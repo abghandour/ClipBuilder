@@ -135,6 +135,44 @@ struct ClipInspector: View {
 
             Divider()
 
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Custom crops")
+                    Spacer()
+                    Button {
+                        addCrop()
+                    } label: {
+                        Label("Add Crop", systemImage: "plus")
+                    }
+                    .controlSize(.small)
+                    .help("Add a crop rectangle; drag it in the preview to pick the region to show")
+                }
+                if let crops = clip.freeCrops, !crops.isEmpty {
+                    ForEach(crops.indices, id: \.self) { index in
+                        HStack {
+                            Image(systemName: "crop")
+                                .foregroundStyle(.secondary)
+                            Text("Crop \(index + 1)")
+                            Spacer()
+                            Button {
+                                removeCrop(at: index)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Remove this crop")
+                        }
+                        .font(.caption)
+                    }
+                    Text("Drag a rectangle in the preview to choose the part of the video to display; drag a corner to resize it.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Divider()
+
             HStack {
                 Button("Duplicate") { model.duplicateClip(clip.uid) }
                 Spacer()
@@ -143,6 +181,34 @@ struct ClipInspector: View {
             .controlSize(.small)
         }
         .padding(12)
+    }
+
+    /// New crops start as the center half of the frame (staggered a little so
+    /// stacked crops stay grabbable) and display in place: dst mirrors src
+    /// until the user gives them different roles.
+    private func addCrop() {
+        let model = store.builder
+        let count = clip.freeCrops?.count ?? 0
+        let offset = min(0.1 * Double(count), 0.25)
+        let rect = FreeCropRect(xFrac: 0.25 + offset, yFrac: 0.25 + offset,
+                                wFrac: 0.5, hFrac: 0.5)
+        model.updateClip(clip.uid) {
+            var crops = $0.freeCrops ?? []
+            crops.append(FreeCrop(src: rect, dst: rect, z: count))
+            $0.freeCrops = crops
+        }
+        // Move the playhead into the clip so the preview shows the rectangle.
+        if model.playhead < clip.startTime || model.playhead >= clip.startTime + clip.duration {
+            model.playhead = clip.startTime
+        }
+    }
+
+    private func removeCrop(at index: Int) {
+        store.builder.updateClip(clip.uid) {
+            guard var crops = $0.freeCrops, crops.indices.contains(index) else { return }
+            crops.remove(at: index)
+            $0.freeCrops = crops.isEmpty ? nil : crops
+        }
     }
 
     private func cropPreview(fraction: Double) -> some View {
