@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Clip Builder — Getting Started</title>
+<style>
+    @page { size: letter; margin: 22mm 20mm; }
+    body {
+        font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+        color: #1d1d1f;
+        font-size: 11.5pt;
+        line-height: 1.55;
+        max-width: 720px;
+        margin: 0 auto;
+    }
+    h1 {
+        font-size: 24pt;
+        margin-bottom: 2px;
+        letter-spacing: -0.5px;
+    }
+    .subtitle {
+        color: #6e6e73;
+        font-size: 12pt;
+        margin-top: 0;
+        margin-bottom: 28px;
+    }
+    h2 {
+        font-size: 16pt;
+        margin-top: 34px;
+        padding-bottom: 6px;
+        border-bottom: 2px solid #e5e5ea;
+        letter-spacing: -0.3px;
+    }
+    h3 { font-size: 12.5pt; margin-top: 22px; margin-bottom: 6px; }
+    code, pre {
+        font-family: "SF Mono", Menlo, Consolas, monospace;
+        font-size: 10pt;
+        background: #f5f5f7;
+        border-radius: 5px;
+    }
+    code { padding: 1.5px 5px; }
+    pre {
+        padding: 10px 14px;
+        overflow-x: auto;
+        border: 1px solid #e5e5ea;
+    }
+    pre code { padding: 0; background: none; border: none; }
+    ol li, ul li { margin-bottom: 6px; }
+    table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 12px 0;
+        font-size: 10.5pt;
+    }
+    th, td {
+        border: 1px solid #d2d2d7;
+        padding: 7px 10px;
+        text-align: left;
+        vertical-align: top;
+    }
+    th { background: #f5f5f7; }
+    .note {
+        background: #fff8e6;
+        border-left: 4px solid #f5a623;
+        padding: 10px 14px;
+        border-radius: 0 6px 6px 0;
+        margin: 14px 0;
+    }
+    .tip {
+        background: #eef6ee;
+        border-left: 4px solid #34c759;
+        padding: 10px 14px;
+        border-radius: 0 6px 6px 0;
+        margin: 14px 0;
+    }
+    kbd {
+        font-family: -apple-system, sans-serif;
+        background: #f5f5f7;
+        border: 1px solid #d2d2d7;
+        border-bottom-width: 2px;
+        border-radius: 4px;
+        padding: 0 5px;
+        font-size: 10pt;
+    }
+    .step-label { font-weight: 600; }
+    footer {
+        margin-top: 40px;
+        padding-top: 10px;
+        border-top: 1px solid #e5e5ea;
+        color: #6e6e73;
+        font-size: 9.5pt;
+    }
+</style>
+</head>
+<body>
+
+<h1>Clip Builder</h1>
+<p class="subtitle">Getting Started Guide — installation, first launch, profiles, and AI model setup</p>
+
+<h2>1. Install the App</h2>
+<ol>
+    <li>Download <code>ClipBuilder-1.0.dmg</code> from the
+        <a href="https://github.com/abghandour/ClipBuilder/releases">GitHub Releases page</a>.</li>
+    <li>Double-click the downloaded <code>.dmg</code> file to open it.</li>
+    <li>Drag <span class="step-label">Clip Builder</span> onto the <span class="step-label">Applications</span> folder shortcut inside the window.</li>
+    <li>Eject the disk image (right-click it on the Desktop or in Finder's sidebar and choose <em>Eject</em>).</li>
+</ol>
+
+<h3>Prerequisite: ffmpeg</h3>
+<p>Clip Builder uses <code>ffmpeg</code> for video processing (scene rendering, thumbnails, exports). Install it with <a href="https://brew.sh">Homebrew</a>:</p>
+<pre><code>brew install ffmpeg</code></pre>
+<p>You can confirm the app sees it later under <em>Settings → General → Storage</em>, where the ffmpeg row should read <span style="color:#34c759">Found</span>.</p>
+
+<h2>2. Open the App for the First Time</h2>
+<p>Because this build is not notarized by Apple, macOS shows a warning the first time you open it:
+<em>"Clip Builder" Not Opened — Apple could not verify "Clip Builder" is free of malware…</em></p>
+<ol>
+    <li>In the warning dialog, click <span class="step-label">Done</span> — <strong>not</strong> "Move to Trash".</li>
+    <li>Open <span class="step-label">System Settings → Privacy &amp; Security</span>.</li>
+    <li>Scroll down to the <em>Security</em> section. You'll see a message saying "Clip Builder" was blocked.</li>
+    <li>Click <span class="step-label">Open Anyway</span>, then confirm (you may be asked for your password or Touch ID).</li>
+</ol>
+<p>This is only required once — afterwards the app opens normally from Launchpad or the Applications folder.</p>
+<div class="tip"><strong>Terminal alternative:</strong> you can clear the quarantine flag instead:<br>
+<code>xattr -d com.apple.quarantine "/Applications/Clip Builder.app"</code></div>
+<div class="note"><strong>Note:</strong> on recent macOS versions, right-clicking the app and choosing <em>Open</em> no longer bypasses this dialog — use the System Settings route above.</div>
+
+<h2>3. Set Up a New Profile</h2>
+<p>A profile bundles your brand identity, folders, and scene database. The app starts with a <em>Default</em> profile; create one per brand or project.</p>
+<ol>
+    <li>Open <span class="step-label">Settings</span> (menu bar: <em>Clip Builder → Settings…</em>, or press <kbd>⌘</kbd> <kbd>,</kbd>).</li>
+    <li>Select the <span class="step-label">Profile</span> tab.</li>
+    <li>Under <em>Profile</em>, type a name into <span class="step-label">New profile name</span> and click <span class="step-label">Create</span>. The new profile becomes the active one; you can switch profiles at any time with the <em>Active profile</em> picker.</li>
+    <li>Fill in the <span class="step-label">Brand</span> section:
+        <ul>
+            <li><em>Brand name</em> — the name used in captions and exports.</li>
+            <li><em>Content domain</em> — your niche (e.g. MMA, cooking, travel). This guides the AI analysis.</li>
+            <li><em>Instagram handle</em> — used when generating social captions.</li>
+        </ul>
+    </li>
+    <li>Set the <span class="step-label">Folders</span>:
+        <ul>
+            <li><em>Input folder</em> — where your source videos live. The app watches this folder.</li>
+            <li><em>Output folder</em> — where rendered clips are written.</li>
+        </ul>
+    </li>
+    <li>Optionally choose <span class="step-label">Intro / Outro</span> videos to be stitched onto every export.</li>
+    <li>Optionally customize the <span class="step-label">Tag Schema</span> — one category per row with comma-separated tags. Leave it empty to use the built-in schema.</li>
+    <li>Click <span class="step-label">Save Profile</span>.</li>
+</ol>
+<div class="note"><strong>Deleting a profile</strong> removes its configuration and scene database, but never touches your source or output video files. The <em>Default</em> profile cannot be deleted.</div>
+
+<h2>4. Set Up and Install the Three AI Models</h2>
+<p>Clip Builder routes its AI work (video analysis, wizard reasoning, caption generation) through three locally installed AI command-line tools. The app reuses whatever login each tool already has, so there are no API keys to paste into Clip Builder itself. Install each CLI, sign in once, and the app picks it up automatically.</p>
+<div class="tip">All three installers below use <code>npm</code>, which comes with <a href="https://nodejs.org">Node.js</a>. If you don't have it: <code>brew install node</code></div>
+
+<h3>4.1 Claude Code (Anthropic) — default provider</h3>
+<ol>
+    <li>Install:
+        <pre><code>npm install -g @anthropic-ai/claude-code</code></pre></li>
+    <li>Run <code>claude</code> in Terminal and follow the prompts to sign in with your Claude account.</li>
+    <li>Available models in Clip Builder: <code>claude-haiku-4-5-20251001</code> (default), <code>claude-sonnet-4-6</code>, <code>claude-opus-4-8</code>.</li>
+</ol>
+
+<h3>4.2 Gemini CLI (Google)</h3>
+<ol>
+    <li>Install:
+        <pre><code>npm install -g @google/gemini-cli</code></pre></li>
+    <li>Run <code>gemini</code> in Terminal and sign in with your Google account when prompted.</li>
+    <li>Available models: <code>gemini-2.5-flash</code> (default), <code>gemini-2.5-flash-lite</code>, <code>gemini-2.0-flash</code>, <code>gemini-2.5-pro</code>.</li>
+</ol>
+
+<h3>4.3 Codex CLI (OpenAI)</h3>
+<ol>
+    <li>Install:
+        <pre><code>npm install -g @openai/codex</code></pre></li>
+    <li>Run <code>codex</code> in Terminal and sign in with your ChatGPT account when prompted.</li>
+    <li>Available models: <code>gpt-5-mini</code> (default), <code>gpt-5-nano</code>, <code>o3-mini</code>, <code>gpt-5-codex</code>, <code>o3</code>, <code>gpt-5</code>.</li>
+</ol>
+<div class="note"><strong>Note:</strong> Codex does not support image input, so it can't be used for visual video analysis — prefer Claude or Gemini for the <em>Video analysis</em> task.</div>
+
+<h3>4.4 Verify and Configure in Clip Builder</h3>
+<ol>
+    <li>Open <span class="step-label">Settings → AI</span>.</li>
+    <li>Each provider section shows a <em>Status</em> row — it should read <span style="color:#34c759">Installed</span> for every CLI you set up. If it says <span style="color:#f5a623">Not found</span>, either the CLI isn't installed or it isn't on the app's PATH; you can enter an explicit <em>Binary path</em> (e.g. <code>/opt/homebrew/bin/claude</code> — find it with <code>which claude</code>).</li>
+    <li>Pick a <span class="step-label">Default model</span> for each provider.</li>
+    <li>Under <span class="step-label">Task Routing</span>, choose which provider handles each task:
+        <table>
+            <tr><th>Task</th><th>What it does</th><th>Default</th></tr>
+            <tr><td>Video analysis</td><td>Watches sampled frames and describes/tags scenes</td><td>Claude Code</td></tr>
+            <tr><td>Wizard reasoning</td><td>Plans clip selections and edits in the Wizard</td><td>Claude Code</td></tr>
+            <tr><td>Caption generation</td><td>Writes social captions for exports</td><td>Claude Code</td></tr>
+        </table>
+    </li>
+    <li>Click <span class="step-label">Save</span>.</li>
+</ol>
+<div class="tip"><strong>Transcription</strong> needs no setup — it runs fully on-device using Apple's SpeechAnalyzer. You can set a language code and vocabulary hints under <em>Settings → General → Transcription</em>.</div>
+
+<h2>You're Ready</h2>
+<p>Point your <em>Input folder</em> at some footage, open the <em>Analyze</em> tab to scan and tag scenes, then use the <em>Wizard</em> or <em>Builder</em> to assemble and export clips.</p>
+
+<footer>Clip Builder 1.0 — Getting Started Guide · July 2026</footer>
+
+</body>
+</html>
