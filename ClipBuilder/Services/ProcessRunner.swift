@@ -111,9 +111,28 @@ nonisolated enum ProcessRunner {
         }
     }
 
+    private static let locateLock = NSLock()
+    nonisolated(unsafe) private static var locateCache: [String: URL] = [:]
+
     /// Locate a command-line tool: absolute path as-is, then Homebrew and
     /// standard prefixes, then a `which` lookup through the login shell PATH.
+    /// Successful lookups are cached (misses re-check so a tool installed
+    /// mid-session is picked up).
     static func locate(_ tool: String) -> URL? {
+        locateLock.lock()
+        let cached = locateCache[tool]
+        locateLock.unlock()
+        if let cached { return cached }
+        let located = locateUncached(tool)
+        if let located {
+            locateLock.lock()
+            locateCache[tool] = located
+            locateLock.unlock()
+        }
+        return located
+    }
+
+    private static func locateUncached(_ tool: String) -> URL? {
         if tool.hasPrefix("/") || tool.hasPrefix("~") {
             let expanded = (tool as NSString).expandingTildeInPath
             return FileManager.default.isExecutableFile(atPath: expanded)

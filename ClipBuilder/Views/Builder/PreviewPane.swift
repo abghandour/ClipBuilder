@@ -28,7 +28,7 @@ struct PreviewPane: View {
                 ForEach(model.document.textOverlays.filter {
                     $0.startTime <= time && time < $0.endTime
                 }) { overlay in
-                    textLayer(overlay, frame: frame)
+                    TextOverlayLayer(overlay: overlay, frame: frame)
                 }
                 if active.isEmpty {
                     Image(systemName: "film")
@@ -70,7 +70,19 @@ struct PreviewPane: View {
         }
     }
 
-    private func textLayer(_ overlay: TextOverlayItem, frame: CGSize) -> some View {
+}
+
+/// A text overlay in the preview. Drag it to reposition: the drag writes the
+/// same xFrac/yFrac the inspector sliders edit, so both stay in sync.
+private struct TextOverlayLayer: View {
+    @Environment(AppStore.self) private var store
+    let overlay: TextOverlayItem
+    let frame: CGSize
+
+    /// Fractional position at the moment the drag started; nil when idle.
+    @State private var dragStart: CGPoint?
+
+    var body: some View {
         let (r, g, b) = TextOverlayRenderer.parseColor(overlay.fontcolor)
         let x = overlay.xFrac ?? 0.5
         let y = overlay.yFrac ?? {
@@ -80,19 +92,37 @@ struct PreviewPane: View {
             default: return 0.85
             }
         }()
-        return Text(overlay.text)
+        Text(overlay.text)
             .font(.system(size: CGFloat(overlay.fontsize) * frame.width / 1080,
                           weight: overlay.bold ? .bold : .regular))
             .italic(overlay.italic)
             .foregroundStyle(Color(red: r, green: g, blue: b))
             .padding(4)
             .background(overlay.boxOpacity > 0
-                        ? backgroundColor(for: overlay).opacity(overlay.boxOpacity) : .clear,
+                        ? backgroundColor.opacity(overlay.boxOpacity) : .clear,
                         in: RoundedRectangle(cornerRadius: 3))
             .position(x: frame.width * x, y: frame.height * y)
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        let model = store.builder
+                        if dragStart == nil {
+                            dragStart = CGPoint(x: x, y: y)
+                            model.selection = .text(overlay.uid)
+                        }
+                        guard let start = dragStart else { return }
+                        let newX = min(max(start.x + value.translation.width / frame.width, 0), 1)
+                        let newY = min(max(start.y + value.translation.height / frame.height, 0), 1)
+                        model.updateText(overlay.uid) {
+                            $0.xFrac = newX
+                            $0.yFrac = newY
+                        }
+                    }
+                    .onEnded { _ in dragStart = nil }
+            )
     }
 
-    private func backgroundColor(for overlay: TextOverlayItem) -> Color {
+    private var backgroundColor: Color {
         let (r, g, b) = TextOverlayRenderer.parseColor(overlay.bgcolor, fallback: (0, 0, 0))
         return Color(red: r, green: g, blue: b)
     }

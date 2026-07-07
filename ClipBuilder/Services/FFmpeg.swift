@@ -16,13 +16,50 @@ nonisolated enum FFmpegError: Error, CustomStringConvertible {
     }
 }
 
-/// Thin async wrapper over the ffmpeg/ffprobe binaries — same commands the
-/// Python app runs, so output files are bit-compatible with its pipeline.
+/// Thin async wrapper over the ffmpeg/ffprobe binaries — same filter graphs
+/// as the Python app's pipeline, with hardware (VideoToolbox) encoding and
+/// cached probes for speed.
 nonisolated enum FFmpeg {
     static func ffmpegURL() throws -> URL {
         guard let url = ProcessRunner.locate("ffmpeg") else { throw FFmpegError.toolNotFound("ffmpeg") }
         return url
     }
+
+    // MARK: - Encoder selection
+
+    /// Whether this ffmpeg build carries the VideoToolbox H.264 encoder —
+    /// hardware encoding is 5-10x faster than libx264 on Apple hardware.
+    static let hasVideoToolbox: Bool = {
+        guard let url = ProcessRunner.locate("ffmpeg") else { return false }
+        let process = Process()
+        process.executableURL = url
+        process.arguments = ["-hide_banner", "-encoders"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return false }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8)?.contains("h264_videotoolbox") ?? false
+    }()
+
+    /// Video encode arguments: hardware VideoToolbox when available
+    /// (`-allow_sw 1` lets VT fall back to its software path), else libx264.
+    static var videoEncodeArgs: [String] {
+        hasVideoToolbox
+            ? ["-c:v", "h264_videotoolbox", "-b:v", "8M", "-allow_sw", "1"]
+            : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    }
+
+    static let audioEncodeArgs = ["-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k"]
+
+    /// Standard full encode argument set shared by every render stage.
+    static var encodeArgs: [String] {
+        videoEncodeArgs + audioEncodeArgs + ["-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+    }
+
+    /// How many ffmpeg jobs to run concurrently during segment/clip renders.
+    static let jobLimit = max(2, min(4, ProcessInfo.processInfo.activeProcessorCount / 2))
 
     static func ffprobeURL() throws -> URL {
         guard let url = ProcessRunner.locate("ffprobe") else { throw FFmpegError.toolNotFound("ffprobe") }
@@ -53,10 +90,22 @@ nonisolated enum FFmpeg {
         return result.stdoutText
     }
 
+    /// Cache key tied to the file's identity so overwritten paths re-probe.
+    private static func probeKey(_ url: URL) -> String {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? -1
+        let mtime = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+        return "\(url.path)|\(size)|\(mtime)"
+    }
+
     static func duration(of url: URL) async -> Double {
+        let key = probeKey(url)
+        if let cached = await ProbeCache.shared.duration(key) { return cached }
         let output = (try? await probe(["-v", "quiet", "-show_entries", "format=duration",
                                         "-of", "csv=p=0", url.path])) ?? ""
-        return Double(output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        let value = Double(output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        if value > 0 { await ProbeCache.shared.setDuration(value, for: key) }
+        return value
     }
 
     static func dimensions(of url: URL) async -> (width: Int, height: Int) {
@@ -89,10 +138,55 @@ nonisolated enum FFmpeg {
     }
 
     static func hasAudioStream(_ url: URL) async -> Bool {
+        let key = probeKey(url)
+        if let cached = await ProbeCache.shared.hasAudio(key) { return cached }
         let output = (try? await probe(["-v", "quiet", "-select_streams", "a",
                                         "-show_entries", "stream=index",
                                         "-of", "csv=p=0", url.path])) ?? ""
-        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let value = !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        await ProbeCache.shared.setHasAudio(value, for: key)
+        return value
+    }
+}
+
+/// Memoizes ffprobe results — source files get probed once per identity
+/// instead of once per segment they appear in (each probe is a process spawn).
+private actor ProbeCache {
+    static let shared = ProbeCache()
+    private var durations: [String: Double] = [:]
+    private var audio: [String: Bool] = [:]
+
+    func duration(_ key: String) -> Double? { durations[key] }
+    func setDuration(_ value: Double, for key: String) { durations[key] = value }
+    func hasAudio(_ key: String) -> Bool? { audio[key] }
+    func setHasAudio(_ value: Bool, for key: String) { audio[key] = value }
+}
+
+/// Order-preserving concurrent map with a bounded number of in-flight tasks —
+/// used to run independent ffmpeg jobs in parallel without oversubscribing.
+nonisolated enum BoundedConcurrency {
+    static func map<T: Sendable, R: Sendable>(
+        _ items: [T], limit: Int,
+        _ transform: @escaping @Sendable (Int, T) async throws -> R
+    ) async throws -> [R] {
+        guard !items.isEmpty else { return [] }
+        var results = [R?](repeating: nil, count: items.count)
+        try await withThrowingTaskGroup(of: (Int, R).self) { group in
+            var next = 0
+            func addNextTask(_ group: inout ThrowingTaskGroup<(Int, R), Error>) {
+                guard next < items.count else { return }
+                let index = next
+                let item = items[index]
+                next += 1
+                group.addTask { (index, try await transform(index, item)) }
+            }
+            for _ in 0..<min(max(1, limit), items.count) { addNextTask(&group) }
+            while let (index, value) = try await group.next() {
+                results[index] = value
+                addNextTask(&group)
+            }
+        }
+        return results.compactMap { $0 }
     }
 }
 

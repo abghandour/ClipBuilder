@@ -58,9 +58,6 @@ actor MultitrackRenderer {
     private static let height = RenderEngine.outputHeight
     private static let slotHeight = 640
     private static let slotY: [String: Int] = ["top": 0, "center": 640, "bottom": 1280]
-    private static let encodeArgs = ["-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                                     "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-                                     "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
 
     private let render: RenderEngine
 
@@ -118,70 +115,22 @@ actor MultitrackRenderer {
 
         let captionRenderer = CaptionRenderer(videoWidth: Self.width, videoHeight: Self.height,
                                               style: profile.captions)
+        let captionCache = CaptionPNGCache(renderer: captionRenderer, directory: scratch)
+        let segmentCount = fullSegments.count
+
+        // Render every segment concurrently (bounded) — each is one
+        // independent ffmpeg job with captions burned in the same pass.
+        let segmentPaths = try await BoundedConcurrency.map(fullSegments,
+                                                            limit: FFmpeg.jobLimit) { index, segment in
+            try await self.renderSegment(segment, index: index, of: segmentCount,
+                                         scratch: scratch, database: database,
+                                         captionRenderer: captionRenderer,
+                                         captionCache: captionCache, emit: emit)
+        }
         for (index, segment) in fullSegments.enumerated() {
-            if segment.clips.isEmpty {
-                emit("Segment \(index + 1)/\(fullSegments.count): gap (\(String(format: "%.1fs", segment.duration)))")
-                let gapPath = scratch.appendingPathComponent(String(format: "gap%03d.mp4", index))
-                try await generatePlaceholder(duration: segment.duration, output: gapPath)
-                clipPaths.append(gapPath)
-                if clipPaths.count > 1 { transitions.append(nil) }
-                continue
-            }
-
-            emit("Segment \(index + 1)/\(fullSegments.count): compositing \(segment.clips.count) clip(s)…")
-            var placements: [Placement] = []
-            for clip in segment.clips {
-                let clipOffset = segment.start - clip.startTime
-                placements.append(Placement(sourcePath: clip.sourcePath,
-                                            sourceStart: clip.sourceStart + clipOffset,
-                                            sourceDur: segment.duration,
-                                            isWide: clip.wide,
-                                            layer: clip.track,
-                                            position: clip.effectivePosition,
-                                            muted: clip.muted,
-                                            stackOrder: clip.stackOrder,
-                                            cropXFrac: clip.effectiveCropXFrac,
-                                            freeCrops: clip.freeCrops))
-            }
-            var segmentPath = scratch.appendingPathComponent(String(format: "seg%03d_layered.mp4", index))
-            try await compositeLayeredSegment(placements: placements, duration: segment.duration,
-                                              output: segmentPath)
-
-            // Captions burn after compositing so they sit on the final frame.
-            var positioned: [(segment: TranscriptSegment, position: String?)] = []
-            for clip in segment.clips {
-                guard let captionPosition = clip.captionsPosition, let videoID = clip.videoID else { continue }
-                let clipOffset = segment.start - clip.startTime
-                let sourceStart = clip.sourceStart + clipOffset
-                let sourceEnd = sourceStart + segment.duration
-                let rows = (try? await database.transcriptSegments(videoID: videoID,
-                                                                   start: sourceStart, end: sourceEnd)) ?? []
-                for row in rows {
-                    // Shift to segment-local time and clamp to the window,
-                    // like db.py get_transcript_for_clip().
-                    let start = max(0, row.start - sourceStart)
-                    let end = min(segment.duration, row.end - sourceStart)
-                    guard end > start else { continue }
-                    positioned.append((TranscriptSegment(start: start, end: end, text: row.text, words: nil),
-                                       captionPosition))
-                }
-            }
-            if !positioned.isEmpty {
-                let cappedPath = scratch.appendingPathComponent(String(format: "seg%03d_capped.mp4", index))
-                do {
-                    try await burnPositionedCaptions(video: segmentPath, captions: positioned,
-                                                     renderer: captionRenderer, scratch: scratch,
-                                                     output: cappedPath)
-                    segmentPath = cappedPath
-                } catch {
-                    emit("Segment \(index + 1): caption burn failed, keeping uncaptioned (\(error))")
-                }
-            }
-
-            clipPaths.append(segmentPath)
-            if clipPaths.count > 1 {
-                transitions.append(segment.clips.first?.transIn)
-            }
+            clipPaths.append(segmentPaths[index])
+            guard clipPaths.count > 1 else { continue }
+            transitions.append(segment.clips.isEmpty ? nil : segment.clips.first?.transIn)
         }
 
         var outroAdded = false
@@ -368,6 +317,82 @@ actor MultitrackRenderer {
         return segments
     }
 
+    // MARK: - Segment rendering
+
+    /// A caption PNG composited over a segment inside its enable window.
+    nonisolated struct CaptionOverlay: Sendable {
+        var png: URL
+        var x: Int
+        var y: Int
+        var start: Double
+        var end: Double
+    }
+
+    /// Render one timeline segment to its own file: black gap placeholder, or
+    /// layered composite with captions burned in the same encode pass.
+    private func renderSegment(_ segment: Segment, index: Int, of total: Int,
+                               scratch: URL, database: Database,
+                               captionRenderer: CaptionRenderer,
+                               captionCache: CaptionPNGCache,
+                               emit: @escaping @Sendable (String) -> Void) async throws -> URL {
+        if segment.clips.isEmpty {
+            emit("Segment \(index + 1)/\(total): gap (\(String(format: "%.1fs", segment.duration)))")
+            let gapPath = scratch.appendingPathComponent(String(format: "gap%03d.mp4", index))
+            try await generatePlaceholder(duration: segment.duration, output: gapPath)
+            return gapPath
+        }
+
+        emit("Segment \(index + 1)/\(total): compositing \(segment.clips.count) clip(s)…")
+        var placements: [Placement] = []
+        for clip in segment.clips {
+            let clipOffset = segment.start - clip.startTime
+            placements.append(Placement(sourcePath: clip.sourcePath,
+                                        sourceStart: clip.sourceStart + clipOffset,
+                                        sourceDur: segment.duration,
+                                        isWide: clip.wide,
+                                        layer: clip.track,
+                                        position: clip.effectivePosition,
+                                        muted: clip.muted,
+                                        stackOrder: clip.stackOrder,
+                                        cropXFrac: clip.effectiveCropXFrac,
+                                        freeCrops: clip.freeCrops))
+        }
+
+        // Captions ride the composite's filter graph — no second encode pass.
+        var captions: [CaptionOverlay] = []
+        for clip in segment.clips {
+            guard let captionPosition = clip.captionsPosition, let videoID = clip.videoID else { continue }
+            let clipOffset = segment.start - clip.startTime
+            let sourceStart = clip.sourceStart + clipOffset
+            let sourceEnd = sourceStart + segment.duration
+            let rows = (try? await database.transcriptSegments(videoID: videoID,
+                                                               start: sourceStart, end: sourceEnd)) ?? []
+            for row in rows {
+                // Shift to segment-local time and clamp to the window,
+                // like db.py get_transcript_for_clip().
+                let start = max(0, row.start - sourceStart)
+                let end = min(segment.duration, row.end - sourceStart)
+                guard end > start else { continue }
+                let text = row.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                guard let rendered = try? await captionCache.rendered(text) else { continue }
+                let (x, y) = captionRenderer.position(for: rendered, positionOverride: captionPosition)
+                captions.append(CaptionOverlay(png: rendered.pngURL, x: x, y: y, start: start, end: end))
+            }
+        }
+
+        let segmentPath = scratch.appendingPathComponent(String(format: "seg%03d_layered.mp4", index))
+        do {
+            try await compositeLayeredSegment(placements: placements, duration: segment.duration,
+                                              captions: captions, output: segmentPath)
+        } catch where !captions.isEmpty {
+            emit("Segment \(index + 1): caption burn failed, retrying without captions")
+            try await compositeLayeredSegment(placements: placements, duration: segment.duration,
+                                              captions: [], output: segmentPath)
+        }
+        return segmentPath
+    }
+
     // MARK: - FFmpeg stages
 
     /// Solid black 1080x1920 clip with silent audio (video.py generate_placeholder).
@@ -378,15 +403,17 @@ actor MultitrackRenderer {
                                      Self.width, Self.height, duration),
                               "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
                               "-t", String(format: "%.2f", duration)]
-                             + Self.encodeArgs + [output.path], timeout: 120)
+                             + FFmpeg.encodeArgs + [output.path], timeout: 120)
     }
 
     /// Port of video.py composite_layered_segment(): black base canvas, each
     /// placement overlaid in (layer, stack order) order — non-wide clips fill
     /// the frame, cropped wides fill the frame through a 9:16 window, slot
     /// wides land in a 1080x640 band, free-crop rectangles composite in z
-    /// order. Unmuted clip audio mixes via amix (silence when none).
+    /// order, caption PNGs overlay last inside their enable windows. Unmuted
+    /// clip audio mixes via amix (silence when none).
     private func compositeLayeredSegment(placements: [Placement], duration: Double,
+                                         captions: [CaptionOverlay] = [],
                                          output: URL) async throws {
         guard !placements.isEmpty else {
             try await generatePlaceholder(duration: duration, output: output)
@@ -409,6 +436,7 @@ actor MultitrackRenderer {
                           "-t", String(format: "%.3f", placement.sourceDur),
                           "-i", placement.sourcePath]
         }
+        for caption in captions { arguments += ["-i", caption.png.path] }
 
         var filters: [String] = []
         var freeCropOutputs: [Int: [(label: String, x: Int, y: Int)]] = [:]
@@ -470,8 +498,19 @@ actor MultitrackRenderer {
         }
         var previous = "[0:v]"
         for (stepIndex, step) in overlaySteps.enumerated() {
-            let outLabel = stepIndex == overlaySteps.count - 1 ? "[vout]" : "[ov\(stepIndex)]"
+            let isLast = stepIndex == overlaySteps.count - 1 && captions.isEmpty
+            let outLabel = isLast ? "[vout]" : "[ov\(stepIndex)]"
             filters.append("\(previous)[\(step.label)]overlay=x=\(step.x):y=\(step.y):shortest=0\(outLabel)")
+            previous = outLabel
+        }
+
+        // Caption overlays chain onto the composited frame (single-frame PNG
+        // inputs persist via repeatlast, gated by their enable windows).
+        let captionBase = 2 + ordered.count
+        for (capIndex, caption) in captions.enumerated() {
+            let outLabel = capIndex == captions.count - 1 ? "[vout]" : "[cap\(capIndex)]"
+            filters.append("\(previous)[\(captionBase + capIndex):v]overlay=x=\(caption.x):y=\(caption.y):" +
+                           String(format: "enable='between(t,%.3f,%.3f)'", caption.start, caption.end) + outLabel)
             previous = outLabel
         }
 
@@ -499,7 +538,7 @@ actor MultitrackRenderer {
             "-filter_complex", filters.joined(separator: ";"),
             "-map", "[vout]", "-map", audioSource,
             "-t", String(format: "%.3f", duration),
-        ] + Self.encodeArgs + [output.path], timeout: 600)
+        ] + FFmpeg.encodeArgs + [output.path], timeout: 600)
     }
 
     private nonisolated struct NormalizedCrop {
@@ -530,46 +569,6 @@ actor MultitrackRenderer {
                                              dx: dx, dy: dy, dw: dw, dh: dh, z: crop.z))
         }
         return normalized
-    }
-
-    /// Burn caption PNGs with per-segment vertical positions — the builder's
-    /// variant of RenderEngine.burnCaptions (positions vary per source clip).
-    private func burnPositionedCaptions(video: URL,
-                                        captions: [(segment: TranscriptSegment, position: String?)],
-                                        renderer: CaptionRenderer, scratch: URL,
-                                        output: URL) async throws {
-        var arguments = ["-y", "-i", video.path]
-        var filterParts: [String] = []
-        var previous = "[0:v]"
-        for (index, entry) in captions.enumerated() {
-            let text = entry.segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
-            let rendered = try renderer.render(text: text, to: scratch)
-            let (x, y) = renderer.position(for: rendered, positionOverride: entry.position)
-            arguments += ["-i", rendered.pngURL.path]
-            let inputIndex = filterParts.count + 1
-            let label = index == captions.count - 1 ? "[vout]" : "[cap\(inputIndex)]"
-            filterParts.append("\(previous)[\(inputIndex):v]overlay=x=\(x):y=\(y):" +
-                               String(format: "enable='between(t,%.3f,%.3f)'",
-                                      entry.segment.start, entry.segment.end) + label)
-            previous = label
-        }
-        guard !filterParts.isEmpty else {
-            try FileManager.default.copyItemReplacing(at: video, to: output)
-            return
-        }
-        if var last = filterParts.popLast() {
-            if !last.hasSuffix("[vout]"), let bracket = last.lastIndex(of: "[") {
-                last = String(last[..<bracket]) + "[vout]"
-            }
-            filterParts.append(last)
-        }
-        try await FFmpeg.run(arguments + [
-            "-filter_complex", filterParts.joined(separator: ";"),
-            "-map", "[vout]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-c:a", "copy", "-pix_fmt", "yuv420p", output.path,
-        ], timeout: 1200)
     }
 
     /// Port of video.py build_music_track(): concat per-block trimmed music
@@ -703,8 +702,8 @@ actor MultitrackRenderer {
         try await FFmpeg.run(arguments + [
             "-filter_complex", filters.joined(separator: ";"),
             "-map", previous, "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-            "-c:a", "copy", "-movflags", "+faststart", output.path,
+        ] + FFmpeg.videoEncodeArgs + [
+            "-c:a", "copy", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output.path,
         ], timeout: 900)
     }
 
@@ -762,5 +761,25 @@ actor MultitrackRenderer {
             }
         }
         return directory.appendingPathComponent("hl-\(Int(totalDuration))-\(counter).mp4")
+    }
+}
+
+/// Serializes and memoizes caption PNG rasterization — identical caption text
+/// renders once per run, even across concurrent segment jobs.
+actor CaptionPNGCache {
+    private let renderer: CaptionRenderer
+    private let directory: URL
+    private var cache: [String: CaptionRenderer.RenderedCaption] = [:]
+
+    init(renderer: CaptionRenderer, directory: URL) {
+        self.renderer = renderer
+        self.directory = directory
+    }
+
+    func rendered(_ text: String) throws -> CaptionRenderer.RenderedCaption {
+        if let hit = cache[text] { return hit }
+        let rendered = try renderer.render(text: text, to: directory)
+        cache[text] = rendered
+        return rendered
     }
 }

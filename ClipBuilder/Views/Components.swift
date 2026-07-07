@@ -40,6 +40,25 @@ struct VideoThumbnail: View {
     }
 }
 
+/// AVPlayerView wrapper used instead of SwiftUI's VideoPlayer, which crashes
+/// at runtime on macOS 27 betas (the _AVKit_SwiftUI shim fails to resolve the
+/// AVPlayerView superclass metadata and aborts). Referencing AVPlayerView
+/// directly also guarantees AVKit is linked into the process.
+private struct PlayerView: NSViewRepresentable {
+    let player: AVPlayer?
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.showsFullScreenToggleButton = true
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.player = player
+    }
+}
+
 /// Modal player used by both the Library and the scene browser.
 struct PlayerSheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -61,7 +80,7 @@ struct PlayerSheet: View {
             }
             .padding()
 
-            VideoPlayer(player: player)
+            PlayerView(player: player)
                 .frame(minWidth: 420, minHeight: 560)
         }
         .onAppear {

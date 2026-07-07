@@ -13,7 +13,7 @@ struct BuilderView: View {
         let model = store.builder
         HSplitView {
             ClipBrowserPane()
-                .frame(minWidth: 250, idealWidth: 300, maxWidth: 420, maxHeight: .infinity)
+                .frame(minWidth: 250, idealWidth: 300, maxWidth: 420, maxHeight: .infinity, alignment: .top)
             VStack(spacing: 0) {
                 HStack(spacing: 0) {
                     PreviewPane()

@@ -70,6 +70,7 @@ struct ClipBrowserPane: View {
             if filteredScenes.isEmpty {
                 ContentUnavailableView("No Scenes", systemImage: "square.grid.3x3",
                                        description: Text("Analyze source videos, then drag scenes onto the timeline."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8, alignment: .top)],

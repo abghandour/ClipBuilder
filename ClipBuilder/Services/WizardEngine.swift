@@ -504,68 +504,31 @@ actor WizardEngine {
             clipURLs.append(normalized)
         }
 
-        for (index, clip) in plan.clips.enumerated() {
-            guard let scene = sceneMap[clip.sceneID] else { continue }
-            let duration = clip.end - clip.start
-            let mode = clip.wideSplit ? "split-screen" : (options.autoCropWide && scene.wide ? "auto-crop" : "")
-            emit("Video \(label): clip \(index + 1)/\(plan.clips.count) " +
-                 String(format: "[%.1fs +%.1fs]", clip.start, duration) +
-                 " from \(scene.videoFilename)\(mode.isEmpty ? "" : " (\(mode))")")
-
-            var current = scratch.appendingPathComponent("clip_\(index).mp4")
-            if clip.wideSplit && scene.wide {
-                try await render.extractWideSplit(source: scene.videoURL, start: clip.start,
-                                                  duration: duration, output: current)
-            } else if options.autoCropWide && scene.wide {
-                do {
-                    try await render.extractWideSubclipAutocrop(source: scene.videoURL, start: clip.start,
-                                                                duration: duration, output: current)
-                } catch {
-                    try await render.extractSubclip(source: scene.videoURL, start: clip.start,
-                                                    duration: duration, output: current)
-                }
-            } else {
-                try await render.extractSubclip(source: scene.videoURL, start: clip.start,
-                                                duration: duration, output: current)
+        // Extract every planned clip concurrently — captions, text overlay
+        // and mute are burned in ONE encode pass per clip (they used to be
+        // up to three extra full re-encodes each).
+        let jobs: [(index: Int, clip: WizardPlanClip, scene: SceneRecord)] =
+            plan.clips.enumerated().compactMap { index, clip in
+                sceneMap[clip.sceneID].map { (index, clip, $0) }
             }
+        let clipCount = plan.clips.count
+        let captionStyle = profile.captions
+        let extracted = try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
+            try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
+                                              scene: job.scene, options: options,
+                                              captionStyle: captionStyle,
+                                              database: database, scratch: scratch,
+                                              label: label, emit: emit)
+        }
 
-            if options.addCaptions {
-                // Transcript times are in source-video time; shift into clip time.
-                let sourceSegments = (try? await database.transcriptSegments(
-                    videoID: scene.videoID, start: clip.start, end: clip.end)) ?? []
-                let shifted = sourceSegments.compactMap { segment -> TranscriptSegment? in
-                    let start = max(0, segment.start - clip.start)
-                    let end = min(duration, segment.end - clip.start)
-                    guard end > start + 0.1 else { return nil }
-                    return TranscriptSegment(start: start, end: end, text: segment.text, words: nil)
-                }
-                if !shifted.isEmpty {
-                    let captioned = scratch.appendingPathComponent("clip_\(index)_cap.mp4")
-                    try await render.burnCaptions(video: current, segments: shifted,
-                                                  style: profile.captions, output: captioned)
-                    current = captioned
-                }
-            }
-
-            if let overlayText = clip.textOverlay, options.enableTextOverlays {
-                let overlaid = scratch.appendingPathComponent("clip_\(index)_txt.mp4")
-                try await render.addTextOverlay(video: current, text: overlayText, output: overlaid)
-                current = overlaid
-            }
-
-            if options.muteSource {
-                let muted = scratch.appendingPathComponent("clip_\(index)_mute.mp4")
-                try await render.muteAudio(video: current, output: muted)
-                current = muted
-            }
-
+        for url in extracted {
             if clipURLs.count > clipTransitions.count && !clipURLs.isEmpty {
                 // Boundary after intro or a previous clip: planner transition
                 // if available, else hard fade.
                 let planIndex = clipURLs.count - (assetURL(profile.introVideo) != nil ? 2 : 1)
                 clipTransitions.append(plan.transitions[safe: planIndex] ?? "fade")
             }
-            clipURLs.append(current)
+            clipURLs.append(url)
         }
 
         if let outro = assetURL(profile.outroVideo) {
@@ -621,6 +584,85 @@ actor WizardEngine {
                                                                wizardProvider: attribution.provider,
                                                                wizardModel: attribution.model)
         return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID)
+    }
+
+    /// One planned clip → one normalized file in a single decode→encode pass:
+    /// wide handling, caption overlays, text overlay and mute all ride the
+    /// same ffmpeg filter graph.
+    private func extractPlannedClip(_ clip: WizardPlanClip, index: Int, of total: Int,
+                                    scene: SceneRecord, options: WizardOptions,
+                                    captionStyle: CaptionStyle,
+                                    database: Database, scratch: URL,
+                                    label: String,
+                                    emit: @escaping @Sendable (String) -> Void) async throws -> URL {
+        let duration = clip.end - clip.start
+        let mode = clip.wideSplit ? "split-screen" : (options.autoCropWide && scene.wide ? "auto-crop" : "")
+        emit("Video \(label): clip \(index + 1)/\(total) " +
+             String(format: "[%.1fs +%.1fs]", clip.start, duration) +
+             " from \(scene.videoFilename)\(mode.isEmpty ? "" : " (\(mode))")")
+
+        var overlays: [RenderEngine.ClipOverlay] = []
+        if options.addCaptions {
+            // Transcript times are in source-video time; shift into clip time.
+            let renderer = CaptionRenderer(videoWidth: RenderEngine.outputWidth,
+                                           videoHeight: RenderEngine.outputHeight,
+                                           style: captionStyle)
+            let sourceSegments = (try? await database.transcriptSegments(
+                videoID: scene.videoID, start: clip.start, end: clip.end)) ?? []
+            for segment in sourceSegments {
+                let start = max(0, segment.start - clip.start)
+                let end = min(duration, segment.end - clip.start)
+                guard end > start + 0.1 else { continue }
+                let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                guard let rendered = try? renderer.render(text: text, to: scratch) else { continue }
+                let (x, y) = renderer.position(for: rendered)
+                overlays.append(RenderEngine.ClipOverlay(png: rendered.pngURL, x: x, y: y,
+                                                         start: start, end: end))
+            }
+        }
+        if let overlayText = clip.textOverlay, options.enableTextOverlays {
+            // Punchy full-clip text overlay — bigger type, upper third.
+            let renderer = CaptionRenderer(videoWidth: RenderEngine.outputWidth,
+                                           videoHeight: RenderEngine.outputHeight,
+                                           style: CaptionStyle())
+            if let rendered = try? renderer.render(text: overlayText.uppercased(), to: scratch,
+                                                   fontSize: CGFloat(RenderEngine.outputWidth) / 14) {
+                overlays.append(RenderEngine.ClipOverlay(
+                    png: rendered.pngURL,
+                    x: (RenderEngine.outputWidth - rendered.width) / 2,
+                    y: RenderEngine.outputHeight / 5,
+                    start: nil, end: nil))
+            }
+        }
+
+        let output = scratch.appendingPathComponent("clip_\(index).mp4")
+        if clip.wideSplit && scene.wide {
+            try await render.extractClip(source: scene.videoURL, start: clip.start,
+                                         duration: duration, wide: .split,
+                                         overlays: overlays, mute: options.muteSource,
+                                         output: output)
+        } else if options.autoCropWide && scene.wide {
+            let xFraction = await render.autoCropXFraction(source: scene.videoURL,
+                                                           start: clip.start, duration: duration)
+            do {
+                try await render.extractClip(source: scene.videoURL, start: clip.start,
+                                             duration: duration, wide: .autoCrop(xFraction),
+                                             overlays: overlays, mute: options.muteSource,
+                                             output: output)
+            } catch {
+                try await render.extractClip(source: scene.videoURL, start: clip.start,
+                                             duration: duration,
+                                             overlays: overlays, mute: options.muteSource,
+                                             output: output)
+            }
+        } else {
+            try await render.extractClip(source: scene.videoURL, start: clip.start,
+                                         duration: duration,
+                                         overlays: overlays, mute: options.muteSource,
+                                         output: output)
+        }
+        return output
     }
 
     private func assetURL(_ path: String?) -> URL? {

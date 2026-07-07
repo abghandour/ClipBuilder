@@ -35,29 +35,83 @@ actor RenderEngine {
         "scale=\(outputWidth):\(outputHeight):force_original_aspect_ratio=decrease," +
         "pad=\(outputWidth):\(outputHeight):(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30"
 
-    private static let encodeArgs = ["-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                                     "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-                                     "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
-
     // MARK: - Subclip extraction
 
-    /// Trim [start, start+duration] and normalize to portrait 1080x1920@30.
-    /// Sources without audio get a silent stereo track so every intermediate
-    /// clip is concat-compatible.
-    func extractSubclip(source: URL, start: Double, duration: Double, output: URL) async throws {
-        if await FFmpeg.hasAudioStream(source) {
-            try await FFmpeg.run(["-y", "-ss", String(format: "%.2f", start), "-i", source.path,
-                                  "-t", String(format: "%.2f", duration),
-                                  "-vf", Self.normalizeFilter]
-                                 + Self.encodeArgs + [output.path], timeout: 600)
-        } else {
-            try await FFmpeg.run(["-y", "-ss", String(format: "%.2f", start), "-i", source.path,
-                                  "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-                                  "-t", String(format: "%.2f", duration),
-                                  "-filter_complex", "[0:v]\(Self.normalizeFilter)[vout]",
-                                  "-map", "[vout]", "-map", "1:a"]
-                                 + Self.encodeArgs + [output.path], timeout: 600)
+    /// A PNG composited over a clip during extraction (caption or text
+    /// overlay). `start`/`end` bound the enable window in clip-local time;
+    /// nil shows the overlay for the whole clip.
+    nonisolated struct ClipOverlay: Sendable {
+        var png: URL
+        var x: Int
+        var y: Int
+        var start: Double?
+        var end: Double?
+    }
+
+    /// How a wide (landscape) source fills the portrait frame.
+    nonisolated enum WideTreatment: Sendable {
+        case none                 // letterbox/normalize
+        case autoCrop(Double)     // 9:16 window at the given x fraction
+        case split                // left/right halves stacked top/bottom
+    }
+
+    /// Trim [start, start+duration], normalize to portrait 1080x1920@30, and
+    /// burn any overlays — all in ONE decode→encode pass (captions, text and
+    /// mute used to be separate full re-encodes). Sources without audio get a
+    /// silent stereo track so every intermediate clip is concat-compatible.
+    func extractClip(source: URL, start: Double, duration: Double,
+                     wide: WideTreatment = .none,
+                     overlays: [ClipOverlay] = [],
+                     mute: Bool = false,
+                     output: URL) async throws {
+        let hasAudio = mute ? false : await FFmpeg.hasAudioStream(source)
+        var arguments = ["-y", "-ss", String(format: "%.2f", start), "-i", source.path]
+        if !hasAudio { arguments += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"] }
+        let overlayBase = hasAudio ? 1 : 2
+        for overlay in overlays { arguments += ["-i", overlay.png.path] }
+
+        var filters: [String] = []
+        let baseLabel = overlays.isEmpty ? "[vout]" : "[base]"
+        switch wide {
+        case .none:
+            filters.append("[0:v]\(Self.normalizeFilter)\(baseLabel)")
+        case .autoCrop(let xFraction):
+            filters.append(String(format: "[0:v]crop=ih*9/16:ih:(iw-ih*9/16)*%.4f:0," +
+                                  "scale=%d:%d,setsar=1,fps=30%@",
+                                  xFraction, Self.outputWidth, Self.outputHeight, baseLabel))
+        case .split:
+            let half = Self.outputHeight / 2
+            filters.append("""
+            [0:v]split=2[left][right];\
+            [left]crop=iw/2:ih:0:0,scale=\(Self.outputWidth):\(half):force_original_aspect_ratio=increase,\
+            crop=\(Self.outputWidth):\(half)[top];\
+            [right]crop=iw/2:ih:iw/2:0,scale=\(Self.outputWidth):\(half):force_original_aspect_ratio=increase,\
+            crop=\(Self.outputWidth):\(half)[bottom];\
+            [top][bottom]vstack,setsar=1,fps=30\(baseLabel)
+            """)
         }
+
+        // Overlay chain (single-frame PNG inputs persist via repeatlast).
+        var previous = baseLabel
+        for (index, overlay) in overlays.enumerated() {
+            let outLabel = index == overlays.count - 1 ? "[vout]" : "[ovl\(index)]"
+            var step = "\(previous)[\(overlayBase + index):v]overlay=x=\(overlay.x):y=\(overlay.y)"
+            if let windowStart = overlay.start, let windowEnd = overlay.end {
+                step += String(format: ":enable='between(t,%.3f,%.3f)'", windowStart, windowEnd)
+            }
+            filters.append(step + outLabel)
+            previous = outLabel
+        }
+
+        arguments += ["-filter_complex", filters.joined(separator: ";"),
+                      "-map", "[vout]", "-map", hasAudio ? "0:a" : "1:a",
+                      "-t", String(format: "%.2f", duration)]
+        try await FFmpeg.run(arguments + FFmpeg.encodeArgs + [output.path], timeout: 900)
+    }
+
+    /// Plain trim + normalize (no overlays).
+    func extractSubclip(source: URL, start: Double, duration: Double, output: URL) async throws {
+        try await extractClip(source: source, start: start, duration: duration, output: output)
     }
 
     /// Re-encode an arbitrary clip (intro/outro) to the standard format.
@@ -72,14 +126,23 @@ actor RenderEngine {
     /// (column stdev) + 0.6·motion (frame-to-frame column diff), sliding a
     /// 9:16 window to find the busiest region. Port of auto_crop_x_frac.
     func autoCropXFraction(source: URL, start: Double, duration: Double) async -> Double {
-        var frames: [(pixels: [UInt8], width: Int, height: Int)] = []
-        for i in 0..<7 {
-            let fraction = 0.05 + 0.90 * Double(i) / 6.0
-            let t = start + duration * fraction
-            if let frame = await ThumbnailService.grayscaleFrame(url: source, at: t, width: 384) {
-                frames.append(frame)
+        // Grab the sample frames concurrently — each is an independent
+        // AVAssetImageGenerator (or ffmpeg fallback) call.
+        let frames: [(pixels: [UInt8], width: Int, height: Int)] =
+            await withTaskGroup(of: (Int, (pixels: [UInt8], width: Int, height: Int)?).self) { group in
+                for i in 0..<7 {
+                    let fraction = 0.05 + 0.90 * Double(i) / 6.0
+                    let t = start + duration * fraction
+                    group.addTask {
+                        (i, await ThumbnailService.grayscaleFrame(url: source, at: t, width: 384))
+                    }
+                }
+                var collected: [(Int, (pixels: [UInt8], width: Int, height: Int))] = []
+                for await (i, frame) in group {
+                    if let frame { collected.append((i, frame)) }
+                }
+                return collected.sorted { $0.0 < $1.0 }.map(\.1)
             }
-        }
         guard frames.count >= 2, let first = frames.first else { return 0.5 }
         let width = first.width
         let height = first.height
@@ -88,30 +151,44 @@ actor RenderEngine {
         }
 
         // Column detail: stdev down each column, averaged across frames.
+        // (Row-major scans with per-column accumulators for cache locality.)
         var detail = [Double](repeating: 0, count: width)
         for frame in frames {
-            for x in 0..<width {
-                var sum = 0.0, sumSquares = 0.0
-                for y in 0..<height {
-                    let v = Double(frame.pixels[y * width + x])
-                    sum += v
-                    sumSquares += v * v
+            var sums = [Double](repeating: 0, count: width)
+            var squares = [Double](repeating: 0, count: width)
+            frame.pixels.withUnsafeBufferPointer { pixels in
+                var offset = 0
+                for _ in 0..<height {
+                    for x in 0..<width {
+                        let v = Double(pixels[offset])
+                        offset += 1
+                        sums[x] += v
+                        squares[x] += v * v
+                    }
                 }
-                let mean = sum / Double(height)
-                detail[x] += max(0, sumSquares / Double(height) - mean * mean).squareRoot()
+            }
+            for x in 0..<width {
+                let mean = sums[x] / Double(height)
+                detail[x] += max(0, squares[x] / Double(height) - mean * mean).squareRoot()
             }
         }
         // Column motion: mean abs diff between consecutive frames.
         var motion = [Double](repeating: 0, count: width)
         for index in 1..<frames.count {
-            let a = frames[index - 1].pixels
-            let b = frames[index].pixels
-            for x in 0..<width {
-                var diff = 0.0
-                for y in 0..<height {
-                    diff += abs(Double(b[y * width + x]) - Double(a[y * width + x]))
+            var diffs = [Double](repeating: 0, count: width)
+            frames[index - 1].pixels.withUnsafeBufferPointer { a in
+                frames[index].pixels.withUnsafeBufferPointer { b in
+                    var offset = 0
+                    for _ in 0..<height {
+                        for x in 0..<width {
+                            diffs[x] += abs(Double(b[offset]) - Double(a[offset]))
+                            offset += 1
+                        }
+                    }
                 }
-                motion[x] += diff / Double(height)
+            }
+            for x in 0..<width {
+                motion[x] += diffs[x] / Double(height)
             }
         }
 
@@ -136,48 +213,6 @@ actor RenderEngine {
             }
         }
         return min(1, max(0, Double(bestLeft) / Double(width - targetWidth)))
-    }
-
-    /// Wide → portrait: crop a 9:16 window centered on the action.
-    func extractWideSubclipAutocrop(source: URL, start: Double, duration: Double, output: URL) async throws {
-        let xFraction = await autoCropXFraction(source: source, start: start, duration: duration)
-        let filter = String(format: "crop=ih*9/16:ih:(iw-ih*9/16)*%.4f:0,scale=%d:%d,setsar=1,fps=30",
-                            xFraction, Self.outputWidth, Self.outputHeight)
-        if await FFmpeg.hasAudioStream(source) {
-            try await FFmpeg.run(["-y", "-ss", String(format: "%.2f", start), "-i", source.path,
-                                  "-t", String(format: "%.2f", duration), "-vf", filter]
-                                 + Self.encodeArgs + [output.path], timeout: 600)
-        } else {
-            try await FFmpeg.run(["-y", "-ss", String(format: "%.2f", start), "-i", source.path,
-                                  "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-                                  "-t", String(format: "%.2f", duration),
-                                  "-filter_complex", "[0:v]\(filter)[vout]",
-                                  "-map", "[vout]", "-map", "1:a"]
-                                 + Self.encodeArgs + [output.path], timeout: 600)
-        }
-    }
-
-    /// Wide → portrait split-screen: left/right halves stacked to fill the
-    /// full 9:16 frame with no black bars.
-    func extractWideSplit(source: URL, start: Double, duration: Double, output: URL) async throws {
-        let half = Self.outputHeight / 2
-        let filter = """
-        [0:v]split=2[left][right];\
-        [left]crop=iw/2:ih:0:0,scale=\(Self.outputWidth):\(half):force_original_aspect_ratio=increase,\
-        crop=\(Self.outputWidth):\(half)[top];\
-        [right]crop=iw/2:ih:iw/2:0,scale=\(Self.outputWidth):\(half):force_original_aspect_ratio=increase,\
-        crop=\(Self.outputWidth):\(half)[bottom];\
-        [top][bottom]vstack,setsar=1,fps=30[vout]
-        """
-        let hasAudio = await FFmpeg.hasAudioStream(source)
-        var arguments = ["-y", "-ss", String(format: "%.2f", start), "-i", source.path]
-        if !hasAudio {
-            arguments += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"]
-        }
-        arguments += ["-t", String(format: "%.2f", duration),
-                      "-filter_complex", filter,
-                      "-map", "[vout]", "-map", hasAudio ? "0:a" : "1:a"]
-        try await FFmpeg.run(arguments + Self.encodeArgs + [output.path], timeout: 600)
     }
 
     // MARK: - Concatenation
@@ -252,9 +287,8 @@ actor RenderEngine {
     /// xfade every gap in one pass; throws when durations can't support the
     /// crossfade so callers can fall back to a plain concat.
     private func xfadeAll(clips: [URL], transitions: [String], output: URL) async throws {
-        var durations: [Double] = []
-        for clip in clips {
-            durations.append(await FFmpeg.duration(of: clip))
+        let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
+            await FFmpeg.duration(of: clip)
         }
         let requestedXfade = 0.5
         let actualXfade = min(requestedXfade, (durations.min() ?? 0) * 0.4)
@@ -288,12 +322,14 @@ actor RenderEngine {
         try await FFmpeg.run(arguments + [
             "-filter_complex", filterParts.joined(separator: ";"),
             "-map", "[vout]", "-map", "[aout]",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", output.path,
-        ], timeout: 1800)
+        ] + FFmpeg.encodeArgs + [output.path], timeout: 1800)
     }
 
+    /// Every input is one of our own normalized intermediates (identical
+    /// codec/resolution/fps/pixel format), so the video stream can be
+    /// stream-copied — a sub-second remux instead of re-encoding the whole
+    /// timeline. Audio is re-encoded (fast) to smooth AAC priming gaps at
+    /// the joins.
     private func concatPlain(clips: [URL], output: URL) async throws {
         let listFile = workDirectory.appendingPathComponent("concat_\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: listFile) }
@@ -302,10 +338,9 @@ actor RenderEngine {
             .joined(separator: "\n")
         try listing.write(to: listFile, atomically: true, encoding: .utf8)
         try await FFmpeg.run(["-y", "-f", "concat", "-safe", "0", "-i", listFile.path,
-                              "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-                              "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-                              "-pix_fmt", "yuv420p", "-movflags", "+faststart", output.path],
-                             timeout: 1800)
+                              "-c:v", "copy"] + FFmpeg.audioEncodeArgs +
+                             ["-movflags", "+faststart", output.path],
+                             timeout: 600)
     }
 
     // MARK: - Audio
@@ -334,82 +369,6 @@ actor RenderEngine {
         }
     }
 
-    /// Replace the audio track with silence (wizard "mute source" option).
-    func muteAudio(video: URL, output: URL) async throws {
-        try await FFmpeg.run(["-y", "-i", video.path,
-                              "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
-                              "-map", "0:v", "-map", "1:a",
-                              "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-                              "-shortest", output.path], timeout: 600)
-    }
-
-    // MARK: - Overlays
-
-    /// Burn transcript captions: one PNG per segment, overlaid inside its
-    /// [start, end] window via enable='between(t,...)'.
-    func burnCaptions(video: URL, segments: [TranscriptSegment], style: CaptionStyle, output: URL) async throws {
-        guard !segments.isEmpty else {
-            try FileManager.default.copyItemReplacing(at: video, to: output)
-            return
-        }
-        let scratch = try makeScratchDirectory()
-        defer { try? FileManager.default.removeItem(at: scratch) }
-        let renderer = CaptionRenderer(videoWidth: Self.outputWidth, videoHeight: Self.outputHeight, style: style)
-
-        var arguments = ["-y", "-i", video.path]
-        var filterParts: [String] = []
-        var previous = "[0:v]"
-        for (index, segment) in segments.enumerated() {
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
-            let rendered = try renderer.render(text: text, to: scratch)
-            let (x, y) = renderer.position(for: rendered)
-            arguments += ["-i", rendered.pngURL.path]
-            let inputIndex = filterParts.count + 1
-            let label = index == segments.count - 1 ? "[vout]" : "[ov\(inputIndex)]"
-            filterParts.append("\(previous)[\(inputIndex):v]overlay=x=\(x):y=\(y):" +
-                               String(format: "enable='between(t,%.3f,%.3f)'", segment.start, segment.end) + label)
-            previous = label
-        }
-        guard !filterParts.isEmpty else {
-            try FileManager.default.copyItemReplacing(at: video, to: output)
-            return
-        }
-        // Ensure the last filter writes [vout] even if trailing segments were empty.
-        if var last = filterParts.popLast() {
-            if !last.hasSuffix("[vout]") {
-                if let bracket = last.lastIndex(of: "[") {
-                    last = String(last[..<bracket]) + "[vout]"
-                }
-            }
-            filterParts.append(last)
-        }
-        try await FFmpeg.run(arguments + [
-            "-filter_complex", filterParts.joined(separator: ";"),
-            "-map", "[vout]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-c:a", "copy", "-pix_fmt", "yuv420p", output.path,
-        ], timeout: 1200)
-    }
-
-    /// Punchy full-clip text overlay (wizard text_overlay) — bigger type,
-    /// upper third, shown for the whole clip.
-    func addTextOverlay(video: URL, text: String, output: URL) async throws {
-        let scratch = try makeScratchDirectory()
-        defer { try? FileManager.default.removeItem(at: scratch) }
-        var style = CaptionStyle()
-        style.position = "top"
-        let renderer = CaptionRenderer(videoWidth: Self.outputWidth, videoHeight: Self.outputHeight, style: style)
-        let rendered = try renderer.render(text: text.uppercased(), to: scratch,
-                                           fontSize: CGFloat(Self.outputWidth) / 14)
-        let x = (Self.outputWidth - rendered.width) / 2
-        let y = Self.outputHeight / 5
-        try await FFmpeg.run(["-y", "-i", video.path, "-i", rendered.pngURL.path,
-                              "-filter_complex", "[0:v][1:v]overlay=x=\(x):y=\(y)[vout]",
-                              "-map", "[vout]", "-map", "0:a?",
-                              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                              "-c:a", "copy", "-pix_fmt", "yuv420p", output.path], timeout: 600)
-    }
 }
 
 nonisolated extension FileManager {
