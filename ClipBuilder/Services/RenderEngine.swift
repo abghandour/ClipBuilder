@@ -182,25 +182,84 @@ actor RenderEngine {
 
     // MARK: - Concatenation
 
-    /// Concatenate normalized clips with per-gap xfade transitions and audio
-    /// crossfades. Falls back to the concat demuxer when transitions can't
-    /// apply (single clip or degenerate durations).
-    func concatenate(clips: [URL], transitions: [String], output: URL) async throws {
+    /// Concatenate normalized clips with per-gap transitions or hard cuts —
+    /// the port of video.py concatenate_clips(). Each transitions entry is an
+    /// xfade name or nil (hard cut). Mixed lists group consecutive clips that
+    /// share transitions, xfade within each group, then plain-concat the
+    /// groups. Falls back to the concat demuxer on degenerate durations.
+    func concatenate(clips: [URL], transitions: [String?], output: URL) async throws {
         guard !clips.isEmpty else { return }
         if clips.count == 1 {
             try FileManager.default.copyItemReplacing(at: clips[0], to: output)
             return
         }
+        var padded = transitions
+        while padded.count < clips.count - 1 { padded.append(nil) }
+        padded = Array(padded.prefix(clips.count - 1))
 
+        if padded.allSatisfy({ $0 == nil }) {
+            try await concatPlain(clips: clips, output: output)
+            return
+        }
+        if padded.allSatisfy({ $0 != nil }) {
+            do {
+                try await xfadeAll(clips: clips, transitions: padded.compactMap { $0 }, output: output)
+            } catch {
+                try await concatPlain(clips: clips, output: output)
+            }
+            return
+        }
+
+        // Mixed: group runs of transition-joined clips.
+        var groups: [(clips: [URL], transitions: [String])] = []
+        var currentClips = [clips[0]]
+        var currentTransitions: [String] = []
+        for index in 1..<clips.count {
+            if let name = padded[index - 1] {
+                currentClips.append(clips[index])
+                currentTransitions.append(name)
+            } else {
+                groups.append((currentClips, currentTransitions))
+                currentClips = [clips[index]]
+                currentTransitions = []
+            }
+        }
+        groups.append((currentClips, currentTransitions))
+
+        let scratch = try makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        var groupOutputs: [URL] = []
+        for (index, group) in groups.enumerated() {
+            if group.clips.count == 1 {
+                groupOutputs.append(group.clips[0])
+            } else {
+                let groupOutput = scratch.appendingPathComponent("group_\(index).mp4")
+                do {
+                    try await xfadeAll(clips: group.clips, transitions: group.transitions, output: groupOutput)
+                } catch {
+                    try await concatPlain(clips: group.clips, output: groupOutput)
+                }
+                groupOutputs.append(groupOutput)
+            }
+        }
+        if groupOutputs.count == 1 {
+            try FileManager.default.copyItemReplacing(at: groupOutputs[0], to: output)
+        } else {
+            try await concatPlain(clips: groupOutputs, output: output)
+        }
+    }
+
+    /// xfade every gap in one pass; throws when durations can't support the
+    /// crossfade so callers can fall back to a plain concat.
+    private func xfadeAll(clips: [URL], transitions: [String], output: URL) async throws {
         var durations: [Double] = []
         for clip in clips {
             durations.append(await FFmpeg.duration(of: clip))
         }
         let requestedXfade = 0.5
-        let actualXfade = max(0.1, min(requestedXfade, (durations.min() ?? 1) * 0.4))
-        guard durations.allSatisfy({ $0 > actualXfade }) else {
-            try await concatPlain(clips: clips, output: output)
-            return
+        let actualXfade = min(requestedXfade, (durations.min() ?? 0) * 0.4)
+        guard actualXfade >= 0.1, durations.allSatisfy({ $0 > actualXfade }) else {
+            throw CocoaError(.featureUnsupported)
         }
 
         var arguments = ["-y"]
@@ -226,17 +285,13 @@ actor RenderEngine {
             offset += durations[index] - actualXfade
         }
 
-        do {
-            try await FFmpeg.run(arguments + [
-                "-filter_complex", filterParts.joined(separator: ";"),
-                "-map", "[vout]", "-map", "[aout]",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "22",
-                "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart", output.path,
-            ], timeout: 1800)
-        } catch {
-            try await concatPlain(clips: clips, output: output)
-        }
+        try await FFmpeg.run(arguments + [
+            "-filter_complex", filterParts.joined(separator: ";"),
+            "-map", "[vout]", "-map", "[aout]",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+            "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", output.path,
+        ], timeout: 1800)
     }
 
     private func concatPlain(clips: [URL], output: URL) async throws {

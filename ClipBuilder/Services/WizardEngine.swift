@@ -582,7 +582,8 @@ actor WizardEngine {
 
         emit("Video \(label): assembling \(clipURLs.count) segments...")
         let assembled = scratch.appendingPathComponent("assembled.mp4")
-        try await render.concatenate(clips: clipURLs, transitions: clipTransitions, output: assembled)
+        try await render.concatenate(clips: clipURLs, transitions: clipTransitions.map { Optional($0) },
+                                     output: assembled)
 
         let outputURL = try outputFile(profile: profile, plan: plan)
         if let musicName = plan.musicName,

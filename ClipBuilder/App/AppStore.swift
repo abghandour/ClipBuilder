@@ -32,6 +32,14 @@ final class AppStore {
     var isWizardRunning = false
     var wizardLog: [String] = []
 
+    // Clip Builder
+    let builder = BuilderTimelineModel()
+    var isBuilderRendering = false
+    var builderLog: [String] = []
+    /// Set by views (e.g. "Open in Builder") to ask the main window to switch
+    /// sidebar sections; the window consumes and clears it.
+    var requestedSection: SidebarSection?
+
     // MARK: - Services
 
     let ai: AIService
@@ -40,6 +48,7 @@ final class AppStore {
     let transcription = TranscriptionService()
     private let analyzer: Analyzer
     private let wizard: WizardEngine
+    private let multitrackRenderer: MultitrackRenderer
     private var watcher: FolderWatcher?
 
     init() {
@@ -48,6 +57,7 @@ final class AppStore {
         ai = AIService(config: settings.ai)
         analyzer = Analyzer(ai: ai)
         wizard = WizardEngine(ai: ai, render: renderEngine)
+        multitrackRenderer = MultitrackRenderer(render: renderEngine)
 
         let defaultProfile = ProfileStore.ensureDefaultProfile()
         var loaded = ProfileStore.listProfiles()
@@ -73,6 +83,7 @@ final class AppStore {
             lastError = "Could not open profile database: \(error)"
         }
         watcher?.watch(activeProfile.sourceFolderURL)
+        builder.load(profileName: activeProfile.profileName)
         refreshAll()
         scanSourceFolder()
     }
@@ -147,6 +158,7 @@ final class AppStore {
                 self.scenes = scenes
                 self.generatedVideos = generated
                 self.feedback = feedback
+                self.builder.updateScenes(scenes)
             } catch {
                 lastError = "Could not load data: \(error)"
             }
@@ -287,6 +299,50 @@ final class AppStore {
             try? await database.addFeedback(generatedVideoID: video.id, text: trimmed)
             refreshAll()
         }
+    }
+
+    // MARK: - Clip Builder
+
+    /// Render the builder timeline through the multitrack pipeline and file
+    /// the result into the Library. Mirrors the runWizard job pattern.
+    func renderBuilderTimeline() {
+        guard let database, !isBuilderRendering else { return }
+        guard !builder.document.videoTrack.isEmpty else {
+            lastError = "Add clips to the timeline first."
+            return
+        }
+        isBuilderRendering = true
+        builderLog = []
+        let document = builder.document
+        let scenes = builder.scenes
+        let profile = activeProfile
+        let renderer = multitrackRenderer
+        Task {
+            do {
+                let result = try await renderer.render(document: document, scenes: scenes,
+                                                       profile: profile, database: database) { message in
+                    Task { @MainActor in self.builderLog.append(message) }
+                }
+                builderLog.append("Done: \(result.url.lastPathComponent) (\(result.duration.timecode))")
+            } catch {
+                builderLog.append("Failed: \(error)")
+                lastError = "Builder render failed: \(error)"
+            }
+            isBuilderRendering = false
+            refreshAll()
+        }
+    }
+
+    /// Load a generated video's saved timeline back into the builder.
+    func openInBuilder(_ video: GeneratedVideoRecord) {
+        guard let data = video.timelineJSON.data(using: .utf8),
+              let document = try? JSONDecoder().decode(TimelineDocument.self, from: data),
+              !document.videoTrack.isEmpty else {
+            lastError = "This video's timeline uses the old linear format and can't be edited in the Builder."
+            return
+        }
+        builder.loadDocument(document)
+        requestedSection = .builder
     }
 
     // MARK: - Wizard

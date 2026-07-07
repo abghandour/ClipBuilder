@@ -152,6 +152,14 @@ struct LibraryView: View {
         }
         .padding(10)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+        .contextMenu {
+            Button("Open in Builder") {
+                store.openInBuilder(video)
+            }
+            Button("Show in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([video.url])
+            }
+        }
     }
 
     @ViewBuilder

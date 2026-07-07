@@ -110,7 +110,7 @@ struct TagWrap: View {
     }
 }
 
-extension Double {
+nonisolated extension Double {
     var timecode: String {
         let total = Int(self.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)

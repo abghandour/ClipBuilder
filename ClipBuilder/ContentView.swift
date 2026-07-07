@@ -29,6 +29,7 @@ struct ClipBuilderApp: App {
 enum SidebarSection: String, CaseIterable, Identifiable {
     case library
     case scenes
+    case builder
     case analyze
     case wizard
 
@@ -38,6 +39,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         switch self {
         case .library: return "Library"
         case .scenes: return "Scenes"
+        case .builder: return "Builder"
         case .analyze: return "Analyze"
         case .wizard: return "AI Wizard"
         }
@@ -47,6 +49,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         switch self {
         case .library: return "film.stack"
         case .scenes: return "square.grid.3x3"
+        case .builder: return "timeline.selection"
         case .analyze: return "sparkles.rectangle.stack"
         case .wizard: return "wand.and.stars"
         }
@@ -69,8 +72,15 @@ struct MainWindowView: View {
             switch selection ?? .library {
             case .library: LibraryView()
             case .scenes: ScenesView()
+            case .builder: BuilderView()
             case .analyze: AnalyzeView()
             case .wizard: WizardView()
+            }
+        }
+        .onChange(of: store.requestedSection) { _, requested in
+            if let requested {
+                selection = requested
+                store.requestedSection = nil
             }
         }
         .navigationTitle("ClipBuilder")

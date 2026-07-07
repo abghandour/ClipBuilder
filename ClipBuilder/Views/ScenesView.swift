@@ -224,6 +224,12 @@ struct SceneCard: View {
         }
         .padding(8)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+        .contextMenu {
+            Button("Add to Builder") {
+                store.builder.addScene(scene)
+                store.requestedSection = .builder
+            }
+        }
     }
 }
 
