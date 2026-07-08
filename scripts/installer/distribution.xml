@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Clip Builder</title>
+    <welcome file="welcome.html"/>
+    <conclusion file="conclusion.html"/>
+    <options customize="never" require-scripts="true" hostArchitectures="arm64,x86_64" rootVolumeOnly="true"/>
+    <domains enable_localSystem="true"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="app"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="app" visible="false" title="Clip Builder">
+        <pkg-ref id="com.mokotti-solutions.clipbuilder.pkg"/>
+    </choice>
+    <pkg-ref id="com.mokotti-solutions.clipbuilder.pkg" version="__VERSION__" onConclusion="none">ClipBuilderApp.pkg</pkg-ref>
+</installer-gui-script>

@@ -1,0 +1,20 @@
+#!/bin/zsh
+# Runs as root at the end of the Clip Builder .pkg install.
+# Opens the guided setup script in Terminal as the logged-in user.
+set -u
+
+SETUP="/Library/Application Support/ClipBuilder/Clip Builder Setup.command"
+APP="/Applications/Clip Builder.app"
+
+chmod 755 "$SETUP" 2>/dev/null || true
+# Payload-installed apps aren't quarantined, but clear the flag defensively.
+xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true
+
+CONSOLE_USER=$(stat -f%Su /dev/console 2>/dev/null || echo "")
+if [[ -n "$CONSOLE_USER" && "$CONSOLE_USER" != "root" && "$CONSOLE_USER" != "loginwindow" ]]; then
+    CONSOLE_UID=$(id -u "$CONSOLE_USER")
+    launchctl asuser "$CONSOLE_UID" sudo -u "$CONSOLE_USER" \
+        open -a Terminal "$SETUP" 2>/dev/null || true
+fi
+
+exit 0
