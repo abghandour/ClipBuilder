@@ -86,9 +86,13 @@ hdiutil create -volname "Clip Builder" -srcfolder "$STAGING" -ov -format UDZO "$
 codesign --sign "$SIGN_IDENTITY" --timestamp "$DMG"
 
 step "Notarizing DMG"
-xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait \
-    | tee /dev/stderr | grep -q "status: Accepted" \
-    || { echo "error: DMG notarization was not accepted" >&2; exit 1; }
+# Capture-then-grep (not a pipeline into grep -q): grep -q exiting early
+# SIGPIPEs tee, which pipefail would misread as a notarization failure.
+NOTARY_OUTPUT=$(xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 | tee /dev/stderr)
+if ! print -r -- "$NOTARY_OUTPUT" | grep -q "status: Accepted"; then
+    echo "error: DMG notarization was not accepted" >&2
+    exit 1
+fi
 xcrun stapler staple "$DMG"
 spctl -a -vv -t open --context context:primary-signature "$DMG"
 
