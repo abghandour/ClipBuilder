@@ -77,12 +77,14 @@ actor TranscriptionService {
 
         // Extract 16 kHz mono audio, same command as transcription.py.
         log("Extracting audio from \(video.filename)...")
+        // PCM/WAV: skips the AAC encode (the analyzer decodes it right back
+        // anyway) and avoids a lossy generation before transcription.
         let audioURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cb_audio_\(UUID().uuidString).m4a")
+            .appendingPathComponent("cb_audio_\(UUID().uuidString).wav")
         defer { try? FileManager.default.removeItem(at: audioURL) }
         try await FFmpeg.run(["-y", "-i", video.url.path,
                               "-vn", "-ac", "1", "-ar", "16000",
-                              "-c:a", "aac", "-b:a", "64k", audioURL.path],
+                              "-c:a", "pcm_s16le", audioURL.path],
                              timeout: 600)
 
         log("Transcribing \(video.filename) (\(supportedLocale.identifier))...")
@@ -111,14 +113,9 @@ actor TranscriptionService {
             try await installationRequest.downloadAndInstall()
         }
 
-        let asset = AVURLAsset(url: audioURL)
-        guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
-            throw TranscriptionError.noAudioTrack(audioURL.lastPathComponent)
-        }
-        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
-            throw TranscriptionError.unsupportedLocale(locale.identifier)
-        }
-        let provider = AssetInputSequenceProvider(asset: asset, track: track, analyzerFormat: format)
+        // AVAudioFile keeps this on the macOS 26 API surface — the
+        // AssetInputSequenceProvider alternative requires macOS 27.
+        let audioFile = try AVAudioFile(forReading: audioURL)
         let analyzer = SpeechAnalyzer(modules: [transcriber])
 
         // Collect finalized results while the analyzer consumes the file.
@@ -152,7 +149,7 @@ actor TranscriptionService {
             return segments
         }
 
-        let lastSampleTime = try await analyzer.analyzeSequence(provider.analyzerInputs)
+        let lastSampleTime = try await analyzer.analyzeSequence(from: audioFile)
         if let lastSampleTime {
             try await analyzer.finalizeAndFinish(through: lastSampleTime)
         } else {
