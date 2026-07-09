@@ -170,6 +170,22 @@ if (( ${#INSTALLED_PROVIDERS} == 0 )); then
 fi
 
 # -------------------------------------------------------------- CLI logins
+# Best-effort check for an existing sign-in so re-runs don't nag. Each CLI
+# leaves a credential artifact behind after login: Claude Code a Keychain
+# entry (a JSON file on other setups), Gemini and Codex a file in $HOME.
+is_signed_in() {
+    case $1 in
+        claude)
+            security find-generic-password -s "Claude Code-credentials" >/dev/null 2>&1 \
+                || [[ -f "$HOME/.claude/.credentials.json" ]] ;;
+        gemini)
+            [[ -f "$HOME/.gemini/oauth_creds.json" || -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]] ;;
+        codex)
+            [[ -f "$HOME/.codex/auth.json" ]] ;;
+        *)  return 1 ;;
+    esac
+}
+
 if (( ${#INSTALLED_PROVIDERS} > 0 )); then
 step "AI provider sign-in"
 echo "    Each provider needs a one-time sign-in before Clip Builder can use it."
@@ -179,6 +195,10 @@ for entry in "${INSTALLED_PROVIDERS[@]}"; do
     rest=${entry#*|};  bin=${rest%%|*}
     rest=${rest#*|};   pkg=${rest%%|*}
     label=${rest#*|}
+    if is_signed_in "$local_key"; then
+        ok "$label — already signed in"
+        continue
+    fi
     echo
     if ask_yes_no "    Sign in to ${BOLD}$label${RESET} now?" y; then
         case $local_key in
