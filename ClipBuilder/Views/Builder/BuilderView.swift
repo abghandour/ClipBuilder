@@ -8,6 +8,7 @@ struct BuilderView: View {
 
     @State private var playingClip: TimelineClip?
     @State private var showLog = false
+    @State private var showPreview = false
 
     var body: some View {
         let model = store.builder
@@ -19,6 +20,13 @@ struct BuilderView: View {
                     PreviewPane()
                         .padding(10)
                         .frame(maxWidth: .infinity)
+                        .overlay {
+                            // Hidden while the crop editor is up so it never
+                            // covers the crop rectangles.
+                            if !model.document.videoTrack.isEmpty && !isCropEditing {
+                                PreviewPlayButton { showPreview = true }
+                            }
+                        }
                     Divider()
                     BuilderInspector()
                         .frame(width: 270)
@@ -83,9 +91,22 @@ struct BuilderView: View {
                         title: model.scene(for: clip)?.videoFilename ?? "Clip",
                         startTime: clip.sourceStart ?? 0)
         }
+        .sheet(isPresented: $showPreview) {
+            TimelinePreviewSheet()
+        }
         .onDeleteCommand {
             deleteSelection()
         }
+    }
+
+    /// Mirrors PreviewPane's crop-editor condition.
+    private var isCropEditing: Bool {
+        let model = store.builder
+        if case .clip(let uid) = model.selection,
+           let clip = model.clip(uid), clip.freeCrops?.isEmpty == false {
+            return true
+        }
+        return false
     }
 
     // MARK: - Controls bar

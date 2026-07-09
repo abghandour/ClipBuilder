@@ -79,7 +79,7 @@ struct VideoThumbnail: View {
 /// at runtime on macOS 27 betas (the _AVKit_SwiftUI shim fails to resolve the
 /// AVPlayerView superclass metadata and aborts). Referencing AVPlayerView
 /// directly also guarantees AVKit is linked into the process.
-private struct PlayerView: NSViewRepresentable {
+struct PlayerView: NSViewRepresentable {
     let player: AVPlayer?
 
     func makeNSView(context: Context) -> AVPlayerView {
