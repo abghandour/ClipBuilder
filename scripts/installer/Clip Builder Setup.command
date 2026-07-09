@@ -1,9 +1,10 @@
 #!/bin/zsh
 # Clip Builder guided setup.
 #
-# Installs everything Clip Builder needs (Homebrew, ffmpeg, Node.js, the
-# Claude/Gemini/Codex CLIs), offers to log in to each AI provider, and walks
-# the user through creating their first profile.
+# Installs everything Clip Builder needs (Homebrew, ffmpeg), optionally
+# installs any of the Claude/Gemini/Codex CLIs (each can also be installed
+# later from the app's Settings → AI), offers to log in to each installed
+# provider, and walks the user through creating their first profile.
 #
 # Launched automatically by the .pkg installer's postinstall step, but safe
 # to re-run at any time:
@@ -96,19 +97,6 @@ else
     fi
 fi
 
-step "Checking Node.js (needed for the AI provider CLIs)"
-if command -v npm >/dev/null 2>&1; then
-    ok "Node.js found: $(node --version 2>/dev/null || echo unknown)"
-else
-    echo "    Installing Node.js with Homebrew..."
-    if brew install node; then
-        ok "Node.js installed"
-    else
-        fail "Node.js install failed — run 'brew install node' manually, then re-run this setup."
-        exit 1
-    fi
-fi
-
 # ---------------------------------------------------------------- AI CLIs
 # provider entries: key|binary|npm package|label
 AI_PROVIDERS=(
@@ -129,7 +117,24 @@ npm_install_global() {
     fi
 }
 
-step "Installing AI provider CLIs"
+# The CLIs are npm packages — install Node.js only once a provider is chosen.
+ensure_node() {
+    if command -v npm >/dev/null 2>&1; then
+        return 0
+    fi
+    echo "    Installing Node.js with Homebrew (needed for the AI provider CLIs)..."
+    if brew install node; then
+        ok "Node.js installed"
+        return 0
+    fi
+    fail "Node.js install failed — run 'brew install node' manually, then re-run this setup."
+    return 1
+}
+
+step "AI provider CLIs (optional)"
+echo "    Clip Builder can use any of these AI providers. Each one is optional —"
+echo "    you can install any of them later from the app (Settings → AI) or by"
+echo "    re-running this setup."
 typeset -a INSTALLED_PROVIDERS
 INSTALLED_PROVIDERS=()
 for entry in "${AI_PROVIDERS[@]}"; do
@@ -140,18 +145,32 @@ for entry in "${AI_PROVIDERS[@]}"; do
     if command -v "$bin" >/dev/null 2>&1; then
         ok "$label already installed"
         INSTALLED_PROVIDERS+=("$entry")
+        continue
+    fi
+    echo
+    if ! ask_yes_no "    Install ${BOLD}$label${RESET} now?" y; then
+        warn "Skipped — install later from the app (Settings → AI)."
+        continue
+    fi
+    if ! ensure_node; then
+        warn "Skipping $label — Node.js is required for it."
+        continue
+    fi
+    echo "    Installing $label..."
+    if npm_install_global "$pkg"; then
+        ok "$label installed"
+        INSTALLED_PROVIDERS+=("$entry")
     else
-        echo "    Installing $label..."
-        if npm_install_global "$pkg"; then
-            ok "$label installed"
-            INSTALLED_PROVIDERS+=("$entry")
-        else
-            fail "$label failed to install — you can retry later with: npm install -g $pkg"
-        fi
+        fail "$label failed to install — you can retry later with: npm install -g $pkg"
     fi
 done
+if (( ${#INSTALLED_PROVIDERS} == 0 )); then
+    warn "No AI providers installed — Clip Builder's AI features will be off"
+    warn "until you add one from Settings → AI in the app."
+fi
 
 # -------------------------------------------------------------- CLI logins
+if (( ${#INSTALLED_PROVIDERS} > 0 )); then
 step "AI provider sign-in"
 echo "    Each provider needs a one-time sign-in before Clip Builder can use it."
 echo "    You can do it now, or later by running the command shown."
@@ -184,6 +203,7 @@ for entry in "${INSTALLED_PROVIDERS[@]}"; do
         esac
     fi
 done
+fi
 
 # ----------------------------------------------------------- first profile
 PROFILES_DIR="$HOME/Documents/ClipBuilder"
@@ -279,7 +299,7 @@ command -v ffmpeg >/dev/null 2>&1 && ok "ffmpeg ready" || warn "ffmpeg missing"
 for entry in "${AI_PROVIDERS[@]}"; do
     bin=$(print -r -- "$entry" | cut -d'|' -f2)
     label=$(print -r -- "$entry" | cut -d'|' -f4)
-    command -v "$bin" >/dev/null 2>&1 && ok "$label ready" || warn "$label missing"
+    command -v "$bin" >/dev/null 2>&1 && ok "$label ready" || warn "$label not installed (optional — add it from Settings → AI)"
 done
 echo
 echo "    In the app, check Settings → General (ffmpeg status) and"

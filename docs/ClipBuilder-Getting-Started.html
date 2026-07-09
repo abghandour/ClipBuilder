@@ -104,8 +104,8 @@
     <li>Double-click the downloaded <code>.pkg</code> file and follow the installer. The installer is signed and notarized by Apple, so no security warnings appear. You'll be asked for your Mac password to install.</li>
     <li>When the installer finishes, a <span class="step-label">Terminal window opens automatically</span> to complete setup. It installs everything Clip Builder needs and walks you through the first-time configuration:
         <ul>
-            <li><a href="https://brew.sh">Homebrew</a> (if not already installed), <code>ffmpeg</code> (the video engine), and Node.js;</li>
-            <li>the three AI provider CLIs — Claude Code, Gemini CLI, and Codex CLI;</li>
+            <li><a href="https://brew.sh">Homebrew</a> (if not already installed) and <code>ffmpeg</code> (the video engine);</li>
+            <li>your choice of AI provider CLIs — Claude Code, Gemini CLI, and Codex CLI are each optional, and any of them can be added later from the app (<em>Settings → AI</em>) or by re-running setup;</li>
             <li>an optional sign-in to each AI provider (you can also do this later — see section 4);</li>
             <li>your first profile — brand name, content niche, social handles, and Input/Output folders.</li>
         </ul>
@@ -143,8 +143,8 @@
 </ol>
 <div class="note"><strong>Deleting a profile</strong> removes its configuration and scene database, but never touches your source or output video files. The <em>Default</em> profile cannot be deleted.</div>
 
-<h2>4. Sign In to the Three AI Providers</h2>
-<p>Clip Builder routes its AI work (video analysis, wizard reasoning, caption generation) through three locally installed AI command-line tools. The installer sets all three up for you; each just needs a one-time sign-in, which the guided setup offers during installation. The app reuses whatever login each tool already has, so there are no API keys to paste into Clip Builder itself.</p>
+<h2>4. Sign In to the AI Providers</h2>
+<p>Clip Builder routes its AI work (video analysis, wizard reasoning, caption generation) through locally installed AI command-line tools. During setup you choose which of the three to install — each is optional, and you can add any of them later from the app (<em>Settings → AI</em>). Each installed CLI just needs a one-time sign-in, which the guided setup offers during installation. The app reuses whatever login each tool already has, so there are no API keys to paste into Clip Builder itself.</p>
 <p>If you chose "later" during setup (or installed a CLI yourself), here is each provider's sign-in — the <code>npm install</code> line is only needed if the CLI is missing:</p>
 
 <h3>4.1 Claude Code (Anthropic) — default provider</h3>
