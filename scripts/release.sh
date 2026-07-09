@@ -6,10 +6,9 @@
 #      carries a new version number.
 #   2. Updates the version references in the Getting Started guide (and
 #      regenerates the PDF when Chrome is available).
-#   3. Builds, signs, and notarizes the pkg (make_pkg.sh), then packages the
-#      same Developer ID-signed app into a DMG, signs, notarizes, staples.
+#   3. Builds, signs, and notarizes the pkg (make_pkg.sh).
 #   4. Commits the bump, tags v<version>, pushes, and creates the GitHub
-#      release with the pkg, DMG, and PDF attached.
+#      release with the pkg and PDF attached.
 #
 # Environment (defaults match this machine's setup):
 #   DEVELOPER_DIR    Xcode to build with
@@ -20,7 +19,6 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PBXPROJ="$REPO_ROOT/Clip Builder.xcodeproj/project.pbxproj"
 GUIDE="$REPO_ROOT/docs/ClipBuilder-Getting-Started.html"
 DIST_DIR="$REPO_ROOT/dist"
-APP_PATH="$REPO_ROOT/build/Build/Products/Release/Clip Builder.app"
 CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
@@ -72,30 +70,6 @@ step "Building and notarizing pkg"
 PKG="$DIST_DIR/ClipBuilder-$VERSION.pkg"
 [[ -f $PKG ]] || { echo "error: expected $PKG from make_pkg.sh" >&2; exit 1; }
 
-step "Packaging DMG from the signed app"
-DMG="$DIST_DIR/ClipBuilder-$VERSION.dmg"
-SIGN_IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null \
-    | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)
-[[ -n $SIGN_IDENTITY ]] || { echo "error: no Developer ID Application identity" >&2; exit 1; }
-STAGING=$(mktemp -d)
-trap 'rm -rf "$STAGING"' EXIT
-cp -R "$APP_PATH" "$STAGING/"
-ln -s /Applications "$STAGING/Applications"
-rm -f "$DMG"
-hdiutil create -volname "Clip Builder" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
-codesign --sign "$SIGN_IDENTITY" --timestamp "$DMG"
-
-step "Notarizing DMG"
-# Capture-then-grep (not a pipeline into grep -q): grep -q exiting early
-# SIGPIPEs tee, which pipefail would misread as a notarization failure.
-NOTARY_OUTPUT=$(xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait 2>&1 | tee /dev/stderr)
-if ! print -r -- "$NOTARY_OUTPUT" | grep -q "status: Accepted"; then
-    echo "error: DMG notarization was not accepted" >&2
-    exit 1
-fi
-xcrun stapler staple "$DMG"
-spctl -a -vv -t open --context context:primary-signature "$DMG"
-
 # --------------------------------------------------------- commit + publish
 step "Committing, tagging v$VERSION, pushing"
 git -C "$REPO_ROOT" add "$PBXPROJ" "$GUIDE" "$REPO_ROOT/docs/ClipBuilder-Getting-Started.pdf"
@@ -104,7 +78,7 @@ git -C "$REPO_ROOT" tag "v$VERSION"
 git -C "$REPO_ROOT" push origin HEAD "v$VERSION"
 
 step "Creating GitHub release v$VERSION"
-gh release create "v$VERSION" "$PKG" "$DMG" "$REPO_ROOT/docs/ClipBuilder-Getting-Started.pdf" \
+gh release create "v$VERSION" "$PKG" "$REPO_ROOT/docs/ClipBuilder-Getting-Started.pdf" \
     --title "Clip Builder $VERSION" --generate-notes
 
 step "Done — released Clip Builder $VERSION"
