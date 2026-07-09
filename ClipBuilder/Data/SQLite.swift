@@ -120,19 +120,36 @@ nonisolated final class SQLiteConnection {
         }
     }
 
+    /// Wrap `body` in a single transaction — bulk writes commit once instead
+    /// of once per statement, and either fully apply or roll back.
+    func transaction<T>(_ body: () throws -> T) throws -> T {
+        try execute("BEGIN IMMEDIATE")
+        do {
+            let result = try body()
+            try execute("COMMIT")
+            return result
+        } catch {
+            try? execute("ROLLBACK")
+            throw error
+        }
+    }
+
     func query(_ sql: String, _ params: [SQLValue] = []) throws -> [SQLRow] {
         let stmt = try prepare(sql, params)
         defer { sqlite3_finalize(stmt) }
         var rows: [SQLRow] = []
+        // Column names are fixed per statement — resolve them once, not per row.
+        let columnCount = sqlite3_column_count(stmt)
+        let names = (0..<columnCount).map { String(cString: sqlite3_column_name(stmt, $0)) }
         while true {
             let rc = sqlite3_step(stmt)
             if rc == SQLITE_DONE { break }
             guard rc == SQLITE_ROW else {
                 throw SQLiteError.step(errorMessage, sql: sql)
             }
-            var row: SQLRow = [:]
-            for col in 0..<sqlite3_column_count(stmt) {
-                let name = String(cString: sqlite3_column_name(stmt, col))
+            var row = SQLRow(minimumCapacity: names.count)
+            for col in 0..<columnCount {
+                let name = names[Int(col)]
                 switch sqlite3_column_type(stmt, col) {
                 case SQLITE_INTEGER: row[name] = .integer(sqlite3_column_int64(stmt, col))
                 case SQLITE_FLOAT: row[name] = .real(sqlite3_column_double(stmt, col))
@@ -153,9 +170,8 @@ nonisolated final class SQLiteConnection {
 
     var lastInsertRowID: Int64 { sqlite3_last_insert_rowid(handle) }
 
-    /// True if `SELECT <column> FROM <table> LIMIT 0` compiles — the same
-    /// probe the Python app uses to detect missing columns before ALTER.
-    func hasColumn(_ column: String, table: String) -> Bool {
-        (try? execute("SELECT \(column) FROM \(table) LIMIT 0")) != nil
+    /// All column names of a table, from a single `PRAGMA table_info`.
+    func columnNames(of table: String) throws -> Set<String> {
+        Set(try query("PRAGMA table_info(\(table))").compactMap { $0["name"]?.stringValue })
     }
 }

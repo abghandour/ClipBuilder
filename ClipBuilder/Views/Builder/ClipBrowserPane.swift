@@ -18,15 +18,16 @@ struct ClipBrowserPane: View {
     }
 
     private var filteredScenes: [SceneRecord] {
-        store.scenes.filter { scene in
+        let needle = searchText.lowercased()
+        return store.scenes.filter { scene in
             if scene.excluded { return false }
             if favoritesOnly && !scene.favorite { return false }
             if orientation == .wide && !scene.wide { return false }
             if orientation == .vertical && scene.wide { return false }
             if let tagFilter, !scene.tags.contains(tagFilter) { return false }
-            if !searchText.isEmpty {
+            if !needle.isEmpty {
                 let haystack = (scene.videoFilename + " " + scene.tags.joined(separator: " ")).lowercased()
-                if !haystack.contains(searchText.lowercased()) { return false }
+                if !haystack.contains(needle) { return false }
             }
             return true
         }

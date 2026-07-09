@@ -98,23 +98,43 @@ nonisolated enum FFmpeg {
         return "\(url.path)|\(size)|\(mtime)"
     }
 
+    /// Duration, dimensions, and audio presence from a single cached ffprobe.
+    static func info(of url: URL) async -> MediaProbe {
+        await ProbeCache.shared.info(for: probeKey(url)) { await probeInfo(url) }
+    }
+
+    private static func probeInfo(_ url: URL) async -> MediaProbe {
+        let output = (try? await probe(["-v", "quiet",
+                                        "-show_entries", "stream=codec_type,width,height:format=duration",
+                                        "-of", "json", url.path])) ?? ""
+        var info = MediaProbe()
+        guard let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return info }
+        if let format = root["format"] as? [String: Any],
+           let durationString = format["duration"] as? String {
+            info.duration = Double(durationString) ?? 0
+        }
+        for stream in root["streams"] as? [[String: Any]] ?? [] {
+            switch stream["codec_type"] as? String {
+            case "video" where info.width == 0:
+                info.width = stream["width"] as? Int ?? 0
+                info.height = stream["height"] as? Int ?? 0
+            case "audio":
+                info.hasAudio = true
+            default:
+                break
+            }
+        }
+        return info
+    }
+
     static func duration(of url: URL) async -> Double {
-        let key = probeKey(url)
-        if let cached = await ProbeCache.shared.duration(key) { return cached }
-        let output = (try? await probe(["-v", "quiet", "-show_entries", "format=duration",
-                                        "-of", "csv=p=0", url.path])) ?? ""
-        let value = Double(output.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
-        if value > 0 { await ProbeCache.shared.setDuration(value, for: key) }
-        return value
+        await info(of: url).duration
     }
 
     static func dimensions(of url: URL) async -> (width: Int, height: Int) {
-        let output = (try? await probe(["-v", "quiet", "-select_streams", "v:0",
-                                        "-show_entries", "stream=width,height",
-                                        "-of", "csv=p=0", url.path])) ?? ""
-        let parts = output.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ",")
-        guard parts.count >= 2, let w = Int(parts[0]), let h = Int(parts[1]) else { return (0, 0) }
-        return (w, h)
+        let info = await info(of: url)
+        return (info.width, info.height)
     }
 
     /// One JPEG frame piped to stdout — fallback for containers AVFoundation
@@ -138,28 +158,37 @@ nonisolated enum FFmpeg {
     }
 
     static func hasAudioStream(_ url: URL) async -> Bool {
-        let key = probeKey(url)
-        if let cached = await ProbeCache.shared.hasAudio(key) { return cached }
-        let output = (try? await probe(["-v", "quiet", "-select_streams", "a",
-                                        "-show_entries", "stream=index",
-                                        "-of", "csv=p=0", url.path])) ?? ""
-        let value = !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        await ProbeCache.shared.setHasAudio(value, for: key)
-        return value
+        await info(of: url).hasAudio
     }
+}
+
+/// Everything the pipeline asks ffprobe about a file, gathered in one spawn.
+nonisolated struct MediaProbe: Sendable {
+    var duration: Double = 0
+    var width: Int = 0
+    var height: Int = 0
+    var hasAudio: Bool = false
+
+    var isEmpty: Bool { duration == 0 && width == 0 && !hasAudio }
 }
 
 /// Memoizes ffprobe results — source files get probed once per identity
 /// instead of once per segment they appear in (each probe is a process spawn).
+/// Stores the in-flight Task so concurrent callers racing past an empty cache
+/// (e.g. parallel segment renders sharing a source) await one probe.
 private actor ProbeCache {
     static let shared = ProbeCache()
-    private var durations: [String: Double] = [:]
-    private var audio: [String: Bool] = [:]
+    private var probes: [String: Task<MediaProbe, Never>] = [:]
 
-    func duration(_ key: String) -> Double? { durations[key] }
-    func setDuration(_ value: Double, for key: String) { durations[key] = value }
-    func hasAudio(_ key: String) -> Bool? { audio[key] }
-    func setHasAudio(_ value: Bool, for key: String) { audio[key] = value }
+    func info(for key: String, probe: @escaping @Sendable () async -> MediaProbe) async -> MediaProbe {
+        if let existing = probes[key] { return await existing.value }
+        let task = Task { await probe() }
+        probes[key] = task
+        let value = await task.value
+        // Don't cache a failed probe (unreadable or still-copying file).
+        if value.isEmpty { probes[key] = nil }
+        return value
+    }
 }
 
 /// Order-preserving concurrent map with a bounded number of in-flight tasks —

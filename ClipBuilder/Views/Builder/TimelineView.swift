@@ -45,9 +45,7 @@ struct TimelineView: View {
 
     private func headerColumn(model: BuilderTimelineModel) -> some View {
         VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
-            Text(model.playhead.timecode)
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+            PlayheadTimecode()
                 .frame(height: Self.rulerHeight)
                 .padding(.leading, 8)
             ForEach(0..<model.document.trackCount, id: \.self) { track in
@@ -212,7 +210,11 @@ struct TimeRuler: View {
         .contentShape(Rectangle())
         .gesture(DragGesture(minimumDistance: 0)
             .onChanged { value in
-                model.playhead = max(0, Double(value.location.x / pps))
+                // Snap before writing and skip no-op writes: @Observable
+                // fires on every set, and an unsnapped value invalidates
+                // the playhead observers once per pixel of mouse travel.
+                let time = BuilderTimelineModel.snap(Double(value.location.x / pps))
+                if model.playhead != time { model.playhead = time }
             })
     }
 }
@@ -229,6 +231,18 @@ struct PlayheadLine: View {
             .frame(maxHeight: .infinity)
             .offset(x: CGFloat(model.playhead) * model.pointsPerSecond)
             .allowsHitTesting(false)
+    }
+}
+
+/// Playhead readout isolated in its own view so the timeline's header (and
+/// with it every lane) doesn't re-evaluate on each playhead change.
+struct PlayheadTimecode: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        Text(store.builder.playhead.timecode)
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.secondary)
     }
 }
 

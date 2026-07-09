@@ -20,19 +20,28 @@ actor Analyzer {
     @discardableResult
     func scanSourceFolder(profile: BrandProfile, database: Database) async throws -> Int {
         let folder = profile.sourceFolderURL
-        let known = Set(try await database.fetchVideos().map(\.hash))
-        var discovered = 0
+        let knownPaths = Dictionary(try await database.fetchVideos().map { ($0.hash, $0.path) },
+                                    uniquingKeysWith: { first, _ in first })
+        var candidates: [(url: URL, hash: String)] = []
         let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)
         while let item = enumerator?.nextObject() as? URL {
             guard Self.videoExtensions.contains(item.pathExtension.lowercased()) else { continue }
             guard let hash = try? ContentHash.fingerprint(of: item) else { continue }
-            let duration = await FFmpeg.duration(of: item)
-            let (width, height) = await FFmpeg.dimensions(of: item)
-            let wide = width > 0 && height > 0 && width > height
-            if !known.contains(hash) { discovered += 1 }
-            try await database.registerVideo(hash: hash, filename: item.lastPathComponent,
-                                             path: item.path, duration: duration,
-                                             width: width, height: height, wide: wide)
+            // Known and unmoved — skip the probes; rescans fire on every
+            // folder event, so this must be cheap for existing files.
+            if knownPaths[hash] == item.path { continue }
+            candidates.append((item, hash))
+        }
+        let probed = try await BoundedConcurrency.map(candidates, limit: FFmpeg.jobLimit) { _, candidate in
+            (candidate, await FFmpeg.info(of: candidate.url))
+        }
+        var discovered = 0
+        for (candidate, info) in probed {
+            let wide = info.width > 0 && info.height > 0 && info.width > info.height
+            if knownPaths[candidate.hash] == nil { discovered += 1 }
+            try await database.registerVideo(hash: candidate.hash, filename: candidate.url.lastPathComponent,
+                                             path: candidate.url.path, duration: info.duration,
+                                             width: info.width, height: info.height, wide: wide)
         }
         return discovered
     }
@@ -57,13 +66,13 @@ actor Analyzer {
 
     private func extractFrames(url: URL, duration: Double,
                                log: @Sendable (String) -> Void) async -> [AIFrame] {
-        var frames: [AIFrame] = []
-        for timestamp in Self.frameTimestamps(duration: duration) {
-            if let jpeg = await ThumbnailService.jpegFrame(url: url, at: timestamp) {
-                frames.append(AIFrame(jpeg: jpeg, label: String(format: "%.1fs", timestamp)))
+        let timestamps = Self.frameTimestamps(duration: duration)
+        let frames = (try? await BoundedConcurrency.map(timestamps, limit: FFmpeg.jobLimit) { _, timestamp in
+            await ThumbnailService.jpegFrame(url: url, at: timestamp).map {
+                AIFrame(jpeg: $0, label: String(format: "%.1fs", timestamp))
             }
-        }
-        return frames
+        }) ?? []
+        return frames.compactMap { $0 }
     }
 
     // MARK: - Prompts (verbatim from analyzer.py)

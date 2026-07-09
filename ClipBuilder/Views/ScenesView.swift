@@ -13,13 +13,14 @@ struct ScenesView: View {
     @State private var transcriptVideo: VideoRecord?
 
     private var filteredScenes: [SceneRecord] {
-        store.scenes.filter { scene in
+        let needle = searchText.lowercased()
+        return store.scenes.filter { scene in
             if let selectedVideoID, scene.videoID != selectedVideoID { return false }
             if !showHidden && scene.excluded { return false }
             if let tagFilter, !scene.tags.contains(tagFilter) { return false }
-            if !searchText.isEmpty {
+            if !needle.isEmpty {
                 let haystack = (scene.videoFilename + " " + scene.tags.joined(separator: " ")).lowercased()
-                if !haystack.contains(searchText.lowercased()) { return false }
+                if !haystack.contains(needle) { return false }
             }
             return true
         }
@@ -30,15 +31,17 @@ struct ScenesView: View {
     }
 
     var body: some View {
+        // Filter once per body pass — the subtitle and grid share the result.
+        let filtered = filteredScenes
         HSplitView {
             fileList
                 .frame(minWidth: 220, idealWidth: 260, maxWidth: 340, maxHeight: .infinity)
-            sceneGrid
+            sceneGrid(filtered)
                 .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("Scenes")
-        .navigationSubtitle("\(filteredScenes.count) scenes")
+        .navigationSubtitle("\(filtered.count) scenes")
         .searchable(text: $searchText, prompt: "Filter by file or tag")
         .toolbar {
             ToolbarItem {
@@ -66,7 +69,9 @@ struct ScenesView: View {
     }
 
     private var fileList: some View {
-        List(selection: $selectedVideoID) {
+        // One pass over scenes instead of an O(scenes) filter per row.
+        let sceneCounts = store.scenes.reduce(into: [Int64: Int]()) { $0[$1.videoID, default: 0] += 1 }
+        return List(selection: $selectedVideoID) {
             Section("Source Videos") {
                 HStack {
                     Image(systemName: "square.grid.3x3")
@@ -88,7 +93,7 @@ struct ScenesView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Text("\(store.scenes.filter { $0.videoID == video.id }.count)")
+                        Text("\(sceneCounts[video.id] ?? 0)")
                             .foregroundStyle(.secondary)
                             .font(.caption)
                     }
@@ -107,9 +112,9 @@ struct ScenesView: View {
         .listStyle(.sidebar)
     }
 
-    private var sceneGrid: some View {
+    private func sceneGrid(_ filtered: [SceneRecord]) -> some View {
         Group {
-            if filteredScenes.isEmpty {
+            if filtered.isEmpty {
                 ContentUnavailableView(
                     "No Scenes",
                     systemImage: "square.grid.3x3",
@@ -117,7 +122,7 @@ struct ScenesView: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12, alignment: .top)], spacing: 12) {
-                        ForEach(filteredScenes) { scene in
+                        ForEach(filtered) { scene in
                             SceneCard(scene: scene,
                                       onPlay: { playingScene = scene },
                                       onTranscript: {

@@ -114,6 +114,11 @@ actor Database {
         imported_at  TEXT DEFAULT (datetime('now')),
         PRIMARY KEY (platform, external_id)
     );
+
+    CREATE INDEX IF NOT EXISTS idx_grades_scene ON grades(scene_id);
+    CREATE INDEX IF NOT EXISTS idx_moments_video ON moments(video_id);
+    CREATE INDEX IF NOT EXISTS idx_wizard_feedback_video ON wizard_feedback(generated_video_id);
+    CREATE INDEX IF NOT EXISTS idx_wizard_research_topic ON wizard_research(topic, researched_at);
     """
 
     init(path: URL) throws {
@@ -127,34 +132,36 @@ actor Database {
         try Self.migrate(connection)
     }
 
-    /// Lazy column migrations, same probe-then-ALTER strategy as db.py so
-    /// old and new columns end up identical across both apps.
+    /// Lazy column migrations mirroring db.py, so old and new columns end up
+    /// identical across both apps. One `PRAGMA table_info` per table replaces
+    /// the per-column probe statements.
     private static func migrate(_ connection: SQLiteConnection) throws {
         let textColumns: [(table: String, columns: [String])] = [
-            ("generated_videos", ["caption"]),
-            ("videos", ["drive_file_id", "drive_link"]),
-            ("generated_videos", ["drive_file_id", "drive_link"]),
-            ("videos", ["analyzer_provider", "visual_analyzer_provider",
+            ("generated_videos", ["caption", "drive_file_id", "drive_link",
+                                  "caption_provider", "wizard_provider",
+                                  "caption_model", "wizard_model"]),
+            ("videos", ["drive_file_id", "drive_link",
+                        "analyzer_provider", "visual_analyzer_provider",
                         "speech_analyzer_provider", "analyzer_model",
                         "visual_analyzer_model", "speech_analyzer_model",
                         "visual_analyzed_at", "speech_analyzed_at"]),
-            ("generated_videos", ["caption_provider", "wizard_provider",
-                                  "caption_model", "wizard_model"]),
             ("wizard_research", ["provider", "model"]),
             ("transcripts", ["provider", "model", "original_text", "words"]),
         ]
         for (table, columns) in textColumns {
-            for column in columns where !connection.hasColumn(column, table: table) {
+            let existing = try connection.columnNames(of: table)
+            for column in columns where !existing.contains(column) {
                 try connection.execute("ALTER TABLE \(table) ADD COLUMN \(column) TEXT")
             }
         }
-        if !connection.hasColumn("favorite", table: "scenes") {
+        let sceneColumns = try connection.columnNames(of: "scenes")
+        if !sceneColumns.contains("favorite") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN favorite INTEGER DEFAULT 0")
         }
-        if !connection.hasColumn("crop_x_frac", table: "scenes") {
+        if !sceneColumns.contains("crop_x_frac") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN crop_x_frac REAL")
         }
-        if !connection.hasColumn("free_crops", table: "scenes") {
+        if !sceneColumns.contains("free_crops") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN free_crops TEXT")
         }
     }
@@ -164,7 +171,7 @@ actor Database {
     @discardableResult
     func registerVideo(hash: String, filename: String, path: String, duration: Double,
                        width: Int, height: Int, wide: Bool) throws -> Int64 {
-        try connection.execute("""
+        let rows = try connection.query("""
             INSERT INTO videos (hash, filename, path, duration, width, height, wide)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(hash) DO UPDATE SET
@@ -174,9 +181,9 @@ actor Database {
                 width=excluded.width,
                 height=excluded.height,
                 wide=excluded.wide
+            RETURNING id
             """, [.text(hash), .text(filename), .text(path), .real(duration),
                   .integer(Int64(width)), .integer(Int64(height)), .integer(wide ? 1 : 0)])
-        let rows = try connection.query("SELECT id FROM videos WHERE hash = ?", [.text(hash)])
         return rows.first?["id"]?.intValue ?? connection.lastInsertRowID
     }
 
@@ -232,7 +239,12 @@ actor Database {
         sql += " ORDER BY v.filename COLLATE NOCASE, s.start_time"
         let sceneRows = try connection.query(sql, params)
 
-        let tagRows = try connection.query("SELECT scene_id, tag FROM scene_tags")
+        // Scope the tag/grade lookups to the filter — otherwise a
+        // single-video fetch pays for the whole library's tags and grades.
+        let sceneScope = videoID != nil ? " WHERE scene_id IN (SELECT id FROM scenes WHERE video_id = ?)" : ""
+        let scopeParams: [SQLValue] = videoID.map { [.integer($0)] } ?? []
+
+        let tagRows = try connection.query("SELECT scene_id, tag FROM scene_tags" + sceneScope, scopeParams)
         var tagsByScene: [Int64: [String]] = [:]
         for row in tagRows {
             guard let sceneID = row["scene_id"]?.intValue, let tag = row["tag"]?.stringValue else { continue }
@@ -240,7 +252,8 @@ actor Database {
         }
 
         let gradeRows = try connection.query(
-            "SELECT scene_id, AVG(score) AS avg, COUNT(*) AS n FROM grades GROUP BY scene_id")
+            "SELECT scene_id, AVG(score) AS avg, COUNT(*) AS n FROM grades" + sceneScope + " GROUP BY scene_id",
+            scopeParams)
         var gradesByScene: [Int64: (Double, Int)] = [:]
         for row in gradeRows {
             guard let sceneID = row["scene_id"]?.intValue else { continue }
@@ -304,54 +317,59 @@ actor Database {
                 rangeTags[key, default: (range.start, range.end, [])].tags.insert(tag)
             }
         }
-        for (_, entry) in rangeTags {
-            try connection.execute("""
-                INSERT OR IGNORE INTO scenes (video_id, start_time, end_time)
-                VALUES (?, ?, ?)
-                """, [.integer(videoID), .real(entry.start), .real(entry.end)])
-            guard let sceneID = try connection.query(
-                "SELECT id FROM scenes WHERE video_id = ? AND start_time = ? AND end_time = ?",
-                [.integer(videoID), .real(entry.start), .real(entry.end)]
-            ).first?["id"]?.intValue else { continue }
-            for tag in entry.tags {
-                try connection.execute("INSERT OR IGNORE INTO scene_tags (scene_id, tag) VALUES (?, ?)",
-                                       [.integer(sceneID), .text(tag)])
+        // One transaction: a pass writes hundreds of rows, and committing
+        // per statement would pay a WAL sync for each (and persist a
+        // half-saved analysis on failure).
+        try connection.transaction {
+            for (_, entry) in rangeTags {
+                // The no-op DO UPDATE makes RETURNING yield the id for the
+                // pre-existing row too, replacing the insert-then-SELECT pair.
+                guard let sceneID = try connection.query("""
+                    INSERT INTO scenes (video_id, start_time, end_time)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(video_id, start_time, end_time) DO UPDATE SET video_id = video_id
+                    RETURNING id
+                    """, [.integer(videoID), .real(entry.start), .real(entry.end)]
+                ).first?["id"]?.intValue else { continue }
+                for tag in entry.tags {
+                    try connection.execute("INSERT OR IGNORE INTO scene_tags (scene_id, tag) VALUES (?, ?)",
+                                           [.integer(sceneID), .text(tag)])
+                }
             }
-        }
-        for moment in moments {
-            try connection.execute("INSERT INTO moments (video_id, at_time, note, dialog) VALUES (?, ?, ?, ?)",
-                                   [.integer(videoID), .real(moment.at), .text(moment.note),
-                                    moment.dialog.map(SQLValue.text) ?? .null])
-        }
-        for tag in analyzedTags {
-            try connection.execute("INSERT OR IGNORE INTO analyzed_tags (video_id, tag) VALUES (?, ?)",
-                                   [.integer(videoID), .text(tag)])
-        }
-        // Auto-hide unusable footage flagged low-quality by the analyzer.
-        let lowQuality = try connection.query("""
-            SELECT s.id FROM scenes s
-            JOIN scene_tags t ON t.scene_id = s.id
-            WHERE s.video_id = ? AND t.tag = 'low-quality'
-            """, [.integer(videoID)])
-        for row in lowQuality {
-            guard let sceneID = row["id"]?.intValue else { continue }
-            try connection.execute("INSERT OR IGNORE INTO scene_tags (scene_id, tag) VALUES (?, 'auto-hidden')",
-                                   [.integer(sceneID)])
-            try connection.execute("UPDATE scenes SET excluded = 1 WHERE id = ?", [.integer(sceneID)])
-        }
-        try connection.execute("UPDATE videos SET analyzed_at = datetime('now') WHERE id = ?", [.integer(videoID)])
-        let modeColumn = mode == "speech" ? "speech" : "visual"
-        try connection.execute("UPDATE videos SET \(modeColumn)_analyzed_at = datetime('now') WHERE id = ?",
-                               [.integer(videoID)])
-        if let provider {
+            for moment in moments {
+                try connection.execute("INSERT INTO moments (video_id, at_time, note, dialog) VALUES (?, ?, ?, ?)",
+                                       [.integer(videoID), .real(moment.at), .text(moment.note),
+                                        moment.dialog.map(SQLValue.text) ?? .null])
+            }
+            for tag in analyzedTags {
+                try connection.execute("INSERT OR IGNORE INTO analyzed_tags (video_id, tag) VALUES (?, ?)",
+                                       [.integer(videoID), .text(tag)])
+            }
+            // Auto-hide unusable footage flagged low-quality by the analyzer.
             try connection.execute("""
-                UPDATE videos SET analyzer_provider = ?, \(modeColumn)_analyzer_provider = ? WHERE id = ?
-                """, [.text(provider), .text(provider), .integer(videoID)])
-        }
-        if let model {
+                INSERT OR IGNORE INTO scene_tags (scene_id, tag)
+                SELECT s.id, 'auto-hidden' FROM scenes s
+                JOIN scene_tags t ON t.scene_id = s.id
+                WHERE s.video_id = ? AND t.tag = 'low-quality'
+                """, [.integer(videoID)])
             try connection.execute("""
-                UPDATE videos SET analyzer_model = ?, \(modeColumn)_analyzer_model = ? WHERE id = ?
-                """, [.text(model), .text(model), .integer(videoID)])
+                UPDATE scenes SET excluded = 1 WHERE video_id = ? AND id IN
+                    (SELECT scene_id FROM scene_tags WHERE tag = 'low-quality')
+                """, [.integer(videoID)])
+            try connection.execute("UPDATE videos SET analyzed_at = datetime('now') WHERE id = ?", [.integer(videoID)])
+            let modeColumn = mode == "speech" ? "speech" : "visual"
+            try connection.execute("UPDATE videos SET \(modeColumn)_analyzed_at = datetime('now') WHERE id = ?",
+                                   [.integer(videoID)])
+            if let provider {
+                try connection.execute("""
+                    UPDATE videos SET analyzer_provider = ?, \(modeColumn)_analyzer_provider = ? WHERE id = ?
+                    """, [.text(provider), .text(provider), .integer(videoID)])
+            }
+            if let model {
+                try connection.execute("""
+                    UPDATE videos SET analyzer_model = ?, \(modeColumn)_analyzer_model = ? WHERE id = ?
+                    """, [.text(model), .text(model), .integer(videoID)])
+            }
         }
     }
 
@@ -374,19 +392,23 @@ actor Database {
 
     func replaceTranscripts(videoID: Int64, language: String, isTranslation: Bool,
                             segments: [TranscriptSegment], provider: String?, model: String?) throws {
-        try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND language = ? AND is_translation = ?",
-                               [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0)])
-        let encoder = JSONEncoder()
-        for segment in segments {
-            let wordsJSON = segment.words.flatMap { try? encoder.encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
-            try connection.execute("""
-                INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, words, provider, model)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0),
-                      .real(segment.start), .real(segment.end), .text(segment.text),
-                      wordsJSON.map(SQLValue.text) ?? .null,
-                      provider.map(SQLValue.text) ?? .null,
-                      model.map(SQLValue.text) ?? .null])
+        // One transaction: long videos have thousands of segments, and the
+        // delete + inserts must land atomically.
+        try connection.transaction {
+            try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND language = ? AND is_translation = ?",
+                                   [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0)])
+            let encoder = JSONEncoder()
+            for segment in segments {
+                let wordsJSON = segment.words.flatMap { try? encoder.encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+                try connection.execute("""
+                    INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, words, provider, model)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0),
+                          .real(segment.start), .real(segment.end), .text(segment.text),
+                          wordsJSON.map(SQLValue.text) ?? .null,
+                          provider.map(SQLValue.text) ?? .null,
+                          model.map(SQLValue.text) ?? .null])
+            }
         }
     }
 
@@ -524,12 +546,17 @@ actor Database {
 
     // MARK: - Helpers
 
-    nonisolated static func parseSQLiteDate(_ string: String?) -> Date? {
-        guard let string else { return nil }
+    /// DateFormatter construction is expensive; the formatter is immutable
+    /// after setup and documented thread-safe, so share one instance.
+    private nonisolated static let sqliteDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.date(from: string)
+        return formatter
+    }()
+
+    nonisolated static func parseSQLiteDate(_ string: String?) -> Date? {
+        string.flatMap { sqliteDateFormatter.date(from: $0) }
     }
 }

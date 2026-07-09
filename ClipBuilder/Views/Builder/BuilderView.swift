@@ -156,7 +156,9 @@ struct BuilderView: View {
     private var logDrawer: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
+                // Lazy: a long render log would otherwise keep a live Text
+                // for every line inside this 110pt drawer.
+                LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(store.builderLog.enumerated()), id: \.offset) { entry in
                         Text(entry.element)
                             .font(.caption.monospaced())

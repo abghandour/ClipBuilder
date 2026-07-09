@@ -155,6 +155,10 @@ private struct ProfileSettingsTab: View {
 private struct GeneralSettingsTab: View {
     @Environment(AppStore.self) private var store
     @AppStorage(SettingsStore.dataFolderDefaultsKey) private var dataFolder = ""
+    // Resolved off-main once: when ffmpeg is missing, the lookup falls back
+    // to a blocking login-shell spawn, which must not run per body pass
+    // (this tab re-renders on every keystroke in its text fields).
+    @State private var ffmpegAvailable: Bool?
 
     var body: some View {
         @Bindable var store = store
@@ -194,8 +198,17 @@ private struct GeneralSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 LabeledContent("ffmpeg") {
-                    Text(FFmpeg.isAvailable ? "Found" : "Not found — brew install ffmpeg")
-                        .foregroundStyle(FFmpeg.isAvailable ? .green : .red)
+                    switch ffmpegAvailable {
+                    case .none:
+                        Text("Checking…")
+                            .foregroundStyle(.secondary)
+                    case .some(true):
+                        Text("Found")
+                            .foregroundStyle(.green)
+                    case .some(false):
+                        Text("Not found — brew install ffmpeg")
+                            .foregroundStyle(.red)
+                    }
                 }
             }
 
@@ -207,6 +220,9 @@ private struct GeneralSettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .task {
+            ffmpegAvailable = await Task.detached { FFmpeg.isAvailable }.value
+        }
     }
 }
 

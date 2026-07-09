@@ -15,6 +15,7 @@ struct WizardView: View {
     @State private var aiInstructions = ""
     @State private var selectedVideoIDs: Set<Int64> = []
     @State private var limitToSelection = false
+    @State private var musicCount = 0
 
     private var analyzedSceneCount: Int {
         store.scenes.filter { !$0.excluded && !$0.ignored }.count
@@ -24,12 +25,15 @@ struct WizardView: View {
         HSplitView {
             configurationForm
                 .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
-            logPanel
+            WizardLogPanel()
                 .frame(minWidth: 300, idealWidth: 360, maxWidth: 480, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("AI Wizard")
         .navigationSubtitle("\(analyzedSceneCount) scenes available")
+        // Loaded once instead of in the Form: availableMusic() lists a
+        // directory synchronously, which doesn't belong in a body pass.
+        .task { musicCount = WizardEngine.availableMusic().count }
     }
 
     private var configurationForm: some View {
@@ -49,16 +53,22 @@ struct WizardView: View {
                 Toggle("Mute source audio (music only)", isOn: $muteSource)
                     .disabled(!useMusic)
                 LabeledContent("Music library") {
-                    let count = WizardEngine.availableMusic().count
                     HStack {
-                        Text("\(count) tracks")
-                            .foregroundStyle(count == 0 ? .orange : .secondary)
+                        Text("\(musicCount) tracks")
+                            .foregroundStyle(musicCount == 0 ? .orange : .secondary)
                         Button("Open Folder") {
                             try? FileManager.default.createDirectory(at: WizardEngine.musicDirectory,
                                                                      withIntermediateDirectories: true)
                             NSWorkspace.shared.open(WizardEngine.musicDirectory)
                         }
                         .controlSize(.small)
+                        Button {
+                            musicCount = WizardEngine.availableMusic().count
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .controlSize(.small)
+                        .help("Re-count tracks after adding music")
                     }
                 }
             }
@@ -125,7 +135,14 @@ struct WizardView: View {
         store.runWizard(options: options)
     }
 
-    private var logPanel: some View {
+}
+
+/// Isolated so per-line log appends don't re-evaluate the whole wizard
+/// screen (and its Form) while a generation runs.
+private struct WizardLogPanel: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Generation Log")

@@ -21,7 +21,7 @@ struct AnalyzeView: View {
         VSplitView {
             table
                 .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity)
-            logPanel
+            AnalysisLogPanel()
                 .frame(maxWidth: .infinity, minHeight: 120, idealHeight: 160)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -77,7 +77,9 @@ struct AnalyzeView: View {
     }
 
     private var table: some View {
-        Table(store.videos, selection: $selection) {
+        // One pass over scenes instead of an O(scenes) filter per table row.
+        let sceneCounts = store.scenes.reduce(into: [Int64: Int]()) { $0[$1.videoID, default: 0] += 1 }
+        return Table(store.videos, selection: $selection) {
             TableColumn("File") { video in
                 HStack {
                     Image(systemName: video.wide ? "rectangle" : "rectangle.portrait")
@@ -131,7 +133,7 @@ struct AnalyzeView: View {
             .width(100)
 
             TableColumn("Scenes") { video in
-                Text("\(store.scenes.filter { $0.videoID == video.id }.count)")
+                Text("\(sceneCounts[video.id] ?? 0)")
                     .foregroundStyle(.secondary)
             }
             .width(60)
@@ -153,7 +155,14 @@ struct AnalyzeView: View {
         video.speechAnalyzerProvider != nil
     }
 
-    private var logPanel: some View {
+}
+
+/// Isolated so per-tick progress/log updates don't re-evaluate the whole
+/// Analyze screen (including the videos table) on every appended line.
+private struct AnalysisLogPanel: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Activity")
@@ -167,23 +176,7 @@ struct AnalyzeView: View {
                         .frame(width: 180)
                 }
             }
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(Array(store.analysisLog.enumerated()), id: \.offset) { index, line in
-                            Text(line)
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                                .id(index)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .onChange(of: store.analysisLog.count) {
-                    proxy.scrollTo(store.analysisLog.count - 1, anchor: .bottom)
-                }
-            }
+            ActivityLogView(lines: \.analysisLog)
         }
         .padding()
     }

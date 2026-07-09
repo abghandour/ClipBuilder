@@ -85,7 +85,11 @@ final class BuilderTimelineModel {
         saveTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            BuilderStateStore.save(snapshot, profileName: name)
+            // Detached: this fires continuously during editing, and a plain
+            // Task would inherit main-actor isolation for the encode + write.
+            await Task.detached(priority: .utility) {
+                BuilderStateStore.save(snapshot, profileName: name)
+            }.value
         }
     }
 

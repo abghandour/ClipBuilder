@@ -113,22 +113,30 @@ nonisolated enum ProcessRunner {
 
     private static let locateLock = NSLock()
     nonisolated(unsafe) private static var locateCache: [String: URL] = [:]
+    nonisolated(unsafe) private static var locateMisses: [String: Date] = [:]
+    /// The login-shell fallback in locateUncached is expensive (sources the
+    /// user's dotfiles), so misses are cached too — briefly, so a tool
+    /// installed mid-session is still picked up within a minute.
+    private static let missTTL: TimeInterval = 60
 
     /// Locate a command-line tool: absolute path as-is, then Homebrew and
     /// standard prefixes, then a `which` lookup through the login shell PATH.
-    /// Successful lookups are cached (misses re-check so a tool installed
-    /// mid-session is picked up).
     static func locate(_ tool: String) -> URL? {
         locateLock.lock()
         let cached = locateCache[tool]
+        let missedAt = locateMisses[tool]
         locateLock.unlock()
         if let cached { return cached }
+        if let missedAt, Date().timeIntervalSince(missedAt) < missTTL { return nil }
         let located = locateUncached(tool)
+        locateLock.lock()
         if let located {
-            locateLock.lock()
             locateCache[tool] = located
-            locateLock.unlock()
+            locateMisses[tool] = nil
+        } else {
+            locateMisses[tool] = Date()
         }
+        locateLock.unlock()
         return located
     }
 

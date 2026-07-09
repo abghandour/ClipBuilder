@@ -1,6 +1,35 @@
 import SwiftUI
 import AVKit
 
+/// Live log lines in an isolated view: it reads the store array through a
+/// key path in its own body, so per-line appends invalidate just this view
+/// instead of the whole surrounding screen.
+struct ActivityLogView: View {
+    @Environment(AppStore.self) private var store
+    let lines: KeyPath<AppStore, [String]>
+
+    var body: some View {
+        let log = store[keyPath: lines]
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(log.enumerated()), id: \.offset) { index, line in
+                        Text(line)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .id(index)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .onChange(of: log.count) {
+                proxy.scrollTo(log.count - 1, anchor: .bottom)
+            }
+        }
+    }
+}
+
 /// Async, disk-cached video frame thumbnail.
 struct VideoThumbnail: View {
     @Environment(AppStore.self) private var store
@@ -9,6 +38,7 @@ struct VideoThumbnail: View {
     var cornerRadius: CGFloat = 6
 
     @State private var image: NSImage?
+    @State private var loadedKey: String?
 
     var body: some View {
         ZStack {
@@ -31,10 +61,15 @@ struct VideoThumbnail: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
         .task(id: "\(url.path)|\(time)") {
-            guard image == nil else { return }
+            // Track which key is loaded rather than guarding on image ==
+            // nil, which froze the thumbnail on its first frame when the
+            // same view was later given a different time (preview scrub).
+            let key = "\(url.path)|\(time)"
+            guard loadedKey != key else { return }
             if let data = await store.thumbnails.thumbnail(for: url, at: time),
                let loaded = NSImage(data: data) {
                 image = loaded
+                loadedKey = key
             }
         }
     }

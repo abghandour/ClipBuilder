@@ -422,6 +422,25 @@ actor WizardEngine {
         let musicNames = Set(music.map(\.name))
         var generatedCount = 0
 
+        // Normalize the profile's intro/outro once for the whole run — the
+        // result is identical for every video/variation assembled below.
+        let runScratch = try await render.makeScratchDirectory()
+        defer { try? FileManager.default.removeItem(at: runScratch) }
+        var normalizedIntro: URL?
+        if let intro = assetURL(profile.introVideo) {
+            emit("Normalizing intro...")
+            let output = runScratch.appendingPathComponent("intro.mp4")
+            try await render.normalizeClip(source: intro, output: output)
+            normalizedIntro = output
+        }
+        var normalizedOutro: URL?
+        if let outro = assetURL(profile.outroVideo) {
+            emit("Normalizing outro...")
+            let output = runScratch.appendingPathComponent("outro.mp4")
+            try await render.normalizeClip(source: outro, output: output)
+            normalizedOutro = output
+        }
+
         for videoNumber in 1...options.numberOfVideos {
             var previousRationales: [String] = []
             for variationNumber in 1...options.variationsPerVideo {
@@ -447,7 +466,9 @@ actor WizardEngine {
                 emit("\nPhase 3: Assembling Video \(variationLabel)/\(options.numberOfVideos)...")
                 let result = try await assemble(plan: plan, music: music, options: options,
                                                 profile: profile, database: database,
-                                                sceneMap: sceneMap, label: variationLabel, emit: emit)
+                                                sceneMap: sceneMap, label: variationLabel,
+                                                normalizedIntro: normalizedIntro,
+                                                normalizedOutro: normalizedOutro, emit: emit)
                 generatedCount += 1
 
                 emit("Generating Instagram caption...")
@@ -489,6 +510,8 @@ actor WizardEngine {
                           database: Database,
                           sceneMap: [Int64: SceneRecord],
                           label: String,
+                          normalizedIntro: URL?,
+                          normalizedOutro: URL?,
                           emit: @escaping @Sendable (String) -> Void) async throws -> AssemblyResult {
         let scratch = try await render.makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -496,12 +519,9 @@ actor WizardEngine {
         var clipURLs: [URL] = []
         var clipTransitions: [String] = []
 
-        // Intro (profile asset) — joined with a hard fade.
-        if let intro = assetURL(profile.introVideo) {
-            emit("Video \(label): normalizing intro...")
-            let normalized = scratch.appendingPathComponent("intro.mp4")
-            try await render.normalizeClip(source: intro, output: normalized)
-            clipURLs.append(normalized)
+        // Intro (profile asset, normalized once per run) — joined with a hard fade.
+        if let normalizedIntro {
+            clipURLs.append(normalizedIntro)
         }
 
         // Extract every planned clip concurrently — captions, text overlay
@@ -525,18 +545,15 @@ actor WizardEngine {
             if clipURLs.count > clipTransitions.count && !clipURLs.isEmpty {
                 // Boundary after intro or a previous clip: planner transition
                 // if available, else hard fade.
-                let planIndex = clipURLs.count - (assetURL(profile.introVideo) != nil ? 2 : 1)
+                let planIndex = clipURLs.count - (normalizedIntro != nil ? 2 : 1)
                 clipTransitions.append(plan.transitions[safe: planIndex] ?? "fade")
             }
             clipURLs.append(url)
         }
 
-        if let outro = assetURL(profile.outroVideo) {
-            emit("Video \(label): normalizing outro...")
-            let normalized = scratch.appendingPathComponent("outro.mp4")
-            try await render.normalizeClip(source: outro, output: normalized)
+        if let normalizedOutro {
             clipTransitions.append("fade")
-            clipURLs.append(normalized)
+            clipURLs.append(normalizedOutro)
         }
 
         guard !clipURLs.isEmpty else {

@@ -254,11 +254,21 @@ final class AppStore {
 
     // MARK: - Scene actions
 
+    /// Apply a single-scene change in place after its DB write — refetching
+    /// the whole library for a one-row mutation made every rating click
+    /// O(library size).
+    private func updateScene(_ id: Int64, _ mutate: (inout SceneRecord) -> Void) {
+        guard let index = scenes.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&scenes[index])
+        builder.updateScenes(scenes)
+    }
+
     func toggleFavorite(_ scene: SceneRecord) {
         guard let database else { return }
+        let favorite = !scene.favorite
         Task {
-            try? await database.setSceneFavorite(scene.id, favorite: !scene.favorite)
-            refreshAll()
+            try? await database.setSceneFavorite(scene.id, favorite: favorite)
+            updateScene(scene.id) { $0.favorite = favorite }
         }
     }
 
@@ -266,7 +276,7 @@ final class AppStore {
         guard let database else { return }
         Task {
             try? await database.setSceneExcluded(scene.id, excluded: excluded)
-            refreshAll()
+            updateScene(scene.id) { $0.excluded = excluded }
         }
     }
 
@@ -274,7 +284,11 @@ final class AppStore {
         guard let database else { return }
         Task {
             try? await database.addGrade(sceneID: scene.id, score: score)
-            refreshAll()
+            updateScene(scene.id) {
+                let total = ($0.gradeAverage ?? 0) * Double($0.gradeCount) + Double(score)
+                $0.gradeCount += 1
+                $0.gradeAverage = total / Double($0.gradeCount)
+            }
         }
     }
 
@@ -287,7 +301,8 @@ final class AppStore {
             if removeFile {
                 try? FileManager.default.removeItem(at: video.url)
             }
-            refreshAll()
+            generatedVideos.removeAll { $0.id == video.id }
+            feedback.removeAll { $0.generatedVideoID == video.id }
         }
     }
 
@@ -297,7 +312,7 @@ final class AppStore {
         guard !trimmed.isEmpty else { return }
         Task {
             try? await database.addFeedback(generatedVideoID: video.id, text: trimmed)
-            refreshAll()
+            if let rows = try? await database.fetchAllFeedback() { feedback = rows }
         }
     }
 
