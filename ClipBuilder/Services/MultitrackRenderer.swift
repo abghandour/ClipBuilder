@@ -120,6 +120,7 @@ actor MultitrackRenderer {
 
         // Render every segment concurrently (bounded) — each is one
         // independent ffmpeg job with captions burned in the same pass.
+        try Task.checkCancellation()
         let segmentPaths = try await BoundedConcurrency.map(fullSegments,
                                                             limit: FFmpeg.jobLimit) { index, segment in
             try await self.renderSegment(segment, index: index, of: segmentCount,
@@ -150,6 +151,7 @@ actor MultitrackRenderer {
         while transitions.count < clipPaths.count - 1 { transitions.append(nil) }
         transitions = Array(transitions.prefix(max(0, clipPaths.count - 1)))
 
+        try Task.checkCancellation()
         emit("Assembling \(clipPaths.count) segment(s)…")
         var assembled = scratch.appendingPathComponent("assembled.mp4")
         if clipPaths.count == 1 {

@@ -9,8 +9,111 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             AISettingsTab()
                 .tabItem { Label("AI", systemImage: "sparkles") }
+            InstagramSettingsTab()
+                .tabItem { Label("Instagram", systemImage: "play.rectangle.on.rectangle") }
         }
         .frame(width: 560, height: 520)
+    }
+}
+
+// MARK: - Instagram
+
+private struct InstagramSettingsTab: View {
+    @Environment(AppStore.self) private var store
+    @State private var testResult: String?
+    @State private var testing = false
+    @State private var graphToken = ""
+
+    var body: some View {
+        @Bindable var store = store
+        Form {
+            Section("Own Account (Graph API)") {
+                if store.settings.instagram.isGraphConnected {
+                    LabeledContent("Connected") {
+                        Label("@\(store.settings.instagram.connectedUsername)",
+                              systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                    }
+                    Button("Disconnect") { store.disconnectInstagram() }
+                    Text("Reels for this account fetch through the official API with full insights (reach, saves, shares, watch time). If the token expires, fetches fall back to the public web API — reconnect here with a fresh token.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    SecureField("Access token", text: $graphToken,
+                                prompt: Text("Long-lived Meta access token"))
+                    Button(store.isConnectingInstagram ? "Connecting…" : "Connect") {
+                        store.connectInstagram(token: graphToken)
+                        graphToken = ""
+                    }
+                    .disabled(graphToken.trimmingCharacters(in: .whitespaces).isEmpty
+                              || store.isConnectingInstagram)
+                    Text("Paste a long-lived access token from a Meta app with instagram_basic and instagram_manage_insights, for the Facebook page linked to your business/creator account. Stored in the Keychain, never in settings files.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Fetching") {
+                Picker("Browser cookies", selection: $store.settings.instagram.cookieSource) {
+                    Text("None (anonymous)").tag("none")
+                    Text("Safari").tag("safari")
+                    Text("Chrome").tag("chrome")
+                    Text("Firefox").tag("firefox")
+                    Text("cookies.txt file").tag("file")
+                }
+                if store.settings.instagram.cookieSource == "file" {
+                    TextField("Cookies file path", text: $store.settings.instagram.cookieFilePath,
+                              prompt: Text("~/Downloads/instagram-cookies.txt"))
+                }
+                Stepper("Reels per fetch: \(store.settings.instagram.fetchLimit)",
+                        value: $store.settings.instagram.fetchLimit, in: 4...24, step: 4)
+                Text("Listing uses Instagram's public web API — anonymous works for public accounts; a cookies.txt makes it reliable. Browser-cookie options apply to video downloads (via yt-dlp) only. Note this accesses Instagram outside its official API — fetches are kept small on purpose.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Test") {
+                HStack {
+                    Button(testing ? "Testing…" : "Test Fetch") {
+                        runTestFetch()
+                    }
+                    .disabled(testing)
+                    if let testResult {
+                        Text(testResult)
+                            .font(.caption)
+                            .foregroundStyle(testResult.hasPrefix("OK") ? .green : .red)
+                            .lineLimit(2)
+                    }
+                }
+            }
+
+            Section {
+                Button("Save") {
+                    store.saveSettings()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func runTestFetch() {
+        testing = true
+        testResult = nil
+        let settings = store.settings.instagram
+        let handle = store.activeProfile.socials["instagram"]?.handle
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@ ")) ?? ""
+        let username = handle.isEmpty ? "instagram" : handle
+        Task {
+            do {
+                let provider = InstagramWebProvider(settings: settings)
+                let profile = try await provider.fetchProfile(username: username) { _ in }
+                testResult = "OK — reached @\(profile.username)"
+            } catch {
+                testResult = "\(error)"
+            }
+            testing = false
+        }
     }
 }
 

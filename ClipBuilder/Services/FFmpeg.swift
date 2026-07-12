@@ -160,6 +160,31 @@ nonisolated enum FFmpeg {
     static func hasAudioStream(_ url: URL) async -> Bool {
         await info(of: url).hasAudio
     }
+
+    /// Timestamps (seconds) where the scene-change detector fires — objective
+    /// cut positions used as ground truth for reel template analysis.
+    static func sceneChangeTimestamps(of url: URL, threshold: Double = 0.3) async throws -> [Double] {
+        let result = try await ProcessRunner.run(
+            executable: ffmpegURL(),
+            arguments: ["-hide_banner", "-i", url.path,
+                        "-vf", "select='gt(scene,\(threshold))',showinfo",
+                        "-f", "null", "-"],
+            timeout: 300)
+        guard result.exitCode == 0 else {
+            throw FFmpegError.commandFailed(tool: "ffmpeg scene detection",
+                                            exitCode: result.exitCode, stderr: result.stderrText)
+        }
+        // showinfo logs matched frames to stderr as "... pts_time:12.345 ...".
+        var timestamps: [Double] = []
+        for line in result.stderrText.split(separator: "\n") {
+            guard let range = line.range(of: "pts_time:") else { continue }
+            let digits = line[range.upperBound...].prefix { "0123456789.".contains($0) }
+            if let time = Double(digits) {
+                timestamps.append(time.rounded(toPlaces: 2))
+            }
+        }
+        return timestamps
+    }
 }
 
 /// Everything the pipeline asks ffprobe about a file, gathered in one spawn.

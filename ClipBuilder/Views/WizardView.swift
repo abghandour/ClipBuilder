@@ -38,6 +38,26 @@ struct WizardView: View {
 
     private var configurationForm: some View {
         Form {
+            if let handoff = store.pendingWizardTemplate {
+                Section("Reference Template") {
+                    HStack {
+                        Label(handoff.label, systemImage: "play.rectangle.on.rectangle")
+                        Spacer()
+                        Button {
+                            store.pendingWizardTemplate = nil
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove the template")
+                    }
+                    Text("The wizard will replicate this reel's hook, pacing, and structure with your scenes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Output") {
                 Stepper("Videos: \(numberOfVideos)", value: $numberOfVideos, in: 1...5)
                 Stepper("Variations per video: \(variationsPerVideo)", value: $variationsPerVideo, in: 1...5)
@@ -100,16 +120,26 @@ struct WizardView: View {
             }
 
             Section {
-                Button {
-                    runWizard()
-                } label: {
-                    Label(store.isWizardRunning ? "Generating…" : "Generate Reels",
-                          systemImage: "wand.and.stars")
-                        .frame(maxWidth: .infinity)
+                if store.isWizardRunning {
+                    Button(role: .destructive) {
+                        store.cancelWizard()
+                    } label: {
+                        Label("Stop Generating", systemImage: "stop.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.bordered)
+                } else {
+                    Button {
+                        runWizard()
+                    } label: {
+                        Label("Generate Reels", systemImage: "wand.and.stars")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(analyzedSceneCount == 0)
                 }
-                .controlSize(.large)
-                .buttonStyle(.borderedProminent)
-                .disabled(store.isWizardRunning || analyzedSceneCount == 0)
 
                 if analyzedSceneCount == 0 {
                     Text("Analyze some videos first — the wizard picks from analyzed scenes.")
@@ -132,6 +162,11 @@ struct WizardView: View {
         options.enableTextOverlays = enableTextOverlays
         options.aiInstructions = aiInstructions
         options.selectedVideoIDs = limitToSelection ? selectedVideoIDs : []
+        if let handoff = store.pendingWizardTemplate {
+            options.templateJSON = handoff.templateJSON
+            options.templateLabel = handoff.label
+            store.pendingWizardTemplate = nil
+        }
         store.runWizard(options: options)
     }
 

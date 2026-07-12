@@ -118,8 +118,17 @@ struct AnalyzeView: View {
 
             TableColumn("Transcript") { video in
                 if store.transcribingVideoIDs.contains(video.id) {
-                    ProgressView()
-                        .controlSize(.small)
+                    HStack(spacing: 4) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Button {
+                            store.cancelTranscription(videoID: video.id)
+                        } label: {
+                            Image(systemName: "stop.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Stop transcribing")
+                    }
                 } else if video.speechAnalyzedAt != nil || hasTranscript(video) {
                     Image(systemName: "text.quote")
                         .foregroundStyle(.green)
@@ -174,6 +183,11 @@ private struct AnalysisLogPanel: View {
                         .foregroundStyle(.secondary)
                     ProgressView(value: store.analysisProgress)
                         .frame(width: 180)
+                    Button("Stop", systemImage: "stop.circle") {
+                        store.cancelAnalysis()
+                    }
+                    .controlSize(.small)
+                    .help("Stop the analysis")
                 }
             }
             ActivityLogView(lines: \.analysisLog)

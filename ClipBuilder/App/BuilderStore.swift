@@ -24,13 +24,74 @@ final class BuilderTimelineModel {
     private var saveTask: Task<Void, Never>?
     private var suppressAutosave = false
 
+    /// Window undo manager, injected by BuilderView. Registering with the
+    /// window (instead of replacing the Undo menu command) keeps text-field
+    /// editing on the field editor's own undo stack.
+    weak var undoManager: UndoManager?
+    private var lastUndoKey: String?
+    private var lastUndoDate = Date.distantPast
+    private static let undoCoalesceWindow: TimeInterval = 1.0
+
     static let rowHeight: CGFloat = 56
     static let laneSpacing: CGFloat = 6
+
+    // MARK: - Undo
+
+    /// Push the pre-mutation document as an undo step. Continuous edits
+    /// (slider drags, per-keystroke text changes) pass a stable `coalescing`
+    /// key so a burst of updates becomes a single step.
+    private func registerUndo(_ actionName: String, coalescing key: String? = nil) {
+        let now = Date()
+        if let key, key == lastUndoKey,
+           now.timeIntervalSince(lastUndoDate) < Self.undoCoalesceWindow {
+            lastUndoDate = now
+            return
+        }
+        lastUndoKey = key
+        lastUndoDate = now
+        registerUndoStep(actionName)
+    }
+
+    private func registerUndoStep(_ actionName: String) {
+        guard let undoManager else { return }
+        let snapshot = document
+        undoManager.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated {
+                model.registerUndoStep(actionName)   // becomes the redo step
+                model.restore(snapshot)
+            }
+        }
+        if !undoManager.isUndoing && !undoManager.isRedoing {
+            undoManager.setActionName(actionName)
+        }
+    }
+
+    private func restore(_ snapshot: TimelineDocument) {
+        document = snapshot
+        lastUndoKey = nil
+        hydrateClips()
+        if let selection, !contains(selection) { self.selection = nil }
+        documentDidChange()
+    }
+
+    private func contains(_ selection: TimelineSelection) -> Bool {
+        switch selection {
+        case .clip(let uid): return document.videoTrack.contains { $0.uid == uid }
+        case .sound(let uid): return document.soundTrack.contains { $0.uid == uid }
+        case .text(let uid): return document.textOverlays.contains { $0.uid == uid }
+        }
+    }
+
+    private func resetUndoHistory() {
+        undoManager?.removeAllActions(withTarget: self)
+        lastUndoKey = nil
+    }
 
     // MARK: - Load / persistence
 
     func load(profileName: String) {
         saveTask?.cancel()
+        resetUndoHistory()
         self.profileName = profileName
         suppressAutosave = true
         document = BuilderStateStore.load(profileName: profileName) ?? TimelineDocument()
@@ -42,6 +103,7 @@ final class BuilderTimelineModel {
 
     /// Replace the working document (e.g. "Open in Builder" from the Library).
     func loadDocument(_ newDocument: TimelineDocument) {
+        registerUndo("Replace Timeline")
         document = newDocument
         selection = nil
         hydrateClips()
@@ -49,6 +111,7 @@ final class BuilderTimelineModel {
     }
 
     func clear() {
+        registerUndo("Clear Timeline")
         document = TimelineDocument()
         selection = nil
         playhead = 0
@@ -177,6 +240,7 @@ final class BuilderTimelineModel {
     // MARK: - Clip mutations
 
     func addScene(_ scene: SceneRecord, at time: Double? = nil, track: Int = 0) {
+        registerUndo("Add Clip")
         var clip = TimelineClip()
         clip.sceneID = scene.id
         clip.videoFile = scene.videoPath
@@ -202,6 +266,7 @@ final class BuilderTimelineModel {
 
     func placeClip(_ uid: UUID, startTime: Double, track: Int) {
         guard let index = clipIndex(uid) else { return }
+        registerUndo("Move Clip")
         let oldTrack = document.videoTrack[index].track
         let newTrack = min(max(0, track), document.trackCount - 1)
         document.videoTrack[index].startTime = Self.snap(startTime)
@@ -215,6 +280,7 @@ final class BuilderTimelineModel {
 
     func trimClip(_ uid: UUID, duration: Double) {
         guard let index = clipIndex(uid) else { return }
+        registerUndo("Trim Clip")
         var clip = document.videoTrack[index]
         var maxDuration = Double.greatestFiniteMagnitude
         if let scene = scene(for: clip) {
@@ -230,6 +296,7 @@ final class BuilderTimelineModel {
 
     func removeClip(_ uid: UUID) {
         guard let index = clipIndex(uid) else { return }
+        registerUndo("Delete Clip")
         let track = document.videoTrack[index].track
         document.videoTrack.remove(at: index)
         if selection == .clip(uid) { selection = nil }
@@ -239,6 +306,7 @@ final class BuilderTimelineModel {
 
     func duplicateClip(_ uid: UUID) {
         guard let original = clip(uid) else { return }
+        registerUndo("Duplicate Clip")
         var copy = original
         copy.uid = UUID()
         copy.startTime = Self.snap(original.startTime + original.duration)
@@ -250,6 +318,7 @@ final class BuilderTimelineModel {
 
     func updateClip(_ uid: UUID, _ mutate: (inout TimelineClip) -> Void) {
         guard let index = clipIndex(uid) else { return }
+        registerUndo("Edit Clip", coalescing: "clip-\(uid)")
         mutate(&document.videoTrack[index])
         documentDidChange()
     }
@@ -270,6 +339,7 @@ final class BuilderTimelineModel {
 
     func setTrackSequential(_ sequential: Bool, track: Int) {
         guard track >= 0, track < 3 else { return }
+        registerUndo("Change Track Layout")
         document.trackSequential[track] = sequential
         resolveLayout(track: track)
         documentDidChange()
@@ -277,6 +347,8 @@ final class BuilderTimelineModel {
 
     func setTrackCount(_ count: Int) {
         let clamped = min(3, max(1, count))
+        guard clamped != document.trackCount else { return }
+        registerUndo("Change Track Count")
         document.trackCount = clamped
         // Pull clips from hidden tracks back onto the last visible one.
         for index in document.videoTrack.indices where document.videoTrack[index].track >= clamped {
@@ -288,6 +360,7 @@ final class BuilderTimelineModel {
 
     func updateTrackSettings(_ track: Int, _ mutate: (inout TrackSettings) -> Void) {
         guard track >= 0, track < document.trackSettings.count else { return }
+        registerUndo("Edit Track", coalescing: "track-\(track)")
         mutate(&document.trackSettings[track])
         documentDidChange()
     }
@@ -295,6 +368,7 @@ final class BuilderTimelineModel {
     // MARK: - Sound track
 
     func addSound(name: String, at time: Double? = nil, duration: Double = 10) {
+        registerUndo("Add Music")
         let start = Self.snap(time ?? playhead)
         let item = SoundItem(name: name, volume: 3, startTime: start, duration: duration)
         document.soundTrack.append(item)
@@ -308,6 +382,7 @@ final class BuilderTimelineModel {
 
     func updateSound(_ uid: UUID, _ mutate: (inout SoundItem) -> Void) {
         guard let index = soundIndex(uid) else { return }
+        registerUndo("Edit Music", coalescing: "sound-\(uid)")
         mutate(&document.soundTrack[index])
         document.soundTrack[index].startTime = max(0, document.soundTrack[index].startTime)
         document.soundTrack[index].duration = max(0.5, document.soundTrack[index].duration)
@@ -315,6 +390,8 @@ final class BuilderTimelineModel {
     }
 
     func removeSound(_ uid: UUID) {
+        guard soundIndex(uid) != nil else { return }
+        registerUndo("Delete Music")
         document.soundTrack.removeAll { $0.uid == uid }
         if selection == .sound(uid) { selection = nil }
         documentDidChange()
@@ -323,6 +400,7 @@ final class BuilderTimelineModel {
     // MARK: - Text overlays
 
     func addText(at time: Double? = nil) -> UUID {
+        registerUndo("Add Text")
         let start = Self.snap(time ?? playhead)
         var item = TextOverlayItem(text: "Text", startTime: start, endTime: start + 3)
         item.xFrac = 0.5
@@ -343,6 +421,7 @@ final class BuilderTimelineModel {
 
     func updateText(_ uid: UUID, _ mutate: (inout TextOverlayItem) -> Void) {
         guard let index = textIndex(uid) else { return }
+        registerUndo("Edit Text", coalescing: "text-\(uid)")
         mutate(&document.textOverlays[index])
         let item = document.textOverlays[index]
         document.textOverlays[index].startTime = max(0, item.startTime)
@@ -351,6 +430,8 @@ final class BuilderTimelineModel {
     }
 
     func removeText(_ uid: UUID) {
+        guard textIndex(uid) != nil else { return }
+        registerUndo("Delete Text")
         document.textOverlays.removeAll { $0.uid == uid }
         if selection == .text(uid) { selection = nil }
         documentDidChange()
@@ -359,11 +440,15 @@ final class BuilderTimelineModel {
     // MARK: - Document toggles
 
     func setIncludeIntro(_ include: Bool) {
+        guard include != document.includeIntro else { return }
+        registerUndo("Toggle Intro")
         document.includeIntro = include
         documentDidChange()
     }
 
     func setIncludeOutro(_ include: Bool) {
+        guard include != document.includeOutro else { return }
+        registerUndo("Toggle Outro")
         document.includeOutro = include
         documentDidChange()
     }

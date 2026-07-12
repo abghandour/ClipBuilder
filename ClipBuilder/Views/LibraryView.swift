@@ -16,6 +16,7 @@ struct LibraryView: View {
     @State private var deleting: GeneratedVideoRecord?
     @State private var feedbackTarget: GeneratedVideoRecord?
     @State private var feedbackText = ""
+    @State private var builderTarget: GeneratedVideoRecord?
 
     private var sorted: [GeneratedVideoRecord] {
         switch sortOrder {
@@ -74,6 +75,28 @@ struct LibraryView: View {
                 deleting = nil
             }
             Button("Cancel", role: .cancel) { deleting = nil }
+        }
+        .confirmationDialog(
+            "Replace the current timeline?",
+            isPresented: Binding(get: { builderTarget != nil }, set: { if !$0 { builderTarget = nil } })
+        ) {
+            Button("Replace Timeline") {
+                if let builderTarget { store.openInBuilder(builderTarget) }
+                builderTarget = nil
+            }
+            Button("Cancel", role: .cancel) { builderTarget = nil }
+        } message: {
+            Text("The Builder already has clips on its timeline. Opening \(builderTarget?.filename ?? "this video") replaces them. You can undo this with ⌘Z.")
+        }
+    }
+
+    /// Opening in the Builder replaces whatever is on its timeline — confirm
+    /// first unless the timeline is empty.
+    private func openInBuilder(_ video: GeneratedVideoRecord) {
+        if store.builder.document.videoTrack.isEmpty {
+            store.openInBuilder(video)
+        } else {
+            builderTarget = video
         }
     }
 
@@ -154,7 +177,7 @@ struct LibraryView: View {
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
         .contextMenu {
             Button("Open in Builder") {
-                store.openInBuilder(video)
+                openInBuilder(video)
             }
             Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([video.url])

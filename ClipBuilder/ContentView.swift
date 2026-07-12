@@ -17,6 +17,17 @@ struct ClipBuilderApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             }
+            // ⌘1–⌘6 section switching, routed through requestedSection —
+            // the same channel views use — so the sidebar stays in sync.
+            CommandGroup(after: .sidebar) {
+                Divider()
+                ForEach(SidebarSection.allCases) { section in
+                    Button(section.title) {
+                        store.requestedSection = section
+                    }
+                    .keyboardShortcut(section.shortcut ?? "0", modifiers: .command)
+                }
+            }
         }
 
         Settings {
@@ -26,14 +37,32 @@ struct ClipBuilderApp: App {
     }
 }
 
+/// Case order follows the workflow (footage in → finished reel out); it also
+/// drives the sidebar order and the ⌘1–⌘6 shortcuts.
 enum SidebarSection: String, CaseIterable, Identifiable {
-    case library
-    case scenes
-    case builder
     case analyze
+    case scenes
+    case instagram
     case wizard
+    case builder
+    case library
 
     var id: String { rawValue }
+
+    /// Sidebar groups: what feeds creation (footage and reference templates),
+    /// where reels are made, and where they end up.
+    static let groups: [(title: String, sections: [SidebarSection])] = [
+        ("Source", [.analyze, .scenes, .instagram]),
+        ("Create", [.wizard, .builder]),
+        ("Output", [.library]),
+    ]
+
+    /// ⌘1–⌘6, in workflow order.
+    var shortcut: KeyEquivalent? {
+        guard let index = Self.allCases.firstIndex(of: self),
+              let digit = "\(index + 1)".first else { return nil }
+        return KeyEquivalent(digit)
+    }
 
     var title: String {
         switch self {
@@ -42,6 +71,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .builder: return "Builder"
         case .analyze: return "Analyze"
         case .wizard: return "AI Wizard"
+        case .instagram: return "Instagram"
         }
     }
 
@@ -52,29 +82,37 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .builder: return "timeline.selection"
         case .analyze: return "sparkles.rectangle.stack"
         case .wizard: return "wand.and.stars"
+        case .instagram: return "play.rectangle.on.rectangle"
         }
     }
 }
 
 struct MainWindowView: View {
     @Environment(AppStore.self) private var store
-    @State private var selection: SidebarSection? = .library
+    @State private var selection: SidebarSection? = .analyze
 
     var body: some View {
         @Bindable var store = store
         NavigationSplitView {
-            List(SidebarSection.allCases, selection: $selection) { section in
-                Label(section.title, systemImage: section.systemImage)
-                    .tag(section)
+            List(selection: $selection) {
+                ForEach(SidebarSection.groups, id: \.title) { group in
+                    Section(group.title) {
+                        ForEach(group.sections) { section in
+                            Label(section.title, systemImage: section.systemImage)
+                                .tag(section)
+                        }
+                    }
+                }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
         } detail: {
-            switch selection ?? .library {
+            switch selection ?? .analyze {
             case .library: LibraryView()
             case .scenes: ScenesView()
             case .builder: BuilderView()
             case .analyze: AnalyzeView()
             case .wizard: WizardView()
+            case .instagram: InstagramView()
             }
         }
         .onChange(of: store.requestedSection) { _, requested in
@@ -99,12 +137,12 @@ struct MainWindowView: View {
             }
         }
         .alert("Error", isPresented: Binding(
-            get: { store.lastError != nil },
-            set: { if !$0 { store.lastError = nil } }
+            get: { store.currentError != nil },
+            set: { if !$0 { store.dismissCurrentError() } }
         )) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text(store.lastError ?? "")
+            Text(store.currentError?.message ?? "")
         }
     }
 }

@@ -158,9 +158,10 @@ actor AIService {
                 result = try await ProcessRunner.run(executable: binary, arguments: arguments,
                                                      stdin: stdin, timeout: timeout)
             } catch {
+                if error is CancellationError { throw error }
                 if attempt < maxRetries {
                     log("Attempt failed (\(error)), retrying (\(attempt + 1)/\(maxRetries))...")
-                    try? await Task.sleep(for: .seconds(5))
+                    try await Task.sleep(for: .seconds(5))
                     continue
                 }
                 throw error
@@ -180,7 +181,7 @@ actor AIService {
                 log("Claude CLI error: \(errorMessage.prefix(200))")
                 if attempt < maxRetries {
                     log("Retrying (\(attempt + 1)/\(maxRetries))...")
-                    try? await Task.sleep(for: .seconds(5))
+                    try await Task.sleep(for: .seconds(5))
                     continue
                 }
                 throw AIError.emptyResponse("Claude")
@@ -225,7 +226,7 @@ actor AIService {
                 log("Claude CLI error: \(cliError.prefix(200))")
                 if attempt < maxRetries {
                     log("Retrying (\(attempt + 1)/\(maxRetries))...")
-                    try? await Task.sleep(for: .seconds(5))
+                    try await Task.sleep(for: .seconds(5))
                     continue
                 }
                 throw AIError.emptyResponse("Claude")
@@ -233,7 +234,7 @@ actor AIService {
             if !text.isEmpty { return text }
             if attempt < maxRetries {
                 log("Empty response, retrying (\(attempt + 1)/\(maxRetries))...")
-                try? await Task.sleep(for: .seconds(5))
+                try await Task.sleep(for: .seconds(5))
             }
         }
         throw AIError.emptyResponse("Claude")

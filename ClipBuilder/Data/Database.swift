@@ -119,6 +119,45 @@ actor Database {
     CREATE INDEX IF NOT EXISTS idx_moments_video ON moments(video_id);
     CREATE INDEX IF NOT EXISTS idx_wizard_feedback_video ON wizard_feedback(generated_video_id);
     CREATE INDEX IF NOT EXISTS idx_wizard_research_topic ON wizard_research(topic, researched_at);
+
+    CREATE TABLE IF NOT EXISTS ig_accounts (
+        id INTEGER PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL COLLATE NOCASE,
+        kind TEXT NOT NULL DEFAULT 'public',
+        display_name TEXT,
+        ig_user_id TEXT,
+        followers INTEGER,
+        profile_pic_path TEXT,
+        last_fetched_at TEXT,
+        added_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS ig_media (
+        id INTEGER PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        media_id TEXT NOT NULL,
+        media_type TEXT NOT NULL DEFAULT 'reel',
+        caption TEXT DEFAULT '',
+        permalink TEXT,
+        posted_at TEXT,
+        duration REAL DEFAULT 0,
+        thumbnail_path TEXT,
+        local_video_path TEXT,
+        stats_json TEXT DEFAULT '{}',
+        source TEXT NOT NULL DEFAULT 'ytdlp',
+        fetched_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(account_id, media_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ig_media_account ON ig_media(account_id, posted_at);
+
+    CREATE TABLE IF NOT EXISTS ig_templates (
+        id INTEGER PRIMARY KEY,
+        media_id INTEGER NOT NULL UNIQUE REFERENCES ig_media(id) ON DELETE CASCADE,
+        template_json TEXT NOT NULL,
+        provider TEXT,
+        model TEXT,
+        analyzed_at TEXT DEFAULT (datetime('now'))
+    );
     """
 
     init(path: URL) throws {
@@ -544,6 +583,167 @@ actor Database {
                                [.integer(generatedVideoID), .text(text)])
     }
 
+    // MARK: - Instagram
+
+    @discardableResult
+    func upsertIGAccount(username: String, kind: String, displayName: String?,
+                         igUserID: String?, followers: Int?) throws -> Int64 {
+        let rows = try connection.query("""
+            INSERT INTO ig_accounts (username, kind, display_name, ig_user_id, followers)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(username) DO UPDATE SET
+                kind=excluded.kind,
+                display_name=COALESCE(excluded.display_name, ig_accounts.display_name),
+                ig_user_id=COALESCE(excluded.ig_user_id, ig_accounts.ig_user_id),
+                followers=COALESCE(excluded.followers, ig_accounts.followers)
+            RETURNING id
+            """, [.text(username), .text(kind),
+                  displayName.map(SQLValue.text) ?? .null,
+                  igUserID.map(SQLValue.text) ?? .null,
+                  followers.map { SQLValue.integer(Int64($0)) } ?? .null])
+        return rows.first?["id"]?.intValue ?? connection.lastInsertRowID
+    }
+
+    func fetchIGAccounts() throws -> [IGAccountRecord] {
+        try connection.query("SELECT * FROM ig_accounts ORDER BY kind DESC, username COLLATE NOCASE").map {
+            IGAccountRecord(id: $0["id"]?.intValue ?? 0,
+                            username: $0["username"]?.stringValue ?? "",
+                            kind: $0["kind"]?.stringValue ?? "public",
+                            displayName: $0["display_name"]?.stringValue,
+                            igUserID: $0["ig_user_id"]?.stringValue,
+                            followers: $0["followers"]?.intValue.map(Int.init),
+                            profilePicPath: $0["profile_pic_path"]?.stringValue,
+                            lastFetchedAt: Self.parseSQLiteDate($0["last_fetched_at"]?.stringValue),
+                            addedAt: $0["added_at"]?.stringValue)
+        }
+    }
+
+    func deleteIGAccount(id: Int64) throws {
+        try connection.execute("DELETE FROM ig_accounts WHERE id = ?", [.integer(id)])
+    }
+
+    func markIGAccountFetched(id: Int64) throws {
+        try connection.execute("UPDATE ig_accounts SET last_fetched_at = datetime('now') WHERE id = ?",
+                               [.integer(id)])
+    }
+
+    /// Upsert one fetched media item. Never clears cached local paths —
+    /// refreshes update stats/caption, downloads happen separately.
+    @discardableResult
+    func upsertIGMedia(_ item: IGMediaUpsert) throws -> Int64 {
+        let rows = try connection.query("""
+            INSERT INTO ig_media (account_id, media_id, media_type, caption, permalink,
+                                  posted_at, duration, stats_json, source, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(account_id, media_id) DO UPDATE SET
+                media_type=excluded.media_type,
+                caption=excluded.caption,
+                permalink=COALESCE(excluded.permalink, ig_media.permalink),
+                posted_at=COALESCE(excluded.posted_at, ig_media.posted_at),
+                duration=CASE WHEN excluded.duration > 0 THEN excluded.duration ELSE ig_media.duration END,
+                stats_json=excluded.stats_json,
+                source=excluded.source,
+                fetched_at=datetime('now')
+            RETURNING id
+            """, [.integer(item.accountID), .text(item.mediaID), .text(item.mediaType),
+                  .text(item.caption),
+                  item.permalink.map(SQLValue.text) ?? .null,
+                  item.postedAt.map { .text(Self.sqliteDateString($0)) } ?? .null,
+                  .real(item.duration), .text(item.statsJSON), .text(item.source)])
+        return rows.first?["id"]?.intValue ?? connection.lastInsertRowID
+    }
+
+    func fetchIGMedia(accountID: Int64) throws -> [IGMediaRecord] {
+        try connection.query("""
+            SELECT * FROM ig_media WHERE account_id = ? ORDER BY posted_at DESC, id DESC
+            """, [.integer(accountID)]).map {
+            IGMediaRecord(id: $0["id"]?.intValue ?? 0,
+                          accountID: $0["account_id"]?.intValue ?? 0,
+                          mediaID: $0["media_id"]?.stringValue ?? "",
+                          mediaType: $0["media_type"]?.stringValue ?? "reel",
+                          caption: $0["caption"]?.stringValue ?? "",
+                          permalink: $0["permalink"]?.stringValue,
+                          postedAt: Self.parseSQLiteDate($0["posted_at"]?.stringValue),
+                          duration: $0["duration"]?.doubleValue ?? 0,
+                          thumbnailPath: $0["thumbnail_path"]?.stringValue,
+                          localVideoPath: $0["local_video_path"]?.stringValue,
+                          statsJSON: $0["stats_json"]?.stringValue ?? "{}",
+                          source: $0["source"]?.stringValue ?? "ytdlp",
+                          fetchedAt: $0["fetched_at"]?.stringValue)
+        }
+    }
+
+    /// After a Graph refresh, drop rows for the same reels previously fetched
+    /// via the web (same permalink, different media id) — except ones that
+    /// already carry a template analysis.
+    func pruneSupersededIGMedia(accountID: Int64) throws {
+        try connection.execute("""
+            DELETE FROM ig_media WHERE account_id = ?1 AND source != 'graph'
+                AND id NOT IN (SELECT media_id FROM ig_templates)
+                AND permalink IN (SELECT permalink FROM ig_media
+                                  WHERE account_id = ?1 AND source = 'graph'
+                                    AND permalink IS NOT NULL)
+            """, [.integer(accountID)])
+    }
+
+    func setIGMediaLocalPaths(id: Int64, thumbnailPath: String?, localVideoPath: String?) throws {
+        if let thumbnailPath {
+            try connection.execute("UPDATE ig_media SET thumbnail_path = ? WHERE id = ?",
+                                   [.text(thumbnailPath), .integer(id)])
+        }
+        if let localVideoPath {
+            try connection.execute("UPDATE ig_media SET local_video_path = ? WHERE id = ?",
+                                   [.text(localVideoPath), .integer(id)])
+        }
+    }
+
+    func saveIGTemplate(mediaID: Int64, templateJSON: String, provider: String?, model: String?) throws {
+        try connection.execute("""
+            INSERT INTO ig_templates (media_id, template_json, provider, model, analyzed_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(media_id) DO UPDATE SET
+                template_json=excluded.template_json,
+                provider=excluded.provider,
+                model=excluded.model,
+                analyzed_at=datetime('now')
+            """, [.integer(mediaID), .text(templateJSON),
+                  provider.map(SQLValue.text) ?? .null,
+                  model.map(SQLValue.text) ?? .null])
+    }
+
+    func fetchIGTemplate(mediaID: Int64) throws -> IGTemplateRecord? {
+        try connection.query("SELECT * FROM ig_templates WHERE media_id = ?", [.integer(mediaID)]).first.map {
+            IGTemplateRecord(id: $0["id"]?.intValue ?? 0,
+                             mediaID: $0["media_id"]?.intValue ?? 0,
+                             templateJSON: $0["template_json"]?.stringValue ?? "",
+                             provider: $0["provider"]?.stringValue,
+                             model: $0["model"]?.stringValue,
+                             analyzedAt: $0["analyzed_at"]?.stringValue)
+        }
+    }
+
+    /// IDs of media that already have a cached template analysis.
+    func fetchIGTemplateMediaIDs(accountID: Int64) throws -> Set<Int64> {
+        let rows = try connection.query("""
+            SELECT t.media_id FROM ig_templates t
+            JOIN ig_media m ON m.id = t.media_id WHERE m.account_id = ?
+            """, [.integer(accountID)])
+        return Set(rows.compactMap { $0["media_id"]?.intValue })
+    }
+
+    /// Write-through registry entry for a downloaded external video —
+    /// honors imported_externals' contract shared with the Python app.
+    func registerImportedExternal(platform: String, externalID: String, title: String?,
+                                  pageURL: String?, localPath: String?) throws {
+        try connection.execute("""
+            INSERT OR REPLACE INTO imported_externals (platform, external_id, title, page_url, local_path)
+            VALUES (?, ?, ?, ?, ?)
+            """, [.text(platform), .text(externalID),
+                  title.map(SQLValue.text) ?? .null,
+                  pageURL.map(SQLValue.text) ?? .null,
+                  localPath.map(SQLValue.text) ?? .null])
+    }
+
     // MARK: - Helpers
 
     /// DateFormatter construction is expensive; the formatter is immutable
@@ -558,5 +758,9 @@ actor Database {
 
     nonisolated static func parseSQLiteDate(_ string: String?) -> Date? {
         string.flatMap { sqliteDateFormatter.date(from: $0) }
+    }
+
+    nonisolated static func sqliteDateString(_ date: Date) -> String {
+        sqliteDateFormatter.string(from: date)
     }
 }

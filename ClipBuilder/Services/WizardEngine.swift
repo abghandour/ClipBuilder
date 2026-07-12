@@ -12,6 +12,10 @@ nonisolated struct WizardOptions: Sendable {
     /// Restrict scene selection to these source videos (empty = all).
     var selectedVideoIDs: Set<Int64> = []
     var modelOverride: String?
+    /// Structural analysis of a reference reel (ReelTemplate JSON) the plan
+    /// should replicate, plus a human-readable label for logs.
+    var templateJSON: String?
+    var templateLabel: String?
 }
 
 nonisolated struct WizardPlanClip: Sendable {
@@ -170,10 +174,23 @@ actor WizardEngine {
         let brand = profile.brandName
 
         let range = research["ideal_duration_range"] as? [String: Any]
-        let durationMin = (range?["min"] as? NSNumber)?.intValue ?? 15
-        let durationMax = (range?["max"] as? NSNumber)?.intValue ?? 30
-        let targetDuration = (research["optimal_duration"] as? NSNumber)?.intValue ?? 22
-        let cutsPerMinute = (research["pacing_cuts_per_minute"] as? NSNumber)?.intValue ?? 20
+        var durationMin = (range?["min"] as? NSNumber)?.intValue ?? 15
+        var durationMax = (range?["max"] as? NSNumber)?.intValue ?? 30
+        var targetDuration = (research["optimal_duration"] as? NSNumber)?.intValue ?? 22
+        var cutsPerMinute = (research["pacing_cuts_per_minute"] as? NSNumber)?.intValue ?? 20
+
+        // A reference template overrides the research's generic numbers.
+        let template = options.templateJSON.flatMap { AIResponseParser.jsonObject(from: $0) }
+        if let template {
+            if let duration = (template["duration"] as? NSNumber)?.doubleValue, duration > 0 {
+                targetDuration = Int(duration.rounded())
+                durationMin = min(durationMin, targetDuration - 3)
+                durationMax = max(durationMax, targetDuration + 3)
+            }
+            if let cadence = (template["cuts_per_minute"] as? NSNumber)?.doubleValue, cadence > 0 {
+                cutsPerMinute = Int(cadence.rounded())
+            }
+        }
 
         let researchJSON = (try? JSONSerialization.data(withJSONObject: research, options: [.prettyPrinted, .sortedKeys]))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
@@ -186,6 +203,20 @@ actor WizardEngine {
             ## USER AI INSTRUCTIONS (HIGHEST PRIORITY — OVERRIDES ALL OTHER GUIDANCE BELOW)
             \(options.aiInstructions)
             These are hard requirements. Follow them even when they conflict with the research, feedback, or rules below.
+            """
+        }
+
+        var templateBlock = ""
+        if let templateJSON = options.templateJSON, template != nil {
+            let label = options.templateLabel.map { " (\($0))" } ?? ""
+            templateBlock = """
+
+
+            ## REFERENCE TEMPLATE (HIGH PRIORITY — replicate this reel's STRUCTURE)
+            The user picked a high-performing reel\(label) as the model for this video. Its structural analysis:
+            \(templateJSON)
+
+            Replicate the STRUCTURE, never the content: match its hook type and timing, cut rhythm, pacing curve, phase structure, text overlay usage, and overall duration using the scenes available below. When the template conflicts with the research or the key principles, the template wins (user AI instructions still outrank everything).
             """
         }
 
@@ -219,7 +250,7 @@ actor WizardEngine {
 
         return """
         You are an expert video editor creating an Instagram Reel for a \(domain) channel called \(brand). Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
-        \(userInstructions)
+        \(userInstructions)\(templateBlock)
 
         ## Instagram Reels Research
         \(researchJSON)
@@ -384,16 +415,28 @@ actor WizardEngine {
         do {
             try await runThrowing(options: options, profile: profile, database: database, emit: emit)
             emit("DONE:ok")
+        } catch is CancellationError {
+            emit("Cancelled.")
+            emit("DONE:error")
         } catch {
-            emit("Error: \(error)")
+            emit("Error: \(error.userMessage)")
             emit("DONE:error")
         }
     }
 
-    private func runThrowing(options: WizardOptions,
-                             profile: BrandProfile,
-                             database: Database,
-                             emit: @escaping @Sendable (String) -> Void) async throws {
+    /// Everything the planning phase needs, loaded once per run.
+    private struct PlanningInputs {
+        var research: [String: Any]
+        var scenes: [SceneRecord]
+        var sceneMap: [Int64: SceneRecord]
+        var music: [(name: String, url: URL)]
+        var feedback: [FeedbackRecord]
+    }
+
+    private func loadPlanningInputs(options: WizardOptions,
+                                    profile: BrandProfile,
+                                    database: Database,
+                                    emit: @escaping @Sendable (String) -> Void) async throws -> PlanningInputs {
         emit("Phase 1: Instagram Reels research...")
         let research = await getResearch(profile: profile, database: database,
                                          model: options.modelOverride, emit: emit)
@@ -408,6 +451,9 @@ actor WizardEngine {
         guard !scenes.isEmpty else {
             throw AIError.notConfigured("No analyzed scenes available. Analyze some videos first.")
         }
+        if options.templateJSON != nil {
+            emit("Using reference template: \(options.templateLabel ?? "Instagram reel")")
+        }
         let music = options.useMusic ? Self.availableMusic() : []
         if !options.useMusic { emit("No-music mode: original audio only.") }
         if options.muteSource { emit("Source audio will be muted (music only)") }
@@ -417,9 +463,51 @@ actor WizardEngine {
         if options.variationsPerVideo > 1 {
             emit("Generating \(options.variationsPerVideo) A/B variations per video")
         }
+        return PlanningInputs(research: research, scenes: scenes,
+                              sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
+                              music: music, feedback: feedback)
+    }
 
-        let sceneMap = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
-        let musicNames = Set(music.map(\.name))
+    /// One prompt → AI call → validated plan; nil when the response is unusable.
+    private func makePlan(inputs: PlanningInputs, options: WizardOptions, profile: BrandProfile,
+                          variation: (number: Int, total: Int, previousRationales: [String])?,
+                          emit: @escaping @Sendable (String) -> Void) async throws -> WizardPlan? {
+        let prompt = planPrompt(profile: profile, research: inputs.research, scenes: inputs.scenes,
+                                musicNames: inputs.music.map(\.name), feedback: inputs.feedback,
+                                options: options, variation: variation)
+        let response = try await ai.call(prompt: prompt, task: "wizard",
+                                         model: options.modelOverride, timeout: 300, log: emit)
+        guard let rawPlan = AIResponseParser.jsonObject(from: response) else { return nil }
+        return validatePlan(rawPlan, scenes: inputs.sceneMap, musicNames: Set(inputs.music.map(\.name)))
+    }
+
+    /// Plan-only entry for the Builder pre-fill path — research → AI plan →
+    /// validation, no assembly, no captions.
+    func plan(options: WizardOptions,
+              profile: BrandProfile,
+              database: Database,
+              emit: @escaping @Sendable (String) -> Void) async throws
+        -> (plan: WizardPlan, sceneMap: [Int64: SceneRecord]) {
+        let inputs = try await loadPlanningInputs(options: options, profile: profile,
+                                                  database: database, emit: emit)
+        emit("\nPhase 2: Planning the timeline...")
+        guard let plan = try await makePlan(inputs: inputs, options: options, profile: profile,
+                                            variation: nil, emit: emit) else {
+            throw AIError.emptyResponse("wizard planning (unparseable JSON)")
+        }
+        emit("Plan: \(plan.clips.count) clips, ~\(Int(plan.targetDuration))s, music: \(plan.musicName ?? "none")")
+        emit("Strategy: \(plan.rationale)")
+        return (plan, inputs.sceneMap)
+    }
+
+    private func runThrowing(options: WizardOptions,
+                             profile: BrandProfile,
+                             database: Database,
+                             emit: @escaping @Sendable (String) -> Void) async throws {
+        let inputs = try await loadPlanningInputs(options: options, profile: profile,
+                                                  database: database, emit: emit)
+        let sceneMap = inputs.sceneMap
+        let music = inputs.music
         var generatedCount = 0
 
         // Normalize the profile's intro/outro once for the whole run — the
@@ -444,18 +532,15 @@ actor WizardEngine {
         for videoNumber in 1...options.numberOfVideos {
             var previousRationales: [String] = []
             for variationNumber in 1...options.variationsPerVideo {
+                try Task.checkCancellation()
                 let variationLabel = options.variationsPerVideo > 1
                     ? "\(videoNumber).\(variationNumber)" : "\(videoNumber)"
                 emit("\nPhase 2: Planning Video \(variationLabel)/\(options.numberOfVideos)...")
 
-                let prompt = planPrompt(profile: profile, research: research, scenes: scenes,
-                                        musicNames: music.map(\.name), feedback: feedback,
-                                        options: options,
-                                        variation: (variationNumber, options.variationsPerVideo, previousRationales))
-                let response = try await ai.call(prompt: prompt, task: "wizard",
-                                                 model: options.modelOverride, timeout: 300, log: emit)
-                guard let rawPlan = AIResponseParser.jsonObject(from: response),
-                      let plan = validatePlan(rawPlan, scenes: sceneMap, musicNames: musicNames) else {
+                guard let plan = try await makePlan(
+                    inputs: inputs, options: options, profile: profile,
+                    variation: (variationNumber, options.variationsPerVideo, previousRationales),
+                    emit: emit) else {
                     emit("Plan for video \(variationLabel) could not be parsed — skipping")
                     continue
                 }
@@ -493,6 +578,58 @@ actor WizardEngine {
             }
         }
         emit("\nAll done! Generated \(generatedCount) video(s)")
+    }
+
+    // MARK: - Builder pre-fill
+
+    /// Map a validated plan onto a Builder timeline document: sequential clips
+    /// on track 0 with planner transitions as transIn, music spanning the
+    /// whole timeline, per-clip text overlays. No rendering — the user edits
+    /// from here. (wideSplit hints are dropped; auto-crop covers wide scenes.)
+    nonisolated static func timelineDocument(from plan: WizardPlan,
+                                             sceneMap: [Int64: SceneRecord]) -> TimelineDocument {
+        var document = TimelineDocument()
+        var cursor = 0.0
+        for clip in plan.clips {
+            guard let scene = sceneMap[clip.sceneID] else { continue }
+            let duration = ((clip.end - clip.start) * 10).rounded() / 10
+            guard duration > 0 else { continue }
+
+            var timelineClip = TimelineClip()
+            timelineClip.sceneID = clip.sceneID
+            timelineClip.videoFile = scene.videoPath
+            timelineClip.sourceStart = clip.start
+            timelineClip.sourceEnd = clip.end
+            timelineClip.startTime = cursor
+            timelineClip.duration = duration
+            timelineClip.sceneFullDuration = (scene.duration * 10).rounded() / 10
+            timelineClip.wide = scene.wide
+            timelineClip.cropXFrac = scene.cropXFrac
+            let index = document.videoTrack.count
+            if index > 0 {
+                timelineClip.transIn = plan.transitions[safe: index - 1] ?? "fade"
+            }
+            document.videoTrack.append(timelineClip)
+
+            if let text = clip.textOverlay, !text.isEmpty {
+                var overlay = TextOverlayItem()
+                overlay.text = text.uppercased()
+                overlay.startTime = cursor
+                overlay.endTime = cursor + duration
+                overlay.position = "top"
+                document.textOverlays.append(overlay)
+            }
+            cursor += duration
+        }
+        if let musicName = plan.musicName, cursor > 0 {
+            var sound = SoundItem()
+            sound.name = musicName
+            sound.volume = min(5, max(1, plan.musicVolume))
+            sound.startTime = 0
+            sound.duration = (cursor * 10).rounded() / 10
+            document.soundTrack.append(sound)
+        }
+        return document
     }
 
     // MARK: - Assembly

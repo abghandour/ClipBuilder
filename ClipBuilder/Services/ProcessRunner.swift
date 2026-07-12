@@ -25,6 +25,47 @@ private final class DataBox: @unchecked Sendable {
     var data = Data()
 }
 
+/// Cross-thread state for one process run, shared between the worker thread,
+/// the timeout work item, and the Task cancellation handler. Everything goes
+/// through the lock — `timedOut`/`cancelled` are written from other queues
+/// while the worker reads them after waitUntilExit.
+nonisolated private final class ProcessRunState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var timedOut = false
+    private var cancelled = false
+
+    /// Record the process about to launch; returns false (don't launch) if
+    /// the task was cancelled while queued.
+    func claimLaunch(_ process: Process) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled else { return false }
+        self.process = process
+        return true
+    }
+
+    /// Mark cancelled; returns the process to signal if it already launched.
+    func markCancelled() -> Process? {
+        lock.lock()
+        defer { lock.unlock() }
+        cancelled = true
+        return process
+    }
+
+    func markTimedOut() {
+        lock.lock()
+        defer { lock.unlock() }
+        timedOut = true
+    }
+
+    var flags: (timedOut: Bool, cancelled: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (timedOut, cancelled)
+    }
+}
+
 /// Runs external tools (ffmpeg, ffprobe, claude, gemini, codex) off the main
 /// actor, with full stdout/stderr capture and an optional timeout.
 nonisolated enum ProcessRunner {
@@ -34,80 +75,101 @@ nonisolated enum ProcessRunner {
                     timeout: TimeInterval? = nil,
                     environment: [String: String]? = nil) async throws -> ProcessResult {
         let toolName = executable.lastPathComponent
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let process = Process()
-                process.executableURL = executable
-                process.arguments = arguments
-                if let environment {
-                    process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
-                }
-
-                let stdoutPipe = Pipe()
-                let stderrPipe = Pipe()
-                process.standardOutput = stdoutPipe
-                process.standardError = stderrPipe
-                let stdinPipe: Pipe? = stdin != nil ? Pipe() : nil
-                if let stdinPipe { process.standardInput = stdinPipe }
-
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(throwing: ProcessRunnerError.launchFailed(
-                        toolName, underlying: error.localizedDescription))
-                    return
-                }
-
-                if let stdin, let stdinPipe {
-                    DispatchQueue.global(qos: .userInitiated).async {
-                        try? stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
-                        try? stdinPipe.fileHandleForWriting.close()
+        let state = ProcessRunState()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let process = Process()
+                    process.executableURL = executable
+                    process.arguments = arguments
+                    if let environment {
+                        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
                     }
-                }
 
-                let outBox = DataBox()
-                let errBox = DataBox()
-                let readGroup = DispatchGroup()
-                readGroup.enter()
-                DispatchQueue.global(qos: .userInitiated).async {
-                    outBox.data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                    readGroup.leave()
-                }
-                readGroup.enter()
-                DispatchQueue.global(qos: .userInitiated).async {
-                    errBox.data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-                    readGroup.leave()
-                }
+                    let stdoutPipe = Pipe()
+                    let stderrPipe = Pipe()
+                    process.standardOutput = stdoutPipe
+                    process.standardError = stderrPipe
+                    let stdinPipe: Pipe? = stdin != nil ? Pipe() : nil
+                    if let stdinPipe { process.standardInput = stdinPipe }
 
-                var didTimeOut = false
-                var timeoutWork: DispatchWorkItem?
-                if let timeout {
-                    let work = DispatchWorkItem {
-                        if process.isRunning {
-                            didTimeOut = true
-                            process.terminate()
-                            // Escalate if terminate is ignored (ffmpeg mid-encode).
-                            DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
-                                if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-                            }
+                    guard state.claimLaunch(process) else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    do {
+                        try process.run()
+                    } catch {
+                        continuation.resume(throwing: ProcessRunnerError.launchFailed(
+                            toolName, underlying: error.localizedDescription))
+                        return
+                    }
+                    // Cancellation can slip in between claimLaunch and run(),
+                    // when there was no live process to signal yet.
+                    if state.flags.cancelled { terminate(process) }
+
+                    if let stdin, let stdinPipe {
+                        DispatchQueue.global(qos: .userInitiated).async {
+                            try? stdinPipe.fileHandleForWriting.write(contentsOf: stdin)
+                            try? stdinPipe.fileHandleForWriting.close()
                         }
                     }
-                    timeoutWork = work
-                    DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: work)
-                }
 
-                process.waitUntilExit()
-                timeoutWork?.cancel()
-                readGroup.wait()
+                    let outBox = DataBox()
+                    let errBox = DataBox()
+                    let readGroup = DispatchGroup()
+                    readGroup.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        outBox.data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                        readGroup.leave()
+                    }
+                    readGroup.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        errBox.data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                        readGroup.leave()
+                    }
 
-                if didTimeOut {
-                    continuation.resume(throwing: ProcessRunnerError.timedOut(toolName))
-                } else {
-                    continuation.resume(returning: ProcessResult(
-                        stdout: outBox.data, stderr: errBox.data,
-                        exitCode: process.terminationStatus))
+                    var timeoutWork: DispatchWorkItem?
+                    if let timeout {
+                        let work = DispatchWorkItem {
+                            if process.isRunning {
+                                state.markTimedOut()
+                                terminate(process)
+                            }
+                        }
+                        timeoutWork = work
+                        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: work)
+                    }
+
+                    process.waitUntilExit()
+                    timeoutWork?.cancel()
+                    readGroup.wait()
+
+                    let flags = state.flags
+                    if flags.cancelled {
+                        continuation.resume(throwing: CancellationError())
+                    } else if flags.timedOut {
+                        continuation.resume(throwing: ProcessRunnerError.timedOut(toolName))
+                    } else {
+                        continuation.resume(returning: ProcessResult(
+                            stdout: outBox.data, stderr: errBox.data,
+                            exitCode: process.terminationStatus))
+                    }
                 }
             }
+        } onCancel: {
+            if let process = state.markCancelled() {
+                terminate(process)
+            }
+        }
+    }
+
+    /// SIGTERM with a SIGKILL escalation if it's ignored (ffmpeg mid-encode).
+    private static func terminate(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 3) {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
     }
 

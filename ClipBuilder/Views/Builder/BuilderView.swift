@@ -5,10 +5,12 @@ import SwiftUI
 /// multitrack pipeline into the Library.
 struct BuilderView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.undoManager) private var undoManager
 
     @State private var playingClip: TimelineClip?
     @State private var showLog = false
     @State private var showPreview = false
+    @State private var confirmClear = false
 
     var body: some View {
         let model = store.builder
@@ -61,7 +63,7 @@ struct BuilderView: View {
             }
             ToolbarItem {
                 Button(role: .destructive) {
-                    model.clear()
+                    confirmClear = true
                 } label: {
                     Label("Clear", systemImage: "trash")
                 }
@@ -69,22 +71,38 @@ struct BuilderView: View {
                 .help("Remove everything from the timeline")
             }
             ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showLog = true
-                    store.renderBuilderTimeline()
-                } label: {
-                    if store.isBuilderRendering {
+                if store.isBuilderRendering {
+                    Button {
+                        store.cancelBuilderRender()
+                    } label: {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
-                            Text("Rendering…")
+                            Label("Stop", systemImage: "stop.fill")
                         }
-                    } else {
+                    }
+                    .help("Stop the render")
+                } else {
+                    Button {
+                        showLog = true
+                        store.renderBuilderTimeline()
+                    } label: {
                         Label("Generate", systemImage: "play.rectangle.fill")
                     }
+                    .disabled(model.document.videoTrack.isEmpty)
+                    .help("Render the timeline to a video in the Library")
                 }
-                .disabled(store.isBuilderRendering || model.document.videoTrack.isEmpty)
-                .help("Render the timeline to a video in the Library")
             }
+        }
+        .confirmationDialog("Clear the timeline?", isPresented: $confirmClear) {
+            Button("Clear Timeline", role: .destructive) {
+                model.clear()
+            }
+        } message: {
+            Text("Removes every clip, music block, and text overlay. You can undo this with ⌘Z.")
+        }
+        .onAppear { model.undoManager = undoManager }
+        .onChange(of: undoManager) { _, manager in
+            model.undoManager = manager
         }
         .sheet(item: $playingClip) { clip in
             PlayerSheet(url: model.sourceURL(for: clip) ?? URL(fileURLWithPath: "/"),

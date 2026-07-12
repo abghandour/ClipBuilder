@@ -10,6 +10,7 @@ nonisolated struct AppSettings: Codable, Sendable {
     var transcribeLanguage: String = ""          // empty = auto/current locale
     var theme: String = "default"
     var ai: AIConfig = AIConfig()
+    var instagram: InstagramSettings = InstagramSettings()
 
     enum CodingKeys: String, CodingKey {
         case analysisMode = "analysis_mode"
@@ -19,6 +20,7 @@ nonisolated struct AppSettings: Codable, Sendable {
         case transcribeLanguage = "whisper_language"
         case theme
         case ai
+        case instagram
     }
 
     init() {}
@@ -35,6 +37,46 @@ nonisolated struct AppSettings: Codable, Sendable {
         transcribeLanguage = try container.decodeIfPresent(String.self, forKey: .transcribeLanguage) ?? ""
         theme = try container.decodeIfPresent(String.self, forKey: .theme) ?? "default"
         ai = try container.decodeIfPresent(AIConfig.self, forKey: .ai) ?? AIConfig()
+        instagram = try container.decodeIfPresent(InstagramSettings.self, forKey: .instagram) ?? InstagramSettings()
+    }
+}
+
+/// Instagram integration settings — app-level (browser cookies and Meta app
+/// credentials are per-machine, not per-brand-profile). The Meta app SECRET
+/// and OAuth tokens never live here: app_settings.json is plaintext and
+/// shared with the Python app; secrets go to the Keychain (Phase 4).
+nonisolated struct InstagramSettings: Codable, Sendable {
+    var metaAppID: String = ""
+    var redirectURI: String = ""
+    var cookieSource: String = "none"     // none | safari | chrome | firefox | file
+    var cookieFilePath: String = ""
+    var fetchLimit: Int = 12
+    var connectedUsername: String = ""    // Graph API account, set on Connect
+    var connectedIGUserID: String = ""    // its IG user id — skips discovery
+
+    var isGraphConnected: Bool { !connectedUsername.isEmpty }
+
+    enum CodingKeys: String, CodingKey {
+        case metaAppID = "meta_app_id"
+        case redirectURI = "redirect_uri"
+        case cookieSource = "cookie_source"
+        case cookieFilePath = "cookie_file_path"
+        case fetchLimit = "fetch_limit"
+        case connectedUsername = "connected_username"
+        case connectedIGUserID = "connected_ig_user_id"
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        metaAppID = try container.decodeIfPresent(String.self, forKey: .metaAppID) ?? ""
+        redirectURI = try container.decodeIfPresent(String.self, forKey: .redirectURI) ?? ""
+        cookieSource = try container.decodeIfPresent(String.self, forKey: .cookieSource) ?? "none"
+        cookieFilePath = try container.decodeIfPresent(String.self, forKey: .cookieFilePath) ?? ""
+        fetchLimit = try container.decodeIfPresent(Int.self, forKey: .fetchLimit) ?? 12
+        connectedUsername = try container.decodeIfPresent(String.self, forKey: .connectedUsername) ?? ""
+        connectedIGUserID = try container.decodeIfPresent(String.self, forKey: .connectedIGUserID) ?? ""
     }
 }
 
@@ -124,6 +166,11 @@ nonisolated enum SettingsStore {
 
     static func databaseURL(profileName: String) -> URL {
         profilesDBDirectory.appendingPathComponent(ProfileStore.sanitize(profileName) + ".db")
+    }
+
+    /// Per-account Instagram cache: thumbs/<media_id>.jpg, videos/<media_id>.mp4.
+    static func instagramCacheDirectory(username: String) -> URL {
+        cacheDirectory.appendingPathComponent("instagram/\(ProfileStore.sanitize(username))", isDirectory: true)
     }
 
     static func loadSettings() -> AppSettings {
