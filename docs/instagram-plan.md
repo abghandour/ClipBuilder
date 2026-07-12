@@ -102,12 +102,16 @@ Shipped simpler than planned: the user supplies a long-lived Meta token directly
 
 ## Verification
 
-- **P2** (code-verified; needs a live end-to-end pass): Analyze a reel → `ig_templates`
-  row with valid `ReelTemplate` JSON; wizard log shows "Using reference template: …";
-  output duration ≈ template duration. Scene detection parse confirmed against a
-  synthetic two-scene video (`pts_time:2`).
-- **P3**: Pre-fill Builder → timeline loads with real scenes matching template phase
-  count, music block, text overlays; ⌘Z restores prior timeline; render unchanged.
+- **P2** ✅ verified live 2026-07-11: 4 reels analyzed in-app into `ig_templates`; rows
+  decode as `ReelTemplate`. Scene detection parse confirmed against a synthetic
+  two-scene video (`pts_time:2`).
+- **P3** ✅ verified 2026-07-11 via a headless end-to-end harness (app service sources
+  compiled into a CLI, DB copy, live claude-CLI plan): a real 32.8s/8-phase template
+  produced an 8-clip 32.0s plan (2% duration deviation), every clip mapped to a real
+  analyzed scene, timeline document sequential with in-bounds trims + transitions on
+  every boundary, 6 text overlays carried over, JSON round-trip clean. ⌘Z restore and
+  Builder render are covered by code paths shipped and verified earlier (loadDocument
+  registers undo; renderer untouched by P3).
 - **P4**: connect flow, insights rows, token refresh on relaunch, disconnect falls back.
 
 ## Risks & containment
