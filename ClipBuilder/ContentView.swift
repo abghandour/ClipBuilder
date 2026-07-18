@@ -11,6 +11,14 @@ struct ClipBuilderApp: App {
         }
         .defaultSize(width: 1200, height: 780)
         .commands {
+            // .appInfo placement silently drops the item on this macOS, so
+            // the updater lives below Settings… in the app menu instead.
+            CommandGroup(after: .appSettings) {
+                Button("Check for Updates…") {
+                    store.checkForUpdates()
+                }
+                .disabled(store.isDownloadingUpdate)
+            }
             CommandGroup(after: .newItem) {
                 Button("Scan Input Folder") {
                     store.scanSourceFolder()
@@ -144,6 +152,55 @@ struct MainWindowView: View {
         } message: {
             Text(store.currentError?.message ?? "")
         }
+        .alert(updateAlertTitle, isPresented: Binding(
+            get: { store.updateCheckResult != nil },
+            set: { if !$0 { store.updateCheckResult = nil } }
+        ), presenting: store.updateCheckResult) { result in
+            switch result {
+            case .updateAvailable(let update):
+                Button("Download and Install") {
+                    store.installUpdate(update)
+                }
+                Button("Later", role: .cancel) {}
+            case .upToDate:
+                Button("OK", role: .cancel) {}
+            }
+        } message: { result in
+            switch result {
+            case .updateAvailable(let update):
+                Text(Self.updateMessage(for: update))
+            case .upToDate:
+                Text("Clip Builder \(UpdateService.currentVersion) is the latest version.")
+            }
+        }
+        .overlay {
+            if store.isDownloadingUpdate {
+                ProgressView("Downloading update…")
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .task {
+            store.checkForUpdatesAtLaunch()
+        }
+    }
+
+    private var updateAlertTitle: String {
+        if case .updateAvailable = store.updateCheckResult {
+            return "Update Available"
+        }
+        return "You're up to date"
+    }
+
+    /// Version line plus the release notes, kept short enough for an alert.
+    private static func updateMessage(for update: AppUpdate) -> String {
+        var message = "\(update.releaseName) is available — you have \(UpdateService.currentVersion). "
+            + "The download opens in Installer; Clip Builder quits so it can update in place."
+        let notes = update.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !notes.isEmpty {
+            message += "\n\n\(notes.prefix(400))"
+        }
+        return message
     }
 }
 

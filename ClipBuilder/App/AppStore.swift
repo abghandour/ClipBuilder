@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -62,6 +63,14 @@ final class AppStore {
     /// Set by views (e.g. "Open in Builder") to ask the main window to switch
     /// sidebar sections; the window consumes and clears it.
     var requestedSection: SidebarSection?
+
+    // Updates
+    /// What an update check concluded; the main window presents it as one
+    /// alert. `.upToDate` is only set for manual checks — the launch check
+    /// stays silent unless there is something to install.
+    var updateCheckResult: UpdateCheckResult?
+    var isDownloadingUpdate = false
+    private var hasCheckedForUpdatesAtLaunch = false
 
     // MARK: - Services
 
@@ -473,6 +482,50 @@ final class AppStore {
 
     func cancelWizard() {
         wizardTask?.cancel()
+    }
+
+    // MARK: - Updates
+
+    /// One silent check per app run, from the main window's `.task`.
+    func checkForUpdatesAtLaunch() {
+        guard !hasCheckedForUpdatesAtLaunch else { return }
+        hasCheckedForUpdatesAtLaunch = true
+        checkForUpdates(userInitiated: false)
+    }
+
+    /// Look for a newer release. A launch check fails and passes silently;
+    /// a manual one (the Check for Updates… menu item) always answers.
+    func checkForUpdates(userInitiated: Bool = true) {
+        Task {
+            do {
+                if let update = try await UpdateService.checkForUpdate() {
+                    updateCheckResult = .updateAvailable(update)
+                } else if userInitiated {
+                    updateCheckResult = .upToDate
+                }
+            } catch {
+                if userInitiated {
+                    presentError("Update check failed", error)
+                }
+            }
+        }
+    }
+
+    /// Download the update's pkg and hand it to Installer.app, then quit so
+    /// the installer can replace the app cleanly.
+    func installUpdate(_ update: AppUpdate) {
+        guard !isDownloadingUpdate else { return }
+        isDownloadingUpdate = true
+        Task {
+            do {
+                let pkg = try await UpdateService.downloadInstaller(update)
+                UpdateService.launchInstaller(at: pkg)
+                NSApp.terminate(nil)
+            } catch {
+                presentError("Could not download the update", error)
+            }
+            isDownloadingUpdate = false
+        }
     }
 
     // MARK: - Instagram

@@ -50,3 +50,7 @@ nonisolated extension TranscriptionError: LocalizedError {
 nonisolated extension InstagramError: LocalizedError {
     var errorDescription: String? { description }
 }
+
+nonisolated extension UpdateError: LocalizedError {
+    var errorDescription: String? { description }
+}
