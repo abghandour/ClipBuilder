@@ -8,6 +8,7 @@ struct AnalyzeView: View {
     @State private var selection: Set<Int64> = []
     @State private var provider: String = ""
     @State private var model: String = ""
+    @State private var isDropTargeted = false
 
     private var selectedVideos: [VideoRecord] {
         store.videos.filter { selection.contains($0.id) }
@@ -45,13 +46,11 @@ struct AnalyzeView: View {
                                   model: model.isEmpty ? nil : model)
                 }
                 .disabled(pendingVideos.isEmpty || store.isAnalyzing)
-
-                Button("Scan Folder", systemImage: "arrow.clockwise") {
-                    store.scanSourceFolder()
-                }
-                .help("Re-scan the profile's Input folder for new videos")
             }
         }
+        // The folder watcher keeps the table current while the app runs;
+        // this catches anything from before this view existed.
+        .task { store.scanSourceFolder() }
     }
 
     private var providerLabel: String {
@@ -155,6 +154,21 @@ struct AnalyzeView: View {
                 for video in store.videos.filter({ ids.contains($0.id) }) {
                     store.transcribe(video: video)
                 }
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            store.importVideos(urls)
+            return urls.contains { Analyzer.videoExtensions.contains($0.pathExtension.lowercased()) }
+        } isTargeted: { isDropTargeted = $0 }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .allowsHitTesting(false)
+            } else if store.videos.isEmpty {
+                ContentUnavailableView("No source videos", systemImage: "film",
+                                       description: Text("Drop video files here — they're copied into the profile's Input folder."))
+                    .allowsHitTesting(false)
             }
         }
     }

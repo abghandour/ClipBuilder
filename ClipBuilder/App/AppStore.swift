@@ -240,6 +240,55 @@ final class AppStore {
         }
     }
 
+    /// Copy videos dragged into the app into the profile's Input folder,
+    /// then scan so they appear immediately (the folder watcher would also
+    /// catch them, but only after its debounce).
+    func importVideos(_ urls: [URL]) {
+        let videos = urls.filter { Analyzer.videoExtensions.contains($0.pathExtension.lowercased()) }
+        guard !videos.isEmpty else { return }
+        let folder = activeProfile.sourceFolderURL.standardizedFileURL
+        Task.detached {
+            var copied = 0
+            var failures: [String] = []
+            for url in videos where url.deletingLastPathComponent().standardizedFileURL != folder {
+                do {
+                    if try Self.copyIntoFolder(url, folder: folder) { copied += 1 }
+                } catch {
+                    failures.append("\(url.lastPathComponent): \(error.userMessage)")
+                }
+            }
+            await MainActor.run { [copied, failures] in
+                if copied > 0 {
+                    self.analysisLog.append("Added \(copied) video(s) to the Input folder")
+                    self.scanSourceFolder()
+                }
+                for failure in failures {
+                    self.presentError("Could not add \(failure)")
+                }
+            }
+        }
+    }
+
+    /// Collision handling: an existing file with the same name and size is
+    /// treated as already imported; otherwise a numbered name is picked.
+    nonisolated private static func copyIntoFolder(_ url: URL, folder: URL) throws -> Bool {
+        let fm = FileManager.default
+        var destination = folder.appendingPathComponent(url.lastPathComponent)
+        if fm.fileExists(atPath: destination.path) {
+            let sourceSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            let existingSize = try destination.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            if sourceSize == existingSize { return false }
+            let base = url.deletingPathExtension().lastPathComponent
+            var counter = 2
+            repeat {
+                destination = folder.appendingPathComponent("\(base) \(counter).\(url.pathExtension)")
+                counter += 1
+            } while fm.fileExists(atPath: destination.path)
+        }
+        try fm.copyItem(at: url, to: destination)
+        return true
+    }
+
     // MARK: - Analysis
 
     func analyze(videos targets: [VideoRecord], provider: String? = nil, model: String? = nil) {
