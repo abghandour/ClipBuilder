@@ -662,8 +662,8 @@ actor MultitrackRenderer {
             arguments += ["-loop", "1", "-t", String(format: "%.2f", duration + 1), "-i", pngURL.path]
 
             var current = "[\(inputIndex):v]"
-            let fadeIn = overlay.transIn == "fade"
-            let fadeOut = overlay.transOut == "fade"
+            let fadeIn = overlay.transIn == "fade" || overlay.transIn == "pop"
+            let fadeOut = overlay.transOut == "fade" || overlay.transOut == "pop"
             if fadeIn || fadeOut {
                 var fadeParts = ["format=rgba"]
                 if fadeIn { fadeParts.append(String(format: "fade=t=in:st=0:d=%.3f:alpha=1", anim)) }
@@ -675,8 +675,8 @@ actor MultitrackRenderer {
             }
 
             let outLabel = "[txt\(index)]"
-            let slideIn = overlay.transIn.hasPrefix("slide_")
-            let slideOut = overlay.transOut.hasPrefix("slide_")
+            let slideIn = overlay.transIn.hasPrefix("slide_") || overlay.transIn == "pop"
+            let slideOut = overlay.transOut.hasPrefix("slide_") || overlay.transOut == "pop"
             if slideIn || slideOut {
                 let enterX = slideIn ? Self.slideExpression(overlay.transIn, axis: "x", at: start, anim: anim, entering: true) : "0"
                 let enterY = slideIn ? Self.slideExpression(overlay.transIn, axis: "y", at: start, anim: anim, entering: true) : "0"
@@ -720,6 +720,8 @@ actor MultitrackRenderer {
             case ("x", "right"): return String(format: "if(lt(t-%.3f,%.3f),-W+W*(t-%.3f)/%.3f,0)", time, anim, time, anim)
             case ("y", "up"): return String(format: "if(lt(t-%.3f,%.3f),H-H*(t-%.3f)/%.3f,0)", time, anim, time, anim)
             case ("y", "down"): return String(format: "if(lt(t-%.3f,%.3f),-H+H*(t-%.3f)/%.3f,0)", time, anim, time, anim)
+            // Rise-settle from 5% below with a cubic ease-out.
+            case ("y", "pop"): return String(format: "if(lt(t-%.3f,%.3f),round(H*0.05*pow(1-(t-%.3f)/%.3f,3)),0)", time, anim, time, anim)
             default: return "0"
             }
         } else {
@@ -729,6 +731,7 @@ actor MultitrackRenderer {
             case ("x", "right"): return String(format: "if(gt(t,%.3f),W*(t-%.3f)/%.3f,0)", exitStart, exitStart, anim)
             case ("y", "up"): return String(format: "if(gt(t,%.3f),-H*(t-%.3f)/%.3f,0)", exitStart, exitStart, anim)
             case ("y", "down"): return String(format: "if(gt(t,%.3f),H*(t-%.3f)/%.3f,0)", exitStart, exitStart, anim)
+            case ("y", "pop"): return String(format: "if(gt(t,%.3f),round(H*0.05*pow((t-%.3f)/%.3f,3)),0)", exitStart, exitStart, anim)
             default: return "0"
             }
         }

@@ -321,10 +321,15 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     var position: String = "bottom"     // used when fractions are absent
     var transIn: String = "fade"
     var transOut: String = "fade"
+    // Style flair (all default to the legacy flat look when absent).
+    var strokeColor: String?            // outline color; nil = no outline
+    var strokeWidthEm: Double = 0       // outline width as a fraction of font size
+    var shadowOpacity: Double = 0       // drop shadow strength, 0 = none
+    var highlightColor: String?         // color for *starred* words in `text`
 
     var duration: Double { max(0, endTime - startTime) }
 
-    static let transitionChoices = ["fade", "slide_left", "slide_right", "slide_up", "slide_down", "cut"]
+    static let transitionChoices = ["fade", "slide_left", "slide_right", "slide_up", "slide_down", "pop", "cut"]
 
     enum CodingKeys: String, CodingKey {
         case text, fontsize, fontcolor, fontfamily, bold, italic, bgcolor, position
@@ -337,6 +342,10 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         case hFrac = "h_frac"
         case transIn = "trans_in"
         case transOut = "trans_out"
+        case strokeColor = "stroke_color"
+        case strokeWidthEm = "stroke_width_em"
+        case shadowOpacity = "shadow_opacity"
+        case highlightColor = "highlight_color"
     }
 
     init(text: String = "", startTime: Double = 0, endTime: Double = 3) {
@@ -364,6 +373,10 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         position = try container.decodeIfPresent(String.self, forKey: .position) ?? "bottom"
         transIn = try container.decodeIfPresent(String.self, forKey: .transIn) ?? "fade"
         transOut = try container.decodeIfPresent(String.self, forKey: .transOut) ?? "fade"
+        strokeColor = try container.decodeIfPresent(String.self, forKey: .strokeColor)
+        strokeWidthEm = try container.decodeIfPresent(Double.self, forKey: .strokeWidthEm) ?? 0
+        shadowOpacity = try container.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? 0
+        highlightColor = try container.decodeIfPresent(String.self, forKey: .highlightColor)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -389,6 +402,12 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         if bold { try container.encode(true, forKey: .bold) }
         if italic { try container.encode(true, forKey: .italic) }
         if let bgcolor { try container.encode(bgcolor, forKey: .bgcolor) }
+        if let strokeColor, strokeWidthEm > 0 {
+            try container.encode(strokeColor, forKey: .strokeColor)
+            try container.encode(strokeWidthEm, forKey: .strokeWidthEm)
+        }
+        if shadowOpacity > 0 { try container.encode(shadowOpacity, forKey: .shadowOpacity) }
+        if let highlightColor { try container.encode(highlightColor, forKey: .highlightColor) }
     }
 
     static func == (lhs: TextOverlayItem, rhs: TextOverlayItem) -> Bool {
@@ -399,6 +418,8 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
             && lhs.bgcolor == rhs.bgcolor && lhs.xFrac == rhs.xFrac && lhs.yFrac == rhs.yFrac
             && lhs.wFrac == rhs.wFrac && lhs.hFrac == rhs.hFrac && lhs.position == rhs.position
             && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
+            && lhs.strokeColor == rhs.strokeColor && lhs.strokeWidthEm == rhs.strokeWidthEm
+            && lhs.shadowOpacity == rhs.shadowOpacity && lhs.highlightColor == rhs.highlightColor
     }
 
     var id: UUID { uid }

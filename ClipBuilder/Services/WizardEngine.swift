@@ -24,6 +24,55 @@ nonisolated struct WizardPlanClip: Sendable {
     var end: Double
     var wideSplit: Bool
     var textOverlay: String?
+    var overlayStyle: String?
+    var overlayAnimation: String?
+}
+
+/// Hand-tuned text overlay looks the wizard's AI picks from by name. The AI
+/// does creative direction (which words, which style, which animation); the
+/// rendering stays deterministic.
+nonisolated enum WizardTextStyle: String, CaseIterable {
+    case impact       // huge condensed type, black outline, hard shadow
+    case highlight    // black outline + accent color on *starred* words
+    case banner       // bold type on a solid full-width bar
+    case minimal      // clean bold type with a soft shadow
+
+    static let animations = ["fade", "slide_up", "pop", "word_reveal"]
+
+    /// The overlay template for this style: upper-third auto-fit box; the
+    /// caller sets text/timing.
+    func overlayItem(text: String) -> TextOverlayItem {
+        var item = TextOverlayItem()
+        item.text = text.uppercased()
+        item.xFrac = 0.5
+        item.yFrac = 0.2
+        item.wFrac = 0.82
+        item.hFrac = 0.12
+        item.boxOpacity = 0
+        switch self {
+        case .impact:
+            item.fontfamily = "Anton"
+            item.strokeColor = "black"
+            item.strokeWidthEm = 0.09
+            item.shadowOpacity = 0.7
+        case .highlight:
+            item.fontfamily = "Archivo Black"
+            item.highlightColor = "#FFD400"
+            item.strokeColor = "black"
+            item.strokeWidthEm = 0.08
+            item.shadowOpacity = 0.5
+        case .banner:
+            item.fontfamily = "Montserrat"
+            item.bold = true
+            item.bgcolor = "black"
+            item.boxOpacity = 0.85
+        case .minimal:
+            item.fontfamily = "Helvetica Neue"
+            item.bold = true
+            item.shadowOpacity = 0.45
+        }
+        return item
+    }
 }
 
 nonisolated struct WizardPlan: Sendable {
@@ -262,6 +311,9 @@ actor WizardEngine {
         if options.enableTextOverlays {
             textOverlayInstruction = """
             - Text overlays are ENABLED. Insert punchy ALL-CAPS text ONLY where it improves engagement: the hook (first clip), a payoff/reveal, the climax, or an ending CTA. 2-6 words max, one line each, about 3-5 overlays across the whole reel.
+            - Each text overlay is an object: {"text": "...", "style": "...", "animation": "..."}.
+            - Styles: "impact" (huge condensed type with black outline — hooks, climaxes), "highlight" (like impact, plus wrap the 1-2 most important words in *stars* to color them — e.g. "HE *DROPS* HIM"), "banner" (bold type on a solid bar — stats, names, CTAs), "minimal" (clean and quiet — context, captions). Vary styles with intent; don't use one style everywhere.
+            - Animations: "pop" (snappy rise-settle — punchy moments), "word_reveal" (words appear one by one — building tension, hooks), "slide_up" (energetic entrance), "fade" (calm). Match the animation to the moment's energy.
             """
         } else {
             textOverlayInstruction = "- Text overlays are DISABLED. Set \"text_overlay\" to null for every clip."
@@ -329,7 +381,7 @@ actor WizardEngine {
               "start": <start seconds>,
               "end": <end seconds>,
               "wide_split": <true if this WIDE scene should use split-screen>,
-              "text_overlay": "<optional text to overlay on this clip, or null>",
+              "text_overlay": {"text": "<2-6 word ALL-CAPS line>", "style": "<impact|highlight|banner|minimal>", "animation": "<fade|slide_up|pop|word_reveal>"} or null,
               "reason": "<why this clip, why this position>"
             }
           ],
@@ -346,7 +398,7 @@ actor WizardEngine {
         - only use music names from the list above (or null)
         - only use transition names from the list above
         - For WIDE scenes: set "wide_split": true to display as split-screen (top + bottom halves, filling the full 9:16 frame with no black bars)
-        - "text_overlay": only include if text overlays are enabled (see below). Use short punchy text (max 6 words) for impact moments, fighter names, or engagement hooks. null if no text needed for this clip.
+        - "text_overlay": only include if text overlays are enabled (see below). Use short punchy text (max 6 words) for impact moments, fighter names, or engagement hooks. null if no text needed for this clip. Only use style/animation names from the lists below.
         \(textOverlayInstruction)
         - Return ONLY the JSON object
         """
@@ -412,13 +464,33 @@ actor WizardEngine {
             start = start.rounded(toPlaces: 2)
             end = end.rounded(toPlaces: 2)
             usedRanges[scene.videoID, default: []].append((start, end))
-            let overlayText = (clipObject["text_overlay"] as? String)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            // "text_overlay" is {text, style, animation}; a bare string
+            // (older prompt / stubborn model) still works with defaults.
+            var overlayText: String?
+            var overlayStyle: String?
+            var overlayAnimation: String?
+            if let overlayObject = clipObject["text_overlay"] as? [String: Any] {
+                overlayText = (overlayObject["text"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let style = overlayObject["style"] as? String,
+                   WizardTextStyle(rawValue: style) != nil {
+                    overlayStyle = style
+                }
+                if let animation = overlayObject["animation"] as? String,
+                   WizardTextStyle.animations.contains(animation) {
+                    overlayAnimation = animation
+                }
+            } else {
+                overlayText = (clipObject["text_overlay"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             clips.append(WizardPlanClip(sceneID: sceneID,
                                         start: start,
                                         end: end,
                                         wideSplit: (clipObject["wide_split"] as? Bool ?? false) && scene.wide,
-                                        textOverlay: overlayText?.isEmpty == false ? overlayText : nil))
+                                        textOverlay: overlayText?.isEmpty == false ? overlayText : nil,
+                                        overlayStyle: overlayStyle,
+                                        overlayAnimation: overlayAnimation))
         }
         guard !clips.isEmpty else { return nil }
 
@@ -672,11 +744,14 @@ actor WizardEngine {
             document.videoTrack.append(timelineClip)
 
             if let text = clip.textOverlay, !text.isEmpty {
-                var overlay = TextOverlayItem()
-                overlay.text = text.uppercased()
+                let style = WizardTextStyle(rawValue: clip.overlayStyle ?? "") ?? .impact
+                var overlay = style.overlayItem(text: text)
                 overlay.startTime = cursor
                 overlay.endTime = cursor + duration
-                overlay.position = "top"
+                // Builder's renderer has no word_reveal; degrade to fade.
+                let animation = clip.overlayAnimation ?? "fade"
+                overlay.transIn = animation == "word_reveal" ? "fade" : animation
+                overlay.transOut = "fade"
                 document.textOverlays.append(overlay)
             }
             cursor += duration
@@ -836,17 +911,30 @@ actor WizardEngine {
             }
         }
         if let overlayText = clip.textOverlay, options.enableTextOverlays {
-            // Punchy full-clip text overlay — bigger type, upper third.
-            let renderer = CaptionRenderer(videoWidth: RenderEngine.outputWidth,
-                                           videoHeight: RenderEngine.outputHeight,
-                                           style: CaptionStyle())
-            if let rendered = try? renderer.render(text: overlayText.uppercased(), to: scratch,
-                                                   fontSize: CGFloat(RenderEngine.outputWidth) / 14) {
+            // Punchy full-clip text overlay — styled preset, upper third,
+            // animated in (full-frame PNGs, so x/y are 0).
+            let style = WizardTextStyle(rawValue: clip.overlayStyle ?? "") ?? .impact
+            let item = style.overlayItem(text: overlayText)
+            let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
+                                               videoHeight: RenderEngine.outputHeight)
+            let animation = clip.overlayAnimation ?? "fade"
+            let wordCount = TextOverlayRenderer.wordCount(item.text)
+            if animation == "word_reveal", wordCount > 1 {
+                // One progressive PNG per word, hard-cut on staggered windows;
+                // the full-text PNG holds from the last reveal to the end.
+                let step = min(0.3, max(0.1, duration / 3 / Double(wordCount)))
+                for wordIndex in 1...wordCount {
+                    guard let png = try? renderer.render(item, to: scratch,
+                                                         visibleWords: wordIndex) else { continue }
+                    overlays.append(RenderEngine.ClipOverlay(
+                        png: png, x: 0, y: 0,
+                        start: Double(wordIndex - 1) * step,
+                        end: wordIndex == wordCount ? duration : Double(wordIndex) * step))
+                }
+            } else if let png = try? renderer.render(item, to: scratch) {
                 overlays.append(RenderEngine.ClipOverlay(
-                    png: rendered.pngURL,
-                    x: (RenderEngine.outputWidth - rendered.width) / 2,
-                    y: RenderEngine.outputHeight / 5,
-                    start: nil, end: nil))
+                    png: png, x: 0, y: 0, start: nil, end: nil,
+                    animation: animation == "word_reveal" ? "fade" : animation))
             }
         }
 

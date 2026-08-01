@@ -40,12 +40,18 @@ actor RenderEngine {
     /// A PNG composited over a clip during extraction (caption or text
     /// overlay). `start`/`end` bound the enable window in clip-local time;
     /// nil shows the overlay for the whole clip.
+    ///
+    /// `animation` ("fade" | "pop" | "slide_up") animates the overlay in and
+    /// fades it out. Animated overlays must be full-frame PNGs shown for the
+    /// whole clip (start/end nil) — the timing expressions assume clip-local
+    /// time starting at 0.
     nonisolated struct ClipOverlay: Sendable {
         var png: URL
         var x: Int
         var y: Int
         var start: Double?
         var end: Double?
+        var animation: String?
     }
 
     /// How a wide (landscape) source fills the portrait frame.
@@ -68,7 +74,15 @@ actor RenderEngine {
         var arguments = ["-y", "-ss", String(format: "%.2f", start), "-i", source.path]
         if !hasAudio { arguments += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"] }
         let overlayBase = hasAudio ? 1 : 2
-        for overlay in overlays { arguments += ["-i", overlay.png.path] }
+        for overlay in overlays {
+            if overlay.animation != nil {
+                // Fade needs a real stream to act on, not a single still frame.
+                arguments += ["-loop", "1", "-t", String(format: "%.2f", duration),
+                              "-i", overlay.png.path]
+            } else {
+                arguments += ["-i", overlay.png.path]
+            }
+        }
 
         var filters: [String] = []
         let baseLabel = overlays.isEmpty ? "[vout]" : "[base]"
@@ -95,7 +109,30 @@ actor RenderEngine {
         var previous = baseLabel
         for (index, overlay) in overlays.enumerated() {
             let outLabel = index == overlays.count - 1 ? "[vout]" : "[ovl\(index)]"
-            var step = "\(previous)[\(overlayBase + index):v]overlay=x=\(overlay.x):y=\(overlay.y)"
+            var inputLabel = "[\(overlayBase + index):v]"
+            var xExpr = "\(overlay.x)"
+            var yExpr = "\(overlay.y)"
+            if let animation = overlay.animation {
+                // Clip-local time starts at 0; the overlay runs the whole clip.
+                let anim = min(0.4, max(0.15, duration / 3))
+                let fadeInDuration = animation == "fade" ? anim : min(0.18, anim)
+                let animLabel = "[anim\(index)]"
+                filters.append(inputLabel + "format=rgba," +
+                               String(format: "fade=t=in:st=0:d=%.3f:alpha=1,", fadeInDuration) +
+                               String(format: "fade=t=out:st=%.3f:d=%.3f:alpha=1", duration - anim, anim) +
+                               animLabel)
+                inputLabel = animLabel
+                switch animation {
+                case "pop":
+                    // Rise-settle: drop in from 5% below with a cubic ease-out.
+                    yExpr = String(format: "'if(lt(t,%.3f),round(H*0.05*pow(1-t/%.3f,3)),0)'", anim, anim)
+                case "slide_up":
+                    yExpr = String(format: "'if(lt(t,%.3f),H-H*t/%.3f,0)'", anim, anim)
+                default:
+                    break
+                }
+            }
+            var step = "\(previous)\(inputLabel)overlay=x=\(xExpr):y=\(yExpr)"
             if let windowStart = overlay.start, let windowEnd = overlay.end {
                 step += String(format: ":enable='between(t,%.3f,%.3f)'", windowStart, windowEnd)
             }

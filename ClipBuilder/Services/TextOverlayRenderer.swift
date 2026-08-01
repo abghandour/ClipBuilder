@@ -8,9 +8,53 @@ import UniformTypeIdentifiers
 /// Text port of video.py's Pillow _render_text_image(). The PNG is the size
 /// of the video (1080x1920) and gets overlaid at 0:0, so slide/fade filter
 /// expressions work on the whole frame exactly like the Python pipeline.
+///
+/// Style flair on top of the Pillow parity: outline stroke, drop shadow,
+/// `*starred*` words in a highlight color, and partial renders (only the
+/// first N words visible, layout unchanged) for the word-reveal animation.
 nonisolated struct TextOverlayRenderer {
     var videoWidth = 1080
     var videoHeight = 1920
+
+    // MARK: - Markup
+
+    /// One display word; `*starred*` words render in the highlight color.
+    struct Word {
+        var text: String
+        var highlighted: Bool
+        var index: Int
+    }
+
+    /// Split text into words, consuming `*...*` emphasis markup (a span may
+    /// cover several words). Stars are stripped from the rendered text.
+    static func parseMarkup(_ text: String) -> [Word] {
+        var words: [Word] = []
+        var highlighting = false
+        for token in text.split(separator: " ") {
+            var word = String(token)
+            var highlighted = highlighting
+            if word.hasPrefix("*") {
+                word.removeFirst()
+                highlighted = true
+                highlighting = true
+            }
+            if word.hasSuffix("*") {
+                word.removeLast()
+                highlighting = false
+            }
+            guard !word.isEmpty else { continue }
+            words.append(Word(text: word, highlighted: highlighted, index: words.count))
+        }
+        return words
+    }
+
+    static func plainText(_ words: [Word]) -> String {
+        words.map(\.text).joined(separator: " ")
+    }
+
+    static func wordCount(_ text: String) -> Int {
+        parseMarkup(text).count
+    }
 
     // MARK: - Color / font
 
@@ -37,6 +81,11 @@ nonisolated struct TextOverlayRenderer {
                 CGFloat(value & 0xff) / 255)
     }
 
+    private static func cgColor(_ string: String?, fallback: (CGFloat, CGFloat, CGFloat) = (1, 1, 1)) -> CGColor {
+        let (r, g, b) = parseColor(string, fallback: fallback)
+        return CGColor(red: r, green: g, blue: b, alpha: 1)
+    }
+
     private func resolveFont(size: CGFloat, family: String?, bold: Bool, italic: Bool) -> CTFont {
         let base = CTFontCreateWithName((family?.isEmpty == false ? family! : "Helvetica Neue") as CFString,
                                         size, nil)
@@ -60,19 +109,18 @@ nonisolated struct TextOverlayRenderer {
         CGFloat(CTLineGetTypographicBounds(line(text, font: font), nil, nil, nil))
     }
 
-    /// Word-wrap to a pixel width (port of _wrap_text).
-    private func wrap(_ text: String, font: CTFont, maxWidth: CGFloat) -> [String] {
-        let words = text.split(separator: " ").map(String.init)
-        guard !words.isEmpty else { return [text] }
-        var lines: [String] = []
-        var current = words[0]
+    /// Word-wrap to a pixel width (port of _wrap_text, over markup words).
+    private func wrap(_ words: [Word], font: CTFont, maxWidth: CGFloat) -> [[Word]] {
+        guard !words.isEmpty else { return [] }
+        var lines: [[Word]] = []
+        var current = [words[0]]
         for word in words.dropFirst() {
-            let candidate = current + " " + word
+            let candidate = Self.plainText(current + [word])
             if lineWidth(candidate, font: font) <= maxWidth {
-                current = candidate
+                current.append(word)
             } else {
                 lines.append(current)
-                current = word
+                current = [word]
             }
         }
         lines.append(current)
@@ -81,8 +129,11 @@ nonisolated struct TextOverlayRenderer {
 
     // MARK: - Rendering
 
-    /// Render one overlay item to a full-frame PNG in `directory`.
-    func render(_ item: TextOverlayItem, to directory: URL) throws -> URL {
+    /// Render one overlay item to a full-frame PNG in `directory`. With
+    /// `visibleWords`, only the first N words are drawn — at the positions
+    /// they hold in the full layout — so successive renders animate a
+    /// word-by-word reveal without any reflow.
+    func render(_ item: TextOverlayItem, to directory: URL, visibleWords: Int? = nil) throws -> URL {
         let width = videoWidth
         let height = videoHeight
         let colorSpace = CGColorSpaceCreateDeviceRGB()
@@ -93,16 +144,15 @@ nonisolated struct TextOverlayRenderer {
             throw CocoaError(.fileWriteUnknown)
         }
 
-        let (tr, tg, tb) = Self.parseColor(item.fontcolor)
-        let textColor = CGColor(red: tr, green: tg, blue: tb, alpha: 1)
+        let words = Self.parseMarkup(item.text)
 
         if let wFrac = item.wFrac, let hFrac = item.hFrac,
            let xFrac = item.xFrac, let yFrac = item.yFrac, wFrac > 0, hFrac > 0 {
-            drawFittedBox(in: context, item: item, textColor: textColor,
+            drawFittedBox(in: context, item: item, words: words, visibleWords: visibleWords,
                           boxWidth: Int(Double(width) * wFrac), boxHeight: Int(Double(height) * hFrac),
                           centerX: Int(Double(width) * xFrac), centerY: Int(Double(height) * yFrac))
         } else {
-            drawLegacy(in: context, item: item, textColor: textColor)
+            drawLegacy(in: context, item: item, words: words, visibleWords: visibleWords)
         }
 
         guard let image = context.makeImage() else { throw CocoaError(.fileWriteUnknown) }
@@ -119,17 +169,19 @@ nonisolated struct TextOverlayRenderer {
     /// WYSIWYG mode: auto-fit the largest font whose wrapped lines fill the
     /// destination box, then center the block (port of the w_frac/h_frac
     /// branch, including the binary search and 0.15em line spacing).
-    private func drawFittedBox(in context: CGContext, item: TextOverlayItem, textColor: CGColor,
+    private func drawFittedBox(in context: CGContext, item: TextOverlayItem,
+                               words: [Word], visibleWords: Int?,
                                boxWidth: Int, boxHeight: Int, centerX: Int, centerY: Int) {
-        func metrics(for size: CGFloat) -> (font: CTFont, lines: [String], lineHeight: CGFloat,
+        guard !words.isEmpty else { return }
+        func metrics(for size: CGFloat) -> (font: CTFont, lines: [[Word]], lineHeight: CGFloat,
                                             spacing: CGFloat, totalHeight: CGFloat, maxWidth: CGFloat) {
             let font = resolveFont(size: size, family: item.fontfamily,
                                    bold: item.bold, italic: item.italic)
-            let lines = wrap(item.text, font: font, maxWidth: CGFloat(boxWidth))
+            let lines = wrap(words, font: font, maxWidth: CGFloat(boxWidth))
             let lineHeight = CTFontGetAscent(font) + CTFontGetDescent(font)
             let spacing = (size * 0.15).rounded(.down)
             let total = lineHeight * CGFloat(lines.count) + spacing * CGFloat(max(0, lines.count - 1))
-            let maxLineWidth = lines.map { lineWidth($0, font: font) }.max() ?? 0
+            let maxLineWidth = lines.map { lineWidth(Self.plainText($0), font: font) }.max() ?? 0
             return (font, lines, lineHeight, spacing, total, maxLineWidth)
         }
 
@@ -155,21 +207,24 @@ nonisolated struct TextOverlayRenderer {
 
         var cursorTop = CGFloat(boxTop) + (CGFloat(boxHeight) - m.totalHeight) / 2
         let ascent = CTFontGetAscent(m.font)
-        for text in m.lines {
-            let width = lineWidth(text, font: m.font)
+        for lineWords in m.lines {
+            let width = lineWidth(Self.plainText(lineWords), font: m.font)
             let x = CGFloat(boxLeft) + (CGFloat(boxWidth) - width) / 2
-            drawLine(text, font: m.font, color: textColor, in: context,
-                     x: x, baselineFromTop: cursorTop + ascent)
+            drawStyledLine(lineWords, font: m.font, item: item, visibleWords: visibleWords,
+                           in: context, x: x, baselineFromTop: cursorTop + ascent)
             cursorTop += m.lineHeight + m.spacing
         }
     }
 
     /// Legacy mode: one unwrapped line at a fractional point or a named
     /// position (top 8%, center, bottom 85% — video.py fallback branch).
-    private func drawLegacy(in context: CGContext, item: TextOverlayItem, textColor: CGColor) {
+    private func drawLegacy(in context: CGContext, item: TextOverlayItem,
+                            words: [Word], visibleWords: Int?) {
+        guard !words.isEmpty else { return }
         let font = resolveFont(size: CGFloat(item.fontsize), family: item.fontfamily,
                                bold: item.bold, italic: item.italic)
-        let width = lineWidth(item.text, font: font)
+        let plain = Self.plainText(words)
+        let width = lineWidth(plain, font: font)
         let ascent = CTFontGetAscent(font)
         let textHeight = ascent + CTFontGetDescent(font)
 
@@ -192,8 +247,8 @@ nonisolated struct TextOverlayRenderer {
                                   topLeft: (Int(x), Int(top)),
                                   size: (Int(width.rounded(.up)), Int(textHeight.rounded(.up))))
         }
-        drawLine(item.text, font: font, color: textColor, in: context,
-                 x: x, baselineFromTop: top + ascent)
+        drawStyledLine(words, font: font, item: item, visibleWords: visibleWords,
+                       in: context, x: x, baselineFromTop: top + ascent)
     }
 
     /// Rounded background box with 5px padding and 4px radius (Pillow parity).
@@ -212,16 +267,83 @@ nonisolated struct TextOverlayRenderer {
         context.fillPath()
     }
 
-    /// Draw one text line given a baseline measured from the frame's top edge
-    /// (CoreGraphics origin is bottom-left).
-    private func drawLine(_ text: String, font: CTFont, color: CGColor, in context: CGContext,
-                          x: CGFloat, baselineFromTop: CGFloat) {
-        let attributed = NSAttributedString(string: text, attributes: [
-            NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): color,
-        ])
-        let line = CTLineCreateWithAttributedString(attributed)
-        context.textPosition = CGPoint(x: x, y: CGFloat(videoHeight) - baselineFromTop)
-        CTLineDraw(line, context)
+    // MARK: - Styled line drawing
+
+    /// Attributed string for one wrapped line. Hidden words (beyond
+    /// `visibleWords`) get fully transparent color so the layout — including
+    /// spaces — is identical across the reveal sequence.
+    private func attributedLine(_ words: [Word], font: CTFont, item: TextOverlayItem,
+                                visibleWords: Int?, strokeWidthPercent: CGFloat) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let baseColor = Self.cgColor(item.fontcolor)
+        let highlightColor = item.highlightColor.map { Self.cgColor($0, fallback: (1, 0.84, 0)) }
+        let strokeColor = Self.cgColor(item.strokeColor, fallback: (0, 0, 0))
+        let clear = CGColor(red: 0, green: 0, blue: 0, alpha: 0)
+        let strokePass = strokeWidthPercent > 0
+
+        for (position, word) in words.enumerated() {
+            let visible = visibleWords.map { word.index < $0 } ?? true
+            var attributes: [NSAttributedString.Key: Any] = [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+            ]
+            if strokePass {
+                // Positive stroke width = stroke only; the fill pass draws on top.
+                attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] =
+                    strokeWidthPercent as NSNumber
+                attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] =
+                    visible ? strokeColor : clear
+                attributes[NSAttributedString.Key(kCTForegroundColorAttributeName as String)] = clear
+            } else {
+                let fill = word.highlighted ? (highlightColor ?? baseColor) : baseColor
+                attributes[NSAttributedString.Key(kCTForegroundColorAttributeName as String)] =
+                    visible ? fill : clear
+            }
+            result.append(NSAttributedString(string: (position > 0 ? " " : "") + word.text,
+                                             attributes: attributes))
+        }
+        return result
+    }
+
+    /// Draw one line: optional drop shadow, optional outline stroke pass
+    /// behind the color fill pass.
+    private func drawStyledLine(_ words: [Word], font: CTFont, item: TextOverlayItem,
+                                visibleWords: Int?, in context: CGContext,
+                                x: CGFloat, baselineFromTop: CGFloat) {
+        let position = CGPoint(x: x, y: CGFloat(videoHeight) - baselineFromTop)
+        let fontSize = CTFontGetSize(font)
+        // CT stroke width is a percentage of the font size; the stroke is
+        // centered on the glyph edge, so double it to get the requested
+        // outward thickness once the fill pass covers the inner half.
+        let strokePercent = item.strokeColor != nil && item.strokeWidthEm > 0
+            ? CGFloat(item.strokeWidthEm) * 200 : 0
+
+        context.saveGState()
+        if item.shadowOpacity > 0 {
+            context.setShadow(offset: CGSize(width: 0, height: -fontSize * 0.05),
+                              blur: fontSize * 0.15,
+                              color: CGColor(red: 0, green: 0, blue: 0,
+                                             alpha: CGFloat(min(1, item.shadowOpacity))))
+        }
+        if strokePercent > 0 {
+            // Round joins: sharp glyph corners (W, V, A) grow miter spikes
+            // at these stroke widths otherwise.
+            context.setLineJoin(.round)
+            context.setLineCap(.round)
+            let stroke = CTLineCreateWithAttributedString(
+                attributedLine(words, font: font, item: item,
+                               visibleWords: visibleWords, strokeWidthPercent: strokePercent))
+            context.textPosition = position
+            CTLineDraw(stroke, context)
+            // The fill draws on top without a shadow of its own — otherwise
+            // it would shade the stroke it sits on.
+            context.restoreGState()
+            context.saveGState()
+        }
+        let fill = CTLineCreateWithAttributedString(
+            attributedLine(words, font: font, item: item,
+                           visibleWords: visibleWords, strokeWidthPercent: 0))
+        context.textPosition = position
+        CTLineDraw(fill, context)
+        context.restoreGState()
     }
 }
