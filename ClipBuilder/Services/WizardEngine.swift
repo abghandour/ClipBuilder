@@ -140,7 +140,7 @@ actor WizardEngine {
 
     // MARK: - Planning phase
 
-    private func sceneLine(_ scene: SceneRecord) -> String {
+    private func sceneLine(_ scene: SceneRecord, note: String? = nil) -> String {
         var line = "#\(scene.id): \(scene.videoFilename) " +
             String(format: "[%.1f-%.1f] %.1fs", scene.startTime, scene.endTime, scene.duration) +
             " tags:\(scene.tags.prefix(8).joined(separator: ","))"
@@ -148,7 +148,30 @@ actor WizardEngine {
         if let average = scene.gradeAverage, scene.gradeCount > 0 {
             line += String(format: " grade:%.1f/5", average)
         }
+        if let note { line += " " + note }
         return line
+    }
+
+    /// Scenes are tag ranges, so one can sit entirely inside another from the
+    /// same video. Spelled out per line because the model follows explicit
+    /// pointers far more reliably than interval arithmetic over a long list.
+    private func containmentNotes(_ scenes: [SceneRecord]) -> [Int64: String] {
+        var notes: [Int64: String] = [:]
+        for group in Dictionary(grouping: scenes, by: \.videoID).values {
+            for scene in group {
+                let contains = group.filter {
+                    $0.id != scene.id && $0.startTime >= scene.startTime && $0.endTime <= scene.endTime
+                }.map { "#\($0.id)" }
+                let within = group.filter {
+                    $0.id != scene.id && scene.startTime >= $0.startTime && scene.endTime <= $0.endTime
+                }.map { "#\($0.id)" }
+                var parts: [String] = []
+                if !contains.isEmpty { parts.append("contains:" + contains.prefix(8).joined(separator: ",")) }
+                if !within.isEmpty { parts.append("within:" + within.prefix(8).joined(separator: ",")) }
+                if !parts.isEmpty { notes[scene.id] = parts.joined(separator: " ") }
+            }
+        }
+        return notes
     }
 
     private func feedbackBlock(_ feedback: [FeedbackRecord]) -> String {
@@ -244,7 +267,8 @@ actor WizardEngine {
             textOverlayInstruction = "- Text overlays are DISABLED. Set \"text_overlay\" to null for every clip."
         }
 
-        let sceneList = scenes.map(sceneLine).joined(separator: "\n")
+        let notes = containmentNotes(scenes)
+        let sceneList = scenes.map { sceneLine($0, note: notes[$0.id]) }.joined(separator: "\n")
         let musicList = musicNames.isEmpty ? "No music available" : musicNames.joined(separator: ", ")
         let beatInfo = "Beat detection found no clear beats. Use your judgment for cut timing."
 
@@ -315,6 +339,7 @@ actor WizardEngine {
         RULES:
         - "transitions" array must have exactly len(clips) - 1 elements
         - clip start/end must be within the scene's time range
+        - Scenes from the same video OVERLAP in time (see the contains:/within: notes in the scene list). Every second of source footage may appear in the reel AT MOST ONCE: never pick two clips whose video time ranges overlap, even through different scene IDs. Overlapping clips get trimmed or dropped.
         - each clip duration should be 1.5-5 seconds
         - total clip duration should approximate target_duration
         - only use scene IDs from the list above
@@ -327,8 +352,28 @@ actor WizardEngine {
         """
     }
 
+    /// The longest sub-range of [start, end] not covered by any used range,
+    /// or nil when the whole range is covered.
+    private func longestFreeGap(start: Double, end: Double,
+                                used: [(start: Double, end: Double)]) -> (start: Double, end: Double)? {
+        let blockers = used.filter { $0.end > start && $0.start < end }.sorted { $0.start < $1.start }
+        var best: (start: Double, end: Double)?
+        var cursor = start
+        for blocker in blockers {
+            if blocker.start > cursor, best == nil || blocker.start - cursor > best!.end - best!.start {
+                best = (cursor, blocker.start)
+            }
+            cursor = max(cursor, blocker.end)
+        }
+        if cursor < end, best == nil || end - cursor > best!.end - best!.start {
+            best = (cursor, end)
+        }
+        return best
+    }
+
     /// Parse + validate the AI's plan per wizard.py rules: clamp clips to
-    /// scene bounds, drop sub-0.5s clips, sanitize music and transitions.
+    /// scene bounds, drop sub-0.5s clips, drop or trim clips that re-cover
+    /// footage an earlier clip already uses, sanitize music and transitions.
     private func validatePlan(_ raw: [String: Any],
                               scenes: [Int64: SceneRecord],
                               musicNames: Set<String>) -> WizardPlan? {
@@ -342,6 +387,7 @@ actor WizardEngine {
         }
 
         var clips: [WizardPlanClip] = []
+        var usedRanges: [Int64: [(start: Double, end: Double)]] = [:]
         for clipObject in raw["clips"] as? [[String: Any]] ?? [] {
             guard let sceneID = (clipObject["scene_id"] as? NSNumber)?.int64Value,
                   let scene = scenes[sceneID] else { continue }
@@ -352,11 +398,25 @@ actor WizardEngine {
                 end = min(scene.endTime, start + 3.0)
             }
             guard end - start >= 0.5 else { continue }
+            // Scenes overlap (they're tag ranges), so two scene IDs can cover
+            // the same footage — dedupe by absolute video time, not scene ID:
+            // trim a clip that re-covers accepted footage to its unseen
+            // remainder, drop it when too little survives.
+            let used = usedRanges[scene.videoID] ?? []
+            let overlap = used.reduce(0.0) { $0 + max(0, min(end, $1.end) - max(start, $1.start)) }
+            if overlap > 0.5 {
+                guard let gap = longestFreeGap(start: start, end: end, used: used),
+                      gap.end - gap.start >= 1.5 else { continue }
+                (start, end) = gap
+            }
+            start = start.rounded(toPlaces: 2)
+            end = end.rounded(toPlaces: 2)
+            usedRanges[scene.videoID, default: []].append((start, end))
             let overlayText = (clipObject["text_overlay"] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             clips.append(WizardPlanClip(sceneID: sceneID,
-                                        start: start.rounded(toPlaces: 2),
-                                        end: end.rounded(toPlaces: 2),
+                                        start: start,
+                                        end: end,
                                         wideSplit: (clipObject["wide_split"] as? Bool ?? false) && scene.wide,
                                         textOverlay: overlayText?.isEmpty == false ? overlayText : nil))
         }
