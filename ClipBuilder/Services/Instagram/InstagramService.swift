@@ -255,6 +255,22 @@ actor InstagramService {
           ],
           "visual_style": "<framing, camera movement, color/lighting, location variety>",
           "text_overlay_usage": "<how on-screen text is used, or 'none'>",
+          "text_style": {
+            "font_class": "<condensed-poster|heavy-sans|clean-sans|serif|script — the closest class for the dominant on-screen text, or null if no text>",
+            "text_case": "<uppercase|mixed>",
+            "fill": "<dominant text color as #hex, e.g. #FFFFFF>",
+            "accent": "<emphasis color used on key words as #hex, or null>",
+            "outlined": <true if the text has an outline/stroke>,
+            "shadowed": <true if the text casts a drop shadow>,
+            "has_kicker": <true if small label lines sit above/near headlines>,
+            "animation": "<none|fade|pop|word_reveal|slide|karaoke — how text enters; compare CONSECUTIVE frames: text growing word-by-word means word_reveal/karaoke>",
+            "placement": "<top|center|bottom>"
+          },
+          "effects": {
+            "transitions": "<transition flavor between shots: hard cuts, whip-pans, flash frames, zoom punches...>",
+            "speed": "<speed manipulation: slow-mo, ramps, freeze frames, or 'none'>",
+            "grade": "<the color look: contrast, saturation, tint>"
+          },
           "music_usage": "<how audio/music drives the edit, or what's audible>",
           "caption_style": "<how the written caption hooks engagement>",
           "why_it_works": "<2-3 sentences on the structural reasons this reel performs>"
@@ -264,6 +280,7 @@ actor InstagramService {
         - "structure" phases must tile 0.0 to \(String(format: "%.1f", duration)) in order without gaps
         - Align phase boundaries to detected cut timestamps where sensible
         - Describe STRUCTURE and TECHNIQUE, never the literal subject matter — the template will be applied to different footage
+        - "text_style": read it from the frames (colors as #hex approximations); use null for fields you cannot determine, or the whole object null when the reel has no on-screen text
         - Return ONLY the JSON object, no markdown fences, no explanation
         """
     }

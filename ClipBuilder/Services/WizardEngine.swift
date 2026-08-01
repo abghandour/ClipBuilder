@@ -27,6 +27,7 @@ nonisolated struct WizardPlanClip: Sendable {
     var overlayStyle: String?
     var overlayAnimation: String?
     var overlayKicker: String?
+    var overlayAccent: String?
 }
 
 /// Hand-tuned text overlay looks the wizard's AI picks from by name. The AI
@@ -40,9 +41,19 @@ nonisolated enum WizardTextStyle: String, CaseIterable {
 
     static let animations = ["fade", "slide_up", "pop", "word_reveal"]
 
+    /// Accept only #rgb/#rrggbb(aa)-style accents from the model.
+    static func sanitizedAccent(_ accent: String?) -> String? {
+        guard let accent = accent?.trimmingCharacters(in: .whitespacesAndNewlines),
+              accent.hasPrefix("#"), (4...9).contains(accent.count),
+              accent.dropFirst().allSatisfy(\.isHexDigit) else { return nil }
+        return accent
+    }
+
     /// The overlay template for this style: upper-third auto-fit box; the
-    /// caller sets text/timing.
-    func overlayItem(text: String, kicker: String? = nil) -> TextOverlayItem {
+    /// caller sets text/timing. `accent` (a #hex from a reference template)
+    /// overrides the default yellow on kicker chips, starred words, and
+    /// tag stripes.
+    func overlayItem(text: String, kicker: String? = nil, accent: String? = nil) -> TextOverlayItem {
         var item = TextOverlayItem()
         item.text = text.uppercased()
         item.xFrac = 0.5
@@ -72,6 +83,10 @@ nonisolated enum WizardTextStyle: String, CaseIterable {
             item.fontfamily = "Helvetica Neue"
             item.bold = true
             item.shadowOpacity = 0.45
+        }
+        if let accent = Self.sanitizedAccent(accent) {
+            item.accentColor = accent
+            if item.highlightColor != nil { item.highlightColor = accent }
         }
         return item
     }
@@ -291,6 +306,11 @@ actor WizardEngine {
             \(templateJSON)
 
             Replicate the STRUCTURE, never the content: match its hook type and timing, cut rhythm, pacing curve, phase structure, text overlay usage, and overall duration using the scenes available below. When the template conflicts with the research or the key principles, the template wins (user AI instructions still outrank everything).
+            Also replicate its TEXT DESIGN and EFFECTS with the tools available here:
+            - Map "text_style.font_class" to the closest overlay style: condensed-poster/heavy-sans → "impact" (or "highlight" when the reference colors key words), clean-sans → "banner" for labels or "minimal" for quiet text.
+            - Match "text_style.animation": word_reveal/karaoke → "word_reveal", pop → "pop", slide → "slide_up", fade/none → "fade".
+            - Copy its accent color: set each overlay's "accent" to the reference's text_style.accent hex; use kickers if has_kicker is true.
+            - Match "effects.transitions" with the closest names from the available transitions list; mirror its cut rhythm even where an exact effect (whip-pan, flash) is unavailable.
             """
         }
 
@@ -316,6 +336,7 @@ actor WizardEngine {
             - Each text overlay is an object: {"text": "...", "style": "...", "animation": "...", "kicker": "..." or null}.
             - Styles: "impact" (poster headline: huge condensed type, outline, gradient — hooks, climaxes), "highlight" (like impact, plus wrap the 1-2 most important words in *stars* to color them accent yellow — e.g. "HE *DROPS* HIM"), "banner" (angled dark plate with an accent stripe — names, stats, CTAs), "minimal" (clean and quiet — context, captions). Vary styles with intent; don't use one style everywhere.
             - "kicker": optional 1-3 word label rendered small on an angled accent chip above an impact/highlight headline (e.g. kicker "ROUND 2" above "THE COMEBACK"). Use when a moment deserves context; null otherwise. Ignored by banner/minimal.
+            - "accent": leave null for the default yellow. Set a #hex only when a reference template or the user's instructions call for a specific accent color, and use the same accent on every overlay in the reel.
             - Animations: "pop" (snappy rise-settle — punchy moments), "word_reveal" (words appear one by one — building tension, hooks), "slide_up" (energetic entrance), "fade" (calm). Match the animation to the moment's energy.
             """
         } else {
@@ -384,7 +405,7 @@ actor WizardEngine {
               "start": <start seconds>,
               "end": <end seconds>,
               "wide_split": <true if this WIDE scene should use split-screen>,
-              "text_overlay": {"text": "<2-6 word ALL-CAPS line>", "style": "<impact|highlight|banner|minimal>", "animation": "<fade|slide_up|pop|word_reveal>", "kicker": "<1-3 word label or null>"} or null,
+              "text_overlay": {"text": "<2-6 word ALL-CAPS line>", "style": "<impact|highlight|banner|minimal>", "animation": "<fade|slide_up|pop|word_reveal>", "kicker": "<1-3 word label or null>", "accent": "<#hex accent color or null for default yellow>"} or null,
               "reason": "<why this clip, why this position>"
             }
           ],
@@ -473,6 +494,7 @@ actor WizardEngine {
             var overlayStyle: String?
             var overlayAnimation: String?
             var overlayKicker: String?
+            var overlayAccent: String?
             if let overlayObject = clipObject["text_overlay"] as? [String: Any] {
                 overlayText = (overlayObject["text"] as? String)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -487,6 +509,7 @@ actor WizardEngine {
                 let kicker = (overlayObject["kicker"] as? String)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 overlayKicker = kicker?.isEmpty == false ? kicker : nil
+                overlayAccent = WizardTextStyle.sanitizedAccent(overlayObject["accent"] as? String)
             } else {
                 overlayText = (clipObject["text_overlay"] as? String)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -498,7 +521,8 @@ actor WizardEngine {
                                         textOverlay: overlayText?.isEmpty == false ? overlayText : nil,
                                         overlayStyle: overlayStyle,
                                         overlayAnimation: overlayAnimation,
-                                        overlayKicker: overlayKicker))
+                                        overlayKicker: overlayKicker,
+                                        overlayAccent: overlayAccent))
         }
         guard !clips.isEmpty else { return nil }
 
@@ -753,7 +777,8 @@ actor WizardEngine {
 
             if let text = clip.textOverlay, !text.isEmpty {
                 let style = WizardTextStyle(rawValue: clip.overlayStyle ?? "") ?? .impact
-                var overlay = style.overlayItem(text: text, kicker: clip.overlayKicker)
+                var overlay = style.overlayItem(text: text, kicker: clip.overlayKicker,
+                                                accent: clip.overlayAccent)
                 overlay.startTime = cursor
                 overlay.endTime = cursor + duration
                 // Builder's renderer has no word_reveal; degrade to fade.
@@ -922,7 +947,8 @@ actor WizardEngine {
             // Punchy full-clip text overlay — styled preset, upper third,
             // animated in (full-frame PNGs, so x/y are 0).
             let style = WizardTextStyle(rawValue: clip.overlayStyle ?? "") ?? .impact
-            let item = style.overlayItem(text: overlayText, kicker: clip.overlayKicker)
+            let item = style.overlayItem(text: overlayText, kicker: clip.overlayKicker,
+                                         accent: clip.overlayAccent)
             let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
                                                videoHeight: RenderEngine.outputHeight)
             let animation = clip.overlayAnimation ?? "fade"

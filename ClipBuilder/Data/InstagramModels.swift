@@ -119,6 +119,32 @@ nonisolated struct ReelTemplate: Codable, Sendable {
         var end: Double
         var description: String
     }
+    /// The reel's on-screen text design, read from the frames — everything
+    /// the wizard needs to replicate the look with the app's own presets.
+    struct TextStyle: Codable, Sendable {
+        var fontClass: String?     // condensed-poster | heavy-sans | clean-sans | serif | script
+        var textCase: String?      // uppercase | mixed
+        var fill: String?          // dominant text color (hex approximation)
+        var accent: String?        // emphasis color used on key words, or null
+        var outlined: Bool?
+        var shadowed: Bool?
+        var hasKicker: Bool?       // small label lines above/near headlines
+        var animation: String?     // none | fade | pop | word_reveal | slide | karaoke
+        var placement: String?     // top | center | bottom
+
+        enum CodingKeys: String, CodingKey {
+            case fill, accent, outlined, shadowed, animation, placement
+            case fontClass = "font_class"
+            case textCase = "text_case"
+            case hasKicker = "has_kicker"
+        }
+    }
+    /// Video treatment beyond cuts: transition flavor, speed play, grade.
+    struct Effects: Codable, Sendable {
+        var transitions: String?   // e.g. "hard cuts with occasional whip-pan"
+        var speed: String?         // e.g. "slow-mo on impacts, ramps into cuts"
+        var grade: String?         // e.g. "high-contrast, teal shadows"
+    }
 
     var duration: Double
     var hook: Hook
@@ -132,9 +158,12 @@ nonisolated struct ReelTemplate: Codable, Sendable {
     var musicUsage: String
     var captionStyle: String
     var whyItWorks: String
+    // Optional so templates cached before these fields existed still decode.
+    var textStyle: TextStyle?
+    var effects: Effects?
 
     enum CodingKeys: String, CodingKey {
-        case duration, hook, structure
+        case duration, hook, structure, effects
         case cutCount = "cut_count"
         case cutsPerMinute = "cuts_per_minute"
         case cutRhythm = "cut_rhythm"
@@ -144,6 +173,7 @@ nonisolated struct ReelTemplate: Codable, Sendable {
         case musicUsage = "music_usage"
         case captionStyle = "caption_style"
         case whyItWorks = "why_it_works"
+        case textStyle = "text_style"
     }
 }
 
