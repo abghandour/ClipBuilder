@@ -67,20 +67,19 @@ struct InstagramView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem {
-            Picker("Account", selection: Binding(
-                get: { store.igSelectedAccountID },
-                set: { store.selectInstagramAccount($0) }
-            )) {
-                ForEach(store.igAccounts) { account in
-                    Label("@\(account.username)",
-                          systemImage: account.isOwn ? "person.crop.circle.badge.checkmark" : "person.crop.circle")
-                        .tag(Int64?.some(account.id))
-                }
-            }
-            .pickerStyle(.menu)
-        }
-        ToolbarItem {
             Menu {
+                Picker("Account", selection: Binding(
+                    get: { store.igSelectedAccountID },
+                    set: { store.selectInstagramAccount($0) }
+                )) {
+                    ForEach(store.igAccounts) { account in
+                        Label("@\(account.username)",
+                              systemImage: account.isOwn ? "person.crop.circle.badge.checkmark" : "person.crop.circle")
+                            .tag(Int64?.some(account.id))
+                    }
+                }
+                .pickerStyle(.inline)
+                Divider()
                 Button("Add Account…") { addingAccount = true }
                 if let account = selectedAccount {
                     Button("Remove @\(account.username)", role: .destructive) {
@@ -88,16 +87,22 @@ struct InstagramView: View {
                     }
                 }
             } label: {
-                Label("Accounts", systemImage: "person.badge.plus")
+                Text("Accounts")
             }
+            .help("Switch, add, or remove accounts")
         }
         ToolbarItem {
-            Picker("Sort", selection: $sortOrder) {
-                ForEach(SortOrder.allCases) { order in
-                    Text(order.rawValue).tag(order)
+            Menu {
+                Picker("Sort", selection: $sortOrder) {
+                    ForEach(SortOrder.allCases) { order in
+                        Text(order.rawValue).tag(order)
+                    }
                 }
+                .pickerStyle(.inline)
+            } label: {
+                Text("Sort: \(sortOrder.rawValue)")
             }
-            .pickerStyle(.menu)
+            .help("Order reels by recency or performance")
         }
         ToolbarItem(placement: .primaryAction) {
             if store.isFetchingInstagram {
