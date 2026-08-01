@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Clip Builder guided setup.
 #
-# Installs everything Clip Builder needs (Homebrew, ffmpeg), optionally
+# Installs everything Clip Builder needs (Homebrew, ffmpeg, yt-dlp), optionally
 # installs any of the Claude/Gemini/Codex CLIs (each can also be installed
 # later from the app's Settings → AI), offers to log in to each installed
 # provider, and walks the user through creating their first profile.
@@ -93,6 +93,19 @@ else
         ok "ffmpeg installed"
     else
         fail "ffmpeg install failed — run 'brew install ffmpeg' manually, then re-run this setup."
+        exit 1
+    fi
+fi
+
+step "Checking yt-dlp (video downloads)"
+if command -v yt-dlp >/dev/null 2>&1; then
+    ok "yt-dlp found: $(command -v yt-dlp)"
+else
+    echo "    Installing yt-dlp with Homebrew..."
+    if brew install yt-dlp; then
+        ok "yt-dlp installed"
+    else
+        fail "yt-dlp install failed — run 'brew install yt-dlp' manually, then re-run this setup."
         exit 1
     fi
 fi
@@ -316,6 +329,7 @@ fi
 # ------------------------------------------------------------------ finish
 step "Setup complete"
 command -v ffmpeg >/dev/null 2>&1 && ok "ffmpeg ready" || warn "ffmpeg missing"
+command -v yt-dlp >/dev/null 2>&1 && ok "yt-dlp ready" || warn "yt-dlp missing"
 for entry in "${AI_PROVIDERS[@]}"; do
     bin=$(print -r -- "$entry" | cut -d'|' -f2)
     label=$(print -r -- "$entry" | cut -d'|' -f4)

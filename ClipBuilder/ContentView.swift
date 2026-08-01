@@ -178,15 +178,15 @@ struct MainWindowView: View {
                 ProgressView("Downloading update…")
                     .padding(20)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-            } else if store.isInstallingFFmpeg {
-                ProgressView("Installing ffmpeg…")
+            } else if store.isInstallingTools {
+                ProgressView("Installing video tools…")
                     .padding(20)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
         .task {
             store.checkForUpdatesAtLaunch()
-            store.ensureFFmpegAtLaunch()
+            store.ensureToolsAtLaunch()
         }
     }
 

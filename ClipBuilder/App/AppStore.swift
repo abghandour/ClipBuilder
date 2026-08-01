@@ -72,9 +72,9 @@ final class AppStore {
     var isDownloadingUpdate = false
     private var hasCheckedForUpdatesAtLaunch = false
 
-    // FFmpeg
-    var isInstallingFFmpeg = false
-    private var hasCheckedFFmpegAtLaunch = false
+    // Required command-line tools (ffmpeg, ffprobe, yt-dlp)
+    var isInstallingTools = false
+    private var hasCheckedToolsAtLaunch = false
 
     // MARK: - Services
 
@@ -581,38 +581,45 @@ final class AppStore {
         }
     }
 
-    // MARK: - FFmpeg
+    // MARK: - Required tools
 
     /// One check per app run: everything downstream of import (probing,
-    /// frame extraction, rendering) needs ffmpeg, so a missing install is
-    /// fixed automatically instead of surfacing as cryptic probe failures.
-    func ensureFFmpegAtLaunch() {
-        guard !hasCheckedFFmpegAtLaunch else { return }
-        hasCheckedFFmpegAtLaunch = true
+    /// frame extraction, rendering, reel downloads) needs the command-line
+    /// tools, so a missing install is fixed automatically instead of
+    /// surfacing as cryptic per-feature failures.
+    func ensureToolsAtLaunch() {
+        guard !hasCheckedToolsAtLaunch else { return }
+        hasCheckedToolsAtLaunch = true
         Task {
             // locate() can fall through to a login-shell lookup — off main.
-            let installed = await Task.detached { FFmpegInstaller.isInstalled }.value
-            if !installed { installFFmpeg() }
+            let missing = await Task.detached { ToolInstaller.missingTools }.value
+            if !missing.isEmpty { installMissingTools() }
         }
     }
 
-    /// Install ffmpeg + ffprobe (Homebrew when available, otherwise static
-    /// builds), then rescan so files whose probe failed get real metadata.
-    func installFFmpeg() {
-        guard !isInstallingFFmpeg else { return }
-        isInstallingFFmpeg = true
-        analysisLog.append("ffmpeg is not installed — installing it now...")
+    /// Install whichever required tools are missing (Homebrew when available,
+    /// otherwise standalone builds), then rescan so files whose probe failed
+    /// get real metadata.
+    func installMissingTools() {
+        guard !isInstallingTools else { return }
+        isInstallingTools = true
         Task {
+            let missing = await Task.detached { ToolInstaller.missingTools }.value
+            guard !missing.isEmpty else {
+                isInstallingTools = false
+                return
+            }
+            analysisLog.append("\(missing.joined(separator: ", ")) not installed — installing now...")
             do {
-                try await FFmpegInstaller.install { message in
+                try await ToolInstaller.installMissing { message in
                     Task { @MainActor in self.analysisLog.append(message) }
                 }
-                analysisLog.append("ffmpeg is ready.")
+                analysisLog.append("All required tools are ready.")
                 scanSourceFolder()
             } catch {
-                presentError("Could not install ffmpeg", error)
+                presentError("Could not install required tools", error)
             }
-            isInstallingFFmpeg = false
+            isInstallingTools = false
         }
     }
 

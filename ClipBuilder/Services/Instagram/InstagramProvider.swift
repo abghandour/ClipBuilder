@@ -11,7 +11,9 @@ nonisolated enum InstagramError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .toolMissing(let tool):
-            return "\(tool) not found. Install it with: brew install \(tool)"
+            return "\(tool) is not installed. Clip Builder installs it automatically at launch — "
+                + "wait for that to finish, or use Install in Settings → General, "
+                + "or install it manually with: brew install \(tool)"
         case .fetchFailed(let detail):
             return "Instagram fetch failed: \(detail)"
         case .parseFailed(let detail):

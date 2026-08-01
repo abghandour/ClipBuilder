@@ -31,7 +31,21 @@ else
     INSTALLER_SIGN_IDENTITY=""
 fi
 
-if [[ -n "${APP_SIGN_IDENTITY:-}" ]]; then
+if [[ "${UNSIGNED:-0}" == "1" ]]; then
+    echo "==> UNSIGNED=1 — building unsigned (ad-hoc); never distribute this pkg"
+    SIGN_ARGS=(CODE_SIGN_IDENTITY=-)
+else
+    # A missing identity must fail the release, not silently ship an
+    # unsigned pkg — keychain items have vanished on this machine before.
+    if [[ -z "${APP_SIGN_IDENTITY:-}" || -z "${INSTALLER_SIGN_IDENTITY:-}" ]]; then
+        [[ -z "${APP_SIGN_IDENTITY:-}" ]] \
+            && echo "error: no Developer ID Application identity in the keychain (signs the app)" >&2
+        [[ -z "${INSTALLER_SIGN_IDENTITY:-}" ]] \
+            && echo "error: no Developer ID Installer identity in the keychain (signs the pkg)" >&2
+        echo "Create the missing certificate(s) in Xcode: Settings > Accounts > Manage Certificates," >&2
+        echo "or run with UNSIGNED=1 for an explicitly unsigned local build." >&2
+        exit 1
+    fi
     echo "==> Signing app with: $APP_SIGN_IDENTITY"
     SIGN_ARGS=(
         CODE_SIGN_STYLE=Manual
@@ -42,9 +56,6 @@ if [[ -n "${APP_SIGN_IDENTITY:-}" ]]; then
         # the notary service rejects any executable that carries it.
         CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
     )
-else
-    echo "==> No Developer ID Application identity — building unsigned (ad-hoc)"
-    SIGN_ARGS=(CODE_SIGN_IDENTITY=-)
 fi
 
 echo "==> Building $APP_NAME (Release)"

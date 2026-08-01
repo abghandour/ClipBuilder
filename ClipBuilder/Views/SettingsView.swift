@@ -261,7 +261,7 @@ private struct GeneralSettingsTab: View {
     // Resolved off-main once: when ffmpeg is missing, the lookup falls back
     // to a blocking login-shell spawn, which must not run per body pass
     // (this tab re-renders on every keystroke in its text fields).
-    @State private var ffmpegAvailable: Bool?
+    @State private var missingTools: [String]?
 
     var body: some View {
         @Bindable var store = store
@@ -300,26 +300,28 @@ private struct GeneralSettingsTab: View {
                 Text("Databases and caches live here. Point this at a clip-builder checkout's data/ folder to share scene databases with the Python app, then relaunch.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                LabeledContent("ffmpeg") {
-                    switch (ffmpegAvailable, store.isInstallingFFmpeg) {
-                    case (_, true):
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text("Installing…")
+                ForEach(ToolInstaller.requiredTools, id: \.name) { tool in
+                    LabeledContent(tool.name) {
+                        switch (missingTools, store.isInstallingTools) {
+                        case (_, true):
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text("Installing…")
+                                    .foregroundStyle(.secondary)
+                            }
+                        case (.none, _):
+                            Text("Checking…")
                                 .foregroundStyle(.secondary)
-                        }
-                    case (.none, _):
-                        Text("Checking…")
-                            .foregroundStyle(.secondary)
-                    case (.some(true), _):
-                        Text("Found")
-                            .foregroundStyle(.green)
-                    case (.some(false), _):
-                        HStack {
-                            Text("Not found")
-                                .foregroundStyle(.red)
-                            Button("Install") {
-                                store.installFFmpeg()
+                        case (.some(let missing), _) where !missing.contains(tool.name):
+                            Text("Found")
+                                .foregroundStyle(.green)
+                        case (.some, _):
+                            HStack {
+                                Text("Not found")
+                                    .foregroundStyle(.red)
+                                Button("Install") {
+                                    store.installMissingTools()
+                                }
                             }
                         }
                     }
@@ -335,12 +337,12 @@ private struct GeneralSettingsTab: View {
         }
         .formStyle(.grouped)
         .task {
-            ffmpegAvailable = await Task.detached { FFmpeg.isAvailable }.value
+            missingTools = await Task.detached { ToolInstaller.missingTools }.value
         }
-        .onChange(of: store.isInstallingFFmpeg) { _, installing in
+        .onChange(of: store.isInstallingTools) { _, installing in
             guard !installing else { return }
             Task {
-                ffmpegAvailable = await Task.detached { FFmpeg.isAvailable }.value
+                missingTools = await Task.detached { ToolInstaller.missingTools }.value
             }
         }
     }
