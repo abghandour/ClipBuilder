@@ -8,7 +8,8 @@ nonisolated enum FFmpegError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .toolNotFound(let tool):
-            return "\(tool) not found. Install it with: brew install ffmpeg"
+            return "\(tool) is not installed. Clip Builder installs it automatically at launch — "
+                + "wait for that to finish, or install it manually with: brew install ffmpeg"
         case .commandFailed(let tool, let code, let stderr):
             let tail = stderr.split(separator: "\n").suffix(4).joined(separator: "\n")
             return "\(tool) failed (exit \(code)): \(tail)"

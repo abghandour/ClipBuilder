@@ -20,16 +20,18 @@ actor Analyzer {
     @discardableResult
     func scanSourceFolder(profile: BrandProfile, database: Database) async throws -> Int {
         let folder = profile.sourceFolderURL
-        let knownPaths = Dictionary(try await database.fetchVideos().map { ($0.hash, $0.path) },
-                                    uniquingKeysWith: { first, _ in first })
+        let known = Dictionary(try await database.fetchVideos().map { ($0.hash, ($0.path, $0.duration)) },
+                               uniquingKeysWith: { first, _ in first })
         var candidates: [(url: URL, hash: String)] = []
         let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)
         while let item = enumerator?.nextObject() as? URL {
             guard Self.videoExtensions.contains(item.pathExtension.lowercased()) else { continue }
             guard let hash = try? ContentHash.fingerprint(of: item) else { continue }
             // Known and unmoved — skip the probes; rescans fire on every
-            // folder event, so this must be cheap for existing files.
-            if knownPaths[hash] == item.path { continue }
+            // folder event, so this must be cheap for existing files. A zero
+            // duration means the registration probe failed (e.g. ffmpeg was
+            // missing), so those rows get re-probed.
+            if let (path, duration) = known[hash], path == item.path, duration > 0 { continue }
             candidates.append((item, hash))
         }
         let probed = try await BoundedConcurrency.map(candidates, limit: FFmpeg.jobLimit) { _, candidate in
@@ -38,7 +40,7 @@ actor Analyzer {
         var discovered = 0
         for (candidate, info) in probed {
             let wide = info.width > 0 && info.height > 0 && info.width > info.height
-            if knownPaths[candidate.hash] == nil { discovered += 1 }
+            if known[candidate.hash] == nil { discovered += 1 }
             try await database.registerVideo(hash: candidate.hash, filename: candidate.url.lastPathComponent,
                                              path: candidate.url.path, duration: info.duration,
                                              width: info.width, height: info.height, wide: wide)
@@ -166,6 +168,7 @@ actor Analyzer {
                        model: String? = nil,
                        log: @escaping @Sendable (String) -> Void,
                        progress: @escaping @Sendable (Double, String) -> Void) async throws {
+        guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let tags = profile.effectiveTags
         let allTags = Set(tags.values.flatMap { $0 })
         let domain = profile.effectiveDomain

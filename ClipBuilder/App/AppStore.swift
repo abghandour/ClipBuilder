@@ -72,6 +72,10 @@ final class AppStore {
     var isDownloadingUpdate = false
     private var hasCheckedForUpdatesAtLaunch = false
 
+    // FFmpeg
+    var isInstallingFFmpeg = false
+    private var hasCheckedFFmpegAtLaunch = false
+
     // MARK: - Services
 
     let ai: AIService
@@ -574,6 +578,41 @@ final class AppStore {
                 presentError("Could not download the update", error)
             }
             isDownloadingUpdate = false
+        }
+    }
+
+    // MARK: - FFmpeg
+
+    /// One check per app run: everything downstream of import (probing,
+    /// frame extraction, rendering) needs ffmpeg, so a missing install is
+    /// fixed automatically instead of surfacing as cryptic probe failures.
+    func ensureFFmpegAtLaunch() {
+        guard !hasCheckedFFmpegAtLaunch else { return }
+        hasCheckedFFmpegAtLaunch = true
+        Task {
+            // locate() can fall through to a login-shell lookup — off main.
+            let installed = await Task.detached { FFmpegInstaller.isInstalled }.value
+            if !installed { installFFmpeg() }
+        }
+    }
+
+    /// Install ffmpeg + ffprobe (Homebrew when available, otherwise static
+    /// builds), then rescan so files whose probe failed get real metadata.
+    func installFFmpeg() {
+        guard !isInstallingFFmpeg else { return }
+        isInstallingFFmpeg = true
+        analysisLog.append("ffmpeg is not installed — installing it now...")
+        Task {
+            do {
+                try await FFmpegInstaller.install { message in
+                    Task { @MainActor in self.analysisLog.append(message) }
+                }
+                analysisLog.append("ffmpeg is ready.")
+                scanSourceFolder()
+            } catch {
+                presentError("Could not install ffmpeg", error)
+            }
+            isInstallingFFmpeg = false
         }
     }
 

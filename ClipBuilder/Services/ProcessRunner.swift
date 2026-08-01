@@ -173,6 +173,13 @@ nonisolated enum ProcessRunner {
         }
     }
 
+    /// Where the app puts tools it installs itself (the static ffmpeg
+    /// fallback when Homebrew is absent); searched before system prefixes.
+    static var managedBinDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ClipBuilder/bin", isDirectory: true)
+    }
+
     private static let locateLock = NSLock()
     nonisolated(unsafe) private static var locateCache: [String: URL] = [:]
     nonisolated(unsafe) private static var locateMisses: [String: Date] = [:]
@@ -202,13 +209,23 @@ nonisolated enum ProcessRunner {
         return located
     }
 
+    /// Forget cached hits and misses — call after installing a tool so the
+    /// next locate sees it immediately instead of waiting out the miss TTL.
+    static func resetLocateCache() {
+        locateLock.lock()
+        locateCache = [:]
+        locateMisses = [:]
+        locateLock.unlock()
+    }
+
     private static func locateUncached(_ tool: String) -> URL? {
         if tool.hasPrefix("/") || tool.hasPrefix("~") {
             let expanded = (tool as NSString).expandingTildeInPath
             return FileManager.default.isExecutableFile(atPath: expanded)
                 ? URL(fileURLWithPath: expanded) : nil
         }
-        let prefixes = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/opt/local/bin"]
+        let prefixes = [managedBinDirectory.path,
+                        "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/opt/local/bin"]
         for prefix in prefixes {
             let candidate = "\(prefix)/\(tool)"
             if FileManager.default.isExecutableFile(atPath: candidate) {

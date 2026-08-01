@@ -301,16 +301,27 @@ private struct GeneralSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 LabeledContent("ffmpeg") {
-                    switch ffmpegAvailable {
-                    case .none:
+                    switch (ffmpegAvailable, store.isInstallingFFmpeg) {
+                    case (_, true):
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Installing…")
+                                .foregroundStyle(.secondary)
+                        }
+                    case (.none, _):
                         Text("Checking…")
                             .foregroundStyle(.secondary)
-                    case .some(true):
+                    case (.some(true), _):
                         Text("Found")
                             .foregroundStyle(.green)
-                    case .some(false):
-                        Text("Not found — brew install ffmpeg")
-                            .foregroundStyle(.red)
+                    case (.some(false), _):
+                        HStack {
+                            Text("Not found")
+                                .foregroundStyle(.red)
+                            Button("Install") {
+                                store.installFFmpeg()
+                            }
+                        }
                     }
                 }
             }
@@ -325,6 +336,12 @@ private struct GeneralSettingsTab: View {
         .formStyle(.grouped)
         .task {
             ffmpegAvailable = await Task.detached { FFmpeg.isAvailable }.value
+        }
+        .onChange(of: store.isInstallingFFmpeg) { _, installing in
+            guard !installing else { return }
+            Task {
+                ffmpegAvailable = await Task.detached { FFmpeg.isAvailable }.value
+            }
         }
     }
 }
