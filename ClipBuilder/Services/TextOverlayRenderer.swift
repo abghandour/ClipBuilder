@@ -101,6 +101,9 @@ nonisolated struct TextOverlayRenderer {
     private func line(_ text: String, font: CTFont) -> CTLine {
         let attributed = NSAttributedString(string: text, attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
+            // Without this Core Text fills with attribute black and ignores
+            // the context fill/stroke colors the hero passes set.
+            NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true,
         ])
         return CTLineCreateWithAttributedString(attributed)
     }
@@ -146,13 +149,20 @@ nonisolated struct TextOverlayRenderer {
 
         let words = Self.parseMarkup(item.text)
 
-        if let wFrac = item.wFrac, let hFrac = item.hFrac,
-           let xFrac = item.xFrac, let yFrac = item.yFrac, wFrac > 0, hFrac > 0 {
-            drawFittedBox(in: context, item: item, words: words, visibleWords: visibleWords,
-                          boxWidth: Int(Double(width) * wFrac), boxHeight: Int(Double(height) * hFrac),
-                          centerX: Int(Double(width) * xFrac), centerY: Int(Double(height) * yFrac))
-        } else {
-            drawLegacy(in: context, item: item, words: words, visibleWords: visibleWords)
+        switch item.design {
+        case "hero":
+            drawHero(in: context, item: item, words: words, visibleWords: visibleWords)
+        case "tag":
+            drawTag(in: context, item: item, words: words, visibleWords: visibleWords)
+        default:
+            if let wFrac = item.wFrac, let hFrac = item.hFrac,
+               let xFrac = item.xFrac, let yFrac = item.yFrac, wFrac > 0, hFrac > 0 {
+                drawFittedBox(in: context, item: item, words: words, visibleWords: visibleWords,
+                              boxWidth: Int(Double(width) * wFrac), boxHeight: Int(Double(height) * hFrac),
+                              centerX: Int(Double(width) * xFrac), centerY: Int(Double(height) * yFrac))
+            } else {
+                drawLegacy(in: context, item: item, words: words, visibleWords: visibleWords)
+            }
         }
 
         guard let image = context.makeImage() else { throw CocoaError(.fileWriteUnknown) }
@@ -265,6 +275,249 @@ nonisolated struct TextOverlayRenderer {
         context.setFillColor(CGColor(red: br, green: bg, blue: bb,
                                      alpha: CGFloat(min(1, max(0, item.boxOpacity)))))
         context.fillPath()
+    }
+
+    // MARK: - Pro compositions
+
+    private static let heroGradientBottom: (CGFloat, CGFloat, CGFloat) = (0.83, 0.83, 0.85)
+
+    /// A parallelogram (rectangle skewed ~8°) — the angled bar behind
+    /// kickers and tags.
+    private func skewedBarPath(center: CGPoint, width: CGFloat, height: CGFloat) -> CGPath {
+        let skew = height * 0.14
+        let halfW = width / 2, halfH = height / 2
+        let path = CGMutablePath()
+        path.move(to: CGPoint(x: center.x - halfW + skew, y: center.y + halfH))
+        path.addLine(to: CGPoint(x: center.x + halfW + skew, y: center.y + halfH))
+        path.addLine(to: CGPoint(x: center.x + halfW - skew, y: center.y - halfH))
+        path.addLine(to: CGPoint(x: center.x - halfW - skew, y: center.y - halfH))
+        path.closeSubpath()
+        return path
+    }
+
+    private func kernedAttributes(font: CTFont, color: CGColor, trackingEm: CGFloat) -> [NSAttributedString.Key: Any] {
+        [NSAttributedString.Key(kCTFontAttributeName as String): font,
+         NSAttributedString.Key(kCTForegroundColorAttributeName as String): color,
+         NSAttributedString.Key(kCTKernAttributeName as String):
+            (CTFontGetSize(font) * trackingEm) as NSNumber]
+    }
+
+    /// Word start offsets within a full line, so words can be drawn (or
+    /// skipped) individually without any layout drift.
+    private func wordOffsets(_ words: [Word], font: CTFont) -> [CGFloat] {
+        let plain = Self.plainText(words)
+        let full = line(plain, font: font)
+        var offsets: [CGFloat] = []
+        var characterIndex = 0
+        for word in words {
+            offsets.append(CGFloat(CTLineGetOffsetForStringIndex(full, characterIndex, nil)))
+            characterIndex += word.text.count + 1
+        }
+        return offsets
+    }
+
+    /// Hero lockup: small tracked-out kicker on a skewed accent bar above a
+    /// huge auto-fit headline with outline, layered shadows, and a subtle
+    /// vertical gradient — the fight-poster look.
+    private func drawHero(in context: CGContext, item: TextOverlayItem,
+                          words: [Word], visibleWords: Int?) {
+        guard !words.isEmpty else { return }
+        let boxWidth = Double(videoWidth) * (item.wFrac ?? 0.82)
+        let boxHeight = Double(videoHeight) * (item.hFrac ?? 0.12)
+        let centerX = Double(videoWidth) * (item.xFrac ?? 0.5)
+        let centerY = Double(videoHeight) * (item.yFrac ?? 0.2)
+
+        // Auto-fit the headline exactly like the fitted-box path.
+        func metrics(for size: CGFloat) -> (font: CTFont, lines: [[Word]], lineHeight: CGFloat,
+                                            spacing: CGFloat, totalHeight: CGFloat, maxWidth: CGFloat) {
+            let font = resolveFont(size: size, family: item.fontfamily ?? "Anton",
+                                   bold: item.bold, italic: item.italic)
+            let lines = wrap(words, font: font, maxWidth: boxWidth)
+            let lineHeight = CTFontGetAscent(font) + CTFontGetDescent(font)
+            let spacing = (size * 0.08).rounded(.down)
+            let total = lineHeight * CGFloat(lines.count) + spacing * CGFloat(max(0, lines.count - 1))
+            let maxLineWidth = lines.map { lineWidth(Self.plainText($0), font: font) }.max() ?? 0
+            return (font, lines, lineHeight, spacing, total, maxLineWidth)
+        }
+        var low = 6, high = Int(max(boxWidth, boxHeight)), best = 6
+        while low <= high {
+            let mid = (low + high) / 2
+            let m = metrics(for: CGFloat(mid))
+            if m.totalHeight <= boxHeight && m.maxWidth <= boxWidth { best = mid; low = mid + 1 }
+            else { high = mid - 1 }
+        }
+        let m = metrics(for: CGFloat(best))
+        let headlineSize = CGFloat(best)
+        let blockTop = centerY - Double(m.totalHeight) / 2
+
+        // Kicker on its angled accent bar, centered above the headline.
+        if let kicker = item.kicker?.trimmingCharacters(in: .whitespacesAndNewlines), !kicker.isEmpty {
+            let kickerFont = resolveFont(size: max(24, headlineSize * 0.2),
+                                         family: "Archivo Black", bold: false, italic: false)
+            let accent = Self.cgColor(item.accentColor, fallback: (1, 0.84, 0))
+            let black = CGColor(red: 0.05, green: 0.05, blue: 0.06, alpha: 1)
+            let attributes = kernedAttributes(font: kickerFont, color: black, trackingEm: 0.14)
+            let kickerLine = CTLineCreateWithAttributedString(
+                NSAttributedString(string: kicker.uppercased(), attributes: attributes))
+            let textWidth = CGFloat(CTLineGetTypographicBounds(kickerLine, nil, nil, nil))
+            let ascent = CTFontGetAscent(kickerFont), descent = CTFontGetDescent(kickerFont)
+            let barHeight = (ascent + descent) * 1.55
+            let barWidth = textWidth + barHeight * 1.1
+            let gap = headlineSize * 0.24
+            let barCenterY = CGFloat(videoHeight) - CGFloat(blockTop) + gap + barHeight / 2
+
+            context.saveGState()
+            context.setShadow(offset: CGSize(width: 0, height: -4), blur: 14,
+                              color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.35))
+            context.addPath(skewedBarPath(center: CGPoint(x: centerX, y: barCenterY),
+                                          width: barWidth, height: barHeight))
+            context.setFillColor(accent)
+            context.fillPath()
+            context.restoreGState()
+            // Center optically: drop the trailing kern the last glyph carries.
+            let kern = CTFontGetSize(kickerFont) * 0.14
+            context.textPosition = CGPoint(x: centerX - Double(textWidth - kern) / 2,
+                                           y: barCenterY - (ascent - descent) / 2)
+            CTLineDraw(kickerLine, context)
+        }
+
+        // Headline lines: outline with ambient shadow, solid fill with a
+        // tight contact shadow, then a vertical gradient clipped to the
+        // visible glyphs.
+        let strokePercent = CGFloat(max(item.strokeWidthEm, 0.05)) * 200
+        let strokeColor = Self.cgColor(item.strokeColor ?? "black", fallback: (0, 0, 0))
+        let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
+        let highlightColor = item.highlightColor.map { Self.cgColor($0, fallback: (1, 0.84, 0)) }
+        let (gr, gg, gb) = Self.heroGradientBottom
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let gradient = CGGradient(colorsSpace: colorSpace,
+                                  colors: [white, CGColor(red: gr, green: gg, blue: gb, alpha: 1)] as CFArray,
+                                  locations: [0, 1])
+
+        var cursorTop = blockTop
+        let ascent = CTFontGetAscent(m.font), descent = CTFontGetDescent(m.font)
+        for lineWords in m.lines {
+            let plain = Self.plainText(lineWords)
+            let width = lineWidth(plain, font: m.font)
+            let lineX = centerX - Double(width) / 2
+            let baselineY = CGFloat(videoHeight) - CGFloat(cursorTop) - ascent
+            let offsets = wordOffsets(lineWords, font: m.font)
+
+            for (position, word) in lineWords.enumerated() {
+                if let visibleWords, word.index >= visibleWords { continue }
+                let wordLine = line(word.text, font: m.font)
+                let wordX = CGFloat(lineX) + offsets[position]
+
+                // 1. Outline + ambient shadow.
+                context.saveGState()
+                context.setLineJoin(.round)
+                context.setLineCap(.round)
+                context.setShadow(offset: CGSize(width: 0, height: -headlineSize * 0.09),
+                                  blur: headlineSize * 0.26,
+                                  color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.38))
+                context.setTextDrawingMode(.stroke)
+                context.setStrokeColor(strokeColor)
+                context.setLineWidth(headlineSize * strokePercent / 100)
+                context.textPosition = CGPoint(x: wordX, y: baselineY)
+                CTLineDraw(wordLine, context)
+                context.restoreGState()
+
+                // 2. Solid fill + contact shadow. Starred words take the
+                //    accent color and skip the gradient.
+                let accented = word.highlighted ? highlightColor : nil
+                context.saveGState()
+                context.setShadow(offset: CGSize(width: 0, height: -headlineSize * 0.03),
+                                  blur: headlineSize * 0.05,
+                                  color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.7))
+                context.setTextDrawingMode(.fill)
+                context.setFillColor(accented ?? white)
+                context.textPosition = CGPoint(x: wordX, y: baselineY)
+                CTLineDraw(wordLine, context)
+                context.restoreGState()
+
+                // 3. Gradient clipped to the glyphs.
+                if let gradient, accented == nil {
+                    context.saveGState()
+                    context.setTextDrawingMode(.clip)
+                    context.textPosition = CGPoint(x: wordX, y: baselineY)
+                    CTLineDraw(wordLine, context)
+                    context.drawLinearGradient(gradient,
+                                               start: CGPoint(x: 0, y: baselineY + ascent),
+                                               end: CGPoint(x: 0, y: baselineY - descent),
+                                               options: [])
+                    context.restoreGState()
+                }
+            }
+            cursorTop += Double(m.lineHeight + m.spacing)
+        }
+    }
+
+    /// Tag chip: one bold line on a skewed dark bar with an accent stripe on
+    /// the leading edge — lower-third name/stat plate.
+    private func drawTag(in context: CGContext, item: TextOverlayItem,
+                         words: [Word], visibleWords: Int?) {
+        guard !words.isEmpty else { return }
+        let maxWidth = Double(videoWidth) * (item.wFrac ?? 0.8)
+        let maxHeight = Double(videoHeight) * (item.hFrac ?? 0.06)
+        let centerX = Double(videoWidth) * (item.xFrac ?? 0.5)
+        let centerY = Double(videoHeight) * (item.yFrac ?? 0.2)
+        let plain = Self.plainText(words)
+
+        var low = 6, high = Int(maxHeight), best = 6
+        while low <= high {
+            let mid = (low + high) / 2
+            let font = resolveFont(size: CGFloat(mid), family: item.fontfamily ?? "Archivo Black",
+                                   bold: item.bold, italic: item.italic)
+            // Bar padding eats into the width budget.
+            if lineWidth(plain, font: font) <= maxWidth - Double(CGFloat(mid)) * 2.4 { best = mid; low = mid + 1 }
+            else { high = mid - 1 }
+        }
+        let font = resolveFont(size: CGFloat(best), family: item.fontfamily ?? "Archivo Black",
+                               bold: item.bold, italic: item.italic)
+        let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
+        let attributes = kernedAttributes(font: font, color: white, trackingEm: 0.03)
+        let tagLine = CTLineCreateWithAttributedString(
+            NSAttributedString(string: plain, attributes: attributes))
+        let textWidth = CGFloat(CTLineGetTypographicBounds(tagLine, nil, nil, nil))
+        let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font)
+        let barHeight = (ascent + descent) * 1.7
+        let barWidth = textWidth + barHeight * 1.2
+        let center = CGPoint(x: centerX, y: CGFloat(videoHeight) - centerY)
+        let dark = Self.cgColor(item.bgcolor, fallback: (0.07, 0.07, 0.09))
+        let accent = Self.cgColor(item.accentColor, fallback: (1, 0.84, 0))
+
+        // Bar with a soft lift shadow.
+        context.saveGState()
+        context.setShadow(offset: CGSize(width: 0, height: -6), blur: 22,
+                          color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.4))
+        context.addPath(skewedBarPath(center: center, width: barWidth, height: barHeight))
+        context.setFillColor(dark)
+        context.fillPath()
+        context.restoreGState()
+
+        // Accent stripe hugging the leading edge (same skew).
+        let stripeWidth = barHeight * 0.16
+        let stripeCenter = CGPoint(x: center.x - barWidth / 2 - stripeWidth * 0.9, y: center.y)
+        context.addPath(skewedBarPath(center: stripeCenter, width: stripeWidth, height: barHeight))
+        context.setFillColor(accent)
+        context.fillPath()
+
+        // Hidden words keep their space (word_reveal parity).
+        let kern = CTFontGetSize(font) * 0.03
+        let textX = center.x - (textWidth - kern) / 2
+        let baselineY = center.y - (ascent - descent) / 2
+        if let visibleWords, visibleWords < words.count {
+            let offsets = wordOffsets(words, font: font)
+            for (position, word) in words.enumerated() where word.index < visibleWords {
+                let wordLine = CTLineCreateWithAttributedString(
+                    NSAttributedString(string: word.text, attributes: attributes))
+                context.textPosition = CGPoint(x: textX + offsets[position], y: baselineY)
+                CTLineDraw(wordLine, context)
+            }
+        } else {
+            context.textPosition = CGPoint(x: textX, y: baselineY)
+            CTLineDraw(tagLine, context)
+        }
     }
 
     // MARK: - Styled line drawing

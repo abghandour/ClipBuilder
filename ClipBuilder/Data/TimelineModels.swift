@@ -326,6 +326,11 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     var strokeWidthEm: Double = 0       // outline width as a fraction of font size
     var shadowOpacity: Double = 0       // drop shadow strength, 0 = none
     var highlightColor: String?         // color for *starred* words in `text`
+    // Pro compositions ("hero" = kicker bar + gradient headline,
+    // "tag" = skewed chip); nil = plain line rendering.
+    var design: String?
+    var kicker: String?                 // small label above a hero headline
+    var accentColor: String?            // bar/stripe color for hero/tag
 
     var duration: Double { max(0, endTime - startTime) }
 
@@ -346,6 +351,8 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         case strokeWidthEm = "stroke_width_em"
         case shadowOpacity = "shadow_opacity"
         case highlightColor = "highlight_color"
+        case design, kicker
+        case accentColor = "accent_color"
     }
 
     init(text: String = "", startTime: Double = 0, endTime: Double = 3) {
@@ -377,6 +384,9 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         strokeWidthEm = try container.decodeIfPresent(Double.self, forKey: .strokeWidthEm) ?? 0
         shadowOpacity = try container.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? 0
         highlightColor = try container.decodeIfPresent(String.self, forKey: .highlightColor)
+        design = try container.decodeIfPresent(String.self, forKey: .design)
+        kicker = try container.decodeIfPresent(String.self, forKey: .kicker)
+        accentColor = try container.decodeIfPresent(String.self, forKey: .accentColor)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -408,6 +418,9 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         }
         if shadowOpacity > 0 { try container.encode(shadowOpacity, forKey: .shadowOpacity) }
         if let highlightColor { try container.encode(highlightColor, forKey: .highlightColor) }
+        if let design { try container.encode(design, forKey: .design) }
+        if let kicker { try container.encode(kicker, forKey: .kicker) }
+        if let accentColor { try container.encode(accentColor, forKey: .accentColor) }
     }
 
     static func == (lhs: TextOverlayItem, rhs: TextOverlayItem) -> Bool {
@@ -420,6 +433,8 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
             && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
             && lhs.strokeColor == rhs.strokeColor && lhs.strokeWidthEm == rhs.strokeWidthEm
             && lhs.shadowOpacity == rhs.shadowOpacity && lhs.highlightColor == rhs.highlightColor
+            && lhs.design == rhs.design && lhs.kicker == rhs.kicker
+            && lhs.accentColor == rhs.accentColor
     }
 
     var id: UUID { uid }
