@@ -94,6 +94,11 @@ nonisolated struct IGMediaUpsert: Sendable {
 nonisolated struct WizardTemplateHandoff: Sendable, Hashable {
     var templateJSON: String
     var label: String            // "@handle · 1.2M views"
+    var thumbnailPath: String?   // reel snapshot shown in the Wizard's template card
+
+    var thumbnailURL: URL? {
+        thumbnailPath.flatMap { FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil }
+    }
 }
 
 nonisolated struct IGTemplateRecord: Sendable, Hashable {

@@ -36,6 +36,9 @@ final class AppStore {
 
     // Wizard job
     var isWizardRunning = false
+    /// True while a Builder pre-fill plan runs — drives the Builder's
+    /// loading overlay.
+    var isPlanningIntoBuilder = false
     var wizardLog: [String] = []
     private var wizardTask: Task<Void, Never>?
 
@@ -820,7 +823,8 @@ final class AppStore {
         Task {
             guard let templateJSON = await fetchTemplateJSON(mediaID: media.id) else { return }
             pendingWizardTemplate = WizardTemplateHandoff(templateJSON: templateJSON,
-                                                          label: templateLabel(for: media))
+                                                          label: templateLabel(for: media),
+                                                          thumbnailPath: media.thumbnailPath)
             requestedSection = .wizard
         }
     }
@@ -840,12 +844,14 @@ final class AppStore {
     }
 
     /// The Builder pre-fill job: wizard planning only, then load the plan as
-    /// a timeline document. Shares the wizard's log panel and stop button.
+    /// a timeline document. Opens the Builder immediately — a loading overlay
+    /// there (isPlanningIntoBuilder) shows progress while the plan runs.
     func planIntoBuilder(options: WizardOptions) {
         guard let database, !isWizardRunning else { return }
         isWizardRunning = true
+        isPlanningIntoBuilder = true
         wizardLog = []
-        requestedSection = .wizard   // show the live log while planning
+        requestedSection = .builder
         let profile = activeProfile
         let wizard = wizard
         wizardTask = Task {
@@ -860,12 +866,14 @@ final class AppStore {
                 } else {
                     wizardLog.append("Opening \(document.videoTrack.count) clips in the Builder...")
                     builder.loadDocument(document)
-                    requestedSection = .builder
                 }
+            } catch is CancellationError {
+                wizardLog.append("Pre-fill cancelled")
             } catch {
                 presentError("Timeline planning failed", error)
             }
             isWizardRunning = false
+            isPlanningIntoBuilder = false
         }
     }
 }

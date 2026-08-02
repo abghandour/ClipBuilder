@@ -40,8 +40,30 @@ struct WizardView: View {
         Form {
             if let handoff = store.pendingWizardTemplate {
                 Section("Reference Template") {
-                    HStack {
-                        Label(handoff.label, systemImage: "play.rectangle.on.rectangle")
+                    HStack(spacing: 12) {
+                        // Snapshot of the source reel, so it's obvious which
+                        // video the wizard is replicating.
+                        if let url = handoff.thumbnailURL, let image = NSImage(contentsOf: url) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(width: 44, height: 78)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                        } else {
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(.quaternary)
+                                .frame(width: 44, height: 78)
+                                .overlay {
+                                    Image(systemName: "play.rectangle.on.rectangle")
+                                        .foregroundStyle(.secondary)
+                                }
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(handoff.label)
+                            Text("The wizard will replicate this reel's hook, pacing, structure, and text style with your scenes — until you remove it here.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         Spacer()
                         Button {
                             store.pendingWizardTemplate = nil
@@ -50,11 +72,8 @@ struct WizardView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
-                        .help("Remove the template")
+                        .help("Remove the template — future generations won't use it")
                     }
-                    Text("The wizard will replicate this reel's hook, pacing, and structure with your scenes.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -162,10 +181,10 @@ struct WizardView: View {
         options.enableTextOverlays = enableTextOverlays
         options.aiInstructions = aiInstructions
         options.selectedVideoIDs = limitToSelection ? selectedVideoIDs : []
+        // The template persists across runs; the card's X removes it.
         if let handoff = store.pendingWizardTemplate {
             options.templateJSON = handoff.templateJSON
             options.templateLabel = handoff.label
-            store.pendingWizardTemplate = nil
         }
         store.runWizard(options: options)
     }

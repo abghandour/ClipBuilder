@@ -50,6 +50,11 @@ struct BuilderView: View {
             .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            if store.isPlanningIntoBuilder {
+                PrefillProgressOverlay()
+            }
+        }
         .navigationTitle("Builder")
         .navigationSubtitle("\(model.document.videoTrack.count) clips · \(model.totalDuration.timecode)")
         .toolbar {
@@ -224,6 +229,38 @@ struct BuilderView: View {
         case .sound(let uid): model.removeSound(uid)
         case .text(let uid): model.removeText(uid)
         case nil: break
+        }
+    }
+}
+
+/// Full-screen loading card shown while "Pre-fill Builder" plans a timeline
+/// from a reel template. Isolated so per-line log appends only re-evaluate
+/// this overlay, not the whole Builder.
+private struct PrefillProgressOverlay: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.regularMaterial)
+                .ignoresSafeArea()
+            VStack(spacing: 14) {
+                ProgressView()
+                    .controlSize(.large)
+                Text("Pre-filling from template…")
+                    .font(.headline)
+                Text(store.wizardLog.last ?? "Planning a timeline from the reel's structure")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .frame(maxWidth: 420)
+                    .multilineTextAlignment(.center)
+                Button("Cancel") { store.cancelWizard() }
+                    .controlSize(.small)
+            }
+            .padding(28)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14))
+            .shadow(radius: 24, y: 8)
         }
     }
 }
