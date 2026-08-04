@@ -1,18 +1,43 @@
 #!/bin/zsh
 # Clip Builder guided setup.
 #
-# Installs everything Clip Builder needs (Homebrew, ffmpeg, yt-dlp), optionally
-# installs any of the Claude/Gemini/Codex CLIs (each can also be installed
-# later from the app's Settings → AI), offers to log in to each installed
-# provider, and walks the user through creating their first profile.
+# Installs everything Clip Builder needs (ffmpeg, ffprobe, yt-dlp) as
+# standalone binaries — no Homebrew and no Xcode Command Line Tools —
+# optionally installs any of the Claude/Gemini/Codex CLIs (each can also be
+# installed later by re-running this setup), offers to log in to each
+# installed provider, and walks the user through creating their first
+# profile.
 #
 # Launched automatically by the .pkg installer's postinstall step, but safe
 # to re-run at any time:
 #   /Library/Application\ Support/ClipBuilder/Clip\ Builder\ Setup.command
 set -u
 
-# Homebrew lives outside the default PATH of a fresh Terminal.
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Tools install into the app's managed bin folder, which the app searches
+# before the system prefixes (ProcessRunner.managedBinDirectory). Existing
+# installs — Homebrew or otherwise — are detected and left alone.
+SUPPORT_DIR="$HOME/Library/Application Support/ClipBuilder"
+BIN_DIR="$SUPPORT_DIR/bin"
+NODE_DIR="$SUPPORT_DIR/node"   # private Node.js, only for npm-only CLIs
+NPM_PREFIX="$SUPPORT_DIR/npm"
+export PATH="$BIN_DIR:$NPM_PREFIX/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+case "$(uname -m)" in
+    arm64)
+        FFMPEG_BASE="https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release"
+        CODEX_ASSET="codex-aarch64-apple-darwin"
+        NODE_ARCH="darwin-arm64"
+        ;;
+    *)
+        FFMPEG_BASE="https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release"
+        CODEX_ASSET="codex-x86_64-apple-darwin"
+        NODE_ARCH="darwin-x64"
+        ;;
+esac
+YTDLP_URL="https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+
+WORK_DIR=$(mktemp -d -t clipbuilder-setup)
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 BOLD=$'\e[1m'; GREEN=$'\e[32m'; YELLOW=$'\e[33m'; RED=$'\e[31m'; RESET=$'\e[0m'
 
@@ -53,107 +78,173 @@ ask() {
 
 json_escape() { print -r -- "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
+# download "url" "dest" — some hosts 404 on a subset of their load-balanced
+# backends, so retry; each curl run opens a fresh connection, which is what
+# gets the retry onto a different backend.
+download() {
+    local url=$1 dest=$2 attempt
+    for attempt in 1 2 3; do
+        (( attempt > 1 )) && sleep 2
+        curl -fL --connect-timeout 15 --progress-bar -o "$dest" "$url" && return 0
+    done
+    return 1
+}
+
+# Downloaded executables won't pass Gatekeeper if quarantined (curl doesn't
+# quarantine, but be defensive), and zip extraction can drop the exec bit.
+finalize_binary() {
+    chmod 755 "$1"
+    xattr -d com.apple.quarantine "$1" 2>/dev/null || true
+}
+
 echo "${BOLD}"
 echo "╭──────────────────────────────────────────────╮"
 echo "│         Clip Builder — Guided Setup          │"
 echo "╰──────────────────────────────────────────────╯"
 echo "${RESET}"
 echo "This will install Clip Builder's dependencies and help you"
-echo "configure the app. You may be asked for your Mac password."
+echo "configure the app. Everything installs into your user folder —"
+echo "no Homebrew, Xcode tools, or administrator password required."
 
-# ---------------------------------------------------------------- Homebrew
-step "Checking Homebrew"
-if command -v brew >/dev/null 2>&1; then
-    ok "Homebrew found: $(command -v brew)"
-else
-    warn "Homebrew not found — installing it now (this is the official installer)."
-    echo "    You'll be asked for your password; press RETURN when prompted."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    # Pick up brew for the rest of this script.
-    if [[ -x /opt/homebrew/bin/brew ]]; then
-        eval "$(/opt/homebrew/bin/brew shellenv)"
-    elif [[ -x /usr/local/bin/brew ]]; then
-        eval "$(/usr/local/bin/brew shellenv)"
-    fi
-    if command -v brew >/dev/null 2>&1; then
-        ok "Homebrew installed"
+mkdir -p "$BIN_DIR"
+
+# ------------------------------------------------------------- media tools
+# ffmpeg + ffprobe come as per-architecture single-binary zips; yt-dlp is
+# the official self-contained macOS build (universal binary).
+install_media_tool() {
+    local tool=$1
+    if [[ $tool == yt-dlp ]]; then
+        download "$YTDLP_URL" "$WORK_DIR/yt-dlp" || return 1
+        mv "$WORK_DIR/yt-dlp" "$BIN_DIR/yt-dlp"
     else
-        fail "Homebrew installation failed. Install it from https://brew.sh and re-run this setup."
-        exit 1
+        download "$FFMPEG_BASE/$tool.zip" "$WORK_DIR/$tool.zip" || return 1
+        /usr/bin/ditto -x -k "$WORK_DIR/$tool.zip" "$BIN_DIR" || return 1
     fi
-fi
-
-# ------------------------------------------------------------ brew packages
-step "Checking ffmpeg (video engine)"
-if command -v ffmpeg >/dev/null 2>&1; then
-    ok "ffmpeg found: $(command -v ffmpeg)"
-else
-    echo "    Installing ffmpeg with Homebrew (this can take a few minutes)..."
-    if brew install ffmpeg; then
-        ok "ffmpeg installed"
-    else
-        fail "ffmpeg install failed — run 'brew install ffmpeg' manually, then re-run this setup."
-        exit 1
-    fi
-fi
-
-step "Checking yt-dlp (video downloads)"
-if command -v yt-dlp >/dev/null 2>&1; then
-    ok "yt-dlp found: $(command -v yt-dlp)"
-else
-    echo "    Installing yt-dlp with Homebrew..."
-    if brew install yt-dlp; then
-        ok "yt-dlp installed"
-    else
-        fail "yt-dlp install failed — run 'brew install yt-dlp' manually, then re-run this setup."
-        exit 1
-    fi
-fi
-
-# ---------------------------------------------------------------- AI CLIs
-# provider entries: key|binary|npm package|label
-AI_PROVIDERS=(
-    "claude|claude|@anthropic-ai/claude-code|Claude Code (Anthropic)"
-    "gemini|gemini|@google/gemini-cli|Gemini CLI (Google)"
-    "codex|codex|@openai/codex|Codex CLI (OpenAI)"
-)
-
-npm_install_global() {
-    local pkg=$1
-    local prefix
-    prefix=$(npm prefix -g 2>/dev/null || echo "")
-    if [[ -n $prefix && -w $prefix ]]; then
-        npm install -g "$pkg"
-    else
-        warn "npm's global folder needs administrator rights."
-        sudo npm install -g "$pkg"
-    fi
+    finalize_binary "$BIN_DIR/$tool"
 }
 
-# The CLIs are npm packages — install Node.js only once a provider is chosen.
+media_tool_label() {
+    case $1 in
+        ffmpeg)  echo "ffmpeg (video engine)" ;;
+        ffprobe) echo "ffprobe (video analysis)" ;;
+        yt-dlp)  echo "yt-dlp (video downloads)" ;;
+    esac
+}
+
+for tool in ffmpeg ffprobe yt-dlp; do
+    step "Checking $(media_tool_label "$tool")"
+    if command -v "$tool" >/dev/null 2>&1; then
+        ok "$tool found: $(command -v "$tool")"
+        continue
+    fi
+    echo "    Downloading $tool..."
+    if install_media_tool "$tool"; then
+        ok "$tool installed into $BIN_DIR"
+    else
+        fail "$tool download failed — check your internet connection and re-run this setup."
+        exit 1
+    fi
+done
+
+# ---------------------------------------------------------------- AI CLIs
+# provider entries: key|binary|label
+AI_PROVIDERS=(
+    "claude|claude|Claude Code (Anthropic)"
+    "gemini|gemini|Gemini CLI (Google)"
+    "codex|codex|Codex CLI (OpenAI)"
+)
+
+# Gemini's CLI only ships as an npm package. Prefer an existing npm; without
+# one, download the official standalone Node.js LTS build into the app's
+# support folder — private to Clip Builder, no Homebrew, no sudo.
 ensure_node() {
     if command -v npm >/dev/null 2>&1; then
         return 0
     fi
-    echo "    Installing Node.js with Homebrew (needed for the AI provider CLIs)..."
-    if brew install node; then
-        ok "Node.js installed"
+    if [[ -x "$NODE_DIR/bin/npm" ]]; then
+        export PATH="$NODE_DIR/bin:$PATH"
         return 0
     fi
-    fail "Node.js install failed — run 'brew install node' manually, then re-run this setup."
-    return 1
+    echo "    Downloading Node.js (needed for this CLI)..."
+    local version
+    version=$(curl -fsSL https://nodejs.org/dist/index.json \
+        | grep -m1 '"lts":"' | sed -E 's/.*"version":"([^"]+)".*/\1/')
+    if [[ -z ${version:-} ]]; then
+        fail "Could not determine the latest Node.js LTS version — check your internet connection."
+        return 1
+    fi
+    download "https://nodejs.org/dist/$version/node-$version-$NODE_ARCH.tar.gz" "$WORK_DIR/node.tar.gz" \
+        || { fail "Node.js download failed — check your internet connection and re-run this setup."; return 1 }
+    rm -rf "$NODE_DIR"
+    mkdir -p "$NODE_DIR"
+    /usr/bin/tar -xzf "$WORK_DIR/node.tar.gz" -C "$NODE_DIR" --strip-components 1 \
+        || { fail "Could not unpack Node.js."; return 1 }
+    export PATH="$NODE_DIR/bin:$PATH"
+    ok "Node.js $version installed (private to Clip Builder)"
+}
+
+# Install an npm CLI. With the private Node the package lands in the app's
+# support folder and gets a wrapper in BIN_DIR, so the app can run it without
+# node on the system PATH; with the user's own npm it goes wherever their
+# global prefix points (may need sudo, as before).
+install_npm_cli() {
+    local pkg=$1 bin=$2
+    ensure_node || return 1
+    if [[ "$(command -v npm)" == "$NODE_DIR/bin/npm" ]]; then
+        # Private cache too — a user's ~/.npm can hold root-owned files from
+        # past `sudo npm install -g` runs, which break installs with EACCES.
+        NPM_CONFIG_PREFIX="$NPM_PREFIX" NPM_CONFIG_CACHE="$SUPPORT_DIR/npm-cache" \
+            npm install -g "$pkg" || return 1
+        cat > "$BIN_DIR/$bin" <<WRAPPER
+#!/bin/zsh
+export PATH="$NODE_DIR/bin:\$PATH"
+exec "$NPM_PREFIX/bin/$bin" "\$@"
+WRAPPER
+        finalize_binary "$BIN_DIR/$bin"
+    else
+        local prefix
+        prefix=$(npm prefix -g 2>/dev/null || echo "")
+        if [[ -n $prefix && -w $prefix ]]; then
+            npm install -g "$pkg" || return 1
+        else
+            warn "npm's global folder needs administrator rights."
+            sudo npm install -g "$pkg" || return 1
+        fi
+    fi
+}
+
+install_provider() {
+    case $1 in
+        claude)
+            # Official native installer — a self-contained binary in
+            # ~/.local/bin, added to the shell PATH by the installer.
+            /bin/bash -c "$(curl -fsSL https://claude.ai/install.sh)" ;;
+        codex)
+            download "https://github.com/openai/codex/releases/latest/download/$CODEX_ASSET.tar.gz" \
+                "$WORK_DIR/codex.tar.gz" || return 1
+            /usr/bin/tar -xzf "$WORK_DIR/codex.tar.gz" -C "$WORK_DIR" || return 1
+            mv "$WORK_DIR/$CODEX_ASSET" "$BIN_DIR/codex"
+            finalize_binary "$BIN_DIR/codex" ;;
+        gemini)
+            install_npm_cli "@google/gemini-cli" "gemini" ;;
+    esac
+}
+
+retry_hint() {
+    case $1 in
+        claude) echo "curl -fsSL https://claude.ai/install.sh | bash" ;;
+        *)      echo "re-running this setup" ;;
+    esac
 }
 
 step "AI provider CLIs (optional)"
 echo "    Clip Builder can use any of these AI providers. Each one is optional —"
-echo "    you can install any of them later from the app (Settings → AI) or by"
-echo "    re-running this setup."
+echo "    you can install any of them later by re-running this setup."
 typeset -a INSTALLED_PROVIDERS
 INSTALLED_PROVIDERS=()
 for entry in "${AI_PROVIDERS[@]}"; do
     local_key=${entry%%|*}
     rest=${entry#*|};  bin=${rest%%|*}
-    rest=${rest#*|};   pkg=${rest%%|*}
     label=${rest#*|}
     if command -v "$bin" >/dev/null 2>&1; then
         ok "$label already installed"
@@ -162,24 +253,21 @@ for entry in "${AI_PROVIDERS[@]}"; do
     fi
     echo
     if ! ask_yes_no "    Install ${BOLD}$label${RESET} now?" y; then
-        warn "Skipped — install later from the app (Settings → AI)."
-        continue
-    fi
-    if ! ensure_node; then
-        warn "Skipping $label — Node.js is required for it."
+        warn "Skipped — install later by re-running this setup."
         continue
     fi
     echo "    Installing $label..."
-    if npm_install_global "$pkg"; then
+    rehash
+    if install_provider "$local_key" && rehash && command -v "$bin" >/dev/null 2>&1; then
         ok "$label installed"
         INSTALLED_PROVIDERS+=("$entry")
     else
-        fail "$label failed to install — you can retry later with: npm install -g $pkg"
+        fail "$label failed to install — you can retry later with: $(retry_hint "$local_key")"
     fi
 done
 if (( ${#INSTALLED_PROVIDERS} == 0 )); then
     warn "No AI providers installed — Clip Builder's AI features will be off"
-    warn "until you add one from Settings → AI in the app."
+    warn "until you re-run this setup and add one."
 fi
 
 # -------------------------------------------------------------- CLI logins
@@ -202,11 +290,10 @@ is_signed_in() {
 if (( ${#INSTALLED_PROVIDERS} > 0 )); then
 step "AI provider sign-in"
 echo "    Each provider needs a one-time sign-in before Clip Builder can use it."
-echo "    You can do it now, or later by running the command shown."
+echo "    You can do it now, or later by re-running this setup."
 for entry in "${INSTALLED_PROVIDERS[@]}"; do
     local_key=${entry%%|*}
     rest=${entry#*|};  bin=${rest%%|*}
-    rest=${rest#*|};   pkg=${rest%%|*}
     label=${rest#*|}
     if is_signed_in "$local_key"; then
         ok "$label — already signed in"
@@ -230,10 +317,7 @@ for entry in "${INSTALLED_PROVIDERS[@]}"; do
         esac
         ok "Done with $label (Clip Builder's Settings → AI shows its status)"
     else
-        case $local_key in
-            codex) warn "Later: run '$bin login' in Terminal to sign in." ;;
-            *)     warn "Later: run '$bin' in Terminal and complete the login." ;;
-        esac
+        warn "Later: re-run this setup and pick 'Sign in' for $label."
     fi
 done
 fi
@@ -328,12 +412,13 @@ fi
 
 # ------------------------------------------------------------------ finish
 step "Setup complete"
-command -v ffmpeg >/dev/null 2>&1 && ok "ffmpeg ready" || warn "ffmpeg missing"
-command -v yt-dlp >/dev/null 2>&1 && ok "yt-dlp ready" || warn "yt-dlp missing"
+for tool in ffmpeg ffprobe yt-dlp; do
+    command -v "$tool" >/dev/null 2>&1 && ok "$tool ready" || warn "$tool missing"
+done
 for entry in "${AI_PROVIDERS[@]}"; do
     bin=$(print -r -- "$entry" | cut -d'|' -f2)
-    label=$(print -r -- "$entry" | cut -d'|' -f4)
-    command -v "$bin" >/dev/null 2>&1 && ok "$label ready" || warn "$label not installed (optional — add it from Settings → AI)"
+    label=$(print -r -- "$entry" | cut -d'|' -f3)
+    command -v "$bin" >/dev/null 2>&1 && ok "$label ready" || warn "$label not installed (optional — re-run this setup to add it)"
 done
 echo
 echo "    In the app, check Settings → General (ffmpeg status) and"
