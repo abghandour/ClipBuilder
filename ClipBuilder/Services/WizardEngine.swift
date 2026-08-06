@@ -240,23 +240,71 @@ actor WizardEngine {
         return notes
     }
 
-    private func feedbackBlock(_ feedback: [FeedbackRecord]) -> String {
-        guard !feedback.isEmpty else {
-            return "No feedback yet — this is the first generation."
+    /// One review as prompt lines: whole-video verdict, dimension thumbs,
+    /// then only the clips the user reacted to.
+    private func reviewLines(_ summary: ReviewSummary) -> String {
+        var verdictWord = summary.review.verdict > 0 ? "LIKED" : (summary.review.verdict < 0 ? "DISLIKED" : "MIXED")
+        if summary.videoDeleted { verdictWord += " (user deleted this reel)" }
+        var lines = ["- \(summary.videoFilename): \(verdictWord)"]
+        let dimensions = summary.review.dimensions
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key): \($0.value > 0 ? "good" : "bad")" }
+        if !dimensions.isEmpty { lines.append("  aspects — " + dimensions.joined(separator: ", ")) }
+        for clip in summary.clips where clip.verdict != 0 {
+            var line = "  clip \(clip.clipIndex + 1)"
+            if let sceneID = clip.sceneID { line += " (scene #\(sceneID))" }
+            line += clip.verdict > 0 ? ": good pick" : ": bad — \(clip.reasons.joined(separator: ", "))"
+            lines.append(line)
         }
-        return feedback.enumerated().map { index, entry in
-            let recency = index == 0 ? "most recent" : (index < 5 ? "recent" : "older")
-            let file = entry.videoPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "?"
-            let duration = entry.videoDuration.map { String(format: "%.0fs", $0) } ?? "?"
-            return "- [\(recency)] \"\(entry.feedback)\" (video: \(file), \(duration), \(entry.createdAt ?? ""))"
-        }.joined(separator: "\n")
+        if !summary.review.note.isEmpty { lines.append("  note: \"\(summary.review.note)\"") }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Everything the user has taught the wizard, compact: distilled lessons,
+    /// structured review signals, A/B choices, and the latest raw notes —
+    /// instead of an unbounded dump of every feedback entry ever written.
+    private func trainingBlock(_ signals: TrainingSignals) -> String {
+        var sections: [String] = []
+
+        let learned = signals.lessons.filter { !$0.pinned }
+        if !learned.isEmpty {
+            sections.append("### Learned Lessons (distilled from this user's past reviews — apply every one)\n"
+                + learned.map { "- \($0.text)\($0.evidence.isEmpty ? "" : " [\($0.evidence)]")" }
+                    .joined(separator: "\n"))
+        }
+
+        if !signals.reviews.isEmpty {
+            sections.append("### Recent Review Signals (newest first)\n"
+                + signals.reviews.map(reviewLines).joined(separator: "\n"))
+        }
+
+        if !signals.preferences.isEmpty {
+            sections.append("### A/B Choices (the user compared variations — replicate what wins)\n"
+                + signals.preferences.map {
+                    "- CHOSE \"\($0.chosenRationale)\" OVER \"\($0.rejectedRationale)\""
+                }.joined(separator: "\n"))
+        }
+
+        let recentFeedback = signals.feedback.prefix(5)
+        if !recentFeedback.isEmpty {
+            sections.append("### Recent Feedback Notes\n"
+                + recentFeedback.map { entry in
+                    let file = entry.videoPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "?"
+                    return "- \"\(entry.feedback)\" (on \(file))"
+                }.joined(separator: "\n"))
+        }
+
+        guard !sections.isEmpty else {
+            return "No training signals yet — this is the first generation."
+        }
+        return sections.joined(separator: "\n\n")
     }
 
     private func planPrompt(profile: BrandProfile,
                             research: [String: Any],
                             scenes: [SceneRecord],
                             musicNames: [String],
-                            feedback: [FeedbackRecord],
+                            signals: TrainingSignals,
                             options: WizardOptions,
                             variation: (number: Int, total: Int, previousRationales: [String])?) -> String {
         let domain = profile.effectiveDomain
@@ -292,6 +340,17 @@ actor WizardEngine {
             ## USER AI INSTRUCTIONS (HIGHEST PRIORITY — OVERRIDES ALL OTHER GUIDANCE BELOW)
             \(options.aiInstructions)
             These are hard requirements. Follow them even when they conflict with the research, feedback, or rules below.
+            """
+        }
+
+        var pinnedRules = ""
+        let pinned = signals.lessons.filter(\.pinned)
+        if !pinned.isEmpty {
+            pinnedRules = """
+
+
+            ## PINNED STYLE RULES (HARD CONSTRAINTS — the user pinned these; NEVER violate them)
+            \(pinned.map { "- \($0.text)" }.joined(separator: "\n"))
             """
         }
 
@@ -350,7 +409,7 @@ actor WizardEngine {
 
         return """
         You are an expert video editor creating an Instagram Reel for a \(domain) channel called \(brand). Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
-        \(userInstructions)\(templateBlock)
+        \(userInstructions)\(pinnedRules)\(templateBlock)
 
         ## Instagram Reels Research
         \(researchJSON)
@@ -367,20 +426,20 @@ actor WizardEngine {
         ## Music Beat Analysis
         \(beatInfo)
 
-        ## User Feedback History (CRITICAL — read every entry)
-        \(feedbackBlock(feedback))
+        ## Training Signals (CRITICAL — what this user has taught you)
+        \(trainingBlock(signals))
 
         \(variationInfo)
 
         ## Instructions
         Create a video plan optimized for maximum Instagram Reel engagement.
 
-        FEEDBACK IS YOUR MOST IMPORTANT INPUT. The user's feedback above represents hard-learned lessons from previous generations. You MUST:
-        - Identify recurring themes in the feedback (e.g. "too long", "bad transitions")
-        - Treat repeated feedback as hard constraints — never repeat a criticized mistake
-        - Amplify what the user praised — if they liked something, do more of it
-        - Recent feedback takes priority over older feedback if they conflict
-        - In your "rationale" field, explicitly mention which feedback items shaped your decisions
+        THE TRAINING SIGNALS ABOVE ARE YOUR MOST IMPORTANT INPUT — they are this user's accumulated judgments of your previous work. You MUST:
+        - Apply every Learned Lesson; never repeat a mistake a review flagged
+        - Never reuse a scene a clip review called a bad pick in a similar position; favor scenes marked good picks
+        - In A/B choices, the CHOSEN approach won — build on winning strategies, avoid rejected ones
+        - Amplify what reviews rated good; recent signals outrank older ones when they conflict
+        - In your "rationale" field, explicitly mention which lessons and review signals shaped your decisions
 
         KEY PRINCIPLES:
         1. HOOK — First 1-2 seconds must grab attention (most explosive/dramatic moment)
@@ -588,13 +647,28 @@ actor WizardEngine {
         }
     }
 
+    /// Everything the user has taught the wizard, loaded once per run.
+    struct TrainingSignals: Sendable {
+        var lessons: [WizardLesson] = []
+        var reviews: [ReviewSummary] = []
+        var preferences: [PreferenceRecord] = []
+        var feedback: [FeedbackRecord] = []
+    }
+
     /// Everything the planning phase needs, loaded once per run.
     private struct PlanningInputs {
         var research: [String: Any]
         var scenes: [SceneRecord]
         var sceneMap: [Int64: SceneRecord]
         var music: [(name: String, url: URL)]
-        var feedback: [FeedbackRecord]
+        var signals: TrainingSignals
+    }
+
+    private func loadTrainingSignals(database: Database) async -> TrainingSignals {
+        TrainingSignals(lessons: (try? await database.fetchLessons()) ?? [],
+                        reviews: (try? await database.fetchReviewSummaries(limit: 10)) ?? [],
+                        preferences: (try? await database.fetchPreferences(limit: 10)) ?? [],
+                        feedback: (try? await database.fetchAllFeedback()) ?? [])
     }
 
     private func loadPlanningInputs(options: WizardOptions,
@@ -622,14 +696,16 @@ actor WizardEngine {
         if !options.useMusic { emit("No-music mode: original audio only.") }
         if options.muteSource { emit("Source audio will be muted (music only)") }
         if options.enableTextOverlays { emit("Text overlays enabled") }
-        let feedback = (try? await database.fetchAllFeedback()) ?? []
-        emit("Found \(scenes.count) scenes, \(music.count) music tracks, \(feedback.count) feedback entries")
+        let signals = await loadTrainingSignals(database: database)
+        emit("Found \(scenes.count) scenes, \(music.count) music tracks, "
+             + "\(signals.lessons.count) lesson(s), \(signals.reviews.count) review(s), "
+             + "\(signals.feedback.count) feedback entries")
         if options.variationsPerVideo > 1 {
             emit("Generating \(options.variationsPerVideo) A/B variations per video")
         }
         return PlanningInputs(research: research, scenes: scenes,
                               sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
-                              music: music, feedback: feedback)
+                              music: music, signals: signals)
     }
 
     /// One prompt → AI call → validated plan; nil when the response is unusable.
@@ -637,7 +713,7 @@ actor WizardEngine {
                           variation: (number: Int, total: Int, previousRationales: [String])?,
                           emit: @escaping @Sendable (String) -> Void) async throws -> WizardPlan? {
         let prompt = planPrompt(profile: profile, research: inputs.research, scenes: inputs.scenes,
-                                musicNames: inputs.music.map(\.name), feedback: inputs.feedback,
+                                musicNames: inputs.music.map(\.name), signals: inputs.signals,
                                 options: options, variation: variation)
         let response = try await ai.call(prompt: prompt, task: "wizard",
                                          model: options.modelOverride, timeout: 300, log: emit)
@@ -695,6 +771,9 @@ actor WizardEngine {
 
         for videoNumber in 1...options.numberOfVideos {
             var previousRationales: [String] = []
+            // Variations of one video share a batch id, so the Library can
+            // offer them as an A/B pick after the run.
+            let batchID = options.variationsPerVideo > 1 ? UUID().uuidString : nil
             for variationNumber in 1...options.variationsPerVideo {
                 try Task.checkCancellation()
                 let variationLabel = options.variationsPerVideo > 1
@@ -716,6 +795,7 @@ actor WizardEngine {
                 let result = try await assemble(plan: plan, music: music, options: options,
                                                 profile: profile, database: database,
                                                 sceneMap: sceneMap, label: variationLabel,
+                                                batchID: batchID,
                                                 normalizedIntro: normalizedIntro,
                                                 normalizedOutro: normalizedOutro, emit: emit)
                 generatedCount += 1
@@ -742,6 +822,67 @@ actor WizardEngine {
             }
         }
         emit("\nAll done! Generated \(generatedCount) video(s)")
+    }
+
+    // MARK: - Lessons distillation
+
+    /// Compress everything the user has said about past generations into at
+    /// most 10 imperative style rules, replacing the previous machine-learned
+    /// set (pinned rules are user-owned and untouched). Returns the new count.
+    func distillLessons(database: Database, emit: @escaping @Sendable (String) -> Void) async throws -> Int {
+        // Wider windows than a generation prompt: distillation is rare and
+        // benefits from the full history.
+        let reviews = (try? await database.fetchReviewSummaries(limit: 50)) ?? []
+        let preferences = (try? await database.fetchPreferences(limit: 50)) ?? []
+        let feedback = (try? await database.fetchAllFeedback()) ?? []
+        let lessons = (try? await database.fetchLessons()) ?? []
+        guard !reviews.isEmpty || !preferences.isEmpty || !feedback.isEmpty else {
+            throw AIError.notConfigured("Nothing to distill yet — review a few generated videos first.")
+        }
+
+        emit("Distilling lessons from \(reviews.count) review(s), \(preferences.count) A/B choice(s), "
+             + "\(feedback.count) feedback note(s)...")
+        let current = lessons.filter { !$0.pinned }
+        let pinned = lessons.filter(\.pinned)
+        let prompt = """
+        You are distilling a user's reactions to AI-generated Instagram reels into a compact set of editing rules ("lessons") that all future generations must follow.
+
+        ## Structured Reviews (newest first; verdict per video, per aspect, per clip)
+        \(reviews.isEmpty ? "None." : reviews.map(reviewLines).joined(separator: "\n"))
+
+        ## A/B Choices (the user picked one variation over another)
+        \(preferences.isEmpty ? "None." : preferences.map { "- CHOSE \"\($0.chosenRationale)\" OVER \"\($0.rejectedRationale)\"" }.joined(separator: "\n"))
+
+        ## Free-Text Feedback (newest first)
+        \(feedback.isEmpty ? "None." : feedback.map { "- \"\($0.feedback)\"" }.joined(separator: "\n"))
+
+        ## Current Lessons (your previous output — carry over the ones still supported)
+        \(current.isEmpty ? "None." : current.map { "- \($0.text)" }.joined(separator: "\n"))
+
+        ## Pinned Rules (user-authored — do NOT duplicate or contradict these)
+        \(pinned.isEmpty ? "None." : pinned.map { "- \($0.text)" }.joined(separator: "\n"))
+
+        Instructions:
+        - Produce AT MOST 10 lessons. Each is ONE imperative sentence a video editor can act on (e.g. "Open with the single most explosive moment, never a wide establishing shot").
+        - Only state lessons the signals support; prefer patterns that recur. A one-off complaint becomes a lesson only when emphatic.
+        - Newer signals outrank older ones when they conflict.
+        - "evidence" is a terse justification, e.g. "flagged in 3 reviews" or "won 2 A/B picks".
+
+        Return ONLY JSON: {"lessons": [{"text": "...", "evidence": "..."}]}
+        """
+
+        let response = try await ai.call(prompt: prompt, task: "wizard", timeout: 180, log: emit)
+        guard let object = AIResponseParser.jsonObject(from: response),
+              let rawLessons = object["lessons"] as? [[String: Any]] else {
+            throw AIError.emptyResponse("lesson distillation (unparseable JSON)")
+        }
+        let distilled = rawLessons.prefix(10).compactMap { raw -> (text: String, evidence: String)? in
+            guard let text = (raw["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else { return nil }
+            return (text, (raw["evidence"] as? String) ?? "")
+        }
+        try await database.replaceLearnedLessons(distilled)
+        return distilled.count
     }
 
     // MARK: - Builder pre-fill
@@ -815,6 +956,7 @@ actor WizardEngine {
                           database: Database,
                           sceneMap: [Int64: SceneRecord],
                           label: String,
+                          batchID: String?,
                           normalizedIntro: URL?,
                           normalizedOutro: URL?,
                           emit: @escaping @Sendable (String) -> Void) async throws -> AssemblyResult {
@@ -904,7 +1046,9 @@ actor WizardEngine {
                                                                duration: finalDuration.rounded(toPlaces: 1),
                                                                timelineJSON: timelineJSON,
                                                                wizardProvider: attribution.provider,
-                                                               wizardModel: attribution.model)
+                                                               wizardModel: attribution.model,
+                                                               rationale: plan.rationale,
+                                                               batchID: batchID)
         return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID)
     }
 

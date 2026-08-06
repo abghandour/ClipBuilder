@@ -14,8 +14,7 @@ struct LibraryView: View {
     @State private var sortOrder: SortOrder = .newest
     @State private var playing: GeneratedVideoRecord?
     @State private var deleting: GeneratedVideoRecord?
-    @State private var feedbackTarget: GeneratedVideoRecord?
-    @State private var feedbackText = ""
+    @State private var reviewTarget: GeneratedVideoRecord?
     @State private var builderTarget: GeneratedVideoRecord?
 
     private var sorted: [GeneratedVideoRecord] {
@@ -59,8 +58,16 @@ struct LibraryView: View {
         .sheet(item: $playing) { video in
             PlayerSheet(url: video.url, title: video.filename)
         }
-        .sheet(item: $feedbackTarget) { video in
-            feedbackSheet(for: video)
+        .sheet(item: $reviewTarget) { video in
+            ReviewSheet(video: video)
+        }
+        // Hook for scripts/capture_help_screenshots.sh: accessibility-tree
+        // clicking is too flaky to reach the review sheet, so screenshot
+        // captures launch the app with this argument instead.
+        .onAppear {
+            if CommandLine.arguments.contains("--auto-open-review"), reviewTarget == nil {
+                reviewTarget = store.generatedVideos.first
+            }
         }
         .confirmationDialog(
             "Delete \(deleting?.filename ?? "video")?",
@@ -151,12 +158,11 @@ struct LibraryView: View {
                     .labelStyle(.iconOnly)
                     .help("Copy the Instagram caption")
                 }
-                Button("Feedback", systemImage: "bubble.left") {
-                    feedbackText = ""
-                    feedbackTarget = video
+                Button("Review", systemImage: "hand.thumbsup") {
+                    reviewTarget = video
                 }
                 .labelStyle(.iconOnly)
-                .help("Tell the wizard what you thought — it reads this next run")
+                .help("Rate this reel and its clips — the wizard trains on your review")
 
                 Button("Show in Finder", systemImage: "folder") {
                     NSWorkspace.shared.activateFileViewerSelecting([video.url])
@@ -185,30 +191,4 @@ struct LibraryView: View {
         }
     }
 
-    @ViewBuilder
-    private func feedbackSheet(for video: GeneratedVideoRecord) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Feedback for \(video.filename)")
-                .font(.headline)
-            Text("The wizard treats feedback as hard constraints for future generations.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextEditor(text: $feedbackText)
-                .font(.body)
-                .frame(minHeight: 100)
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
-            HStack {
-                Spacer()
-                Button("Cancel") { feedbackTarget = nil }
-                Button("Save Feedback") {
-                    store.addFeedback(for: video, text: feedbackText)
-                    feedbackTarget = nil
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(feedbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding()
-        .frame(width: 420)
-    }
 }

@@ -17,6 +17,12 @@ final class AppStore {
     var scenes: [SceneRecord] = []
     var generatedVideos: [GeneratedVideoRecord] = []
     var feedback: [FeedbackRecord] = []
+    var lessons: [WizardLesson] = []
+
+    /// Variation batch awaiting an A/B pick, presented by the main window
+    /// after a multi-variation wizard run; further batches queue behind it.
+    var pendingComparison: ComparisonBatch?
+    private var comparisonQueue: [ComparisonBatch] = []
 
     /// FIFO of pending alerts; the main window presents the first entry and
     /// dequeues on dismiss, so one failure can't silently replace another.
@@ -40,6 +46,7 @@ final class AppStore {
     /// loading overlay.
     var isPlanningIntoBuilder = false
     var wizardLog: [String] = []
+    var isDistillingLessons = false
     private var wizardTask: Task<Void, Never>?
 
     // Clip Builder
@@ -155,6 +162,9 @@ final class AppStore {
         scenes = []
         generatedVideos = []
         feedback = []
+        lessons = []
+        pendingComparison = nil
+        comparisonQueue = []
         igAccounts = []
         igSelectedAccountID = nil
         igMedia = []
@@ -211,21 +221,27 @@ final class AppStore {
     // MARK: - Data refresh
 
     func refreshAll() {
+        Task { await refreshAllNow() }
+    }
+
+    /// Awaitable refresh for callers that need the fresh lists (e.g. the
+    /// wizard's post-run variation-batch detection).
+    func refreshAllNow() async {
         guard let database else { return }
-        Task {
-            do {
-                let videos = try await database.fetchVideos()
-                let scenes = try await database.fetchScenes()
-                let generated = try await database.fetchGeneratedVideos()
-                let feedback = try await database.fetchAllFeedback()
-                self.videos = videos
-                self.scenes = scenes
-                self.generatedVideos = generated
-                self.feedback = feedback
-                self.builder.updateScenes(scenes)
-            } catch {
-                presentError("Could not load the library", error)
-            }
+        do {
+            let videos = try await database.fetchVideos()
+            let scenes = try await database.fetchScenes()
+            let generated = try await database.fetchGeneratedVideos()
+            let feedback = try await database.fetchAllFeedback()
+            let lessons = try await database.fetchLessons()
+            self.videos = videos
+            self.scenes = scenes
+            self.generatedVideos = generated
+            self.feedback = feedback
+            self.lessons = lessons
+            self.builder.updateScenes(scenes)
+        } catch {
+            presentError("Could not load the library", error)
         }
     }
 
@@ -469,6 +485,103 @@ final class AppStore {
         }
     }
 
+    // MARK: - Reviews + lessons
+
+    func loadReview(for video: GeneratedVideoRecord) async -> (review: GenerationReview, clips: [ClipReview])? {
+        guard let database else { return nil }
+        return try? await database.fetchReview(generatedVideoID: video.id)
+    }
+
+    func saveReview(_ review: GenerationReview, clips: [ClipReview]) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.saveReview(review, clips: clips)
+            } catch {
+                presentError("Could not save the review", error)
+            }
+        }
+    }
+
+    /// Record the A/B pick for the presented batch (winner vs. every other
+    /// variation), then surface the next queued batch if any.
+    func resolveComparison(_ batch: ComparisonBatch, winner: GeneratedVideoRecord?) {
+        if let database, let winner {
+            let losers = batch.videos.filter { $0.id != winner.id }
+            Task {
+                for loser in losers {
+                    do {
+                        try await database.addPreference(chosenID: winner.id, rejectedID: loser.id,
+                                                         chosenRationale: winner.rationale ?? "",
+                                                         rejectedRationale: loser.rationale ?? "")
+                    } catch {
+                        presentError("Could not save the preference", error)
+                    }
+                }
+            }
+        }
+        comparisonQueue.removeAll { $0.id == batch.id }
+        pendingComparison = comparisonQueue.first
+    }
+
+    func distillLessons() {
+        guard let database, !isDistillingLessons else { return }
+        isDistillingLessons = true
+        let wizard = wizard
+        Task {
+            do {
+                let count = try await wizard.distillLessons(database: database) { message in
+                    Task { @MainActor in self.wizardLog.append(message) }
+                }
+                lessons = try await database.fetchLessons()
+                wizardLog.append("Distilled \(count) lesson(s) from your reviews")
+            } catch {
+                presentError("Lesson distillation failed", error)
+            }
+            isDistillingLessons = false
+        }
+    }
+
+    func addLesson(text: String) {
+        guard let database else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        Task {
+            do {
+                try await database.addLesson(text: trimmed, pinned: true, evidence: "added by you")
+                lessons = try await database.fetchLessons()
+            } catch {
+                presentError("Could not save the lesson", error)
+            }
+        }
+    }
+
+    func updateLesson(_ lesson: WizardLesson, text: String? = nil, pinned: Bool? = nil) {
+        guard let database else { return }
+        let newText = text ?? lesson.text
+        let newPinned = pinned ?? lesson.pinned
+        Task {
+            do {
+                try await database.updateLesson(id: lesson.id, text: newText, pinned: newPinned)
+                lessons = try await database.fetchLessons()
+            } catch {
+                presentError("Could not update the lesson", error)
+            }
+        }
+    }
+
+    func deleteLesson(_ lesson: WizardLesson) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.deleteLesson(id: lesson.id)
+                lessons.removeAll { $0.id == lesson.id }
+            } catch {
+                presentError("Could not delete the lesson", error)
+            }
+        }
+    }
+
     // MARK: - Clip Builder
 
     /// Render the builder timeline through the multitrack pipeline and file
@@ -527,13 +640,28 @@ final class AppStore {
         wizardLog = []
         let profile = activeProfile
         let wizard = wizard
+        let previousIDs = Set(generatedVideos.map(\.id))
         wizardTask = Task {
             await wizard.run(options: options, profile: profile, database: database) { message in
                 Task { @MainActor in self.wizardLog.append(message) }
             }
             isWizardRunning = false
-            refreshAll()
+            await refreshAllNow()
+            queueComparisons(previousIDs: previousIDs)
         }
+    }
+
+    /// New multi-variation batches from the finished run become A/B picks;
+    /// each choice is preference data for future generations.
+    private func queueComparisons(previousIDs: Set<Int64>) {
+        let fresh = generatedVideos.filter { !previousIDs.contains($0.id) && $0.batchID != nil }
+        let batches = Dictionary(grouping: fresh) { $0.batchID! }
+            .filter { $0.value.count > 1 }
+            .map { ComparisonBatch(id: $0.key, videos: $0.value.sorted { $0.id < $1.id }) }
+            .sorted { ($0.videos.first?.id ?? 0) < ($1.videos.first?.id ?? 0) }
+        guard !batches.isEmpty else { return }
+        comparisonQueue = batches
+        pendingComparison = batches.first
     }
 
     func cancelWizard() {

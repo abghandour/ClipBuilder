@@ -150,6 +150,43 @@ actor Database {
     );
     CREATE INDEX IF NOT EXISTS idx_ig_media_account ON ig_media(account_id, posted_at);
 
+    CREATE TABLE IF NOT EXISTS generation_reviews (
+        id INTEGER PRIMARY KEY,
+        generated_video_id INTEGER NOT NULL UNIQUE REFERENCES generated_videos(id) ON DELETE CASCADE,
+        verdict INTEGER NOT NULL DEFAULT 0,
+        dimensions_json TEXT NOT NULL DEFAULT '{}',
+        note TEXT NOT NULL DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS clip_reviews (
+        id INTEGER PRIMARY KEY,
+        generated_video_id INTEGER NOT NULL REFERENCES generated_videos(id) ON DELETE CASCADE,
+        clip_index INTEGER NOT NULL,
+        scene_id INTEGER,
+        verdict INTEGER NOT NULL,
+        reasons_json TEXT NOT NULL DEFAULT '[]',
+        UNIQUE(generated_video_id, clip_index)
+    );
+
+    CREATE TABLE IF NOT EXISTS wizard_preferences (
+        id INTEGER PRIMARY KEY,
+        chosen_video_id INTEGER REFERENCES generated_videos(id) ON DELETE SET NULL,
+        rejected_video_id INTEGER REFERENCES generated_videos(id) ON DELETE SET NULL,
+        chosen_rationale TEXT NOT NULL DEFAULT '',
+        rejected_rationale TEXT NOT NULL DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS wizard_lessons (
+        id INTEGER PRIMARY KEY,
+        text TEXT NOT NULL,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        evidence TEXT NOT NULL DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS ig_templates (
         id INTEGER PRIMARY KEY,
         media_id INTEGER NOT NULL UNIQUE REFERENCES ig_media(id) ON DELETE CASCADE,
@@ -185,7 +222,8 @@ actor Database {
         let textColumns: [(table: String, columns: [String])] = [
             ("generated_videos", ["caption", "drive_file_id", "drive_link",
                                   "caption_provider", "wizard_provider",
-                                  "caption_model", "wizard_model"]),
+                                  "caption_model", "wizard_model",
+                                  "rationale", "batch_id"]),
             ("videos", ["drive_file_id", "drive_link",
                         "analyzer_provider", "visual_analyzer_provider",
                         "speech_analyzer_provider", "analyzer_model",
@@ -209,6 +247,10 @@ actor Database {
         }
         if !sceneColumns.contains("free_crops") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN free_crops TEXT")
+        }
+        let generatedColumns = try connection.columnNames(of: "generated_videos")
+        if !generatedColumns.contains("deleted") {
+            try connection.execute("ALTER TABLE generated_videos ADD COLUMN deleted INTEGER DEFAULT 0")
         }
     }
 
@@ -510,29 +552,40 @@ actor Database {
 
     @discardableResult
     func insertGeneratedVideo(path: String, duration: Double, timelineJSON: String,
-                              wizardProvider: String?, wizardModel: String?) throws -> Int64 {
+                              wizardProvider: String?, wizardModel: String?,
+                              rationale: String? = nil, batchID: String? = nil) throws -> Int64 {
         try connection.execute("""
-            INSERT INTO generated_videos (path, duration, timeline_json, wizard_provider, wizard_model)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO generated_videos (path, duration, timeline_json, wizard_provider, wizard_model,
+                                          rationale, batch_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """, [.text(path), .real(duration), .text(timelineJSON),
                   wizardProvider.map(SQLValue.text) ?? .null,
-                  wizardModel.map(SQLValue.text) ?? .null])
+                  wizardModel.map(SQLValue.text) ?? .null,
+                  rationale.map(SQLValue.text) ?? .null,
+                  batchID.map(SQLValue.text) ?? .null])
         return connection.lastInsertRowID
     }
 
     func fetchGeneratedVideos() throws -> [GeneratedVideoRecord] {
-        try connection.query("SELECT * FROM generated_videos ORDER BY generated_at DESC, id DESC").map {
-            GeneratedVideoRecord(id: $0["id"]?.intValue ?? 0,
-                                 path: $0["path"]?.stringValue ?? "",
-                                 duration: $0["duration"]?.doubleValue ?? 0,
-                                 timelineJSON: $0["timeline_json"]?.stringValue ?? "[]",
-                                 caption: $0["caption"]?.stringValue ?? "",
-                                 generatedAt: $0["generated_at"]?.stringValue,
-                                 wizardProvider: $0["wizard_provider"]?.stringValue,
-                                 wizardModel: $0["wizard_model"]?.stringValue,
-                                 captionProvider: $0["caption_provider"]?.stringValue,
-                                 captionModel: $0["caption_model"]?.stringValue)
-        }
+        try connection.query("""
+            SELECT * FROM generated_videos WHERE COALESCE(deleted, 0) = 0
+            ORDER BY generated_at DESC, id DESC
+            """).map(Self.generatedVideoRecord)
+    }
+
+    private static func generatedVideoRecord(_ row: SQLRow) -> GeneratedVideoRecord {
+        GeneratedVideoRecord(id: row["id"]?.intValue ?? 0,
+                             path: row["path"]?.stringValue ?? "",
+                             duration: row["duration"]?.doubleValue ?? 0,
+                             timelineJSON: row["timeline_json"]?.stringValue ?? "[]",
+                             caption: row["caption"]?.stringValue ?? "",
+                             generatedAt: row["generated_at"]?.stringValue,
+                             wizardProvider: row["wizard_provider"]?.stringValue,
+                             wizardModel: row["wizard_model"]?.stringValue,
+                             captionProvider: row["caption_provider"]?.stringValue,
+                             captionModel: row["caption_model"]?.stringValue,
+                             rationale: row["rationale"]?.stringValue,
+                             batchID: row["batch_id"]?.stringValue)
     }
 
     func updateGeneratedCaption(id: Int64, caption: String, provider: String?, model: String?) throws {
@@ -544,8 +597,155 @@ actor Database {
                   .integer(id)])
     }
 
+    /// Soft delete: the row (plan, rationale, reviews) is retained as a
+    /// negative training signal for the wizard; only the Library hides it.
     func deleteGeneratedVideo(id: Int64) throws {
-        try connection.execute("DELETE FROM generated_videos WHERE id = ?", [.integer(id)])
+        try connection.execute("UPDATE generated_videos SET deleted = 1 WHERE id = ?", [.integer(id)])
+    }
+
+    // MARK: - Reviews, preferences, lessons
+
+    /// Upsert the structured review for one generated video (whole-video
+    /// verdict + per-clip verdicts replace any previous review).
+    func saveReview(_ review: GenerationReview, clips: [ClipReview]) throws {
+        let dimensionsJSON = (try? JSONSerialization.data(withJSONObject: review.dimensions))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        try connection.transaction {
+            try connection.execute("""
+                INSERT INTO generation_reviews (generated_video_id, verdict, dimensions_json, note)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(generated_video_id) DO UPDATE SET
+                    verdict=excluded.verdict,
+                    dimensions_json=excluded.dimensions_json,
+                    note=excluded.note,
+                    created_at=datetime('now')
+                """, [.integer(review.generatedVideoID), .integer(Int64(review.verdict)),
+                      .text(dimensionsJSON), .text(review.note)])
+            try connection.execute("DELETE FROM clip_reviews WHERE generated_video_id = ?",
+                                   [.integer(review.generatedVideoID)])
+            for clip in clips {
+                let reasonsJSON = (try? JSONSerialization.data(withJSONObject: clip.reasons))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+                try connection.execute("""
+                    INSERT INTO clip_reviews (generated_video_id, clip_index, scene_id, verdict, reasons_json)
+                    VALUES (?, ?, ?, ?, ?)
+                    """, [.integer(review.generatedVideoID), .integer(Int64(clip.clipIndex)),
+                          clip.sceneID.map(SQLValue.integer) ?? .null,
+                          .integer(Int64(clip.verdict)), .text(reasonsJSON)])
+            }
+        }
+    }
+
+    func fetchReview(generatedVideoID: Int64) throws -> (review: GenerationReview, clips: [ClipReview])? {
+        guard let row = try connection.query(
+            "SELECT * FROM generation_reviews WHERE generated_video_id = ?",
+            [.integer(generatedVideoID)]).first else { return nil }
+        let clipRows = try connection.query(
+            "SELECT * FROM clip_reviews WHERE generated_video_id = ? ORDER BY clip_index",
+            [.integer(generatedVideoID)])
+        return (Self.generationReview(row), clipRows.map(Self.clipReview))
+    }
+
+    /// Newest-first reviews joined with their video's filename and plan
+    /// rationale — the wizard's structured training input.
+    func fetchReviewSummaries(limit: Int) throws -> [ReviewSummary] {
+        let rows = try connection.query("""
+            SELECT r.*, g.path AS video_path, g.rationale AS plan_rationale,
+                   COALESCE(g.deleted, 0) AS video_deleted
+            FROM generation_reviews r JOIN generated_videos g ON g.id = r.generated_video_id
+            ORDER BY r.created_at DESC, r.id DESC LIMIT ?
+            """, [.integer(Int64(limit))])
+        return try rows.map { row in
+            let videoID = row["generated_video_id"]?.intValue ?? 0
+            let clipRows = try connection.query(
+                "SELECT * FROM clip_reviews WHERE generated_video_id = ? ORDER BY clip_index",
+                [.integer(videoID)])
+            let path = row["video_path"]?.stringValue ?? ""
+            return ReviewSummary(review: Self.generationReview(row),
+                                 clips: clipRows.map(Self.clipReview),
+                                 videoFilename: URL(fileURLWithPath: path).lastPathComponent,
+                                 rationale: row["plan_rationale"]?.stringValue,
+                                 videoDeleted: row["video_deleted"]?.boolValue ?? false)
+        }
+    }
+
+    private static func generationReview(_ row: SQLRow) -> GenerationReview {
+        let dimensions = row["dimensions_json"]?.stringValue
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Int] } ?? [:]
+        return GenerationReview(generatedVideoID: row["generated_video_id"]?.intValue ?? 0,
+                                verdict: Int(row["verdict"]?.intValue ?? 0),
+                                dimensions: dimensions,
+                                note: row["note"]?.stringValue ?? "",
+                                createdAt: row["created_at"]?.stringValue)
+    }
+
+    private static func clipReview(_ row: SQLRow) -> ClipReview {
+        let reasons = row["reasons_json"]?.stringValue
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String] } ?? []
+        return ClipReview(clipIndex: Int(row["clip_index"]?.intValue ?? 0),
+                          sceneID: row["scene_id"]?.intValue,
+                          verdict: Int(row["verdict"]?.intValue ?? 0),
+                          reasons: reasons)
+    }
+
+    func addPreference(chosenID: Int64, rejectedID: Int64,
+                       chosenRationale: String, rejectedRationale: String) throws {
+        try connection.execute("""
+            INSERT INTO wizard_preferences (chosen_video_id, rejected_video_id, chosen_rationale, rejected_rationale)
+            VALUES (?, ?, ?, ?)
+            """, [.integer(chosenID), .integer(rejectedID),
+                  .text(chosenRationale), .text(rejectedRationale)])
+    }
+
+    func fetchPreferences(limit: Int) throws -> [PreferenceRecord] {
+        try connection.query("""
+            SELECT * FROM wizard_preferences ORDER BY created_at DESC, id DESC LIMIT ?
+            """, [.integer(Int64(limit))]).map {
+            PreferenceRecord(id: $0["id"]?.intValue ?? 0,
+                             chosenRationale: $0["chosen_rationale"]?.stringValue ?? "",
+                             rejectedRationale: $0["rejected_rationale"]?.stringValue ?? "",
+                             createdAt: $0["created_at"]?.stringValue)
+        }
+    }
+
+    func fetchLessons() throws -> [WizardLesson] {
+        try connection.query("SELECT * FROM wizard_lessons ORDER BY pinned DESC, id").map {
+            WizardLesson(id: $0["id"]?.intValue ?? 0,
+                         text: $0["text"]?.stringValue ?? "",
+                         pinned: $0["pinned"]?.boolValue ?? false,
+                         evidence: $0["evidence"]?.stringValue ?? "")
+        }
+    }
+
+    @discardableResult
+    func addLesson(text: String, pinned: Bool, evidence: String) throws -> Int64 {
+        try connection.execute("INSERT INTO wizard_lessons (text, pinned, evidence) VALUES (?, ?, ?)",
+                               [.text(text), .integer(pinned ? 1 : 0), .text(evidence)])
+        return connection.lastInsertRowID
+    }
+
+    func updateLesson(id: Int64, text: String, pinned: Bool) throws {
+        try connection.execute("""
+            UPDATE wizard_lessons SET text = ?, pinned = ?, updated_at = datetime('now') WHERE id = ?
+            """, [.text(text), .integer(pinned ? 1 : 0), .integer(id)])
+    }
+
+    func deleteLesson(id: Int64) throws {
+        try connection.execute("DELETE FROM wizard_lessons WHERE id = ?", [.integer(id)])
+    }
+
+    /// Distillation output replaces machine-learned lessons; pinned lessons
+    /// are user-owned and never touched.
+    func replaceLearnedLessons(_ lessons: [(text: String, evidence: String)]) throws {
+        try connection.transaction {
+            try connection.execute("DELETE FROM wizard_lessons WHERE pinned = 0")
+            for lesson in lessons {
+                try connection.execute("INSERT INTO wizard_lessons (text, pinned, evidence) VALUES (?, 0, ?)",
+                                       [.text(lesson.text), .text(lesson.evidence)])
+            }
+        }
     }
 
     // MARK: - Wizard research + feedback

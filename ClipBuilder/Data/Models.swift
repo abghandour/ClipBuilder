@@ -81,6 +81,8 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     var wizardModel: String?
     var captionProvider: String?
     var captionModel: String?
+    var rationale: String?
+    var batchID: String?
 
     var url: URL { URL(fileURLWithPath: path) }
     var filename: String { url.lastPathComponent }
@@ -102,6 +104,101 @@ nonisolated struct FeedbackRecord: Identifiable, Sendable, Hashable {
     var createdAt: String?
     var videoPath: String?
     var videoDuration: Double?
+}
+
+/// Structured review of one generated video: whole-video verdict plus
+/// per-dimension thumbs ("hook"/"pacing"/"music"/"scenes" → 1 or -1).
+nonisolated struct GenerationReview: Sendable, Hashable {
+    var generatedVideoID: Int64
+    var verdict: Int              // 1 liked, -1 disliked, 0 unset
+    var dimensions: [String: Int]
+    var note: String
+    var createdAt: String?
+
+    static let dimensionKeys = ["hook", "pacing", "music", "scenes"]
+}
+
+nonisolated struct ClipReview: Sendable, Hashable {
+    var clipIndex: Int
+    var sceneID: Int64?
+    var verdict: Int              // 1 or -1
+    var reasons: [String]
+
+    static let negativeReasons = ["wrong scene", "too long", "too short",
+                                  "bad transition", "text overlay off", "wrong position"]
+}
+
+/// A review joined with its video's name and plan rationale — what the
+/// wizard prompt and the lessons distiller consume.
+nonisolated struct ReviewSummary: Sendable {
+    var review: GenerationReview
+    var clips: [ClipReview]
+    var videoFilename: String
+    var rationale: String?
+    var videoDeleted: Bool
+}
+
+/// One A/B choice between two variations of the same wizard run.
+nonisolated struct PreferenceRecord: Identifiable, Sendable, Hashable {
+    var id: Int64
+    var chosenRationale: String
+    var rejectedRationale: String
+    var createdAt: String?
+}
+
+/// A distilled style rule the wizard applies to every future generation.
+/// Pinned lessons are user-authored hard constraints; unpinned ones are
+/// machine-distilled and replaced by the next distillation pass.
+nonisolated struct WizardLesson: Identifiable, Sendable, Hashable {
+    var id: Int64
+    var text: String
+    var pinned: Bool
+    var evidence: String
+}
+
+/// Variations from one wizard run, presented side by side for an A/B pick.
+nonisolated struct ComparisonBatch: Identifiable, Sendable, Hashable {
+    var id: String                // the shared batch_id
+    var videos: [GeneratedVideoRecord]
+}
+
+/// One clip of a generated video's timeline resolved for the review panel:
+/// which source footage played at that position.
+nonisolated struct ReviewableClip: Identifiable, Sendable, Hashable {
+    var index: Int
+    var sceneID: Int64?
+    var videoFile: String
+    var start: Double
+    var end: Double
+
+    var id: Int { index }
+    var duration: Double { end - start }
+    var url: URL { URL(fileURLWithPath: videoFile) }
+}
+
+extension GeneratedVideoRecord {
+    /// Clips from either stored timeline format: the wizard's flat array
+    /// ([{"type": "clip", ...}]) or the Builder's TimelineDocument object.
+    var reviewableClips: [ReviewableClip] {
+        guard let data = timelineJSON.data(using: .utf8) else { return [] }
+        if let flat = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            return flat.filter { $0["type"] as? String == "clip" }.enumerated().map { index, clip in
+                ReviewableClip(index: index,
+                               sceneID: (clip["id"] as? NSNumber)?.int64Value,
+                               videoFile: clip["video_file"] as? String ?? "",
+                               start: (clip["start"] as? NSNumber)?.doubleValue ?? 0,
+                               end: (clip["end"] as? NSNumber)?.doubleValue ?? 0)
+            }
+        }
+        guard let document = try? JSONDecoder().decode(TimelineDocument.self, from: data) else { return [] }
+        return document.videoTrack.sorted { $0.startTime < $1.startTime }.enumerated().map { index, clip in
+            ReviewableClip(index: index,
+                           sceneID: clip.sceneID,
+                           videoFile: clip.videoFile ?? "",
+                           start: clip.sourceStart ?? 0,
+                           end: clip.sourceEnd ?? (clip.sourceStart ?? 0) + clip.duration)
+        }
+    }
 }
 
 /// One transcript segment as produced by a transcription provider (matches

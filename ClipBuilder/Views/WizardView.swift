@@ -16,6 +16,8 @@ struct WizardView: View {
     @State private var selectedVideoIDs: Set<Int64> = []
     @State private var limitToSelection = false
     @State private var musicCount = 0
+    @State private var newLessonText = ""
+    @State private var showTrainingGuide = false
 
     private var analyzedSceneCount: Int {
         store.scenes.filter { !$0.excluded && !$0.ignored }.count
@@ -31,6 +33,15 @@ struct WizardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("AI Wizard")
         .navigationSubtitle("\(analyzedSceneCount) scenes available")
+        .toolbar {
+            Button("Training Guide", systemImage: "questionmark.circle") {
+                showTrainingGuide = true
+            }
+            .help("How to train the wizard for better results")
+        }
+        .sheet(isPresented: $showTrainingGuide) {
+            HelpSheet()
+        }
         // Loaded once instead of in the Form: availableMusic() lists a
         // directory synchronously, which doesn't belong in a body pass.
         .task { musicCount = WizardEngine.availableMusic().count }
@@ -138,6 +149,39 @@ struct WizardView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Learned Lessons") {
+                if store.lessons.isEmpty {
+                    Text("Nothing learned yet. Review generated reels in the Library (👍/👎 per clip), then distill those reviews into rules the wizard follows every run.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(store.lessons) { lesson in
+                    LessonRow(lesson: lesson)
+                }
+                HStack {
+                    TextField("Add your own rule — saved as pinned", text: $newLessonText)
+                        .onSubmit(addLesson)
+                    Button("Add", action: addLesson)
+                        .disabled(newLessonText.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                HStack {
+                    Button {
+                        store.distillLessons()
+                    } label: {
+                        Label("Distill Lessons from Reviews", systemImage: "sparkles")
+                    }
+                    .disabled(store.isDistillingLessons)
+                    if store.isDistillingLessons {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Spacer()
+                }
+                Text("Distilling replaces unpinned lessons with rules summarized from your reviews, A/B picks, and notes. Pin a lesson (📌) to make it a permanent hard constraint the distiller never touches.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 if store.isWizardRunning {
                     Button(role: .destructive) {
@@ -170,6 +214,11 @@ struct WizardView: View {
         .formStyle(.grouped)
     }
 
+    private func addLesson() {
+        store.addLesson(text: newLessonText)
+        newLessonText = ""
+    }
+
     private func runWizard() {
         var options = WizardOptions()
         options.numberOfVideos = numberOfVideos
@@ -189,6 +238,55 @@ struct WizardView: View {
         store.runWizard(options: options)
     }
 
+}
+
+/// One editable lesson: pin toggle (pinned = permanent hard constraint the
+/// distiller never replaces), inline text editing, evidence, delete.
+private struct LessonRow: View {
+    @Environment(AppStore.self) private var store
+    let lesson: WizardLesson
+
+    @State private var text: String = ""
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Button {
+                store.updateLesson(lesson, pinned: !lesson.pinned)
+            } label: {
+                Image(systemName: lesson.pinned ? "pin.fill" : "pin")
+                    .foregroundStyle(lesson.pinned ? .orange : .secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(lesson.pinned ? "Pinned: permanent hard constraint. Click to unpin."
+                                : "Click to pin — the distiller never replaces pinned lessons")
+
+            VStack(alignment: .leading, spacing: 2) {
+                TextField("Lesson", text: $text, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .onSubmit {
+                        store.updateLesson(lesson, text: text)
+                    }
+                if !lesson.evidence.isEmpty {
+                    Text(lesson.evidence)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Spacer()
+
+            Button {
+                store.deleteLesson(lesson)
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("Delete this lesson")
+        }
+        .onAppear { text = lesson.text }
+        .onChange(of: lesson.text) { _, newValue in text = newValue }
+    }
 }
 
 /// Isolated so per-line log appends don't re-evaluate the whole wizard

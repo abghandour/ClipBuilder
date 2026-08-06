@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light dark">
+<title>Clip Builder — Training the AI Wizard</title>
+<style>
+    @page { size: letter; margin: 22mm 20mm; }
+    body {
+        font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+        color: #1d1d1f;
+        font-size: 11.5pt;
+        line-height: 1.55;
+        max-width: 720px;
+        margin: 0 auto;
+    }
+    h1 {
+        font-size: 24pt;
+        margin-bottom: 2px;
+        letter-spacing: -0.5px;
+    }
+    .subtitle {
+        color: #6e6e73;
+        font-size: 12pt;
+        margin-top: 0;
+        margin-bottom: 28px;
+    }
+    h2 {
+        font-size: 16pt;
+        margin-top: 34px;
+        padding-bottom: 6px;
+        border-bottom: 2px solid #e5e5ea;
+        letter-spacing: -0.3px;
+    }
+    h3 { font-size: 12.5pt; margin-top: 22px; margin-bottom: 6px; }
+    code, pre {
+        font-family: "SF Mono", Menlo, Consolas, monospace;
+        font-size: 10pt;
+        background: #f5f5f7;
+        border-radius: 5px;
+    }
+    code { padding: 1.5px 5px; }
+    pre {
+        padding: 10px 14px;
+        overflow-x: auto;
+        border: 1px solid #e5e5ea;
+    }
+    pre code { padding: 0; background: none; border: none; }
+    ol li, ul li { margin-bottom: 6px; }
+    table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 12px 0;
+        font-size: 10.5pt;
+    }
+    th, td {
+        border: 1px solid #d2d2d7;
+        padding: 7px 10px;
+        text-align: left;
+        vertical-align: top;
+    }
+    th { background: #f5f5f7; }
+    .note {
+        background: #fff8e6;
+        border-left: 4px solid #f5a623;
+        padding: 10px 14px;
+        border-radius: 0 6px 6px 0;
+        margin: 14px 0;
+    }
+    .tip {
+        background: #eef6ee;
+        border-left: 4px solid #34c759;
+        padding: 10px 14px;
+        border-radius: 0 6px 6px 0;
+        margin: 14px 0;
+    }
+    kbd {
+        font-family: -apple-system, sans-serif;
+        background: #f5f5f7;
+        border: 1px solid #d2d2d7;
+        border-bottom-width: 2px;
+        border-radius: 4px;
+        padding: 0 5px;
+        font-size: 10pt;
+    }
+    .step-label { font-weight: 600; }
+    footer {
+        margin-top: 40px;
+        padding-top: 10px;
+        border-top: 1px solid #e5e5ea;
+        color: #6e6e73;
+        font-size: 9.5pt;
+    }
+    /* In-app viewing: breathing room around the content. Print/PDF output
+       gets its margins from @page instead, so scope this to screens. */
+    @media screen {
+        body { padding: 28px 36px 48px; }
+    }
+    figure { margin: 16px 0 20px; }
+    figure img {
+        max-width: 100%;
+        border: 1px solid #d2d2d7;
+        border-radius: 8px;
+        display: block;
+    }
+    figcaption {
+        color: #6e6e73;
+        font-size: 9.5pt;
+        margin-top: 6px;
+    }
+    /* In-app dark mode (the PDF/print rendering always uses light) */
+    @media (prefers-color-scheme: dark) {
+        body { background: #1e1e1e; color: #f5f5f7; }
+        .subtitle, footer { color: #98989d; }
+        h2 { border-bottom-color: #3a3a3c; }
+        code, pre, th, kbd { background: #2c2c2e; }
+        pre, th, td, kbd { border-color: #48484a; }
+        .note { background: #3a2f14; }
+        .tip { background: #1c3222; }
+        footer { border-top-color: #3a3a3c; }
+        figure img { border-color: #48484a; }
+        figcaption { color: #98989d; }
+    }
+</style>
+</head>
+<body>
+
+<h1>Training the AI Wizard</h1>
+<p class="subtitle">How to teach Clip Builder your taste, step by step — so every batch of reels gets closer to what you want</p>
+
+<h2>1. How Training Works</h2>
+<p>Clip Builder doesn't retrain an AI model on your Mac. Instead, every rating you give is saved in your profile's database and turned into <strong>written instructions the AI reads before planning each new reel</strong>. The loop looks like this:</p>
+<ol>
+    <li><span class="step-label">Generate</span> reels with the AI Wizard.</li>
+    <li><span class="step-label">Rate</span> the results — thumbs up/down on whole reels, individual clips, and side-by-side variations.</li>
+    <li><span class="step-label">Distill</span> those ratings into a short rulebook of "Learned Lessons".</li>
+    <li><span class="step-label">Generate again</span> — the wizard applies the lessons plus your most recent ratings automatically.</li>
+</ol>
+<p>The more you rate, the sharper the rulebook gets. Each training signal is described below, in the order you'll typically use them. All training is <strong>per profile</strong>, so each brand learns its own style.</p>
+
+<h2>2. Step 0 — Grade Your Scenes (before the first run)</h2>
+<p>Even before the wizard has produced anything, you can steer which footage it reaches for:</p>
+<ol>
+    <li>Open the <span class="step-label">Scenes</span> tab.</li>
+    <li>Give strong scenes a <span class="step-label">👍</span> (grade 5) and weak ones a <span class="step-label">👎</span> (grade 1). The wizard sees each scene's average grade (e.g. <code>grade:4.2/5</code>) when choosing clips.</li>
+    <li>Mark your best material with the <span class="step-label">♥ Favorite</span> button.</li>
+    <li>Use <span class="step-label">Exclude</span> on footage the wizard should never touch — excluded scenes are hidden from it entirely.</li>
+</ol>
+<figure>
+    <img src="help-scenes.png" alt="The Scenes tab with per-scene grade, favorite, and exclude controls">
+    <figcaption>The Scenes tab — 👍/👎 grades, ♥ favorites, and excludes steer what the wizard picks from.</figcaption>
+</figure>
+<div class="tip"><strong>Tip:</strong> five minutes of grading after each Analyze run is the best "day zero" training you can do — it shapes clip selection before a single review exists.</div>
+
+<h2>3. Step 1 — Generate Variations to Compare</h2>
+<p>The fastest way to teach the wizard your taste is to let it try several approaches and tell it which one won:</p>
+<ol>
+    <li>Open the <span class="step-label">AI Wizard</span> tab.</li>
+    <li>Set <span class="step-label">Variations per video</span> to 2 or 3 (up to 5). Each variation uses a different creative approach — a different hook, pacing, or scene selection.</li>
+    <li>Click <span class="step-label">Generate Reels</span>.</li>
+    <li>When the run finishes, the <span class="step-label">"Which variation is best?"</span> sheet appears with the variations side by side. Watch them, then click <span class="step-label">Pick This One</span> under the winner — or <span class="step-label">Skip — don't record a preference</span> if none stands out.</li>
+</ol>
+<figure>
+    <img src="help-wizard.png" alt="The AI Wizard tab with the variations stepper and Learned Lessons section">
+    <figcaption>The AI Wizard tab — output settings, AI Instructions, and the Learned Lessons rulebook.</figcaption>
+</figure>
+<p>Your pick is stored as an A/B preference: the wizard remembers <em>why</em> the winner's approach beat each loser's, and favors winning strategies in future runs.</p>
+<div class="note"><strong>Note:</strong> the wizard needs analyzed footage to work with. If the tab says "Analyze some videos first", run the <em>Analyze</em> tab on your Input folder before generating.</div>
+
+<h2>4. Step 2 — Review Finished Reels in the Library</h2>
+<p>This is the highest-leverage training signal. It's designed to take about ten seconds per reel:</p>
+<ol>
+    <li>Open the <span class="step-label">Library</span> tab and watch a generated reel.</li>
+    <li>Click the <span class="step-label">👍 Review</span> button on its card. The review sheet opens.</li>
+    <li>Set the <span class="step-label">Overall</span> verdict: 👍 or 👎. (Tap the active thumb again to clear it.)</li>
+    <li>Rate the four dimensions that apply: <span class="step-label">Hook</span>, <span class="step-label">Pacing</span>, <span class="step-label">Music</span>, and <span class="step-label">Scene choice</span>. You can skip any dimension you have no opinion on.</li>
+    <li>In the <span class="step-label">Clips</span> strip, rate the individual picks the wizard made. When you thumbs-down a clip, a <span class="step-label">Why?</span> menu appears — check every reason that applies: <em>wrong scene, too long, too short, bad transition, text overlay off, wrong position</em>.</li>
+    <li>Use the <span class="step-label">"Anything else?"</span> field for anything the buttons can't say — your note is quoted verbatim to the AI in future runs.</li>
+    <li>Click <span class="step-label">Save Review</span>. You can reopen and edit a review at any time.</li>
+</ol>
+<figure>
+    <img src="help-review.png" alt="The review sheet with overall verdict, dimension thumbs, note field, and clip strip">
+    <figcaption>The review sheet — overall and per-dimension thumbs, a free-text note, and per-clip ratings with reasons.</figcaption>
+</figure>
+<div class="tip"><strong>Tip:</strong> always pick a reason when you thumbs-down a clip. "Bad — too long, wrong scene" teaches the wizard something concrete; a bare 👎 teaches it much less. Scenes you flag as bad picks are avoided in future reels, and scenes you flag as good picks are favored.</div>
+<p>Deleting a reel is also a signal — the wizard is told when a reviewed reel was deleted and treats it as a strong negative.</p>
+
+<h2>5. Step 3 — Distill Lessons into a Rulebook</h2>
+<p>After you've reviewed a handful of reels (three to five is a good start), compress that history into rules:</p>
+<ol>
+    <li>Open the <span class="step-label">AI Wizard</span> tab and find the <span class="step-label">Learned Lessons</span> section.</li>
+    <li>Click <span class="step-label">Distill Lessons from Reviews</span> (the ✨ button). The AI reads all your reviews, clip ratings, A/B picks, and notes, and writes at most <strong>10 short imperative rules</strong> — e.g. "Open with the highest-energy scene" or "Keep clips under 3 seconds".</li>
+    <li>Read the result. Each lesson shows the evidence it was based on; you can edit a lesson inline or delete it with the trash button.</li>
+</ol>
+<p>These lessons are injected into every future wizard run as hard guidance. Distillation only happens when you click the button — it never runs on its own — so re-distill whenever you've accumulated a new batch of reviews.</p>
+<div class="note"><strong>Important:</strong> distilling <em>replaces</em> all unpinned lessons with a fresh set. Pin (📌) any rule that must survive before distilling again. The distiller looks for <em>recurring patterns</em>, so a one-off complaint usually won't become a lesson — if something matters, say it in multiple reviews, or add it yourself as a pinned rule (next section).</div>
+
+<h2>6. Step 4 — Pin Rules and Add Your Own</h2>
+<p>Pinned lessons are permanent hard constraints — the wizard must follow them in every run, and distillation never touches them.</p>
+<ul>
+    <li>To protect a distilled lesson, click its <span class="step-label">📌 pin</span> toggle.</li>
+    <li>To write your own rule, type it into the <span class="step-label">"Add your own rule — saved as pinned"</span> field and click <span class="step-label">Add</span>. Phrase rules as short commands: <em>"Never use slow-motion openings"</em>, <em>"Always end on the brand logo scene"</em>.</li>
+</ul>
+<div class="tip"><strong>Pinned rule or AI Instructions?</strong> The wizard tab's <em>AI Instructions</em> field is the highest-priority input, but it's a <strong>per-run</strong> override (e.g. "today, always open with a knockout"). For anything that should apply <em>every</em> run, use a pinned lesson instead.</div>
+
+<h2>7. What the Wizard Reads Each Run</h2>
+<p>Every time you click <span class="step-label">Generate Reels</span>, the wizard automatically loads your training signals — there's nothing to enable:</p>
+<table>
+    <tr><th>Signal</th><th>Where you create it</th><th>How the wizard uses it</th></tr>
+    <tr><td>Learned Lessons</td><td>Wizard tab → Distill / Add rule</td><td>All lessons applied every run; pinned rules are hard constraints</td></tr>
+    <tr><td>Reviews</td><td>Library → Review sheet</td><td>The 10 most recent reviews, including per-clip verdicts and reasons</td></tr>
+    <tr><td>A/B picks</td><td>"Which variation is best?" sheet</td><td>The 10 most recent picks — "chose X over Y" with rationale; winning strategies are built on</td></tr>
+    <tr><td>Notes</td><td>Review sheet → "Anything else?"</td><td>Your latest notes, quoted verbatim</td></tr>
+    <tr><td>Scene grades, favorites, excludes</td><td>Scenes tab</td><td>Grades and favorites steer clip selection; excluded scenes are never used</td></tr>
+</table>
+<p>Because only the most <em>recent</em> reviews and picks are loaded in full, <strong>recency beats volume</strong>: if your taste changes, your newest ratings win over older ones. Older history isn't lost — it's what the Distill step compacts into lessons.</p>
+
+<h2>8. A Good Training Routine</h2>
+<ol>
+    <li>After each <span class="step-label">Analyze</span> run, spend a few minutes grading and excluding scenes.</li>
+    <li>Generate with <span class="step-label">2–3 variations</span> and always answer the comparison sheet.</li>
+    <li><span class="step-label">Review every reel</span> you actually watch — ten seconds each, with reasons on every clip 👎.</li>
+    <li>After every 3–5 reviews, click <span class="step-label">Distill Lessons from Reviews</span>, then read, edit, and pin the results.</li>
+    <li>Keep the rulebook small and current — delete lessons that no longer apply. Ten sharp rules beat a long contradictory list.</li>
+</ol>
+<p>Within a few cycles, the wizard's first drafts should start looking like reels you'd have cut yourself.</p>
+
+<footer>Clip Builder — Training Guide · August 2026</footer>
+
+</body>
+</html>

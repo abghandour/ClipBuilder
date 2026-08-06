@@ -64,6 +64,14 @@ else
     echo "    ! Chrome not found — regenerate docs/ClipBuilder-Getting-Started.pdf manually"
 fi
 
+# ----------------------------------------------- training guide screenshots
+step "Refreshing Training Guide screenshots"
+if "$REPO_ROOT/scripts/capture_help_screenshots.sh"; then
+    echo "    screenshots refreshed"
+else
+    echo "    ! capture incomplete — shipping the existing screenshots"
+fi
+
 # ------------------------------------------------------------- build + sign
 step "Building and notarizing pkg"
 "$REPO_ROOT/scripts/make_pkg.sh"
@@ -72,7 +80,8 @@ PKG="$DIST_DIR/ClipBuilder-$VERSION.pkg"
 
 # --------------------------------------------------------- commit + publish
 step "Committing, tagging v$VERSION, pushing"
-git -C "$REPO_ROOT" add "$PBXPROJ" "$GUIDE" "$REPO_ROOT/docs/ClipBuilder-Getting-Started.pdf"
+git -C "$REPO_ROOT" add "$PBXPROJ" "$GUIDE" "$REPO_ROOT/docs/ClipBuilder-Getting-Started.pdf" \
+    "$REPO_ROOT/ClipBuilder/Resources"
 git -C "$REPO_ROOT" commit -m "Release $VERSION (build $NEW_BUILD)"
 git -C "$REPO_ROOT" tag "v$VERSION"
 git -C "$REPO_ROOT" push origin HEAD "v$VERSION"

@@ -144,6 +144,9 @@ struct MainWindowView: View {
                 .help("Active brand profile")
             }
         }
+        .sheet(item: $store.pendingComparison) { batch in
+            ComparisonSheet(batch: batch)
+        }
         .alert("Error", isPresented: Binding(
             get: { store.currentError != nil },
             set: { if !$0 { store.dismissCurrentError() } }
