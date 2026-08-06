@@ -165,7 +165,14 @@ actor Database {
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
         connection = try SQLiteConnection(path: path.path)
-        try connection.execute("PRAGMA journal_mode=WAL")
+        do {
+            try connection.execute("PRAGMA journal_mode=WAL")
+        } catch {
+            // WAL needs mmap + shared-memory sidecar files, which some
+            // filesystems (cloud-synced or network folders) can't provide.
+            // The rollback journal is slower but works everywhere.
+            try connection.execute("PRAGMA journal_mode=DELETE")
+        }
         try connection.execute("PRAGMA foreign_keys=ON")
         try connection.executeScript(Self.schema)
         try Self.migrate(connection)

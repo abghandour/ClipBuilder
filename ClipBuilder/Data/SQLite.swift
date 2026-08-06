@@ -11,9 +11,18 @@ nonisolated enum SQLiteError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .open(let m): return "SQLite open failed: \(m)"
-        case .prepare(let m, let sql): return "SQLite prepare failed: \(m) — \(sql)"
-        case .step(let m, let sql): return "SQLite step failed: \(m) — \(sql)"
+        case .prepare(let m, let sql): return "SQLite prepare failed: \(m) — \(Self.snippet(sql))"
+        case .step(let m, let sql): return "SQLite step failed: \(m) — \(Self.snippet(sql))"
         }
+    }
+
+    /// Errors surface in alert dialogs; a multi-statement script would dump
+    /// pages of SQL there, and one line identifies the statement just as well.
+    private static func snippet(_ sql: String) -> String {
+        let flattened = sql.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .joined(separator: " ")
+        return flattened.count > 120 ? flattened.prefix(120) + "…" : flattened
     }
 }
 
@@ -64,7 +73,7 @@ nonisolated final class SQLiteConnection {
     init(path: String) throws {
         var db: OpaquePointer?
         if sqlite3_open(path, &db) != SQLITE_OK {
-            let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
+            let message = db.map(Self.describeError) ?? "unknown"
             sqlite3_close(db)
             throw SQLiteError.open(message)
         }
@@ -75,8 +84,14 @@ nonisolated final class SQLiteConnection {
         sqlite3_close_v2(handle)
     }
 
+    /// The extended result code pins down failures the base message lumps
+    /// together — e.g. which WAL shared-memory step raised "disk I/O error".
+    private static func describeError(_ handle: OpaquePointer) -> String {
+        "\(String(cString: sqlite3_errmsg(handle))) (extended code \(sqlite3_extended_errcode(handle)))"
+    }
+
     private var errorMessage: String {
-        handle.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
+        handle.map(Self.describeError) ?? "unknown"
     }
 
     private func prepare(_ sql: String, _ params: [SQLValue]) throws -> OpaquePointer {
@@ -112,11 +127,8 @@ nonisolated final class SQLiteConnection {
 
     /// Run several `;`-separated statements (schema creation).
     func executeScript(_ sql: String) throws {
-        var errMsg: UnsafeMutablePointer<CChar>?
-        guard sqlite3_exec(handle, sql, nil, nil, &errMsg) == SQLITE_OK else {
-            let message = errMsg.map { String(cString: $0) } ?? "unknown"
-            sqlite3_free(errMsg)
-            throw SQLiteError.step(message, sql: sql)
+        guard sqlite3_exec(handle, sql, nil, nil, nil) == SQLITE_OK else {
+            throw SQLiteError.step(errorMessage, sql: sql)
         }
     }
 
