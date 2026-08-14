@@ -25,7 +25,7 @@ struct ClipBuilderApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             }
-            // ⌘1–⌘6 section switching, routed through requestedSection —
+            // ⌘1–⌘9 section switching, routed through requestedSection —
             // the same channel views use — so the sidebar stays in sync.
             CommandGroup(after: .sidebar) {
                 Divider()
@@ -46,29 +46,32 @@ struct ClipBuilderApp: App {
 }
 
 /// Case order follows the workflow (footage in → finished reel out); it also
-/// drives the sidebar order and the ⌘1–⌘6 shortcuts.
+/// drives the sidebar order and the ⌘1–⌘9 shortcuts.
 enum SidebarSection: String, CaseIterable, Identifiable {
     case analyze
     case scenes
     case instagram
+    case music
+    case fonts
+    case images
+    case overlays
     case wizard
     case builder
     case library
 
     var id: String { rawValue }
 
-    /// Sidebar groups: what feeds creation (footage and reference templates),
-    /// where reels are made, and where they end up.
-    static let groups: [(title: String, sections: [SidebarSection])] = [
-        ("Source", [.analyze, .scenes, .instagram]),
-        ("Create", [.wizard, .builder]),
-        ("Output", [.library]),
-    ]
+    /// Source > Videos: footage in, scene detection, reference reels.
+    static let videoSections: [SidebarSection] = [.analyze, .scenes, .instagram]
+    /// Source asset libraries: media browsers plus overlay templates.
+    static let assetSections: [SidebarSection] = [.music, .fonts, .images, .overlays]
+    static let createSections: [SidebarSection] = [.wizard, .builder]
+    static let outputSections: [SidebarSection] = [.library]
 
-    /// ⌘1–⌘6, in workflow order.
+    /// ⌘1–⌘9 in workflow order; the tenth section wraps to ⌘0.
     var shortcut: KeyEquivalent? {
-        guard let index = Self.allCases.firstIndex(of: self),
-              let digit = "\(index + 1)".first else { return nil }
+        guard let index = Self.allCases.firstIndex(of: self), index < 10,
+              let digit = "\((index + 1) % 10)".first else { return nil }
         return KeyEquivalent(digit)
     }
 
@@ -80,6 +83,10 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .analyze: return "Analyze"
         case .wizard: return "AI Wizard"
         case .instagram: return "Instagram"
+        case .music: return AssetKind.music.title
+        case .fonts: return AssetKind.fonts.title
+        case .images: return AssetKind.images.title
+        case .overlays: return "Overlays"
         }
     }
 
@@ -91,6 +98,10 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .analyze: return "sparkles.rectangle.stack"
         case .wizard: return "wand.and.stars"
         case .instagram: return "play.rectangle.on.rectangle"
+        case .music: return AssetKind.music.systemImage
+        case .fonts: return AssetKind.fonts.systemImage
+        case .images: return AssetKind.images.systemImage
+        case .overlays: return "character.textbox"
         }
     }
 }
@@ -98,18 +109,25 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 struct MainWindowView: View {
     @Environment(AppStore.self) private var store
     @State private var selection: SidebarSection? = .analyze
+    @State private var videosExpanded = true
 
     var body: some View {
         @Bindable var store = store
         NavigationSplitView {
             List(selection: $selection) {
-                ForEach(SidebarSection.groups, id: \.title) { group in
-                    Section(group.title) {
-                        ForEach(group.sections) { section in
-                            Label(section.title, systemImage: section.systemImage)
-                                .tag(section)
-                        }
+                Section("Source") {
+                    DisclosureGroup(isExpanded: $videosExpanded) {
+                        sidebarItems(SidebarSection.videoSections)
+                    } label: {
+                        Label("Videos", systemImage: "video")
                     }
+                    sidebarItems(SidebarSection.assetSections)
+                }
+                Section("Create") {
+                    sidebarItems(SidebarSection.createSections)
+                }
+                Section("Output") {
+                    sidebarItems(SidebarSection.outputSections)
                 }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
@@ -121,12 +139,23 @@ struct MainWindowView: View {
             case .analyze: AnalyzeView()
             case .wizard: WizardView()
             case .instagram: InstagramView()
+            case .music: AssetBrowserView(kind: .music)
+            case .fonts: AssetBrowserView(kind: .fonts)
+            case .images: AssetBrowserView(kind: .images)
+            case .overlays: OverlayTemplatesView()
             }
         }
         .onChange(of: store.requestedSection) { _, requested in
             if let requested {
                 selection = requested
                 store.requestedSection = nil
+            }
+        }
+        // ⌘-shortcut or programmatic jumps into a Videos section must reveal
+        // the row even when the disclosure group is collapsed.
+        .onChange(of: selection) { _, selected in
+            if let selected, SidebarSection.videoSections.contains(selected) {
+                videosExpanded = true
             }
         }
         .navigationTitle("ClipBuilder")
@@ -190,6 +219,16 @@ struct MainWindowView: View {
         .task {
             store.checkForUpdatesAtLaunch()
             store.ensureToolsAtLaunch()
+            AssetStore.ensureRoots()
+            AssetStore.registerFonts()
+        }
+    }
+
+    /// Rows for one sidebar group.
+    private func sidebarItems(_ sections: [SidebarSection]) -> some View {
+        ForEach(sections) { section in
+            Label(section.title, systemImage: section.systemImage)
+                .tag(section)
         }
     }
 

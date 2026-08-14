@@ -45,10 +45,54 @@ struct WizardView: View {
         // Loaded once instead of in the Form: availableMusic() lists a
         // directory synchronously, which doesn't belong in a body pass.
         .task { musicCount = WizardEngine.availableMusic().count }
+        // Seed the form from an Analyze "Generate Sample Video" request —
+        // on arrival, and again in place when its AI interpretation lands.
+        .task {
+            if let handoff = store.pendingWizardPrompt { applyPromptHandoff(handoff) }
+        }
+        .onChange(of: store.pendingWizardPrompt) { _, handoff in
+            if let handoff { applyPromptHandoff(handoff) }
+        }
     }
 
     private var configurationForm: some View {
         Form {
+            if let handoff = store.pendingWizardPrompt {
+                Section("Sample Video Request") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("“\(handoff.description)”")
+                            Spacer()
+                            Button {
+                                store.pendingWizardPrompt = nil
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove the request — the settings it filled in stay editable below")
+                        }
+                        if let status = handoff.statusMessage {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text(status)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if handoff.parseFailed {
+                            Text("Couldn't interpret the request with AI — it was placed in AI Instructions as-is.")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                        } else if let parsed = handoff.parsed {
+                            Text(parsedSummary(parsed))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
             if let handoff = store.pendingWizardTemplate {
                 Section("Reference Template") {
                     HStack(spacing: 12) {
@@ -219,6 +263,51 @@ struct WizardView: View {
         newLessonText = ""
     }
 
+    /// Fill the form from an Analyze request. Only fields the user actually
+    /// specified are touched; before/without an AI interpretation the raw
+    /// description rides as instructions so nothing is lost. Duration and
+    /// overlay choices aren't form fields — runWizard() reads them straight
+    /// from the handoff, and the request card shows them.
+    private func applyPromptHandoff(_ handoff: WizardPromptHandoff) {
+        if !handoff.videoIDs.isEmpty {
+            selectedVideoIDs = handoff.videoIDs
+            limitToSelection = true
+        }
+        guard let parsed = handoff.parsed else {
+            aiInstructions = handoff.description
+            return
+        }
+        if let count = parsed.numberOfVideos { numberOfVideos = count }
+        if let value = parsed.useMusic { useMusic = value }
+        if let value = parsed.addCaptions { addCaptions = value }
+        if let value = parsed.enableTextOverlays { enableTextOverlays = value }
+        var lines: [String] = []
+        if !parsed.contentTags.isEmpty {
+            lines.append("Only use footage tagged: \(parsed.contentTags.joined(separator: ", ")). Skip everything else.")
+        }
+        if !parsed.residualInstructions.isEmpty {
+            lines.append(parsed.residualInstructions)
+        }
+        aiInstructions = lines.joined(separator: "\n")
+    }
+
+    private func parsedSummary(_ parsed: ParsedWizardRequest) -> String {
+        var parts: [String] = []
+        if let duration = parsed.targetDurationSeconds { parts.append("~\(duration)s") }
+        if let count = parsed.numberOfVideos { parts.append("\(count) video(s)") }
+        if !parsed.contentTags.isEmpty {
+            parts.append("footage: \(parsed.contentTags.joined(separator: ", "))")
+        }
+        if let template = parsed.overlayTemplate { parts.append("overlay: \(template)") }
+        if let text = parsed.overlayText { parts.append("text: “\(text)”") }
+        if parsed.useMusic == false { parts.append("no music") }
+        if parsed.addCaptions == true { parts.append("captions") }
+        guard !parts.isEmpty else {
+            return "No specific settings detected — the description rides as AI instructions."
+        }
+        return "Applied: " + parts.joined(separator: " · ")
+    }
+
     private func runWizard() {
         var options = WizardOptions()
         options.numberOfVideos = numberOfVideos
@@ -234,6 +323,13 @@ struct WizardView: View {
         if let handoff = store.pendingWizardTemplate {
             options.templateJSON = handoff.templateJSON
             options.templateLabel = handoff.label
+        }
+        // Same for a sample-video request: its duration/overlay constraints
+        // apply until the request card is dismissed.
+        if let parsed = store.pendingWizardPrompt?.parsed {
+            options.targetDurationSeconds = parsed.targetDurationSeconds
+            options.pinnedOverlayTemplate = parsed.overlayTemplate
+            options.pinnedOverlayText = parsed.overlayText
         }
         store.runWizard(options: options)
     }

@@ -5,6 +5,7 @@ enum TimelineSelection: Equatable {
     case clip(UUID)
     case sound(UUID)
     case text(UUID)
+    case image(UUID)
 }
 
 /// Observable editing model for the Clip Builder timeline: owns the document,
@@ -79,6 +80,7 @@ final class BuilderTimelineModel {
         case .clip(let uid): return document.videoTrack.contains { $0.uid == uid }
         case .sound(let uid): return document.soundTrack.contains { $0.uid == uid }
         case .text(let uid): return document.textOverlays.contains { $0.uid == uid }
+        case .image(let uid): return document.imageOverlays.contains { $0.uid == uid }
         }
     }
 
@@ -167,7 +169,8 @@ final class BuilderTimelineModel {
         let clipEnd = document.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0
         let soundEnd = document.soundTrack.map { $0.startTime + $0.duration }.max() ?? 0
         let textEnd = document.textOverlays.map(\.endTime).max() ?? 0
-        return max(clipEnd, soundEnd, textEnd)
+        let imageEnd = document.imageOverlays.map(\.endTime).max() ?? 0
+        return max(clipEnd, soundEnd, textEnd, imageEnd)
     }
 
     func clips(inTrack track: Int) -> [TimelineClip] {
@@ -411,6 +414,39 @@ final class BuilderTimelineModel {
         return item.uid
     }
 
+    /// Insert a template's items at the playhead: every text and image keeps
+    /// its own look and relative timing, shifted so the composition starts at
+    /// the insertion point. Unbounded items become concrete, lasting to the
+    /// composition's end.
+    func addComposition(_ composition: OverlayComposition, at time: Double? = nil) {
+        guard !composition.isEmpty else { return }
+        registerUndo("Add Overlay Template")
+        let start = Self.snap(time ?? playhead)
+        let total = composition.duration
+        var lastUID: UUID?
+        for template in composition.texts {
+            var item = template
+            item.uid = UUID()
+            item.startTime = start + template.startTime
+            item.endTime = item.startTime
+                + max(0.5, template.unbounded ? total - template.startTime : template.duration)
+            item.unbounded = false
+            document.textOverlays.append(item)
+            lastUID = item.uid
+        }
+        for template in composition.images {
+            var item = template
+            item.uid = UUID()
+            item.startTime = start + template.startTime
+            item.endTime = item.startTime
+                + max(0.5, template.unbounded ? total - template.startTime : template.duration)
+            item.unbounded = false
+            document.imageOverlays.append(item)
+        }
+        if let lastUID { selection = .text(lastUID) }
+        documentDidChange()
+    }
+
     func textIndex(_ uid: UUID) -> Int? {
         document.textOverlays.firstIndex { $0.uid == uid }
     }
@@ -434,6 +470,45 @@ final class BuilderTimelineModel {
         registerUndo("Delete Text")
         document.textOverlays.removeAll { $0.uid == uid }
         if selection == .text(uid) { selection = nil }
+        documentDidChange()
+    }
+
+    // MARK: - Image overlays
+
+    @discardableResult
+    func addImage(path: String, at time: Double? = nil) -> UUID {
+        registerUndo("Add Image")
+        let start = Self.snap(time ?? playhead)
+        let item = ImageOverlayItem(path: path, startTime: start, endTime: start + 3)
+        document.imageOverlays.append(item)
+        selection = .image(item.uid)
+        documentDidChange()
+        return item.uid
+    }
+
+    func imageIndex(_ uid: UUID) -> Int? {
+        document.imageOverlays.firstIndex { $0.uid == uid }
+    }
+
+    func imageItem(_ uid: UUID) -> ImageOverlayItem? {
+        imageIndex(uid).map { document.imageOverlays[$0] }
+    }
+
+    func updateImage(_ uid: UUID, _ mutate: (inout ImageOverlayItem) -> Void) {
+        guard let index = imageIndex(uid) else { return }
+        registerUndo("Edit Image", coalescing: "image-\(uid)")
+        mutate(&document.imageOverlays[index])
+        let item = document.imageOverlays[index]
+        document.imageOverlays[index].startTime = max(0, item.startTime)
+        document.imageOverlays[index].endTime = max(item.startTime + 0.5, item.endTime)
+        documentDidChange()
+    }
+
+    func removeImage(_ uid: UUID) {
+        guard imageIndex(uid) != nil else { return }
+        registerUndo("Delete Image")
+        document.imageOverlays.removeAll { $0.uid == uid }
+        if selection == .image(uid) { selection = nil }
         documentDidChange()
     }
 

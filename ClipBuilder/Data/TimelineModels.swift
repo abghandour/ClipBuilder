@@ -9,6 +9,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     var videoTrack: [TimelineClip] = []
     var soundTrack: [SoundItem] = []
     var textOverlays: [TextOverlayItem] = []
+    var imageOverlays: [ImageOverlayItem] = []
     var trackSettings: [TrackSettings] = TimelineDocument.defaultTrackSettings
     var trackCount: Int = 1                       // 1...3 visible video tracks
     var trackSequential: [Bool] = [true, true, true]
@@ -22,13 +23,14 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     ]
 
     var isEmpty: Bool {
-        videoTrack.isEmpty && soundTrack.isEmpty && textOverlays.isEmpty
+        videoTrack.isEmpty && soundTrack.isEmpty && textOverlays.isEmpty && imageOverlays.isEmpty
     }
 
     enum CodingKeys: String, CodingKey {
         case videoTrack = "video_track"
         case soundTrack = "sound_track"
         case textOverlays = "text_overlays"
+        case imageOverlays = "image_overlays"
         case trackSettings = "track_settings"
         case trackCount = "track_count"
         case trackSequential = "track_sequential"
@@ -43,6 +45,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         videoTrack = try container.decodeIfPresent([TimelineClip].self, forKey: .videoTrack) ?? []
         soundTrack = try container.decodeIfPresent([SoundItem].self, forKey: .soundTrack) ?? []
         textOverlays = try container.decodeIfPresent([TextOverlayItem].self, forKey: .textOverlays) ?? []
+        imageOverlays = try container.decodeIfPresent([ImageOverlayItem].self, forKey: .imageOverlays) ?? []
         var settings = try container.decodeIfPresent([TrackSettings].self, forKey: .trackSettings) ?? []
         // Always keep exactly 3 entries with the UI's positional defaults.
         let defaults = Self.defaultTrackSettings
@@ -300,6 +303,73 @@ nonisolated struct SoundItem: Codable, Sendable, Equatable, Identifiable {
     var id: UUID { uid }
 }
 
+/// One image overlay: a picture from the Images library composited over the
+/// video for a time window, with the same enter/exit transitions as text
+/// overlays. Position/size are fractions of the frame; width sets the scale
+/// and height follows the image's aspect ratio.
+nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable {
+    /// SwiftUI identity only — never encoded.
+    var uid = UUID()
+
+    var path: String = ""               // absolute path into the Images library
+    var startTime: Double = 0
+    var endTime: Double = 3
+    var xFrac: Double = 0.5             // center, as fraction of frame width
+    var yFrac: Double = 0.5             // center, as fraction of frame height
+    var wFrac: Double = 0.3             // width as fraction of frame width
+    var opacity: Double = 1
+    var transIn: String = "fade"
+    var transOut: String = "fade"
+    /// Template-only: ignore endTime and last as long as the whole overlay
+    /// is visible. Resolved to a concrete endTime when the template is
+    /// applied (clip end in the Wizard, composition end in the Builder).
+    var unbounded: Bool = false
+
+    var id: UUID { uid }
+    var duration: Double { max(0, endTime - startTime) }
+    var url: URL { URL(fileURLWithPath: (path as NSString).expandingTildeInPath) }
+    var displayName: String { url.deletingPathExtension().lastPathComponent }
+
+    enum CodingKeys: String, CodingKey {
+        case path, opacity, unbounded
+        case startTime = "start_time"
+        case endTime = "end_time"
+        case xFrac = "x_frac"
+        case yFrac = "y_frac"
+        case wFrac = "w_frac"
+        case transIn = "trans_in"
+        case transOut = "trans_out"
+    }
+
+    init(path: String = "", startTime: Double = 0, endTime: Double = 3) {
+        self.path = path
+        self.startTime = startTime
+        self.endTime = endTime
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        path = try container.decodeIfPresent(String.self, forKey: .path) ?? ""
+        startTime = try container.decodeIfPresent(Double.self, forKey: .startTime) ?? 0
+        endTime = try container.decodeIfPresent(Double.self, forKey: .endTime) ?? 3
+        xFrac = try container.decodeIfPresent(Double.self, forKey: .xFrac) ?? 0.5
+        yFrac = try container.decodeIfPresent(Double.self, forKey: .yFrac) ?? 0.5
+        wFrac = try container.decodeIfPresent(Double.self, forKey: .wFrac) ?? 0.3
+        opacity = try container.decodeIfPresent(Double.self, forKey: .opacity) ?? 1
+        transIn = try container.decodeIfPresent(String.self, forKey: .transIn) ?? "fade"
+        transOut = try container.decodeIfPresent(String.self, forKey: .transOut) ?? "fade"
+        unbounded = try container.decodeIfPresent(Bool.self, forKey: .unbounded) ?? false
+    }
+
+    static func == (lhs: ImageOverlayItem, rhs: ImageOverlayItem) -> Bool {
+        lhs.uid == rhs.uid && lhs.path == rhs.path && lhs.startTime == rhs.startTime
+            && lhs.endTime == rhs.endTime && lhs.xFrac == rhs.xFrac && lhs.yFrac == rhs.yFrac
+            && lhs.wFrac == rhs.wFrac && lhs.opacity == rhs.opacity
+            && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
+            && lhs.unbounded == rhs.unbounded
+    }
+}
+
 /// One text overlay. Optional keys are encoded only when meaningful, matching
 /// the web serializer (bold/italic only when true, fractions only when set).
 nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
@@ -331,6 +401,17 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     var design: String?
     var kicker: String?                 // small label above a hero headline
     var accentColor: String?            // bar/stripe color for hero/tag
+    /// Overlay-template flag: the AI Wizard may replace this text with its
+    /// own copy. Meaningless on timeline overlays.
+    var isDynamic: Bool = false
+    /// Whole-element opacity (text, outline, shadow, and box together);
+    /// boxOpacity stays the background box's own alpha.
+    var opacity: Double = 1
+    /// Background box corner radius in video pixels; nil = legacy 4px.
+    var boxRadius: Double?
+    /// Template-only: ignore endTime and last as long as the whole overlay
+    /// is visible (resolved to a concrete endTime when applied).
+    var unbounded: Bool = false
 
     var duration: Double { max(0, endTime - startTime) }
 
@@ -353,6 +434,9 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         case highlightColor = "highlight_color"
         case design, kicker
         case accentColor = "accent_color"
+        case isDynamic = "dynamic"
+        case opacity, unbounded
+        case boxRadius = "box_radius"
     }
 
     init(text: String = "", startTime: Double = 0, endTime: Double = 3) {
@@ -387,6 +471,10 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         design = try container.decodeIfPresent(String.self, forKey: .design)
         kicker = try container.decodeIfPresent(String.self, forKey: .kicker)
         accentColor = try container.decodeIfPresent(String.self, forKey: .accentColor)
+        isDynamic = try container.decodeIfPresent(Bool.self, forKey: .isDynamic) ?? false
+        opacity = try container.decodeIfPresent(Double.self, forKey: .opacity) ?? 1
+        boxRadius = try container.decodeIfPresent(Double.self, forKey: .boxRadius)
+        unbounded = try container.decodeIfPresent(Bool.self, forKey: .unbounded) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -421,6 +509,10 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         if let design { try container.encode(design, forKey: .design) }
         if let kicker { try container.encode(kicker, forKey: .kicker) }
         if let accentColor { try container.encode(accentColor, forKey: .accentColor) }
+        if isDynamic { try container.encode(true, forKey: .isDynamic) }
+        if opacity < 1 { try container.encode(opacity, forKey: .opacity) }
+        if let boxRadius { try container.encode(boxRadius, forKey: .boxRadius) }
+        if unbounded { try container.encode(true, forKey: .unbounded) }
     }
 
     static func == (lhs: TextOverlayItem, rhs: TextOverlayItem) -> Bool {
@@ -434,7 +526,9 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
             && lhs.strokeColor == rhs.strokeColor && lhs.strokeWidthEm == rhs.strokeWidthEm
             && lhs.shadowOpacity == rhs.shadowOpacity && lhs.highlightColor == rhs.highlightColor
             && lhs.design == rhs.design && lhs.kicker == rhs.kicker
-            && lhs.accentColor == rhs.accentColor
+            && lhs.accentColor == rhs.accentColor && lhs.isDynamic == rhs.isDynamic
+            && lhs.opacity == rhs.opacity && lhs.boxRadius == rhs.boxRadius
+            && lhs.unbounded == rhs.unbounded
     }
 
     var id: UUID { uid }

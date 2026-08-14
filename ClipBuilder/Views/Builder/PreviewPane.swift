@@ -25,6 +25,11 @@ struct PreviewPane: View {
                 ForEach(active) { clip in
                     clipLayer(clip: clip, time: time, frame: frame, model: model)
                 }
+                ForEach(model.document.imageOverlays.filter {
+                    $0.startTime <= time && time < $0.endTime
+                }) { overlay in
+                    ImageOverlayLayer(overlay: overlay, frame: frame)
+                }
                 ForEach(model.document.textOverlays.filter {
                     $0.startTime <= time && time < $0.endTime
                 }) { overlay in
@@ -241,6 +246,55 @@ private struct CropEditorLayer: View {
     }
 }
 
+/// An image overlay in the preview. Drag it to reposition: the drag writes
+/// the same xFrac/yFrac the inspector sliders edit, so both stay in sync.
+private struct ImageOverlayLayer: View {
+    @Environment(AppStore.self) private var store
+    let overlay: ImageOverlayItem
+    let frame: CGSize
+
+    @State private var image: NSImage?
+    @State private var dragStart: CGPoint?
+
+    var body: some View {
+        let width = frame.width * overlay.wFrac
+        let height = image.map { width * $0.size.height / max(1, $0.size.width) } ?? width
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                RoundedRectangle(cornerRadius: 3).fill(.quaternary)
+            }
+        }
+        .frame(width: width, height: height)
+        .opacity(overlay.opacity)
+        .position(x: frame.width * overlay.xFrac, y: frame.height * overlay.yFrac)
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    let model = store.builder
+                    if dragStart == nil {
+                        dragStart = CGPoint(x: overlay.xFrac, y: overlay.yFrac)
+                        model.selection = .image(overlay.uid)
+                    }
+                    guard let start = dragStart else { return }
+                    let newX = min(max(start.x + value.translation.width / frame.width, 0), 1)
+                    let newY = min(max(start.y + value.translation.height / frame.height, 0), 1)
+                    model.updateImage(overlay.uid) {
+                        $0.xFrac = newX
+                        $0.yFrac = newY
+                    }
+                }
+                .onEnded { _ in dragStart = nil }
+        )
+        .task(id: overlay.path) {
+            image = NSImage(contentsOf: overlay.url)
+        }
+    }
+}
+
 /// A text overlay in the preview. Drag it to reposition: the drag writes the
 /// same xFrac/yFrac the inspector sliders edit, so both stay in sync.
 private struct TextOverlayLayer: View {
@@ -269,7 +323,8 @@ private struct TextOverlayLayer: View {
             .padding(4)
             .background(overlay.boxOpacity > 0
                         ? backgroundColor.opacity(overlay.boxOpacity) : .clear,
-                        in: RoundedRectangle(cornerRadius: 3))
+                        in: RoundedRectangle(cornerRadius: (overlay.boxRadius ?? 4) * frame.width / 1080))
+            .opacity(overlay.opacity)
             .position(x: frame.width * x, y: frame.height * y)
             .gesture(
                 DragGesture()

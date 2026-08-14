@@ -70,6 +70,9 @@ final class AppStore {
     /// Template picked in the Instagram tab, consumed by the Wizard's next
     /// run (or dismissed from its chip).
     var pendingWizardTemplate: WizardTemplateHandoff?
+    /// "Generate Sample Video" request from the Analyze tab; the Wizard seeds
+    /// its form from it and keeps it until the user dismisses its card.
+    var pendingWizardPrompt: WizardPromptHandoff?
     /// Set by views (e.g. "Open in Builder") to ask the main window to switch
     /// sidebar sections; the window consumes and clears it.
     var requestedSection: SidebarSection?
@@ -170,6 +173,7 @@ final class AppStore {
         igMedia = []
         igTemplatedMediaIDs = []
         pendingWizardTemplate = nil
+        pendingWizardPrompt = nil
         openActiveProfile()
     }
 
@@ -633,6 +637,49 @@ final class AppStore {
     }
 
     // MARK: - Wizard
+
+    /// "Generate Sample Video" from the Analyze tab: hand the description to
+    /// the Wizard immediately (so the user lands on a live form), then analyze
+    /// any un-analyzed selections and AI-parse the description into settings,
+    /// updating the handoff in place. A failed parse degrades to passing the
+    /// raw description as instructions — this never blocks the wizard.
+    func generateSampleVideo(description: String, videos: [VideoRecord]) {
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !videos.isEmpty else { return }
+        let unanalyzed = videos.filter { $0.visualAnalyzedAt == nil }
+        let willAnalyze = !unanalyzed.isEmpty && !isAnalyzing
+        pendingWizardPrompt = WizardPromptHandoff(
+            description: trimmed,
+            videoIDs: Set(videos.map(\.id)),
+            statusMessage: willAnalyze
+                ? "Analyzing \(unanalyzed.count) video(s), then interpreting your request…"
+                : "Interpreting your request…")
+        requestedSection = .wizard
+        let profile = activeProfile
+        let wizard = wizard
+        Task {
+            if willAnalyze {
+                analyze(videos: unanalyzed)
+                await analysisTask?.value
+                guard pendingWizardPrompt?.description == trimmed else { return }
+                pendingWizardPrompt?.statusMessage = "Interpreting your request…"
+            }
+            do {
+                let parsed = try await wizard.parseRequest(description: trimmed, profile: profile) { message in
+                    Task { @MainActor in self.wizardLog.append(message) }
+                }
+                // The user may have dismissed or replaced the request meanwhile.
+                guard pendingWizardPrompt?.description == trimmed else { return }
+                pendingWizardPrompt?.parsed = parsed
+                pendingWizardPrompt?.statusMessage = nil
+            } catch {
+                guard pendingWizardPrompt?.description == trimmed else { return }
+                pendingWizardPrompt?.statusMessage = nil
+                pendingWizardPrompt?.parseFailed = true
+                wizardLog.append("Could not interpret the request with AI — it will be passed to the wizard as-is. (\(error.userMessage))")
+            }
+        }
+    }
 
     func runWizard(options: WizardOptions) {
         guard let database, !isWizardRunning else { return }

@@ -16,6 +16,46 @@ nonisolated struct WizardOptions: Sendable {
     /// should replicate, plus a human-readable label for logs.
     var templateJSON: String?
     var templateLabel: String?
+    /// Hard duration the user asked for (e.g. "a 15s video") — overrides the
+    /// research/template numbers instead of merely suggesting them.
+    var targetDurationSeconds: Int?
+    /// Overlay choices the user named explicitly. The template is forced onto
+    /// every planned overlay; the text is guaranteed to appear on one clip.
+    var pinnedOverlayTemplate: String?
+    var pinnedOverlayText: String?
+}
+
+/// A plain-language request ("action-packed 15s, fight footage only, use the
+/// Sample 1 overlay saying 'Porrada day!'") decomposed into wizard settings.
+/// nil/empty fields mean the user didn't specify.
+nonisolated struct ParsedWizardRequest: Sendable, Equatable {
+    var targetDurationSeconds: Int?
+    var numberOfVideos: Int?
+    /// Restrict footage to scenes carrying at least one of these tags
+    /// (validated against the profile's tag vocabulary).
+    var contentTags: [String] = []
+    /// Exact saved overlay-template name (validated against the store).
+    var overlayTemplate: String?
+    /// Exact text the user wants displayed on screen.
+    var overlayText: String?
+    var enableTextOverlays: Bool?
+    var addCaptions: Bool?
+    var useMusic: Bool?
+    /// Everything that maps to no setting — fed to the planner as
+    /// highest-priority instructions so no intent is lost.
+    var residualInstructions = ""
+}
+
+/// A "Generate Sample Video" request handed from Analyze to the Wizard;
+/// `parsed` and `statusMessage` update in place while analysis/parsing runs.
+nonisolated struct WizardPromptHandoff: Sendable, Equatable {
+    var description: String
+    var videoIDs: Set<Int64>
+    var parsed: ParsedWizardRequest?
+    /// Non-nil while the request is still being prepared.
+    var statusMessage: String?
+    /// AI interpretation failed — the raw description rides as instructions.
+    var parseFailed = false
 }
 
 nonisolated struct WizardPlanClip: Sendable {
@@ -92,6 +132,32 @@ nonisolated enum WizardTextStyle: String, CaseIterable {
     }
 }
 
+/// Resolve a plan clip's style name to an overlay composition. A user
+/// template (matched by name) applies its saved design: the AI's text goes
+/// into every text marked dynamic, everything else — static texts, images,
+/// per-item timing, transitions — renders verbatim, so `isTemplate` tells
+/// callers to skip the AI's animation/kicker choices. Otherwise the built-in
+/// WizardTextStyle renders as a single full-clip text (default impact).
+nonisolated func wizardPlanOverlay(for clip: WizardPlanClip, text: String)
+    -> (composition: OverlayComposition, isTemplate: Bool) {
+    if var composition = OverlayTemplateStore.composition(named: clip.overlayStyle) {
+        for index in composition.texts.indices {
+            composition.texts[index].uid = UUID()
+            if composition.texts[index].isDynamic {
+                composition.texts[index].text = text
+            }
+        }
+        for index in composition.images.indices {
+            composition.images[index].uid = UUID()
+        }
+        return (composition, true)
+    }
+    let style = WizardTextStyle(rawValue: clip.overlayStyle ?? "") ?? .impact
+    let item = style.overlayItem(text: text, kicker: clip.overlayKicker,
+                                 accent: clip.overlayAccent)
+    return (OverlayComposition(texts: [item]), false)
+}
+
 nonisolated struct WizardPlan: Sendable {
     var targetDuration: Double
     var rationale: String
@@ -118,17 +184,14 @@ actor WizardEngine {
     /// Music library: ~/Documents/ClipBuilder/assets/music (per-user, shared
     /// across profiles — the app-tree equivalent of the repo's assets/music).
     static var musicDirectory: URL {
-        ProfileStore.profilesDirectory.appendingPathComponent("assets/music", isDirectory: true)
+        AssetKind.music.rootURL
     }
 
+    /// Recursive: the Music section lets users organize tracks into
+    /// subfolders. Names are root-relative (extension dropped) so same-named
+    /// tracks in different folders stay distinguishable.
     static func availableMusic() -> [(name: String, url: URL)] {
-        let extensions: Set<String> = ["mp3", "m4a", "wav", "aac", "flac"]
-        let files = (try? FileManager.default.contentsOfDirectory(at: musicDirectory,
-                                                                  includingPropertiesForKeys: nil)) ?? []
-        return files
-            .filter { extensions.contains($0.pathExtension.lowercased()) }
-            .map { ($0.deletingPathExtension().lastPathComponent, $0) }
-            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+        AssetStore.allFiles(of: .music)
     }
 
     // MARK: - Research phase
@@ -202,6 +265,95 @@ actor WizardEngine {
             emit("Research failed (\(error)) — using built-in defaults")
         }
         return Self.researchDefaults
+    }
+
+    // MARK: - Request parsing
+
+    private func parseRequestPrompt(description: String, templateNames: [String],
+                                    tagVocabulary: [String]) -> String {
+        let templates = templateNames.isEmpty
+            ? "None saved."
+            : templateNames.map { "\"\($0)\"" }.joined(separator: ", ")
+        let tags = tagVocabulary.isEmpty ? "None." : tagVocabulary.joined(separator: ", ")
+        return """
+        You are configuring an AI video-generation wizard from a user's plain-language request.
+
+        ## User request
+        "\(description)"
+
+        ## Saved overlay templates (the only templates that exist)
+        \(templates)
+
+        ## Content tag vocabulary (the only tags that exist)
+        \(tags)
+
+        Return a JSON object with EXACTLY this structure:
+        {
+          "target_duration_seconds": <int, or null if the user gave no duration>,
+          "number_of_videos": <int, or null if the user didn't say how many videos>,
+          "content_tags": ["<tag from the vocabulary>", ...],
+          "overlay_template": "<exact template name from the list, or null>",
+          "overlay_text": "<exact text the user wants displayed on the video, or null>",
+          "enable_text_overlays": <true|false|null>,
+          "add_captions": <true|false|null>,
+          "use_music": <true|false|null>,
+          "residual_instructions": "<every remaining creative requirement, imperative voice; \"\" if none>"
+        }
+
+        Rules:
+        - null (or [] for content_tags) means the user did not specify it. Never guess or invent defaults.
+        - "content_tags": when the user restricts WHAT footage to use (e.g. "fight footage only"), pick EVERY vocabulary tag matching that restriction. Empty when they don't restrict content.
+        - "overlay_template": the user may refer to a template loosely (e.g. 'the text overlays "Sample 1"'). Match by meaning but return the EXACT listed name; null when nothing matches.
+        - "overlay_text": text the user wants shown ON the video — often a quoted phrase they call a caption, title, or overlay (e.g. 'with the caption "Porrada day!"' → "Porrada day!"). Copy it verbatim; never invent text.
+        - "add_captions" is ONLY for burned-in spoken-word transcript subtitles, not overlay text.
+        - "enable_text_overlays": true whenever the user asks for any on-screen text, overlay template, or overlay text.
+        - "residual_instructions": everything not captured above (style, pacing, mood, hook ideas...). Do NOT repeat anything you already captured in a field.
+        - Return ONLY the JSON object.
+        """
+    }
+
+    /// Turn a free-text "generate a sample video" description into wizard
+    /// settings. Template and tag answers are validated against what actually
+    /// exists; anything else the model claims is dropped, not trusted.
+    func parseRequest(description: String, profile: BrandProfile,
+                      emit: @escaping @Sendable (String) -> Void) async throws -> ParsedWizardRequest {
+        let templateNames = OverlayTemplateStore.list().map(\.name)
+        let tagVocabulary = profile.effectiveTags.values.flatMap(\.self).sorted()
+        let prompt = parseRequestPrompt(description: description,
+                                        templateNames: templateNames,
+                                        tagVocabulary: tagVocabulary)
+        let response = try await ai.call(prompt: prompt, task: "wizard", timeout: 120, log: emit)
+        guard let object = AIResponseParser.jsonObject(from: response) else {
+            throw AIError.emptyResponse("request parsing (unparseable JSON)")
+        }
+
+        var parsed = ParsedWizardRequest()
+        if let duration = (object["target_duration_seconds"] as? NSNumber)?.intValue, duration > 0 {
+            parsed.targetDurationSeconds = min(180, max(3, duration))
+        }
+        if let count = (object["number_of_videos"] as? NSNumber)?.intValue, count > 0 {
+            parsed.numberOfVideos = min(5, count)
+        }
+        let knownTags = Set(tagVocabulary.map { $0.lowercased() })
+        parsed.contentTags = (object["content_tags"] as? [String] ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { knownTags.contains($0.lowercased()) }
+        if let name = object["overlay_template"] as? String,
+           let match = templateNames.first(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+            parsed.overlayTemplate = match
+        }
+        let overlayText = (object["overlay_text"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        parsed.overlayText = overlayText?.isEmpty == false ? overlayText : nil
+        parsed.enableTextOverlays = object["enable_text_overlays"] as? Bool
+        if parsed.overlayTemplate != nil || parsed.overlayText != nil {
+            parsed.enableTextOverlays = true
+        }
+        parsed.addCaptions = object["add_captions"] as? Bool
+        parsed.useMusic = object["use_music"] as? Bool
+        parsed.residualInstructions = (object["residual_instructions"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return parsed
     }
 
     // MARK: - Planning phase
@@ -329,6 +481,25 @@ actor WizardEngine {
             }
         }
 
+        // An explicit user duration beats research and template alike. It
+        // bounds the FINISHED file: each crossfade eats ~0.5s of overlap in
+        // the render, so the planned clip total is padded by the expected
+        // transition count or the output lands short of what the user asked.
+        var durationDirective = ""
+        if let requested = options.targetDurationSeconds {
+            let expectedClips = max(1, Int((Double(requested) / 60 * Double(cutsPerMinute)).rounded()))
+            let padded = Double(requested) + 0.5 * Double(expectedClips - 1)
+            targetDuration = Int(padded.rounded())
+            durationMin = max(3, targetDuration - 2)
+            durationMax = targetDuration + 2
+            durationDirective = """
+
+
+            ## REQUIRED DURATION (HARD CONSTRAINT)
+            The user requires the FINISHED reel to run ~\(requested)s. Crossfade transitions each consume ~0.5s of overlap in the final render, so you MUST plan more clip time than \(requested)s: total clip duration = \(requested) + 0.5 × (number of clips − 1). At ~\(expectedClips) clips that is ~\(String(format: "%.1f", padded))s of clips. Set "target_duration" to that padded total, never to \(requested).
+            """
+        }
+
         let researchJSON = (try? JSONSerialization.data(withJSONObject: research, options: [.prettyPrinted, .sortedKeys]))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 
@@ -388,15 +559,39 @@ actor WizardEngine {
             variationInfo += "\nUse a different hook, scene selection, pacing, and/or music than previous variations."
         }
 
+        var pinnedOverlayDirective = ""
+        if options.enableTextOverlays {
+            if let name = options.pinnedOverlayTemplate {
+                pinnedOverlayDirective += """
+
+                - USER REQUIREMENT: set "style" to exactly "\(name)" for EVERY text overlay in this reel — never use a different style.
+                """
+            }
+            if let text = options.pinnedOverlayText {
+                pinnedOverlayDirective += """
+
+                - USER REQUIREMENT: one overlay (prefer the hook on the first clip) must display exactly this text, verbatim: "\(text)".
+                """
+            }
+        }
+
         let textOverlayInstruction: String
         if options.enableTextOverlays {
+            // User-saved overlay templates join the built-in palette; their
+            // saved look (including transitions) is applied verbatim, so
+            // kicker/animation guidance doesn't apply to them.
+            let templateNames = OverlayTemplateStore.list().map(\.name)
+            let templateStyles = templateNames.isEmpty ? "" : """
+
+            - The user also saved custom overlay templates. Pick one BY EXACT NAME as the "style" when its look fits the moment; it renders the user's saved design with your text ("animation" and "kicker" are ignored for these): \(templateNames.map { "\"\($0)\"" }.joined(separator: ", ")).
+            """
             textOverlayInstruction = """
             - Text overlays are ENABLED. Insert punchy ALL-CAPS text ONLY where it improves engagement: the hook (first clip), a payoff/reveal, the climax, or an ending CTA. 2-6 words max, one line each, about 3-5 overlays across the whole reel.
             - Each text overlay is an object: {"text": "...", "style": "...", "animation": "...", "kicker": "..." or null}.
-            - Styles: "impact" (poster headline: huge condensed type, outline, gradient — hooks, climaxes), "highlight" (like impact, plus wrap the 1-2 most important words in *stars* to color them accent yellow — e.g. "HE *DROPS* HIM"), "banner" (angled dark plate with an accent stripe — names, stats, CTAs), "minimal" (clean and quiet — context, captions). Vary styles with intent; don't use one style everywhere.
+            - Styles: "impact" (poster headline: huge condensed type, outline, gradient — hooks, climaxes), "highlight" (like impact, plus wrap the 1-2 most important words in *stars* to color them accent yellow — e.g. "HE *DROPS* HIM"), "banner" (angled dark plate with an accent stripe — names, stats, CTAs), "minimal" (clean and quiet — context, captions). Vary styles with intent; don't use one style everywhere.\(templateStyles)
             - "kicker": optional 1-3 word label rendered small on an angled accent chip above an impact/highlight headline (e.g. kicker "ROUND 2" above "THE COMEBACK"). Use when a moment deserves context; null otherwise. Ignored by banner/minimal.
             - "accent": leave null for the default yellow. Set a #hex only when a reference template or the user's instructions call for a specific accent color, and use the same accent on every overlay in the reel.
-            - Animations: "pop" (snappy rise-settle — punchy moments), "word_reveal" (words appear one by one — building tension, hooks), "slide_up" (energetic entrance), "fade" (calm). Match the animation to the moment's energy.
+            - Animations: "pop" (snappy rise-settle — punchy moments), "word_reveal" (words appear one by one — building tension, hooks), "slide_up" (energetic entrance), "fade" (calm). Match the animation to the moment's energy.\(pinnedOverlayDirective)
             """
         } else {
             textOverlayInstruction = "- Text overlays are DISABLED. Set \"text_overlay\" to null for every clip."
@@ -409,7 +604,7 @@ actor WizardEngine {
 
         return """
         You are an expert video editor creating an Instagram Reel for a \(domain) channel called \(brand). Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
-        \(userInstructions)\(pinnedRules)\(templateBlock)
+        \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)
 
         ## Instagram Reels Research
         \(researchJSON)
@@ -558,7 +753,8 @@ actor WizardEngine {
                 overlayText = (overlayObject["text"] as? String)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if let style = overlayObject["style"] as? String,
-                   WizardTextStyle(rawValue: style) != nil {
+                   WizardTextStyle(rawValue: style) != nil
+                    || OverlayTemplateStore.composition(named: style) != nil {
                     overlayStyle = style
                 }
                 if let animation = overlayObject["animation"] as? String,
@@ -719,6 +915,31 @@ actor WizardEngine {
                                          model: options.modelOverride, timeout: 300, log: emit)
         guard let rawPlan = AIResponseParser.jsonObject(from: response) else { return nil }
         return validatePlan(rawPlan, scenes: inputs.sceneMap, musicNames: Set(inputs.music.map(\.name)))
+            .map { enforcePinnedOverlays($0, options: options) }
+    }
+
+    /// The prompt asks for the user's pinned overlay choices; this guarantees
+    /// them. The named template replaces whatever style the model picked, and
+    /// the required text lands on the first overlay clip (or the first clip
+    /// when the model planned no overlays at all).
+    private func enforcePinnedOverlays(_ plan: WizardPlan, options: WizardOptions) -> WizardPlan {
+        guard options.enableTextOverlays,
+              options.pinnedOverlayTemplate != nil || options.pinnedOverlayText != nil,
+              !plan.clips.isEmpty else { return plan }
+        var plan = plan
+        if let name = options.pinnedOverlayTemplate {
+            for index in plan.clips.indices where plan.clips[index].textOverlay != nil {
+                plan.clips[index].overlayStyle = name
+            }
+        }
+        if let text = options.pinnedOverlayText {
+            let index = plan.clips.firstIndex { $0.textOverlay != nil } ?? 0
+            plan.clips[index].textOverlay = text
+            if let name = options.pinnedOverlayTemplate {
+                plan.clips[index].overlayStyle = name
+            }
+        }
+        return plan
     }
 
     /// Plan-only entry for the Builder pre-fill path — research → AI plan →
@@ -917,16 +1138,38 @@ actor WizardEngine {
             document.videoTrack.append(timelineClip)
 
             if let text = clip.textOverlay, !text.isEmpty {
-                let style = WizardTextStyle(rawValue: clip.overlayStyle ?? "") ?? .impact
-                var overlay = style.overlayItem(text: text, kicker: clip.overlayKicker,
-                                                accent: clip.overlayAccent)
-                overlay.startTime = cursor
-                overlay.endTime = cursor + duration
-                // Builder's renderer has no word_reveal; degrade to fade.
-                let animation = clip.overlayAnimation ?? "fade"
-                overlay.transIn = animation == "word_reveal" ? "fade" : animation
-                overlay.transOut = "fade"
-                document.textOverlays.append(overlay)
+                let (composition, isTemplate) = wizardPlanOverlay(for: clip, text: text)
+                if isTemplate {
+                    // Template items keep their own relative timing, shifted
+                    // to the clip and clamped to its window; unbounded items
+                    // run to the clip's end.
+                    for var overlay in composition.texts {
+                        overlay.startTime += cursor
+                        overlay.endTime = overlay.unbounded
+                            ? cursor + duration
+                            : min(overlay.endTime + cursor, cursor + duration)
+                        overlay.unbounded = false
+                        guard overlay.endTime > overlay.startTime else { continue }
+                        document.textOverlays.append(overlay)
+                    }
+                    for var overlay in composition.images {
+                        overlay.startTime += cursor
+                        overlay.endTime = overlay.unbounded
+                            ? cursor + duration
+                            : min(overlay.endTime + cursor, cursor + duration)
+                        overlay.unbounded = false
+                        guard overlay.endTime > overlay.startTime else { continue }
+                        document.imageOverlays.append(overlay)
+                    }
+                } else if var overlay = composition.texts.first {
+                    overlay.startTime = cursor
+                    overlay.endTime = cursor + duration
+                    // Builder's renderer has no word_reveal; degrade to fade.
+                    let animation = clip.overlayAnimation ?? "fade"
+                    overlay.transIn = animation == "word_reveal" ? "fade" : animation
+                    overlay.transOut = "fade"
+                    document.textOverlays.append(overlay)
+                }
             }
             cursor += duration
         }
@@ -1088,31 +1331,60 @@ actor WizardEngine {
             }
         }
         if let overlayText = clip.textOverlay, options.enableTextOverlays {
-            // Punchy full-clip text overlay — styled preset, upper third,
-            // animated in (full-frame PNGs, so x/y are 0).
-            let style = WizardTextStyle(rawValue: clip.overlayStyle ?? "") ?? .impact
-            let item = style.overlayItem(text: overlayText, kicker: clip.overlayKicker,
-                                         accent: clip.overlayAccent)
+            // Punchy text overlay — styled preset or user template
+            // composition (full-frame PNGs, so x/y are 0).
+            let (composition, isTemplate) = wizardPlanOverlay(for: clip, text: overlayText)
             let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
                                                videoHeight: RenderEngine.outputHeight)
-            let animation = clip.overlayAnimation ?? "fade"
-            let wordCount = TextOverlayRenderer.wordCount(item.text)
-            if animation == "word_reveal", wordCount > 1 {
-                // One progressive PNG per word, hard-cut on staggered windows;
-                // the full-text PNG holds from the last reveal to the end.
-                let step = min(0.3, max(0.1, duration / 3 / Double(wordCount)))
-                for wordIndex in 1...wordCount {
-                    guard let png = try? renderer.render(item, to: scratch,
-                                                         visibleWords: wordIndex) else { continue }
-                    overlays.append(RenderEngine.ClipOverlay(
-                        png: png, x: 0, y: 0,
-                        start: Double(wordIndex - 1) * step,
-                        end: wordIndex == wordCount ? duration : Double(wordIndex) * step))
+            if isTemplate {
+                // Template items keep their own windows within the clip;
+                // enable windows can't animate here, so they hard-cut.
+                let imageRenderer = ImageOverlayRenderer(videoWidth: RenderEngine.outputWidth,
+                                                         videoHeight: RenderEngine.outputHeight)
+                for item in composition.images {
+                    let end = item.unbounded ? duration : min(item.endTime, duration)
+                    guard end > item.startTime,
+                          let png = try? imageRenderer.render(item, to: scratch) else { continue }
+                    overlays.append(RenderEngine.ClipOverlay(png: png, x: 0, y: 0,
+                                                             start: item.startTime, end: end))
                 }
-            } else if let png = try? renderer.render(item, to: scratch) {
-                overlays.append(RenderEngine.ClipOverlay(
-                    png: png, x: 0, y: 0, start: nil, end: nil,
-                    animation: animation == "word_reveal" ? "fade" : animation))
+                for item in composition.texts {
+                    let end = item.unbounded ? duration : min(item.endTime, duration)
+                    guard end > item.startTime,
+                          let png = try? renderer.render(item, to: scratch) else { continue }
+                    // A single full-length item can use the animated path.
+                    if item.startTime == 0, end >= duration - 0.05 {
+                        let animation = ["fade", "pop", "slide_up"].contains(item.transIn)
+                            ? item.transIn : "fade"
+                        overlays.append(RenderEngine.ClipOverlay(png: png, x: 0, y: 0,
+                                                                 start: nil, end: nil,
+                                                                 animation: animation))
+                    } else {
+                        overlays.append(RenderEngine.ClipOverlay(png: png, x: 0, y: 0,
+                                                                 start: item.startTime, end: end))
+                    }
+                }
+            } else if let item = composition.texts.first {
+                let animation = clip.overlayAnimation ?? "fade"
+                let wordCount = TextOverlayRenderer.wordCount(item.text)
+                if animation == "word_reveal", wordCount > 1 {
+                    // One progressive PNG per word, hard-cut on staggered
+                    // windows; the full-text PNG holds from the last reveal
+                    // to the end.
+                    let step = min(0.3, max(0.1, duration / 3 / Double(wordCount)))
+                    for wordIndex in 1...wordCount {
+                        guard let png = try? renderer.render(item, to: scratch,
+                                                             visibleWords: wordIndex) else { continue }
+                        overlays.append(RenderEngine.ClipOverlay(
+                            png: png, x: 0, y: 0,
+                            start: Double(wordIndex - 1) * step,
+                            end: wordIndex == wordCount ? duration : Double(wordIndex) * step))
+                    }
+                } else if let png = try? renderer.render(item, to: scratch) {
+                    overlays.append(RenderEngine.ClipOverlay(
+                        png: png, x: 0, y: 0, start: nil, end: nil,
+                        animation: animation == "word_reveal" ? "fade" : animation))
+                }
             }
         }
 

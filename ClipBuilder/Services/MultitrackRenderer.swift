@@ -198,27 +198,38 @@ actor MultitrackRenderer {
             }
         }
 
-        // Text overlays — shifted past the intro, clamped before the outro.
+        // Text and image overlays — shifted past the intro, clamped before
+        // the outro, pre-rendered to full-frame PNGs and composited in one
+        // pass (images first so text stays on top).
         let introOffset = introAdded ? await FFmpeg.duration(of: clipPaths[0]) : 0
         let outroDuration = outroAdded ? await FFmpeg.duration(of: clipPaths[clipPaths.count - 1]) : 0
-        let overlays = document.textOverlays
-            .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .map { item in
-                var shifted = item
-                shifted.startTime = item.startTime + introOffset
-                shifted.endTime = min(item.endTime + introOffset, videoDuration - outroDuration)
-                return shifted
-            }
-            .filter { $0.endTime > $0.startTime }
+        func clampWindow(start: Double, end: Double) -> (Double, Double) {
+            (start + introOffset, min(end + introOffset, videoDuration - outroDuration))
+        }
+        let textRenderer = TextOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
+        let imageRenderer = ImageOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
+        var overlays: [TimedOverlayPNG] = []
+        for item in document.imageOverlays {
+            let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
+            guard end > start, let png = try? imageRenderer.render(item, to: scratch) else { continue }
+            overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,
+                                            transIn: item.transIn, transOut: item.transOut))
+        }
+        for item in document.textOverlays
+        where !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
+            guard end > start, let png = try? textRenderer.render(item, to: scratch) else { continue }
+            overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,
+                                            transIn: item.transIn, transOut: item.transOut))
+        }
         if !overlays.isEmpty {
-            emit("Burning \(overlays.count) text overlay(s)…")
-            let withText = scratch.appendingPathComponent("with_text.mp4")
+            emit("Burning \(overlays.count) overlay(s)…")
+            let withText = scratch.appendingPathComponent("with_overlays.mp4")
             do {
-                try await addTextOverlays(video: assembled, overlays: overlays,
-                                          scratch: scratch, output: withText)
+                try await addOverlays(video: assembled, overlays: overlays, output: withText)
                 assembled = withText
             } catch {
-                emit("Text overlay failed, continuing without overlays (\(error))")
+                emit("Overlay burn failed, continuing without overlays (\(error))")
             }
         }
 
@@ -640,12 +651,21 @@ actor MultitrackRenderer {
         }
     }
 
-    /// Port of video.py add_multiple_text_overlays(): render each overlay to
-    /// a full-frame PNG, loop it as an input, and composite with fade/slide
-    /// expressions inside its enable window.
-    private func addTextOverlays(video: URL, overlays: [TextOverlayItem],
-                                 scratch: URL, output: URL) async throws {
-        let renderer = TextOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
+    /// A pre-rendered full-frame overlay PNG with its window and transitions
+    /// — text and image overlays share this once rasterized.
+    nonisolated struct TimedOverlayPNG: Sendable {
+        var png: URL
+        var startTime: Double
+        var endTime: Double
+        var transIn: String
+        var transOut: String
+    }
+
+    /// Port of video.py add_multiple_text_overlays(): loop each pre-rendered
+    /// full-frame PNG as an input and composite with fade/slide expressions
+    /// inside its enable window.
+    private func addOverlays(video: URL, overlays: [TimedOverlayPNG],
+                             output: URL) async throws {
         var arguments = ["-y", "-i", video.path]
         var filters: [String] = []
         var previous = "[0:v]"
@@ -653,7 +673,7 @@ actor MultitrackRenderer {
         let animDuration = 0.4
 
         for (index, overlay) in overlays.enumerated() {
-            guard let pngURL = try? renderer.render(overlay, to: scratch) else { continue }
+            let pngURL = overlay.png
             inputIndex += 1
             let start = overlay.startTime
             let end = overlay.endTime

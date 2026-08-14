@@ -32,6 +32,9 @@ struct TimelineView: View {
                         }
                         SoundLane(contentWidth: contentWidth, height: Self.soundLaneHeight)
                         TextLane(contentWidth: contentWidth, height: Self.textLaneHeight)
+                        if !model.document.imageOverlays.isEmpty {
+                            ImageLane(contentWidth: contentWidth, height: Self.textLaneHeight)
+                        }
                     }
                     .overlay(alignment: .topLeading) {
                         PlayheadLine()
@@ -43,6 +46,7 @@ struct TimelineView: View {
         .background(.background)
     }
 
+    @ViewBuilder
     private func headerColumn(model: BuilderTimelineModel) -> some View {
         VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
             PlayheadTimecode()
@@ -56,6 +60,10 @@ struct TimelineView: View {
                 .frame(height: Self.soundLaneHeight)
             laneHeader(title: "Text", systemImage: "textformat")
                 .frame(height: Self.textLaneHeight)
+            if !model.document.imageOverlays.isEmpty {
+                laneHeader(title: "Images", systemImage: "photo")
+                    .frame(height: Self.textLaneHeight)
+            }
         }
     }
 
@@ -501,6 +509,103 @@ struct SoundBlock: View {
             })
         .contextMenu {
             Button("Delete", role: .destructive) { model.removeSound(item.uid) }
+        }
+    }
+}
+
+// MARK: - Image lane
+
+struct ImageLane: View {
+    @Environment(AppStore.self) private var store
+    let contentWidth: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        let model = store.builder
+        ZStack(alignment: .topLeading) {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(.quaternary.opacity(0.25))
+            ForEach(model.document.imageOverlays) { item in
+                ImageBlock(item: item, height: height)
+            }
+        }
+        .frame(width: contentWidth, height: height)
+    }
+}
+
+struct ImageBlock: View {
+    @Environment(AppStore.self) private var store
+    let item: ImageOverlayItem
+    let height: CGFloat
+
+    @State private var dragOffset: CGFloat = 0
+    @State private var isDragging = false
+    @State private var trimDelta: CGFloat = 0
+    @State private var isTrimming = false
+
+    var body: some View {
+        let model = store.builder
+        let pps = model.pointsPerSecond
+        let isSelected = model.selection == .image(item.uid)
+        let width = max(24, CGFloat(item.duration) * pps + (isTrimming ? trimDelta : 0))
+
+        HStack(spacing: 4) {
+            Image(systemName: "photo")
+                .font(.system(size: 9))
+            Text(item.displayName)
+                .font(.system(size: 10))
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 6)
+        .foregroundStyle(.white)
+        .frame(width: width, height: height - 8)
+        .background(Color.teal.opacity(0.55), in: RoundedRectangle(cornerRadius: 5))
+        .overlay {
+            RoundedRectangle(cornerRadius: 5)
+                .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
+        }
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(.white.opacity(0.4))
+                .frame(width: 4)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle().inset(by: -4))
+                .gesture(DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        isTrimming = true
+                        trimDelta = value.translation.width
+                    }
+                    .onEnded { value in
+                        let newEnd = BuilderTimelineModel.snap(
+                            item.endTime + Double(value.translation.width / pps))
+                        model.updateImage(item.uid) { $0.endTime = max($0.startTime + 0.5, newEnd) }
+                        isTrimming = false
+                        trimDelta = 0
+                    })
+        }
+        .offset(x: CGFloat(item.startTime) * pps + (isDragging ? dragOffset : 0), y: 4)
+        .onTapGesture {
+            model.selection = .image(item.uid)
+        }
+        .gesture(DragGesture(minimumDistance: 3)
+            .onChanged { value in
+                isDragging = true
+                dragOffset = value.translation.width
+            }
+            .onEnded { value in
+                let duration = item.duration
+                let newStart = BuilderTimelineModel.snap(
+                    item.startTime + Double(value.translation.width / pps))
+                model.updateImage(item.uid) {
+                    $0.startTime = newStart
+                    $0.endTime = newStart + duration
+                }
+                isDragging = false
+                dragOffset = 0
+            })
+        .contextMenu {
+            Button("Delete", role: .destructive) { model.removeImage(item.uid) }
         }
     }
 }

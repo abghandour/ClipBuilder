@@ -9,6 +9,7 @@ struct AnalyzeView: View {
     @State private var provider: String = ""
     @State private var model: String = ""
     @State private var isDropTargeted = false
+    @State private var showGenerateSheet = false
 
     private var selectedVideos: [VideoRecord] {
         store.videos.filter { selection.contains($0.id) }
@@ -46,7 +47,16 @@ struct AnalyzeView: View {
                                   model: model.isEmpty ? nil : model)
                 }
                 .disabled(pendingVideos.isEmpty || store.isAnalyzing)
+
+                Button("Generate Sample Video", systemImage: "wand.and.stars") {
+                    showGenerateSheet = true
+                }
+                .disabled(selection.isEmpty || store.isAnalyzing)
+                .help("Describe a video to create from the selected footage — the AI Wizard is set up from your description")
             }
+        }
+        .sheet(isPresented: $showGenerateSheet) {
+            GenerateSampleSheet(videos: selectedVideos)
         }
         // The folder watcher keeps the table current while the app runs;
         // this catches anything from before this view existed.
@@ -155,6 +165,10 @@ struct AnalyzeView: View {
                     store.transcribe(video: video)
                 }
             }
+            Button("Generate Sample Video…") {
+                selection = ids
+                showGenerateSheet = true
+            }
         }
         .dropDestination(for: URL.self) { urls, _ in
             store.importVideos(urls)
@@ -178,6 +192,67 @@ struct AnalyzeView: View {
         video.speechAnalyzerProvider != nil
     }
 
+}
+
+/// One question — "what should the sample video be?" — everything else is
+/// interpreted from the answer and lands as editable settings in the Wizard.
+private struct GenerateSampleSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let videos: [VideoRecord]
+
+    @State private var requestText = ""
+
+    private var unanalyzedCount: Int {
+        videos.count(where: { $0.visualAnalyzedAt == nil })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Generate Sample Video")
+                .font(.title3.bold())
+            Text("Describe what to create from the \(videos.count) selected video(s). Mention duration, content, overlays, music — the AI Wizard is filled in from your description, ready to review and run.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            TextEditor(text: $requestText)
+                .font(.body)
+                .frame(minHeight: 90)
+                .overlay(alignment: .topLeading) {
+                    if requestText.isEmpty {
+                        Text("e.g. “generate an action-packed 15s video with fight footage only and use the text overlay ‘Sample 1’ with the caption ‘Porrada day!’”")
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 8)
+                            .padding(.leading, 5)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(.quaternary)
+                }
+
+            if unanalyzedCount > 0 {
+                Label("\(unanalyzedCount) selected video(s) haven't been analyzed — they'll be analyzed first so their footage can be used.",
+                      systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Generate") {
+                    store.generateSampleVideo(description: requestText, videos: videos)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(requestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 460)
+    }
 }
 
 /// Isolated so per-tick progress/log updates don't re-evaluate the whole

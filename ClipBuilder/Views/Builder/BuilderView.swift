@@ -162,12 +162,41 @@ struct BuilderView: View {
             .fixedSize()
             .help("Add a music block at the playhead")
 
-            Button {
-                _ = model.addText()
+            Menu {
+                Button("Plain Text") {
+                    _ = model.addText()
+                }
+                let templates = OverlayTemplateStore.list()
+                if !templates.isEmpty {
+                    Divider()
+                    ForEach(templates) { template in
+                        Button(template.name) {
+                            model.addComposition(template.composition)
+                        }
+                    }
+                }
             } label: {
                 Label("Text", systemImage: "textformat")
             }
-            .help("Add a text overlay at the playhead")
+            .fixedSize()
+            .help("Add a text overlay at the playhead — plain, or from an Overlays template")
+
+            Menu {
+                let images = AssetStore.allFiles(of: .images)
+                if images.isEmpty {
+                    Text("Add images in the Images section first")
+                } else {
+                    ForEach(images, id: \.name) { file in
+                        Button(file.name) {
+                            model.addImage(path: file.url.path)
+                        }
+                    }
+                }
+            } label: {
+                Label("Image", systemImage: "photo")
+            }
+            .fixedSize()
+            .help("Add an image overlay at the playhead from the Images library")
 
             Divider().frame(height: 16)
 
@@ -228,6 +257,7 @@ struct BuilderView: View {
         case .clip(let uid): model.removeClip(uid)
         case .sound(let uid): model.removeSound(uid)
         case .text(let uid): model.removeText(uid)
+        case .image(let uid): model.removeImage(uid)
         case nil: break
         }
     }

@@ -27,6 +27,12 @@ struct BuilderInspector: View {
                 } else {
                     placeholder
                 }
+            case .image(let uid):
+                if let item = model.imageItem(uid) {
+                    ImageInspector(item: item)
+                } else {
+                    placeholder
+                }
             case nil:
                 placeholder
             }
@@ -282,58 +288,23 @@ struct SoundInspector: View {
     }
 }
 
-struct TextInspector: View {
+struct ImageInspector: View {
     @Environment(AppStore.self) private var store
-    let item: TextOverlayItem
+    let item: ImageOverlayItem
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Text Overlay")
+            Text("Image Overlay")
                 .font(.headline)
 
-            TextEditor(text: binding(\.text))
-                .frame(minHeight: 48, maxHeight: 80)
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+            ImageOverlayControls(item: itemBinding, name: item.displayName)
 
-            Stepper("Font size: \(item.fontsize)", value: binding(\.fontsize), in: 10...200, step: 2)
-            HStack {
-                Toggle("Bold", isOn: binding(\.bold))
-                Toggle("Italic", isOn: binding(\.italic))
-            }
-            TextField("Font family (optional)", text: Binding(
-                get: { item.fontfamily ?? "" },
-                set: { value in
-                    store.builder.updateText(item.uid) {
-                        $0.fontfamily = value.isEmpty ? nil : value
-                    }
-                }))
-            TextField("Text color (name or #hex)", text: binding(\.fontcolor))
-            TextField("Box color (#hex)", text: Binding(
-                get: { item.bgcolor ?? "#000000" },
-                set: { value in
-                    store.builder.updateText(item.uid) { $0.bgcolor = value.isEmpty ? nil : value }
-                }))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(String(format: "Box opacity: %.0f%%", item.boxOpacity * 100))
-                    .font(.caption)
-                Slider(value: binding(\.boxOpacity), in: 0...1)
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Horizontal position").font(.caption)
-                Slider(value: fracBinding(\.xFrac, fallback: 0.5), in: 0...1)
-                Text("Vertical position").font(.caption)
-                Slider(value: fracBinding(\.yFrac, fallback: 0.8), in: 0...1)
-            }
-
-            Picker("Enter", selection: binding(\.transIn)) {
+            Picker("Enter", selection: itemBinding.transIn) {
                 ForEach(TextOverlayItem.transitionChoices, id: \.self) { name in
                     Text(name).tag(name)
                 }
             }
-            Picker("Exit", selection: binding(\.transOut)) {
+            Picker("Exit", selection: itemBinding.transOut) {
                 ForEach(TextOverlayItem.transitionChoices, id: \.self) { name in
                     Text(name).tag(name)
                 }
@@ -344,27 +315,112 @@ struct TextInspector: View {
             }
 
             Divider()
-            Button("Delete", role: .destructive) { store.builder.removeText(item.uid) }
+            Button("Delete", role: .destructive) { store.builder.removeImage(item.uid) }
                 .controlSize(.small)
         }
         .padding(12)
     }
 
-    private func binding<T>(_ keyPath: WritableKeyPath<TextOverlayItem, T>) -> Binding<T> {
+    /// Edits route through updateImage so undo registration and time clamping
+    /// stay in one place.
+    private var itemBinding: Binding<ImageOverlayItem> {
         let model = store.builder
         let uid = item.uid
-        let fallback = item[keyPath: keyPath]
+        let fallback = item
         return Binding(
-            get: { model.textItem(uid)?[keyPath: keyPath] ?? fallback },
-            set: { value in model.updateText(uid) { $0[keyPath: keyPath] = value } })
+            get: { model.imageItem(uid) ?? fallback },
+            set: { value in model.updateImage(uid) { $0 = value } })
+    }
+}
+
+struct TextInspector: View {
+    @Environment(AppStore.self) private var store
+    let item: TextOverlayItem
+
+    @State private var savingTemplate = false
+    @State private var templateName = ""
+    @State private var saveError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Text Overlay")
+                .font(.headline)
+
+            TextOverlayForm(item: itemBinding)
+
+            Picker("Enter", selection: itemBinding.transIn) {
+                ForEach(TextOverlayItem.transitionChoices, id: \.self) { name in
+                    Text(name).tag(name)
+                }
+            }
+            Picker("Exit", selection: itemBinding.transOut) {
+                ForEach(TextOverlayItem.transitionChoices, id: \.self) { name in
+                    Text(name).tag(name)
+                }
+            }
+
+            LabeledContent("Timing") {
+                Text("\(item.startTime.timecode)–\(item.endTime.timecode)").monospacedDigit()
+            }
+
+            Divider()
+            HStack {
+                Button("Save as Template…", action: promptForTemplateName)
+                    .controlSize(.small)
+                    .help("Save this overlay's look to the Overlays library for reuse in the Builder and AI Wizard")
+                Spacer()
+                Button("Delete", role: .destructive) { store.builder.removeText(item.uid) }
+                    .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .alert("Save as Template", isPresented: $savingTemplate) {
+            TextField("Template name", text: $templateName)
+            Button("Save", action: saveTemplate)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Templates appear in the Overlays section and in the AI Wizard's style palette.")
+        }
+        .alert("Error", isPresented: Binding(
+            get: { saveError != nil },
+            set: { if !$0 { saveError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(saveError ?? "")
+        }
     }
 
-    private func fracBinding(_ keyPath: WritableKeyPath<TextOverlayItem, Double?>,
-                             fallback: Double) -> Binding<Double> {
+    /// Edits route through updateText so undo registration and time clamping
+    /// stay in one place.
+    private var itemBinding: Binding<TextOverlayItem> {
         let model = store.builder
         let uid = item.uid
+        let fallback = item
         return Binding(
-            get: { model.textItem(uid)?[keyPath: keyPath] ?? fallback },
-            set: { value in model.updateText(uid) { $0[keyPath: keyPath] = value } })
+            get: { model.textItem(uid) ?? fallback },
+            set: { value in model.updateText(uid) { $0 = value } })
+    }
+
+    private func promptForTemplateName() {
+        let firstLine = item.text.components(separatedBy: .newlines).first ?? ""
+        templateName = OverlayTemplateStore.uniqueName(base: firstLine.isEmpty ? "Template" : firstLine)
+        savingTemplate = true
+    }
+
+    private func saveTemplate() {
+        let name = OverlayTemplateStore.uniqueName(base: templateName)
+        // Template timing is relative to the composition start, and a text
+        // saved from the Builder is the headline the AI Wizard may rewrite.
+        var text = item
+        text.startTime = 0
+        text.endTime = max(0.5, item.duration)
+        text.isDynamic = true
+        do {
+            try OverlayTemplateStore.save(OverlayTemplate(name: name,
+                                                          composition: OverlayComposition(texts: [text])))
+        } catch {
+            saveError = error.localizedDescription
+        }
     }
 }

@@ -149,6 +149,14 @@ nonisolated struct TextOverlayRenderer {
 
         let words = Self.parseMarkup(item.text)
 
+        // Whole-element opacity: a transparency layer applies one alpha to
+        // the composed result (box + outline + shadow + glyphs) instead of
+        // multiplying each part's own alpha.
+        let elementAlpha = CGFloat(min(1, max(0, item.opacity)))
+        if elementAlpha < 1 {
+            context.setAlpha(elementAlpha)
+            context.beginTransparencyLayer(auxiliaryInfo: nil)
+        }
         switch item.design {
         case "hero":
             drawHero(in: context, item: item, words: words, visibleWords: visibleWords)
@@ -163,6 +171,9 @@ nonisolated struct TextOverlayRenderer {
             } else {
                 drawLegacy(in: context, item: item, words: words, visibleWords: visibleWords)
             }
+        }
+        if elementAlpha < 1 {
+            context.endTransparencyLayer()
         }
 
         guard let image = context.makeImage() else { throw CocoaError(.fileWriteUnknown) }
@@ -228,13 +239,24 @@ nonisolated struct TextOverlayRenderer {
 
     /// Legacy mode: one unwrapped line at a fractional point or a named
     /// position (top 8%, center, bottom 85% — video.py fallback branch).
+    /// The line is designed around the template's original text, but dynamic
+    /// items get arbitrary AI/user text — so shrink an overflowing line to
+    /// the frame width and nudge it back on screen instead of clipping.
     private func drawLegacy(in context: CGContext, item: TextOverlayItem,
                             words: [Word], visibleWords: Int?) {
         guard !words.isEmpty else { return }
-        let font = resolveFont(size: CGFloat(item.fontsize), family: item.fontfamily,
+        let margin = CGFloat(videoWidth) * 0.02
+        let available = CGFloat(videoWidth) - margin * 2
+        var font = resolveFont(size: CGFloat(item.fontsize), family: item.fontfamily,
                                bold: item.bold, italic: item.italic)
         let plain = Self.plainText(words)
-        let width = lineWidth(plain, font: font)
+        var width = lineWidth(plain, font: font)
+        if width > available {
+            let scaled = max(6, CGFloat(item.fontsize) * available / width)
+            font = resolveFont(size: scaled, family: item.fontfamily,
+                               bold: item.bold, italic: item.italic)
+            width = lineWidth(plain, font: font)
+        }
         let ascent = CTFontGetAscent(font)
         let textHeight = ascent + CTFontGetDescent(font)
 
@@ -251,6 +273,8 @@ nonisolated struct TextOverlayRenderer {
             default: top = CGFloat(videoHeight) * 0.85
             }
         }
+        x = min(max(x, margin), CGFloat(videoWidth) - margin - width)
+        top = min(max(top, margin), CGFloat(videoHeight) - margin - textHeight)
 
         if item.boxOpacity > 0 {
             fillRoundedBackground(in: context, item: item,
@@ -261,7 +285,9 @@ nonisolated struct TextOverlayRenderer {
                        in: context, x: x, baselineFromTop: top + ascent)
     }
 
-    /// Rounded background box with 5px padding and 4px radius (Pillow parity).
+    /// Rounded background box with 5px padding; radius comes from the item
+    /// (nil = 4px, the historical Pillow-parity value), clamped so oversized
+    /// radii still produce a valid capsule.
     private func fillRoundedBackground(in context: CGContext, item: TextOverlayItem,
                                        topLeft: (x: Int, y: Int), size: (w: Int, h: Int)) {
         let (br, bg, bb) = Self.parseColor(item.bgcolor, fallback: (0, 0, 0))
@@ -270,7 +296,8 @@ nonisolated struct TextOverlayRenderer {
                           y: CGFloat(videoHeight - topLeft.y - size.h - pad),
                           width: CGFloat(size.w + pad * 2),
                           height: CGFloat(size.h + pad * 2))
-        let path = CGPath(roundedRect: rect, cornerWidth: 4, cornerHeight: 4, transform: nil)
+        let radius = min(CGFloat(item.boxRadius ?? 4), rect.width / 2, rect.height / 2)
+        let path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
         context.addPath(path)
         context.setFillColor(CGColor(red: br, green: bg, blue: bb,
                                      alpha: CGFloat(min(1, max(0, item.boxOpacity)))))
