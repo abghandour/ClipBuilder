@@ -21,6 +21,7 @@ struct WizardView: View {
     @State private var musicCount = 0
     @State private var newLessonText = ""
     @State private var showTrainingGuide = false
+    @State private var pendingDispatch: PendingDispatch?
 
     private var selectedVideoIDs: Set<Int64> {
         Set(selectedVideoIDsRaw.split(separator: ",").compactMap { Int64($0) })
@@ -56,6 +57,9 @@ struct WizardView: View {
         }
         .sheet(isPresented: $showTrainingGuide) {
             HelpSheet()
+        }
+        .sheet(item: $pendingDispatch) { pending in
+            DispatchPlanSheet(operation: pending.operation, onStart: pending.run)
         }
         // Loaded once instead of in the Form: availableMusic() lists a
         // directory synchronously, which doesn't belong in a body pass.
@@ -253,7 +257,7 @@ struct WizardView: View {
                     .buttonStyle(.bordered)
                 } else {
                     Button {
-                        runWizard()
+                        startGeneration()
                     } label: {
                         Label("Generate Reels", systemImage: "wand.and.stars")
                             .frame(maxWidth: .infinity)
@@ -276,6 +280,18 @@ struct WizardView: View {
     private func addLesson() {
         store.addLesson(text: newLessonText)
         newLessonText = ""
+    }
+
+    /// Show the smart dispatcher's model plan first (unless muted for
+    /// generation), then kick off the run.
+    private func startGeneration() {
+        if store.settings.ai.mutedDispatchPlans.contains(DispatchOperation.generate.rawValue) {
+            runWizard()
+        } else {
+            pendingDispatch = PendingDispatch(operation: .generate) {
+                runWizard()
+            }
+        }
     }
 
     /// Fill the form from an Analyze request. Only fields the user actually

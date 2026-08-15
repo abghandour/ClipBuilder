@@ -251,11 +251,11 @@ actor WizardEngine {
         emit("Researching Instagram Reels best practices...")
         do {
             let response = try await ai.call(prompt: researchPrompt(domain: profile.effectiveDomain),
-                                             task: "wizard", model: model, timeout: 300, log: emit)
+                                             task: "research", model: model, timeout: 300, log: emit)
             if let object = AIResponseParser.jsonObject(from: response),
                let data = AIResponseParser.jsonData(from: response),
                let json = String(data: data, encoding: .utf8) {
-                let attribution = await ai.resolveProviderModel(task: "wizard", model: model)
+                let attribution = await ai.resolveProviderModel(task: "research", model: model)
                 try? await database.saveResearch(topic: Self.researchTopic, resultJSON: json,
                                                  provider: attribution.provider, model: attribution.model)
                 emit("Research complete — cached for future runs")
@@ -322,7 +322,7 @@ actor WizardEngine {
         let prompt = parseRequestPrompt(description: description,
                                         templateNames: templateNames,
                                         tagVocabulary: tagVocabulary)
-        let response = try await ai.call(prompt: prompt, task: "wizard", timeout: 120, log: emit)
+        let response = try await ai.call(prompt: prompt, task: "parse", timeout: 120, log: emit)
         guard let object = AIResponseParser.jsonObject(from: response) else {
             throw AIError.emptyResponse("request parsing (unparseable JSON)")
         }
@@ -1092,7 +1092,7 @@ actor WizardEngine {
         Return ONLY JSON: {"lessons": [{"text": "...", "evidence": "..."}]}
         """
 
-        let response = try await ai.call(prompt: prompt, task: "wizard", timeout: 180, log: emit)
+        let response = try await ai.call(prompt: prompt, task: "distill", timeout: 180, log: emit)
         guard let object = AIResponseParser.jsonObject(from: response),
               let rawLessons = object["lessons"] as? [[String: Any]] else {
             throw AIError.emptyResponse("lesson distillation (unparseable JSON)")

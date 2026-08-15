@@ -57,14 +57,51 @@ actor AIService {
 
     /// The (provider, model) pair a call for `task` would actually use —
     /// stamped into the DB for attribution, mirroring resolve_provider_model().
+    /// Per-task model overrides (the dispatcher's choices) beat the
+    /// provider-level default, but only for the task's own provider.
     func resolveProviderModel(task: String, provider: String? = nil, model: String? = nil) -> (provider: String, model: String?) {
         let key = provider?.isEmpty == false ? provider! : providerKey(forTask: task)
         if let model, !model.isEmpty {
             return (key, model)
         }
+        if key == providerKey(forTask: task),
+           let taskModel = config.taskModels[task], !taskModel.isEmpty {
+            return (key, taskModel)
+        }
         let configured = config.providers[key]?.model
         let fallback = AICatalog.provider(key)?.defaultModel
         return (key, configured?.isEmpty == false ? configured : fallback)
+    }
+
+    /// Ordered (provider, model) candidates for a task: the configured choice
+    /// first, then the catalog's recommended chain — deduplicated by
+    /// provider, restricted to installed CLIs, and to image-capable
+    /// providers when frames ride along. Drives dispatch and failover.
+    func dispatchCandidates(task: String, providerOverride: String? = nil,
+                            model: String? = nil, needsImages: Bool = false)
+        -> [(provider: String, model: String?)] {
+        var raw: [(String, String?)] = []
+        if let providerOverride, !providerOverride.isEmpty {
+            raw.append((providerOverride,
+                        resolveProviderModel(task: task, provider: providerOverride, model: model).model))
+        } else {
+            let primary = resolveProviderModel(task: task, model: model)
+            raw.append((primary.provider, primary.model))
+        }
+        for entry in AICatalog.recommendedChains[task] ?? [] {
+            raw.append((entry.provider, entry.model))
+        }
+
+        var seen = Set<String>()
+        var result: [(provider: String, model: String?)] = []
+        for (key, model) in raw {
+            guard !seen.contains(key), let provider = AICatalog.provider(key) else { continue }
+            seen.insert(key)
+            if needsImages && !provider.supportsImages { continue }
+            guard binaryURL(for: provider) != nil else { continue }
+            result.append((key, model))
+        }
+        return result
     }
 
     private func binaryURL(for provider: AICatalog.Provider) -> URL? {
@@ -80,8 +117,11 @@ actor AIService {
 
     // MARK: - Dispatch
 
-    /// Send a prompt (and optional frames) to the provider configured for
-    /// `task`. Returns the model's text response.
+    /// Send a prompt (and optional frames) to the best available provider
+    /// for `task`. The configured choice runs first; if it fails with an AI
+    /// error (quota exhausted, not authenticated, empty response) the
+    /// dispatcher fails over down the recommended chain, logging the switch,
+    /// so a single provider outage never kills a run.
     func call(prompt: String,
               task: String,
               frames: [AIFrame]? = nil,
@@ -90,7 +130,34 @@ actor AIService {
               timeout: TimeInterval = 300,
               log: (@Sendable (String) -> Void)? = nil) async throws -> String {
         let emit = log ?? { _ in }
-        let key = providerOverride ?? providerKey(forTask: task)
+        let candidates = dispatchCandidates(task: task, providerOverride: providerOverride,
+                                            model: model, needsImages: frames?.isEmpty == false)
+        guard !candidates.isEmpty else {
+            throw AIError.notConfigured(
+                "No AI provider available for \(AICatalog.taskLabels[task] ?? task). Install the claude, gemini, or codex CLI, or check Settings → AI.")
+        }
+        var lastError: Error?
+        for (index, candidate) in candidates.enumerated() {
+            if index > 0 {
+                let label = AICatalog.provider(candidate.provider)?.label ?? candidate.provider
+                emit("Falling back to \(label) (\(candidate.model ?? "default model"))...")
+            }
+            do {
+                return try await callProvider(key: candidate.provider, model: candidate.model,
+                                              prompt: prompt, frames: frames,
+                                              timeout: timeout, emit: emit)
+            } catch let error as AIError {
+                lastError = error
+                let label = AICatalog.provider(candidate.provider)?.label ?? candidate.provider
+                emit("\(label) failed: \(error)")
+            }
+        }
+        throw lastError ?? AIError.emptyResponse("AI dispatch")
+    }
+
+    private func callProvider(key: String, model: String?, prompt: String,
+                              frames: [AIFrame]?, timeout: TimeInterval,
+                              emit: @escaping @Sendable (String) -> Void) async throws -> String {
         guard let provider = AICatalog.provider(key) else {
             throw AIError.notConfigured("Unknown AI provider: \(key)")
         }
@@ -98,8 +165,6 @@ actor AIService {
             throw AIError.notConfigured(
                 "\(provider.label) CLI ('\(provider.bin)') not found. Install it or change the provider in Settings → AI.")
         }
-        let resolvedModel = resolveProviderModel(task: task, provider: key, model: model).model
-
         var effectiveFrames = frames
         if frames?.isEmpty == false && !provider.supportsImages {
             emit("\(provider.label) does not support image input — running text-only (analysis quality will degrade).")
@@ -109,13 +174,13 @@ actor AIService {
         switch key {
         case "claude":
             return try await callClaude(binary: binary, prompt: prompt, frames: effectiveFrames,
-                                        model: resolvedModel, timeout: timeout, log: emit)
+                                        model: model, timeout: timeout, log: emit)
         case "gemini":
             return try await callGemini(binary: binary, prompt: prompt, frames: effectiveFrames,
-                                        model: resolvedModel, timeout: timeout, log: emit)
+                                        model: model, timeout: timeout, log: emit)
         case "codex":
             return try await callCodex(binary: binary, prompt: prompt,
-                                       model: resolvedModel, timeout: timeout, log: emit)
+                                       model: model, timeout: timeout, log: emit)
         default:
             throw AIError.notConfigured("Unknown AI provider: \(key)")
         }

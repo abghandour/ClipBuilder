@@ -360,13 +360,23 @@ private struct AISettingsTab: View {
                 ForEach(AICatalog.tasks, id: \.self) { task in
                     Picker(AICatalog.taskLabels[task] ?? task, selection: Binding(
                         get: { store.settings.ai.tasks[task] ?? AICatalog.taskDefaults[task] ?? "claude" },
-                        set: { store.settings.ai.tasks[task] = $0 }
+                        set: {
+                            store.settings.ai.tasks[task] = $0
+                            // A provider change invalidates the task's model pick.
+                            store.settings.ai.taskModels[task] = nil
+                        }
                     )) {
                         ForEach(AICatalog.providers, id: \.key) { provider in
                             Text(provider.label).tag(provider.key)
                         }
                     }
                 }
+                Button("Reset Smart Dispatcher") {
+                    store.resetDispatcher()
+                }
+                Text("Restores the recommended model for every task and re-enables the model-plan prompts shown before Analyze and Generate.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             ForEach(AICatalog.providers, id: \.key) { provider in

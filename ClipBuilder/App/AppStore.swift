@@ -250,6 +250,15 @@ final class AppStore {
         Task { await ai.updateConfig(config) }
     }
 
+    /// Forget the smart dispatcher's remembered choices: recommended models
+    /// apply again and the plan prompts return before Analyze and Generate.
+    func resetDispatcher() {
+        settings.ai.tasks = [:]
+        settings.ai.taskModels = [:]
+        settings.ai.mutedDispatchPlans = []
+        saveSettings()
+    }
+
     // MARK: - Data refresh
 
     func refreshAll() {

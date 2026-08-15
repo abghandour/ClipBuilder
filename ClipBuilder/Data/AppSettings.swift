@@ -85,17 +85,29 @@ nonisolated struct InstagramSettings: Codable, Sendable {
 /// the Python app's settings.
 nonisolated struct AIConfig: Codable, Sendable {
     var tasks: [String: String] = [:]                      // task → provider key
+    /// task → model, so two tasks on the same provider can use different
+    /// models (planning on Sonnet while parsing runs on Haiku).
+    var taskModels: [String: String] = [:]
     var providers: [String: AIProviderSettings] = [:]      // provider key → overrides
+    /// Dispatch-plan prompts the user muted with "remember my choices"
+    /// ("analyze", "generate"). Reset from Settings → AI.
+    var mutedDispatchPlans: [String] = []
 
     init() {}
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         tasks = try container.decodeIfPresent([String: String].self, forKey: .tasks) ?? [:]
+        taskModels = try container.decodeIfPresent([String: String].self, forKey: .taskModels) ?? [:]
         providers = try container.decodeIfPresent([String: AIProviderSettings].self, forKey: .providers) ?? [:]
+        mutedDispatchPlans = try container.decodeIfPresent([String].self, forKey: .mutedDispatchPlans) ?? []
     }
 
-    enum CodingKeys: String, CodingKey { case tasks, providers }
+    enum CodingKeys: String, CodingKey {
+        case tasks, providers
+        case taskModels = "task_models"
+        case mutedDispatchPlans = "muted_dispatch_plans"
+    }
 }
 
 nonisolated struct AIProviderSettings: Codable, Sendable {
@@ -105,18 +117,53 @@ nonisolated struct AIProviderSettings: Codable, Sendable {
 
 /// Static provider/task metadata ported from ai_cli.py.
 nonisolated enum AICatalog {
-    static let tasks = ["analysis", "wizard", "captions"]
+    // "wizard" stays the planning task's key for config back-compat.
+    static let tasks = ["analysis", "wizard", "research", "parse", "captions", "distill"]
 
     static let taskLabels: [String: String] = [
         "analysis": "Video analysis",
-        "wizard": "Wizard reasoning",
+        "wizard": "Reel planning",
+        "research": "Reels research",
+        "parse": "Request parsing",
         "captions": "Caption generation",
+        "distill": "Lesson distillation",
     ]
 
     static let taskDefaults: [String: String] = [
         "analysis": "claude",
         "wizard": "claude",
+        "research": "claude",
+        "parse": "claude",
         "captions": "claude",
+        "distill": "claude",
+    ]
+
+    /// The smart dispatcher's curated preference chains: best first, each a
+    /// concrete (provider, model). The dispatcher walks a chain skipping
+    /// providers whose CLI isn't installed; the same order drives mid-run
+    /// failover when a provider errors out.
+    static let recommendedChains: [String: [(provider: String, model: String)]] = [
+        // Frame tagging: multimodal + cheap matters most — 30 images/video.
+        "analysis": [("gemini", "gemini-2.5-flash"),
+                     ("claude", "claude-sonnet-4-6"),
+                     ("claude", "claude-haiku-4-5-20251001")],
+        // Planning is the run's brain: strongest reasoning first.
+        "wizard": [("claude", "claude-sonnet-4-6"),
+                   ("gemini", "gemini-2.5-pro"),
+                   ("codex", "gpt-5")],
+        "research": [("claude", "claude-sonnet-4-6"),
+                     ("gemini", "gemini-2.5-flash"),
+                     ("codex", "gpt-5-mini")],
+        // Structured extraction: fast + cheap is plenty.
+        "parse": [("claude", "claude-haiku-4-5-20251001"),
+                  ("gemini", "gemini-2.5-flash"),
+                  ("codex", "gpt-5-mini")],
+        "captions": [("claude", "claude-haiku-4-5-20251001"),
+                     ("gemini", "gemini-2.5-flash"),
+                     ("codex", "gpt-5-mini")],
+        "distill": [("claude", "claude-sonnet-4-6"),
+                    ("gemini", "gemini-2.5-pro"),
+                    ("codex", "gpt-5")],
     ]
 
     struct Provider: Sendable {

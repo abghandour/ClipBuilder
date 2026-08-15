@@ -6,10 +6,9 @@ struct AnalyzeView: View {
     @Environment(AppStore.self) private var store
 
     @State private var selection: Set<Int64> = []
-    @State private var provider: String = ""
-    @State private var model: String = ""
     @State private var isDropTargeted = false
     @State private var showGenerateSheet = false
+    @State private var pendingDispatch: PendingDispatch?
 
     private var selectedVideos: [VideoRecord] {
         store.videos.filter { selection.contains($0.id) }
@@ -31,15 +30,10 @@ struct AnalyzeView: View {
         .navigationSubtitle("\(store.videos.count) source videos")
         .toolbar {
             ToolbarItemGroup {
-                Menu("Provider: \(providerLabel)") {
-                    providerMenu
-                }
                 // Explicit text + icon content: the toolbar renders plain
                 // Label buttons icon-only regardless of labelStyle.
                 Button {
-                    store.analyze(videos: selectedVideos,
-                                  provider: provider.isEmpty ? nil : provider,
-                                  model: model.isEmpty ? nil : model)
+                    startAnalysis(of: selectedVideos)
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "sparkles")
@@ -49,9 +43,7 @@ struct AnalyzeView: View {
                 .disabled(selection.isEmpty || store.isAnalyzing)
 
                 Button {
-                    store.analyze(videos: pendingVideos,
-                                  provider: provider.isEmpty ? nil : provider,
-                                  model: model.isEmpty ? nil : model)
+                    startAnalysis(of: pendingVideos)
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "sparkles.rectangle.stack")
@@ -75,29 +67,22 @@ struct AnalyzeView: View {
         .sheet(isPresented: $showGenerateSheet) {
             GenerateSampleSheet(videos: selectedVideos)
         }
+        .sheet(item: $pendingDispatch) { pending in
+            DispatchPlanSheet(operation: pending.operation, onStart: pending.run)
+        }
         // The folder watcher keeps the table current while the app runs;
         // this catches anything from before this view existed.
         .task { store.scanSourceFolder() }
     }
 
-    private var providerLabel: String {
-        provider.isEmpty ? "default" : provider
-    }
-
-    @ViewBuilder
-    private var providerMenu: some View {
-        Button("Use Settings Default") {
-            provider = ""
-            model = ""
-        }
-        ForEach(AICatalog.providers, id: \.key) { entry in
-            Menu(entry.label) {
-                ForEach(entry.models, id: \.self) { modelName in
-                    Button(modelName) {
-                        provider = entry.key
-                        model = modelName
-                    }
-                }
+    /// Show the smart dispatcher's model plan first (unless muted for
+    /// analysis), then run. Replaces the old per-run provider menu.
+    private func startAnalysis(of videos: [VideoRecord]) {
+        if store.settings.ai.mutedDispatchPlans.contains(DispatchOperation.analyze.rawValue) {
+            store.analyze(videos: videos)
+        } else {
+            pendingDispatch = PendingDispatch(operation: .analyze) {
+                store.analyze(videos: videos)
             }
         }
     }
@@ -175,7 +160,7 @@ struct AnalyzeView: View {
         }
         .contextMenu(forSelectionType: Int64.self) { ids in
             Button("Analyze") {
-                store.analyze(videos: store.videos.filter { ids.contains($0.id) })
+                startAnalysis(of: store.videos.filter { ids.contains($0.id) })
             }
             Button("Transcribe") {
                 for video in store.videos.filter({ ids.contains($0.id) }) {
