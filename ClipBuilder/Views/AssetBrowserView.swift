@@ -422,8 +422,8 @@ private struct FontRow: View {
 }
 
 /// Async downsampled image thumbnail (full-size decodes would balloon memory
-/// in a large grid).
-private struct ImageThumbnail: View {
+/// in a large grid). Shared with the image-overlay picker.
+struct ImageThumbnail: View {
     let url: URL
 
     @State private var image: NSImage?

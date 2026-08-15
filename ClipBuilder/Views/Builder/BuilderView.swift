@@ -10,6 +10,7 @@ struct BuilderView: View {
     @State private var playingClip: TimelineClip?
     @State private var showLog = false
     @State private var showPreview = false
+    @State private var showImagePicker = false
     @State private var confirmClear = false
 
     var body: some View {
@@ -181,22 +182,18 @@ struct BuilderView: View {
             .fixedSize()
             .help("Add a text overlay at the playhead — plain, or from an Overlays template")
 
-            Menu {
-                let images = AssetStore.allFiles(of: .images)
-                if images.isEmpty {
-                    Text("Add images in the Images section first")
-                } else {
-                    ForEach(images, id: \.name) { file in
-                        Button(file.name) {
-                            model.addImage(path: file.url.path)
-                        }
-                    }
-                }
+            Button {
+                showImagePicker = true
             } label: {
                 Label("Image", systemImage: "photo")
             }
             .fixedSize()
-            .help("Add an image overlay at the playhead from the Images library")
+            .help("Add image overlays at the playhead from the Images library")
+            .sheet(isPresented: $showImagePicker) {
+                ImagePickerSheet { urls in
+                    for url in urls { model.addImage(path: url.path) }
+                }
+            }
 
             Divider().frame(height: 16)
 

@@ -304,8 +304,10 @@ struct OverlayTemplateEditor: View {
                     showingImagePicker = true
                 }
                 .controlSize(.small)
-                .popover(isPresented: $showingImagePicker) {
-                    imagePicker
+                .sheet(isPresented: $showingImagePicker) {
+                    ImagePickerSheet { urls in
+                        for url in urls { addImage(path: url.path) }
+                    }
                 }
             }
             ForEach(composition.texts) { item in
@@ -367,36 +369,6 @@ struct OverlayTemplateEditor: View {
                     in: RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
-    }
-
-    private var imagePicker: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            let images = AssetStore.allFiles(of: .images)
-            if images.isEmpty {
-                Text("Add images in the Images section first.")
-                    .foregroundStyle(.secondary)
-                    .padding()
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 2) {
-                        ForEach(images, id: \.name) { file in
-                            Button {
-                                addImage(path: file.url.path)
-                                showingImagePicker = false
-                            } label: {
-                                Label(file.name, systemImage: "photo")
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .padding(.vertical, 3)
-                        }
-                    }
-                    .padding(8)
-                }
-                .frame(width: 260, height: min(300, CGFloat(images.count) * 26 + 20))
-            }
-        }
     }
 
     // MARK: - Selected item form
