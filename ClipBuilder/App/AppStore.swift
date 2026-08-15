@@ -2,6 +2,24 @@ import AppKit
 import Foundation
 import Observation
 
+/// Coarse progress of a wizard run: which stage it's in, how far along the
+/// whole run is, and when the stage started (so the UI can show elapsed time
+/// during multi-minute AI calls).
+struct WizardRunStatus: Equatable {
+    var stage: String
+    var detail = ""
+    /// Overall 0–1 across every requested video/variation.
+    var fraction: Double
+    var startedAt = Date()
+    var stageChangedAt = Date()
+}
+
+/// The videos a finished wizard run produced — drives the results sheet.
+struct WizardRunResults: Identifiable {
+    let id = UUID()
+    var videos: [GeneratedVideoRecord]
+}
+
 /// Main-actor app state: active profile, its database, background jobs, and
 /// the cached lists the views render. One instance lives for the app.
 @Observable
@@ -46,6 +64,15 @@ final class AppStore {
     /// loading overlay.
     var isPlanningIntoBuilder = false
     var wizardLog: [String] = []
+    /// Human-readable progress for the running generation, derived from the
+    /// engine's log stream — so multi-minute AI calls don't look like a hang.
+    var wizardStatus: WizardRunStatus?
+    /// Videos produced by the finished run, presented as the results sheet.
+    var wizardResults: WizardRunResults?
+    /// Options of the last run — "Retry" in the results sheet re-runs them.
+    private(set) var lastWizardOptions: WizardOptions?
+    private var wizardTotalUnits = 1
+    private var wizardCompletedUnits = 0
     var isDistillingLessons = false
     private var wizardTask: Task<Void, Never>?
 
@@ -174,6 +201,7 @@ final class AppStore {
         igTemplatedMediaIDs = []
         pendingWizardTemplate = nil
         pendingWizardPrompt = nil
+        wizardResults = nil
         openActiveProfile()
     }
 
@@ -685,16 +713,123 @@ final class AppStore {
         guard let database, !isWizardRunning else { return }
         isWizardRunning = true
         wizardLog = []
+        lastWizardOptions = options
+        wizardTotalUnits = max(1, options.numberOfVideos * options.variationsPerVideo)
+        wizardCompletedUnits = 0
+        wizardStatus = WizardRunStatus(stage: "Starting…", fraction: 0)
         let profile = activeProfile
         let wizard = wizard
         let previousIDs = Set(generatedVideos.map(\.id))
         wizardTask = Task {
             await wizard.run(options: options, profile: profile, database: database) { message in
-                Task { @MainActor in self.wizardLog.append(message) }
+                Task { @MainActor in
+                    self.wizardLog.append(message)
+                    self.updateWizardStatus(from: message)
+                }
             }
             isWizardRunning = false
+            wizardStatus = nil
             await refreshAllNow()
+            // Results sheet first (watch/rate/retry); any A/B comparison
+            // queued below appears after it is dismissed.
+            let fresh = generatedVideos
+                .filter { !previousIDs.contains($0.id) }
+                .sorted { $0.id < $1.id }
+            if !fresh.isEmpty {
+                wizardResults = WizardRunResults(videos: fresh)
+            }
             queueComparisons(previousIDs: previousIDs)
+        }
+    }
+
+    /// Re-run the wizard with the same options as the last run.
+    func retryWizard() {
+        guard let options = lastWizardOptions else { return }
+        wizardResults = nil
+        runWizard(options: options)
+    }
+
+    /// Resolve a generated video's filename (as logged) to its file URL.
+    /// Falls back to scanning the profile's dated output folders because the
+    /// cached record list only refreshes after the run finishes.
+    func generatedVideoURL(named filename: String) -> URL? {
+        if let record = generatedVideos.first(where: { $0.filename == filename }) {
+            return record.url
+        }
+        let root = activeProfile.outputFolderURL
+        let dated = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        for directory in dated.sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
+            let candidate = directory.appendingPathComponent(filename)
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// Map engine log lines onto stage + overall progress. Each requested
+    /// video/variation is one unit: planning ~0-0.3, assembly 0.3-0.9,
+    /// caption 0.9-1. Unknown lines leave the status untouched.
+    private func updateWizardStatus(from rawMessage: String) {
+        // Phase lines arrive with leading newlines for log readability.
+        let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        func label(after prefix: String) -> String {
+            // "... Video 1.2/3..." → "1.2 of 3"
+            var tail = String(message.dropFirst(prefix.count))
+            while tail.hasSuffix(".") { tail.removeLast() }
+            return tail.replacingOccurrences(of: "/", with: " of ")
+        }
+        func set(_ stage: String, detail: String = "", unitFraction: Double) {
+            let overall = (Double(wizardCompletedUnits) + unitFraction) / Double(wizardTotalUnits)
+            var status = wizardStatus ?? WizardRunStatus(stage: stage, fraction: 0)
+            if status.stage != stage {
+                status.stage = stage
+                status.stageChangedAt = Date()
+            }
+            status.detail = detail
+            status.fraction = min(1, max(status.fraction, overall))
+            wizardStatus = status
+        }
+
+        if message.hasPrefix("Phase 1") {
+            set("Researching what performs on Reels", unitFraction: 0)
+        } else if message.hasPrefix("Loading scenes") {
+            set("Loading your scenes and music", unitFraction: 0.02)
+        } else if message.contains("Phase 2: Planning Video") {
+            set("Planning video \(label(after: "Phase 2: Planning Video "))",
+                detail: "The AI is designing the edit — this step can take a few minutes.",
+                unitFraction: 0.05)
+        } else if message.hasPrefix("Phase 2: Planning the timeline") {
+            set("Planning the timeline",
+                detail: "The AI is designing the edit — this step can take a few minutes.",
+                unitFraction: 0.05)
+        } else if message.hasPrefix("Plan: ") {
+            set("Plan ready", unitFraction: 0.3)
+        } else if message.contains("Phase 3: Assembling Video") {
+            set("Assembling video \(label(after: "Phase 3: Assembling Video "))",
+                detail: "Cutting clips and burning in overlays.",
+                unitFraction: 0.32)
+        } else if let range = message.range(of: #"clip (\d+)/(\d+)"#, options: .regularExpression) {
+            let parts = message[range].dropFirst(5).split(separator: "/")
+            if parts.count == 2, let index = Double(parts[0]), let total = Double(parts[1]), total > 0 {
+                set("Cutting clip \(Int(index)) of \(Int(total))",
+                    detail: "Extracting and styling each planned clip.",
+                    unitFraction: 0.32 + 0.5 * (index / total))
+            }
+        } else if message.contains(": assembling") {
+            set("Joining clips with transitions", unitFraction: 0.85)
+        } else if message.contains("adding music") {
+            set("Adding music", unitFraction: 0.9)
+        } else if message.hasPrefix("Generating Instagram caption") {
+            set("Writing the Instagram caption", unitFraction: 0.93)
+        } else if message.contains(" complete! ") {
+            wizardCompletedUnits = min(wizardTotalUnits, wizardCompletedUnits + 1)
+            set(wizardCompletedUnits == wizardTotalUnits ? "Finishing up"
+                    : "Video \(wizardCompletedUnits) of \(wizardTotalUnits) done",
+                unitFraction: 0)
+        } else if message.hasPrefix("All done!") {
+            set("Done", unitFraction: 1)
         }
     }
 

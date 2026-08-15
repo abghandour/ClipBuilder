@@ -34,22 +34,39 @@ struct AnalyzeView: View {
                 Menu("Provider: \(providerLabel)") {
                     providerMenu
                 }
-                Button("Analyze Selected", systemImage: "sparkles") {
+                // Explicit text + icon content: the toolbar renders plain
+                // Label buttons icon-only regardless of labelStyle.
+                Button {
                     store.analyze(videos: selectedVideos,
                                   provider: provider.isEmpty ? nil : provider,
                                   model: model.isEmpty ? nil : model)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                        Text("Analyze Selected")
+                    }
                 }
                 .disabled(selection.isEmpty || store.isAnalyzing)
 
-                Button("Analyze All Pending", systemImage: "sparkles.rectangle.stack") {
+                Button {
                     store.analyze(videos: pendingVideos,
                                   provider: provider.isEmpty ? nil : provider,
                                   model: model.isEmpty ? nil : model)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles.rectangle.stack")
+                        Text("Analyze All Pending")
+                    }
                 }
                 .disabled(pendingVideos.isEmpty || store.isAnalyzing)
 
-                Button("Generate Sample Video", systemImage: "wand.and.stars") {
+                Button {
                     showGenerateSheet = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "wand.and.stars")
+                        Text("Generate Sample Video")
+                    }
                 }
                 .disabled(selection.isEmpty || store.isAnalyzing)
                 .help("Describe a video to create from the selected footage — the AI Wizard is set up from your description")

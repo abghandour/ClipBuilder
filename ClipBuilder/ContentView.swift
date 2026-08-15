@@ -173,6 +173,10 @@ struct MainWindowView: View {
                 .help("Active brand profile")
             }
         }
+        // Results first; a queued A/B comparison presents after it closes.
+        .sheet(item: $store.wizardResults) { results in
+            WizardResultsSheet(results: results)
+        }
         .sheet(item: $store.pendingComparison) { batch in
             ComparisonSheet(batch: batch)
         }

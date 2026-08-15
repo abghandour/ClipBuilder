@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// AI Wizard: configure a generation run, watch the live log, and find the
@@ -5,19 +6,33 @@ import SwiftUI
 struct WizardView: View {
     @Environment(AppStore.self) private var store
 
-    @State private var numberOfVideos = 1
-    @State private var variationsPerVideo = 1
-    @State private var useMusic = true
-    @State private var muteSource = false
-    @State private var addCaptions = false
-    @State private var autoCropWide = true
-    @State private var enableTextOverlays = false
-    @State private var aiInstructions = ""
-    @State private var selectedVideoIDs: Set<Int64> = []
-    @State private var limitToSelection = false
+    // Persisted so the form survives section switches and app restarts.
+    @AppStorage("wizard.numberOfVideos") private var numberOfVideos = 1
+    @AppStorage("wizard.variationsPerVideo") private var variationsPerVideo = 1
+    @AppStorage("wizard.useMusic") private var useMusic = true
+    @AppStorage("wizard.muteSource") private var muteSource = false
+    @AppStorage("wizard.addCaptions") private var addCaptions = false
+    @AppStorage("wizard.autoCropWide") private var autoCropWide = true
+    @AppStorage("wizard.enableTextOverlays") private var enableTextOverlays = false
+    @AppStorage("wizard.aiInstructions") private var aiInstructions = ""
+    @AppStorage("wizard.limitToSelection") private var limitToSelection = false
+    /// Comma-joined video IDs — AppStorage can't hold a Set directly.
+    @AppStorage("wizard.selectedVideoIDs") private var selectedVideoIDsRaw = ""
     @State private var musicCount = 0
     @State private var newLessonText = ""
     @State private var showTrainingGuide = false
+
+    private var selectedVideoIDs: Set<Int64> {
+        Set(selectedVideoIDsRaw.split(separator: ",").compactMap { Int64($0) })
+    }
+
+    private func setSelectedVideoIDs(_ ids: Set<Int64>) {
+        selectedVideoIDsRaw = ids.sorted().map(String.init).joined(separator: ",")
+    }
+
+    private var selectionBinding: Binding<Set<Int64>> {
+        Binding(get: { selectedVideoIDs }, set: { setSelectedVideoIDs($0) })
+    }
 
     private var analyzedSceneCount: Int {
         store.scenes.filter { !$0.excluded && !$0.ignored }.count
@@ -176,7 +191,7 @@ struct WizardView: View {
             Section("Source Selection") {
                 Toggle("Limit to selected videos", isOn: $limitToSelection)
                 if limitToSelection {
-                    List(store.videos, selection: $selectedVideoIDs) { video in
+                    List(store.videos, selection: selectionBinding) { video in
                         Text(video.filename)
                             .tag(video.id)
                     }
@@ -270,7 +285,7 @@ struct WizardView: View {
     /// from the handoff, and the request card shows them.
     private func applyPromptHandoff(_ handoff: WizardPromptHandoff) {
         if !handoff.videoIDs.isEmpty {
-            selectedVideoIDs = handoff.videoIDs
+            setSelectedVideoIDs(handoff.videoIDs)
             limitToSelection = true
         }
         guard let parsed = handoff.parsed else {
@@ -403,6 +418,11 @@ private struct WizardLogPanel: View {
             }
             .padding([.top, .horizontal])
 
+            if let status = store.wizardStatus {
+                progressCard(status)
+                    .padding(.horizontal)
+            }
+
             if store.wizardLog.isEmpty {
                 ContentUnavailableView(
                     "Ready",
@@ -413,10 +433,7 @@ private struct WizardLogPanel: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(Array(store.wizardLog.enumerated()), id: \.offset) { index, line in
-                                Text(line)
-                                    .font(.caption.monospaced())
-                                    .foregroundStyle(line.hasPrefix("DONE:error") || line.hasPrefix("Error") ? .red : .secondary)
-                                    .textSelection(.enabled)
+                                logLine(line)
                                     .id(index)
                             }
                         }
@@ -429,5 +446,71 @@ private struct WizardLogPanel: View {
                 }
             }
         }
+    }
+
+    /// One log line. The engine's "VIDEO:<file>:<duration>" marker renders
+    /// as a link that opens the rendered file; everything else is plain text.
+    @ViewBuilder
+    private func logLine(_ line: String) -> some View {
+        if let video = Self.videoReference(from: line) {
+            Button {
+                if let url = store.generatedVideoURL(named: video.name) {
+                    NSWorkspace.shared.open(url)
+                }
+            } label: {
+                Label("\(video.name) · \(video.duration)s — click to watch",
+                      systemImage: "play.rectangle.fill")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .help("Open the generated video")
+        } else {
+            Text(line)
+                .font(.caption.monospaced())
+                .foregroundStyle(line.hasPrefix("DONE:error") || line.hasPrefix("Error") ? .red : .secondary)
+                .textSelection(.enabled)
+        }
+    }
+
+    /// "VIDEO:wiz-43-2.mp4:38.7" → (name, duration).
+    private static func videoReference(from line: String) -> (name: String, duration: String)? {
+        guard line.hasPrefix("VIDEO:") else { return nil }
+        let parts = line.dropFirst("VIDEO:".count).split(separator: ":")
+        guard parts.count == 2 else { return nil }
+        return (String(parts[0]), String(parts[1]))
+    }
+
+    /// Friendly stage + overall progress + a per-stage elapsed clock, so a
+    /// multi-minute AI call reads as "working" instead of "stuck".
+    @ViewBuilder
+    private func progressCard(_ status: WizardRunStatus) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(status.stage)
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                // SwiftUI-qualified: the Builder's timeline editor is also
+                // named TimelineView.
+                SwiftUI.TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(Self.elapsedString(from: status.stageChangedAt, to: context.date))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ProgressView(value: status.fraction)
+            if !status.detail.isEmpty {
+                Text(status.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private static func elapsedString(from start: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        return seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s"
     }
 }
