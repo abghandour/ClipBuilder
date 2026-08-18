@@ -973,25 +973,6 @@ actor WizardEngine {
         let music = inputs.music
         var generatedCount = 0
 
-        // Normalize the profile's intro/outro once for the whole run — the
-        // result is identical for every video/variation assembled below.
-        let runScratch = try await render.makeScratchDirectory()
-        defer { try? FileManager.default.removeItem(at: runScratch) }
-        var normalizedIntro: URL?
-        if let intro = assetURL(profile.introVideo) {
-            emit("Normalizing intro...")
-            let output = runScratch.appendingPathComponent("intro.mp4")
-            try await render.normalizeClip(source: intro, output: output)
-            normalizedIntro = output
-        }
-        var normalizedOutro: URL?
-        if let outro = assetURL(profile.outroVideo) {
-            emit("Normalizing outro...")
-            let output = runScratch.appendingPathComponent("outro.mp4")
-            try await render.normalizeClip(source: outro, output: output)
-            normalizedOutro = output
-        }
-
         for videoNumber in 1...options.numberOfVideos {
             var previousRationales: [String] = []
             // Variations of one video share a batch id, so the Library can
@@ -1018,9 +999,7 @@ actor WizardEngine {
                 let result = try await assemble(plan: plan, music: music, options: options,
                                                 profile: profile, database: database,
                                                 sceneMap: sceneMap, label: variationLabel,
-                                                batchID: batchID,
-                                                normalizedIntro: normalizedIntro,
-                                                normalizedOutro: normalizedOutro, emit: emit)
+                                                batchID: batchID, emit: emit)
                 generatedCount += 1
 
                 emit("Generating Instagram caption...")
@@ -1142,27 +1121,14 @@ actor WizardEngine {
             if let text = clip.textOverlay, !text.isEmpty {
                 let (composition, isTemplate) = wizardPlanOverlay(for: clip, text: text)
                 if isTemplate {
-                    // Template items keep their own relative timing, shifted
-                    // to the clip and clamped to its window; unbounded items
-                    // run to the clip's end.
-                    for var overlay in composition.texts {
-                        overlay.startTime += cursor
-                        overlay.endTime = overlay.unbounded
-                            ? cursor + duration
-                            : min(overlay.endTime + cursor, cursor + duration)
-                        overlay.unbounded = false
-                        guard overlay.endTime > overlay.startTime else { continue }
-                        document.textOverlays.append(overlay)
-                    }
-                    for var overlay in composition.images {
-                        overlay.startTime += cursor
-                        overlay.endTime = overlay.unbounded
-                            ? cursor + duration
-                            : min(overlay.endTime + cursor, cursor + duration)
-                        overlay.unbounded = false
-                        guard overlay.endTime > overlay.startTime else { continue }
-                        document.imageOverlays.append(overlay)
-                    }
+                    // A template overlay lands in the Builder as one block —
+                    // the same unit the Builder's Overlay menu inserts.
+                    var block = OverlayBlockItem()
+                    block.name = clip.overlayStyle ?? "Overlay"
+                    block.composition = composition
+                    block.startTime = cursor
+                    block.duration = duration
+                    document.overlayBlocks.append(block)
                 } else if var overlay = composition.texts.first {
                     overlay.startTime = cursor
                     overlay.endTime = cursor + duration
@@ -1263,19 +1229,12 @@ actor WizardEngine {
                           sceneMap: [Int64: SceneRecord],
                           label: String,
                           batchID: String?,
-                          normalizedIntro: URL?,
-                          normalizedOutro: URL?,
                           emit: @escaping @Sendable (String) -> Void) async throws -> AssemblyResult {
         let scratch = try await render.makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
 
         var clipURLs: [URL] = []
         var clipTransitions: [String] = []
-
-        // Intro (profile asset, normalized once per run) — joined with a hard fade.
-        if let normalizedIntro {
-            clipURLs.append(normalizedIntro)
-        }
 
         // Extract every planned clip concurrently — captions, text overlay
         // and mute are burned in ONE encode pass per clip (they used to be
@@ -1296,17 +1255,11 @@ actor WizardEngine {
 
         for url in extracted {
             if clipURLs.count > clipTransitions.count && !clipURLs.isEmpty {
-                // Boundary after intro or a previous clip: planner transition
-                // if available, else hard fade.
-                let planIndex = clipURLs.count - (normalizedIntro != nil ? 2 : 1)
-                clipTransitions.append(plan.transitions[safe: planIndex] ?? "fade")
+                // Boundary after a previous clip: planner transition if
+                // available, else hard fade.
+                clipTransitions.append(plan.transitions[safe: clipURLs.count - 1] ?? "fade")
             }
             clipURLs.append(url)
-        }
-
-        if let normalizedOutro {
-            clipTransitions.append("fade")
-            clipURLs.append(normalizedOutro)
         }
 
         guard !clipURLs.isEmpty else {
@@ -1474,12 +1427,6 @@ actor WizardEngine {
                                          output: output)
         }
         return output
-    }
-
-    private func assetURL(_ path: String?) -> URL? {
-        guard let path, !path.isEmpty else { return nil }
-        let expanded = (path as NSString).expandingTildeInPath
-        return FileManager.default.fileExists(atPath: expanded) ? URL(fileURLWithPath: expanded) : nil
     }
 
     /// Output naming per wizard.py: <output>/<YYYY-MM-DD>/wiz-<dur>-<n>.mp4.

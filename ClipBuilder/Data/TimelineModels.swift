@@ -10,11 +10,10 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     var soundTrack: [SoundItem] = []
     var textOverlays: [TextOverlayItem] = []
     var imageOverlays: [ImageOverlayItem] = []
+    var overlayBlocks: [OverlayBlockItem] = []
     var trackSettings: [TrackSettings] = TimelineDocument.defaultTrackSettings
     var trackCount: Int = 1                       // 1...3 visible video tracks
     var trackSequential: [Bool] = [true, true, true]
-    var includeIntro: Bool = true
-    var includeOutro: Bool = true
 
     static let defaultTrackSettings: [TrackSettings] = [
         TrackSettings(defaultPosition: "top"),
@@ -23,7 +22,8 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     ]
 
     var isEmpty: Bool {
-        videoTrack.isEmpty && soundTrack.isEmpty && textOverlays.isEmpty && imageOverlays.isEmpty
+        videoTrack.isEmpty && soundTrack.isEmpty && textOverlays.isEmpty
+            && imageOverlays.isEmpty && overlayBlocks.isEmpty
     }
 
     enum CodingKeys: String, CodingKey {
@@ -31,11 +31,10 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         case soundTrack = "sound_track"
         case textOverlays = "text_overlays"
         case imageOverlays = "image_overlays"
+        case overlayBlocks = "overlay_blocks"
         case trackSettings = "track_settings"
         case trackCount = "track_count"
         case trackSequential = "track_sequential"
-        case includeIntro = "include_intro"
-        case includeOutro = "include_outro"
     }
 
     init() {}
@@ -46,6 +45,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         soundTrack = try container.decodeIfPresent([SoundItem].self, forKey: .soundTrack) ?? []
         textOverlays = try container.decodeIfPresent([TextOverlayItem].self, forKey: .textOverlays) ?? []
         imageOverlays = try container.decodeIfPresent([ImageOverlayItem].self, forKey: .imageOverlays) ?? []
+        overlayBlocks = try container.decodeIfPresent([OverlayBlockItem].self, forKey: .overlayBlocks) ?? []
         var settings = try container.decodeIfPresent([TrackSettings].self, forKey: .trackSettings) ?? []
         // Always keep exactly 3 entries with the UI's positional defaults.
         let defaults = Self.defaultTrackSettings
@@ -60,8 +60,73 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         var sequential = try container.decodeIfPresent([Bool].self, forKey: .trackSequential) ?? [true, true, true]
         while sequential.count < 3 { sequential.append(true) }
         trackSequential = Array(sequential.prefix(3))
-        includeIntro = try container.decodeIfPresent(Bool.self, forKey: .includeIntro) ?? true
-        includeOutro = try container.decodeIfPresent(Bool.self, forKey: .includeOutro) ?? true
+    }
+
+    /// Flatten overlay blocks into concrete text/image items (for rendering
+    /// and any consumer that predates blocks). Each block's items shift to
+    /// the block's start and clamp to its window; unbounded items span it.
+    func expandingOverlayBlocks() -> TimelineDocument {
+        guard !overlayBlocks.isEmpty else { return self }
+        var document = self
+        for block in overlayBlocks {
+            for template in block.composition.texts {
+                var item = template
+                item.uid = UUID()
+                let relStart = min(template.startTime, block.duration)
+                let relEnd = template.unbounded ? block.duration : min(template.endTime, block.duration)
+                guard relEnd > relStart else { continue }
+                item.startTime = block.startTime + relStart
+                item.endTime = block.startTime + relEnd
+                item.unbounded = false
+                document.textOverlays.append(item)
+            }
+            for template in block.composition.images {
+                var item = template
+                item.uid = UUID()
+                let relStart = min(template.startTime, block.duration)
+                let relEnd = template.unbounded ? block.duration : min(template.endTime, block.duration)
+                guard relEnd > relStart else { continue }
+                item.startTime = block.startTime + relStart
+                item.endTime = block.startTime + relEnd
+                item.unbounded = false
+                document.imageOverlays.append(item)
+            }
+        }
+        document.overlayBlocks = []
+        return document
+    }
+}
+
+/// An overlay template placed on the timeline as one unit: a snapshot of the
+/// template's composition (later template edits don't affect placed blocks),
+/// positioned and trimmed as a single block. Internal items keep their
+/// timing relative to the block start.
+nonisolated struct OverlayBlockItem: Codable, Sendable, Equatable, Identifiable {
+    /// SwiftUI identity only — never encoded.
+    var uid = UUID()
+
+    var name: String = "Overlay"
+    var startTime: Double = 0
+    var duration: Double = 3
+    var composition = OverlayComposition()
+
+    var endTime: Double { startTime + duration }
+    var id: UUID { uid }
+
+    enum CodingKeys: String, CodingKey {
+        case name, duration, composition
+        case startTime = "start_time"
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Overlay"
+        startTime = try container.decodeIfPresent(Double.self, forKey: .startTime) ?? 0
+        duration = max(0.5, try container.decodeIfPresent(Double.self, forKey: .duration) ?? 3)
+        composition = try container.decodeIfPresent(OverlayComposition.self, forKey: .composition)
+            ?? OverlayComposition()
     }
 }
 

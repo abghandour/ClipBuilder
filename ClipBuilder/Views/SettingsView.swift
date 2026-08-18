@@ -165,15 +165,6 @@ private struct ProfileSettingsTab: View {
                 folderRow(title: "Output folder", path: $store.activeProfile.outputFolder)
             }
 
-            Section("Intro / Outro") {
-                fileRow(title: "Intro video", path: Binding(
-                    get: { store.activeProfile.introVideo ?? "" },
-                    set: { store.activeProfile.introVideo = $0.isEmpty ? nil : $0 }))
-                fileRow(title: "Outro video", path: Binding(
-                    get: { store.activeProfile.outroVideo ?? "" },
-                    set: { store.activeProfile.outroVideo = $0.isEmpty ? nil : $0 }))
-            }
-
             Section("Tag Schema") {
                 Text("One category per row; comma-separated tags. Leave empty to use the built-in schema.")
                     .font(.caption)
@@ -238,19 +229,6 @@ private struct ProfileSettingsTab: View {
         }
     }
 
-    private func fileRow(title: String, path: Binding<String>) -> some View {
-        HStack {
-            TextField(title, text: path, prompt: Text("None"))
-            Button("Choose…") {
-                let panel = NSOpenPanel()
-                panel.canChooseDirectories = false
-                panel.canChooseFiles = true
-                if panel.runModal() == .OK, let url = panel.url {
-                    path.wrappedValue = url.path
-                }
-            }
-        }
-    }
 }
 
 // MARK: - General

@@ -70,6 +70,8 @@ actor MultitrackRenderer {
     func render(document: TimelineDocument, scenes: [SceneRecord],
                 profile: BrandProfile, database: Database,
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
+        // Overlay blocks render as their flattened text/image items.
+        let document = document.expandingOverlayBlocks()
         let clips = Self.resolveClips(document: document, scenes: scenes)
         guard !clips.isEmpty else {
             throw CocoaError(.fileNoSuchFile, userInfo: [
@@ -102,16 +104,6 @@ actor MultitrackRenderer {
         // Python generator (pad/truncate at the end for exact parity).
         var clipPaths: [URL] = []
         var transitions: [String?] = []
-        var introAdded = false
-
-        if document.includeIntro, let intro = Self.assetURL(profile.introVideo) {
-            emit("Normalizing intro…")
-            let normalized = scratch.appendingPathComponent("intro_norm.mp4")
-            try await render.normalizeClip(source: intro, output: normalized)
-            clipPaths.append(normalized)
-            transitions.append("fade")
-            introAdded = true
-        }
 
         let captionRenderer = CaptionRenderer(videoWidth: Self.width, videoHeight: Self.height,
                                               style: profile.captions)
@@ -132,16 +124,6 @@ actor MultitrackRenderer {
             clipPaths.append(segmentPaths[index])
             guard clipPaths.count > 1 else { continue }
             transitions.append(segment.clips.isEmpty ? nil : segment.clips.first?.transIn)
-        }
-
-        var outroAdded = false
-        if document.includeOutro, let outro = Self.assetURL(profile.outroVideo) {
-            emit("Normalizing outro…")
-            let normalized = scratch.appendingPathComponent("outro_norm.mp4")
-            try await render.normalizeClip(source: outro, output: normalized)
-            clipPaths.append(normalized)
-            outroAdded = true
-            if clipPaths.count > 1 { transitions.append("fade") }
         }
 
         guard !clipPaths.isEmpty else {
@@ -198,13 +180,10 @@ actor MultitrackRenderer {
             }
         }
 
-        // Text and image overlays — shifted past the intro, clamped before
-        // the outro, pre-rendered to full-frame PNGs and composited in one
-        // pass (images first so text stays on top).
-        let introOffset = introAdded ? await FFmpeg.duration(of: clipPaths[0]) : 0
-        let outroDuration = outroAdded ? await FFmpeg.duration(of: clipPaths[clipPaths.count - 1]) : 0
+        // Text and image overlays — pre-rendered to full-frame PNGs and
+        // composited in one pass (images first so text stays on top).
         func clampWindow(start: Double, end: Double) -> (Double, Double) {
-            (start + introOffset, min(end + introOffset, videoDuration - outroDuration))
+            (start, min(end, videoDuration))
         }
         let textRenderer = TextOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
         let imageRenderer = ImageOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
@@ -758,12 +737,6 @@ actor MultitrackRenderer {
     }
 
     // MARK: - Output naming
-
-    private nonisolated static func assetURL(_ path: String?) -> URL? {
-        guard let path, !path.isEmpty else { return nil }
-        let expanded = (path as NSString).expandingTildeInPath
-        return FileManager.default.fileExists(atPath: expanded) ? URL(fileURLWithPath: expanded) : nil
-    }
 
     /// <output>/<YYYY-MM-DD>/hl-<duration>-<n>.mp4, sharing the per-day
     /// counter with the Python builder (it scans every mp4's trailing number).

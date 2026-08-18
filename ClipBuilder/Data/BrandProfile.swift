@@ -11,8 +11,6 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var tagSchema: [String: [String]]
     var socials: [String: SocialSlot]
     var captions: CaptionStyle
-    var introVideo: String?
-    var outroVideo: String?
 
     var id: String { profileName }
 
@@ -25,8 +23,6 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case tagSchema = "tag_schema"
         case socials
         case captions
-        case introVideo = "intro_video"
-        case outroVideo = "outro_video"
     }
 
     init(from decoder: Decoder) throws {
@@ -41,8 +37,6 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         tagSchema = try container.decodeIfPresent([String: [String]].self, forKey: .tagSchema) ?? [:]
         socials = try container.decodeIfPresent([String: SocialSlot].self, forKey: .socials) ?? [:]
         captions = try container.decodeIfPresent(CaptionStyle.self, forKey: .captions) ?? CaptionStyle()
-        introVideo = try container.decodeIfPresent(String.self, forKey: .introVideo)
-        outroVideo = try container.decodeIfPresent(String.self, forKey: .outroVideo)
     }
 
     init(name: String) {
@@ -54,8 +48,6 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         tagSchema = [:]
         socials = ["instagram": SocialSlot(), "tiktok": SocialSlot(), "youtube": SocialSlot()]
         captions = CaptionStyle()
-        introVideo = nil
-        outroVideo = nil
     }
 
     var sourceFolderURL: URL { URL(fileURLWithPath: (sourceFolder as NSString).expandingTildeInPath) }

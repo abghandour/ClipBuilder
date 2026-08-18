@@ -163,24 +163,13 @@ struct BuilderView: View {
             .fixedSize()
             .help("Add a music block at the playhead")
 
-            Menu {
-                Button("Plain Text") {
-                    _ = model.addText()
-                }
-                let templates = OverlayTemplateStore.list()
-                if !templates.isEmpty {
-                    Divider()
-                    ForEach(templates) { template in
-                        Button(template.name) {
-                            model.addComposition(template.composition)
-                        }
-                    }
-                }
+            Button {
+                _ = model.addText()
             } label: {
                 Label("Text", systemImage: "textformat")
             }
             .fixedSize()
-            .help("Add a text overlay at the playhead — plain, or from an Overlays template")
+            .help("Add a text overlay at the playhead")
 
             Button {
                 showImagePicker = true
@@ -195,14 +184,23 @@ struct BuilderView: View {
                 }
             }
 
-            Divider().frame(height: 16)
-
-            Toggle("Intro", isOn: Binding(
-                get: { model.document.includeIntro },
-                set: { model.setIncludeIntro($0) }))
-            Toggle("Outro", isOn: Binding(
-                get: { model.document.includeOutro },
-                set: { model.setIncludeOutro($0) }))
+            Menu {
+                let templates = OverlayTemplateStore.list()
+                if templates.isEmpty {
+                    Text("Design templates in the Overlays section first")
+                } else {
+                    ForEach(templates) { template in
+                        Button(template.name) {
+                            model.addOverlayBlock(name: template.name,
+                                                  composition: template.composition)
+                        }
+                    }
+                }
+            } label: {
+                Label("Overlay", systemImage: "square.2.layers.3d")
+            }
+            .fixedSize()
+            .help("Add an Overlays template at the playhead as a single block")
 
             Spacer()
 
@@ -255,6 +253,7 @@ struct BuilderView: View {
         case .sound(let uid): model.removeSound(uid)
         case .text(let uid): model.removeText(uid)
         case .image(let uid): model.removeImage(uid)
+        case .overlay(let uid): model.removeOverlayBlock(uid)
         case nil: break
         }
     }

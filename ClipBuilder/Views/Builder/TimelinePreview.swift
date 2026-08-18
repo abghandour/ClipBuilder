@@ -4,7 +4,7 @@ import AVFoundation
 /// Instant timeline playback without rendering: the video track is assembled
 /// into an AVMutableComposition (clip audio + music via an AVAudioMix) and
 /// played directly. Layout-affecting features the FFmpeg pipeline burns in —
-/// crops, slot bands, captions, text overlays, transitions, intro/outro —
+/// crops, slot bands, captions, text overlays, transitions —
 /// are not applied here; the render remains the source of truth.
 
 /// One non-overlapping stretch of timeline mapped to a source file range.

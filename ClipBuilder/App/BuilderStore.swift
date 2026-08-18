@@ -6,6 +6,41 @@ enum TimelineSelection: Equatable {
     case sound(UUID)
     case text(UUID)
     case image(UUID)
+    case overlay(UUID)
+}
+
+/// One item in the unified overlay lane — texts, images, and overlay blocks
+/// share a single timeline that stacks rows when items overlap in time.
+enum OverlayLaneEntry: Identifiable {
+    case text(TextOverlayItem)
+    case image(ImageOverlayItem)
+    case block(OverlayBlockItem)
+
+    var uid: UUID {
+        switch self {
+        case .text(let item): return item.uid
+        case .image(let item): return item.uid
+        case .block(let item): return item.uid
+        }
+    }
+
+    var start: Double {
+        switch self {
+        case .text(let item): return item.startTime
+        case .image(let item): return item.startTime
+        case .block(let item): return item.startTime
+        }
+    }
+
+    var end: Double {
+        switch self {
+        case .text(let item): return item.endTime
+        case .image(let item): return item.endTime
+        case .block(let item): return item.endTime
+        }
+    }
+
+    var id: UUID { uid }
 }
 
 /// Observable editing model for the Clip Builder timeline: owns the document,
@@ -81,6 +116,7 @@ final class BuilderTimelineModel {
         case .sound(let uid): return document.soundTrack.contains { $0.uid == uid }
         case .text(let uid): return document.textOverlays.contains { $0.uid == uid }
         case .image(let uid): return document.imageOverlays.contains { $0.uid == uid }
+        case .overlay(let uid): return document.overlayBlocks.contains { $0.uid == uid }
         }
     }
 
@@ -170,7 +206,42 @@ final class BuilderTimelineModel {
         let soundEnd = document.soundTrack.map { $0.startTime + $0.duration }.max() ?? 0
         let textEnd = document.textOverlays.map(\.endTime).max() ?? 0
         let imageEnd = document.imageOverlays.map(\.endTime).max() ?? 0
-        return max(clipEnd, soundEnd, textEnd, imageEnd)
+        let blockEnd = document.overlayBlocks.map(\.endTime).max() ?? 0
+        return max(clipEnd, soundEnd, textEnd, imageEnd, blockEnd)
+    }
+
+    // MARK: - Unified overlay lane
+
+    static let overlayRowHeight: CGFloat = 40
+
+    var overlayLaneEntries: [OverlayLaneEntry] {
+        document.textOverlays.map(OverlayLaneEntry.text)
+            + document.imageOverlays.map(OverlayLaneEntry.image)
+            + document.overlayBlocks.map(OverlayLaneEntry.block)
+    }
+
+    /// Greedy interval packing: each entry takes the lowest row that is free
+    /// at its start time, so overlapping items stack instead of colliding.
+    func overlayRowLayout() -> (rows: [UUID: Int], rowCount: Int) {
+        let entries = overlayLaneEntries.sorted {
+            $0.start == $1.start ? $0.end < $1.end : $0.start < $1.start
+        }
+        var rowEnds: [Double] = []
+        var rows: [UUID: Int] = [:]
+        for entry in entries {
+            if let row = rowEnds.firstIndex(where: { $0 <= entry.start + 0.001 }) {
+                rows[entry.uid] = row
+                rowEnds[row] = entry.end
+            } else {
+                rows[entry.uid] = rowEnds.count
+                rowEnds.append(entry.end)
+            }
+        }
+        return (rows, max(1, rowEnds.count))
+    }
+
+    var overlayLaneHeight: CGFloat {
+        CGFloat(overlayRowLayout().rowCount) * Self.overlayRowHeight
     }
 
     func clips(inTrack track: Int) -> [TimelineClip] {
@@ -414,36 +485,47 @@ final class BuilderTimelineModel {
         return item.uid
     }
 
-    /// Insert a template's items at the playhead: every text and image keeps
-    /// its own look and relative timing, shifted so the composition starts at
-    /// the insertion point. Unbounded items become concrete, lasting to the
-    /// composition's end.
-    func addComposition(_ composition: OverlayComposition, at time: Double? = nil) {
+    // MARK: - Overlay blocks
+
+    /// Place an overlay template at the playhead as ONE timeline unit: the
+    /// whole composition (a snapshot — later template edits don't touch it)
+    /// moves and trims as a single block.
+    func addOverlayBlock(name: String, composition: OverlayComposition, at time: Double? = nil) {
         guard !composition.isEmpty else { return }
-        registerUndo("Add Overlay Template")
-        let start = Self.snap(time ?? playhead)
-        let total = composition.duration
-        var lastUID: UUID?
-        for template in composition.texts {
-            var item = template
-            item.uid = UUID()
-            item.startTime = start + template.startTime
-            item.endTime = item.startTime
-                + max(0.5, template.unbounded ? total - template.startTime : template.duration)
-            item.unbounded = false
-            document.textOverlays.append(item)
-            lastUID = item.uid
-        }
-        for template in composition.images {
-            var item = template
-            item.uid = UUID()
-            item.startTime = start + template.startTime
-            item.endTime = item.startTime
-                + max(0.5, template.unbounded ? total - template.startTime : template.duration)
-            item.unbounded = false
-            document.imageOverlays.append(item)
-        }
-        if let lastUID { selection = .text(lastUID) }
+        registerUndo("Add Overlay")
+        var block = OverlayBlockItem()
+        block.name = name
+        block.composition = composition
+        block.startTime = Self.snap(time ?? playhead)
+        block.duration = max(1, (composition.duration * 10).rounded() / 10)
+        document.overlayBlocks.append(block)
+        selection = .overlay(block.uid)
+        documentDidChange()
+    }
+
+    func overlayBlockIndex(_ uid: UUID) -> Int? {
+        document.overlayBlocks.firstIndex { $0.uid == uid }
+    }
+
+    func overlayBlock(_ uid: UUID) -> OverlayBlockItem? {
+        overlayBlockIndex(uid).map { document.overlayBlocks[$0] }
+    }
+
+    func updateOverlayBlock(_ uid: UUID, _ mutate: (inout OverlayBlockItem) -> Void) {
+        guard let index = overlayBlockIndex(uid) else { return }
+        registerUndo("Edit Overlay", coalescing: "overlay-\(uid)")
+        mutate(&document.overlayBlocks[index])
+        let block = document.overlayBlocks[index]
+        document.overlayBlocks[index].startTime = max(0, block.startTime)
+        document.overlayBlocks[index].duration = max(0.5, block.duration)
+        documentDidChange()
+    }
+
+    func removeOverlayBlock(_ uid: UUID) {
+        guard overlayBlockIndex(uid) != nil else { return }
+        registerUndo("Delete Overlay")
+        document.overlayBlocks.removeAll { $0.uid == uid }
+        if selection == .overlay(uid) { selection = nil }
         documentDidChange()
     }
 
@@ -512,19 +594,4 @@ final class BuilderTimelineModel {
         documentDidChange()
     }
 
-    // MARK: - Document toggles
-
-    func setIncludeIntro(_ include: Bool) {
-        guard include != document.includeIntro else { return }
-        registerUndo("Toggle Intro")
-        document.includeIntro = include
-        documentDidChange()
-    }
-
-    func setIncludeOutro(_ include: Bool) {
-        guard include != document.includeOutro else { return }
-        registerUndo("Toggle Outro")
-        document.includeOutro = include
-        documentDidChange()
-    }
 }

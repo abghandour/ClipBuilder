@@ -31,10 +31,7 @@ struct TimelineView: View {
                                            onPlayClip: onPlayClip)
                         }
                         SoundLane(contentWidth: contentWidth, height: Self.soundLaneHeight)
-                        TextLane(contentWidth: contentWidth, height: Self.textLaneHeight)
-                        if !model.document.imageOverlays.isEmpty {
-                            ImageLane(contentWidth: contentWidth, height: Self.textLaneHeight)
-                        }
+                        OverlayLane(contentWidth: contentWidth)
                     }
                     .overlay(alignment: .topLeading) {
                         PlayheadLine()
@@ -58,12 +55,8 @@ struct TimelineView: View {
             }
             laneHeader(title: "Sound", systemImage: "music.note")
                 .frame(height: Self.soundLaneHeight)
-            laneHeader(title: "Text", systemImage: "textformat")
-                .frame(height: Self.textLaneHeight)
-            if !model.document.imageOverlays.isEmpty {
-                laneHeader(title: "Images", systemImage: "photo")
-                    .frame(height: Self.textLaneHeight)
-            }
+            laneHeader(title: "Overlays", systemImage: "square.2.layers.3d")
+                .frame(height: model.overlayLaneHeight)
         }
     }
 
@@ -513,29 +506,122 @@ struct SoundBlock: View {
     }
 }
 
-// MARK: - Image lane
+// MARK: - Unified overlay lane
 
-struct ImageLane: View {
+/// One lane for texts, images, and overlay blocks. Overlapping items stack
+/// into extra rows (the lane grows vertically) instead of painting over
+/// each other.
+struct OverlayLane: View {
     @Environment(AppStore.self) private var store
     let contentWidth: CGFloat
-    let height: CGFloat
 
     var body: some View {
         let model = store.builder
+        let layout = model.overlayRowLayout()
+        let rowHeight = BuilderTimelineModel.overlayRowHeight
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 6)
                 .fill(.quaternary.opacity(0.25))
-            ForEach(model.document.imageOverlays) { item in
-                ImageBlock(item: item, height: height)
+            ForEach(model.overlayLaneEntries) { entry in
+                let row = layout.rows[entry.uid] ?? 0
+                switch entry {
+                case .text(let item):
+                    TextBlock(item: item, row: row, height: rowHeight)
+                case .image(let item):
+                    ImageBlock(item: item, row: row, height: rowHeight)
+                case .block(let item):
+                    OverlayBlockView(item: item, row: row, height: rowHeight)
+                }
             }
         }
-        .frame(width: contentWidth, height: height)
+        .frame(width: contentWidth, height: model.overlayLaneHeight)
+    }
+}
+
+/// A placed overlay template: one indigo unit block on the lane.
+struct OverlayBlockView: View {
+    @Environment(AppStore.self) private var store
+    let item: OverlayBlockItem
+    let row: Int
+    let height: CGFloat
+
+    @State private var dragOffset: CGFloat = 0
+    @State private var isDragging = false
+    @State private var trimDelta: CGFloat = 0
+    @State private var isTrimming = false
+
+    var body: some View {
+        let model = store.builder
+        let pps = model.pointsPerSecond
+        let isSelected = model.selection == .overlay(item.uid)
+        let width = max(24, CGFloat(item.duration) * pps + (isTrimming ? trimDelta : 0))
+
+        HStack(spacing: 4) {
+            Image(systemName: "square.2.layers.3d")
+                .font(.system(size: 9))
+            Text(item.name)
+                .font(.system(size: 10))
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Text("\(item.composition.texts.count + item.composition.images.count)")
+                .font(.system(size: 8).monospacedDigit())
+                .opacity(0.7)
+        }
+        .padding(.horizontal, 6)
+        .foregroundStyle(.white)
+        .frame(width: width, height: height - 8)
+        .background(Color.indigo.opacity(0.6), in: RoundedRectangle(cornerRadius: 5))
+        .overlay {
+            RoundedRectangle(cornerRadius: 5)
+                .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
+        }
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(.white.opacity(0.4))
+                .frame(width: 4)
+                .padding(.vertical, 8)
+                .contentShape(Rectangle().inset(by: -4))
+                .gesture(DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        isTrimming = true
+                        trimDelta = value.translation.width
+                    }
+                    .onEnded { value in
+                        let newDuration = BuilderTimelineModel.snap(
+                            item.duration + Double(value.translation.width / pps))
+                        model.updateOverlayBlock(item.uid) { $0.duration = max(0.5, newDuration) }
+                        isTrimming = false
+                        trimDelta = 0
+                    })
+        }
+        .offset(x: CGFloat(item.startTime) * pps + (isDragging ? dragOffset : 0),
+                y: CGFloat(row) * BuilderTimelineModel.overlayRowHeight + 4)
+        .onTapGesture {
+            model.selection = .overlay(item.uid)
+        }
+        .gesture(DragGesture(minimumDistance: 3)
+            .onChanged { value in
+                isDragging = true
+                dragOffset = value.translation.width
+            }
+            .onEnded { value in
+                let newStart = BuilderTimelineModel.snap(
+                    item.startTime + Double(value.translation.width / pps))
+                model.updateOverlayBlock(item.uid) { $0.startTime = newStart }
+                isDragging = false
+                dragOffset = 0
+            })
+        .contextMenu {
+            Button("Delete", role: .destructive) { model.removeOverlayBlock(item.uid) }
+        }
+        .help("\(item.name) — overlay template block")
     }
 }
 
 struct ImageBlock: View {
     @Environment(AppStore.self) private var store
     let item: ImageOverlayItem
+    let row: Int
     let height: CGFloat
 
     @State private var dragOffset: CGFloat = 0
@@ -584,7 +670,8 @@ struct ImageBlock: View {
                         trimDelta = 0
                     })
         }
-        .offset(x: CGFloat(item.startTime) * pps + (isDragging ? dragOffset : 0), y: 4)
+        .offset(x: CGFloat(item.startTime) * pps + (isDragging ? dragOffset : 0),
+                y: CGFloat(row) * BuilderTimelineModel.overlayRowHeight + 4)
         .onTapGesture {
             model.selection = .image(item.uid)
         }
@@ -610,29 +697,12 @@ struct ImageBlock: View {
     }
 }
 
-// MARK: - Text lane
-
-struct TextLane: View {
-    @Environment(AppStore.self) private var store
-    let contentWidth: CGFloat
-    let height: CGFloat
-
-    var body: some View {
-        let model = store.builder
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.quaternary.opacity(0.25))
-            ForEach(model.document.textOverlays) { item in
-                TextBlock(item: item, height: height)
-            }
-        }
-        .frame(width: contentWidth, height: height)
-    }
-}
+// MARK: - Text block
 
 struct TextBlock: View {
     @Environment(AppStore.self) private var store
     let item: TextOverlayItem
+    let row: Int
     let height: CGFloat
 
     @State private var dragOffset: CGFloat = 0
@@ -681,7 +751,8 @@ struct TextBlock: View {
                         trimDelta = 0
                     })
         }
-        .offset(x: CGFloat(item.startTime) * pps + (isDragging ? dragOffset : 0), y: 4)
+        .offset(x: CGFloat(item.startTime) * pps + (isDragging ? dragOffset : 0),
+                y: CGFloat(row) * BuilderTimelineModel.overlayRowHeight + 4)
         .onTapGesture {
             model.selection = .text(item.uid)
         }

@@ -33,6 +33,12 @@ struct BuilderInspector: View {
                 } else {
                     placeholder
                 }
+            case .overlay(let uid):
+                if let item = model.overlayBlock(uid) {
+                    OverlayBlockInspector(item: item)
+                } else {
+                    placeholder
+                }
             case nil:
                 placeholder
             }
@@ -422,5 +428,51 @@ struct TextInspector: View {
         } catch {
             saveError = error.localizedDescription
         }
+    }
+}
+
+/// A placed overlay-template block: timing controls plus a summary of the
+/// snapshot it renders. The design itself is edited in the Overlays section
+/// (and re-added, since placed blocks are snapshots).
+struct OverlayBlockInspector: View {
+    @Environment(AppStore.self) private var store
+    let item: OverlayBlockItem
+
+    var body: some View {
+        let model = store.builder
+        VStack(alignment: .leading, spacing: 12) {
+            Label(item.name, systemImage: "square.2.layers.3d")
+                .font(.headline)
+                .lineLimit(1)
+
+            Text("\(item.composition.texts.count) text(s) · \(item.composition.images.count) image(s)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            LabeledContent("Start") {
+                Text(item.startTime.timecode).monospacedDigit()
+            }
+            Stepper(value: Binding(
+                get: { item.duration },
+                set: { value in model.updateOverlayBlock(item.uid) { $0.duration = max(0.5, value) } }),
+                in: 0.5...600, step: 0.5) {
+                LabeledContent("Duration") {
+                    Text(String(format: "%.1fs", item.duration)).monospacedDigit()
+                }
+            }
+
+            Divider()
+
+            Text("This block is a snapshot of the template as it was when added. Edit the design in the Overlays section and re-add it to pick up changes.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
+            Button("Delete Overlay", role: .destructive) {
+                model.removeOverlayBlock(item.uid)
+            }
+        }
+        .padding(12)
     }
 }
