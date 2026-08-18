@@ -12,6 +12,7 @@ struct WizardResultsSheet: View {
     @State private var players: [Int64: AVPlayer] = [:]
     @State private var verdicts: [Int64: Int] = [:]
     @State private var reviewTarget: GeneratedVideoRecord?
+    @State private var builderTarget: GeneratedVideoRecord?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -63,6 +64,23 @@ struct WizardResultsSheet: View {
         .sheet(item: $reviewTarget) { video in
             ReviewSheet(video: video)
         }
+        // Mirrors the Library: opening in the Builder replaces its timeline,
+        // so confirm when clips are already there.
+        .confirmationDialog(
+            "Replace the current timeline?",
+            isPresented: Binding(get: { builderTarget != nil }, set: { if !$0 { builderTarget = nil } })
+        ) {
+            Button("Replace Timeline") {
+                if let builderTarget {
+                    dismiss()
+                    store.openInBuilder(builderTarget)
+                }
+                builderTarget = nil
+            }
+            Button("Cancel", role: .cancel) { builderTarget = nil }
+        } message: {
+            Text("The Builder already has clips on its timeline. Opening \(builderTarget?.filename ?? "this video") replaces them. You can undo this with ⌘Z.")
+        }
     }
 
     @ViewBuilder
@@ -98,6 +116,19 @@ struct WizardResultsSheet: View {
                 }
                 .controlSize(.small)
             }
+
+            Button {
+                if store.builder.document.videoTrack.isEmpty {
+                    dismiss()
+                    store.openInBuilder(video)
+                } else {
+                    builderTarget = video
+                }
+            } label: {
+                Label("Edit in Builder", systemImage: "slider.horizontal.below.rectangle")
+            }
+            .controlSize(.small)
+            .help("Open this video's timeline in the Builder to tweak clips, overlays, and music")
         }
     }
 

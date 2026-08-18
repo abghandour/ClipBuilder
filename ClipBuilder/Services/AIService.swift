@@ -130,6 +130,12 @@ actor AIService {
               timeout: TimeInterval = 300,
               log: (@Sendable (String) -> Void)? = nil) async throws -> String {
         let emit = log ?? { _ in }
+        // Verbose logging (the log panels' checkbox): show exactly what the
+        // model receives, for every task.
+        if UserDefaults.standard.bool(forKey: "log.verbose") {
+            let frameNote = (frames?.count ?? 0) > 0 ? " + \(frames?.count ?? 0) image frames" : ""
+            emit("──── prompt (\(AICatalog.taskLabels[task] ?? task)\(frameNote)) ────\n\(prompt)\n──── end prompt ────")
+        }
         let candidates = dispatchCandidates(task: task, providerOverride: providerOverride,
                                             model: model, needsImages: frames?.isEmpty == false)
         guard !candidates.isEmpty else {
