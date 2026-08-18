@@ -50,15 +50,21 @@ actor Analyzer {
 
     // MARK: - Frame sampling
 
+    /// A user-chosen interval may sample denser than the automatic mode.
+    static let maxCustomFrames = 60
+
     /// Variable-interval sampling matching analyzer.py: 1s (≤10s),
     /// 2s (≤60s), 3s (>60s); from 0.5s to duration−0.3s; max 30 frames.
-    static func frameTimestamps(duration: Double) -> [Double] {
-        let interval: Double = duration <= 10 ? 1.0 : (duration <= 60 ? 2.0 : 3.0)
+    /// A non-nil `interval` overrides the automatic choice (capped at 60
+    /// frames so a dense interval on long footage can't explode the call).
+    static func frameTimestamps(duration: Double, interval custom: Double? = nil) -> [Double] {
+        let interval = custom ?? (duration <= 10 ? 1.0 : (duration <= 60 ? 2.0 : 3.0))
+        let cap = custom == nil ? maxFrames : maxCustomFrames
         var timestamps: [Double] = []
         var t = 0.5
-        while t < duration - 0.3 && timestamps.count < maxFrames {
+        while t < duration - 0.3 && timestamps.count < cap {
             timestamps.append(t)
-            t += interval
+            t += max(0.2, interval)
         }
         if timestamps.isEmpty && duration > 0 {
             timestamps.append(min(0.5, duration / 2))
@@ -66,9 +72,17 @@ actor Analyzer {
         return timestamps
     }
 
-    private func extractFrames(url: URL, duration: Double,
+    private func extractFrames(url: URL, duration: Double, interval: Double?,
                                log: @Sendable (String) -> Void) async -> [AIFrame] {
-        let timestamps = Self.frameTimestamps(duration: duration)
+        let timestamps = Self.frameTimestamps(duration: duration, interval: interval)
+        if let interval {
+            let wanted = Int(((duration - 0.8) / max(0.2, interval)).rounded(.up))
+            if wanted > timestamps.count {
+                log(String(format: "Sampling every %.1fs capped at %d frames", interval, timestamps.count))
+            } else {
+                log(String(format: "Sampling every %.1fs (%d frames)", interval, timestamps.count))
+            }
+        }
         let frames = (try? await BoundedConcurrency.map(timestamps, limit: FFmpeg.jobLimit) { _, timestamp in
             await ThumbnailService.jpegFrame(url: url, at: timestamp).map {
                 AIFrame(jpeg: $0, label: String(format: "%.1fs", timestamp))
@@ -85,11 +99,49 @@ actor Analyzer {
             .joined(separator: "\n") + "\n"
     }
 
-    private static func fullAnalysisPrompt(domain: String, duration: Double, tags: [String: [String]]) -> String {
+    /// User-supplied context injected ahead of the tagging rules.
+    private static func instructionsBlock(_ instructions: String) -> String {
+        let trimmed = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return """
+
+        ## USER CONTEXT (HIGHEST PRIORITY — apply this when tagging and noting moments)
+        \(trimmed)
+
+        If this context RESTRICTS what footage to include (e.g. "only scenes with a particular person"), treat it as a HARD FILTER: omit every time range where the restriction is not met, even if tags would otherwise apply there. Returning fewer ranges — or none at all — is the correct behavior when little or nothing matches. Never tag excluded footage "just in case".
+
+        """
+    }
+
+    /// Timestamped, per-video notes — the model relates each to the nearest
+    /// sampled frames. When `withReferenceFrames`, each note's exact anchor
+    /// frame rides along so the model can resolve what the note points at.
+    private static func notesBlock(_ notes: [VideoNote], withReferenceFrames: Bool) -> String {
+        guard !notes.isEmpty else { return "" }
+        let lines = notes
+            .sorted { $0.atTime < $1.atTime }
+            .map { String(format: "- at %.1fs: %@", $0.atTime, $0.note) }
+            .joined(separator: "\n")
+        let referenceGuidance = withReferenceFrames ? """
+        Each note has a matching image labeled "REFERENCE for note at Xs" — the exact frame the user was looking at when they wrote it. Use it to resolve what the note refers to (e.g. which person "this guy" is), then apply the note.
+        """ : ""
+        return """
+
+        ## USER NOTES FOR THIS VIDEO (HIGHEST PRIORITY — each anchored at a video timestamp)
+        \(lines)
+        \(referenceGuidance)
+        Relate each note to the frames nearest its timestamp and let it guide your tagging and moments around that part of the video. If a note states a video-wide restriction (e.g. "only include scenes with this person"), treat it as a HARD FILTER for the whole video: omit every time range where the restriction is not met.
+
+        """
+    }
+
+    private static func fullAnalysisPrompt(domain: String, duration: Double, tags: [String: [String]],
+                                           instructions: String, notes: [VideoNote],
+                                           notesHaveReferenceFrames: Bool) -> String {
         """
         You are analyzing frames from a \(domain) video.
         Video duration: \(String(format: "%.1f", duration))s. Frames are shown at their timestamps.
-
+        \(instructionsBlock(instructions))\(notesBlock(notes, withReferenceFrames: notesHaveReferenceFrames))
         Your job: produce a TAG-CENTRIC analysis. For each tag that applies to this
         video, provide the TIME RANGES where that tag is present. Also note any
         important moments (dialog, key events).
@@ -127,11 +179,13 @@ actor Analyzer {
         """
     }
 
-    private static func incrementalPrompt(domain: String, duration: Double, newTags: [String]) -> String {
+    private static func incrementalPrompt(domain: String, duration: Double, newTags: [String],
+                                          instructions: String, notes: [VideoNote],
+                                          notesHaveReferenceFrames: Bool) -> String {
         """
         You are analyzing frames from a \(domain) video.
         Video duration: \(String(format: "%.1f", duration))s. Frames are shown at their timestamps.
-
+        \(instructionsBlock(instructions))\(notesBlock(notes, withReferenceFrames: notesHaveReferenceFrames))
         This video has already been analyzed for some tags. Now I need you to check
         for ONLY these NEW tags:
         \(newTags.sorted().joined(separator: ", "))
@@ -160,14 +214,21 @@ actor Analyzer {
 
     /// Full visual analysis of one video. If the video was analyzed before
     /// and only new tags were added to the schema, runs the cheaper
-    /// incremental pass instead.
+    /// incremental pass instead. Returns the id of the analyze batch the
+    /// results were stored under (nil when the pass was skipped).
+    @discardableResult
     func analyzeVisual(video: VideoRecord,
                        profile: BrandProfile,
                        database: Database,
+                       runName: String,
                        provider: String? = nil,
                        model: String? = nil,
+                       instructions: String = "",
+                       notes: [VideoNote] = [],
+                       sampleInterval: Double? = nil,
+                       force: Bool = false,
                        log: @escaping @Sendable (String) -> Void,
-                       progress: @escaping @Sendable (Double, String) -> Void) async throws {
+                       progress: @escaping @Sendable (Double, String) -> Void) async throws -> Int64? {
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let tags = profile.effectiveTags
         let allTags = Set(tags.values.flatMap { $0 })
@@ -176,35 +237,59 @@ actor Analyzer {
 
         let alreadyAnalyzed = try await database.analyzedTags(videoID: video.id)
         let newTags = allTags.subtracting(alreadyAnalyzed)
-        let isIncremental = video.visualAnalyzedAt != nil && !alreadyAnalyzed.isEmpty
-        if isIncremental && newTags.isEmpty {
+        // A forced re-run always does the full pass, ignoring what was
+        // analyzed before (the caller decides whether old scenes survive).
+        let isIncremental = !force && video.visualAnalyzedAt != nil && !alreadyAnalyzed.isEmpty
+        if !force && isIncremental && newTags.isEmpty {
             log("\(video.filename): all tags already analyzed — skipping")
-            return
+            return nil
         }
 
         progress(0.05, "extracting frames")
         log("Extracting frames from \(video.filename)...")
-        let frames = await extractFrames(url: video.url, duration: duration, log: log)
+        let frames = await extractFrames(url: video.url, duration: duration,
+                                         interval: sampleInterval, log: log)
         guard !frames.isEmpty else {
             throw FFmpegError.commandFailed(tool: "frame extraction", exitCode: 1,
                                             stderr: "no frames could be extracted from \(video.filename)")
         }
 
+        // Each note also sends the exact frame the user paused on when
+        // writing it — the sampled grid can miss that moment, and deictic
+        // notes ("this guy") are unresolvable without it.
+        var referenceFrames: [AIFrame] = []
+        if !notes.isEmpty {
+            referenceFrames = ((try? await BoundedConcurrency.map(notes, limit: FFmpeg.jobLimit) { _, note in
+                let at = min(max(0, note.atTime), max(0, duration - 0.1))
+                return await ThumbnailService.jpegFrame(url: video.url, at: at).map {
+                    AIFrame(jpeg: $0, label: String(format: "REFERENCE for note at %.1fs", note.atTime))
+                }
+            }) ?? []).compactMap { $0 }
+            if !referenceFrames.isEmpty {
+                log("Attached \(referenceFrames.count) reference frame(s) for the video notes")
+            }
+        }
+
         let prompt: String
         let tagsToRecord: [String]
         if isIncremental {
-            prompt = Self.incrementalPrompt(domain: domain, duration: duration, newTags: Array(newTags))
+            prompt = Self.incrementalPrompt(domain: domain, duration: duration, newTags: Array(newTags),
+                                            instructions: instructions, notes: notes,
+                                            notesHaveReferenceFrames: !referenceFrames.isEmpty)
             tagsToRecord = Array(newTags)
             progress(0.25, "tagging \(newTags.count) new tags")
             log("Extracted \(frames.count) frames, checking \(newTags.count) new tags...")
         } else {
-            prompt = Self.fullAnalysisPrompt(domain: domain, duration: duration, tags: tags)
+            prompt = Self.fullAnalysisPrompt(domain: domain, duration: duration, tags: tags,
+                                             instructions: instructions, notes: notes,
+                                             notesHaveReferenceFrames: !referenceFrames.isEmpty)
             tagsToRecord = Array(allTags)
             progress(0.25, "tagging (\(frames.count) frames)")
             log("Extracted \(frames.count) frames, sending for full analysis...")
         }
 
-        let response = try await ai.call(prompt: prompt, task: "analysis", frames: frames,
+        let response = try await ai.call(prompt: prompt, task: "analysis",
+                                         frames: referenceFrames + frames,
                                          model: model, provider: provider, timeout: 300, log: log)
         guard let object = AIResponseParser.jsonObject(from: response) else {
             throw AIError.emptyResponse("analysis (unparseable JSON)")
@@ -237,14 +322,26 @@ actor Analyzer {
         progress(0.95, "saving")
         log("Got \(cleanTags.count) tags, \(cleanMoments.count) moments")
         let attribution = await ai.resolveProviderModel(task: "analysis", provider: provider, model: model)
-        try await database.saveAnalysis(videoID: video.id,
-                                        tagRanges: cleanTags,
-                                        moments: cleanMoments,
-                                        analyzedTags: tagsToRecord,
-                                        provider: attribution.provider,
-                                        model: attribution.model,
-                                        mode: "visual")
+        // Notes live on the video and can change later — snapshot the set
+        // this run actually used so the batch info stays truthful.
+        let noteSnapshot = notes
+            .sorted { $0.atTime < $1.atTime }
+            .map { AnalysisRunNote(at: $0.atTime, note: $0.note) }
+        let notesJSON = (try? JSONEncoder().encode(noteSnapshot))
+            .flatMap { String(data: $0, encoding: .utf8) }
+        let runID = try await database.saveAnalysis(videoID: video.id,
+                                                    runName: runName,
+                                                    instructions: instructions,
+                                                    sampleInterval: sampleInterval,
+                                                    notesJSON: notesJSON,
+                                                    tagRanges: cleanTags,
+                                                    moments: cleanMoments,
+                                                    analyzedTags: tagsToRecord,
+                                                    provider: attribution.provider,
+                                                    model: attribution.model,
+                                                    mode: "visual")
         progress(1.0, "done")
+        return runID
     }
 }
 

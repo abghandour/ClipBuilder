@@ -16,23 +16,36 @@ struct WizardView: View {
     @AppStorage("wizard.enableTextOverlays") private var enableTextOverlays = false
     @AppStorage("wizard.aiInstructions") private var aiInstructions = ""
     @AppStorage("wizard.limitToSelection") private var limitToSelection = false
-    /// Comma-joined video IDs — AppStorage can't hold a Set directly.
-    @AppStorage("wizard.selectedVideoIDs") private var selectedVideoIDsRaw = ""
+    /// Comma-joined analyze-batch IDs — AppStorage can't hold a Set directly.
+    @AppStorage("wizard.selectedRunIDs") private var selectedRunIDsRaw = ""
     @State private var musicCount = 0
     @State private var newLessonText = ""
     @State private var showTrainingGuide = false
     @State private var pendingDispatch: PendingDispatch?
 
-    private var selectedVideoIDs: Set<Int64> {
-        Set(selectedVideoIDsRaw.split(separator: ",").compactMap { Int64($0) })
+    private var selectedRunIDs: Set<Int64> {
+        Set(selectedRunIDsRaw.split(separator: ",").compactMap { Int64($0) })
     }
 
-    private func setSelectedVideoIDs(_ ids: Set<Int64>) {
-        selectedVideoIDsRaw = ids.sorted().map(String.init).joined(separator: ",")
+    private func setSelectedRunIDs(_ ids: Set<Int64>) {
+        selectedRunIDsRaw = ids.sorted().map(String.init).joined(separator: ",")
     }
 
     private var selectionBinding: Binding<Set<Int64>> {
-        Binding(get: { selectedVideoIDs }, set: { setSelectedVideoIDs($0) })
+        Binding(get: { selectedRunIDs }, set: { setSelectedRunIDs($0) })
+    }
+
+    /// The latest analyze batch of each given video — how an Analyze-tab
+    /// video selection translates into batch selection.
+    private func latestRunIDs(forVideoIDs videoIDs: Set<Int64>) -> Set<Int64> {
+        var latest: [Int64: AnalysisRun] = [:]
+        for run in store.analysisRuns where videoIDs.contains(run.videoID) {
+            let current = latest[run.videoID]
+            if current == nil || (run.createdAt ?? "") > (current?.createdAt ?? "") {
+                latest[run.videoID] = run
+            }
+        }
+        return Set(latest.values.map(\.id))
     }
 
     private var analyzedSceneCount: Int {
@@ -193,11 +206,18 @@ struct WizardView: View {
             }
 
             Section("Source Selection") {
-                Toggle("Limit to selected videos", isOn: $limitToSelection)
+                Toggle("Limit to selected analyze batches", isOn: $limitToSelection)
                 if limitToSelection {
-                    List(store.videos, selection: selectionBinding) { video in
-                        Text(video.filename)
-                            .tag(video.id)
+                    List(store.analysisRuns, selection: selectionBinding) { run in
+                        HStack {
+                            Text(run.name)
+                                .lineLimit(1)
+                            Spacer()
+                            Text("\(run.sceneCount) scenes")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(run.id)
                     }
                     .frame(height: 140)
                 }
@@ -287,6 +307,8 @@ struct WizardView: View {
     private func startGeneration() {
         if store.settings.ai.mutedDispatchPlans.contains(DispatchOperation.generate.rawValue) {
             runWizard()
+            // runWizard() has already reset the log by the time this appends.
+            store.wizardLog.append("Model-plan prompt is muted — Reset Smart Dispatcher in Settings → AI to bring it back.")
         } else {
             pendingDispatch = PendingDispatch(operation: .generate) {
                 runWizard()
@@ -301,7 +323,9 @@ struct WizardView: View {
     /// from the handoff, and the request card shows them.
     private func applyPromptHandoff(_ handoff: WizardPromptHandoff) {
         if !handoff.videoIDs.isEmpty {
-            setSelectedVideoIDs(handoff.videoIDs)
+            // Re-resolved on every handoff update, so batches created by the
+            // "analyze first" step are picked up once analysis finishes.
+            setSelectedRunIDs(latestRunIDs(forVideoIDs: handoff.videoIDs))
             limitToSelection = true
         }
         guard let parsed = handoff.parsed else {
@@ -349,7 +373,7 @@ struct WizardView: View {
         options.autoCropWide = autoCropWide
         options.enableTextOverlays = enableTextOverlays
         options.aiInstructions = aiInstructions
-        options.selectedVideoIDs = limitToSelection ? selectedVideoIDs : []
+        options.selectedRunIDs = limitToSelection ? selectedRunIDs : []
         // The template persists across runs; the card's X removes it.
         if let handoff = store.pendingWizardTemplate {
             options.templateJSON = handoff.templateJSON
@@ -420,12 +444,17 @@ private struct LessonRow: View {
 /// screen (and its Form) while a generation runs.
 private struct WizardLogPanel: View {
     @Environment(AppStore.self) private var store
+    @AppStorage("log.verbose") private var verboseLog = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Generation Log")
                     .font(.headline)
+                Toggle("Verbose", isOn: $verboseLog)
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .help("Log the full prompt sent to the AI for every call")
                 Spacer()
                 if store.isWizardRunning {
                     ProgressView()

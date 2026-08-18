@@ -25,9 +25,57 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     var url: URL { URL(fileURLWithPath: path) }
 }
 
+/// A user note anchored at a timestamp in a source video — injected into
+/// that video's analysis prompt as highest-priority guidance.
+nonisolated struct VideoNote: Identifiable, Sendable, Hashable {
+    var id: Int64
+    var videoID: Int64
+    var atTime: Double
+    var note: String
+}
+
+/// One analysis pass over a video: when it ran, the instructions and notes
+/// context it used, and which model produced it. Scenes belong to a batch,
+/// so re-analyzing a video adds a new batch alongside the old one.
+nonisolated struct AnalysisRun: Identifiable, Sendable, Hashable {
+    var id: Int64
+    var videoID: Int64
+    var name: String
+    var instructions: String
+    var provider: String?
+    var model: String?
+    /// Whether this batch's analyze run produced (or kept) a transcript.
+    var hasTranscript: Bool
+    /// Seconds between sampled frames; 0 = automatic (1–3s by length).
+    var sampleInterval: Double
+    /// Snapshot of the video's timestamped notes at analysis time
+    /// ([AnalysisRunNote] JSON); nil for batches that predate note snapshots.
+    var notesJSON: String?
+    var createdAt: String?
+    // Denormalized from the joined videos row for display.
+    var videoFilename: String
+    var videoPath: String
+    var sceneCount: Int
+
+    var videoURL: URL { URL(fileURLWithPath: videoPath) }
+
+    /// Decoded note snapshot; nil when this batch predates note snapshots.
+    var noteSnapshot: [AnalysisRunNote]? {
+        guard let data = notesJSON?.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode([AnalysisRunNote].self, from: data)
+    }
+}
+
+/// One timestamped note as recorded on an analyze batch.
+nonisolated struct AnalysisRunNote: Codable, Sendable, Hashable {
+    var at: Double
+    var note: String
+}
+
 nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var id: Int64
     var videoID: Int64
+    var runID: Int64?
     var startTime: Double
     var endTime: Double
     var excluded: Bool

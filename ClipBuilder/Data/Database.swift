@@ -21,14 +21,32 @@ actor Database {
         analyzed_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS analysis_runs (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        instructions TEXT NOT NULL DEFAULT '',
+        provider TEXT,
+        model TEXT,
+        has_transcript INTEGER DEFAULT 0,
+        sample_interval REAL DEFAULT 0,
+        notes_json TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_analysis_runs_video ON analysis_runs(video_id);
+
     CREATE TABLE IF NOT EXISTS scenes (
         id INTEGER PRIMARY KEY,
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        run_id INTEGER REFERENCES analysis_runs(id) ON DELETE CASCADE,
         start_time REAL NOT NULL,
         end_time REAL NOT NULL,
         excluded BOOLEAN DEFAULT 0,
         ignored BOOLEAN DEFAULT 0,
-        UNIQUE(video_id, start_time, end_time)
+        favorite INTEGER DEFAULT 0,
+        crop_x_frac REAL,
+        free_crops TEXT,
+        UNIQUE(video_id, run_id, start_time, end_time)
     );
 
     CREATE TABLE IF NOT EXISTS scene_tags (
@@ -44,6 +62,15 @@ actor Database {
         note TEXT,
         dialog TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS video_notes (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        at_time REAL NOT NULL,
+        note TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_video_notes_video ON video_notes(video_id);
 
     CREATE TABLE IF NOT EXISTS analyzed_tags (
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -252,6 +279,80 @@ actor Database {
         if !generatedColumns.contains("deleted") {
             try connection.execute("ALTER TABLE generated_videos ADD COLUMN deleted INTEGER DEFAULT 0")
         }
+        try migrateScenesToAnalysisRuns(connection)
+        // Databases migrated before batches learned about transcription:
+        // credit each transcribed video's transcript to its newest batch.
+        if try !connection.columnNames(of: "analysis_runs").contains("has_transcript") {
+            try connection.execute("ALTER TABLE analysis_runs ADD COLUMN has_transcript INTEGER DEFAULT 0")
+            try connection.execute("""
+                UPDATE analysis_runs SET has_transcript = 1 WHERE id IN (
+                    SELECT MAX(r.id) FROM analysis_runs r
+                    JOIN transcripts t ON t.video_id = r.video_id
+                    GROUP BY r.video_id
+                )
+                """)
+        }
+        if try !connection.columnNames(of: "analysis_runs").contains("sample_interval") {
+            try connection.execute("ALTER TABLE analysis_runs ADD COLUMN sample_interval REAL DEFAULT 0")
+        }
+        if try !connection.columnNames(of: "analysis_runs").contains("notes_json") {
+            try connection.execute("ALTER TABLE analysis_runs ADD COLUMN notes_json TEXT")
+        }
+    }
+
+    /// Pre-batch databases keep scenes directly on videos with a
+    /// UNIQUE(video_id, start_time, end_time) constraint. Rebuild the table
+    /// with a run_id (dropping that constraint so the same range can exist in
+    /// several batches) and backfill one synthetic batch per analyzed video so
+    /// legacy scenes get full batch features. Scene ids are preserved, so
+    /// scene_tags, grades, and clip_reviews rows stay valid.
+    private static func migrateScenesToAnalysisRuns(_ connection: SQLiteConnection) throws {
+        guard try !connection.columnNames(of: "scenes").contains("run_id") else { return }
+        // The rebuild drops/renames a table other tables reference — FK
+        // checks must be off, and SQLite only allows toggling them outside a
+        // transaction.
+        try connection.execute("PRAGMA foreign_keys=OFF")
+        defer { try? connection.execute("PRAGMA foreign_keys=ON") }
+        try connection.transaction {
+            try connection.execute("""
+                INSERT INTO analysis_runs (video_id, name, instructions, provider, model, created_at)
+                SELECT v.id,
+                       v.filename || ' — as of ' ||
+                           strftime('%Y-%m-%d %H:%M',
+                                    COALESCE(v.visual_analyzed_at, v.analyzed_at, 'now'),
+                                    'localtime'),
+                       '',
+                       v.visual_analyzer_provider,
+                       v.visual_analyzer_model,
+                       COALESCE(v.visual_analyzed_at, v.analyzed_at, datetime('now'))
+                FROM videos v WHERE EXISTS (SELECT 1 FROM scenes s WHERE s.video_id = v.id)
+                """)
+            try connection.execute("""
+                CREATE TABLE scenes_new (
+                    id INTEGER PRIMARY KEY,
+                    video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+                    run_id INTEGER REFERENCES analysis_runs(id) ON DELETE CASCADE,
+                    start_time REAL NOT NULL,
+                    end_time REAL NOT NULL,
+                    excluded BOOLEAN DEFAULT 0,
+                    ignored BOOLEAN DEFAULT 0,
+                    favorite INTEGER DEFAULT 0,
+                    crop_x_frac REAL,
+                    free_crops TEXT,
+                    UNIQUE(video_id, run_id, start_time, end_time)
+                )
+                """)
+            try connection.execute("""
+                INSERT INTO scenes_new (id, video_id, run_id, start_time, end_time,
+                                        excluded, ignored, favorite, crop_x_frac, free_crops)
+                SELECT s.id, s.video_id, r.id, s.start_time, s.end_time,
+                       s.excluded, s.ignored, s.favorite, s.crop_x_frac, s.free_crops
+                FROM scenes s
+                LEFT JOIN analysis_runs r ON r.video_id = s.video_id
+                """)
+            try connection.execute("DROP TABLE scenes")
+            try connection.execute("ALTER TABLE scenes_new RENAME TO scenes")
+        }
     }
 
     // MARK: - Videos
@@ -273,6 +374,34 @@ actor Database {
             """, [.text(hash), .text(filename), .text(path), .real(duration),
                   .integer(Int64(width)), .integer(Int64(height)), .integer(wide ? 1 : 0)])
         return rows.first?["id"]?.intValue ?? connection.lastInsertRowID
+    }
+
+    // MARK: - Video notes (timestamped analysis guidance)
+
+    func videoNotes(videoID: Int64) throws -> [VideoNote] {
+        try connection.query("SELECT * FROM video_notes WHERE video_id = ? ORDER BY at_time",
+                             [.integer(videoID)]).map { row in
+            VideoNote(id: row["id"]?.intValue ?? 0,
+                      videoID: videoID,
+                      atTime: row["at_time"]?.doubleValue ?? 0,
+                      note: row["note"]?.stringValue ?? "")
+        }
+    }
+
+    func addVideoNote(videoID: Int64, at atTime: Double, note: String) throws {
+        try connection.execute("INSERT INTO video_notes (video_id, at_time, note) VALUES (?, ?, ?)",
+                               [.integer(videoID), .real(atTime), .text(note)])
+    }
+
+    func deleteVideoNote(id: Int64) throws {
+        try connection.execute("DELETE FROM video_notes WHERE id = ?", [.integer(id)])
+    }
+
+    /// Rename support: the file was already moved on disk; scenes join the
+    /// videos table, so their paths follow automatically.
+    func renameVideo(id: Int64, filename: String, path: String) throws {
+        try connection.execute("UPDATE videos SET filename = ?, path = ? WHERE id = ?",
+                               [.text(filename), .text(path), .integer(id)])
     }
 
     func fetchVideos() throws -> [VideoRecord] {
@@ -354,6 +483,7 @@ actor Database {
             return SceneRecord(
                 id: id,
                 videoID: row["video_id"]?.intValue ?? 0,
+                runID: row["run_id"]?.intValue,
                 startTime: row["start_time"]?.doubleValue ?? 0,
                 endTime: row["end_time"]?.doubleValue ?? 0,
                 excluded: row["excluded"]?.boolValue ?? false,
@@ -388,15 +518,68 @@ actor Database {
 
     // MARK: - Analysis results
 
+    // MARK: - Analysis runs (batches)
+
+    /// All batches joined with their video and scene count, newest first.
+    func fetchAnalysisRuns() throws -> [AnalysisRun] {
+        try connection.query("""
+            SELECT r.*, v.filename AS video_filename, v.path AS video_path,
+                   (SELECT COUNT(*) FROM scenes s WHERE s.run_id = r.id) AS scene_count
+            FROM analysis_runs r JOIN videos v ON v.id = r.video_id
+            ORDER BY r.created_at DESC, r.id DESC
+            """).map { row in
+            AnalysisRun(id: row["id"]?.intValue ?? 0,
+                        videoID: row["video_id"]?.intValue ?? 0,
+                        name: row["name"]?.stringValue ?? "",
+                        instructions: row["instructions"]?.stringValue ?? "",
+                        provider: row["provider"]?.stringValue,
+                        model: row["model"]?.stringValue,
+                        hasTranscript: row["has_transcript"]?.boolValue ?? false,
+                        sampleInterval: row["sample_interval"]?.doubleValue ?? 0,
+                        notesJSON: row["notes_json"]?.stringValue,
+                        createdAt: row["created_at"]?.stringValue,
+                        videoFilename: row["video_filename"]?.stringValue ?? "",
+                        videoPath: row["video_path"]?.stringValue ?? "",
+                        sceneCount: Int(row["scene_count"]?.intValue ?? 0))
+        }
+    }
+
+    func renameAnalysisRun(id: Int64, name: String) throws {
+        try connection.execute("UPDATE analysis_runs SET name = ? WHERE id = ?",
+                               [.text(name), .integer(id)])
+    }
+
+    /// Record that this batch's analyze run produced (or kept) a transcript.
+    func markAnalysisRunTranscribed(id: Int64) throws {
+        try connection.execute("UPDATE analysis_runs SET has_transcript = 1 WHERE id = ?",
+                               [.integer(id)])
+    }
+
+    /// Delete a batch and its scenes; scene_tags and grades cascade.
+    func deleteAnalysisRun(id: Int64) throws {
+        try connection.transaction {
+            try connection.execute("DELETE FROM scenes WHERE run_id = ?", [.integer(id)])
+            try connection.execute("DELETE FROM analysis_runs WHERE id = ?", [.integer(id)])
+        }
+    }
+
     /// Persist one analysis pass — mirrors analyzer.py save_analysis():
-    /// tag time-ranges become scenes + scene_tags (INSERT OR IGNORE dedup),
-    /// moments and analyzed-tag bookkeeping recorded, low-quality scenes
-    /// auto-hidden, per-mode timestamps and provider attribution stamped.
+    /// a new analysis_runs batch records when the pass ran and the
+    /// instructions it used, tag time-ranges become that batch's scenes +
+    /// scene_tags (INSERT OR IGNORE dedup), moments and analyzed-tag
+    /// bookkeeping recorded, low-quality scenes auto-hidden, per-mode
+    /// timestamps and provider attribution stamped.
+    /// Returns the id of the analyze batch the pass was stored under.
+    @discardableResult
     func saveAnalysis(videoID: Int64,
+                      runName: String,
+                      instructions: String,
+                      sampleInterval: Double?,
+                      notesJSON: String?,
                       tagRanges: [String: [(start: Double, end: Double)]],
                       moments: [(at: Double, note: String, dialog: String?)],
                       analyzedTags: [String],
-                      provider: String?, model: String?, mode: String) throws {
+                      provider: String?, model: String?, mode: String) throws -> Int64 {
         // (start, end) → set of tags, so one range shared by many tags makes one scene.
         var rangeTags: [String: (start: Double, end: Double, tags: Set<String>)] = [:]
         for (tag, ranges) in tagRanges {
@@ -408,16 +591,25 @@ actor Database {
         // One transaction: a pass writes hundreds of rows, and committing
         // per statement would pay a WAL sync for each (and persist a
         // half-saved analysis on failure).
-        try connection.transaction {
+        return try connection.transaction {
+            try connection.execute("""
+                INSERT INTO analysis_runs (video_id, name, instructions, provider, model, sample_interval, notes_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, [.integer(videoID), .text(runName), .text(instructions),
+                      provider.map(SQLValue.text) ?? .null,
+                      model.map(SQLValue.text) ?? .null,
+                      .real(sampleInterval ?? 0),
+                      notesJSON.map(SQLValue.text) ?? .null])
+            let runID = connection.lastInsertRowID
             for (_, entry) in rangeTags {
                 // The no-op DO UPDATE makes RETURNING yield the id for the
                 // pre-existing row too, replacing the insert-then-SELECT pair.
                 guard let sceneID = try connection.query("""
-                    INSERT INTO scenes (video_id, start_time, end_time)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(video_id, start_time, end_time) DO UPDATE SET video_id = video_id
+                    INSERT INTO scenes (video_id, run_id, start_time, end_time)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(video_id, run_id, start_time, end_time) DO UPDATE SET video_id = video_id
                     RETURNING id
-                    """, [.integer(videoID), .real(entry.start), .real(entry.end)]
+                    """, [.integer(videoID), .integer(runID), .real(entry.start), .real(entry.end)]
                 ).first?["id"]?.intValue else { continue }
                 for tag in entry.tags {
                     try connection.execute("INSERT OR IGNORE INTO scene_tags (scene_id, tag) VALUES (?, ?)",
@@ -438,12 +630,12 @@ actor Database {
                 INSERT OR IGNORE INTO scene_tags (scene_id, tag)
                 SELECT s.id, 'auto-hidden' FROM scenes s
                 JOIN scene_tags t ON t.scene_id = s.id
-                WHERE s.video_id = ? AND t.tag = 'low-quality'
-                """, [.integer(videoID)])
+                WHERE s.run_id = ? AND t.tag = 'low-quality'
+                """, [.integer(runID)])
             try connection.execute("""
-                UPDATE scenes SET excluded = 1 WHERE video_id = ? AND id IN
+                UPDATE scenes SET excluded = 1 WHERE run_id = ? AND id IN
                     (SELECT scene_id FROM scene_tags WHERE tag = 'low-quality')
-                """, [.integer(videoID)])
+                """, [.integer(runID)])
             try connection.execute("UPDATE videos SET analyzed_at = datetime('now') WHERE id = ?", [.integer(videoID)])
             let modeColumn = mode == "speech" ? "speech" : "visual"
             try connection.execute("UPDATE videos SET \(modeColumn)_analyzed_at = datetime('now') WHERE id = ?",
@@ -458,6 +650,7 @@ actor Database {
                     UPDATE videos SET analyzer_model = ?, \(modeColumn)_analyzer_model = ? WHERE id = ?
                     """, [.text(model), .text(model), .integer(videoID)])
             }
+            return runID
         }
     }
 

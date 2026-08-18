@@ -33,6 +33,7 @@ final class AppStore {
 
     var videos: [VideoRecord] = []
     var scenes: [SceneRecord] = []
+    var analysisRuns: [AnalysisRun] = []
     var generatedVideos: [GeneratedVideoRecord] = []
     var feedback: [FeedbackRecord] = []
     var lessons: [WizardLesson] = []
@@ -46,6 +47,10 @@ final class AppStore {
     /// dequeues on dismiss, so one failure can't silently replace another.
     private(set) var errorQueue: [AppError] = []
     var currentError: AppError? { errorQueue.first }
+
+    /// Hand-off from the Scenes screen: open the Analyze tab with this video
+    /// selected and the model-plan sheet prefilled from a past batch.
+    var pendingAnalyzeSetup: VideoRecord?
 
     // Analysis job
     var isAnalyzing = false
@@ -272,11 +277,13 @@ final class AppStore {
         do {
             let videos = try await database.fetchVideos()
             let scenes = try await database.fetchScenes()
+            let analysisRuns = try await database.fetchAnalysisRuns()
             let generated = try await database.fetchGeneratedVideos()
             let feedback = try await database.fetchAllFeedback()
             let lessons = try await database.fetchLessons()
             self.videos = videos
             self.scenes = scenes
+            self.analysisRuns = analysisRuns
             self.generatedVideos = generated
             self.feedback = feedback
             self.lessons = lessons
@@ -355,6 +362,16 @@ final class AppStore {
 
     // MARK: - Analysis
 
+    /// Batch name stamped at analysis time: "video name — as of date time".
+    private static func analysisRunName(for video: VideoRecord, at date: Date = .now) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return "\(video.filename) — as of \(formatter.string(from: date))"
+    }
+
+    /// Every run is a full pass that lands in a new analyze batch alongside
+    /// any earlier ones — delete unwanted batches from the Scenes screen.
     func analyze(videos targets: [VideoRecord], provider: String? = nil, model: String? = nil) {
         guard let database, !isAnalyzing else { return }
         isAnalyzing = true
@@ -362,6 +379,15 @@ final class AppStore {
         analysisProgress = 0
         let profile = activeProfile
         let analyzer = analyzer
+        // Instructions and sampling density come from the dispatch plan
+        // sheet (persisted, so muted runs keep the last-used values).
+        let instructions = UserDefaults.standard.string(forKey: "analysis.instructions") ?? ""
+        let storedInterval = UserDefaults.standard.double(forKey: "analysis.sampleInterval")
+        let sampleInterval: Double? = storedInterval > 0 ? storedInterval : nil
+        let includeTranscript = UserDefaults.standard.bool(forKey: "analysis.includeTranscript")
+        let transcription = transcription
+        let language = settings.transcribeLanguage
+        if !instructions.isEmpty { analysisLog.append("Using analysis instructions: \(instructions)") }
         analysisTask = Task {
             defer {
                 isAnalyzing = false
@@ -372,9 +398,17 @@ final class AppStore {
                 let base = Double(index) / Double(targets.count)
                 let span = 1.0 / Double(targets.count)
                 do {
-                    try await analyzer.analyzeVisual(
+                    let notes = (try? await database.videoNotes(videoID: video.id)) ?? []
+                    if !notes.isEmpty {
+                        analysisLog.append("\(video.filename): applying \(notes.count) timestamped note(s)")
+                    }
+                    let runID = try await analyzer.analyzeVisual(
                         video: video, profile: profile, database: database,
+                        runName: Self.analysisRunName(for: video),
                         provider: provider, model: model,
+                        instructions: instructions, notes: notes,
+                        sampleInterval: sampleInterval,
+                        force: true,
                         log: { message in
                             Task { @MainActor in self.analysisLog.append(message) }
                         },
@@ -384,6 +418,32 @@ final class AppStore {
                                 self.analysisStage = stage
                             }
                         })
+                    if includeTranscript {
+                        // A transcript failure shouldn't undo a good analysis
+                        // — log it and keep going.
+                        do {
+                            let existing = (try? await database.fetchTranscripts(videoID: video.id)) ?? []
+                            if existing.isEmpty {
+                                analysisStage = "transcribing"
+                                _ = try await transcription.transcribe(
+                                    video: video, database: database,
+                                    languageCode: language,
+                                    log: { message in
+                                        Task { @MainActor in self.analysisLog.append(message) }
+                                    })
+                                analysisLog.append("\(video.filename): transcript saved")
+                            } else {
+                                analysisLog.append("\(video.filename): already has a transcript — keeping it")
+                            }
+                            if let runID {
+                                try? await database.markAnalysisRunTranscribed(id: runID)
+                            }
+                        } catch is CancellationError {
+                            break
+                        } catch {
+                            analysisLog.append("\(video.filename): transcription failed — \(error.userMessage)")
+                        }
+                    }
                     analysisLog.append("\(video.filename): done")
                 } catch is CancellationError {
                     break
@@ -409,6 +469,117 @@ final class AppStore {
 
     func cancelAnalysis() {
         analysisTask?.cancel()
+    }
+
+    // MARK: - Analyze batches
+
+    /// Load a past batch's options back into the analysis settings and route
+    /// to the Analyze tab with the plan sheet open — edit, then re-run.
+    func reanalyzeBatch(_ run: AnalysisRun) {
+        guard let video = videos.first(where: { $0.id == run.videoID }) else {
+            presentError("The source video for this batch is no longer in the library.")
+            return
+        }
+        let defaults = UserDefaults.standard
+        defaults.set(run.instructions, forKey: "analysis.instructions")
+        defaults.set(run.sampleInterval, forKey: "analysis.sampleInterval")
+        defaults.set(run.hasTranscript, forKey: "analysis.includeTranscript")
+        if let provider = run.provider {
+            settings.ai.tasks["analysis"] = provider
+            if let model = run.model { settings.ai.taskModels["analysis"] = model }
+            saveSettings()
+        }
+        pendingAnalyzeSetup = video
+        requestedSection = .analyze
+    }
+
+    func renameAnalysisRun(_ run: AnalysisRun, to rawName: String) {
+        guard let database else { return }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != run.name else { return }
+        Task {
+            do {
+                try await database.renameAnalysisRun(id: run.id, name: name)
+                await refreshAllNow()
+            } catch {
+                presentError("Could not rename the analyze batch", error)
+            }
+        }
+    }
+
+    /// Delete a batch with its scenes, tags, and grades.
+    func deleteAnalysisRun(_ run: AnalysisRun) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.deleteAnalysisRun(id: run.id)
+                await refreshAllNow()
+            } catch {
+                presentError("Could not delete the analyze batch", error)
+            }
+        }
+    }
+
+    // MARK: - Video notes
+
+    func videoNotes(for videoID: Int64) async -> [VideoNote] {
+        guard let database else { return [] }
+        return (try? await database.videoNotes(videoID: videoID)) ?? []
+    }
+
+    /// Add a timestamped note; returns the video's refreshed note list.
+    func addVideoNote(videoID: Int64, at atTime: Double, text: String) async -> [VideoNote] {
+        guard let database else { return [] }
+        do {
+            try await database.addVideoNote(videoID: videoID, at: atTime, note: text)
+        } catch {
+            presentError("Could not save the note", error)
+        }
+        return (try? await database.videoNotes(videoID: videoID)) ?? []
+    }
+
+    func deleteVideoNote(_ note: VideoNote) async -> [VideoNote] {
+        guard let database else { return [] }
+        do {
+            try await database.deleteVideoNote(id: note.id)
+        } catch {
+            presentError("Could not delete the note", error)
+        }
+        return (try? await database.videoNotes(videoID: note.videoID)) ?? []
+    }
+
+    /// Rename a source video: move the file in the Input folder and update
+    /// its row (scenes join the videos table, so they follow). Content
+    /// hashing means the folder watcher won't re-register it as new.
+    func renameVideo(_ video: VideoRecord, to rawName: String) {
+        guard let database else { return }
+        var name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+        guard !name.isEmpty, name != video.filename else { return }
+        let ext = video.url.pathExtension
+        if !ext.isEmpty, (name as NSString).pathExtension.lowercased() != ext.lowercased() {
+            name += ".\(ext)"
+        }
+        let destination = video.url.deletingLastPathComponent().appendingPathComponent(name)
+        guard !FileManager.default.fileExists(atPath: destination.path) else {
+            presentError("A file named \(name) already exists in the Input folder.")
+            return
+        }
+        do {
+            try FileManager.default.moveItem(at: video.url, to: destination)
+        } catch {
+            presentError("Could not rename the video", error)
+            return
+        }
+        Task {
+            do {
+                try await database.renameVideo(id: video.id, filename: name, path: destination.path)
+                await refreshAllNow()
+            } catch {
+                presentError("Could not save the new name", error)
+            }
+        }
     }
 
     func transcribe(video: VideoRecord, force: Bool = false) {
@@ -662,11 +833,19 @@ final class AppStore {
     }
 
     /// Load a generated video's saved timeline back into the builder.
+    /// Videos rendered before documents were persisted stored a flat legacy
+    /// format — those get a best-effort conversion (clips, transitions,
+    /// music; their burned-in overlays were never recorded).
     func openInBuilder(_ video: GeneratedVideoRecord) {
-        guard let data = video.timelineJSON.data(using: .utf8),
-              let document = try? JSONDecoder().decode(TimelineDocument.self, from: data),
-              !document.videoTrack.isEmpty else {
-            presentError("This video's timeline uses the old linear format and can't be edited in the Builder.")
+        var document = video.timelineJSON.data(using: .utf8)
+            .flatMap { try? JSONDecoder().decode(TimelineDocument.self, from: $0) }
+        if document?.videoTrack.isEmpty != false {
+            let sceneMap = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
+            document = WizardEngine.legacyTimelineDocument(fromFlat: video.timelineJSON,
+                                                           scenes: sceneMap)
+        }
+        guard let document, !document.videoTrack.isEmpty else {
+            presentError("This video's timeline couldn't be read, so it can't be edited in the Builder.")
             return
         }
         builder.loadDocument(document)

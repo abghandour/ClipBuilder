@@ -9,8 +9,8 @@ nonisolated struct WizardOptions: Sendable {
     var enableTextOverlays = false
     var useMusic = true
     var aiInstructions = ""
-    /// Restrict scene selection to these source videos (empty = all).
-    var selectedVideoIDs: Set<Int64> = []
+    /// Restrict scene selection to these analyze batches (empty = all).
+    var selectedRunIDs: Set<Int64> = []
     var modelOverride: String?
     /// Structural analysis of a reference reel (ReelTemplate JSON) the plan
     /// should replicate, plus a human-readable label for logs.
@@ -877,10 +877,12 @@ actor WizardEngine {
 
         emit("Loading scenes and music...")
         var scenes = try await database.fetchScenes(includeExcluded: false).filter { !$0.ignored }
-        if !options.selectedVideoIDs.isEmpty {
+        if !options.selectedRunIDs.isEmpty {
             let before = scenes.count
-            scenes = scenes.filter { options.selectedVideoIDs.contains($0.videoID) }
-            emit("Filtered to \(scenes.count) scenes from \(options.selectedVideoIDs.count) selected file(s) (was \(before))")
+            scenes = scenes.filter { scene in
+                scene.runID.map { options.selectedRunIDs.contains($0) } ?? false
+            }
+            emit("Filtered to \(scenes.count) scenes from \(options.selectedRunIDs.count) selected analyze batch(es) (was \(before))")
         }
         guard !scenes.isEmpty else {
             throw AIError.notConfigured("No analyzed scenes available. Analyze some videos first.")
@@ -1184,6 +1186,67 @@ actor WizardEngine {
         return document
     }
 
+    /// Best-effort Builder document from the legacy flat timeline JSON
+    /// (`[{type: music|transition|clip}, ...]`) that wizard renders stored
+    /// before documents were persisted. Clips, order, transitions, and music
+    /// survive; burned-in overlays and captions were never recorded and
+    /// can't be recovered.
+    nonisolated static func legacyTimelineDocument(fromFlat json: String,
+                                                   scenes: [Int64: SceneRecord]) -> TimelineDocument? {
+        guard let data = json.data(using: .utf8),
+              let entries = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+            return nil
+        }
+        var document = TimelineDocument()
+        var cursor = 0.0
+        var pendingTransition: String?
+        var music: (name: String, volume: Int)?
+        for entry in entries {
+            switch entry["type"] as? String {
+            case "music":
+                if let name = entry["name"] as? String, !name.isEmpty {
+                    music = (name, (entry["volume"] as? NSNumber)?.intValue ?? 3)
+                }
+            case "transition":
+                pendingTransition = entry["name"] as? String
+            case "clip":
+                guard let start = (entry["start"] as? NSNumber)?.doubleValue,
+                      let end = (entry["end"] as? NSNumber)?.doubleValue, end > start else { continue }
+                var clip = TimelineClip()
+                clip.sceneID = (entry["id"] as? NSNumber)?.int64Value
+                clip.videoFile = entry["video_file"] as? String
+                clip.sourceStart = start
+                clip.sourceEnd = end
+                clip.startTime = cursor
+                clip.duration = ((end - start) * 10).rounded() / 10
+                if let sceneID = clip.sceneID, let scene = scenes[sceneID] {
+                    clip.sceneFullDuration = (scene.duration * 10).rounded() / 10
+                    clip.wide = scene.wide
+                    clip.cropXFrac = scene.cropXFrac
+                    if clip.videoFile?.isEmpty != false { clip.videoFile = scene.videoPath }
+                }
+                if !document.videoTrack.isEmpty {
+                    clip.transIn = pendingTransition ?? "fade"
+                }
+                pendingTransition = nil
+                document.videoTrack.append(clip)
+                cursor += clip.duration
+            default:
+                continue
+            }
+        }
+        guard !document.videoTrack.isEmpty else { return nil }
+        if let music, cursor > 0 {
+            var sound = SoundItem()
+            sound.name = music.name
+            sound.volume = min(5, max(1, music.volume))
+            sound.startTime = 0
+            sound.duration = (cursor * 10).rounded() / 10
+            document.soundTrack.append(sound)
+        }
+        return document
+    }
+
     // MARK: - Assembly
 
     private struct AssemblyResult {
@@ -1266,23 +1329,19 @@ actor WizardEngine {
 
         let finalDuration = await FFmpeg.duration(of: outputURL)
 
-        // Timeline JSON matching the Python builder's flat format.
-        var timeline: [[String: Any]] = []
-        if let musicName = plan.musicName {
-            timeline.append(["type": "music", "name": musicName, "volume": plan.musicVolume])
+        // Persist the Builder-editable document for this render — clips with
+        // their source ranges and transitions, overlay items with timing,
+        // and the music block — so "Open in Builder" can load any wizard
+        // video for editing. (Replaces the legacy flat Python format.)
+        var editPlan = plan
+        if !options.enableTextOverlays {
+            // A stray overlay the model emitted anyway wasn't burned in;
+            // keep the document faithful to the rendered video.
+            for index in editPlan.clips.indices { editPlan.clips[index].textOverlay = nil }
         }
-        for (index, clip) in plan.clips.enumerated() {
-            if index > 0, let transition = plan.transitions[safe: index - 1] {
-                timeline.append(["type": "transition", "name": transition])
-            }
-            timeline.append(["type": "clip",
-                             "id": clip.sceneID,
-                             "video_file": sceneMap[clip.sceneID]?.videoPath ?? "",
-                             "start": clip.start,
-                             "end": clip.end])
-        }
-        let timelineJSON = (try? JSONSerialization.data(withJSONObject: timeline))
-            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let document = Self.timelineDocument(from: editPlan, sceneMap: sceneMap)
+        let timelineJSON = (try? JSONEncoder().encode(document))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 
         let attribution = await ai.resolveProviderModel(task: "wizard", model: options.modelOverride)
         let recordID = try await database.insertGeneratedVideo(path: outputURL.path,
