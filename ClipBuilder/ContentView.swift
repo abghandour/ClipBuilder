@@ -50,6 +50,7 @@ struct ClipBuilderApp: App {
 enum SidebarSection: String, CaseIterable, Identifiable {
     case analyze
     case scenes
+    case people
     case instagram
     case music
     case fonts
@@ -62,7 +63,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     /// Source > Videos: footage in, scene detection, reference reels.
-    static let videoSections: [SidebarSection] = [.analyze, .scenes, .instagram]
+    static let videoSections: [SidebarSection] = [.analyze, .scenes, .people, .instagram]
     /// Source asset libraries: media browsers plus overlay templates.
     static let assetSections: [SidebarSection] = [.music, .fonts, .images, .overlays]
     static let createSections: [SidebarSection] = [.wizard, .builder]
@@ -79,6 +80,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         switch self {
         case .library: return "Library"
         case .scenes: return "Scenes"
+        case .people: return "People"
         case .builder: return "Builder"
         case .analyze: return "Analyze"
         case .wizard: return "AI Wizard"
@@ -94,6 +96,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         switch self {
         case .library: return "film.stack"
         case .scenes: return "square.grid.3x3"
+        case .people: return "person.2"
         case .builder: return "timeline.selection"
         case .analyze: return "sparkles.rectangle.stack"
         case .wizard: return "wand.and.stars"
@@ -135,6 +138,7 @@ struct MainWindowView: View {
             switch selection ?? .analyze {
             case .library: LibraryView()
             case .scenes: ScenesView()
+            case .people: PeopleView()
             case .builder: BuilderView()
             case .analyze: AnalyzeView()
             case .wizard: WizardView()
@@ -179,6 +183,9 @@ struct MainWindowView: View {
         }
         .sheet(item: $store.pendingComparison) { batch in
             ComparisonSheet(batch: batch)
+        }
+        .sheet(item: $store.pendingPeopleReview) { request in
+            PersonReviewSheet(request: request)
         }
         .alert("Error", isPresented: Binding(
             get: { store.currentError != nil },

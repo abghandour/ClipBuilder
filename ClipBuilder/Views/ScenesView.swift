@@ -77,7 +77,8 @@ struct ScenesView: View {
         .sheet(item: $playingScene) { scene in
             PlayerSheet(url: scene.videoURL,
                         title: "\(scene.videoFilename) \(scene.startTime.timecode)–\(scene.endTime.timecode)",
-                        startTime: scene.startTime)
+                        startTime: scene.startTime,
+                        endTime: scene.endTime)
         }
         .sheet(item: $transcriptVideo) { video in
             TranscriptSheet(video: video)
@@ -333,7 +334,7 @@ struct SceneCard: View {
                 .lineLimit(1)
 
             if !scene.tags.isEmpty {
-                TagWrap(tags: scene.tags, limit: 4)
+                SceneTagLine(tags: scene.tags)
             }
 
             HStack(spacing: 8) {

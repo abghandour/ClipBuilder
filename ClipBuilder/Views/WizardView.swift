@@ -7,18 +7,23 @@ struct WizardView: View {
     @Environment(AppStore.self) private var store
 
     // Persisted so the form survives section switches and app restarts.
-    @AppStorage("wizard.numberOfVideos") private var numberOfVideos = 1
-    @AppStorage("wizard.variationsPerVideo") private var variationsPerVideo = 1
     @AppStorage("wizard.useMusic") private var useMusic = true
     @AppStorage("wizard.muteSource") private var muteSource = false
     @AppStorage("wizard.addCaptions") private var addCaptions = false
     @AppStorage("wizard.autoCropWide") private var autoCropWide = true
+    @AppStorage("wizard.centerStageWide") private var centerStageWide = false
+    /// Center Stage camera preset: "smooth", "balanced", or "fast".
+    @AppStorage("wizard.centerStageCamera") private var centerStageCamera = "balanced"
     @AppStorage("wizard.allowWideSplit") private var allowWideSplit = false
     @AppStorage("wizard.enableTextOverlays") private var enableTextOverlays = false
     @AppStorage("wizard.aiInstructions") private var aiInstructions = ""
+    /// Hard duration for the generated reel, in seconds.
+    @AppStorage("wizard.targetDuration") private var targetDuration = 10
     @AppStorage("wizard.limitToSelection") private var limitToSelection = false
     /// Comma-joined analyze-batch IDs — AppStorage can't hold a Set directly.
     @AppStorage("wizard.selectedRunIDs") private var selectedRunIDsRaw = ""
+    /// Comma-joined person keys the footage must feature (empty = everyone).
+    @AppStorage("wizard.sourcePeople") private var sourcePeopleRaw = ""
     @State private var musicCount = 0
     @State private var newLessonText = ""
     @State private var showTrainingGuide = false
@@ -51,6 +56,44 @@ struct WizardView: View {
 
     private var analyzedSceneCount: Int {
         store.scenes.filter { !$0.excluded && !$0.ignored }.count
+    }
+
+    /// Captions can only burn transcripts that already exist — the wizard
+    /// never transcribes. True when the current source selection contains at
+    /// least one analyze batch that produced a transcript.
+    private var transcriptsAvailable: Bool {
+        let runs = limitToSelection && !selectedRunIDs.isEmpty
+            ? store.analysisRuns.filter { selectedRunIDs.contains($0.id) }
+            : store.analysisRuns
+        return runs.contains(where: \.hasTranscript)
+    }
+
+    private var selectedSourcePeople: Set<String> {
+        Set(sourcePeopleRaw.split(separator: ",").map(String.init))
+    }
+
+    /// People eligible under the current batch selection: with batches
+    /// picked, only those appearing in the selected batches' scenes.
+    private var eligibleSourcePeople: [PersonRecord] {
+        guard limitToSelection, !selectedRunIDs.isEmpty else { return store.people }
+        let runIDs = selectedRunIDs
+        var tags = Set<String>()
+        for scene in store.scenes where scene.runID.map(runIDs.contains) ?? false {
+            for tag in scene.tags where tag.hasPrefix("person:") {
+                tags.insert(tag)
+            }
+        }
+        return store.people.filter { tags.contains($0.tag) }
+    }
+
+    /// Distinct people recognized per analyze batch, via person: scene tags.
+    private var batchPeopleCounts: [Int64: Int] {
+        store.scenes.reduce(into: [Int64: Set<String>]()) { acc, scene in
+            guard let runID = scene.runID else { return }
+            for tag in scene.tags where tag.hasPrefix("person:") {
+                acc[runID, default: []].insert(tag)
+            }
+        }.mapValues(\.count)
     }
 
     var body: some View {
@@ -90,6 +133,29 @@ struct WizardView: View {
 
     private var configurationForm: some View {
         Form {
+            Section("AI Instructions (highest priority)") {
+                TextEditor(text: $aiInstructions)
+                    .font(.body)
+                    .frame(minHeight: 70)
+                Text("Hard requirements that override research and feedback — e.g. “always open with a knockout” or “only include scenes with Person A fighting in the cage, keep Person A centered”.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Text("Target duration")
+                    Spacer()
+                    TextField("Target duration", value: $targetDuration, format: .number)
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: 60)
+                    Stepper("Target duration", value: $targetDuration, in: 3...180)
+                        .labelsHidden()
+                    Text("seconds")
+                        .foregroundStyle(.secondary)
+                }
+                .help("The generated reel is planned to this length (3–180s)")
+            }
+
             if let handoff = store.pendingWizardPrompt {
                 Section("Sample Video Request") {
                     VStack(alignment: .leading, spacing: 6) {
@@ -165,16 +231,6 @@ struct WizardView: View {
                 }
             }
 
-            Section("Output") {
-                Stepper("Videos: \(numberOfVideos)", value: $numberOfVideos, in: 1...5)
-                Stepper("Variations per video: \(variationsPerVideo)", value: $variationsPerVideo, in: 1...5)
-                if variationsPerVideo > 1 {
-                    Text("Each variation uses a different creative approach.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
             Section("Audio") {
                 Toggle("Use background music", isOn: $useMusic)
                 Toggle("Mute source audio (music only)", isOn: $muteSource)
@@ -202,7 +258,30 @@ struct WizardView: View {
 
             Section("Visuals") {
                 Toggle("Burn transcript captions", isOn: $addCaptions)
+                    .disabled(!transcriptsAvailable)
+                    .help("Burns spoken-word subtitles from transcripts that already exist — the wizard never transcribes")
+                if !transcriptsAvailable {
+                    Text("No transcript in the selected sources. Captions only burn transcripts produced during analysis — the wizard doesn't transcribe.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Toggle("Auto-crop wide footage to portrait", isOn: $autoCropWide)
+                Toggle("Center Stage: track people in wide footage", isOn: $centerStageWide)
+                    .help("Wide scenes get a virtual camera that pans and zooms to keep the people centered, instead of a static crop")
+                if centerStageWide {
+                    Picker("Camera", selection: $centerStageCamera) {
+                        Text("Smooth").tag("smooth")
+                        Text("Balanced").tag("balanced")
+                        Text("Fast action").tag("fast")
+                    }
+                    .pickerStyle(.segmented)
+                    .help("How eagerly the tracking camera chases the people: Smooth drifts cinematically, Fast action reacts hard and zooms out so fighters stay in frame")
+                    Text(selectedSourcePeople.isEmpty
+                         ? "Tracks everyone on screen. Pick people under Source Selection to focus the camera on them."
+                         : "Tracks the people picked under Source Selection; wide scenes without them auto-crop.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Toggle("Allow split-screen for wide footage", isOn: $allowWideSplit)
                     .help("Lets the AI stack a wide scene's left/right halves top and bottom. Off = wide footage always zooms to fill the frame instead.")
                 Toggle("AI text overlays", isOn: $enableTextOverlays)
@@ -211,12 +290,15 @@ struct WizardView: View {
             Section("Source Selection") {
                 Toggle("Limit to selected analyze batches", isOn: $limitToSelection)
                 if limitToSelection {
+                    let peopleCounts = batchPeopleCounts
                     List(store.analysisRuns, selection: selectionBinding) { run in
                         HStack {
                             Text(run.name)
                                 .lineLimit(1)
                             Spacer()
-                            Text("\(run.sceneCount) scenes")
+                            let people = peopleCounts[run.id] ?? 0
+                            Text("\(run.sceneCount) scenes"
+                                 + (people > 0 ? " · \(people) \(people == 1 ? "person" : "people")" : ""))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -224,46 +306,52 @@ struct WizardView: View {
                     }
                     .frame(height: 140)
                 }
-            }
-
-            if !store.videoSubjects.isEmpty {
-                Section("VIP Subjects") {
-                    ForEach(store.videoSubjects) { subject in
-                        HStack(spacing: 8) {
-                            Circle()
-                                .fill(subject.color)
-                                .frame(width: 10, height: 10)
-                            Text(subject.name)
-                            Text(subject.videoFilename)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            Spacer()
-                            Menu("Add to Instructions") {
-                                Button("Only include scenes with \(subject.name)") {
-                                    appendInstruction("Only include scenes featuring \"\(subject.name)\" (scenes tagged \"\(subject.tag)\").")
-                                }
-                                Button("Keep \(subject.name) in focus") {
-                                    appendInstruction("Keep \"\(subject.name)\" in focus and centered in the frame — prefer scenes tagged \"\(subject.tag)\".")
+                let eligiblePeople = eligibleSourcePeople
+                if !eligiblePeople.isEmpty {
+                    // People outside the selected batches are hidden; their
+                    // stale selections are ignored, not silently applied.
+                    let selected = selectedSourcePeople
+                        .intersection(Set(eligiblePeople.map(\.key)))
+                    // Messages-style pinned-contact row: tap a face to toggle
+                    // that person; nobody picked = use anyone's scenes.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 14) {
+                            personChoice(label: "Anyone", isSelected: selected.isEmpty,
+                                         help: "Use scenes regardless of who is in them") {
+                                sourcePeopleRaw = ""
+                            } avatar: {
+                                Circle()
+                                    .fill(.quaternary)
+                                    .overlay {
+                                        Image(systemName: "person.2.fill")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(width: 44, height: 44)
+                            }
+                            ForEach(eligiblePeople) { person in
+                                personChoice(label: person.displayName,
+                                             isSelected: selected.contains(person.key),
+                                             help: "Only use scenes featuring \(person.displayName) — Center Stage tracks them too") {
+                                    var keys = selected
+                                    if keys.contains(person.key) {
+                                        keys.remove(person.key)
+                                    } else {
+                                        keys.insert(person.key)
+                                    }
+                                    sourcePeopleRaw = keys.sorted().joined(separator: ",")
+                                } avatar: {
+                                    PersonFaceAvatar(person: person, size: 44)
                                 }
                             }
-                            .controlSize(.small)
-                            .fixedSize()
                         }
+                        .padding(.vertical, 4)
                     }
-                    Text("People you marked in the Analyze tab. Reference them by name in AI Instructions — the wizard resolves names to their \"vip:\" scene tags.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    if !selected.isEmpty {
+                        Text("Only scenes featuring the picked people are used — combined with the batch filter above. Center Stage tracks them in wide footage.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-            }
-
-            Section("AI Instructions (highest priority)") {
-                TextEditor(text: $aiInstructions)
-                    .font(.body)
-                    .frame(minHeight: 70)
-                Text("Hard requirements that override research and feedback — e.g. “always open with a knockout” or “only include scenes with Person A fighting in the cage, keep Person A centered”.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("Learned Lessons") {
@@ -331,6 +419,38 @@ struct WizardView: View {
         .formStyle(.grouped)
     }
 
+    /// One item in the source-people row: avatar with a selection ring and
+    /// checkmark badge, name underneath.
+    private func personChoice(label: String, isSelected: Bool, help: String,
+                              action: @escaping () -> Void,
+                              @ViewBuilder avatar: () -> some View) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                avatar()
+                    .overlay {
+                        Circle()
+                            .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2.5)
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 14))
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, Color.accentColor)
+                                .background(Circle().fill(.background))
+                        }
+                    }
+                Text(label)
+                    .font(.caption2)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: 58)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
     private func addLesson() {
         store.addLesson(text: newLessonText)
         newLessonText = ""
@@ -357,9 +477,9 @@ struct WizardView: View {
 
     /// Fill the form from an Analyze request. Only fields the user actually
     /// specified are touched; before/without an AI interpretation the raw
-    /// description rides as instructions so nothing is lost. Duration and
-    /// overlay choices aren't form fields — runWizard() reads them straight
-    /// from the handoff, and the request card shows them.
+    /// description rides as instructions so nothing is lost. Overlay choices
+    /// aren't form fields — runWizard() reads them straight from the
+    /// handoff, and the request card shows them.
     private func applyPromptHandoff(_ handoff: WizardPromptHandoff) {
         if !handoff.videoIDs.isEmpty {
             // Re-resolved on every handoff update, so batches created by the
@@ -371,7 +491,7 @@ struct WizardView: View {
             aiInstructions = handoff.description
             return
         }
-        if let count = parsed.numberOfVideos { numberOfVideos = count }
+        if let duration = parsed.targetDurationSeconds { targetDuration = duration }
         if let value = parsed.useMusic { useMusic = value }
         if let value = parsed.addCaptions { addCaptions = value }
         if let value = parsed.enableTextOverlays { enableTextOverlays = value }
@@ -388,7 +508,6 @@ struct WizardView: View {
     private func parsedSummary(_ parsed: ParsedWizardRequest) -> String {
         var parts: [String] = []
         if let duration = parsed.targetDurationSeconds { parts.append("~\(duration)s") }
-        if let count = parsed.numberOfVideos { parts.append("\(count) video(s)") }
         if !parsed.contentTags.isEmpty {
             parts.append("footage: \(parsed.contentTags.joined(separator: ", "))")
         }
@@ -404,25 +523,34 @@ struct WizardView: View {
 
     private func runWizard() {
         var options = WizardOptions()
-        options.numberOfVideos = numberOfVideos
-        options.variationsPerVideo = variationsPerVideo
         options.useMusic = useMusic
         options.muteSource = muteSource && useMusic
-        options.addCaptions = addCaptions
+        options.addCaptions = addCaptions && transcriptsAvailable
         options.autoCropWide = autoCropWide
+        options.centerStageWide = centerStageWide
+        options.centerStageCamera = centerStageCamera
         options.allowWideSplit = allowWideSplit
         options.enableTextOverlays = enableTextOverlays
         options.aiInstructions = aiInstructions
+        options.targetDurationSeconds = min(180, max(3, targetDuration))
         options.selectedRunIDs = limitToSelection ? selectedRunIDs : []
+        // People hidden by the batch selection don't filter — only visible
+        // picks apply.
+        let eligibleKeys = Set(eligibleSourcePeople.map(\.key))
+        options.sourcePeople = sourcePeopleRaw.split(separator: ",").map(String.init)
+            .filter(eligibleKeys.contains)
+        // The source-people filter doubles as the Center Stage focus: the
+        // camera tracks the picked people (everyone when nobody is picked).
+        options.centerStagePeople = options.sourcePeople
         // The template persists across runs; the card's X removes it.
         if let handoff = store.pendingWizardTemplate {
             options.templateJSON = handoff.templateJSON
             options.templateLabel = handoff.label
         }
-        // Same for a sample-video request: its duration/overlay constraints
-        // apply until the request card is dismissed.
+        // Same for a sample-video request: its overlay constraints apply
+        // until the request card is dismissed. (Its duration lands in the
+        // form's target-duration field via applyPromptHandoff.)
         if let parsed = store.pendingWizardPrompt?.parsed {
-            options.targetDurationSeconds = parsed.targetDurationSeconds
             options.pinnedOverlayTemplate = parsed.overlayTemplate
             options.pinnedOverlayText = parsed.overlayText
         }

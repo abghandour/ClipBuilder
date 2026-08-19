@@ -154,6 +154,9 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     var cropXFrac: Double?
     var freeCrops: [FreeCrop]?
     var captions: String = "inherit"   // inherit | none | top | middle | bottom
+    /// Wide clips only: reframe with the Center Stage tracking camera
+    /// instead of a static crop.
+    var centerStage: Bool = false
 
     /// Full duration of the referenced scene — editor state used to decide
     /// whether the clip is trimmed. Never encoded; refilled on hydration.
@@ -179,6 +182,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case transOut = "trans_out"
         case cropXFrac = "crop_x_frac"
         case freeCrops = "free_crops"
+        case centerStage = "center_stage"
     }
 
     init() {}
@@ -200,6 +204,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         transOut = try container.decodeIfPresent(String.self, forKey: .transOut)
         cropXFrac = try container.decodeIfPresent(Double.self, forKey: .cropXFrac)
         freeCrops = try container.decodeIfPresent([FreeCrop].self, forKey: .freeCrops)
+        centerStage = try container.decodeIfPresent(Bool.self, forKey: .centerStage) ?? false
         captions = Self.decodeCaptions(container, key: .captions, fallback: "inherit",
                                        valid: Self.captionChoices)
         // The web serializer never writes duration for scene clips; hydration
@@ -243,6 +248,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             try container.encodeNil(forKey: .freeCrops)
         }
         try container.encode(captions, forKey: .captions)
+        try container.encode(centerStage, forKey: .centerStage)
         if let sceneID, !isTrimmedScene {
             try container.encode(sceneID, forKey: .sceneID)
         } else if let videoFile, let sourceStart {
@@ -262,6 +268,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.duration == rhs.duration && lhs.track == rhs.track && lhs.wide == rhs.wide
             && lhs.stackOrder == rhs.stackOrder && lhs.volume == rhs.volume && lhs.muted == rhs.muted
             && lhs.position == rhs.position && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
+            && lhs.centerStage == rhs.centerStage
             && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
     }
 

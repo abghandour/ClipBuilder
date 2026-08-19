@@ -16,6 +16,7 @@ struct OverlayTemplatesView: View {
     @State private var renamePrompt = false
     @State private var renameText = ""
     @State private var deleteTarget: String?
+    @State private var showOverlayWizard = false
     @State private var operationError: String?
 
     var body: some View {
@@ -27,6 +28,7 @@ struct OverlayTemplatesView: View {
                     Text("Design an overlay once — texts and images with their own timing and effects — and reuse it everywhere: templates can be inserted in the Builder and picked by the AI Wizard.")
                 } actions: {
                     Button("New Template", action: createTemplate)
+                    Button("Overlay Wizard…") { showOverlayWizard = true }
                 }
             } else {
                 HSplitView {
@@ -50,10 +52,20 @@ struct OverlayTemplatesView: View {
             ToolbarItemGroup {
                 Button("New Template", systemImage: "plus", action: createTemplate)
                     .help("Create an overlay template")
+                Button("Overlay Wizard", systemImage: "wand.and.stars") {
+                    showOverlayWizard = true
+                }
+                .help("Extract an overlay design from a reference image with AI")
                 Button("Show in Finder", systemImage: "folder") {
                     NSWorkspace.shared.open(OverlayTemplateStore.directory)
                 }
                 .help("Open the overlay templates folder in Finder")
+            }
+        }
+        .sheet(isPresented: $showOverlayWizard) {
+            OverlayWizardSheet { name in
+                refresh()
+                selectedName = name
             }
         }
         .alert("Rename Template", isPresented: $renamePrompt) {

@@ -34,7 +34,7 @@ final class AppStore {
     var videos: [VideoRecord] = []
     var scenes: [SceneRecord] = []
     var analysisRuns: [AnalysisRun] = []
-    var videoSubjects: [VideoSubject] = []
+    var people: [PersonRecord] = []
     var generatedVideos: [GeneratedVideoRecord] = []
     var feedback: [FeedbackRecord] = []
     var lessons: [WizardLesson] = []
@@ -42,6 +42,9 @@ final class AppStore {
     /// Variation batch awaiting an A/B pick, presented by the main window
     /// after a multi-variation wizard run; further batches queue behind it.
     var pendingComparison: ComparisonBatch?
+    /// People first detected by the just-finished analysis — presented for
+    /// naming/merging as soon as the run ends.
+    var pendingPeopleReview: PeopleReviewRequest?
     private var comparisonQueue: [ComparisonBatch] = []
 
     /// FIFO of pending alerts; the main window presents the first entry and
@@ -77,8 +80,6 @@ final class AppStore {
     var wizardResults: WizardRunResults?
     /// Options of the last run — "Retry" in the results sheet re-runs them.
     private(set) var lastWizardOptions: WizardOptions?
-    private var wizardTotalUnits = 1
-    private var wizardCompletedUnits = 0
     var isDistillingLessons = false
     private var wizardTask: Task<Void, Never>?
 
@@ -196,7 +197,7 @@ final class AppStore {
         SettingsStore.saveActiveProfileName(name)
         videos = []
         scenes = []
-        videoSubjects = []
+        people = []
         generatedVideos = []
         feedback = []
         lessons = []
@@ -280,14 +281,14 @@ final class AppStore {
             let videos = try await database.fetchVideos()
             let scenes = try await database.fetchScenes()
             let analysisRuns = try await database.fetchAnalysisRuns()
-            let subjects = try await database.fetchVideoSubjects()
+            let people = try await database.fetchPeople()
             let generated = try await database.fetchGeneratedVideos()
             let feedback = try await database.fetchAllFeedback()
             let lessons = try await database.fetchLessons()
             self.videos = videos
             self.scenes = scenes
             self.analysisRuns = analysisRuns
-            self.videoSubjects = subjects
+            self.people = people
             self.generatedVideos = generated
             self.feedback = feedback
             self.lessons = lessons
@@ -387,6 +388,8 @@ final class AppStore {
         // sheet (persisted, so muted runs keep the last-used values).
         let instructions = UserDefaults.standard.string(forKey: "analysis.instructions") ?? ""
         let storedInterval = UserDefaults.standard.double(forKey: "analysis.sampleInterval")
+        let detectPeople = UserDefaults.standard.object(forKey: "analysis.detectPeople") == nil
+            ? true : UserDefaults.standard.bool(forKey: "analysis.detectPeople")
         let sampleInterval: Double? = storedInterval > 0 ? storedInterval : nil
         let includeTranscript = UserDefaults.standard.bool(forKey: "analysis.includeTranscript")
         let transcription = transcription
@@ -397,6 +400,10 @@ final class AppStore {
                 isAnalyzing = false
                 refreshAll()
             }
+            // People first seen anywhere in this batch — reviewed once at the
+            // end. Later videos already treat them as known (people are
+            // refetched per video), so keys never repeat across videos.
+            var newPeople: [DetectedNewPerson] = []
             for (index, video) in targets.enumerated() {
                 if Task.isCancelled { break }
                 let base = Double(index) / Double(targets.count)
@@ -406,17 +413,18 @@ final class AppStore {
                     if !notes.isEmpty {
                         analysisLog.append("\(video.filename): applying \(notes.count) timestamped note(s)")
                     }
-                    let subjects = (try? await database.fetchVideoSubjects(videoID: video.id)) ?? []
-                    if !subjects.isEmpty {
-                        analysisLog.append("\(video.filename): tracking \(subjects.count) VIP subject(s): "
-                                           + subjects.map(\.name).joined(separator: ", "))
-                    }
-                    let runID = try await analyzer.analyzeVisual(
+                    // Refetched per video so people discovered earlier in this
+                    // batch keep their identity in the following videos.
+                    let knownPeople = (try? await database.fetchPeople()) ?? []
+                    let markers = (try? await database.personMarkers(videoID: video.id)) ?? []
+                    let (runID, videoNewPeople) = try await analyzer.analyzeVisual(
                         video: video, profile: profile, database: database,
                         runName: Self.analysisRunName(for: video),
                         provider: provider, model: model,
                         instructions: instructions, notes: notes,
-                        subjects: subjects,
+                        knownPeople: knownPeople,
+                        personMarkers: markers,
+                        detectPeople: detectPeople,
                         sampleInterval: sampleInterval,
                         force: true,
                         log: { message in
@@ -428,6 +436,8 @@ final class AppStore {
                                 self.analysisStage = stage
                             }
                         })
+                    let pendingKeys = Set(newPeople.map(\.key))
+                    newPeople.append(contentsOf: videoNewPeople.filter { !pendingKeys.contains($0.key) })
                     if includeTranscript {
                         // A transcript failure shouldn't undo a good analysis
                         // — log it and keep going.
@@ -473,6 +483,9 @@ final class AppStore {
             } else {
                 analysisProgress = 1
                 analysisStage = "done"
+            }
+            if !newPeople.isEmpty {
+                pendingPeopleReview = PeopleReviewRequest(people: newPeople)
             }
         }
     }
@@ -530,6 +543,233 @@ final class AppStore {
         }
     }
 
+    // MARK: - Overlay wizard
+
+    /// Read the overlay elements out of a reference image (text, logos,
+    /// badges — people and background are discarded) and save them as a new
+    /// overlay template. Logo/badge regions are cropped out of the image
+    /// into the Images library so the template can render them.
+    /// Returns the created template's name.
+    func extractOverlayTemplate(from imageURL: URL, provider: String?, model: String?,
+                                log: @escaping @Sendable (String) -> Void) async throws -> String {
+        guard let imageData = try? Data(contentsOf: imageURL),
+              let image = NSImage(contentsOf: imageURL),
+              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            throw AIError.notConfigured("Could not read the image.")
+        }
+        let prompt = """
+        You are extracting the OVERLAY DESIGN from one frame of a social video so it can be recreated as a reusable overlay template.
+
+        Identify ONLY overlay elements: text captions/titles, name plates, logos, channel badges, watermarks, stickers. DISCARD everything that is part of the footage itself — people, background, scenery.
+
+        Return a JSON object:
+        {"overlays": [
+          {"kind": "text", "text": "<exact text>", "x": <0-1 center x>, "y": <0-1 center y>, "w": <0-1 width>, "h": <0-1 height>, "fontcolor": "#hex", "bold": true|false, "italic": true|false, "bgcolor": "#hex or null", "box_opacity": <0-1, 0 when no background plate>, "dynamic": true|false},
+          {"kind": "image", "x": ..., "y": ..., "w": ..., "h": ..., "description": "<what it is, e.g. 'UFC logo'>"}
+        ]}
+
+        Rules:
+        - Coordinates are fractions of the full frame; x/y are the element's CENTER.
+        - "kind":"text" for anything that is essentially styled text — recreate it as text, estimating color/bold/italic and any background plate.
+        - "kind":"image" for graphical marks (logos, badges, icons) that cannot be recreated as plain text. Make the box tight around the mark.
+        - "dynamic": true for the main caption-style text a future video would replace with its own words; false for names/labels/branding.
+        - 2-8 elements typical. Return ONLY the JSON object.
+        """
+        let frame = AIFrame(jpeg: imageData, label: "reference frame")
+        let response = try await ai.call(prompt: prompt, task: "overlay", frames: [frame],
+                                         model: model, provider: provider, timeout: 180, log: log)
+        guard let object = AIResponseParser.jsonObject(from: response),
+              let rawOverlays = object["overlays"] as? [[String: Any]], !rawOverlays.isEmpty else {
+            throw AIError.emptyResponse("overlay extraction (no overlays found)")
+        }
+
+        var composition = OverlayComposition()
+        var croppedCount = 0
+        for raw in rawOverlays {
+            let x = (raw["x"] as? NSNumber)?.doubleValue ?? 0.5
+            let y = (raw["y"] as? NSNumber)?.doubleValue ?? 0.5
+            let w = min(1, max(0.02, (raw["w"] as? NSNumber)?.doubleValue ?? 0.3))
+            let h = min(1, max(0.02, (raw["h"] as? NSNumber)?.doubleValue ?? 0.1))
+            if (raw["kind"] as? String) == "image" {
+                // Crop the mark out of the reference image into the library.
+                let pixelWidth = Double(cgImage.width)
+                let pixelHeight = Double(cgImage.height)
+                let rect = CGRect(x: max(0, (x - w / 2)) * pixelWidth,
+                                  y: max(0, (y - h / 2)) * pixelHeight,
+                                  width: min(w, 1) * pixelWidth,
+                                  height: min(h, 1) * pixelHeight).integral
+                guard let crop = cgImage.cropping(to: rect) else { continue }
+                let name = raw["description"] as? String ?? "overlay mark"
+                let sanitized = name.map { $0.isLetter || $0.isNumber ? $0 : "-" }
+                    .reduce(into: "") { if $1 != "-" || $0.last != "-" { $0.append($1) } }
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+                let directory = AssetKind.images.rootURL
+                try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                var fileURL = directory.appendingPathComponent("\(sanitized.isEmpty ? "overlay" : sanitized).png")
+                var counter = 2
+                while FileManager.default.fileExists(atPath: fileURL.path) {
+                    fileURL = directory.appendingPathComponent("\(sanitized.isEmpty ? "overlay" : sanitized)-\(counter).png")
+                    counter += 1
+                }
+                let rep = NSBitmapImageRep(cgImage: crop)
+                guard let png = rep.representation(using: .png, properties: [:]) else { continue }
+                try? png.write(to: fileURL)
+                var item = ImageOverlayItem(path: fileURL.path, startTime: 0, endTime: 3)
+                item.xFrac = x
+                item.yFrac = y
+                item.wFrac = w
+                item.unbounded = true
+                composition.images.append(item)
+                croppedCount += 1
+            } else {
+                let text = (raw["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { continue }
+                var item = TextOverlayItem(text: text, startTime: 0, endTime: 3)
+                item.xFrac = x
+                item.yFrac = y
+                item.wFrac = w
+                item.hFrac = h
+                item.fontcolor = raw["fontcolor"] as? String ?? "white"
+                item.bold = raw["bold"] as? Bool ?? false
+                item.italic = raw["italic"] as? Bool ?? false
+                if let bg = raw["bgcolor"] as? String {
+                    item.bgcolor = bg
+                    item.boxOpacity = (raw["box_opacity"] as? NSNumber)?.doubleValue ?? 0.6
+                }
+                item.isDynamic = raw["dynamic"] as? Bool ?? false
+                item.unbounded = true
+                composition.texts.append(item)
+            }
+        }
+        guard !composition.isEmpty else {
+            throw AIError.emptyResponse("overlay extraction (nothing usable)")
+        }
+        let base = imageURL.deletingPathExtension().lastPathComponent
+        let name = OverlayTemplateStore.uniqueName(base: "Wizard – \(base)")
+        try OverlayTemplateStore.save(OverlayTemplate(name: name, composition: composition))
+        log("Created overlay template \"\(name)\": \(composition.texts.count) text(s), \(croppedCount) cropped image(s)")
+        return name
+    }
+
+    // MARK: - People
+
+    func renamePerson(_ person: PersonRecord, to name: String) {
+        guard let database else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            do {
+                try await database.renamePerson(id: person.id, name: trimmed)
+                people = try await database.fetchPeople()
+            } catch {
+                presentError("Could not rename the person", error)
+            }
+        }
+    }
+
+    func deletePerson(_ person: PersonRecord) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.deletePerson(person)
+                await refreshAllNow()
+            } catch {
+                presentError("Could not delete the person", error)
+            }
+        }
+    }
+
+    func mergePeople(source: PersonRecord, into target: PersonRecord) {
+        guard let database, source.id != target.id else { return }
+        Task {
+            do {
+                try await database.mergePeople(source: source, into: target)
+                await refreshAllNow()
+            } catch {
+                presentError("Could not merge the people", error)
+            }
+        }
+    }
+
+    /// Merge several people into one. The survivor keeps its name; every
+    /// other selected person's scenes are retagged onto it.
+    func mergePeople(_ selected: [PersonRecord], into survivor: PersonRecord) {
+        guard let database else { return }
+        Task {
+            do {
+                for person in selected where person.id != survivor.id {
+                    try await database.mergePeople(source: person, into: survivor)
+                }
+                await refreshAllNow()
+            } catch {
+                presentError("Could not merge the people", error)
+            }
+        }
+    }
+
+    /// Apply the end-of-analysis people review in one pass: names land first,
+    /// then duplicates fold into their targets. Merge targets are resolved
+    /// transitively (A→B while B→C sends A's scenes to C), so chained
+    /// assignments in one review can't point at a person that just vanished.
+    func applyPeopleReview(names: [String: String], merges: [String: Int64]) {
+        guard let database else { return }
+        Task {
+            do {
+                var current = try await database.fetchPeople()
+                for (key, name) in names {
+                    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard merges[key] == nil, !trimmed.isEmpty,
+                          let record = current.first(where: { $0.key == key }) else { continue }
+                    try await database.renamePerson(id: record.id, name: trimmed)
+                }
+                current = try await database.fetchPeople()
+                let mergesByID: [Int64: Int64] = Dictionary(uniqueKeysWithValues:
+                    merges.compactMap { key, targetID in
+                        current.first { $0.key == key }.map { ($0.id, targetID) }
+                    })
+                func resolve(_ id: Int64) -> Int64 {
+                    var seen: Set<Int64> = []
+                    var id = id
+                    while let next = mergesByID[id], seen.insert(id).inserted { id = next }
+                    return id
+                }
+                for (sourceID, targetID) in mergesByID {
+                    let resolved = resolve(targetID)
+                    // A resolved target that is itself still a merge source
+                    // means a cycle (A→B, B→A) — skip rather than merge into
+                    // a person about to disappear.
+                    guard mergesByID[resolved] == nil,
+                          let source = current.first(where: { $0.id == sourceID }),
+                          let target = current.first(where: { $0.id == resolved }),
+                          source.id != target.id else { continue }
+                    try await database.mergePeople(source: source, into: target)
+                }
+                await refreshAllNow()
+            } catch {
+                presentError("Could not apply the people review", error)
+            }
+        }
+    }
+
+    /// Split support: move one scene from a person to another (or a brand-new
+    /// person named `newPersonName`, or nobody when both are nil).
+    func reassignScene(_ scene: SceneRecord, from person: PersonRecord,
+                       to target: PersonRecord?, newPersonName: String? = nil) {
+        guard let database else { return }
+        Task {
+            do {
+                var destination = target
+                if destination == nil, let newPersonName {
+                    destination = try await database.createPerson(name: newPersonName)
+                }
+                try await database.reassignScenePerson(sceneID: scene.id, from: person,
+                                                       to: destination)
+                await refreshAllNow()
+            } catch {
+                presentError("Could not reassign the scene", error)
+            }
+        }
+    }
+
     // MARK: - Video notes
 
     func videoNotes(for videoID: Int64) async -> [VideoNote] {
@@ -558,67 +798,65 @@ final class AppStore {
         return (try? await database.videoNotes(videoID: note.videoID)) ?? []
     }
 
-    // MARK: - VIP subjects
+    // MARK: - Person markers
 
-    func subjects(for videoID: Int64) -> [VideoSubject] {
-        videoSubjects.filter { $0.videoID == videoID }
+    func personMarkers(for videoID: Int64) async -> [PersonMarker] {
+        guard let database else { return [] }
+        return (try? await database.personMarkers(videoID: videoID)) ?? []
     }
 
-    private func refreshVideoSubjects() async {
-        guard let database else { return }
-        videoSubjects = (try? await database.fetchVideoSubjects()) ?? []
+    /// Draw a new identity box; returns the video's refreshed marker list.
+    func addPersonMarker(videoID: Int64, at atTime: Double,
+                         x: Double, y: Double, width: Double, height: Double) async -> [PersonMarker] {
+        guard let database else { return [] }
+        do {
+            try await database.addPersonMarker(videoID: videoID, at: atTime,
+                                               x: x, y: y, width: width, height: height)
+        } catch {
+            presentError("Could not save the person marker", error)
+        }
+        return (try? await database.personMarkers(videoID: videoID)) ?? []
     }
 
-    /// Create a subject with the next free palette color and a placeholder
-    /// name ("Person A", "Person B", …); returns the fresh row for renaming.
-    @discardableResult
-    func addVideoSubject(videoID: Int64, rects: [SubjectRect] = []) async -> VideoSubject? {
+    func updatePersonMarker(_ marker: PersonMarker) async -> [PersonMarker] {
+        guard let database else { return [] }
+        do {
+            try await database.updatePersonMarker(marker)
+        } catch {
+            presentError("Could not update the person marker", error)
+        }
+        return (try? await database.personMarkers(videoID: marker.videoID)) ?? []
+    }
+
+    func deletePersonMarker(_ marker: PersonMarker) async -> [PersonMarker] {
+        guard let database else { return [] }
+        do {
+            try await database.deletePersonMarker(id: marker.id)
+        } catch {
+            presentError("Could not delete the person marker", error)
+        }
+        return (try? await database.personMarkers(videoID: marker.videoID)) ?? []
+    }
+
+    /// The person's first marker plus its video URL, for face avatars.
+    func personMarkerReference(for personID: Int64) async -> (url: URL, marker: PersonMarker)? {
         guard let database else { return nil }
-        let existing = subjects(for: videoID)
-        let letter = Character(UnicodeScalar(UInt8(65 + existing.count % 26)))
+        guard let reference = try? await database.markerReference(personID: personID),
+              !reference.videoPath.isEmpty else { return nil }
+        return (URL(fileURLWithPath: reference.videoPath), reference.marker)
+    }
+
+    /// "New Person…" from a marker's dropdown — creates the registry entry
+    /// and refreshes the people list. Returns the new record.
+    func createPerson(named name: String) async -> PersonRecord? {
+        guard let database else { return nil }
         do {
-            let id = try await database.addVideoSubject(videoID: videoID,
-                                                        name: "Person \(letter)",
-                                                        colorIndex: existing.count,
-                                                        rectsJSON: VideoSubject.encodeRects(rects))
-            await refreshVideoSubjects()
-            return videoSubjects.first { $0.id == id }
+            let person = try await database.createPerson(name: name)
+            people = try await database.fetchPeople()
+            return person
         } catch {
-            presentError("Could not save the subject", error)
+            presentError("Could not create the person", error)
             return nil
-        }
-    }
-
-    func renameVideoSubject(_ subject: VideoSubject, to rawName: String) async {
-        guard let database else { return }
-        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, name != subject.name else { return }
-        do {
-            try await database.renameVideoSubject(id: subject.id, name: name)
-            await refreshVideoSubjects()
-        } catch {
-            presentError("Could not rename the subject", error)
-        }
-    }
-
-    func updateVideoSubjectRects(_ subject: VideoSubject, rects: [SubjectRect]) async {
-        guard let database else { return }
-        do {
-            try await database.updateVideoSubjectRects(id: subject.id,
-                                                       rectsJSON: VideoSubject.encodeRects(rects))
-            await refreshVideoSubjects()
-        } catch {
-            presentError("Could not save the subject's boxes", error)
-        }
-    }
-
-    func deleteVideoSubject(_ subject: VideoSubject) async {
-        guard let database else { return }
-        do {
-            try await database.deleteVideoSubject(id: subject.id)
-            await refreshVideoSubjects()
-        } catch {
-            presentError("Could not delete the subject", error)
         }
     }
 
@@ -886,8 +1124,11 @@ final class AppStore {
         let renderer = multitrackRenderer
         builderRenderTask = Task {
             do {
+                // The Builder honors the wizard's Center Stage camera preset.
+                let camera = UserDefaults.standard.string(forKey: "wizard.centerStageCamera") ?? "balanced"
                 let result = try await renderer.render(document: document, scenes: scenes,
-                                                       profile: profile, database: database) { message in
+                                                       profile: profile, database: database,
+                                                       centerStageCamera: camera) { message in
                     Task { @MainActor in self.builderLog.append(message) }
                 }
                 builderLog.append("Done: \(result.url.lastPathComponent) (\(result.duration.timecode))")
@@ -976,8 +1217,6 @@ final class AppStore {
         isWizardRunning = true
         wizardLog = []
         lastWizardOptions = options
-        wizardTotalUnits = max(1, options.numberOfVideos * options.variationsPerVideo)
-        wizardCompletedUnits = 0
         wizardStatus = WizardRunStatus(stage: "Starting…", fraction: 0)
         let profile = activeProfile
         let wizard = wizard
@@ -1030,68 +1269,54 @@ final class AppStore {
         return nil
     }
 
-    /// Map engine log lines onto stage + overall progress. Each requested
-    /// video/variation is one unit: planning ~0-0.3, assembly 0.3-0.9,
-    /// caption 0.9-1. Unknown lines leave the status untouched.
+    /// Map engine log lines onto stage + overall progress: planning ~0-0.3,
+    /// assembly 0.3-0.9, caption 0.9-1. Unknown lines leave the status
+    /// untouched.
     private func updateWizardStatus(from rawMessage: String) {
         // Phase lines arrive with leading newlines for log readability.
         let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-        func label(after prefix: String) -> String {
-            // "... Video 1.2/3..." → "1.2 of 3"
-            var tail = String(message.dropFirst(prefix.count))
-            while tail.hasSuffix(".") { tail.removeLast() }
-            return tail.replacingOccurrences(of: "/", with: " of ")
-        }
-        func set(_ stage: String, detail: String = "", unitFraction: Double) {
-            let overall = (Double(wizardCompletedUnits) + unitFraction) / Double(wizardTotalUnits)
+        func set(_ stage: String, detail: String = "", fraction: Double) {
             var status = wizardStatus ?? WizardRunStatus(stage: stage, fraction: 0)
             if status.stage != stage {
                 status.stage = stage
                 status.stageChangedAt = Date()
             }
             status.detail = detail
-            status.fraction = min(1, max(status.fraction, overall))
+            status.fraction = min(1, max(status.fraction, fraction))
             wizardStatus = status
         }
 
         if message.hasPrefix("Phase 1") {
-            set("Researching what performs on Reels", unitFraction: 0)
+            set("Researching what performs on Reels", fraction: 0)
         } else if message.hasPrefix("Loading scenes") {
-            set("Loading your scenes and music", unitFraction: 0.02)
-        } else if message.contains("Phase 2: Planning Video") {
-            set("Planning video \(label(after: "Phase 2: Planning Video "))",
-                detail: "The AI is designing the edit — this step can take a few minutes.",
-                unitFraction: 0.05)
+            set("Loading your scenes and music", fraction: 0.02)
         } else if message.hasPrefix("Phase 2: Planning the timeline") {
             set("Planning the timeline",
                 detail: "The AI is designing the edit — this step can take a few minutes.",
-                unitFraction: 0.05)
+                fraction: 0.05)
         } else if message.hasPrefix("Plan: ") {
-            set("Plan ready", unitFraction: 0.3)
-        } else if message.contains("Phase 3: Assembling Video") {
-            set("Assembling video \(label(after: "Phase 3: Assembling Video "))",
+            set("Plan ready", fraction: 0.3)
+        } else if message.hasPrefix("Phase 3: Assembling") {
+            set("Assembling the video",
                 detail: "Cutting clips and burning in overlays.",
-                unitFraction: 0.32)
+                fraction: 0.32)
         } else if let range = message.range(of: #"clip (\d+)/(\d+)"#, options: .regularExpression) {
             let parts = message[range].dropFirst(5).split(separator: "/")
             if parts.count == 2, let index = Double(parts[0]), let total = Double(parts[1]), total > 0 {
                 set("Cutting clip \(Int(index)) of \(Int(total))",
                     detail: "Extracting and styling each planned clip.",
-                    unitFraction: 0.32 + 0.5 * (index / total))
+                    fraction: 0.32 + 0.5 * (index / total))
             }
-        } else if message.contains(": assembling") {
-            set("Joining clips with transitions", unitFraction: 0.85)
-        } else if message.contains("adding music") {
-            set("Adding music", unitFraction: 0.9)
+        } else if message.hasPrefix("Assembling ") {
+            set("Joining clips with transitions", fraction: 0.85)
+        } else if message.hasPrefix("Adding music") {
+            set("Adding music", fraction: 0.9)
         } else if message.hasPrefix("Generating Instagram caption") {
-            set("Writing the Instagram caption", unitFraction: 0.93)
+            set("Writing the Instagram caption", fraction: 0.93)
         } else if message.contains(" complete! ") {
-            wizardCompletedUnits = min(wizardTotalUnits, wizardCompletedUnits + 1)
-            set(wizardCompletedUnits == wizardTotalUnits ? "Finishing up"
-                    : "Video \(wizardCompletedUnits) of \(wizardTotalUnits) done",
-                unitFraction: 0)
+            set("Finishing up", fraction: 0.97)
         } else if message.hasPrefix("All done!") {
-            set("Done", unitFraction: 1)
+            set("Done", fraction: 1)
         }
     }
 

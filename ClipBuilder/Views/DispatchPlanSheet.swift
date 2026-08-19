@@ -64,6 +64,7 @@ struct DispatchPlanSheet: View {
     // Analysis-only options; persisted so muted runs keep the last values.
     @AppStorage("analysis.instructions") private var instructions = ""
     @AppStorage("analysis.sampleInterval") private var sampleInterval = 0.0   // 0 = automatic
+    @AppStorage("analysis.detectPeople") private var detectPeople = true
     @AppStorage("analysis.includeTranscript") private var includeTranscript = false
     // One engine today; persisted so future engines slot in without a rekey.
     @AppStorage("analysis.transcribeEngine") private var transcribeEngine = "apple"
@@ -152,6 +153,8 @@ struct DispatchPlanSheet: View {
                         }
                     }
                     .help("How often a frame is sent to the model. Denser sampling catches short moments but costs more (capped at 60 frames).")
+                    Toggle("Detect people (build the People registry)", isOn: $detectPeople)
+                        .help("Identify each distinct person, tag their scenes, and keep their identity across videos — see the People section")
                     transcriptionRows
                 }
                 ForEach(operation.localStages, id: \.label) { stage in
@@ -171,10 +174,14 @@ struct DispatchPlanSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Toggle("Remember these choices and don't ask again", isOn: $remember)
-                Text("You can reset the dispatcher's choices and re-enable this prompt in Settings → AI.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                // Analysis always shows this plan — remembering applies to
+                // generation only.
+                if operation == .generate {
+                    Toggle("Remember these choices and don't ask again", isOn: $remember)
+                    Text("You can reset the dispatcher's choices and re-enable this prompt in Settings → AI.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
                 HStack {
                     Spacer()
                     Button("Cancel", role: .cancel) { dismiss() }
@@ -226,11 +233,10 @@ struct DispatchPlanSheet: View {
         Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
     }
 
-    /// VIP subjects of the target videos — quick-insert hard filters into
+    /// Named people from the registry — quick-insert hard filters into
     /// the instructions without retyping names.
-    private var targetSubjects: [VideoSubject] {
-        let videoIDs = Set(videos.map(\.id))
-        return store.videoSubjects.filter { videoIDs.contains($0.videoID) }
+    private var namedPeople: [PersonRecord] {
+        store.people.filter { !$0.name.isEmpty }
     }
 
     private func appendInstruction(_ line: String) {
@@ -247,22 +253,22 @@ struct DispatchPlanSheet: View {
                 Text("Generic instructions — apply to every video (optional)")
                     .font(.subheadline.weight(.medium))
                 Spacer()
-                if !targetSubjects.isEmpty {
-                    Menu("VIPs") {
-                        ForEach(targetSubjects) { subject in
-                            Menu(subject.name) {
-                                Button("Only include scenes with \(subject.name)") {
-                                    appendInstruction("Only include scenes featuring \"\(subject.name)\" — omit every range where they are not clearly present.")
+                if !namedPeople.isEmpty {
+                    Menu("People") {
+                        ForEach(namedPeople) { person in
+                            Menu(person.name) {
+                                Button("Only include scenes with \(person.name)") {
+                                    appendInstruction("Only include scenes featuring \"\(person.name)\" — omit every range where they are not clearly present.")
                                 }
-                                Button("Focus on \(subject.name)") {
-                                    appendInstruction("Focus on \"\(subject.name)\" — prioritize moments where they are the main action.")
+                                Button("Focus on \(person.name)") {
+                                    appendInstruction("Focus on \"\(person.name)\" — prioritize moments where they are the main action.")
                                 }
                             }
                         }
                     }
                     .controlSize(.small)
                     .fixedSize()
-                    .help("Insert an instruction referencing a marked VIP subject")
+                    .help("Insert an instruction referencing a person from the People section")
                 }
                 Menu("History") {
                     ForEach(savedPrompts) { prompt in
@@ -420,10 +426,33 @@ private struct VideoNotesPanel: View {
     @State private var notes: [VideoNote] = []
     @State private var noteText = ""
     @State private var player: AVPlayer?
-    @State private var markupVideo: VideoRecord?
+    @State private var markers: [PersonMarker] = []
+    @State private var currentTime = 0.0
+    @State private var timeObserver: Any?
+    @State private var pendingNewPersonMarker: PersonMarker?
+    @State private var newPersonName = ""
+
+    /// One distinct color per marker, cycling a fixed palette.
+    private static let markerColors: [Color] = [.yellow, .green, .cyan, .orange,
+                                                .pink, .purple, .red, .mint]
 
     private var video: VideoRecord {
         videos[min(selectedIndex, videos.count - 1)]
+    }
+
+    private func markerColor(_ marker: PersonMarker) -> Color {
+        let index = markers.firstIndex(where: { $0.id == marker.id }) ?? 0
+        return Self.markerColors[index % Self.markerColors.count]
+    }
+
+    private func markerPersonName(_ marker: PersonMarker) -> String? {
+        marker.personID.flatMap { id in store.people.first { $0.id == id }?.displayName }
+    }
+
+    /// Markers anchored near the current playback moment — the ones drawn
+    /// over the video and editable right now.
+    private var visibleMarkers: [PersonMarker] {
+        markers.filter { abs($0.atTime - currentTime) < 0.5 }
     }
 
     var body: some View {
@@ -449,24 +478,54 @@ private struct VideoNotesPanel: View {
 
             PlayerView(player: player)
                 .frame(maxWidth: .infinity)
-                .frame(height: 420)
+                .frame(height: 380)
                 .background(.black, in: RoundedRectangle(cornerRadius: 8))
-
-            HStack(spacing: 6) {
-                ForEach(store.subjects(for: video.id)) { subject in
-                    HStack(spacing: 3) {
-                        Circle()
-                            .fill(subject.color)
-                            .frame(width: 8, height: 8)
-                        Text(subject.name)
-                            .font(.caption2)
-                            .lineLimit(1)
+                .overlay {
+                    // Identity boxes near the current moment, drawn in the
+                    // video's letterboxed display rect and editable in place.
+                    GeometryReader { geo in
+                        let videoRect = AVMakeRect(
+                            aspectRatio: CGSize(width: max(1, video.width), height: max(1, video.height)),
+                            insideRect: CGRect(origin: .zero, size: geo.size))
+                        ForEach(visibleMarkers) { marker in
+                            PersonMarkerBox(marker: marker,
+                                            color: markerColor(marker),
+                                            name: markerPersonName(marker),
+                                            videoRect: videoRect) { updated in
+                                if let index = markers.firstIndex(where: { $0.id == updated.id }) {
+                                    markers[index] = updated
+                                }
+                            } onCommit: { updated in
+                                Task { markers = await store.updatePersonMarker(updated) }
+                            }
+                        }
                     }
                 }
-                Button("VIP Subjects…") { markupVideo = video }
-                    .controlSize(.small)
-                    .help("Draw colored boxes around important people — analysis tags their scenes \"vip:<name>\"")
+
+            HStack {
+                Button {
+                    addPersonMarker()
+                } label: {
+                    Label("Add Person", systemImage: "person.crop.rectangle.badge.plus")
+                }
+                .help("Pauses the video and drops a colored box at this moment — drag and resize it around one person, then name them. Markers are ground truth for people recognition.")
+                Text(visibleMarkers.isEmpty && !markers.isEmpty
+                     ? "\(markers.count) marker(s) on this video — click a row to jump to one."
+                     : "Drag the box around one person; resize from the corner dot.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
                 Spacer()
+            }
+
+            if !markers.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(markers) { marker in
+                            markerRow(marker)
+                        }
+                    }
+                }
+                .frame(maxHeight: 96)
             }
 
             HStack {
@@ -521,16 +580,113 @@ private struct VideoNotesPanel: View {
             Spacer(minLength: 0)
         }
         .padding()
-        .sheet(item: $markupVideo) { video in
-            SubjectMarkupSheet(video: video)
-        }
         .task(id: video.id) {
+            if let timeObserver, let player {
+                player.removeTimeObserver(timeObserver)
+                self.timeObserver = nil
+            }
             player?.pause()
-            player = AVPlayer(url: video.url)
+            let newPlayer = AVPlayer(url: video.url)
+            player = newPlayer
+            currentTime = 0
+            timeObserver = newPlayer.addPeriodicTimeObserver(
+                forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
+                queue: .main) { time in
+                Task { @MainActor in currentTime = time.seconds }
+            }
             notes = await store.videoNotes(for: video.id)
+            markers = await store.personMarkers(for: video.id)
         }
         .onDisappear {
+            if let timeObserver, let player {
+                player.removeTimeObserver(timeObserver)
+                self.timeObserver = nil
+            }
             player?.pause()
+        }
+        .alert("New Person", isPresented: Binding(
+            get: { pendingNewPersonMarker != nil },
+            set: { if !$0 { pendingNewPersonMarker = nil; newPersonName = "" } })
+        ) {
+            TextField("Name", text: $newPersonName)
+            Button("Create") {
+                let name = newPersonName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if var marker = pendingNewPersonMarker, !name.isEmpty {
+                    Task {
+                        if let person = await store.createPerson(named: name) {
+                            marker.personID = person.id
+                            markers = await store.updatePersonMarker(marker)
+                        }
+                    }
+                }
+                pendingNewPersonMarker = nil
+                newPersonName = ""
+            }
+            Button("Cancel", role: .cancel) {
+                pendingNewPersonMarker = nil
+                newPersonName = ""
+            }
+        } message: {
+            Text("The person is added to the People section and this marker teaches the analyzer their face.")
+        }
+    }
+
+    /// One marker: color swatch, seek-to timecode, person dropdown, delete.
+    @ViewBuilder
+    private func markerRow(_ marker: PersonMarker) -> some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(markerColor(marker))
+                .frame(width: 10, height: 10)
+            Button {
+                player?.pause()
+                player?.seek(to: CMTime(seconds: marker.atTime, preferredTimescale: 600))
+            } label: {
+                Text(marker.atTime.timecode)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tint)
+            }
+            .buttonStyle(.borderless)
+            .help("Jump the player to this marker's moment")
+
+            Menu(markerPersonName(marker) ?? "Who is this?") {
+                ForEach(store.people) { person in
+                    Button(person.displayName) {
+                        var updated = marker
+                        updated.personID = person.id
+                        Task { markers = await store.updatePersonMarker(updated) }
+                    }
+                }
+                if !store.people.isEmpty { Divider() }
+                Button("New Person…") {
+                    pendingNewPersonMarker = marker
+                }
+            }
+            .controlSize(.small)
+            .fixedSize()
+
+            Spacer()
+
+            Button {
+                Task { markers = await store.deletePersonMarker(marker) }
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+        }
+    }
+
+    /// Drop a fresh box at the paused moment, centered-ish so it's easy to
+    /// grab and fit around a person.
+    private func addPersonMarker() {
+        guard let player else { return }
+        player.pause()
+        let seconds = player.currentTime().seconds
+        let atTime = seconds.isFinite ? max(0, (seconds * 10).rounded() / 10) : 0
+        Task {
+            markers = await store.addPersonMarker(videoID: video.id, at: atTime,
+                                                  x: 0.35, y: 0.2, width: 0.3, height: 0.55)
         }
     }
 
@@ -542,5 +698,91 @@ private struct VideoNotesPanel: View {
         let atTime = seconds.isFinite ? max(0, (seconds * 10).rounded() / 10) : 0
         noteText = ""
         Task { notes = await store.addVideoNote(videoID: video.id, at: atTime, text: text) }
+    }
+}
+
+/// One editable identity box over the video: drag the body to move, drag the
+/// bottom-right dot to resize. Coordinates stay normalized to the video's
+/// display rect, so they survive any player size.
+private struct PersonMarkerBox: View {
+    let marker: PersonMarker
+    let color: Color
+    let name: String?
+    let videoRect: CGRect
+    let onChange: (PersonMarker) -> Void
+    let onCommit: (PersonMarker) -> Void
+
+    /// Marker state at gesture start — deltas apply against this.
+    @State private var gestureStart: PersonMarker?
+
+    private var boxRect: CGRect {
+        CGRect(x: videoRect.minX + marker.x * videoRect.width,
+               y: videoRect.minY + marker.y * videoRect.height,
+               width: marker.width * videoRect.width,
+               height: marker.height * videoRect.height)
+    }
+
+    var body: some View {
+        let rect = boxRect
+        ZStack(alignment: .bottomTrailing) {
+            Rectangle()
+                .strokeBorder(color, lineWidth: 2.5)
+                .background(color.opacity(0.12))
+                .contentShape(Rectangle())
+                .gesture(moveGesture)
+            Circle()
+                .fill(color)
+                .frame(width: 13, height: 13)
+                .contentShape(Circle().inset(by: -8))
+                .gesture(resizeGesture)
+                .offset(x: 5, y: 5)
+        }
+        .overlay(alignment: .topLeading) {
+            Text(name ?? "who?")
+                .font(.caption2.bold())
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(color, in: RoundedRectangle(cornerRadius: 3))
+                .foregroundStyle(.black)
+                .offset(y: -16)
+        }
+        .frame(width: rect.width, height: rect.height)
+        .position(x: rect.midX, y: rect.midY)
+    }
+
+    private var moveGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                let start = gestureStart ?? marker
+                gestureStart = start
+                var updated = start
+                updated.x = min(max(0, start.x + value.translation.width / videoRect.width),
+                                1 - start.width)
+                updated.y = min(max(0, start.y + value.translation.height / videoRect.height),
+                                1 - start.height)
+                onChange(updated)
+            }
+            .onEnded { _ in
+                gestureStart = nil
+                onCommit(marker)
+            }
+    }
+
+    private var resizeGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                let start = gestureStart ?? marker
+                gestureStart = start
+                var updated = start
+                updated.width = min(max(0.04, start.width + value.translation.width / videoRect.width),
+                                    1 - start.x)
+                updated.height = min(max(0.04, start.height + value.translation.height / videoRect.height),
+                                     1 - start.y)
+                onChange(updated)
+            }
+            .onEnded { _ in
+                gestureStart = nil
+                onCommit(marker)
+            }
     }
 }

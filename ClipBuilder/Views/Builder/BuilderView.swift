@@ -113,7 +113,8 @@ struct BuilderView: View {
         .sheet(item: $playingClip) { clip in
             PlayerSheet(url: model.sourceURL(for: clip) ?? URL(fileURLWithPath: "/"),
                         title: model.scene(for: clip)?.videoFilename ?? "Clip",
-                        startTime: clip.sourceStart ?? 0)
+                        startTime: clip.sourceStart ?? 0,
+                        endTime: (clip.sourceStart ?? 0) + clip.duration)
         }
         .sheet(isPresented: $showPreview) {
             TimelinePreviewSheet()

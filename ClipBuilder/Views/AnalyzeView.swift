@@ -12,7 +12,6 @@ struct AnalyzeView: View {
     @State private var pendingDispatch: PendingDispatch?
     @State private var renamingID: Int64?
     @State private var renameText = ""
-    @State private var markupVideo: VideoRecord?
     @FocusState private var renameFocused: Bool
 
     /// Exactly one selected video → the preview pane shows it.
@@ -35,7 +34,7 @@ struct AnalyzeView: View {
                 table
                     .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
                 if let video = previewVideo {
-                    VideoPreviewPane(video: video) { markupVideo = video }
+                    VideoPreviewPane(video: video)
                         .frame(minWidth: 240, idealWidth: 320, maxWidth: 440, maxHeight: .infinity)
                 }
             }
@@ -48,12 +47,6 @@ struct AnalyzeView: View {
         .navigationSubtitle("\(store.videos.count) source videos")
         .toolbar {
             ToolbarItemGroup {
-                // Visible mute state for the dispatcher's plan prompt — when
-                // this is off, Analyze starts immediately with saved choices.
-                Toggle("Ask for model plan", isOn: askBeforeAnalyze)
-                    .toggleStyle(.checkbox)
-                    .help("Show the model plan (model, sampling, instructions) before each analysis. Unchecked = start immediately with the remembered choices.")
-
                 // Explicit text + icon content: the toolbar renders plain
                 // Label buttons icon-only regardless of labelStyle.
                 Button {
@@ -92,9 +85,6 @@ struct AnalyzeView: View {
         .sheet(isPresented: $showGenerateSheet) {
             GenerateSampleSheet(videos: selectedVideos)
         }
-        .sheet(item: $markupVideo) { video in
-            SubjectMarkupSheet(video: video)
-        }
         .sheet(item: $pendingDispatch) { pending in
             DispatchPlanSheet(operation: pending.operation, videos: pending.videos,
                               onStart: pending.run)
@@ -121,33 +111,31 @@ struct AnalyzeView: View {
                                           run: { store.analyze(videos: [video]) })
     }
 
-    /// Inverse of the dispatcher's "analyze" mute, editable from the toolbar.
-    private var askBeforeAnalyze: Binding<Bool> {
-        Binding(
-            get: { !store.settings.ai.mutedDispatchPlans.contains(DispatchOperation.analyze.rawValue) },
-            set: { ask in
-                var muted = store.settings.ai.mutedDispatchPlans
-                muted.removeAll { $0 == DispatchOperation.analyze.rawValue }
-                if !ask { muted.append(DispatchOperation.analyze.rawValue) }
-                store.settings.ai.mutedDispatchPlans = muted
-                store.saveSettings()
-            })
-    }
-
-    /// Show the smart dispatcher's model plan first (unless muted for
-    /// analysis), then run. Replaces the old per-run provider menu.
+    /// The model plan always shows for analysis — it carries the options
+    /// (model, sampling, instructions, notes, people detection) for the run.
     private func withDispatchPlan(videos: [VideoRecord], _ run: @escaping () -> Void) {
-        if store.settings.ai.mutedDispatchPlans.contains(DispatchOperation.analyze.rawValue) {
-            run()
-            // analyze() has already reset the log by the time this appends.
-            store.analysisLog.append("Model-plan prompt is muted — Reset Smart Dispatcher in Settings → AI to bring it back.")
-        } else {
-            pendingDispatch = PendingDispatch(operation: .analyze, videos: videos, run: run)
-        }
+        pendingDispatch = PendingDispatch(operation: .analyze, videos: videos, run: run)
     }
 
     private func startAnalysis(of videos: [VideoRecord]) {
         withDispatchPlan(videos: videos) { store.analyze(videos: videos) }
+    }
+
+    /// "16:9"-style label: snap to the common ratios, else reduce by GCD.
+    static func aspectRatioLabel(width: Int, height: Int) -> String {
+        guard width > 0, height > 0 else { return "—" }
+        let value = Double(width) / Double(height)
+        let common: [(String, Double)] = [
+            ("16:9", 16.0 / 9), ("9:16", 9.0 / 16), ("4:3", 4.0 / 3), ("3:4", 3.0 / 4),
+            ("1:1", 1), ("21:9", 21.0 / 9), ("2:3", 2.0 / 3), ("3:2", 3.0 / 2),
+        ]
+        if let match = common.first(where: { abs($0.1 - value) / $0.1 < 0.02 }) {
+            return match.0
+        }
+        func gcd(_ a: Int, _ b: Int) -> Int { b == 0 ? a : gcd(b, a % b) }
+        let divisor = gcd(width, height)
+        let w = width / divisor, h = height / divisor
+        return w <= 50 && h <= 50 ? "\(w):\(h)" : String(format: "%.2f:1", value)
     }
 
     private var table: some View {
@@ -157,11 +145,15 @@ struct AnalyzeView: View {
         let transcriptCounts = store.analysisRuns.reduce(into: [Int64: Int]()) {
             if $1.hasTranscript { $0[$1.videoID, default: 0] += 1 }
         }
+        // Distinct people recognized per video, via person: tags on scenes.
+        let peopleCounts = store.scenes.reduce(into: [Int64: Set<String>]()) { acc, scene in
+            for tag in scene.tags where tag.hasPrefix("person:") {
+                acc[scene.videoID, default: []].insert(tag)
+            }
+        }
         return Table(store.videos, selection: $selection) {
             TableColumn("File") { video in
                 HStack {
-                    Image(systemName: video.wide ? "rectangle" : "rectangle.portrait")
-                        .foregroundStyle(.secondary)
                     if renamingID == video.id {
                         TextField("Name", text: $renameText)
                             .textFieldStyle(.roundedBorder)
@@ -196,6 +188,12 @@ struct AnalyzeView: View {
             }
             .width(90)
 
+            TableColumn("Ratio") { video in
+                Text(Self.aspectRatioLabel(width: video.width, height: video.height))
+                    .foregroundStyle(.secondary)
+            }
+            .width(55)
+
             TableColumn("Analysis") { video in
                 if store.isAnalyzing && selection.contains(video.id) {
                     ProgressView()
@@ -227,6 +225,12 @@ struct AnalyzeView: View {
             }
             .width(80)
 
+            TableColumn("People") { video in
+                countText(peopleCounts[video.id]?.count ?? 0)
+                    .help("Distinct people recognized in this video — see the People section")
+            }
+            .width(55)
+
             TableColumn("Scenes") { video in
                 Text("\(sceneCounts[video.id] ?? 0)")
                     .foregroundStyle(.secondary)
@@ -245,11 +249,6 @@ struct AnalyzeView: View {
             Button("Generate Sample Video…") {
                 selection = ids
                 showGenerateSheet = true
-            }
-            if ids.count == 1, let video = store.videos.first(where: { ids.contains($0.id) }) {
-                Button("VIP Subjects…") {
-                    markupVideo = video
-                }
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -284,7 +283,6 @@ struct AnalyzeView: View {
 private struct VideoPreviewPane: View {
     @Environment(AppStore.self) private var store
     let video: VideoRecord
-    let onMarkSubjects: () -> Void
 
     @State private var player: AVPlayer?
 
@@ -300,21 +298,6 @@ private struct VideoPreviewPane: View {
                 Text("\(video.duration.timecode) · \(video.width)×\(video.height)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 6) {
-                ForEach(store.subjects(for: video.id)) { subject in
-                    HStack(spacing: 3) {
-                        Circle()
-                            .fill(subject.color)
-                            .frame(width: 8, height: 8)
-                        Text(subject.name)
-                            .font(.caption2)
-                            .lineLimit(1)
-                    }
-                }
-                Button("VIP Subjects…", action: onMarkSubjects)
-                    .controlSize(.small)
-                    .help("Draw colored boxes around important people so analysis can tag their scenes")
             }
         }
         .padding(10)
@@ -336,9 +319,29 @@ private struct GenerateSampleSheet: View {
     let videos: [VideoRecord]
 
     @State private var requestText = ""
+    @State private var history = Self.loadHistory()
 
     private var unanalyzedCount: Int {
         videos.count(where: { $0.visualAnalyzedAt == nil })
+    }
+
+    // MARK: - Request history
+
+    private static let historyKey = "analyze.sampleRequestHistory"
+
+    private static func loadHistory() -> [String] {
+        UserDefaults.standard.stringArray(forKey: historyKey) ?? []
+    }
+
+    /// Newest first, deduplicated case-insensitively, capped — typing a
+    /// fresh description automatically remembers it for next time.
+    private static func remember(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var entries = loadHistory()
+        entries.removeAll { $0.compare(trimmed, options: .caseInsensitive) == .orderedSame }
+        entries.insert(trimmed, at: 0)
+        UserDefaults.standard.set(Array(entries.prefix(15)), forKey: historyKey)
     }
 
     var body: some View {
@@ -348,6 +351,27 @@ private struct GenerateSampleSheet: View {
             Text("Describe what to create from the \(videos.count) selected video(s). Mention duration, content, overlays, music — the AI Wizard is filled in from your description, ready to review and run.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+
+            if !history.isEmpty {
+                Menu {
+                    ForEach(history, id: \.self) { entry in
+                        Button {
+                            requestText = entry
+                        } label: {
+                            Text(entry.count > 70 ? entry.prefix(70) + "…" : entry)
+                        }
+                    }
+                    Divider()
+                    Button("Clear History", role: .destructive) {
+                        UserDefaults.standard.removeObject(forKey: Self.historyKey)
+                        history = []
+                    }
+                } label: {
+                    Label("Previous requests", systemImage: "clock.arrow.circlepath")
+                }
+                .fixedSize()
+                .help("Reuse a description from an earlier sample video")
+            }
 
             TextEditor(text: $requestText)
                 .font(.body)
@@ -377,6 +401,7 @@ private struct GenerateSampleSheet: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                 Button("Generate") {
+                    Self.remember(requestText)
                     store.generateSampleVideo(description: requestText, videos: videos)
                     dismiss()
                 }

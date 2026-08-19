@@ -89,7 +89,8 @@ struct ClipBrowserPane: View {
         .sheet(item: $playingScene) { scene in
             PlayerSheet(url: scene.videoURL,
                         title: "\(scene.videoFilename) \(scene.startTime.timecode)–\(scene.endTime.timecode)",
-                        startTime: scene.startTime)
+                        startTime: scene.startTime,
+                        endTime: scene.endTime)
         }
     }
 }
@@ -144,6 +145,9 @@ struct BrowserSceneCard: View {
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+            if !scene.tags.isEmpty {
+                SceneTagLine(tags: scene.tags)
+            }
         }
         .draggable("scene:\(scene.id)")
         .highPriorityGesture(TapGesture(count: 2).onEnded { onPlay() })

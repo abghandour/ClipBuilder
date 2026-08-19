@@ -23,6 +23,7 @@ actor MultitrackRenderer {
         var duration: Double
         var track: Int
         var wide: Bool
+        var centerStage: Bool = false
         var stackOrder: Int
         var muted: Bool
         var transIn: String?
@@ -60,6 +61,7 @@ actor MultitrackRenderer {
     private static let slotY: [String: Int] = ["top": 0, "center": 640, "bottom": 1280]
 
     private let render: RenderEngine
+    private let centerStageService = CenterStageService()
 
     init(render: RenderEngine) {
         self.render = render
@@ -69,10 +71,33 @@ actor MultitrackRenderer {
 
     func render(document: TimelineDocument, scenes: [SceneRecord],
                 profile: BrandProfile, database: Database,
+                centerStageCamera: String = "balanced",
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         // Overlay blocks render as their flattened text/image items.
         let document = document.expandingOverlayBlocks()
-        let clips = Self.resolveClips(document: document, scenes: scenes)
+        var clips = Self.resolveClips(document: document, scenes: scenes)
+        // Center Stage prepass: flagged wide clips are reframed to portrait
+        // intermediates by the tracking camera, then composited as normal
+        // (non-wide) clips.
+        var reframedTemp: [URL] = []
+        for index in clips.indices where clips[index].centerStage {
+            do {
+                emit("Clip \(index + 1): Center Stage reframe…")
+                let portrait = try await centerStageService.reframeClip(
+                    source: URL(fileURLWithPath: clips[index].sourcePath),
+                    start: clips[index].sourceStart,
+                    duration: clips[index].duration,
+                    tuning: .named(centerStageCamera),
+                    log: emit)
+                reframedTemp.append(portrait)
+                clips[index].sourcePath = portrait.path
+                clips[index].sourceStart = 0
+                clips[index].wide = false
+            } catch {
+                emit("Center Stage failed for clip \(index + 1) (\(error)) — using the static crop")
+            }
+        }
+        defer { for url in reframedTemp { try? FileManager.default.removeItem(at: url) } }
         guard !clips.isEmpty else {
             throw CocoaError(.fileNoSuchFile, userInfo: [
                 NSLocalizedDescriptionKey: "No valid clips in the video track"])
@@ -269,6 +294,7 @@ actor MultitrackRenderer {
                                          duration: duration,
                                          track: track,
                                          wide: clip.wide,
+                                         centerStage: clip.centerStage && clip.wide,
                                          stackOrder: clip.stackOrder,
                                          muted: muted,
                                          transIn: clip.transIn,

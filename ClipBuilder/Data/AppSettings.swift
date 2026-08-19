@@ -118,7 +118,7 @@ nonisolated struct AIProviderSettings: Codable, Sendable {
 /// Static provider/task metadata ported from ai_cli.py.
 nonisolated enum AICatalog {
     // "wizard" stays the planning task's key for config back-compat.
-    static let tasks = ["analysis", "wizard", "research", "parse", "captions", "distill"]
+    static let tasks = ["analysis", "wizard", "research", "parse", "captions", "distill", "overlay"]
 
     static let taskLabels: [String: String] = [
         "analysis": "Video analysis",
@@ -127,6 +127,7 @@ nonisolated enum AICatalog {
         "parse": "Request parsing",
         "captions": "Caption generation",
         "distill": "Lesson distillation",
+        "overlay": "Overlay extraction",
     ]
 
     static let taskDefaults: [String: String] = [
@@ -136,6 +137,7 @@ nonisolated enum AICatalog {
         "parse": "claude",
         "captions": "claude",
         "distill": "claude",
+        "overlay": "claude",
     ]
 
     /// The smart dispatcher's curated preference chains: best first, each a
@@ -164,6 +166,11 @@ nonisolated enum AICatalog {
         "distill": [("claude", "claude-sonnet-4-6"),
                     ("gemini", "gemini-2.5-pro"),
                     ("codex", "gpt-5")],
+        // Reading overlay layout from one image: multimodal, precision over
+        // speed — a stronger model gets positions and colors right.
+        "overlay": [("claude", "claude-sonnet-4-6"),
+                    ("gemini", "gemini-2.5-pro"),
+                    ("gemini", "gemini-2.5-flash")],
     ]
 
     struct Provider: Sendable {

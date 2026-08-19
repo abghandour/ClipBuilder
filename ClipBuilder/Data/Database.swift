@@ -72,6 +72,19 @@ actor Database {
     );
     CREATE INDEX IF NOT EXISTS idx_video_notes_video ON video_notes(video_id);
 
+    CREATE TABLE IF NOT EXISTS person_markers (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        at_time REAL NOT NULL,
+        x REAL NOT NULL,
+        y REAL NOT NULL,
+        width REAL NOT NULL,
+        height REAL NOT NULL,
+        person_id INTEGER REFERENCES people(id) ON DELETE SET NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_person_markers_video ON person_markers(video_id);
+
     CREATE TABLE IF NOT EXISTS video_subjects (
         id INTEGER PRIMARY KEY,
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -81,6 +94,14 @@ actor Database {
         created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_video_subjects_video ON video_subjects(video_id);
+
+    CREATE TABLE IF NOT EXISTS people (
+        id INTEGER PRIMARY KEY,
+        key TEXT UNIQUE NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        descriptor TEXT NOT NULL DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now'))
+    );
 
     CREATE TABLE IF NOT EXISTS analyzed_tags (
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -407,51 +428,76 @@ actor Database {
         try connection.execute("DELETE FROM video_notes WHERE id = ?", [.integer(id)])
     }
 
-    // MARK: - VIP subjects (named boxes drawn on video frames)
+    // MARK: - Person markers (user-drawn identity boxes)
 
-    /// Subjects joined with their video, optionally scoped to one video.
-    func fetchVideoSubjects(videoID: Int64? = nil) throws -> [VideoSubject] {
-        var sql = """
-            SELECT s.*, v.filename AS video_filename
-            FROM video_subjects s JOIN videos v ON v.id = s.video_id
-            """
-        var params: [SQLValue] = []
-        if let videoID {
-            sql += " WHERE s.video_id = ?"
-            params.append(.integer(videoID))
-        }
-        sql += " ORDER BY v.filename COLLATE NOCASE, s.id"
-        return try connection.query(sql, params).map { row in
-            VideoSubject(id: row["id"]?.intValue ?? 0,
-                         videoID: row["video_id"]?.intValue ?? 0,
-                         name: row["name"]?.stringValue ?? "",
-                         colorIndex: Int(row["color_index"]?.intValue ?? 0),
-                         rectsJSON: row["rects_json"]?.stringValue ?? "[]",
-                         createdAt: row["created_at"]?.stringValue,
-                         videoFilename: row["video_filename"]?.stringValue ?? "")
+    func personMarkers(videoID: Int64) throws -> [PersonMarker] {
+        try connection.query("SELECT * FROM person_markers WHERE video_id = ? ORDER BY at_time, id",
+                             [.integer(videoID)]).map { row in
+            PersonMarker(id: row["id"]?.intValue ?? 0,
+                         videoID: videoID,
+                         atTime: row["at_time"]?.doubleValue ?? 0,
+                         x: row["x"]?.doubleValue ?? 0,
+                         y: row["y"]?.doubleValue ?? 0,
+                         width: row["width"]?.doubleValue ?? 0,
+                         height: row["height"]?.doubleValue ?? 0,
+                         personID: row["person_id"]?.intValue)
         }
     }
 
-    @discardableResult
-    func addVideoSubject(videoID: Int64, name: String, colorIndex: Int, rectsJSON: String) throws -> Int64 {
+    func addPersonMarker(videoID: Int64, at atTime: Double,
+                         x: Double, y: Double, width: Double, height: Double) throws {
         try connection.execute("""
-            INSERT INTO video_subjects (video_id, name, color_index, rects_json) VALUES (?, ?, ?, ?)
-            """, [.integer(videoID), .text(name), .integer(Int64(colorIndex)), .text(rectsJSON)])
-        return connection.lastInsertRowID
+            INSERT INTO person_markers (video_id, at_time, x, y, width, height)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, [.integer(videoID), .real(atTime), .real(x), .real(y), .real(width), .real(height)])
     }
 
-    func renameVideoSubject(id: Int64, name: String) throws {
-        try connection.execute("UPDATE video_subjects SET name = ? WHERE id = ?",
-                               [.text(name), .integer(id)])
+    func updatePersonMarker(_ marker: PersonMarker) throws {
+        try connection.execute("""
+            UPDATE person_markers SET at_time = ?, x = ?, y = ?, width = ?, height = ?, person_id = ?
+            WHERE id = ?
+            """, [.real(marker.atTime), .real(marker.x), .real(marker.y),
+                  .real(marker.width), .real(marker.height),
+                  marker.personID.map(SQLValue.integer) ?? .null, .integer(marker.id)])
     }
 
-    func updateVideoSubjectRects(id: Int64, rectsJSON: String) throws {
-        try connection.execute("UPDATE video_subjects SET rects_json = ? WHERE id = ?",
-                               [.text(rectsJSON), .integer(id)])
+    func deletePersonMarker(id: Int64) throws {
+        try connection.execute("DELETE FROM person_markers WHERE id = ?", [.integer(id)])
     }
 
-    func deleteVideoSubject(id: Int64) throws {
-        try connection.execute("DELETE FROM video_subjects WHERE id = ?", [.integer(id)])
+    /// Scene ids + ranges of one analyze batch — the portrait-fit pass input.
+    func sceneRanges(runID: Int64) throws -> [(id: Int64, start: Double, end: Double)] {
+        try connection.query("SELECT id, start_time, end_time FROM scenes WHERE run_id = ?",
+                             [.integer(runID)]).map { row in
+            (row["id"]?.intValue ?? 0,
+             row["start_time"]?.doubleValue ?? 0,
+             row["end_time"]?.doubleValue ?? 0)
+        }
+    }
+
+    func addSceneTag(sceneID: Int64, tag: String) throws {
+        try connection.execute("INSERT OR IGNORE INTO scene_tags (scene_id, tag) VALUES (?, ?)",
+                               [.integer(sceneID), .text(tag)])
+    }
+
+    /// The person's first user-drawn marker with its video path — the best
+    /// possible avatar source, since the box is ground truth for who's in it.
+    func markerReference(personID: Int64) throws -> (videoPath: String, marker: PersonMarker)? {
+        try connection.query("""
+            SELECT pm.*, v.path AS video_path FROM person_markers pm
+            JOIN videos v ON v.id = pm.video_id
+            WHERE pm.person_id = ? ORDER BY pm.id LIMIT 1
+            """, [.integer(personID)]).first.map { row in
+            (row["video_path"]?.stringValue ?? "",
+             PersonMarker(id: row["id"]?.intValue ?? 0,
+                          videoID: row["video_id"]?.intValue ?? 0,
+                          atTime: row["at_time"]?.doubleValue ?? 0,
+                          x: row["x"]?.doubleValue ?? 0,
+                          y: row["y"]?.doubleValue ?? 0,
+                          width: row["width"]?.doubleValue ?? 0,
+                          height: row["height"]?.doubleValue ?? 0,
+                          personID: personID))
+        }
     }
 
     /// Rename support: the file was already moved on disk; scenes join the
@@ -708,6 +754,91 @@ actor Database {
                     """, [.text(model), .text(model), .integer(videoID)])
             }
             return runID
+        }
+    }
+
+    // MARK: - People
+
+    func fetchPeople() throws -> [PersonRecord] {
+        try connection.query("SELECT * FROM people ORDER BY name COLLATE NOCASE, id").map { row in
+            PersonRecord(id: row["id"]?.intValue ?? 0,
+                         key: row["key"]?.stringValue ?? "",
+                         name: row["name"]?.stringValue ?? "",
+                         descriptor: row["descriptor"]?.stringValue ?? "")
+        }
+    }
+
+    /// Register a detected person, refreshing the visual descriptor with the
+    /// latest sighting (names are user-owned and never touched here).
+    func upsertPerson(key: String, descriptor: String) throws {
+        try connection.execute("""
+            INSERT INTO people (key, descriptor) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                descriptor = CASE WHEN excluded.descriptor != '' THEN excluded.descriptor
+                                  ELSE people.descriptor END
+            """, [.text(key), .text(descriptor)])
+    }
+
+    func renamePerson(id: Int64, name: String) throws {
+        try connection.execute("UPDATE people SET name = ? WHERE id = ?", [.text(name), .integer(id)])
+    }
+
+    /// Remove a person and every scene tag pointing at them.
+    func deletePerson(_ person: PersonRecord) throws {
+        try connection.transaction {
+            try connection.execute("DELETE FROM scene_tags WHERE tag = ?", [.text(person.tag)])
+            try connection.execute("UPDATE person_markers SET person_id = NULL WHERE person_id = ?",
+                                   [.integer(person.id)])
+            try connection.execute("DELETE FROM people WHERE id = ?", [.integer(person.id)])
+        }
+    }
+
+    /// The AI occasionally splits one real person into two keys — merging
+    /// retags every scene of `source` onto `target` and drops `source`.
+    func mergePeople(source: PersonRecord, into target: PersonRecord) throws {
+        try connection.transaction {
+            try connection.execute("UPDATE OR IGNORE scene_tags SET tag = ? WHERE tag = ?",
+                                   [.text(target.tag), .text(source.tag)])
+            // Rows whose retag collided with an existing target tag remain.
+            try connection.execute("DELETE FROM scene_tags WHERE tag = ?", [.text(source.tag)])
+            try connection.execute("UPDATE person_markers SET person_id = ? WHERE person_id = ?",
+                                   [.integer(target.id), .integer(source.id)])
+            try connection.execute("DELETE FROM people WHERE id = ?", [.integer(source.id)])
+        }
+    }
+
+    /// Create a person by hand (split target). Returns the new record.
+    func createPerson(name: String) throws -> PersonRecord {
+        var key = name.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "-" }
+            .reduce(into: "") { result, character in
+                if character != "-" || result.last != "-" { result.append(character) }
+            }
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if key.isEmpty { key = "person" }
+        // Uniquify against existing keys.
+        let existing = Set(try fetchPeople().map(\.key))
+        var candidate = key
+        var counter = 2
+        while existing.contains(candidate) {
+            candidate = "\(key)-\(counter)"
+            counter += 1
+        }
+        try connection.execute("INSERT INTO people (key, name) VALUES (?, ?)",
+                               [.text(candidate), .text(name)])
+        let id = connection.lastInsertRowID
+        return PersonRecord(id: id, key: candidate, name: name, descriptor: "")
+    }
+
+    /// Split support: move one scene's person tag from `from` to `to`
+    /// (nil `to` = the scene simply loses the person).
+    func reassignScenePerson(sceneID: Int64, from: PersonRecord, to: PersonRecord?) throws {
+        try connection.transaction {
+            try connection.execute("DELETE FROM scene_tags WHERE scene_id = ? AND tag = ?",
+                                   [.integer(sceneID), .text(from.tag)])
+            if let to {
+                try connection.execute("INSERT OR IGNORE INTO scene_tags (scene_id, tag) VALUES (?, ?)",
+                                       [.integer(sceneID), .text(to.tag)])
+            }
         }
     }
 

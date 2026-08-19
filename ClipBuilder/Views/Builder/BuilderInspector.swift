@@ -114,6 +114,8 @@ struct ClipInspector: View {
 
             if clip.wide {
                 Divider()
+                Toggle("Smart reframe (Center Stage)", isOn: binding(\.centerStage))
+                    .help("A tracking camera pans and zooms this wide clip to keep the people centered, replacing the static crop")
                 Picker("Position", selection: Binding(
                     get: { clip.position ?? "layer" },
                     set: { value in

@@ -1,8 +1,6 @@
 import Foundation
 
 nonisolated struct WizardOptions: Sendable {
-    var numberOfVideos = 1
-    var variationsPerVideo = 1
     var muteSource = false
     var addCaptions = false
     var autoCropWide = true
@@ -15,6 +13,10 @@ nonisolated struct WizardOptions: Sendable {
     var aiInstructions = ""
     /// Restrict scene selection to these analyze batches (empty = all).
     var selectedRunIDs: Set<Int64> = []
+    /// Person keys the footage must feature: when set, only scenes tagged
+    /// with at least one of these people are eligible (empty = everyone).
+    /// Combines with the batch filter above.
+    var sourcePeople: [String] = []
     var modelOverride: String?
     /// Structural analysis of a reference reel (ReelTemplate JSON) the plan
     /// should replicate, plus a human-readable label for logs.
@@ -23,6 +25,16 @@ nonisolated struct WizardOptions: Sendable {
     /// Hard duration the user asked for (e.g. "a 15s video") — overrides the
     /// research/template numbers instead of merely suggesting them.
     var targetDurationSeconds: Int?
+    /// Reframe wide scenes with the tracking camera (Center Stage) instead
+    /// of the static auto-crop.
+    var centerStageWide = false
+    /// Camera preset for the tracking camera: "smooth", "balanced", "fast"
+    /// (fast action — reacts hard and zooms out so quick movers stay framed).
+    var centerStageCamera = "balanced"
+    /// Person keys to focus on: when set, only wide clips whose scene
+    /// features one of them get the tracking camera (others auto-crop);
+    /// empty = every wide clip, tracking all people on screen.
+    var centerStagePeople: [String] = []
     /// Overlay choices the user named explicitly. The template is forced onto
     /// every planned overlay; the text is guaranteed to appear on one clip.
     var pinnedOverlayTemplate: String?
@@ -34,7 +46,6 @@ nonisolated struct WizardOptions: Sendable {
 /// nil/empty fields mean the user didn't specify.
 nonisolated struct ParsedWizardRequest: Sendable, Equatable {
     var targetDurationSeconds: Int?
-    var numberOfVideos: Int?
     /// Restrict footage to scenes carrying at least one of these tags
     /// (validated against the profile's tag vocabulary).
     var contentTags: [String] = []
@@ -179,6 +190,7 @@ actor WizardEngine {
 
     private let ai: AIService
     private let render: RenderEngine
+    private let centerStage = CenterStageService()
 
     init(ai: AIService, render: RenderEngine) {
         self.ai = ai
@@ -294,7 +306,6 @@ actor WizardEngine {
         Return a JSON object with EXACTLY this structure:
         {
           "target_duration_seconds": <int, or null if the user gave no duration>,
-          "number_of_videos": <int, or null if the user didn't say how many videos>,
           "content_tags": ["<tag from the vocabulary>", ...],
           "overlay_template": "<exact template name from the list, or null>",
           "overlay_text": "<exact text the user wants displayed on the video, or null>",
@@ -334,9 +345,6 @@ actor WizardEngine {
         var parsed = ParsedWizardRequest()
         if let duration = (object["target_duration_seconds"] as? NSNumber)?.intValue, duration > 0 {
             parsed.targetDurationSeconds = min(180, max(3, duration))
-        }
-        if let count = (object["number_of_videos"] as? NSNumber)?.intValue, count > 0 {
-            parsed.numberOfVideos = min(5, count)
         }
         let knownTags = Set(tagVocabulary.map { $0.lowercased() })
         parsed.contentTags = (object["content_tags"] as? [String] ?? [])
@@ -461,9 +469,8 @@ actor WizardEngine {
                             scenes: [SceneRecord],
                             musicNames: [String],
                             signals: TrainingSignals,
-                            subjects: [VideoSubject],
-                            options: WizardOptions,
-                            variation: (number: Int, total: Int, previousRationales: [String])?) -> String {
+                            people: [PersonRecord],
+                            options: WizardOptions) -> String {
         let domain = profile.effectiveDomain
         let brand = profile.brandName
 
@@ -549,21 +556,6 @@ actor WizardEngine {
             """
         }
 
-        var variationInfo = ""
-        if let variation, variation.total > 1 {
-            variationInfo = """
-            ## VARIATION MODE
-            This is variation \(variation.number) of \(variation.total). You MUST create a DIFFERENT creative approach than previous variations.
-            """
-            if !variation.previousRationales.isEmpty {
-                let previous = variation.previousRationales.enumerated()
-                    .map { "Variation \($0.offset + 1): \($0.element)" }
-                    .joined(separator: ", ")
-                variationInfo += "\nPrevious variation strategies (DO NOT repeat these): \(previous)"
-            }
-            variationInfo += "\nUse a different hook, scene selection, pacing, and/or music than previous variations."
-        }
-
         var pinnedOverlayDirective = ""
         if options.enableTextOverlays {
             if let name = options.pinnedOverlayTemplate {
@@ -602,17 +594,19 @@ actor WizardEngine {
             textOverlayInstruction = "- Text overlays are DISABLED. Set \"text_overlay\" to null for every clip."
         }
 
-        // VIP roster: lets instructions reference people by name ("only
-        // include scenes with Person A") and resolves them to scene tags.
+        // People roster: lets instructions reference detected people by name
+        // ("only include scenes with George") and resolves them to scene tags.
         var subjectsBlock = ""
-        if !subjects.isEmpty {
+        if !people.isEmpty {
             subjectsBlock = """
 
 
-            ## VIP SUBJECTS (people the user marked and named in their footage)
-            \(subjects.map { "- \"\($0.name)\" (in \($0.videoFilename)) — scenes featuring them are tagged \"\($0.tag)\"" }
-                .joined(separator: "\n"))
-            When the user's instructions mention a person by name, resolve the name with these tags: "only include scenes with <name>" is a HARD FILTER — pick ONLY scenes tagged "vip:<name>". "Keep <name> in focus / centered" means prefer scenes tagged with them and frame every choice (crops, split-screens, overlay placement) around that person. Never substitute footage of a different person for a named subject.
+            ## PEOPLE (detected across the footage; the user may reference them by name)
+            \(people.map { person in
+                let named = person.name.isEmpty ? "unnamed" : "\"\(person.name)\""
+                return "- \(named): \(person.descriptor) — scenes featuring them are tagged \"\(person.tag)\""
+            }.joined(separator: "\n"))
+            When the user's instructions mention a person by name, resolve the name with these tags: "only include scenes with <name>" is a HARD FILTER — pick ONLY scenes carrying that person's tag. "Keep <name> in focus / centered" means prefer scenes tagged with them and frame every choice (crops, split-screens, overlay placement) around that person. Never substitute footage of a different person for a named subject.
             """
         }
 
@@ -642,8 +636,6 @@ actor WizardEngine {
 
         ## Training Signals (CRITICAL — what this user has taught you)
         \(trainingBlock(signals))
-
-        \(variationInfo)
 
         ## Instructions
         Create a video plan optimized for maximum Instagram Reel engagement.
@@ -697,6 +689,7 @@ actor WizardEngine {
         \(options.allowWideSplit
             ? "- For WIDE scenes: set \"wide_split\": true to display as split-screen (top + bottom halves, filling the full 9:16 frame with no black bars)"
             : "- Set \"wide_split\" to false for every clip. WIDE scenes are automatically zoomed to a full-height 9:16 window positioned on the action, so they fill the frame — never plan around letterboxing.")
+        - The finished reel is VERTICAL 9:16. WIDE scenes may carry a portrait-fit tag: "portrait-fit:good" means the people stand close enough together that the vertical crop holds them all; "portrait-fit:poor" means they are spread out and someone WILL be cut out of frame. STRONGLY prefer portrait-fit:good WIDE scenes; pick a portrait-fit:poor one only when nothing else covers the moment.
         - "text_overlay": only include if text overlays are enabled (see below). Use short punchy text (max 6 words) for impact moments, fighter names, or engagement hooks. null if no text needed for this clip. Only use style/animation names from the lists below.
         \(textOverlayInstruction)
         - Return ONLY the JSON object
@@ -879,9 +872,9 @@ actor WizardEngine {
         var sceneMap: [Int64: SceneRecord]
         var music: [(name: String, url: URL)]
         var signals: TrainingSignals
-        /// VIP subjects of the videos the scenes come from — so instructions
-        /// can reference people by name.
-        var subjects: [VideoSubject] = []
+        /// The People registry — so instructions can reference detected
+        /// people by name.
+        var people: [PersonRecord] = []
     }
 
     private func loadTrainingSignals(database: Database) async -> TrainingSignals {
@@ -900,6 +893,7 @@ actor WizardEngine {
                                          model: options.modelOverride, emit: emit)
 
         emit("Loading scenes and music...")
+        let people = (try? await database.fetchPeople()) ?? []
         var scenes = try await database.fetchScenes(includeExcluded: false).filter { !$0.ignored }
         if !options.selectedRunIDs.isEmpty {
             let before = scenes.count
@@ -908,8 +902,17 @@ actor WizardEngine {
             }
             emit("Filtered to \(scenes.count) scenes from \(options.selectedRunIDs.count) selected analyze batch(es) (was \(before))")
         }
+        if !options.sourcePeople.isEmpty {
+            let before = scenes.count
+            let requiredTags = Set(options.sourcePeople.map { "person:\($0)" })
+            scenes = scenes.filter { scene in scene.tags.contains(where: requiredTags.contains) }
+            let names = people.filter { options.sourcePeople.contains($0.key) }.map(\.displayName)
+            emit("Filtered to \(scenes.count) scenes featuring \(names.isEmpty ? options.sourcePeople.joined(separator: ", ") : names.joined(separator: ", ")) (was \(before))")
+        }
         guard !scenes.isEmpty else {
-            throw AIError.notConfigured("No analyzed scenes available. Analyze some videos first.")
+            throw AIError.notConfigured(options.sourcePeople.isEmpty
+                ? "No analyzed scenes available. Analyze some videos first."
+                : "No scenes feature the selected people within the current source selection.")
         }
         if options.templateJSON != nil {
             emit("Using reference template: \(options.templateLabel ?? "Instagram reel")")
@@ -919,35 +922,34 @@ actor WizardEngine {
         if options.muteSource { emit("Source audio will be muted (music only)") }
         if options.enableTextOverlays { emit("Text overlays enabled") }
         let signals = await loadTrainingSignals(database: database)
-        let videoIDs = Set(scenes.map(\.videoID))
-        let subjects = ((try? await database.fetchVideoSubjects()) ?? [])
-            .filter { videoIDs.contains($0.videoID) }
-        if !subjects.isEmpty {
-            emit("VIP subjects available: \(subjects.map(\.name).joined(separator: ", "))")
+        let named = people.filter { !$0.name.isEmpty }
+        if !named.isEmpty {
+            emit("People available by name: \(named.map(\.name).joined(separator: ", "))")
         }
         emit("Found \(scenes.count) scenes, \(music.count) music tracks, "
              + "\(signals.lessons.count) lesson(s), \(signals.reviews.count) review(s), "
              + "\(signals.feedback.count) feedback entries")
-        if options.variationsPerVideo > 1 {
-            emit("Generating \(options.variationsPerVideo) A/B variations per video")
-        }
         return PlanningInputs(research: research, scenes: scenes,
                               sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
-                              music: music, signals: signals, subjects: subjects)
+                              music: music, signals: signals, people: people)
     }
 
-    /// One prompt → AI call → validated plan; nil when the response is unusable.
+    /// One prompt → AI call → validated plan; nil plan when the response is
+    /// unusable. Prompt and raw response ride along for the run report.
     private func makePlan(inputs: PlanningInputs, options: WizardOptions, profile: BrandProfile,
-                          variation: (number: Int, total: Int, previousRationales: [String])?,
-                          emit: @escaping @Sendable (String) -> Void) async throws -> WizardPlan? {
+                          emit: @escaping @Sendable (String) -> Void) async throws
+        -> (plan: WizardPlan?, prompt: String, response: String) {
         let prompt = planPrompt(profile: profile, research: inputs.research, scenes: inputs.scenes,
                                 musicNames: inputs.music.map(\.name), signals: inputs.signals,
-                                subjects: inputs.subjects, options: options, variation: variation)
+                                people: inputs.people, options: options)
         let response = try await ai.call(prompt: prompt, task: "wizard",
                                          model: options.modelOverride, timeout: 300, log: emit)
-        guard let rawPlan = AIResponseParser.jsonObject(from: response) else { return nil }
-        return validatePlan(rawPlan, scenes: inputs.sceneMap, musicNames: Set(inputs.music.map(\.name)))
+        guard let rawPlan = AIResponseParser.jsonObject(from: response) else {
+            return (nil, prompt, response)
+        }
+        let plan = validatePlan(rawPlan, scenes: inputs.sceneMap, musicNames: Set(inputs.music.map(\.name)))
             .map { enforcePinnedOverlays($0, options: options) }
+        return (plan, prompt, response)
     }
 
     /// The prompt asks for the user's pinned overlay choices; this guarantees
@@ -985,7 +987,7 @@ actor WizardEngine {
                                                   database: database, emit: emit)
         emit("\nPhase 2: Planning the timeline...")
         guard let plan = try await makePlan(inputs: inputs, options: options, profile: profile,
-                                            variation: nil, emit: emit) else {
+                                            emit: emit).plan else {
             throw AIError.emptyResponse("wizard planning (unparseable JSON)")
         }
         emit("Plan: \(plan.clips.count) clips, ~\(Int(plan.targetDuration))s, music: \(plan.musicName ?? "none")")
@@ -996,64 +998,185 @@ actor WizardEngine {
     private func runThrowing(options: WizardOptions,
                              profile: BrandProfile,
                              database: Database,
-                             emit: @escaping @Sendable (String) -> Void) async throws {
+                             emit rawEmit: @escaping @Sendable (String) -> Void) async throws {
+        // Every log line is also recorded for the per-video run report.
+        let recorder = LogRecorder()
+        let emit: @Sendable (String) -> Void = { line in
+            recorder.append(line)
+            rawEmit(line)
+        }
         let inputs = try await loadPlanningInputs(options: options, profile: profile,
                                                   database: database, emit: emit)
         let sceneMap = inputs.sceneMap
-        let music = inputs.music
-        var generatedCount = 0
 
-        for videoNumber in 1...options.numberOfVideos {
-            var previousRationales: [String] = []
-            // Variations of one video share a batch id, so the Library can
-            // offer them as an A/B pick after the run.
-            let batchID = options.variationsPerVideo > 1 ? UUID().uuidString : nil
-            for variationNumber in 1...options.variationsPerVideo {
-                try Task.checkCancellation()
-                let variationLabel = options.variationsPerVideo > 1
-                    ? "\(videoNumber).\(variationNumber)" : "\(videoNumber)"
-                emit("\nPhase 2: Planning Video \(variationLabel)/\(options.numberOfVideos)...")
-
-                guard let plan = try await makePlan(
-                    inputs: inputs, options: options, profile: profile,
-                    variation: (variationNumber, options.variationsPerVideo, previousRationales),
-                    emit: emit) else {
-                    emit("Plan for video \(variationLabel) could not be parsed — skipping")
-                    continue
-                }
-                emit("Plan: \(plan.clips.count) clips, ~\(Int(plan.targetDuration))s, music: \(plan.musicName ?? "none")")
-                emit("Strategy: \(plan.rationale)")
-                previousRationales.append(plan.rationale)
-
-                emit("\nPhase 3: Assembling Video \(variationLabel)/\(options.numberOfVideos)...")
-                let result = try await assemble(plan: plan, music: music, options: options,
-                                                profile: profile, database: database,
-                                                sceneMap: sceneMap, label: variationLabel,
-                                                batchID: batchID, emit: emit)
-                generatedCount += 1
-
-                emit("Generating Instagram caption...")
-                let tagsUsed = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
-                do {
-                    let caption = try await ai.call(
-                        prompt: captionPrompt(profile: profile, plan: plan,
-                                              duration: result.duration, tags: tagsUsed),
-                        task: "captions", timeout: 60, log: emit)
-                    let attribution = await ai.resolveProviderModel(task: "captions")
-                    try await database.updateGeneratedCaption(id: result.recordID,
-                                                              caption: caption.trimmingCharacters(in: .whitespacesAndNewlines),
-                                                              provider: attribution.provider,
-                                                              model: attribution.model)
-                    emit("Caption generated!")
-                } catch {
-                    emit("Caption generation failed: \(error)")
-                }
-
-                emit("VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))")
-                emit("Video \(variationLabel) complete! \(String(format: "%.1f", result.duration))s -> \(result.url.lastPathComponent)")
-            }
+        try Task.checkCancellation()
+        emit("\nPhase 2: Planning the timeline...")
+        let outcome = try await makePlan(inputs: inputs, options: options, profile: profile,
+                                         emit: emit)
+        guard let plan = outcome.plan else {
+            throw AIError.emptyResponse("wizard planning (unparseable JSON)")
         }
-        emit("\nAll done! Generated \(generatedCount) video(s)")
+        emit("Plan: \(plan.clips.count) clips, ~\(Int(plan.targetDuration))s, music: \(plan.musicName ?? "none")")
+        emit("Strategy: \(plan.rationale)")
+
+        emit("\nPhase 3: Assembling the video...")
+        let result = try await assemble(plan: plan, music: inputs.music, options: options,
+                                        profile: profile, database: database,
+                                        sceneMap: sceneMap, emit: emit)
+
+        emit("Generating Instagram caption...")
+        let tagsUsed = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
+        var captionText: String?
+        do {
+            let caption = try await ai.call(
+                prompt: captionPrompt(profile: profile, plan: plan,
+                                      duration: result.duration, tags: tagsUsed),
+                task: "captions", timeout: 60, log: emit)
+            captionText = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+            let attribution = await ai.resolveProviderModel(task: "captions")
+            try await database.updateGeneratedCaption(id: result.recordID,
+                                                      caption: captionText ?? "",
+                                                      provider: attribution.provider,
+                                                      model: attribution.model)
+            emit("Caption generated!")
+        } catch {
+            emit("Caption generation failed: \(error)")
+        }
+
+        // Everything a model needs to diagnose this reel, next to it.
+        let planAttribution = await ai.resolveProviderModel(task: "wizard",
+                                                            model: options.modelOverride)
+        writeRunReport(for: result, profile: profile,
+                       options: options, inputs: inputs, plan: plan,
+                       planPrompt: outcome.prompt, planResponse: outcome.response,
+                       planAttribution: planAttribution, caption: captionText,
+                       logLines: recorder.lines(), sceneMap: sceneMap,
+                       emit: emit)
+
+        emit("VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))")
+        emit("Video complete! \(String(format: "%.1f", result.duration))s -> \(result.url.lastPathComponent)")
+        emit("\nAll done! Generated 1 video")
+    }
+
+    /// Thread-safe accumulating log — the run's full emit stream, replayed
+    /// into the run report.
+    private final class LogRecorder: @unchecked Sendable {
+        private var storage: [String] = []
+        private let lock = NSLock()
+
+        func append(_ line: String) {
+            lock.lock()
+            storage.append(line)
+            lock.unlock()
+        }
+
+        func lines() -> [String] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+    }
+
+    // MARK: - Run report
+
+    /// Markdown debug report saved next to the rendered video: profile,
+    /// every option, the verbatim planning prompt and model response, the
+    /// validated plan with per-clip source details, caption, and the log —
+    /// made to be handed to an AI along with "here's what's wrong".
+    private func writeRunReport(for result: AssemblyResult,
+                                profile: BrandProfile, options: WizardOptions,
+                                inputs: PlanningInputs, plan: WizardPlan,
+                                planPrompt: String, planResponse: String,
+                                planAttribution: (provider: String, model: String?),
+                                caption: String?, logLines: [String],
+                                sceneMap: [Int64: SceneRecord],
+                                emit: @Sendable (String) -> Void) {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        let formatter = ISO8601DateFormatter()
+
+        func yesNo(_ value: Bool) -> String { value ? "yes" : "no" }
+
+        var clipsTable = "| # | Scene | Source video | Range | Duration | Tags | Overlay |\n|---|---|---|---|---|---|---|\n"
+        for (index, clip) in plan.clips.enumerated() {
+            let scene = sceneMap[clip.sceneID]
+            let overlay = clip.textOverlay.map { "\"\($0)\" (\(clip.overlayStyle ?? "default"), \(clip.overlayAnimation ?? "-"))" } ?? "—"
+            clipsTable += "| \(index + 1) | #\(clip.sceneID) | \(scene?.videoFilename ?? "?") | "
+                + String(format: "%.1f–%.1fs", clip.start, clip.end)
+                + String(format: " | %.1fs | ", clip.end - clip.start)
+                + (scene?.tags.prefix(6).joined(separator: ", ") ?? "?")
+                + " | \(overlay) |\n"
+        }
+
+        let peopleLines = inputs.people.isEmpty ? "None detected yet." :
+            inputs.people.map { "- \($0.displayName) (`\($0.tag)`): \($0.descriptor)" }.joined(separator: "\n")
+
+        let report = """
+        # Clip Builder — AI Wizard run report
+
+        - **Video:** `\(result.url.lastPathComponent)` (\(String(format: "%.1f", result.duration))s final)
+        - **Generated:** \(formatter.string(from: Date())) · Clip Builder \(version) (build \(build))
+        - **Profile:** \(profile.profileName) · brand "\(profile.brandName)" · domain "\(profile.effectiveDomain)"
+        - **Planning model:** \(planAttribution.provider) / \(planAttribution.model ?? "default")
+
+        ## Issue description
+
+        _Describe what is wrong with this reel here, then hand this whole file to an AI assistant working on the app._
+
+        ## Options
+
+        - Music: \(yesNo(options.useMusic)), mute source: \(yesNo(options.muteSource))
+        - Captions: \(yesNo(options.addCaptions)), text overlays: \(yesNo(options.enableTextOverlays))
+        - Auto-crop wide: \(yesNo(options.autoCropWide)), Center Stage wide: \(yesNo(options.centerStageWide))\(options.centerStageWide ? " (camera: \(options.centerStageCamera))" : "")\(options.centerStagePeople.isEmpty ? "" : " (people: \(options.centerStagePeople.joined(separator: ", ")))")
+        - Target duration: \(options.targetDurationSeconds.map { "\($0)s" } ?? "model's choice")
+        - Pinned overlay: \(options.pinnedOverlayTemplate ?? "none")\(options.pinnedOverlayText.map { ", text \"\($0)\"" } ?? "")
+        - Analyze-batch filter: \(options.selectedRunIDs.isEmpty ? "all batches" : options.selectedRunIDs.sorted().map(String.init).joined(separator: ", "))
+        - People filter: \(options.sourcePeople.isEmpty ? "everyone" : options.sourcePeople.joined(separator: ", "))
+        - Reference template: \(options.templateLabel ?? "none")
+        - AI instructions: \(options.aiInstructions.isEmpty ? "none" : options.aiInstructions)
+
+        ## People registry at run time
+
+        \(peopleLines)
+
+        ## Validated plan
+
+        - Target duration: \(String(format: "%.1f", plan.targetDuration))s planned, \(String(format: "%.1f", result.duration))s rendered
+        - Music: \(plan.musicName ?? "none") (volume \(plan.musicVolume))
+        - Transitions: \(plan.transitions.joined(separator: ", "))
+        - Rationale: \(plan.rationale)
+
+        \(clipsTable)
+        ## Caption
+
+        \(caption ?? "_caption generation failed_")
+
+        ## Planning prompt (verbatim)
+
+        ~~~~
+        \(planPrompt)
+        ~~~~
+
+        ## Model response (verbatim)
+
+        ~~~~
+        \(planResponse)
+        ~~~~
+
+        ## Run log for this video
+
+        ~~~~
+        \(logLines.joined(separator: "\n"))
+        ~~~~
+        """
+
+        let reportURL = result.url.deletingPathExtension().appendingPathExtension("md")
+        do {
+            try report.write(to: reportURL, atomically: true, encoding: .utf8)
+            emit("Run report saved: \(reportURL.lastPathComponent)")
+        } catch {
+            emit("Could not save the run report: \(error)")
+        }
     }
 
     // MARK: - Lessons distillation
@@ -1257,8 +1380,6 @@ actor WizardEngine {
                           profile: BrandProfile,
                           database: Database,
                           sceneMap: [Int64: SceneRecord],
-                          label: String,
-                          batchID: String?,
                           emit: @escaping @Sendable (String) -> Void) async throws -> AssemblyResult {
         let scratch = try await render.makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -1280,7 +1401,7 @@ actor WizardEngine {
                                               scene: job.scene, options: options,
                                               captionStyle: captionStyle,
                                               database: database, scratch: scratch,
-                                              label: label, emit: emit)
+                                              emit: emit)
         }
 
         for url in extracted {
@@ -1296,7 +1417,7 @@ actor WizardEngine {
             throw AIError.notConfigured("No clips could be extracted for this plan")
         }
 
-        emit("Video \(label): assembling \(clipURLs.count) segments...")
+        emit("Assembling \(clipURLs.count) segments...")
         let assembled = scratch.appendingPathComponent("assembled.mp4")
         try await render.concatenate(clips: clipURLs, transitions: clipTransitions.map { Optional($0) },
                                      output: assembled)
@@ -1304,7 +1425,7 @@ actor WizardEngine {
         let outputURL = try outputFile(profile: profile, plan: plan)
         if let musicName = plan.musicName,
            let track = music.first(where: { $0.name == musicName }) {
-            emit("Video \(label): adding music (\(musicName))...")
+            emit("Adding music (\(musicName))...")
             try await render.overlayMusic(video: assembled, music: track.url, output: outputURL)
         } else {
             try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)
@@ -1332,8 +1453,7 @@ actor WizardEngine {
                                                                timelineJSON: timelineJSON,
                                                                wizardProvider: attribution.provider,
                                                                wizardModel: attribution.model,
-                                                               rationale: plan.rationale,
-                                                               batchID: batchID)
+                                                               rationale: plan.rationale)
         return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID)
     }
 
@@ -1344,7 +1464,6 @@ actor WizardEngine {
                                     scene: SceneRecord, options: WizardOptions,
                                     captionStyle: CaptionStyle,
                                     database: Database, scratch: URL,
-                                    label: String,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> URL {
         let duration = clip.end - clip.start
         // Screen recordings and reposts bake black bars into the pixels, so
@@ -1359,7 +1478,7 @@ actor WizardEngine {
         var mode = useSplit ? "split-screen"
             : (options.autoCropWide && contentIsWide ? "auto-crop" : "")
         if contentBox != nil { mode = mode.isEmpty ? "bars removed" : mode + ", bars removed" }
-        emit("Video \(label): clip \(index + 1)/\(total) " +
+        emit("Extracting clip \(index + 1)/\(total) " +
              String(format: "[%.1fs +%.1fs]", clip.start, duration) +
              " from \(scene.videoFilename)\(mode.isEmpty ? "" : " (\(mode))")")
 
@@ -1442,6 +1561,31 @@ actor WizardEngine {
         }
 
         let output = scratch.appendingPathComponent("clip_\(index).mp4")
+        // Center Stage: reframe the wide sub-range with the tracking camera,
+        // then burn overlays/captions/mute into the portrait intermediate
+        // through the normal (non-wide) path. With chosen people, only
+        // scenes featuring one of them get the camera; others auto-crop.
+        if options.centerStageWide && contentIsWide && !useSplit {
+            let focused = options.centerStagePeople.isEmpty
+                || options.centerStagePeople.contains { scene.tags.contains("person:\($0)") }
+            if focused {
+                do {
+                    let portrait = try await centerStage.reframeClip(
+                        source: scene.videoURL, start: clip.start, duration: duration,
+                        tuning: .named(options.centerStageCamera),
+                        log: emit)
+                    defer { try? FileManager.default.removeItem(at: portrait) }
+                    emit("Clip \(index + 1) reframed with Center Stage")
+                    try await render.extractClip(source: portrait, start: 0,
+                                                 duration: duration,
+                                                 overlays: overlays, mute: options.muteSource,
+                                                 output: output)
+                    return output
+                } catch {
+                    emit("Center Stage failed for clip \(index + 1) (\(error)) — falling back to auto-crop")
+                }
+            }
+        }
         if useSplit {
             try await render.extractClip(source: scene.videoURL, start: clip.start,
                                          duration: duration, wide: .split,

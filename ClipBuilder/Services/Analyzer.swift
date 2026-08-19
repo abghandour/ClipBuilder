@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import Vision
 
 /// Visual analysis pipeline — the Swift port of analyzer.py's visual mode:
 /// sample frames, ask the AI for tag time-ranges + moments, persist scenes.
@@ -63,15 +65,21 @@ actor Analyzer {
     // MARK: - Frame sampling
 
     /// A user-chosen interval may sample denser than the automatic mode.
-    static let maxCustomFrames = 60
+    static let maxCustomFrames = 120
 
     /// Variable-interval sampling matching analyzer.py: 1s (≤10s),
     /// 2s (≤60s), 3s (>60s); from 0.5s to duration−0.3s; max 30 frames.
-    /// A non-nil `interval` overrides the automatic choice (capped at 60
-    /// frames so a dense interval on long footage can't explode the call).
+    /// A non-nil `interval` overrides the automatic choice, capped at 120
+    /// frames — when the requested density exceeds the cap, the interval is
+    /// stretched so the frames still cover the WHOLE video evenly instead of
+    /// only its first seconds.
     static func frameTimestamps(duration: Double, interval custom: Double? = nil) -> [Double] {
-        let interval = custom ?? (duration <= 10 ? 1.0 : (duration <= 60 ? 2.0 : 3.0))
+        var interval = custom ?? (duration <= 10 ? 1.0 : (duration <= 60 ? 2.0 : 3.0))
         let cap = custom == nil ? maxFrames : maxCustomFrames
+        let span = max(0, duration - 0.8)
+        if span / max(0.2, interval) >= Double(cap) {
+            interval = span / Double(cap - 1)
+        }
         var timestamps: [Double] = []
         var t = 0.5
         while t < duration - 0.3 && timestamps.count < cap {
@@ -89,8 +97,9 @@ actor Analyzer {
         let timestamps = Self.frameTimestamps(duration: duration, interval: interval)
         if let interval {
             let wanted = Int(((duration - 0.8) / max(0.2, interval)).rounded(.up))
-            if wanted > timestamps.count {
-                log(String(format: "Sampling every %.1fs capped at %d frames", interval, timestamps.count))
+            if wanted > timestamps.count, timestamps.count > 1 {
+                log(String(format: "Sampling every %.1fs exceeds the %d-frame budget — stretched to every %.1fs across the whole video",
+                           interval, timestamps.count, timestamps[1] - timestamps[0]))
             } else {
                 log(String(format: "Sampling every %.1fs (%d frames)", interval, timestamps.count))
             }
@@ -147,24 +156,49 @@ actor Analyzer {
         """
     }
 
-    /// VIP subjects marked by the user — each rides with reference frame(s)
-    /// showing a colored box around the person, and the model is asked to
-    /// return per-subject time ranges alongside the tags.
-    private static func subjectsBlock(_ subjects: [VideoSubject]) -> String {
-        guard !subjects.isEmpty else { return "" }
-        let lines = subjects.map { subject in
-            let times = subject.rects.map { String(format: "%.1fs", $0.at) }.joined(separator: ", ")
-            return "- \"\(subject.name)\" — \(subject.colorName) box; reference frame(s) at \(times)"
-        }.joined(separator: "\n")
-        let example = subjects[0].name
+    /// The people breakdown: every distinct person gets a stable key. Known
+    /// people from earlier videos ride along (with the user's names) so the
+    /// same person keeps one identity across the whole library. The filename
+    /// often carries the subjects' real names — offered for matching known
+    /// people and for suggesting names on new ones.
+    /// nil = people detection off for this run: no block at all.
+    private static func peopleBlock(_ knownPeople: [PersonRecord]?, filename: String) -> String {
+        guard let knownPeople else { return "" }
+        let known = knownPeople.isEmpty ? "None yet — every person you find is new." :
+            knownPeople.map { person in
+                let named = person.name.isEmpty ? "" : " (the user calls them \"\(person.name)\")"
+                return "  - key \"\(person.key)\": \(person.descriptor)\(named)"
+            }.joined(separator: "\n")
         return """
 
-        ## VIP SUBJECTS (user-marked people — identify them from their reference boxes)
+        ## PEOPLE BREAKDOWN (always include)
+        Identify each DISTINCT person who appears clearly in the video (skip incidental background passers-by).
+        KNOWN PEOPLE from this library — when someone in the frames is visually the same person, REUSE their exact key:
+        \(known)
+        The video's filename is "\(filename)". Filenames often carry the real names of the people in the footage — use them two ways:
+        - If a filename name matches a KNOWN person's name above, that is strong evidence to reuse their key.
+        - For a person you invent a NEW key for, set "suggested_name" to the filename name you are confident belongs to them (null when unsure or when the filename has no names). Copy names verbatim; never invent one.
+        In your JSON response, ALSO include a top-level "people" array:
+        "people": [{"key": "<known key, or a new kebab-case slug you invent>", "description": "<concise visual description: build, hair, clothing, distinguishing marks>", "suggested_name": "<name from the filename, or null>", "ranges": [{"start": 0.0, "end": 5.2}]}]
+        Rules: reuse a known key ONLY when confident it is the same person; invent a new key otherwise; one entry per person; ranges cover where that person is clearly visible.
+
+        """
+    }
+
+    /// The ground-truth block for user-drawn identity boxes: each marker has
+    /// a matching cropped portrait image riding along with the frames.
+    private static func markerBlock(_ markers: [(marker: PersonMarker, person: PersonRecord)]) -> String {
+        guard !markers.isEmpty else { return "" }
+        let lines = markers.map { entry in
+            String(format: "- At %.1fs: \"%@\" — REUSE their exact key \"%@\"",
+                   entry.marker.atTime, entry.person.displayName, entry.person.key)
+        }.joined(separator: "\n")
+        return """
+
+        ## PERSON MARKERS (ground truth from the user — absolute)
+        The user drew a box around specific people. Each marker below has a matching image labeled "PERSON MARKER: <name> at <time>s" — a crop showing EXACTLY that person at that moment.
         \(lines)
-        Each subject has reference image(s) labeled "SUBJECT <name> (<color> box) at Xs" — the colored rectangle marks exactly who that name refers to. Learn each subject's appearance (build, clothing, hair, position) from their reference image(s), then track them across ALL sampled frames.
-        In your JSON response, ALSO include a top-level "subjects" object mapping each subject's exact name to the time ranges where that person is clearly visible:
-        "subjects": {"\(example)": [{"start": 0.0, "end": 5.2}]}
-        Only include ranges where you can identify the person with confidence; omit a subject entirely if they never appear. If the user context or notes restrict footage to a subject (e.g. "only include scenes with \(example)"), treat that restriction as a HARD FILTER on the tag ranges too.
+        Treat these identities as fact: study each portrait, recognize the same person everywhere they appear in the frames, and use their exact key in the people breakdown and tag ranges. Never assign a marker's key to someone who doesn't match its portrait, and never invent a new key for a marked person.
 
         """
     }
@@ -172,11 +206,13 @@ actor Analyzer {
     private static func fullAnalysisPrompt(domain: String, duration: Double, tags: [String: [String]],
                                            instructions: String, notes: [VideoNote],
                                            notesHaveReferenceFrames: Bool,
-                                           subjects: [VideoSubject]) -> String {
+                                           knownPeople: [PersonRecord]?,
+                                           markers: [(marker: PersonMarker, person: PersonRecord)],
+                                           filename: String) -> String {
         """
         You are analyzing frames from a \(domain) video.
         Video duration: \(String(format: "%.1f", duration))s. Frames are shown at their timestamps.
-        \(instructionsBlock(instructions))\(notesBlock(notes, withReferenceFrames: notesHaveReferenceFrames))\(subjectsBlock(subjects))
+        \(instructionsBlock(instructions))\(notesBlock(notes, withReferenceFrames: notesHaveReferenceFrames))\(peopleBlock(knownPeople, filename: filename))\(markerBlock(markers))
         Your job: produce a TAG-CENTRIC analysis. For each tag that applies to this
         video, provide the TIME RANGES where that tag is present. Also note any
         important moments (dialog, key events).
@@ -250,7 +286,8 @@ actor Analyzer {
     /// Full visual analysis of one video. If the video was analyzed before
     /// and only new tags were added to the schema, runs the cheaper
     /// incremental pass instead. Returns the id of the analyze batch the
-    /// results were stored under (nil when the pass was skipped).
+    /// results were stored under (nil when the pass was skipped) plus the
+    /// people first detected in this pass, for the end-of-run review sheet.
     @discardableResult
     func analyzeVisual(video: VideoRecord,
                        profile: BrandProfile,
@@ -260,11 +297,14 @@ actor Analyzer {
                        model: String? = nil,
                        instructions: String = "",
                        notes: [VideoNote] = [],
-                       subjects: [VideoSubject] = [],
+                       knownPeople: [PersonRecord] = [],
+                       personMarkers: [PersonMarker] = [],
+                       detectPeople: Bool = true,
                        sampleInterval: Double? = nil,
                        force: Bool = false,
                        log: @escaping @Sendable (String) -> Void,
-                       progress: @escaping @Sendable (Double, String) -> Void) async throws -> Int64? {
+                       progress: @escaping @Sendable (Double, String) -> Void) async throws
+        -> (runID: Int64?, newPeople: [DetectedNewPerson]) {
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let tags = profile.effectiveTags
         let allTags = Set(tags.values.flatMap { $0 })
@@ -278,7 +318,7 @@ actor Analyzer {
         let isIncremental = !force && video.visualAnalyzedAt != nil && !alreadyAnalyzed.isEmpty
         if !force && isIncremental && newTags.isEmpty {
             log("\(video.filename): all tags already analyzed — skipping")
-            return nil
+            return (nil, [])
         }
 
         progress(0.05, "extracting frames")
@@ -306,25 +346,30 @@ actor Analyzer {
             }
         }
 
-        // Each VIP subject's boxes ride as annotated frames — the model can't
-        // learn who "Person A" is from a name alone.
-        var subjectFrames: [AIFrame] = []
-        if !subjects.isEmpty {
-            let boxes = subjects.flatMap { subject in
-                subject.rects.prefix(4).map { (subject: subject, rect: $0) }
+        // User-drawn identity boxes become ground-truth portraits: each
+        // marker's crop shows exactly who the user says it is, so the model
+        // stops guessing at people recognition.
+        let peopleByID = Dictionary(uniqueKeysWithValues: knownPeople.map { ($0.id, $0) })
+        let namedMarkers: [(marker: PersonMarker, person: PersonRecord)] = detectPeople
+            ? personMarkers.compactMap { marker in
+                marker.personID.flatMap { peopleByID[$0] }.map { (marker, $0) }
             }
-            subjectFrames = ((try? await BoundedConcurrency.map(boxes, limit: FFmpeg.jobLimit) { _, box in
-                let at = min(max(0, box.rect.at), max(0, duration - 0.1))
-                return await ThumbnailService.subjectReferenceJPEG(url: video.url, at: at,
-                                                                   rect: box.rect,
-                                                                   colorIndex: box.subject.colorIndex).map {
-                    AIFrame(jpeg: $0, label: String(format: "SUBJECT %@ (%@ box) at %.1fs",
-                                                    box.subject.name, box.subject.colorName, box.rect.at))
+            : []
+        var markerFrames: [AIFrame] = []
+        if !namedMarkers.isEmpty {
+            markerFrames = ((try? await BoundedConcurrency.map(namedMarkers, limit: FFmpeg.jobLimit) { _, entry in
+                let at = min(max(0, entry.marker.atTime), max(0, duration - 0.1))
+                guard let data = await ThumbnailService.jpegFrame(url: video.url, at: at),
+                      let portrait = Self.markerPortrait(from: data, marker: entry.marker) else {
+                    return nil as AIFrame?
                 }
+                return AIFrame(jpeg: portrait,
+                               label: String(format: "PERSON MARKER: %@ at %.1fs",
+                                             entry.person.displayName, entry.marker.atTime))
             }) ?? []).compactMap { $0 }
-            if !subjectFrames.isEmpty {
-                log("Attached \(subjectFrames.count) VIP reference frame(s) for "
-                    + subjects.map(\.name).joined(separator: ", "))
+            if !markerFrames.isEmpty {
+                log("Attached \(markerFrames.count) person marker portrait(s): "
+                    + namedMarkers.map(\.person.displayName).joined(separator: ", "))
             }
         }
 
@@ -341,14 +386,16 @@ actor Analyzer {
             prompt = Self.fullAnalysisPrompt(domain: domain, duration: duration, tags: tags,
                                              instructions: instructions, notes: notes,
                                              notesHaveReferenceFrames: !referenceFrames.isEmpty,
-                                             subjects: subjects)
+                                             knownPeople: detectPeople ? knownPeople : nil,
+                                             markers: namedMarkers,
+                                             filename: video.filename)
             tagsToRecord = Array(allTags)
             progress(0.25, "tagging (\(frames.count) frames)")
             log("Extracted \(frames.count) frames, sending for full analysis...")
         }
 
         let response = try await ai.call(prompt: prompt, task: "analysis",
-                                         frames: referenceFrames + subjectFrames + frames,
+                                         frames: referenceFrames + markerFrames + frames,
                                          model: model, provider: provider, timeout: 300, log: log)
         guard let object = AIResponseParser.jsonObject(from: response) else {
             throw AIError.emptyResponse("analysis (unparseable JSON)")
@@ -369,21 +416,37 @@ actor Analyzer {
             }
         }
 
-        // Subject ranges land as "vip:<name>" scene tags — filterable in the
-        // Scenes browser and referenceable by name from wizard instructions.
-        if !subjects.isEmpty, let rawSubjects = object["subjects"] as? [String: Any] {
-            let byLowerName = Dictionary(subjects.map { ($0.name.lowercased(), $0) },
-                                         uniquingKeysWith: { first, _ in first })
-            for (name, value) in rawSubjects {
-                guard let subject = byLowerName[name.trimmingCharacters(in: .whitespaces).lowercased()],
-                      let ranges = value as? [[String: Any]] else { continue }
+        // People breakdown: each detected person becomes a registry upsert
+        // plus "person:<key>" tag ranges (searchable exactly like other tags).
+        var detectedPeople: [(key: String, description: String,
+                              suggestedName: String?, firstSeen: (start: Double, end: Double))] = []
+        if detectPeople, !isIncremental, let rawPeople = object["people"] as? [[String: Any]] {
+            var seenKeys = Set<String>()
+            for entry in rawPeople {
+                let rawKey = (entry["key"] as? String ?? "").lowercased()
+                var key = rawKey.map { $0.isLetter || $0.isNumber ? $0 : "-" }
+                    .reduce(into: "") { result, character in
+                        if character != "-" || result.last != "-" { result.append(character) }
+                    }
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+                if key.isEmpty { key = "person-\(seenKeys.count + 1)" }
+                guard !seenKeys.contains(key) else { continue }
+                seenKeys.insert(key)
+                let description = (entry["description"] as? String ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let suggestedName = (entry["suggested_name"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 var clean: [(Double, Double)] = []
-                for range in ranges {
+                for range in entry["ranges"] as? [[String: Any]] ?? [] {
                     let start = max(0, ((range["start"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
-                    let end = min(duration, ((range["end"] as? NSNumber)?.doubleValue ?? duration).rounded(toPlaces: 1))
+                    let end = min(duration, ((range["end"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
                     if end > start { clean.append((start, end)) }
                 }
-                if !clean.isEmpty { cleanTags[subject.tag, default: []].append(contentsOf: clean) }
+                guard !clean.isEmpty else { continue }
+                detectedPeople.append((key, description,
+                                       suggestedName?.isEmpty == false ? suggestedName : nil,
+                                       clean[0]))
+                cleanTags["person:\(key)", default: []].append(contentsOf: clean)
             }
         }
 
@@ -398,6 +461,31 @@ actor Analyzer {
 
         progress(0.95, "saving")
         log("Got \(cleanTags.count) tags, \(cleanMoments.count) moments")
+        var newPeople: [DetectedNewPerson] = []
+        if !detectedPeople.isEmpty {
+            let known = Set(knownPeople.map(\.key))
+            let namesByKey = Dictionary(uniqueKeysWithValues: knownPeople.map { ($0.key, $0.displayName) })
+            let new = detectedPeople.filter { !known.contains($0.key) }
+            let summary = detectedPeople.map { person in
+                let sceneCount = cleanTags["person:\(person.key)"]?.count ?? 0
+                let name = known.contains(person.key)
+                    ? (namesByKey[person.key] ?? person.key)
+                    : "NEW: \(person.suggestedName ?? person.key)"
+                return "\(name) (\(sceneCount) scene\(sceneCount == 1 ? "" : "s"))"
+            }.joined(separator: ", ")
+            log("People: \(detectedPeople.count) detected"
+                + (new.isEmpty ? "" : " (\(new.count) new)")
+                + " — \(summary)")
+            for person in detectedPeople {
+                try await database.upsertPerson(key: person.key, descriptor: person.description)
+            }
+            newPeople = new.map { person in
+                DetectedNewPerson(key: person.key, descriptor: person.description,
+                                  suggestedName: person.suggestedName,
+                                  videoURL: video.url, videoFilename: video.filename,
+                                  sampleTime: (person.firstSeen.start + person.firstSeen.end) / 2)
+            }
+        }
         let attribution = await ai.resolveProviderModel(task: "analysis", provider: provider, model: model)
         // Notes live on the video and can change later — snapshot the set
         // this run actually used so the batch info stays truthful.
@@ -417,8 +505,59 @@ actor Analyzer {
                                                     provider: attribution.provider,
                                                     model: attribution.model,
                                                     mode: "visual")
+
+        // Local portrait-fit pass on wide footage: score how well each new
+        // scene's people fit a 9:16 crop, so the wizard can prefer moments
+        // where nobody gets cut off. Pure Vision — no AI cost.
+        if video.wide {
+            progress(0.97, "portrait fit")
+            let ranges = (try? await database.sceneRanges(runID: runID)) ?? []
+            var good = 0, poor = 0
+            for range in ranges {
+                try Task.checkCancellation()
+                guard let fits = await Self.portraitFit(url: video.url,
+                                                        start: range.start, end: range.end,
+                                                        videoWidth: video.width,
+                                                        videoHeight: video.height) else { continue }
+                try? await database.addSceneTag(sceneID: range.id,
+                                                tag: fits ? "portrait-fit:good" : "portrait-fit:poor")
+                if fits { good += 1 } else { poor += 1 }
+            }
+            if good + poor > 0 {
+                log("Portrait fit: \(good) scene(s) crop-friendly for 9:16, \(poor) too spread out")
+            }
+        }
         progress(1.0, "done")
-        return runID
+        return (runID, newPeople)
+    }
+
+    /// Whether the people in [start, end] sit close enough together for a
+    /// full-height 9:16 crop to hold them all. Samples three frames, unions
+    /// the detected human boxes per frame, majority-votes; nil when no
+    /// people are detected at all.
+    nonisolated static func portraitFit(url: URL, start: Double, end: Double,
+                                        videoWidth: Int, videoHeight: Int) async -> Bool? {
+        guard videoWidth > 0, videoHeight > 0 else { return nil }
+        // Fraction of the frame width a full-height 9:16 crop covers.
+        let cropFraction = (9.0 / 16.0) * Double(videoHeight) / Double(videoWidth)
+        let duration = end - start
+        var good = 0, judged = 0
+        for fraction in [0.25, 0.5, 0.75] {
+            guard let data = await ThumbnailService.jpegFrame(url: url, at: start + duration * fraction,
+                                                              maxDimension: 720) else { continue }
+            let request = VNDetectHumanRectanglesRequest()
+            request.upperBodyOnly = false
+            try? VNImageRequestHandler(data: data).perform([request])
+            let boxes = (request.results ?? []).map(\.boundingBox)
+            guard !boxes.isEmpty else { continue }
+            judged += 1
+            let union = boxes.dropFirst().reduce(boxes[0]) { $0.union($1) }
+            // 10% slack: the crop pans onto the action (auto-crop and Center
+            // Stage alike), so near-fits still frame everyone.
+            if Double(union.width) <= cropFraction * 1.1 { good += 1 }
+        }
+        guard judged > 0 else { return nil }
+        return good * 2 >= judged
     }
 }
 
@@ -426,5 +565,24 @@ nonisolated extension Double {
     func rounded(toPlaces places: Int) -> Double {
         let factor = pow(10.0, Double(places))
         return (self * factor).rounded() / factor
+    }
+}
+
+extension Analyzer {
+    /// Crop a frame to a marker's box (with breathing room) — the portrait
+    /// the model gets as ground truth for that person.
+    nonisolated static func markerPortrait(from data: Data, marker: PersonMarker) -> Data? {
+        guard let image = NSImage(data: data),
+              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let width = CGFloat(cg.width), height = CGFloat(cg.height)
+        let pad = 0.2
+        let rect = CGRect(x: (marker.x - marker.width * pad) * width,
+                          y: (marker.y - marker.height * pad) * height,
+                          width: marker.width * (1 + 2 * pad) * width,
+                          height: marker.height * (1 + 2 * pad) * height)
+            .intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        guard !rect.isEmpty, let cropped = cg.cropping(to: rect) else { return nil }
+        return NSBitmapImageRep(cgImage: cropped)
+            .representation(using: .jpeg, properties: [.compressionFactor: 0.85])
     }
 }

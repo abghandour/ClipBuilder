@@ -53,32 +53,6 @@ actor ThumbnailService {
         return await FFmpeg.jpegFrame(of: url, at: time, maxDimension: maxDimension)
     }
 
-    /// One frame with a VIP subject's colored box burned in — the analyzer's
-    /// subject reference. The rect is frame fractions with a top-left origin.
-    static func subjectReferenceJPEG(url: URL, at time: Double,
-                                     rect: SubjectRect, colorIndex: Int) async -> Data? {
-        guard let data = await jpegFrame(url: url, at: time),
-              let cgImage = NSBitmapImageRep(data: data)?.cgImage else { return nil }
-        let width = cgImage.width
-        let height = cgImage.height
-        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(data: nil, width: width, height: height,
-                                      bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: colorSpace,
-                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
-        let entry = SubjectPalette.entry(colorIndex)
-        context.setStrokeColor(CGColor(red: entry.red, green: entry.green, blue: entry.blue, alpha: 1))
-        context.setLineWidth(max(3, CGFloat(width) * 0.006))
-        // CG draws bottom-up, so the top-left-origin fractions flip in y.
-        context.stroke(CGRect(x: rect.x * Double(width),
-                              y: (1 - rect.y - rect.h) * Double(height),
-                              width: rect.w * Double(width),
-                              height: rect.h * Double(height)))
-        guard let annotated = context.makeImage() else { return nil }
-        return NSBitmapImageRep(cgImage: annotated)
-            .representation(using: .jpeg, properties: [.compressionFactor: 0.85])
-    }
 
     /// Grayscale pixels for a frame, downscaled to `width` pixels across —
     /// feeds the auto-crop detail/motion scoring.
