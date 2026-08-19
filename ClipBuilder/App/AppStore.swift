@@ -34,6 +34,7 @@ final class AppStore {
     var videos: [VideoRecord] = []
     var scenes: [SceneRecord] = []
     var analysisRuns: [AnalysisRun] = []
+    var videoSubjects: [VideoSubject] = []
     var generatedVideos: [GeneratedVideoRecord] = []
     var feedback: [FeedbackRecord] = []
     var lessons: [WizardLesson] = []
@@ -195,6 +196,7 @@ final class AppStore {
         SettingsStore.saveActiveProfileName(name)
         videos = []
         scenes = []
+        videoSubjects = []
         generatedVideos = []
         feedback = []
         lessons = []
@@ -278,12 +280,14 @@ final class AppStore {
             let videos = try await database.fetchVideos()
             let scenes = try await database.fetchScenes()
             let analysisRuns = try await database.fetchAnalysisRuns()
+            let subjects = try await database.fetchVideoSubjects()
             let generated = try await database.fetchGeneratedVideos()
             let feedback = try await database.fetchAllFeedback()
             let lessons = try await database.fetchLessons()
             self.videos = videos
             self.scenes = scenes
             self.analysisRuns = analysisRuns
+            self.videoSubjects = subjects
             self.generatedVideos = generated
             self.feedback = feedback
             self.lessons = lessons
@@ -402,11 +406,17 @@ final class AppStore {
                     if !notes.isEmpty {
                         analysisLog.append("\(video.filename): applying \(notes.count) timestamped note(s)")
                     }
+                    let subjects = (try? await database.fetchVideoSubjects(videoID: video.id)) ?? []
+                    if !subjects.isEmpty {
+                        analysisLog.append("\(video.filename): tracking \(subjects.count) VIP subject(s): "
+                                           + subjects.map(\.name).joined(separator: ", "))
+                    }
                     let runID = try await analyzer.analyzeVisual(
                         video: video, profile: profile, database: database,
                         runName: Self.analysisRunName(for: video),
                         provider: provider, model: model,
                         instructions: instructions, notes: notes,
+                        subjects: subjects,
                         sampleInterval: sampleInterval,
                         force: true,
                         log: { message in
@@ -546,6 +556,70 @@ final class AppStore {
             presentError("Could not delete the note", error)
         }
         return (try? await database.videoNotes(videoID: note.videoID)) ?? []
+    }
+
+    // MARK: - VIP subjects
+
+    func subjects(for videoID: Int64) -> [VideoSubject] {
+        videoSubjects.filter { $0.videoID == videoID }
+    }
+
+    private func refreshVideoSubjects() async {
+        guard let database else { return }
+        videoSubjects = (try? await database.fetchVideoSubjects()) ?? []
+    }
+
+    /// Create a subject with the next free palette color and a placeholder
+    /// name ("Person A", "Person B", …); returns the fresh row for renaming.
+    @discardableResult
+    func addVideoSubject(videoID: Int64, rects: [SubjectRect] = []) async -> VideoSubject? {
+        guard let database else { return nil }
+        let existing = subjects(for: videoID)
+        let letter = Character(UnicodeScalar(UInt8(65 + existing.count % 26)))
+        do {
+            let id = try await database.addVideoSubject(videoID: videoID,
+                                                        name: "Person \(letter)",
+                                                        colorIndex: existing.count,
+                                                        rectsJSON: VideoSubject.encodeRects(rects))
+            await refreshVideoSubjects()
+            return videoSubjects.first { $0.id == id }
+        } catch {
+            presentError("Could not save the subject", error)
+            return nil
+        }
+    }
+
+    func renameVideoSubject(_ subject: VideoSubject, to rawName: String) async {
+        guard let database else { return }
+        let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != subject.name else { return }
+        do {
+            try await database.renameVideoSubject(id: subject.id, name: name)
+            await refreshVideoSubjects()
+        } catch {
+            presentError("Could not rename the subject", error)
+        }
+    }
+
+    func updateVideoSubjectRects(_ subject: VideoSubject, rects: [SubjectRect]) async {
+        guard let database else { return }
+        do {
+            try await database.updateVideoSubjectRects(id: subject.id,
+                                                       rectsJSON: VideoSubject.encodeRects(rects))
+            await refreshVideoSubjects()
+        } catch {
+            presentError("Could not save the subject's boxes", error)
+        }
+    }
+
+    func deleteVideoSubject(_ subject: VideoSubject) async {
+        guard let database else { return }
+        do {
+            try await database.deleteVideoSubject(id: subject.id)
+            await refreshVideoSubjects()
+        } catch {
+            presentError("Could not delete the subject", error)
+        }
     }
 
     /// Rename a source video: move the file in the Input folder and update

@@ -72,6 +72,65 @@ nonisolated struct AnalysisRunNote: Codable, Sendable, Hashable {
     var note: String
 }
 
+/// One user-drawn box around a VIP subject, anchored at a video timestamp.
+/// Coordinates are fractions of the video frame with a top-left origin.
+nonisolated struct SubjectRect: Codable, Sendable, Hashable {
+    var at: Double
+    var x: Double
+    var y: Double
+    var w: Double
+    var h: Double
+}
+
+/// A named person the user marked in a source video by drawing one or more
+/// colored boxes ("VIP subjects"). The analyzer sends each box's frame as a
+/// reference so it can tag scenes featuring the subject, and the wizard maps
+/// the name back to those tags when instructions mention the person.
+nonisolated struct VideoSubject: Identifiable, Sendable, Hashable {
+    var id: Int64
+    var videoID: Int64
+    var name: String
+    var colorIndex: Int
+    var rectsJSON: String
+    var createdAt: String?
+    // Denormalized from the joined videos row for display.
+    var videoFilename: String
+
+    var rects: [SubjectRect] {
+        guard let data = rectsJSON.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([SubjectRect].self, from: data)) ?? []
+    }
+
+    /// The scene tag the analyzer records for footage featuring this subject.
+    var tag: String { "vip:\(name)" }
+
+    var colorName: String { SubjectPalette.entry(colorIndex).name }
+
+    static func encodeRects(_ rects: [SubjectRect]) -> String {
+        (try? JSONEncoder().encode(rects))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+    }
+}
+
+/// Border colors cycled per subject — named so prompts can say "the yellow
+/// box", with RGB components usable from both SwiftUI and CoreGraphics.
+nonisolated enum SubjectPalette {
+    static let entries: [(name: String, red: Double, green: Double, blue: Double)] = [
+        ("yellow", 1.00, 0.84, 0.04),
+        ("red",    1.00, 0.27, 0.23),
+        ("green",  0.20, 0.84, 0.29),
+        ("blue",   0.10, 0.52, 1.00),
+        ("orange", 1.00, 0.58, 0.00),
+        ("purple", 0.75, 0.35, 0.95),
+        ("cyan",   0.35, 0.82, 0.98),
+        ("pink",   1.00, 0.35, 0.62),
+    ]
+
+    static func entry(_ index: Int) -> (name: String, red: Double, green: Double, blue: Double) {
+        entries[((index % entries.count) + entries.count) % entries.count]
+    }
+}
+
 nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var id: Int64
     var videoID: Int64

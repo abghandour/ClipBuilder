@@ -72,6 +72,16 @@ actor Database {
     );
     CREATE INDEX IF NOT EXISTS idx_video_notes_video ON video_notes(video_id);
 
+    CREATE TABLE IF NOT EXISTS video_subjects (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        color_index INTEGER NOT NULL DEFAULT 0,
+        rects_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_video_subjects_video ON video_subjects(video_id);
+
     CREATE TABLE IF NOT EXISTS analyzed_tags (
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
         tag TEXT NOT NULL,
@@ -395,6 +405,53 @@ actor Database {
 
     func deleteVideoNote(id: Int64) throws {
         try connection.execute("DELETE FROM video_notes WHERE id = ?", [.integer(id)])
+    }
+
+    // MARK: - VIP subjects (named boxes drawn on video frames)
+
+    /// Subjects joined with their video, optionally scoped to one video.
+    func fetchVideoSubjects(videoID: Int64? = nil) throws -> [VideoSubject] {
+        var sql = """
+            SELECT s.*, v.filename AS video_filename
+            FROM video_subjects s JOIN videos v ON v.id = s.video_id
+            """
+        var params: [SQLValue] = []
+        if let videoID {
+            sql += " WHERE s.video_id = ?"
+            params.append(.integer(videoID))
+        }
+        sql += " ORDER BY v.filename COLLATE NOCASE, s.id"
+        return try connection.query(sql, params).map { row in
+            VideoSubject(id: row["id"]?.intValue ?? 0,
+                         videoID: row["video_id"]?.intValue ?? 0,
+                         name: row["name"]?.stringValue ?? "",
+                         colorIndex: Int(row["color_index"]?.intValue ?? 0),
+                         rectsJSON: row["rects_json"]?.stringValue ?? "[]",
+                         createdAt: row["created_at"]?.stringValue,
+                         videoFilename: row["video_filename"]?.stringValue ?? "")
+        }
+    }
+
+    @discardableResult
+    func addVideoSubject(videoID: Int64, name: String, colorIndex: Int, rectsJSON: String) throws -> Int64 {
+        try connection.execute("""
+            INSERT INTO video_subjects (video_id, name, color_index, rects_json) VALUES (?, ?, ?, ?)
+            """, [.integer(videoID), .text(name), .integer(Int64(colorIndex)), .text(rectsJSON)])
+        return connection.lastInsertRowID
+    }
+
+    func renameVideoSubject(id: Int64, name: String) throws {
+        try connection.execute("UPDATE video_subjects SET name = ? WHERE id = ?",
+                               [.text(name), .integer(id)])
+    }
+
+    func updateVideoSubjectRects(id: Int64, rectsJSON: String) throws {
+        try connection.execute("UPDATE video_subjects SET rects_json = ? WHERE id = ?",
+                               [.text(rectsJSON), .integer(id)])
+    }
+
+    func deleteVideoSubject(id: Int64) throws {
+        try connection.execute("DELETE FROM video_subjects WHERE id = ?", [.integer(id)])
     }
 
     /// Rename support: the file was already moved on disk; scenes join the

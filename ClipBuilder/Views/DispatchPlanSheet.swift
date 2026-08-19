@@ -226,6 +226,19 @@ struct DispatchPlanSheet: View {
         Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
     }
 
+    /// VIP subjects of the target videos — quick-insert hard filters into
+    /// the instructions without retyping names.
+    private var targetSubjects: [VideoSubject] {
+        let videoIDs = Set(videos.map(\.id))
+        return store.videoSubjects.filter { videoIDs.contains($0.videoID) }
+    }
+
+    private func appendInstruction(_ line: String) {
+        instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? line
+            : instructions.trimmingCharacters(in: .whitespacesAndNewlines) + "\n" + line
+    }
+
     /// Optional footage context injected into the analysis prompt as
     /// highest-priority guidance, with a named history for reuse.
     private var instructionsSection: some View {
@@ -234,6 +247,23 @@ struct DispatchPlanSheet: View {
                 Text("Generic instructions — apply to every video (optional)")
                     .font(.subheadline.weight(.medium))
                 Spacer()
+                if !targetSubjects.isEmpty {
+                    Menu("VIPs") {
+                        ForEach(targetSubjects) { subject in
+                            Menu(subject.name) {
+                                Button("Only include scenes with \(subject.name)") {
+                                    appendInstruction("Only include scenes featuring \"\(subject.name)\" — omit every range where they are not clearly present.")
+                                }
+                                Button("Focus on \(subject.name)") {
+                                    appendInstruction("Focus on \"\(subject.name)\" — prioritize moments where they are the main action.")
+                                }
+                            }
+                        }
+                    }
+                    .controlSize(.small)
+                    .fixedSize()
+                    .help("Insert an instruction referencing a marked VIP subject")
+                }
                 Menu("History") {
                     ForEach(savedPrompts) { prompt in
                         Button(prompt.name) { instructions = prompt.text }
@@ -390,6 +420,7 @@ private struct VideoNotesPanel: View {
     @State private var notes: [VideoNote] = []
     @State private var noteText = ""
     @State private var player: AVPlayer?
+    @State private var markupVideo: VideoRecord?
 
     private var video: VideoRecord {
         videos[min(selectedIndex, videos.count - 1)]
@@ -420,6 +451,23 @@ private struct VideoNotesPanel: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 420)
                 .background(.black, in: RoundedRectangle(cornerRadius: 8))
+
+            HStack(spacing: 6) {
+                ForEach(store.subjects(for: video.id)) { subject in
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(subject.color)
+                            .frame(width: 8, height: 8)
+                        Text(subject.name)
+                            .font(.caption2)
+                            .lineLimit(1)
+                    }
+                }
+                Button("VIP Subjects…") { markupVideo = video }
+                    .controlSize(.small)
+                    .help("Draw colored boxes around important people — analysis tags their scenes \"vip:<name>\"")
+                Spacer()
+            }
 
             HStack {
                 TextField("Note for the current moment…", text: $noteText)
@@ -473,6 +521,9 @@ private struct VideoNotesPanel: View {
             Spacer(minLength: 0)
         }
         .padding()
+        .sheet(item: $markupVideo) { video in
+            SubjectMarkupSheet(video: video)
+        }
         .task(id: video.id) {
             player?.pause()
             player = AVPlayer(url: video.url)

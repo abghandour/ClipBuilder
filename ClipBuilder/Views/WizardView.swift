@@ -13,6 +13,7 @@ struct WizardView: View {
     @AppStorage("wizard.muteSource") private var muteSource = false
     @AppStorage("wizard.addCaptions") private var addCaptions = false
     @AppStorage("wizard.autoCropWide") private var autoCropWide = true
+    @AppStorage("wizard.allowWideSplit") private var allowWideSplit = false
     @AppStorage("wizard.enableTextOverlays") private var enableTextOverlays = false
     @AppStorage("wizard.aiInstructions") private var aiInstructions = ""
     @AppStorage("wizard.limitToSelection") private var limitToSelection = false
@@ -202,6 +203,8 @@ struct WizardView: View {
             Section("Visuals") {
                 Toggle("Burn transcript captions", isOn: $addCaptions)
                 Toggle("Auto-crop wide footage to portrait", isOn: $autoCropWide)
+                Toggle("Allow split-screen for wide footage", isOn: $allowWideSplit)
+                    .help("Lets the AI stack a wide scene's left/right halves top and bottom. Off = wide footage always zooms to fill the frame instead.")
                 Toggle("AI text overlays", isOn: $enableTextOverlays)
             }
 
@@ -223,11 +226,42 @@ struct WizardView: View {
                 }
             }
 
+            if !store.videoSubjects.isEmpty {
+                Section("VIP Subjects") {
+                    ForEach(store.videoSubjects) { subject in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(subject.color)
+                                .frame(width: 10, height: 10)
+                            Text(subject.name)
+                            Text(subject.videoFilename)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Spacer()
+                            Menu("Add to Instructions") {
+                                Button("Only include scenes with \(subject.name)") {
+                                    appendInstruction("Only include scenes featuring \"\(subject.name)\" (scenes tagged \"\(subject.tag)\").")
+                                }
+                                Button("Keep \(subject.name) in focus") {
+                                    appendInstruction("Keep \"\(subject.name)\" in focus and centered in the frame — prefer scenes tagged \"\(subject.tag)\".")
+                                }
+                            }
+                            .controlSize(.small)
+                            .fixedSize()
+                        }
+                    }
+                    Text("People you marked in the Analyze tab. Reference them by name in AI Instructions — the wizard resolves names to their \"vip:\" scene tags.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("AI Instructions (highest priority)") {
                 TextEditor(text: $aiInstructions)
                     .font(.body)
                     .frame(minHeight: 70)
-                Text("Hard requirements that override research and feedback — e.g. “always open with a knockout”.")
+                Text("Hard requirements that override research and feedback — e.g. “always open with a knockout” or “only include scenes with Person A fighting in the cage, keep Person A centered”.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -302,6 +336,11 @@ struct WizardView: View {
         newLessonText = ""
     }
 
+    private func appendInstruction(_ line: String) {
+        let trimmed = aiInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        aiInstructions = trimmed.isEmpty ? line : trimmed + "\n" + line
+    }
+
     /// Show the smart dispatcher's model plan first (unless muted for
     /// generation), then kick off the run.
     private func startGeneration() {
@@ -371,6 +410,7 @@ struct WizardView: View {
         options.muteSource = muteSource && useMusic
         options.addCaptions = addCaptions
         options.autoCropWide = autoCropWide
+        options.allowWideSplit = allowWideSplit
         options.enableTextOverlays = enableTextOverlays
         options.aiInstructions = aiInstructions
         options.selectedRunIDs = limitToSelection ? selectedRunIDs : []

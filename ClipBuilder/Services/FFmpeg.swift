@@ -106,7 +106,8 @@ nonisolated enum FFmpeg {
 
     private static func probeInfo(_ url: URL) async -> MediaProbe {
         let output = (try? await probe(["-v", "quiet",
-                                        "-show_entries", "stream=codec_type,width,height:format=duration",
+                                        "-show_entries",
+                                        "stream=codec_type,width,height:stream_side_data=rotation:format=duration",
                                         "-of", "json", url.path])) ?? ""
         var info = MediaProbe()
         guard let data = output.data(using: .utf8),
@@ -118,8 +119,22 @@ nonisolated enum FFmpeg {
         for stream in root["streams"] as? [[String: Any]] ?? [] {
             switch stream["codec_type"] as? String {
             case "video" where info.width == 0:
-                info.width = stream["width"] as? Int ?? 0
-                info.height = stream["height"] as? Int ?? 0
+                var width = stream["width"] as? Int ?? 0
+                var height = stream["height"] as? Int ?? 0
+                // A display-matrix rotation (phone footage, screen
+                // recordings) turns the stored frame sideways; every decoder
+                // in the pipeline auto-rotates, so the probe must report
+                // DISPLAY dimensions — a landscape video stored sideways in
+                // a portrait container is a wide video.
+                for sideData in stream["side_data_list"] as? [[String: Any]] ?? [] {
+                    if let rotation = (sideData["rotation"] as? NSNumber)?.intValue,
+                       abs(rotation) % 180 == 90 {
+                        swap(&width, &height)
+                        break
+                    }
+                }
+                info.width = width
+                info.height = height
             case "audio":
                 info.hasAudio = true
             default:

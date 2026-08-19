@@ -61,12 +61,27 @@ actor RenderEngine {
         case split                // left/right halves stacked top/bottom
     }
 
+    /// Baked-in letterbox detection result: the sub-rect of the source that
+    /// holds real footage (screen recordings and reposts bake black bars into
+    /// the pixels), as frame fractions with a top-left origin.
+    nonisolated struct ContentBox: Sendable {
+        var x: Double
+        var y: Double
+        var w: Double
+        var h: Double
+        /// Pixel aspect of the content region (width / height).
+        var aspect: Double
+
+        var isWide: Bool { aspect > 1.05 }
+    }
+
     /// Trim [start, start+duration], normalize to portrait 1080x1920@30, and
     /// burn any overlays — all in ONE decode→encode pass (captions, text and
     /// mute used to be separate full re-encodes). Sources without audio get a
     /// silent stereo track so every intermediate clip is concat-compatible.
     func extractClip(source: URL, start: Double, duration: Double,
                      wide: WideTreatment = .none,
+                     contentBox: ContentBox? = nil,
                      overlays: [ClipOverlay] = [],
                      mute: Bool = false,
                      output: URL) async throws {
@@ -86,17 +101,25 @@ actor RenderEngine {
 
         var filters: [String] = []
         let baseLabel = overlays.isEmpty ? "[vout]" : "[base]"
+        // Baked-in bars come off first, so the wide treatments below see the
+        // real footage; every later iw/ih refers to the cropped stream.
+        var sourceStream = "[0:v]"
+        if let box = contentBox {
+            filters.append(String(format: "[0:v]crop=iw*%.4f:ih*%.4f:iw*%.4f:ih*%.4f[content]",
+                                  box.w, box.h, box.x, box.y))
+            sourceStream = "[content]"
+        }
         switch wide {
         case .none:
-            filters.append("[0:v]\(Self.normalizeFilter)\(baseLabel)")
+            filters.append("\(sourceStream)\(Self.normalizeFilter)\(baseLabel)")
         case .autoCrop(let xFraction):
-            filters.append(String(format: "[0:v]crop=ih*9/16:ih:(iw-ih*9/16)*%.4f:0," +
+            filters.append(String(format: "%@crop=ih*9/16:ih:(iw-ih*9/16)*%.4f:0," +
                                   "scale=%d:%d,setsar=1,fps=30%@",
-                                  xFraction, Self.outputWidth, Self.outputHeight, baseLabel))
+                                  sourceStream, xFraction, Self.outputWidth, Self.outputHeight, baseLabel))
         case .split:
             let half = Self.outputHeight / 2
             filters.append("""
-            [0:v]split=2[left][right];\
+            \(sourceStream)split=2[left][right];\
             [left]crop=iw/2:ih:0:0,scale=\(Self.outputWidth):\(half):force_original_aspect_ratio=increase,\
             crop=\(Self.outputWidth):\(half)[top];\
             [right]crop=iw/2:ih:iw/2:0,scale=\(Self.outputWidth):\(half):force_original_aspect_ratio=increase,\
@@ -159,10 +182,78 @@ actor RenderEngine {
 
     // MARK: - Wide-source handling
 
+    /// Detect baked-in black bars (screen recordings, reposted reels): rows
+    /// and columns that stay black across sampled frames are bars; what's
+    /// left is the content box. Returns nil when the content effectively
+    /// fills the frame or detection is unreliable (dark footage).
+    func detectContentBox(source: URL, start: Double, duration: Double) async -> ContentBox? {
+        let frames: [(pixels: [UInt8], width: Int, height: Int)] =
+            await withTaskGroup(of: (pixels: [UInt8], width: Int, height: Int)?.self) { group in
+                for i in 0..<5 {
+                    let t = start + duration * (0.1 + 0.8 * Double(i) / 4.0)
+                    group.addTask {
+                        await ThumbnailService.grayscaleFrame(url: source, at: t, width: 256)
+                    }
+                }
+                var collected: [(pixels: [UInt8], width: Int, height: Int)] = []
+                for await frame in group where frame != nil {
+                    collected.append(frame!)
+                }
+                return collected
+            }
+        guard let first = frames.first else { return nil }
+        let width = first.width
+        let height = first.height
+        guard width > 0, height > 0,
+              frames.allSatisfy({ $0.width == width && $0.height == height }) else { return nil }
+
+        // A row/column is "lit" if any sampled frame has a pixel above the
+        // compression-noise floor there.
+        var rowMax = [UInt8](repeating: 0, count: height)
+        var columnMax = [UInt8](repeating: 0, count: width)
+        for frame in frames {
+            frame.pixels.withUnsafeBufferPointer { pixels in
+                var offset = 0
+                for y in 0..<height {
+                    for x in 0..<width {
+                        let v = pixels[offset]
+                        offset += 1
+                        if v > rowMax[y] { rowMax[y] = v }
+                        if v > columnMax[x] { columnMax[x] = v }
+                    }
+                }
+            }
+        }
+        let threshold: UInt8 = 32
+        guard let top = rowMax.firstIndex(where: { $0 > threshold }),
+              let bottom = rowMax.lastIndex(where: { $0 > threshold }),
+              let left = columnMax.firstIndex(where: { $0 > threshold }),
+              let right = columnMax.lastIndex(where: { $0 > threshold }),
+              bottom > top, right > left else { return nil }
+
+        // Inset one sample pixel so soft bar edges don't leave a seam.
+        let contentWidth = Double(right - left - 1)
+        let contentHeight = Double(bottom - top - 1)
+        // Unreliable when almost everything is black (night footage, fades).
+        guard contentWidth >= Double(width) * 0.2, contentHeight >= Double(height) * 0.2 else { return nil }
+        // No meaningful bars — don't add a useless crop stage.
+        guard contentWidth < Double(width) * 0.94 || contentHeight < Double(height) * 0.94 else { return nil }
+        // The sample preserves the source aspect, so content aspect is
+        // directly measurable in sample pixels.
+        return ContentBox(x: Double(left + 1) / Double(width),
+                          y: Double(top + 1) / Double(height),
+                          w: contentWidth / Double(width),
+                          h: contentHeight / Double(height),
+                          aspect: contentWidth / contentHeight)
+    }
+
     /// Score horizontal crop positions across sampled frames: 0.4·detail
     /// (column stdev) + 0.6·motion (frame-to-frame column diff), sliding a
     /// 9:16 window to find the busiest region. Port of auto_crop_x_frac.
-    func autoCropXFraction(source: URL, start: Double, duration: Double) async -> Double {
+    /// A `contentBox` restricts scoring to the real footage; the returned
+    /// fraction is then relative to the box, matching the pre-cropped stream.
+    func autoCropXFraction(source: URL, start: Double, duration: Double,
+                           contentBox: ContentBox? = nil) async -> Double {
         // Grab the sample frames concurrently — each is an independent
         // AVAssetImageGenerator (or ffmpeg fallback) call.
         let frames: [(pixels: [UInt8], width: Int, height: Int)] =
@@ -237,19 +328,25 @@ actor RenderEngine {
         let normalizedMotion = normalized(motion)
         let score = (0..<width).map { 0.4 * normalizedDetail[$0] + 0.6 * normalizedMotion[$0] }
 
-        let targetWidth = Int((Double(height) * 9.0 / 16.0).rounded())
-        guard targetWidth < width else { return 0.5 }
-        var windowSum = score.prefix(targetWidth).reduce(0, +)
+        // Slide within the content box when one was detected — the crop
+        // window's height is the content height, and the returned fraction
+        // must be relative to the pre-cropped stream.
+        let x0 = contentBox.map { Int((Double(width) * $0.x).rounded()) } ?? 0
+        let contentWidth = contentBox.map { Int((Double(width) * $0.w).rounded()) } ?? width
+        let contentHeight = contentBox.map { Double(height) * $0.h } ?? Double(height)
+        let targetWidth = Int((contentHeight * 9.0 / 16.0).rounded())
+        guard targetWidth > 0, targetWidth < contentWidth, x0 + contentWidth <= width else { return 0.5 }
+        var windowSum = score[x0..<(x0 + targetWidth)].reduce(0, +)
         var bestSum = windowSum
-        var bestLeft = 0
-        for left in 1...(width - targetWidth) {
+        var bestLeft = x0
+        for left in (x0 + 1)...(x0 + contentWidth - targetWidth) {
             windowSum += score[left + targetWidth - 1] - score[left - 1]
             if windowSum > bestSum {
                 bestSum = windowSum
                 bestLeft = left
             }
         }
-        return min(1, max(0, Double(bestLeft) / Double(width - targetWidth)))
+        return min(1, max(0, Double(bestLeft - x0) / Double(contentWidth - targetWidth)))
     }
 
     // MARK: - Concatenation

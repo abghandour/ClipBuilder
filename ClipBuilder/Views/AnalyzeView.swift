@@ -12,6 +12,7 @@ struct AnalyzeView: View {
     @State private var pendingDispatch: PendingDispatch?
     @State private var renamingID: Int64?
     @State private var renameText = ""
+    @State private var markupVideo: VideoRecord?
     @FocusState private var renameFocused: Bool
 
     /// Exactly one selected video → the preview pane shows it.
@@ -34,7 +35,7 @@ struct AnalyzeView: View {
                 table
                     .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
                 if let video = previewVideo {
-                    VideoPreviewPane(video: video)
+                    VideoPreviewPane(video: video) { markupVideo = video }
                         .frame(minWidth: 240, idealWidth: 320, maxWidth: 440, maxHeight: .infinity)
                 }
             }
@@ -90,6 +91,9 @@ struct AnalyzeView: View {
         }
         .sheet(isPresented: $showGenerateSheet) {
             GenerateSampleSheet(videos: selectedVideos)
+        }
+        .sheet(item: $markupVideo) { video in
+            SubjectMarkupSheet(video: video)
         }
         .sheet(item: $pendingDispatch) { pending in
             DispatchPlanSheet(operation: pending.operation, videos: pending.videos,
@@ -242,6 +246,11 @@ struct AnalyzeView: View {
                 selection = ids
                 showGenerateSheet = true
             }
+            if ids.count == 1, let video = store.videos.first(where: { ids.contains($0.id) }) {
+                Button("VIP Subjects…") {
+                    markupVideo = video
+                }
+            }
         }
         .dropDestination(for: URL.self) { urls, _ in
             store.importVideos(urls)
@@ -273,7 +282,9 @@ struct AnalyzeView: View {
 /// Inline player for the single selected source video — watch the footage
 /// before deciding to analyze (or re-analyze) it.
 private struct VideoPreviewPane: View {
+    @Environment(AppStore.self) private var store
     let video: VideoRecord
+    let onMarkSubjects: () -> Void
 
     @State private var player: AVPlayer?
 
@@ -289,6 +300,21 @@ private struct VideoPreviewPane: View {
                 Text("\(video.duration.timecode) · \(video.width)×\(video.height)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 6) {
+                ForEach(store.subjects(for: video.id)) { subject in
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(subject.color)
+                            .frame(width: 8, height: 8)
+                        Text(subject.name)
+                            .font(.caption2)
+                            .lineLimit(1)
+                    }
+                }
+                Button("VIP Subjects…", action: onMarkSubjects)
+                    .controlSize(.small)
+                    .help("Draw colored boxes around important people so analysis can tag their scenes")
             }
         }
         .padding(10)

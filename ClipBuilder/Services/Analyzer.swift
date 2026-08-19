@@ -14,12 +14,19 @@ actor Analyzer {
 
     // MARK: - Discovery
 
+    /// Probe format version. v3 reports display (rotation-applied)
+    /// dimensions — rows probed earlier may carry sideways width/height and a
+    /// wrong `wide` flag, so bumping this forces one full re-probe per DB.
+    static let probeVersion = 3
+
     /// Register every video file in the profile's source folder (recursive),
     /// keyed by content fingerprint so renames/moves don't duplicate rows.
     /// Returns the number of newly discovered videos.
     @discardableResult
     func scanSourceFolder(profile: BrandProfile, database: Database) async throws -> Int {
         let folder = profile.sourceFolderURL
+        let probeVersionKey = "analyzer.probeVersion.\(profile.profileName)"
+        let reprobeAll = UserDefaults.standard.integer(forKey: probeVersionKey) < Self.probeVersion
         let known = Dictionary(try await database.fetchVideos().map { ($0.hash, ($0.path, $0.duration)) },
                                uniquingKeysWith: { first, _ in first })
         var candidates: [(url: URL, hash: String)] = []
@@ -31,7 +38,7 @@ actor Analyzer {
             // folder event, so this must be cheap for existing files. A zero
             // duration means the registration probe failed (e.g. ffmpeg was
             // missing), so those rows get re-probed.
-            if let (path, duration) = known[hash], path == item.path, duration > 0 { continue }
+            if !reprobeAll, let (path, duration) = known[hash], path == item.path, duration > 0 { continue }
             candidates.append((item, hash))
         }
         let probed = try await BoundedConcurrency.map(candidates, limit: FFmpeg.jobLimit) { _, candidate in
@@ -44,6 +51,11 @@ actor Analyzer {
             try await database.registerVideo(hash: candidate.hash, filename: candidate.url.lastPathComponent,
                                              path: candidate.url.path, duration: info.duration,
                                              width: info.width, height: info.height, wide: wide)
+        }
+        // Only after every row was rewritten — a thrown probe retries the
+        // full pass on the next scan.
+        if reprobeAll {
+            UserDefaults.standard.set(Self.probeVersion, forKey: probeVersionKey)
         }
         return discovered
     }
@@ -135,13 +147,36 @@ actor Analyzer {
         """
     }
 
+    /// VIP subjects marked by the user — each rides with reference frame(s)
+    /// showing a colored box around the person, and the model is asked to
+    /// return per-subject time ranges alongside the tags.
+    private static func subjectsBlock(_ subjects: [VideoSubject]) -> String {
+        guard !subjects.isEmpty else { return "" }
+        let lines = subjects.map { subject in
+            let times = subject.rects.map { String(format: "%.1fs", $0.at) }.joined(separator: ", ")
+            return "- \"\(subject.name)\" — \(subject.colorName) box; reference frame(s) at \(times)"
+        }.joined(separator: "\n")
+        let example = subjects[0].name
+        return """
+
+        ## VIP SUBJECTS (user-marked people — identify them from their reference boxes)
+        \(lines)
+        Each subject has reference image(s) labeled "SUBJECT <name> (<color> box) at Xs" — the colored rectangle marks exactly who that name refers to. Learn each subject's appearance (build, clothing, hair, position) from their reference image(s), then track them across ALL sampled frames.
+        In your JSON response, ALSO include a top-level "subjects" object mapping each subject's exact name to the time ranges where that person is clearly visible:
+        "subjects": {"\(example)": [{"start": 0.0, "end": 5.2}]}
+        Only include ranges where you can identify the person with confidence; omit a subject entirely if they never appear. If the user context or notes restrict footage to a subject (e.g. "only include scenes with \(example)"), treat that restriction as a HARD FILTER on the tag ranges too.
+
+        """
+    }
+
     private static func fullAnalysisPrompt(domain: String, duration: Double, tags: [String: [String]],
                                            instructions: String, notes: [VideoNote],
-                                           notesHaveReferenceFrames: Bool) -> String {
+                                           notesHaveReferenceFrames: Bool,
+                                           subjects: [VideoSubject]) -> String {
         """
         You are analyzing frames from a \(domain) video.
         Video duration: \(String(format: "%.1f", duration))s. Frames are shown at their timestamps.
-        \(instructionsBlock(instructions))\(notesBlock(notes, withReferenceFrames: notesHaveReferenceFrames))
+        \(instructionsBlock(instructions))\(notesBlock(notes, withReferenceFrames: notesHaveReferenceFrames))\(subjectsBlock(subjects))
         Your job: produce a TAG-CENTRIC analysis. For each tag that applies to this
         video, provide the TIME RANGES where that tag is present. Also note any
         important moments (dialog, key events).
@@ -225,6 +260,7 @@ actor Analyzer {
                        model: String? = nil,
                        instructions: String = "",
                        notes: [VideoNote] = [],
+                       subjects: [VideoSubject] = [],
                        sampleInterval: Double? = nil,
                        force: Bool = false,
                        log: @escaping @Sendable (String) -> Void,
@@ -270,6 +306,28 @@ actor Analyzer {
             }
         }
 
+        // Each VIP subject's boxes ride as annotated frames — the model can't
+        // learn who "Person A" is from a name alone.
+        var subjectFrames: [AIFrame] = []
+        if !subjects.isEmpty {
+            let boxes = subjects.flatMap { subject in
+                subject.rects.prefix(4).map { (subject: subject, rect: $0) }
+            }
+            subjectFrames = ((try? await BoundedConcurrency.map(boxes, limit: FFmpeg.jobLimit) { _, box in
+                let at = min(max(0, box.rect.at), max(0, duration - 0.1))
+                return await ThumbnailService.subjectReferenceJPEG(url: video.url, at: at,
+                                                                   rect: box.rect,
+                                                                   colorIndex: box.subject.colorIndex).map {
+                    AIFrame(jpeg: $0, label: String(format: "SUBJECT %@ (%@ box) at %.1fs",
+                                                    box.subject.name, box.subject.colorName, box.rect.at))
+                }
+            }) ?? []).compactMap { $0 }
+            if !subjectFrames.isEmpty {
+                log("Attached \(subjectFrames.count) VIP reference frame(s) for "
+                    + subjects.map(\.name).joined(separator: ", "))
+            }
+        }
+
         let prompt: String
         let tagsToRecord: [String]
         if isIncremental {
@@ -282,14 +340,15 @@ actor Analyzer {
         } else {
             prompt = Self.fullAnalysisPrompt(domain: domain, duration: duration, tags: tags,
                                              instructions: instructions, notes: notes,
-                                             notesHaveReferenceFrames: !referenceFrames.isEmpty)
+                                             notesHaveReferenceFrames: !referenceFrames.isEmpty,
+                                             subjects: subjects)
             tagsToRecord = Array(allTags)
             progress(0.25, "tagging (\(frames.count) frames)")
             log("Extracted \(frames.count) frames, sending for full analysis...")
         }
 
         let response = try await ai.call(prompt: prompt, task: "analysis",
-                                         frames: referenceFrames + frames,
+                                         frames: referenceFrames + subjectFrames + frames,
                                          model: model, provider: provider, timeout: 300, log: log)
         guard let object = AIResponseParser.jsonObject(from: response) else {
             throw AIError.emptyResponse("analysis (unparseable JSON)")
@@ -307,6 +366,24 @@ actor Analyzer {
                     if end > start { clean.append((start, end)) }
                 }
                 if !clean.isEmpty { cleanTags[tag] = clean }
+            }
+        }
+
+        // Subject ranges land as "vip:<name>" scene tags — filterable in the
+        // Scenes browser and referenceable by name from wizard instructions.
+        if !subjects.isEmpty, let rawSubjects = object["subjects"] as? [String: Any] {
+            let byLowerName = Dictionary(subjects.map { ($0.name.lowercased(), $0) },
+                                         uniquingKeysWith: { first, _ in first })
+            for (name, value) in rawSubjects {
+                guard let subject = byLowerName[name.trimmingCharacters(in: .whitespaces).lowercased()],
+                      let ranges = value as? [[String: Any]] else { continue }
+                var clean: [(Double, Double)] = []
+                for range in ranges {
+                    let start = max(0, ((range["start"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
+                    let end = min(duration, ((range["end"] as? NSNumber)?.doubleValue ?? duration).rounded(toPlaces: 1))
+                    if end > start { clean.append((start, end)) }
+                }
+                if !clean.isEmpty { cleanTags[subject.tag, default: []].append(contentsOf: clean) }
             }
         }
 

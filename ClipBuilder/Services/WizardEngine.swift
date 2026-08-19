@@ -6,6 +6,10 @@ nonisolated struct WizardOptions: Sendable {
     var muteSource = false
     var addCaptions = false
     var autoCropWide = true
+    /// Let the plan stack a wide scene's halves top/bottom. Off by default —
+    /// the split reads as a weird montage on action footage; auto-crop keeps
+    /// the frame filled with the real composition instead.
+    var allowWideSplit = false
     var enableTextOverlays = false
     var useMusic = true
     var aiInstructions = ""
@@ -457,6 +461,7 @@ actor WizardEngine {
                             scenes: [SceneRecord],
                             musicNames: [String],
                             signals: TrainingSignals,
+                            subjects: [VideoSubject],
                             options: WizardOptions,
                             variation: (number: Int, total: Int, previousRationales: [String])?) -> String {
         let domain = profile.effectiveDomain
@@ -597,6 +602,20 @@ actor WizardEngine {
             textOverlayInstruction = "- Text overlays are DISABLED. Set \"text_overlay\" to null for every clip."
         }
 
+        // VIP roster: lets instructions reference people by name ("only
+        // include scenes with Person A") and resolves them to scene tags.
+        var subjectsBlock = ""
+        if !subjects.isEmpty {
+            subjectsBlock = """
+
+
+            ## VIP SUBJECTS (people the user marked and named in their footage)
+            \(subjects.map { "- \"\($0.name)\" (in \($0.videoFilename)) — scenes featuring them are tagged \"\($0.tag)\"" }
+                .joined(separator: "\n"))
+            When the user's instructions mention a person by name, resolve the name with these tags: "only include scenes with <name>" is a HARD FILTER — pick ONLY scenes tagged "vip:<name>". "Keep <name> in focus / centered" means prefer scenes tagged with them and frame every choice (crops, split-screens, overlay placement) around that person. Never substitute footage of a different person for a named subject.
+            """
+        }
+
         let notes = containmentNotes(scenes)
         let sceneList = scenes.map { sceneLine($0, note: notes[$0.id]) }.joined(separator: "\n")
         let musicList = musicNames.isEmpty ? "No music available" : musicNames.joined(separator: ", ")
@@ -610,7 +629,7 @@ actor WizardEngine {
         \(researchJSON)
 
         ## Available Scenes
-        \(sceneList)
+        \(sceneList)\(subjectsBlock)
 
         ## Available Music
         \(musicList)
@@ -675,7 +694,9 @@ actor WizardEngine {
         - only use scene IDs from the list above
         - only use music names from the list above (or null)
         - only use transition names from the list above
-        - For WIDE scenes: set "wide_split": true to display as split-screen (top + bottom halves, filling the full 9:16 frame with no black bars)
+        \(options.allowWideSplit
+            ? "- For WIDE scenes: set \"wide_split\": true to display as split-screen (top + bottom halves, filling the full 9:16 frame with no black bars)"
+            : "- Set \"wide_split\" to false for every clip. WIDE scenes are automatically zoomed to a full-height 9:16 window positioned on the action, so they fill the frame — never plan around letterboxing.")
         - "text_overlay": only include if text overlays are enabled (see below). Use short punchy text (max 6 words) for impact moments, fighter names, or engagement hooks. null if no text needed for this clip. Only use style/animation names from the lists below.
         \(textOverlayInstruction)
         - Return ONLY the JSON object
@@ -858,6 +879,9 @@ actor WizardEngine {
         var sceneMap: [Int64: SceneRecord]
         var music: [(name: String, url: URL)]
         var signals: TrainingSignals
+        /// VIP subjects of the videos the scenes come from — so instructions
+        /// can reference people by name.
+        var subjects: [VideoSubject] = []
     }
 
     private func loadTrainingSignals(database: Database) async -> TrainingSignals {
@@ -895,6 +919,12 @@ actor WizardEngine {
         if options.muteSource { emit("Source audio will be muted (music only)") }
         if options.enableTextOverlays { emit("Text overlays enabled") }
         let signals = await loadTrainingSignals(database: database)
+        let videoIDs = Set(scenes.map(\.videoID))
+        let subjects = ((try? await database.fetchVideoSubjects()) ?? [])
+            .filter { videoIDs.contains($0.videoID) }
+        if !subjects.isEmpty {
+            emit("VIP subjects available: \(subjects.map(\.name).joined(separator: ", "))")
+        }
         emit("Found \(scenes.count) scenes, \(music.count) music tracks, "
              + "\(signals.lessons.count) lesson(s), \(signals.reviews.count) review(s), "
              + "\(signals.feedback.count) feedback entries")
@@ -903,7 +933,7 @@ actor WizardEngine {
         }
         return PlanningInputs(research: research, scenes: scenes,
                               sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
-                              music: music, signals: signals)
+                              music: music, signals: signals, subjects: subjects)
     }
 
     /// One prompt → AI call → validated plan; nil when the response is unusable.
@@ -912,7 +942,7 @@ actor WizardEngine {
                           emit: @escaping @Sendable (String) -> Void) async throws -> WizardPlan? {
         let prompt = planPrompt(profile: profile, research: inputs.research, scenes: inputs.scenes,
                                 musicNames: inputs.music.map(\.name), signals: inputs.signals,
-                                options: options, variation: variation)
+                                subjects: inputs.subjects, options: options, variation: variation)
         let response = try await ai.call(prompt: prompt, task: "wizard",
                                          model: options.modelOverride, timeout: 300, log: emit)
         guard let rawPlan = AIResponseParser.jsonObject(from: response) else { return nil }
@@ -1317,7 +1347,18 @@ actor WizardEngine {
                                     label: String,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> URL {
         let duration = clip.end - clip.start
-        let mode = clip.wideSplit ? "split-screen" : (options.autoCropWide && scene.wide ? "auto-crop" : "")
+        // Screen recordings and reposts bake black bars into the pixels, so
+        // the file's aspect lies about the footage. Crop to the detected
+        // content box and treat the CONTENT's aspect as the wide signal —
+        // otherwise a landscape fight inside a portrait recording letterboxes
+        // no matter what the user asks for.
+        let contentBox = await render.detectContentBox(source: scene.videoURL,
+                                                       start: clip.start, duration: duration)
+        let contentIsWide = contentBox?.isWide ?? scene.wide
+        let useSplit = options.allowWideSplit && clip.wideSplit && scene.wide
+        var mode = useSplit ? "split-screen"
+            : (options.autoCropWide && contentIsWide ? "auto-crop" : "")
+        if contentBox != nil { mode = mode.isEmpty ? "bars removed" : mode + ", bars removed" }
         emit("Video \(label): clip \(index + 1)/\(total) " +
              String(format: "[%.1fs +%.1fs]", clip.start, duration) +
              " from \(scene.videoFilename)\(mode.isEmpty ? "" : " (\(mode))")")
@@ -1401,28 +1442,33 @@ actor WizardEngine {
         }
 
         let output = scratch.appendingPathComponent("clip_\(index).mp4")
-        if clip.wideSplit && scene.wide {
+        if useSplit {
             try await render.extractClip(source: scene.videoURL, start: clip.start,
                                          duration: duration, wide: .split,
+                                         contentBox: contentBox,
                                          overlays: overlays, mute: options.muteSource,
                                          output: output)
-        } else if options.autoCropWide && scene.wide {
+        } else if options.autoCropWide && contentIsWide {
             let xFraction = await render.autoCropXFraction(source: scene.videoURL,
-                                                           start: clip.start, duration: duration)
+                                                           start: clip.start, duration: duration,
+                                                           contentBox: contentBox)
             do {
                 try await render.extractClip(source: scene.videoURL, start: clip.start,
                                              duration: duration, wide: .autoCrop(xFraction),
+                                             contentBox: contentBox,
                                              overlays: overlays, mute: options.muteSource,
                                              output: output)
             } catch {
                 try await render.extractClip(source: scene.videoURL, start: clip.start,
                                              duration: duration,
+                                             contentBox: contentBox,
                                              overlays: overlays, mute: options.muteSource,
                                              output: output)
             }
         } else {
             try await render.extractClip(source: scene.videoURL, start: clip.start,
                                          duration: duration,
+                                         contentBox: contentBox,
                                          overlays: overlays, mute: options.muteSource,
                                          output: output)
         }
