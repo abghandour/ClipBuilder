@@ -65,14 +65,32 @@ struct DispatchPlanSheet: View {
     @AppStorage("analysis.instructions") private var instructions = ""
     @AppStorage("analysis.sampleInterval") private var sampleInterval = 0.0   // 0 = automatic
     @AppStorage("analysis.detectPeople") private var detectPeople = true
+    @AppStorage("analysis.portraitOnly") private var portraitOnly = false
+    @AppStorage("analysis.autoBreakdown") private var autoBreakdown = false
+    @AppStorage("analysis.centerStagePaths") private var centerStagePaths = false
+    /// Camera preset the stored paths are computed with: "smooth",
+    /// "balanced", or "fast" — same values as the Wizard's Center Stage.
+    @AppStorage("analysis.centerStageCamera") private var centerStageCamera = "balanced"
+    /// Comma-joined tags whose scenes get the breakdown pass — AppStorage
+    /// can't hold a Set directly.
+    @AppStorage("analysis.breakdownTags") private var breakdownTagsRaw = ""
     @AppStorage("analysis.includeTranscript") private var includeTranscript = false
     // One engine today; persisted so future engines slot in without a rekey.
     @AppStorage("analysis.transcribeEngine") private var transcribeEngine = "apple"
     @State private var transcriptionLocales: [Locale] = []
     @State private var savedPrompts: [SavedPrompt] = []
     @State private var showSavePrompt = false
-    @State private var savePromptName = ""
     @State private var showManagePrompts = false
+    @State private var savePromptName = ""
+    // Per-run trim (single video only) — deliberately NOT persisted: a
+    // leftover range must never silently apply to another video.
+    @State private var trimEnabled = false
+    @State private var trimStart = 0.0
+    @State private var trimEnd = 0.0
+    // Roster selection (single video only) — also per-run, like the trim:
+    // checked people can become a hard "must all be present" scene filter.
+    @State private var selectedPeopleKeys: Set<String> = []
+    @State private var requirePeople = false
 
     private static let samplingChoices: [(label: String, value: Double)] = [
         ("Automatic (1–3s by length)", 0),
@@ -86,7 +104,11 @@ struct DispatchPlanSheet: View {
                 .frame(width: 460)
             if showsNotesPanel {
                 Divider()
-                VideoNotesPanel(videos: videos)
+                VideoNotesPanel(videos: videos,
+                                trimEnabled: $trimEnabled,
+                                trimStart: $trimStart, trimEnd: $trimEnd,
+                                selectedPeopleKeys: $selectedPeopleKeys,
+                                requirePeople: $requirePeople)
                     .frame(width: 520)
             }
         }
@@ -153,8 +175,30 @@ struct DispatchPlanSheet: View {
                         }
                     }
                     .help("How often a frame is sent to the model. Denser sampling catches short moments but costs more (capped at 60 frames).")
+                    if videos.count == 1 {
+                        Toggle("Analyze only a section", isOn: $trimEnabled)
+                            .help("Restrict this run to a time range: frames are sampled and scenes detected only inside it. The section selector appears under the video preview on the right. Applies to this run only — it is not remembered.")
+                    }
                     Toggle("Detect people (build the People registry)", isOn: $detectPeople)
                         .help("Identify each distinct person, tag their scenes, and keep their identity across videos — see the People section")
+                    Toggle("Only keep scenes that crop to 9:16 with people in frame", isOn: $portraitOnly)
+                        .help("After tagging, each scene is checked locally (no AI cost): scenes whose people are spread too wide for a full-height 9:16 crop — or with nobody visible — are auto-hidden. Bring them back anytime with Show Hidden on the Scenes screen.")
+                    Toggle("Break down tagged scenes into sub-scenes", isOn: $autoBreakdown)
+                        .help("Scenes carrying one of the tags picked below get a second, frame-dense AI pass that splits them into their individual actions — each combo or exchange becomes its own scene. Costs one extra AI call per broken-down scene.")
+                    if autoBreakdown {
+                        breakdownTagRows
+                    }
+                    Toggle("Compute Center Stage camera paths", isOn: $centerStagePaths)
+                        .help("Tracks the people in each wide scene locally (no AI cost) and stores the virtual camera's pan/zoom path. Scene previews then play the real moving crop, and generation reuses the path instead of re-tracking. With this on, the video preview also shows the camera's framing for the paused moment — drag or resize that rectangle to pin your preferred framing as a hard hint. Adds local processing time per scene.")
+                    if centerStagePaths {
+                        Picker("Camera", selection: $centerStageCamera) {
+                            Text("Smooth").tag("smooth")
+                            Text("Balanced").tag("balanced")
+                            Text("Fast action").tag("fast")
+                        }
+                        .pickerStyle(.segmented)
+                        .help("How eagerly the tracking camera chases the people — the same presets as the Wizard's Center Stage. Generation reuses a stored path only when its preset matches.")
+                    }
                     transcriptionRows
                 }
                 ForEach(operation.localStages, id: \.label) { stage in
@@ -166,7 +210,11 @@ struct DispatchPlanSheet: View {
             }
             .formStyle(.grouped)
             .frame(minHeight: CGFloat(operation.aiTasks.count + operation.localStages.count) * 44 + 60
-                   + (operation == .analyze ? (includeTranscript ? 176 : 88) : 0))
+                   + (operation == .analyze
+                      ? (includeTranscript ? 308 : 220) + (autoBreakdown ? 160 : 0)
+                        + (centerStagePaths ? 44 : 0)
+                        + (videos.count == 1 ? 44 : 0)
+                      : 0))
 
             if operation == .analyze {
                 instructionsSection
@@ -191,6 +239,54 @@ struct DispatchPlanSheet: View {
                 }
             }
             .padding()
+        }
+    }
+
+    /// The trim range to hand to the run; nil when trimming is off or the
+    /// handles still span the whole video (= no trim).
+    private var trimRange: (start: Double, end: Double)? {
+        guard trimEnabled, videos.count == 1, let video = videos.first,
+              trimEnd > trimStart else { return nil }
+        if trimStart <= 0.05, trimEnd >= video.duration - 0.05 { return nil }
+        return (max(0, trimStart), min(video.duration, trimEnd))
+    }
+
+    private var selectedBreakdownTags: Set<String> {
+        Set(breakdownTagsRaw.split(separator: ",").map(String.init))
+    }
+
+    private func breakdownBinding(for tag: String) -> Binding<Bool> {
+        Binding(get: { selectedBreakdownTags.contains(tag) },
+                set: { on in
+                    var tags = selectedBreakdownTags
+                    if on { tags.insert(tag) } else { tags.remove(tag) }
+                    breakdownTagsRaw = tags.sorted().joined(separator: ",")
+                })
+    }
+
+    /// Which tags mark a scene for the breakdown pass, from the profile's
+    /// tag vocabulary. The picks persist between runs.
+    @ViewBuilder
+    private var breakdownTagRows: some View {
+        let vocabulary = Array(Set(store.activeProfile.effectiveTags.values.flatMap { $0 })).sorted()
+        if vocabulary.isEmpty {
+            Text("This profile has no tag vocabulary yet.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(vocabulary, id: \.self) { tag in
+                        Toggle(tag, isOn: breakdownBinding(for: tag))
+                            .toggleStyle(.checkbox)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 120)
+            Text("Scenes at least \(Int(Analyzer.minBreakdownDuration))s long carrying any checked tag are broken down into their individual actions.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -348,6 +444,20 @@ struct DispatchPlanSheet: View {
     }
 
     private func start() {
+        // One-shot hand-off: the analyze run consumes and clears these.
+        if let range = trimRange {
+            UserDefaults.standard.set(range.start, forKey: "analysis.trimStart")
+            UserDefaults.standard.set(range.end, forKey: "analysis.trimEnd")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "analysis.trimStart")
+            UserDefaults.standard.removeObject(forKey: "analysis.trimEnd")
+        }
+        if requirePeople, !selectedPeopleKeys.isEmpty {
+            UserDefaults.standard.set(selectedPeopleKeys.sorted().joined(separator: ","),
+                                      forKey: "analysis.requiredPeople")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "analysis.requiredPeople")
+        }
         for task in operation.aiTasks {
             let tag = choices[task] ?? recommendedTag(for: task)
             let parts = tag.split(separator: "|", maxSplits: 1)
@@ -421,6 +531,14 @@ private struct ManagePromptsSheet: View {
 private struct VideoNotesPanel: View {
     @Environment(AppStore.self) private var store
     let videos: [VideoRecord]
+    /// "Analyze only a section": the trim selector renders under the video
+    /// so scrubbing it drives this panel's player.
+    @Binding var trimEnabled: Bool
+    @Binding var trimStart: Double
+    @Binding var trimEnd: Double
+    /// Roster checks + the "everyone checked must be in every scene" flag.
+    @Binding var selectedPeopleKeys: Set<String>
+    @Binding var requirePeople: Bool
 
     @State private var selectedIndex = 0
     @State private var notes: [VideoNote] = []
@@ -429,8 +547,25 @@ private struct VideoNotesPanel: View {
     @State private var markers: [PersonMarker] = []
     @State private var currentTime = 0.0
     @State private var timeObserver: Any?
+    @State private var sectionEndObserver: Any?
+    @State private var isPlayingSection = false
     @State private var pendingNewPersonMarker: PersonMarker?
     @State private var newPersonName = ""
+    // Center Stage framing: the computed crop for the paused frame, shown
+    // as an adjustable rectangle; adjusting pins a hard camera hint.
+    @AppStorage("analysis.centerStagePaths") private var centerStagePaths = false
+    @AppStorage("analysis.centerStageCamera") private var centerStageCamera = "balanced"
+    @State private var hints: [CameraHint] = []
+    @State private var suggestionCrop: CGRect?
+    @State private var suggestionDraft: CGRect?
+    @State private var focusPortraits: [Data] = []
+    @State private var avoidPortraits: [Data] = []
+    // The real camera path for the trimmed section, computed on Play
+    // Section and animated over the playing video. Cached per section.
+    @State private var sectionPath: [CameraPathKeyframe]?
+    @State private var sectionPathKey = ""
+    @State private var isComputingSectionPath = false
+    @State private var videoPeople: [VideoPersonRecord] = []
 
     /// One distinct color per marker, cycling a fixed palette.
     private static let markerColors: [Color] = [.yellow, .green, .cyan, .orange,
@@ -441,18 +576,207 @@ private struct VideoNotesPanel: View {
     }
 
     private func markerColor(_ marker: PersonMarker) -> Color {
+        if marker.ignored { return .gray }
         let index = markers.firstIndex(where: { $0.id == marker.id }) ?? 0
         return Self.markerColors[index % Self.markerColors.count]
     }
 
     private func markerPersonName(_ marker: PersonMarker) -> String? {
-        marker.personID.flatMap { id in store.people.first { $0.id == id }?.displayName }
+        if marker.ignored { return "Ignored" }
+        return marker.personID.flatMap { id in store.people.first { $0.id == id }?.displayName }
     }
 
     /// Markers anchored near the current playback moment — the ones drawn
     /// over the video and editable right now.
     private var visibleMarkers: [PersonMarker] {
         markers.filter { abs($0.atTime - currentTime) < 0.5 }
+    }
+
+    /// Recompute the framing suggestion when the paused moment (rounded to
+    /// half-seconds), the video, the hint set, or the marker roster changes.
+    private var suggestionKey: String {
+        "\(video.id)|\(centerStagePaths)|\((currentTime * 2).rounded())|\(hints.count)"
+            + "|\(markers.filter(\.ignored).count)|\(markers.count(where: { $0.personID != nil }))"
+    }
+
+    /// Positive (named) and negative (ignored) identity references for the
+    /// framing suggestion, from this video's markers.
+    private func reloadPortraits() async {
+        let named = markers.filter { $0.personID != nil && !$0.ignored }
+        let ignored = markers.filter(\.ignored)
+        focusPortraits = named.isEmpty ? []
+            : await Analyzer.markerPortraits(url: video.url, markers: named,
+                                             duration: video.duration)
+        avoidPortraits = ignored.isEmpty ? []
+            : await Analyzer.markerPortraits(url: video.url, markers: ignored,
+                                             duration: video.duration)
+    }
+
+    // MARK: - People roster (people-only pass)
+
+    /// Everyone the people pass found in this video: avatars with check
+    /// toggles, a run/re-run button, and the "everyone must be present"
+    /// scene filter for the checked set.
+    @ViewBuilder
+    private var peopleRoster: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("People in this video")
+                    .font(.caption.weight(.medium))
+                Spacer()
+                if store.isDetectingPeople {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+                Button(videoPeople.isEmpty ? "Detect People" : "Re-run") {
+                    Task { videoPeople = await store.detectPeopleInVideo(video) }
+                }
+                .controlSize(.small)
+                .disabled(store.isDetectingPeople)
+                .help("A people-only AI pass: identifies everyone in this video (honoring your markers) and builds the roster below — without running the full scene analysis")
+            }
+            if videoPeople.isEmpty {
+                Text("Run Detect People to see everyone in this video and optionally require them in every scene.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 12) {
+                        ForEach(videoPeople) { entry in
+                            personChip(entry)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                Toggle("Only keep scenes where every checked person is present (>50% of their body visible)",
+                       isOn: $requirePeople)
+                    .font(.caption)
+                    .disabled(selectedPeopleKeys.isEmpty)
+                    .help("A hard filter for this run: the analysis omits every time range where any checked person is absent or mostly hidden")
+            }
+        }
+    }
+
+    private func personChip(_ entry: VideoPersonRecord) -> some View {
+        let isSelected = selectedPeopleKeys.contains(entry.key)
+        return Button {
+            if isSelected {
+                selectedPeopleKeys.remove(entry.key)
+            } else {
+                selectedPeopleKeys.insert(entry.key)
+            }
+        } label: {
+            VStack(spacing: 3) {
+                VideoPersonAvatar(record: entry, videoURL: video.url, size: 44)
+                    .overlay {
+                        Circle()
+                            .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2.5)
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 14))
+                                .symbolRenderingMode(.palette)
+                                .foregroundStyle(.white, Color.accentColor)
+                                .background(Circle().fill(.background))
+                        }
+                    }
+                Text(entry.displayName)
+                    .font(.caption2)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+            .frame(width: 58)
+        }
+        .buttonStyle(.plain)
+        .help(entry.descriptor.isEmpty ? entry.displayName : "\(entry.displayName) — \(entry.descriptor)")
+    }
+
+    // MARK: - Section trim playback
+
+    /// Dragging a trim handle parks the player on that anchor's frame. A
+    /// small tolerance keeps mid-drag seeks cheap (near-keyframe) — exact
+    /// seeks per drag tick stutter on long-GOP sources.
+    private func scrub(to time: Double) {
+        guard let player else { return }
+        if isPlayingSection {
+            stopSectionPlayback()
+        } else {
+            player.pause()
+        }
+        let tolerance = CMTime(seconds: 0.25, preferredTimescale: 600)
+        player.seek(to: CMTime(seconds: time, preferredTimescale: 600),
+                    toleranceBefore: tolerance, toleranceAfter: tolerance)
+    }
+
+    /// The cached section path is valid only for this exact section, camera,
+    /// and marker/hint state.
+    private var sectionPathCacheKey: String {
+        "\(video.id)|\(trimStart)|\(trimEnd)|\(centerStageCamera)|\(markers.hashValue)|\(hints.hashValue)"
+    }
+
+    /// Run the real tracking pass for the trimmed section so the framing
+    /// overlay can follow it during playback. Cached until the section, the
+    /// camera preset, a marker, or a hint changes.
+    private func prepareSectionPath() {
+        let key = sectionPathCacheKey
+        guard key != sectionPathKey || sectionPath == nil else { return }
+        sectionPathKey = key
+        sectionPath = nil
+        isComputingSectionPath = true
+        let start = trimStart
+        let end = trimEnd
+        let focus = focusPortraits
+        let avoid = avoidPortraits
+        let sectionHints = hints
+            .filter { $0.atTime >= start - 0.25 && $0.atTime <= end + 0.25 }
+            .map { hint in
+                (time: min(max(0, hint.atTime - start), end - start),
+                 crop: CGRect(x: hint.x, y: hint.y, width: hint.width, height: hint.height))
+            }
+        let url = video.url
+        let camera = centerStageCamera
+        Task {
+            let centerStage = CenterStageService()
+            let result = try? await centerStage.cameraPath(
+                source: url, start: start, duration: end - start,
+                focusPortraits: focus, avoidPortraits: avoid,
+                hints: sectionHints, tuning: .named(camera))
+            guard sectionPathKey == key else { return }
+            sectionPath = result?.keyframes
+            isComputingSectionPath = false
+        }
+    }
+
+    /// Play exactly [trimStart, trimEnd] in the panel's player, stopping on
+    /// the end boundary.
+    private func playSection() {
+        guard let player, trimEnd > trimStart else { return }
+        stopSectionPlayback()
+        if centerStagePaths, video.wide {
+            prepareSectionPath()
+        }
+        sectionEndObserver = player.addBoundaryTimeObserver(
+            forTimes: [NSValue(time: CMTime(seconds: trimEnd, preferredTimescale: 600))],
+            queue: .main) {
+            Task { @MainActor in stopSectionPlayback() }
+        }
+        player.seek(to: CMTime(seconds: trimStart, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+            player.play()
+        }
+        isPlayingSection = true
+    }
+
+    private func stopSectionPlayback() {
+        if let sectionEndObserver, let player {
+            player.removeTimeObserver(sectionEndObserver)
+        }
+        sectionEndObserver = nil
+        if isPlayingSection {
+            player?.pause()
+            isPlayingSection = false
+        }
     }
 
     var body: some View {
@@ -499,8 +823,127 @@ private struct VideoNotesPanel: View {
                                 Task { markers = await store.updatePersonMarker(updated) }
                             }
                         }
+                        // While the section plays, the REAL camera path
+                        // rides over the video: the framing rectangle moves
+                        // in real time and everything outside it dims.
+                        if isPlayingSection, centerStagePaths, video.wide,
+                           let path = sectionPath, let player {
+                            SwiftUI.TimelineView(.animation) { _ in
+                                let t = player.currentTime().seconds - trimStart
+                                if let crop = CenterStageService.interpolated(path, at: t) {
+                                    let rect = CGRect(
+                                        x: videoRect.minX + crop.x * videoRect.width,
+                                        y: videoRect.minY + crop.y * videoRect.height,
+                                        width: crop.w * videoRect.width,
+                                        height: crop.h * videoRect.height)
+                                    ZStack(alignment: .topLeading) {
+                                        // Dim what the crop would discard.
+                                        Path { dim in
+                                            dim.addRect(videoRect)
+                                            dim.addRect(rect)
+                                        }
+                                        .fill(.black.opacity(0.45), style: FillStyle(eoFill: true))
+                                        Rectangle()
+                                            .strokeBorder(.yellow, lineWidth: 3)
+                                            .frame(width: rect.width, height: rect.height)
+                                            .position(x: rect.midX, y: rect.midY)
+                                    }
+                                }
+                            }
+                            .allowsHitTesting(false)
+                        }
+                        // Center Stage framing for this paused moment: a
+                        // saved hint if one is anchored nearby, else the
+                        // tracker's computed crop — drag either to pin the
+                        // preferred framing as a hard hint.
+                        if centerStagePaths, video.wide, video.height > 0, !isPlayingSection {
+                            let widthPerHeight = (9.0 / 16.0)
+                                * Double(video.height) / Double(max(1, video.width))
+                            if let hint = hints.first(where: { abs($0.atTime - currentTime) < 0.5 }) {
+                                CameraFrameBox(rect: CGRect(x: hint.x, y: hint.y,
+                                                            width: hint.width, height: hint.height),
+                                               color: .orange,
+                                               label: "Camera hint",
+                                               videoRect: videoRect,
+                                               widthPerHeight: widthPerHeight) { updated in
+                                    if let index = hints.firstIndex(where: { $0.id == hint.id }) {
+                                        hints[index].x = updated.minX
+                                        hints[index].y = updated.minY
+                                        hints[index].width = updated.width
+                                        hints[index].height = updated.height
+                                    }
+                                } onCommit: { updated in
+                                    var changed = hint
+                                    changed.x = updated.minX
+                                    changed.y = updated.minY
+                                    changed.width = updated.width
+                                    changed.height = updated.height
+                                    Task { hints = await store.updateCameraHint(changed) }
+                                }
+                            } else if let crop = suggestionDraft ?? suggestionCrop {
+                                CameraFrameBox(rect: crop,
+                                               color: .cyan,
+                                               label: "Center Stage — drag to pin",
+                                               videoRect: videoRect,
+                                               widthPerHeight: widthPerHeight) { updated in
+                                    suggestionDraft = updated
+                                } onCommit: { updated in
+                                    let time = currentTime
+                                    suggestionDraft = nil
+                                    Task {
+                                        hints = await store.addCameraHint(videoID: video.id,
+                                                                          at: time, rect: updated)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
+
+            if trimEnabled && videos.count == 1 {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Section to analyze")
+                            .font(.caption.weight(.medium))
+                        Spacer()
+                        if isPlayingSection && centerStagePaths && isComputingSectionPath {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Computing Center Stage…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Button {
+                            if isPlayingSection {
+                                stopSectionPlayback()
+                            } else {
+                                playSection()
+                            }
+                        } label: {
+                            Label(isPlayingSection ? "Stop" : "Play Section",
+                                  systemImage: isPlayingSection ? "stop.fill" : "play.fill")
+                        }
+                        .controlSize(.small)
+                        .help(centerStagePaths
+                              ? "Play just the selected section — the Center Stage framing rides over the video in real time once its tracking pass finishes"
+                              : "Play just the selected section in the player above")
+                    }
+                    VideoTrimSlider(url: video.url, duration: video.duration,
+                                    start: $trimStart, end: $trimEnd) { time in
+                        scrub(to: time)
+                    }
+                }
+                .onAppear {
+                    if trimEnd <= trimStart {
+                        trimStart = 0
+                        trimEnd = video.duration
+                    }
+                }
+            }
+
+            if videos.count == 1 {
+                peopleRoster
+            }
 
             HStack {
                 Button {
@@ -526,6 +969,45 @@ private struct VideoNotesPanel: View {
                     }
                 }
                 .frame(maxHeight: 96)
+            }
+
+            if centerStagePaths, !hints.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(hints) { hint in
+                            HStack(spacing: 6) {
+                                Button {
+                                    player?.pause()
+                                    player?.seek(to: CMTime(seconds: hint.atTime,
+                                                            preferredTimescale: 600),
+                                                 toleranceBefore: .zero, toleranceAfter: .zero)
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "camera.viewfinder")
+                                            .foregroundStyle(.orange)
+                                        Text(hint.atTime.timecode)
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(.tint)
+                                        Text("Camera framing hint")
+                                            .font(.caption)
+                                        Spacer(minLength: 0)
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Jump to this hint's moment to see or adjust its framing")
+                                Button {
+                                    Task { hints = await store.deleteCameraHint(hint) }
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .controlSize(.small)
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 72)
             }
 
             HStack {
@@ -585,6 +1067,7 @@ private struct VideoNotesPanel: View {
                 player.removeTimeObserver(timeObserver)
                 self.timeObserver = nil
             }
+            stopSectionPlayback()
             player?.pause()
             let newPlayer = AVPlayer(url: video.url)
             player = newPlayer
@@ -596,12 +1079,36 @@ private struct VideoNotesPanel: View {
             }
             notes = await store.videoNotes(for: video.id)
             markers = await store.personMarkers(for: video.id)
+            hints = await store.centerStageHints(for: video.id)
+            videoPeople = await store.videoPeople(for: video.id)
+            selectedPeopleKeys = []
+            await reloadPortraits()
+        }
+        .onChange(of: markers) {
+            Task { await reloadPortraits() }
+        }
+        // The paused frame's computed Center Stage crop — debounced so
+        // scrubbing doesn't spawn a Vision call per tick.
+        .task(id: suggestionKey) {
+            suggestionDraft = nil
+            guard centerStagePaths, video.wide, (player?.rate ?? 0) == 0 else {
+                suggestionCrop = nil
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            suggestionCrop = await CenterStageService.stillFrameCrop(
+                source: video.url, at: currentTime,
+                focusPortraits: focusPortraits,
+                avoidPortraits: avoidPortraits,
+                tuning: .named(centerStageCamera))
         }
         .onDisappear {
             if let timeObserver, let player {
                 player.removeTimeObserver(timeObserver)
                 self.timeObserver = nil
             }
+            stopSectionPlayback()
             player?.pause()
         }
         .alert("New Person", isPresented: Binding(
@@ -654,13 +1161,29 @@ private struct VideoNotesPanel: View {
                     Button(person.displayName) {
                         var updated = marker
                         updated.personID = person.id
-                        Task { markers = await store.updatePersonMarker(updated) }
+                        let wasIgnored = updated.ignored
+                        updated.ignored = false
+                        Task {
+                            markers = await store.updatePersonMarker(updated)
+                            if wasIgnored { store.markerIgnoreChanged(videoID: video.id) }
+                        }
                     }
                 }
                 if !store.people.isEmpty { Divider() }
                 Button("New Person…") {
                     pendingNewPersonMarker = marker
                 }
+                Divider()
+                Button(marker.ignored ? "Stop Ignoring" : "Ignore — exclude from the whole video") {
+                    var updated = marker
+                    updated.ignored = !marker.ignored
+                    if updated.ignored { updated.personID = nil }
+                    Task {
+                        markers = await store.updatePersonMarker(updated)
+                        store.markerIgnoreChanged(videoID: video.id)
+                    }
+                }
+                .help("The boxed person (e.g. a referee) is never framed by Center Stage and never registered or tagged by analysis — applied to this entire video")
             }
             .controlSize(.small)
             .fixedSize()
@@ -704,6 +1227,150 @@ private struct VideoNotesPanel: View {
 /// One editable identity box over the video: drag the body to move, drag the
 /// bottom-right dot to resize. Coordinates stay normalized to the video's
 /// display rect, so they survive any player size.
+/// Round avatar for a roster entry, cropped from the portrait box the
+/// people pass picked for them. Falls back to initials.
+private struct VideoPersonAvatar: View {
+    let record: VideoPersonRecord
+    let videoURL: URL
+    var size: CGFloat = 44
+
+    @State private var image: NSImage?
+    @State private var loadedID: Int64?
+
+    private var initials: String {
+        record.displayName.split(separator: " ").prefix(2)
+            .compactMap(\.first).map(String.init).joined()
+    }
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Color.clear
+                    .overlay {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                    }
+            } else {
+                Circle()
+                    .fill(.quaternary)
+                Text(initials.isEmpty ? "?" : initials)
+                    .font(.system(size: size * 0.36, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .task(id: record.personID) {
+            guard loadedID != record.personID else { return }
+            loadedID = record.personID
+            image = nil
+            guard let box = record.portraitBox,
+                  let frame = await ThumbnailService.jpegFrame(url: videoURL,
+                                                               at: record.portraitAt,
+                                                               maxDimension: 720) else { return }
+            let marker = PersonMarker(id: 0, videoID: record.videoID,
+                                      atTime: record.portraitAt,
+                                      x: box.x, y: box.y, width: box.w, height: box.h)
+            if let portrait = Analyzer.markerPortrait(from: frame, marker: marker),
+               let cropped = NSImage(data: portrait) {
+                image = cropped
+            }
+        }
+    }
+}
+
+/// Draggable, corner-resizable camera-framing rectangle over the video
+/// (9:16 locked): shows where Center Stage points at this moment; adjusting
+/// it pins the framing as a hard hint.
+private struct CameraFrameBox: View {
+    var rect: CGRect          // normalized top-left display coords
+    let color: Color
+    let label: String
+    let videoRect: CGRect
+    /// Normalized width per unit height that keeps the crop 9:16 in pixels.
+    let widthPerHeight: Double
+    let onChange: (CGRect) -> Void
+    let onCommit: (CGRect) -> Void
+
+    /// Rect at gesture start — deltas apply against this.
+    @State private var gestureStart: CGRect?
+
+    private var boxRect: CGRect {
+        CGRect(x: videoRect.minX + rect.minX * videoRect.width,
+               y: videoRect.minY + rect.minY * videoRect.height,
+               width: rect.width * videoRect.width,
+               height: rect.height * videoRect.height)
+    }
+
+    var body: some View {
+        let box = boxRect
+        ZStack(alignment: .bottomTrailing) {
+            Rectangle()
+                .strokeBorder(color, lineWidth: 3)
+                .background(color.opacity(0.22))
+                .contentShape(Rectangle())
+                .gesture(moveGesture)
+            Circle()
+                .fill(color)
+                .frame(width: 13, height: 13)
+                .contentShape(Circle().inset(by: -8))
+                .gesture(resizeGesture)
+                .offset(x: 5, y: 5)
+        }
+        .overlay(alignment: .topLeading) {
+            Text(label)
+                .font(.caption2.bold())
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(color, in: RoundedRectangle(cornerRadius: 3))
+                .foregroundStyle(.black)
+                .offset(y: -16)
+        }
+        .frame(width: box.width, height: box.height)
+        .position(x: box.midX, y: box.midY)
+    }
+
+    private var moveGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                let start = gestureStart ?? rect
+                gestureStart = start
+                var updated = start
+                updated.origin.x = min(max(0, start.minX + value.translation.width / videoRect.width),
+                                       1 - start.width)
+                updated.origin.y = min(max(0, start.minY + value.translation.height / videoRect.height),
+                                       1 - start.height)
+                onChange(updated)
+            }
+            .onEnded { _ in
+                gestureStart = nil
+                onCommit(rect)
+            }
+    }
+
+    private var resizeGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                let start = gestureStart ?? rect
+                gestureStart = start
+                // Corner resize, 9:16 locked: height drives width.
+                let maxHeight = min(1.0, 1.0 / max(0.0001, widthPerHeight))
+                let height = min(max(0.12, start.height + value.translation.height / videoRect.height),
+                                 maxHeight)
+                let width = height * widthPerHeight
+                var updated = CGRect(x: start.minX, y: start.minY, width: width, height: height)
+                updated.origin.x = min(max(0, updated.minX), 1 - width)
+                updated.origin.y = min(max(0, updated.minY), 1 - height)
+                onChange(updated)
+            }
+            .onEnded { _ in
+                gestureStart = nil
+                onCommit(rect)
+            }
+    }
+}
+
 private struct PersonMarkerBox: View {
     let marker: PersonMarker
     let color: Color
@@ -784,5 +1451,144 @@ private struct PersonMarkerBox: View {
                 gestureStart = nil
                 onCommit(marker)
             }
+    }
+}
+
+/// iPhone-Photos-style trim scrubber: a thumbnail filmstrip with draggable
+/// start/end handles bounding the section to analyze. Dragging the middle
+/// slides the whole selection; `onScrub` reports the anchor being dragged
+/// so a player can follow it. Times ride under the strip and update live.
+struct VideoTrimSlider: View {
+    let url: URL
+    let duration: Double
+    @Binding var start: Double
+    @Binding var end: Double
+    var onScrub: ((Double) -> Void)?
+
+    /// Selection start + span captured when a middle drag begins.
+    @State private var moveAnchor: (start: Double, span: Double)?
+
+    private static let handleWidth: CGFloat = 14
+    private static let stripHeight: CGFloat = 44
+    private static let minimumSpan = 1.0
+    private static let thumbnailCount = 8
+    /// Gestures measure in this fixed strip space — measuring in the moving
+    /// handles' own space feeds the drag back into itself and jitters.
+    private static let stripSpace = "videoTrimStrip"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            GeometryReader { proxy in
+                let width = proxy.size.width
+                let startX = x(for: start, width: width)
+                let endX = x(for: end, width: width)
+                ZStack(alignment: .topLeading) {
+                    filmstrip(width: width)
+                    // Dim what's outside the selection.
+                    Rectangle()
+                        .fill(.black.opacity(0.55))
+                        .frame(width: max(0, startX), height: Self.stripHeight)
+                    Rectangle()
+                        .fill(.black.opacity(0.55))
+                        .frame(width: max(0, width - endX), height: Self.stripHeight)
+                        .offset(x: endX)
+                    // Selection frame.
+                    RoundedRectangle(cornerRadius: 4)
+                        .strokeBorder(.yellow, lineWidth: 3)
+                        .frame(width: max(endX - startX, Self.handleWidth * 2),
+                               height: Self.stripHeight)
+                        .offset(x: startX)
+                        .allowsHitTesting(false)
+                    // Middle drag: slide the whole selection, span unchanged.
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .frame(width: max(0, endX - startX - Self.handleWidth * 2),
+                               height: Self.stripHeight)
+                        .offset(x: startX + Self.handleWidth)
+                        .gesture(DragGesture(coordinateSpace: .named(Self.stripSpace))
+                            .onChanged { value in
+                                let anchor = moveAnchor ?? (start, end - start)
+                                moveAnchor = anchor
+                                let shift = duration > 0 && width > 0
+                                    ? Double(value.translation.width / width) * duration : 0
+                                let newStart = min(max(0, anchor.start + shift),
+                                                   max(0, duration - anchor.span))
+                                start = newStart
+                                end = newStart + anchor.span
+                                onScrub?(newStart)
+                            }
+                            .onEnded { _ in moveAnchor = nil })
+                    handle(icon: "chevron.compact.left")
+                        .offset(x: startX)
+                        .gesture(DragGesture(minimumDistance: 0,
+                                             coordinateSpace: .named(Self.stripSpace))
+                            .onChanged { value in
+                                let t = time(forX: value.location.x, width: width)
+                                start = min(max(0, t), end - Self.minimumSpan)
+                                onScrub?(start)
+                            })
+                    handle(icon: "chevron.compact.right")
+                        .offset(x: endX - Self.handleWidth)
+                        .gesture(DragGesture(minimumDistance: 0,
+                                             coordinateSpace: .named(Self.stripSpace))
+                            .onChanged { value in
+                                let t = time(forX: value.location.x, width: width)
+                                end = max(min(duration, t), start + Self.minimumSpan)
+                                onScrub?(end)
+                            })
+                }
+                .coordinateSpace(name: Self.stripSpace)
+            }
+            .frame(height: Self.stripHeight)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            HStack {
+                Text(start.timecode)
+                Spacer()
+                Text(String(format: "%.1fs selected", max(0, end - start)))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(end.timecode)
+            }
+            .font(.caption.monospacedDigit())
+        }
+    }
+
+    private func x(for time: Double, width: CGFloat) -> CGFloat {
+        guard duration > 0 else { return 0 }
+        return CGFloat(min(max(0, time / duration), 1)) * width
+    }
+
+    private func time(forX x: CGFloat, width: CGFloat) -> Double {
+        guard width > 0 else { return 0 }
+        return Double(min(max(0, x / width), 1)) * duration
+    }
+
+    private func filmstrip(width: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            ForEach(0..<Self.thumbnailCount, id: \.self) { index in
+                VideoThumbnail(url: url,
+                               time: duration * (Double(index) + 0.5) / Double(Self.thumbnailCount),
+                               cornerRadius: 0)
+                    .frame(width: width / CGFloat(Self.thumbnailCount),
+                           height: Self.stripHeight)
+                    .clipped()
+            }
+        }
+    }
+
+    private func handle(icon: String) -> some View {
+        UnevenRoundedRectangle(topLeadingRadius: icon.hasSuffix("left") ? 4 : 0,
+                               bottomLeadingRadius: icon.hasSuffix("left") ? 4 : 0,
+                               bottomTrailingRadius: icon.hasSuffix("left") ? 0 : 4,
+                               topTrailingRadius: icon.hasSuffix("left") ? 0 : 4)
+            .fill(.yellow)
+            .frame(width: Self.handleWidth, height: Self.stripHeight)
+            .overlay {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.black)
+            }
+            .contentShape(Rectangle().inset(by: -8))
     }
 }

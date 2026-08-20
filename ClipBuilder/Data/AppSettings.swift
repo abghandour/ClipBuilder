@@ -149,8 +149,10 @@ nonisolated enum AICatalog {
         "analysis": [("gemini", "gemini-2.5-flash"),
                      ("claude", "claude-sonnet-4-6"),
                      ("claude", "claude-haiku-4-5-20251001")],
-        // Planning is the run's brain: strongest reasoning first.
-        "wizard": [("claude", "claude-sonnet-4-6"),
+        // Planning is the run's brain: strongest reasoning first — Fable at
+        // maximum thinking (AIService raises the thinking budget for it).
+        "wizard": [("claude", "claude-fable-5"),
+                   ("claude", "claude-sonnet-4-6"),
                    ("gemini", "gemini-2.5-pro"),
                    ("codex", "gpt-5")],
         "research": [("claude", "claude-sonnet-4-6"),
@@ -163,7 +165,8 @@ nonisolated enum AICatalog {
         "captions": [("claude", "claude-haiku-4-5-20251001"),
                      ("gemini", "gemini-2.5-flash"),
                      ("codex", "gpt-5-mini")],
-        "distill": [("claude", "claude-sonnet-4-6"),
+        "distill": [("claude", "claude-fable-5"),
+                    ("claude", "claude-sonnet-4-6"),
                     ("gemini", "gemini-2.5-pro"),
                     ("codex", "gpt-5")],
         // Reading overlay layout from one image: multimodal, precision over
@@ -185,7 +188,8 @@ nonisolated enum AICatalog {
     static let providers: [Provider] = [
         Provider(key: "claude", label: "Claude Code", bin: "claude",
                  defaultModel: "claude-haiku-4-5-20251001", supportsImages: true,
-                 models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-8"]),
+                 models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-8",
+                          "claude-fable-5"]),
         Provider(key: "gemini", label: "Gemini CLI", bin: "gemini",
                  defaultModel: "gemini-2.5-flash", supportsImages: true,
                  models: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]),
@@ -220,6 +224,12 @@ nonisolated enum SettingsStore {
 
     static func databaseURL(profileName: String) -> URL {
         profilesDBDirectory.appendingPathComponent(ProfileStore.sanitize(profileName) + ".db")
+    }
+
+    /// Saved taste-exemplar frames: taste/<profile>/exemplar-*.jpg.
+    static func tasteFramesDirectory(profileName: String) -> URL {
+        dataDirectory.appendingPathComponent("taste/\(ProfileStore.sanitize(profileName))",
+                                             isDirectory: true)
     }
 
     /// Per-account Instagram cache: thumbs/<media_id>.jpg, videos/<media_id>.mp4.

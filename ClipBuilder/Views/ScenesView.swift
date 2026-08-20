@@ -5,25 +5,43 @@ import SwiftUI
 struct ScenesView: View {
     @Environment(AppStore.self) private var store
 
-    @State private var selectedRunID: Int64?
+    @State private var selectedRunIDs: Set<Int64> = []
     @State private var tagFilter: String?
     @State private var showHidden = false
     @State private var searchText = ""
-    @State private var playingScene: SceneRecord?
     @State private var transcriptVideo: VideoRecord?
     @State private var renamingRun: AnalysisRun?
     @State private var renameText = ""
-    @State private var deletingRun: AnalysisRun?
+    @State private var deletingRuns: [AnalysisRun] = []
     @State private var infoRun: AnalysisRun?
+    @State private var showGenerateSheet = false
 
+    /// Sentinel tag for the "All Batches" row — Set-based selection can't
+    /// hold a nil the way the old single-selection did.
+    private static let allBatchesID: Int64 = -1
+
+    /// The batches to filter by; nil = show everything (nothing selected,
+    /// or "All Batches" is part of the selection).
+    private var runFilter: Set<Int64>? {
+        selectedRunIDs.isEmpty || selectedRunIDs.contains(Self.allBatchesID)
+            ? nil : selectedRunIDs
+    }
+
+    private var selectedRuns: [AnalysisRun] {
+        store.analysisRuns.filter { selectedRunIDs.contains($0.id) }
+    }
+
+    /// Exactly one real batch selected → its info button shows.
     private var selectedRun: AnalysisRun? {
-        store.analysisRuns.first { $0.id == selectedRunID }
+        let runs = selectedRuns
+        return runs.count == 1 ? runs[0] : nil
     }
 
     private var filteredScenes: [SceneRecord] {
         let needle = searchText.lowercased()
+        let runFilter = runFilter
         return store.scenes.filter { scene in
-            if let selectedRunID, scene.runID != selectedRunID { return false }
+            if let runFilter, !(scene.runID.map(runFilter.contains) ?? false) { return false }
             if !showHidden && scene.excluded { return false }
             if let tagFilter, !scene.tags.contains(tagFilter) { return false }
             if !needle.isEmpty {
@@ -36,6 +54,22 @@ struct ScenesView: View {
 
     private var allTags: [String] {
         Array(Set(store.scenes.flatMap(\.tags))).sorted()
+    }
+
+    /// The displayed scenes as a Generate Video source. A person: tag filter
+    /// becomes the Wizard's source-people pick; any other tag rides as a
+    /// content-tag constraint.
+    private var generateSource: GenerateVideoSource {
+        var personKeys: Set<String> = []
+        var tags: [String] = []
+        if let tagFilter {
+            if tagFilter.hasPrefix("person:") {
+                personKeys = [String(tagFilter.dropFirst("person:".count))]
+            } else {
+                tags = [tagFilter]
+            }
+        }
+        return .scenes(filteredScenes, personKeys: personKeys, tags: tags)
     }
 
     var body: some View {
@@ -73,12 +107,18 @@ struct ScenesView: View {
                 Toggle("Show Hidden", systemImage: "eye.slash", isOn: $showHidden)
                     .help("Include scenes hidden by low-quality auto-detection or by you")
             }
+            ToolbarItem {
+                Button {
+                    showGenerateSheet = true
+                } label: {
+                    ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
+                }
+                .disabled(filtered.isEmpty)
+                .help("Describe a video to create from the displayed scenes — the current batch, tag, and search filters carry into the AI Wizard")
+            }
         }
-        .sheet(item: $playingScene) { scene in
-            PlayerSheet(url: scene.videoURL,
-                        title: "\(scene.videoFilename) \(scene.startTime.timecode)–\(scene.endTime.timecode)",
-                        startTime: scene.startTime,
-                        endTime: scene.endTime)
+        .sheet(isPresented: $showGenerateSheet) {
+            GenerateVideoSheet(source: generateSource)
         }
         .sheet(item: $transcriptVideo) { video in
             TranscriptSheet(video: video)
@@ -89,7 +129,7 @@ struct ScenesView: View {
     }
 
     private var fileList: some View {
-        List(selection: $selectedRunID) {
+        List(selection: $selectedRunIDs) {
             Section("Analyze Batches") {
                 HStack {
                     Image(systemName: "square.grid.3x3")
@@ -98,7 +138,7 @@ struct ScenesView: View {
                     Text("\(store.scenes.count)")
                         .foregroundStyle(.secondary)
                 }
-                .tag(Int64?.none)
+                .tag(Self.allBatchesID)
                 ForEach(store.analysisRuns) { run in
                     HStack {
                         Image(systemName: "sparkles.rectangle.stack")
@@ -118,7 +158,7 @@ struct ScenesView: View {
                             .foregroundStyle(.secondary)
                             .font(.caption)
                     }
-                    .tag(Int64?.some(run.id))
+                    .tag(run.id)
                     .help(batchTooltip(run))
                     .contextMenu {
                         Button("Batch Info…") {
@@ -129,7 +169,14 @@ struct ScenesView: View {
                             renamingRun = run
                         }
                         Button("Delete Batch…", role: .destructive) {
-                            deletingRun = run
+                            deletingRuns = [run]
+                        }
+                        // Right-clicking inside a multi-selection offers the
+                        // whole selection; Delete (⌫) does the same.
+                        if selectedRunIDs.contains(run.id), selectedRuns.count > 1 {
+                            Button("Delete \(selectedRuns.count) Selected Batches…", role: .destructive) {
+                                deletingRuns = selectedRuns
+                            }
                         }
                         Divider()
                         Button("Transcript…") {
@@ -143,6 +190,10 @@ struct ScenesView: View {
             }
         }
         .listStyle(.sidebar)
+        .onDeleteCommand {
+            let runs = selectedRuns
+            if !runs.isEmpty { deletingRuns = runs }
+        }
         .alert("Rename Analyze Batch", isPresented: Binding(
             get: { renamingRun != nil },
             set: { if !$0 { renamingRun = nil } })
@@ -155,20 +206,25 @@ struct ScenesView: View {
             Button("Cancel", role: .cancel) { renamingRun = nil }
         }
         .confirmationDialog(
-            "Delete “\(deletingRun?.name ?? "")”?",
-            isPresented: Binding(get: { deletingRun != nil },
-                                 set: { if !$0 { deletingRun = nil } })
+            deletingRuns.count == 1
+                ? "Delete “\(deletingRuns.first?.name ?? "")”?"
+                : "Delete \(deletingRuns.count) analyze batches?",
+            isPresented: Binding(get: { !deletingRuns.isEmpty },
+                                 set: { if !$0 { deletingRuns = [] } })
         ) {
-            Button("Delete Batch", role: .destructive) {
-                if let run = deletingRun {
-                    if selectedRunID == run.id { selectedRunID = nil }
+            Button(deletingRuns.count == 1 ? "Delete Batch" : "Delete \(deletingRuns.count) Batches",
+                   role: .destructive) {
+                for run in deletingRuns {
+                    selectedRunIDs.remove(run.id)
                     store.deleteAnalysisRun(run)
                 }
-                deletingRun = nil
+                deletingRuns = []
             }
-            Button("Cancel", role: .cancel) { deletingRun = nil }
+            Button("Cancel", role: .cancel) { deletingRuns = [] }
         } message: {
-            Text("This deletes the batch's scenes along with their tags and ratings. The source video is not touched.")
+            Text(deletingRuns.count == 1
+                 ? "This deletes the batch's scenes along with their tags and ratings. The source video is not touched."
+                 : "This deletes these batches' scenes along with their tags and ratings. The source videos are not touched.")
         }
     }
 
@@ -191,7 +247,6 @@ struct ScenesView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12, alignment: .top)], spacing: 12) {
                         ForEach(filtered) { scene in
                             SceneCard(scene: scene,
-                                      onPlay: { playingScene = scene },
                                       onTranscript: {
                                           transcriptVideo = store.videos.first { $0.id == scene.videoID }
                                       })
@@ -298,35 +353,33 @@ private struct BatchInfoSheet: View {
 struct SceneCard: View {
     @Environment(AppStore.self) private var store
     let scene: SceneRecord
-    let onPlay: () -> Void
     let onTranscript: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button(action: onPlay) {
-                VideoThumbnail(url: scene.videoURL, time: (scene.startTime + scene.endTime) / 2)
-                    .aspectRatio(9 / 16, contentMode: .fit)
-                    .overlay(alignment: .bottomLeading) {
-                        Text(String(format: "%.1fs", scene.duration))
-                            .font(.caption2.monospacedDigit())
-                            .padding(4)
-                            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
+            SceneInlinePlayer(scene: scene)
+                .aspectRatio(9 / 16, contentMode: .fit)
+                .overlay(alignment: .bottomLeading) {
+                    Text(String(format: "%.1fs", scene.duration))
+                        .font(.caption2.monospacedDigit())
+                        .padding(4)
+                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
+                        .foregroundStyle(.white)
+                        .padding(6)
+                        .allowsHitTesting(false)
+                }
+                .overlay(alignment: .topTrailing) {
+                    if scene.wide {
+                        Text("WIDE")
+                            .font(.caption2.bold())
+                            .padding(3)
+                            .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
                             .foregroundStyle(.white)
                             .padding(6)
+                            .allowsHitTesting(false)
                     }
-                    .overlay(alignment: .topTrailing) {
-                        if scene.wide {
-                            Text("WIDE")
-                                .font(.caption2.bold())
-                                .padding(3)
-                                .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
-                                .foregroundStyle(.white)
-                                .padding(6)
-                        }
-                    }
-                    .opacity(scene.excluded ? 0.4 : 1)
-            }
-            .buttonStyle(.plain)
+                }
+                .opacity(scene.excluded ? 0.4 : 1)
 
             Text("\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)")
                 .font(.caption)

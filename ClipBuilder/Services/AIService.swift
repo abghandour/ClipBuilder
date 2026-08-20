@@ -221,13 +221,18 @@ actor AIService {
                          "--output-format", "stream-json",
                          "--verbose"]
         if let model { arguments += ["--model", model] }
+        // Frontier planning models get the maximum extended-thinking budget —
+        // the reel plan is the run's brain, and thinking depth shows there.
+        let environment: [String: String]? = model?.contains("fable") == true
+            ? ["MAX_THINKING_TOKENS": "31999"] : nil
 
         let maxRetries = 2
         for attempt in 0...maxRetries {
             let result: ProcessResult
             do {
                 result = try await ProcessRunner.run(executable: binary, arguments: arguments,
-                                                     stdin: stdin, timeout: timeout)
+                                                     stdin: stdin, timeout: timeout,
+                                                     environment: environment)
             } catch {
                 if error is CancellationError { throw error }
                 if attempt < maxRetries {

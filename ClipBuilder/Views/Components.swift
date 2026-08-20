@@ -31,6 +31,22 @@ struct ActivityLogView: View {
     }
 }
 
+/// Icon + text label for toolbar bubble buttons. Toolbars render plain Label
+/// buttons icon-only regardless of labelStyle, so this spells the content
+/// out — with breathing room so the text doesn't touch the bubble edges.
+struct ToolbarBubbleLabel: View {
+    let text: String
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+            Text(text)
+        }
+        .padding(.horizontal, 6)
+    }
+}
+
 /// Async, disk-cached video frame thumbnail.
 struct VideoThumbnail: View {
     @Environment(AppStore.self) private var store
@@ -85,6 +101,9 @@ struct PersonFaceAvatar: View {
     var size: CGFloat = 44
 
     @State private var image: NSImage?
+    /// Whose face `image` holds — the same view instance can be handed a
+    /// different person (e.g. the People detail header on selection change).
+    @State private var loadedPersonID: Int64?
 
     private var initials: String {
         person.name.split(separator: " ").prefix(2)
@@ -117,7 +136,9 @@ struct PersonFaceAvatar: View {
         .frame(width: size, height: size)
         .clipShape(Circle())
         .task(id: person.id) {
-            guard image == nil else { return }
+            guard loadedPersonID != person.id else { return }
+            image = nil
+            loadedPersonID = person.id
             // A user-drawn marker is ground truth for who's in the box —
             // crop to it first, then find the face INSIDE it. Without this,
             // two people sharing a scene both get the frame's largest face.
@@ -234,8 +255,17 @@ struct PlayerSheet: View {
             }
             let player = AVPlayer(playerItem: item)
             if startTime > 0 {
-                player.seek(to: CMTime(seconds: startTime, preferredTimescale: 600),
-                            toleranceBefore: .zero, toleranceAfter: .zero)
+                // Seeking before the item is ready gets dropped, leaving the
+                // poster on the file's first frame — wait for readiness so
+                // the still shows the scene's actual start.
+                let target = CMTime(seconds: startTime, preferredTimescale: 600)
+                Task { [weak player, weak item] in
+                    for _ in 0..<100 where item?.status != .readyToPlay {
+                        if item?.status == .failed { return }
+                        try? await Task.sleep(for: .milliseconds(50))
+                    }
+                    await player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+                }
             }
             if endTime != nil {
                 // Hitting the scene's end rewinds to its start (paused), so
@@ -257,6 +287,152 @@ struct PlayerSheet: View {
                 NotificationCenter.default.removeObserver(endObserver)
             }
         }
+    }
+}
+
+/// Bare AVPlayerLayer host — no controls — for inline playback inside cards.
+final class PlayerLayerHostView: NSView {
+    let playerLayer = AVPlayerLayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        layer = CALayer()
+        wantsLayer = true
+        playerLayer.videoGravity = .resizeAspectFill
+        layer?.addSublayer(playerLayer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.frame = bounds
+        CATransaction.commit()
+    }
+}
+
+private struct InlinePlayerLayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> PlayerLayerHostView {
+        let view = PlayerLayerHostView(frame: .zero)
+        view.playerLayer.player = player
+        return view
+    }
+
+    func updateNSView(_ view: PlayerLayerHostView, context: Context) {
+        if view.playerLayer.player !== player {
+            view.playerLayer.player = player
+        }
+    }
+}
+
+/// Scene playback in place of the card thumbnail: click to play exactly the
+/// scene's [start, end] range, click again — or let it finish — to return
+/// to the thumbnail. Wide scenes honor the analyzer's suggested 9:16 crop
+/// position when one was recorded, so the preview shows the scene the way
+/// it would crop in a reel.
+struct SceneInlinePlayer: View {
+    @Environment(AppStore.self) private var store
+    let scene: SceneRecord
+
+    @State private var player: AVPlayer?
+    @State private var endObserver: NSObjectProtocol?
+
+    var body: some View {
+        ZStack {
+            // Stays underneath as the poster while the player gets ready.
+            VideoThumbnail(url: scene.videoURL, time: (scene.startTime + scene.endTime) / 2)
+            if let player {
+                GeometryReader { proxy in
+                    let size = proxy.size
+                    if scene.wide, let path = scene.centerStagePath {
+                        // The stored Center Stage path: animate the visible
+                        // window along the recorded pan/zoom keyframes, so
+                        // the preview plays the actual moving camera.
+                        SwiftUI.TimelineView(.animation) { _ in
+                            let t = player.currentTime().seconds - scene.startTime
+                            if let crop = CenterStageService.interpolated(path.keyframes, at: t),
+                               crop.w > 0, crop.h > 0 {
+                                let displayWidth = size.width / crop.w
+                                let displayHeight = size.height / crop.h
+                                InlinePlayerLayerView(player: player)
+                                    .frame(width: displayWidth, height: displayHeight)
+                                    .offset(x: -crop.x * displayWidth,
+                                            y: -crop.y * displayHeight)
+                            } else {
+                                InlinePlayerLayerView(player: player)
+                            }
+                        }
+                    } else if scene.wide, let crop = scene.cropXFrac,
+                              let aspect = sourceAspect {
+                        // Pan the full-height video so the visible window
+                        // sits at the suggested crop position — the same
+                        // (iw - cropW) * fraction offset the renderers use.
+                        let displayWidth = size.height * aspect
+                        InlinePlayerLayerView(player: player)
+                            .frame(width: displayWidth, height: size.height)
+                            .offset(x: -max(0, displayWidth - size.width) * crop)
+                    } else {
+                        InlinePlayerLayerView(player: player)
+                    }
+                }
+            } else {
+                Image(systemName: "play.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .shadow(radius: 3)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if player == nil { play() } else { stop() }
+        }
+        .onDisappear { stop() }
+    }
+
+    /// Source video aspect (width/height) for the crop pan.
+    private var sourceAspect: Double? {
+        guard let video = store.videos.first(where: { $0.id == scene.videoID }),
+              video.width > 0, video.height > 0 else { return nil }
+        return Double(video.width) / Double(video.height)
+    }
+
+    private func play() {
+        let item = AVPlayerItem(url: scene.videoURL)
+        item.forwardPlaybackEndTime = CMTime(seconds: scene.endTime, preferredTimescale: 600)
+        let player = AVPlayer(playerItem: item)
+        // Finishing the scene's range returns the card to its thumbnail.
+        endObserver = NotificationCenter.default.addObserver(
+            forName: AVPlayerItem.didPlayToEndTimeNotification,
+            object: item, queue: .main) { _ in
+            stop()
+        }
+        // Seeking before the item is ready gets dropped and the file would
+        // play from 0:00 — wait for readiness, land on the start, then roll.
+        let target = CMTime(seconds: scene.startTime, preferredTimescale: 600)
+        Task { [weak player, weak item] in
+            for _ in 0..<100 where item?.status != .readyToPlay {
+                if item?.status == .failed { return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            await player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            player?.play()
+        }
+        self.player = player
+    }
+
+    private func stop() {
+        player?.pause()
+        if let endObserver {
+            NotificationCenter.default.removeObserver(endObserver)
+        }
+        endObserver = nil
+        player = nil
     }
 }
 

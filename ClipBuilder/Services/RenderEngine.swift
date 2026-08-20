@@ -1,4 +1,5 @@
 import Foundation
+import Vision
 
 /// Headless linear render engine — the Swift port of video.py's wizard path:
 /// trim → normalize to 1080x1920@30 → concat with xfade transitions → music
@@ -336,17 +337,54 @@ actor RenderEngine {
         let contentHeight = contentBox.map { Double(height) * $0.h } ?? Double(height)
         let targetWidth = Int((contentHeight * 9.0 / 16.0).rounded())
         guard targetWidth > 0, targetWidth < contentWidth, x0 + contentWidth <= width else { return 0.5 }
-        var windowSum = score[x0..<(x0 + targetWidth)].reduce(0, +)
-        var bestSum = windowSum
-        var bestLeft = x0
-        for left in (x0 + 1)...(x0 + contentWidth - targetWidth) {
-            windowSum += score[left + targetWidth - 1] - score[left - 1]
-            if windowSum > bestSum {
-                bestSum = windowSum
-                bestLeft = left
-            }
+
+        // People anchor the search: when the main subjects are found, the
+        // busyness scan only refines within ±30% of the crop width around
+        // them — the action fine-tunes the position, but the crop can no
+        // longer drift off to a busy crowd or scoreboard and cut people off.
+        var lowerBound = x0
+        var upperBound = x0 + contentWidth - targetWidth
+        if let peopleCenter = await Self.peopleCenterX(source: source, start: start, duration: duration) {
+            let desired = min(max(Int((peopleCenter * Double(width)).rounded()) - targetWidth / 2,
+                                  lowerBound), upperBound)
+            let deviation = Int(0.3 * Double(targetWidth))
+            lowerBound = max(lowerBound, desired - deviation)
+            upperBound = min(upperBound, desired + deviation)
+        }
+
+        var prefix: [Double] = [0]
+        prefix.reserveCapacity(width + 1)
+        for value in score { prefix.append(prefix[prefix.count - 1] + value) }
+        func windowSum(_ left: Int) -> Double { prefix[left + targetWidth] - prefix[left] }
+        var bestLeft = lowerBound
+        var bestSum = windowSum(lowerBound)
+        for left in lowerBound...upperBound where windowSum(left) > bestSum {
+            bestSum = windowSum(left)
+            bestLeft = left
         }
         return min(1, max(0, Double(bestLeft - x0) / Double(contentWidth - targetWidth)))
+    }
+
+    /// Median horizontal center (fraction of frame width) of the primary
+    /// people across three sampled frames of the clip; nil when nobody is
+    /// detected. Uses the same detector and peripheral-people filter as the
+    /// analyzer's portrait-fit pass, so crops and previews agree on who the
+    /// subjects are.
+    static func peopleCenterX(source: URL, start: Double, duration: Double) async -> Double? {
+        var centers: [Double] = []
+        for fraction in [0.25, 0.5, 0.75] {
+            guard let data = await ThumbnailService.jpegFrame(url: source, at: start + duration * fraction,
+                                                              maxDimension: 720) else { continue }
+            let request = VNDetectHumanRectanglesRequest()
+            request.upperBodyOnly = false
+            try? VNImageRequestHandler(data: data).perform([request])
+            let boxes = Analyzer.primaryPeopleBoxes((request.results ?? []).map(\.boundingBox))
+            guard !boxes.isEmpty else { continue }
+            let union = boxes.dropFirst().reduce(boxes[0]) { $0.union($1) }
+            centers.append(Double(union.midX))
+        }
+        guard !centers.isEmpty else { return nil }
+        return centers.sorted()[centers.count / 2]
     }
 
     // MARK: - Concatenation

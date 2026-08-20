@@ -11,6 +11,21 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var tagSchema: [String: [String]]
     var socials: [String: SocialSlot]
     var captions: CaptionStyle
+    // Brand kit — drives the wizard's watermark, headline, and outro card.
+    /// Absolute path to the brand logo image ("" = no logo features).
+    var logoPath: String
+    /// #hex accent used by branded overlays ("" = default yellow).
+    var accentColor: String
+    /// Short motto rendered under the logo on the outro card.
+    var tagline: String
+    /// Caption languages, e.g. ["en", "pt"] — one caption block per language.
+    var captionLanguages: [String]
+    /// Editable "what a keeper moment looks like" rules, distilled from
+    /// exemplar reels the user picked; injected into analysis and planning.
+    var tasteRubric: String
+    /// Saved frames from exemplar reels (absolute JPEG paths) — attached to
+    /// analysis calls as visual definitions of the rubric.
+    var tasteExemplarFrames: [String]
 
     var id: String { profileName }
 
@@ -23,6 +38,12 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case tagSchema = "tag_schema"
         case socials
         case captions
+        case logoPath = "logo_path"
+        case accentColor = "accent_color"
+        case tagline
+        case captionLanguages = "caption_languages"
+        case tasteRubric = "taste_rubric"
+        case tasteExemplarFrames = "taste_exemplar_frames"
     }
 
     init(from decoder: Decoder) throws {
@@ -37,6 +58,12 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         tagSchema = try container.decodeIfPresent([String: [String]].self, forKey: .tagSchema) ?? [:]
         socials = try container.decodeIfPresent([String: SocialSlot].self, forKey: .socials) ?? [:]
         captions = try container.decodeIfPresent(CaptionStyle.self, forKey: .captions) ?? CaptionStyle()
+        logoPath = try container.decodeIfPresent(String.self, forKey: .logoPath) ?? ""
+        accentColor = try container.decodeIfPresent(String.self, forKey: .accentColor) ?? ""
+        tagline = try container.decodeIfPresent(String.self, forKey: .tagline) ?? ""
+        captionLanguages = try container.decodeIfPresent([String].self, forKey: .captionLanguages) ?? ["en"]
+        tasteRubric = try container.decodeIfPresent(String.self, forKey: .tasteRubric) ?? ""
+        tasteExemplarFrames = try container.decodeIfPresent([String].self, forKey: .tasteExemplarFrames) ?? []
     }
 
     init(name: String) {
@@ -48,6 +75,16 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         tagSchema = [:]
         socials = ["instagram": SocialSlot(), "tiktok": SocialSlot(), "youtube": SocialSlot()]
         captions = CaptionStyle()
+        logoPath = ""
+        accentColor = ""
+        tagline = ""
+        captionLanguages = ["en"]
+        tasteRubric = ""
+        tasteExemplarFrames = []
+    }
+
+    var logoURL: URL? {
+        logoPath.isEmpty ? nil : URL(fileURLWithPath: (logoPath as NSString).expandingTildeInPath)
     }
 
     var sourceFolderURL: URL { URL(fileURLWithPath: (sourceFolder as NSString).expandingTildeInPath) }

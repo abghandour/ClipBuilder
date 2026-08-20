@@ -370,7 +370,7 @@ private struct InstagramDetailSheet: View {
     private var isAnalyzing: Bool { store.igAnalyzingMediaIDs.contains(media.id) }
     private var hasTemplate: Bool { store.igTemplatedMediaIDs.contains(media.id) }
 
-    /// Analyze → template ready → Create with Wizard.
+    /// Analyze → template ready → Generate Video.
     @ViewBuilder
     private var templateActions: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -391,14 +391,18 @@ private struct InstagramDetailSheet: View {
                     .font(.caption)
                     .foregroundStyle(.green)
                 HStack {
-                    Button("Create with Wizard") {
+                    Button {
                         store.useTemplateInWizard(media: media)
                         dismiss()
+                    } label: {
+                        Label("Generate Video", systemImage: "wand.and.stars")
                     }
                     .buttonStyle(.borderedProminent)
-                    Button("Pre-fill Builder") {
+                    Button {
                         store.useTemplateInBuilder(media: media)
                         dismiss()
+                    } label: {
+                        Label("Edit Video", systemImage: "timeline.selection")
                     }
                     .help("Plan a timeline from this template and edit it manually")
                 }
@@ -406,16 +410,38 @@ private struct InstagramDetailSheet: View {
                     store.analyzeInstagramTemplate(media: media, force: true)
                 }
                 .controlSize(.small)
+                tasteButton
             } else {
-                Button("Analyze as Template") {
+                Button {
                     store.analyzeInstagramTemplate(media: media)
+                } label: {
+                    Label("Analyze", systemImage: "sparkles")
                 }
                 .buttonStyle(.borderedProminent)
                 Text("Downloads the reel and studies its hook, pacing, and structure so the Wizard can replicate them with your footage.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                tasteButton
             }
         }
+    }
+
+    /// Study this reel as a taste exemplar — independent of the template
+    /// analysis, so it's offered in both states.
+    @ViewBuilder
+    private var tasteButton: some View {
+        HStack(spacing: 6) {
+            Button("Add to Taste Profile", systemImage: "star.bubble") {
+                store.studyTasteExemplar(media: media)
+            }
+            .disabled(store.isStudyingTaste)
+            .help("Study this reel as an example of the results you want — what makes its moments good is distilled into the profile's taste rubric (Settings → Profile), which then guides every analysis and generation")
+            if store.isStudyingTaste {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .controlSize(.small)
     }
 
     private var statsGrid: some View {

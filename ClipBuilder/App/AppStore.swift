@@ -100,12 +100,15 @@ final class AppStore {
     var igTemplatedMediaIDs: Set<Int64> = []
     var igAnalyzingMediaIDs: Set<Int64> = []
     var isConnectingInstagram = false
+    /// A taste-exemplar study is running (one at a time).
+    var isStudyingTaste = false
     private var igAnalyzeTasks: [Int64: Task<Void, Never>] = [:]
     /// Template picked in the Instagram tab, consumed by the Wizard's next
     /// run (or dismissed from its chip).
     var pendingWizardTemplate: WizardTemplateHandoff?
-    /// "Generate Sample Video" request from the Analyze tab; the Wizard seeds
-    /// its form from it and keeps it until the user dismisses its card.
+    /// "Generate Video" request from the Analyze/Scenes/People screens; the
+    /// Wizard seeds its form from it and keeps it until the user dismisses
+    /// its card.
     var pendingWizardPrompt: WizardPromptHandoff?
     /// Set by views (e.g. "Open in Builder") to ask the main window to switch
     /// sidebar sections; the window consumes and clears it.
@@ -390,6 +393,27 @@ final class AppStore {
         let storedInterval = UserDefaults.standard.double(forKey: "analysis.sampleInterval")
         let detectPeople = UserDefaults.standard.object(forKey: "analysis.detectPeople") == nil
             ? true : UserDefaults.standard.bool(forKey: "analysis.detectPeople")
+        let portraitOnly = UserDefaults.standard.bool(forKey: "analysis.portraitOnly")
+        let breakdownTags: [String] = UserDefaults.standard.bool(forKey: "analysis.autoBreakdown")
+            ? (UserDefaults.standard.string(forKey: "analysis.breakdownTags") ?? "")
+                .split(separator: ",").map(String.init)
+            : []
+        let centerStagePaths = UserDefaults.standard.bool(forKey: "analysis.centerStagePaths")
+        let centerStageCamera = UserDefaults.standard.string(forKey: "analysis.centerStageCamera") ?? "balanced"
+        // One-shot trim from the plan sheet — consumed and cleared here so a
+        // leftover range never silently applies to a later run.
+        let trimStart = UserDefaults.standard.object(forKey: "analysis.trimStart") as? Double
+        let trimEnd = UserDefaults.standard.object(forKey: "analysis.trimEnd") as? Double
+        UserDefaults.standard.removeObject(forKey: "analysis.trimStart")
+        UserDefaults.standard.removeObject(forKey: "analysis.trimEnd")
+        let trimRange: (start: Double, end: Double)? = {
+            guard targets.count == 1, let trimStart, let trimEnd, trimEnd > trimStart else { return nil }
+            return (trimStart, trimEnd)
+        }()
+        // One-shot required-people filter from the plan sheet's roster.
+        let requiredPeopleKeys = (UserDefaults.standard.string(forKey: "analysis.requiredPeople") ?? "")
+            .split(separator: ",").map(String.init)
+        UserDefaults.standard.removeObject(forKey: "analysis.requiredPeople")
         let sampleInterval: Double? = storedInterval > 0 ? storedInterval : nil
         let includeTranscript = UserDefaults.standard.bool(forKey: "analysis.includeTranscript")
         let transcription = transcription
@@ -399,6 +423,21 @@ final class AppStore {
             defer {
                 isAnalyzing = false
                 refreshAll()
+            }
+            // The roster's checked people become a hard filter: every kept
+            // range must show ALL of them with most of their body visible.
+            var instructions = instructions
+            if !requiredPeopleKeys.isEmpty {
+                let people = (try? await database.fetchPeople()) ?? []
+                let names = requiredPeopleKeys.map { key in
+                    people.first { $0.key == key }
+                        .map { "\($0.displayName) (key \"\($0.key)\")" } ?? key
+                }
+                let filterLine = "HARD FILTER: Only include time ranges where ALL of these people are on screen AT THE SAME TIME, each with more than half of their body visible: "
+                    + names.joined(separator: ", ")
+                    + ". Omit every range where any of them is absent, mostly occluded, or barely in frame."
+                instructions = instructions.isEmpty ? filterLine : filterLine + "\n" + instructions
+                analysisLog.append("Requiring people in every scene: \(names.joined(separator: ", "))")
             }
             // People first seen anywhere in this batch — reviewed once at the
             // end. Later videos already treat them as known (people are
@@ -419,12 +458,18 @@ final class AppStore {
                     let markers = (try? await database.personMarkers(videoID: video.id)) ?? []
                     let (runID, videoNewPeople) = try await analyzer.analyzeVisual(
                         video: video, profile: profile, database: database,
-                        runName: Self.analysisRunName(for: video),
+                        runName: Self.analysisRunName(for: video)
+                            + (trimRange.map { " (\($0.start.timecode)–\($0.end.timecode))" } ?? ""),
                         provider: provider, model: model,
                         instructions: instructions, notes: notes,
                         knownPeople: knownPeople,
                         personMarkers: markers,
                         detectPeople: detectPeople,
+                        portraitOnly: portraitOnly,
+                        breakdownTags: breakdownTags,
+                        centerStagePaths: centerStagePaths,
+                        centerStageCamera: centerStageCamera,
+                        trimRange: trimRange,
                         sampleInterval: sampleInterval,
                         force: true,
                         log: { message in
@@ -1169,8 +1214,8 @@ final class AppStore {
 
     // MARK: - Wizard
 
-    /// "Generate Sample Video" from the Analyze tab: hand the description to
-    /// the Wizard immediately (so the user lands on a live form), then analyze
+    /// "Generate Video" from the Analyze tab: hand the description to the
+    /// Wizard immediately (so the user lands on a live form), then analyze
     /// any un-analyzed selections and AI-parse the description into settings,
     /// updating the handoff in place. A failed parse degrades to passing the
     /// raw description as instructions — this never blocks the wizard.
@@ -1186,8 +1231,6 @@ final class AppStore {
                 ? "Analyzing \(unanalyzed.count) video(s), then interpreting your request…"
                 : "Interpreting your request…")
         requestedSection = .wizard
-        let profile = activeProfile
-        let wizard = wizard
         Task {
             if willAnalyze {
                 analyze(videos: unanalyzed)
@@ -1195,20 +1238,48 @@ final class AppStore {
                 guard pendingWizardPrompt?.description == trimmed else { return }
                 pendingWizardPrompt?.statusMessage = "Interpreting your request…"
             }
-            do {
-                let parsed = try await wizard.parseRequest(description: trimmed, profile: profile) { message in
-                    Task { @MainActor in self.wizardLog.append(message) }
-                }
-                // The user may have dismissed or replaced the request meanwhile.
-                guard pendingWizardPrompt?.description == trimmed else { return }
-                pendingWizardPrompt?.parsed = parsed
-                pendingWizardPrompt?.statusMessage = nil
-            } catch {
-                guard pendingWizardPrompt?.description == trimmed else { return }
-                pendingWizardPrompt?.statusMessage = nil
-                pendingWizardPrompt?.parseFailed = true
-                wizardLog.append("Could not interpret the request with AI — it will be passed to the wizard as-is. (\(error.userMessage))")
+            await interpretWizardPrompt(trimmed)
+        }
+    }
+
+    /// "Generate Video" from the Scenes/People screens: the currently
+    /// displayed scenes are the source, so their analyze batches plus the
+    /// active people/tag filters ride into the Wizard alongside the parsed
+    /// description. Scenes only exist for analyzed footage, so there is no
+    /// analyze-first step here.
+    func generateSampleVideo(description: String, scenes: [SceneRecord],
+                             personKeys: Set<String>, tags: [String]) {
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !scenes.isEmpty else { return }
+        pendingWizardPrompt = WizardPromptHandoff(
+            description: trimmed,
+            videoIDs: [],
+            runIDs: Set(scenes.compactMap(\.runID)),
+            personKeys: personKeys,
+            tags: tags,
+            statusMessage: "Interpreting your request…")
+        requestedSection = .wizard
+        Task { await interpretWizardPrompt(trimmed) }
+    }
+
+    /// AI-parse a "Generate Video" description into settings, updating the
+    /// pending handoff in place.
+    private func interpretWizardPrompt(_ trimmed: String) async {
+        let profile = activeProfile
+        let wizard = wizard
+        do {
+            let parsed = try await wizard.parseRequest(description: trimmed, profile: profile) { message in
+                Task { @MainActor in self.wizardLog.append(message) }
             }
+            // The user may have dismissed or replaced the request meanwhile.
+            guard pendingWizardPrompt?.description == trimmed else { return }
+            pendingWizardPrompt?.parsed = parsed
+            pendingWizardPrompt?.statusMessage = nil
+        } catch {
+            guard pendingWizardPrompt?.description == trimmed else { return }
+            pendingWizardPrompt?.statusMessage = nil
+            pendingWizardPrompt?.parseFailed = true
+            wizardLog.append("Could not interpret the request with AI — it will be passed to the wizard as-is. (\(error.userMessage))")
         }
     }
 
@@ -1564,6 +1635,217 @@ final class AppStore {
 
     func cancelInstagramAnalysis(mediaID: Int64) {
         igAnalyzeTasks[mediaID]?.cancel()
+    }
+
+    // MARK: - People-only pass
+
+    /// A people-only detection is running (one at a time).
+    var isDetectingPeople = false
+
+    func videoPeople(for videoID: Int64) async -> [VideoPersonRecord] {
+        guard let database else { return [] }
+        return (try? await database.fetchVideoPeople(videoID: videoID)) ?? []
+    }
+
+    /// Run (or re-run) the people-only AI pass for one video and return the
+    /// fresh roster.
+    func detectPeopleInVideo(_ video: VideoRecord) async -> [VideoPersonRecord] {
+        guard let database, !isDetectingPeople else { return [] }
+        isDetectingPeople = true
+        defer { isDetectingPeople = false }
+        do {
+            let roster = try await analyzer.detectPeopleOnly(
+                video: video, profile: activeProfile, database: database) { message in
+                Task { @MainActor in self.analysisLog.append(message) }
+            }
+            refreshAll()
+            return roster
+        } catch {
+            presentError("People detection failed", error)
+            return (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
+        }
+    }
+
+    // MARK: - Center Stage hints
+
+    func centerStageHints(for videoID: Int64) async -> [CameraHint] {
+        guard let database else { return [] }
+        return (try? await database.centerStageHints(videoID: videoID)) ?? []
+    }
+
+    /// Save a user-framed camera hint and immediately recompute the stored
+    /// paths of the scenes covering its moment. Returns the fresh hint list.
+    func addCameraHint(videoID: Int64, at time: Double, rect: CGRect) async -> [CameraHint] {
+        guard let database else { return [] }
+        try? await database.addCenterStageHint(videoID: videoID, at: time,
+                                               x: rect.minX, y: rect.minY,
+                                               width: rect.width, height: rect.height)
+        recomputeCenterStagePaths(videoID: videoID, around: time)
+        return (try? await database.centerStageHints(videoID: videoID)) ?? []
+    }
+
+    func updateCameraHint(_ hint: CameraHint) async -> [CameraHint] {
+        guard let database else { return [] }
+        try? await database.updateCenterStageHint(hint)
+        recomputeCenterStagePaths(videoID: hint.videoID, around: hint.atTime)
+        return (try? await database.centerStageHints(videoID: hint.videoID)) ?? []
+    }
+
+    func deleteCameraHint(_ hint: CameraHint) async -> [CameraHint] {
+        guard let database else { return [] }
+        try? await database.deleteCenterStageHint(id: hint.id)
+        recomputeCenterStagePaths(videoID: hint.videoID, around: hint.atTime)
+        return (try? await database.centerStageHints(videoID: hint.videoID)) ?? []
+    }
+
+    /// Re-run the tracking pass for the stored camera paths of scenes
+    /// covering `time` (nil = every scene of the video), so previews reflect
+    /// an edited hint or ignore marker without a full re-analysis. Local
+    /// only; runs in the background.
+    private func recomputeCenterStagePaths(videoID: Int64, around time: Double?) {
+        guard let database else { return }
+        let affected = scenes.filter { scene in
+            guard scene.videoID == videoID, scene.centerStagePathJSON != nil else { return false }
+            guard let time else { return true }
+            return scene.startTime - 0.25 <= time && time <= scene.endTime + 0.25
+        }
+        guard !affected.isEmpty,
+              let video = videos.first(where: { $0.id == videoID }) else { return }
+        Task {
+            let centerStage = CenterStageService()
+            let markers = (try? await database.personMarkers(videoID: videoID)) ?? []
+            let named = markers.filter { $0.personID != nil && !$0.ignored }
+            let ignored = markers.filter(\.ignored)
+            let portraits = named.isEmpty ? []
+                : await Analyzer.markerPortraits(url: video.url, markers: named,
+                                                 duration: video.duration)
+            let avoidPortraits = ignored.isEmpty ? []
+                : await Analyzer.markerPortraits(url: video.url, markers: ignored,
+                                                 duration: video.duration)
+            let hints = (try? await database.centerStageHints(videoID: videoID)) ?? []
+            for scene in affected {
+                guard let stored = scene.centerStagePath else { continue }
+                let sceneHints = hints
+                    .filter { $0.atTime >= scene.startTime - 0.25 && $0.atTime <= scene.endTime + 0.25 }
+                    .map { hint in
+                        (time: min(max(0, hint.atTime - scene.startTime), scene.duration),
+                         crop: CGRect(x: hint.x, y: hint.y, width: hint.width, height: hint.height))
+                    }
+                guard let result = try? await centerStage.cameraPath(
+                        source: video.url, start: scene.startTime, duration: scene.duration,
+                        focusPortraits: portraits, avoidPortraits: avoidPortraits,
+                        hints: sceneHints,
+                        tuning: .named(stored.camera)),
+                      result.keyframes.count >= 2 else { continue }
+                let path = SceneCameraPath(camera: stored.camera, keyframes: result.keyframes)
+                if let data = try? JSONEncoder().encode(path),
+                   let json = String(data: data, encoding: .utf8) {
+                    try? await database.setSceneCenterStagePath(scene.id, json: json)
+                }
+            }
+            refreshAll()
+        }
+    }
+
+    /// A marker's ignore flag changed — its effect spans the whole video,
+    /// so every stored path of that video gets refreshed in the background.
+    func markerIgnoreChanged(videoID: Int64) {
+        recomputeCenterStagePaths(videoID: videoID, around: nil)
+    }
+
+    // MARK: - Taste profile
+
+    /// Study an Instagram reel as a taste exemplar: download it if needed,
+    /// distill what makes its moments good, and merge the result into the
+    /// active profile's taste rubric.
+    func studyTasteExemplar(media: IGMediaRecord) {
+        guard let database,
+              let account = igAccounts.first(where: { $0.id == media.accountID }),
+              !isStudyingTaste else { return }
+        isStudyingTaste = true
+        let settings = settings.instagram
+        let instagram = instagram
+        let analyzer = analyzer
+        let profile = activeProfile
+        Task {
+            defer { isStudyingTaste = false }
+            do {
+                let video = try await instagram.ensureDownloaded(
+                    media: media, account: account,
+                    database: database, settings: settings) { message in
+                    Task { @MainActor in self.igLog.append(message) }
+                }
+                // Pick up the local_video_path the download may have written.
+                try? await reloadIGMedia()
+                let result = try await analyzer.distillTasteRubric(
+                    video: video, label: "@\(account.username) reel",
+                    existingRubric: profile.tasteRubric,
+                    domain: profile.effectiveDomain) { message in
+                    Task { @MainActor in self.igLog.append(message) }
+                }
+                applyTasteRubric(result.rubric, exemplarFrames: result.exemplarFrames,
+                                 from: profile)
+                igLog.append("Taste rubric updated — review it in Settings → Profile")
+            } catch {
+                presentError("Could not study the reel as a taste exemplar", error)
+            }
+        }
+    }
+
+    /// Study a local sample video (Settings → Profile) the same way.
+    func studyTasteExemplar(url: URL) {
+        guard !isStudyingTaste else { return }
+        isStudyingTaste = true
+        let analyzer = analyzer
+        let profile = activeProfile
+        Task {
+            defer { isStudyingTaste = false }
+            do {
+                let result = try await analyzer.distillTasteRubric(
+                    video: url, label: url.lastPathComponent,
+                    existingRubric: profile.tasteRubric,
+                    domain: profile.effectiveDomain) { message in
+                    Task { @MainActor in self.analysisLog.append(message) }
+                }
+                applyTasteRubric(result.rubric, exemplarFrames: result.exemplarFrames,
+                                 from: profile)
+            } catch {
+                presentError("Could not study the sample video", error)
+            }
+        }
+    }
+
+    /// The study runs against a snapshot — only apply its result if the
+    /// user hasn't switched profiles meanwhile. New exemplar frames are
+    /// written to the profile's taste folder; the library keeps the newest
+    /// eight so prompts stay lean.
+    private func applyTasteRubric(_ rubric: String,
+                                  exemplarFrames: [(time: Double, jpeg: Data)],
+                                  from profile: BrandProfile) {
+        guard activeProfile.profileName == profile.profileName else { return }
+        activeProfile.tasteRubric = rubric
+        if !exemplarFrames.isEmpty {
+            let directory = SettingsStore.tasteFramesDirectory(profileName: profile.profileName)
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let stamp = Int(Date().timeIntervalSince1970)
+            for (index, frame) in exemplarFrames.enumerated() {
+                let url = directory.appendingPathComponent("exemplar-\(stamp)-\(index).jpg")
+                guard (try? frame.jpeg.write(to: url)) != nil else { continue }
+                activeProfile.tasteExemplarFrames.append(url.path)
+            }
+            while activeProfile.tasteExemplarFrames.count > 8 {
+                let oldest = activeProfile.tasteExemplarFrames.removeFirst()
+                try? FileManager.default.removeItem(atPath: oldest)
+            }
+        }
+        saveActiveProfile()
+    }
+
+    /// Remove one exemplar frame (Settings → Profile → Taste).
+    func removeTasteExemplarFrame(path: String) {
+        activeProfile.tasteExemplarFrames.removeAll { $0 == path }
+        try? FileManager.default.removeItem(atPath: path)
+        saveActiveProfile()
     }
 
     /// Validate a Meta Graph API token, store it in the Keychain, and mark

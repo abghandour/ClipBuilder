@@ -46,6 +46,7 @@ actor Database {
         favorite INTEGER DEFAULT 0,
         crop_x_frac REAL,
         free_crops TEXT,
+        center_stage_path TEXT,
         UNIQUE(video_id, run_id, start_time, end_time)
     );
 
@@ -72,6 +73,18 @@ actor Database {
     );
     CREATE INDEX IF NOT EXISTS idx_video_notes_video ON video_notes(video_id);
 
+    CREATE TABLE IF NOT EXISTS fight_outcomes (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        run_id INTEGER NOT NULL REFERENCES analysis_runs(id) ON DELETE CASCADE,
+        method TEXT NOT NULL,
+        winner_key TEXT,
+        loser_key TEXT,
+        event TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_fight_outcomes_video ON fight_outcomes(video_id);
+
     CREATE TABLE IF NOT EXISTS person_markers (
         id INTEGER PRIMARY KEY,
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -81,9 +94,32 @@ actor Database {
         width REAL NOT NULL,
         height REAL NOT NULL,
         person_id INTEGER REFERENCES people(id) ON DELETE SET NULL,
+        ignored INTEGER DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_person_markers_video ON person_markers(video_id);
+
+    CREATE TABLE IF NOT EXISTS video_people (
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+        portrait_at REAL NOT NULL DEFAULT 0,
+        portrait_json TEXT,
+        ranges_json TEXT,
+        detected_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (video_id, person_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS center_stage_hints (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        at_time REAL NOT NULL,
+        x REAL NOT NULL,
+        y REAL NOT NULL,
+        width REAL NOT NULL,
+        height REAL NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_center_stage_hints_video ON center_stage_hints(video_id);
 
     CREATE TABLE IF NOT EXISTS video_subjects (
         id INTEGER PRIMARY KEY,
@@ -306,6 +342,12 @@ actor Database {
         if !sceneColumns.contains("free_crops") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN free_crops TEXT")
         }
+        if !sceneColumns.contains("center_stage_path") {
+            try connection.execute("ALTER TABLE scenes ADD COLUMN center_stage_path TEXT")
+        }
+        if try !connection.columnNames(of: "person_markers").contains("ignored") {
+            try connection.execute("ALTER TABLE person_markers ADD COLUMN ignored INTEGER DEFAULT 0")
+        }
         let generatedColumns = try connection.columnNames(of: "generated_videos")
         if !generatedColumns.contains("deleted") {
             try connection.execute("ALTER TABLE generated_videos ADD COLUMN deleted INTEGER DEFAULT 0")
@@ -370,14 +412,17 @@ actor Database {
                     favorite INTEGER DEFAULT 0,
                     crop_x_frac REAL,
                     free_crops TEXT,
+                    center_stage_path TEXT,
                     UNIQUE(video_id, run_id, start_time, end_time)
                 )
                 """)
             try connection.execute("""
                 INSERT INTO scenes_new (id, video_id, run_id, start_time, end_time,
-                                        excluded, ignored, favorite, crop_x_frac, free_crops)
+                                        excluded, ignored, favorite, crop_x_frac, free_crops,
+                                        center_stage_path)
                 SELECT s.id, s.video_id, r.id, s.start_time, s.end_time,
-                       s.excluded, s.ignored, s.favorite, s.crop_x_frac, s.free_crops
+                       s.excluded, s.ignored, s.favorite, s.crop_x_frac, s.free_crops,
+                       s.center_stage_path
                 FROM scenes s
                 LEFT JOIN analysis_runs r ON r.video_id = s.video_id
                 """)
@@ -428,6 +473,41 @@ actor Database {
         try connection.execute("DELETE FROM video_notes WHERE id = ?", [.integer(id)])
     }
 
+    // MARK: - Fight outcomes
+
+    func saveFightOutcome(videoID: Int64, runID: Int64, method: String,
+                          winnerKey: String?, loserKey: String?, event: String?) throws {
+        try connection.execute("""
+            INSERT INTO fight_outcomes (video_id, run_id, method, winner_key, loser_key, event)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, [.integer(videoID), .integer(runID), .text(method),
+                  winnerKey.map(SQLValue.text) ?? .null,
+                  loserKey.map(SQLValue.text) ?? .null,
+                  event.map(SQLValue.text) ?? .null])
+    }
+
+    /// Latest outcome per video (newer runs win), optionally scoped to runs.
+    func fetchOutcomes(runIDs: Set<Int64> = []) throws -> [FightOutcome] {
+        let rows = try connection.query(
+            "SELECT * FROM fight_outcomes ORDER BY video_id, id DESC")
+        var seenVideos = Set<Int64>()
+        var outcomes: [FightOutcome] = []
+        for row in rows {
+            let runID = row["run_id"]?.intValue ?? 0
+            if !runIDs.isEmpty && !runIDs.contains(runID) { continue }
+            let videoID = row["video_id"]?.intValue ?? 0
+            guard seenVideos.insert(videoID).inserted else { continue }
+            outcomes.append(FightOutcome(id: row["id"]?.intValue ?? 0,
+                                         videoID: videoID,
+                                         runID: runID,
+                                         method: row["method"]?.stringValue ?? "",
+                                         winnerKey: row["winner_key"]?.stringValue,
+                                         loserKey: row["loser_key"]?.stringValue,
+                                         event: row["event"]?.stringValue))
+        }
+        return outcomes
+    }
+
     // MARK: - Person markers (user-drawn identity boxes)
 
     func personMarkers(videoID: Int64) throws -> [PersonMarker] {
@@ -440,7 +520,8 @@ actor Database {
                          y: row["y"]?.doubleValue ?? 0,
                          width: row["width"]?.doubleValue ?? 0,
                          height: row["height"]?.doubleValue ?? 0,
-                         personID: row["person_id"]?.intValue)
+                         personID: row["person_id"]?.intValue,
+                         ignored: row["ignored"]?.boolValue ?? false)
         }
     }
 
@@ -454,15 +535,93 @@ actor Database {
 
     func updatePersonMarker(_ marker: PersonMarker) throws {
         try connection.execute("""
-            UPDATE person_markers SET at_time = ?, x = ?, y = ?, width = ?, height = ?, person_id = ?
+            UPDATE person_markers SET at_time = ?, x = ?, y = ?, width = ?, height = ?, person_id = ?,
+                ignored = ?
             WHERE id = ?
             """, [.real(marker.atTime), .real(marker.x), .real(marker.y),
                   .real(marker.width), .real(marker.height),
-                  marker.personID.map(SQLValue.integer) ?? .null, .integer(marker.id)])
+                  marker.personID.map(SQLValue.integer) ?? .null,
+                  .integer(marker.ignored ? 1 : 0), .integer(marker.id)])
     }
 
     func deletePersonMarker(id: Int64) throws {
         try connection.execute("DELETE FROM person_markers WHERE id = ?", [.integer(id)])
+    }
+
+    // MARK: - Video people (people-only pass roster)
+
+    func fetchVideoPeople(videoID: Int64) throws -> [VideoPersonRecord] {
+        try connection.query("""
+            SELECT vp.*, p.key AS person_key, p.name AS person_name,
+                   p.descriptor AS person_descriptor
+            FROM video_people vp JOIN people p ON p.id = vp.person_id
+            WHERE vp.video_id = ? ORDER BY vp.portrait_at, p.key
+            """, [.integer(videoID)]).map { row in
+            let box = row["portrait_json"]?.stringValue
+                .flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: $0) }
+            return VideoPersonRecord(videoID: videoID,
+                                     personID: row["person_id"]?.intValue ?? 0,
+                                     key: row["person_key"]?.stringValue ?? "",
+                                     name: row["person_name"]?.stringValue ?? "",
+                                     descriptor: row["person_descriptor"]?.stringValue ?? "",
+                                     portraitAt: row["portrait_at"]?.doubleValue ?? 0,
+                                     portraitBox: box)
+        }
+    }
+
+    /// Replace the video's roster with a fresh people-pass result.
+    func replaceVideoPeople(videoID: Int64,
+                            entries: [(personID: Int64, portraitAt: Double,
+                                       portraitJSON: String?, rangesJSON: String?)]) throws {
+        try connection.transaction {
+            try connection.execute("DELETE FROM video_people WHERE video_id = ?",
+                                   [.integer(videoID)])
+            for entry in entries {
+                try connection.execute("""
+                    INSERT OR REPLACE INTO video_people
+                        (video_id, person_id, portrait_at, portrait_json, ranges_json)
+                    VALUES (?, ?, ?, ?, ?)
+                    """, [.integer(videoID), .integer(entry.personID), .real(entry.portraitAt),
+                          entry.portraitJSON.map(SQLValue.text) ?? .null,
+                          entry.rangesJSON.map(SQLValue.text) ?? .null])
+            }
+        }
+    }
+
+    // MARK: - Center Stage hints (user-framed camera keyframes)
+
+    func centerStageHints(videoID: Int64) throws -> [CameraHint] {
+        try connection.query("SELECT * FROM center_stage_hints WHERE video_id = ? ORDER BY at_time, id",
+                             [.integer(videoID)]).map { row in
+            CameraHint(id: row["id"]?.intValue ?? 0,
+                       videoID: videoID,
+                       atTime: row["at_time"]?.doubleValue ?? 0,
+                       x: row["x"]?.doubleValue ?? 0,
+                       y: row["y"]?.doubleValue ?? 0,
+                       width: row["width"]?.doubleValue ?? 0,
+                       height: row["height"]?.doubleValue ?? 0)
+        }
+    }
+
+    func addCenterStageHint(videoID: Int64, at atTime: Double,
+                            x: Double, y: Double, width: Double, height: Double) throws {
+        try connection.execute("""
+            INSERT INTO center_stage_hints (video_id, at_time, x, y, width, height)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, [.integer(videoID), .real(atTime), .real(x), .real(y), .real(width), .real(height)])
+    }
+
+    func updateCenterStageHint(_ hint: CameraHint) throws {
+        try connection.execute("""
+            UPDATE center_stage_hints SET at_time = ?, x = ?, y = ?, width = ?, height = ?
+            WHERE id = ?
+            """, [.real(hint.atTime), .real(hint.x), .real(hint.y),
+                  .real(hint.width), .real(hint.height), .integer(hint.id)])
+    }
+
+    func deleteCenterStageHint(id: Int64) throws {
+        try connection.execute("DELETE FROM center_stage_hints WHERE id = ?", [.integer(id)])
     }
 
     /// Scene ids + ranges of one analyze batch — the portrait-fit pass input.
@@ -594,6 +753,7 @@ actor Database {
                 favorite: row["favorite"]?.boolValue ?? false,
                 cropXFrac: row["crop_x_frac"]?.doubleValue,
                 freeCropsJSON: row["free_crops"]?.stringValue,
+                centerStagePathJSON: row["center_stage_path"]?.stringValue,
                 tags: tagsByScene[id]?.sorted() ?? [],
                 gradeAverage: grade?.0,
                 gradeCount: grade?.1 ?? 0,
@@ -612,6 +772,21 @@ actor Database {
     func setSceneExcluded(_ sceneID: Int64, excluded: Bool) throws {
         try connection.execute("UPDATE scenes SET excluded = ? WHERE id = ?",
                                [.integer(excluded ? 1 : 0), .integer(sceneID)])
+    }
+
+    /// Suggested 9:16 crop-window position (0 = left … 1 = right) recorded
+    /// by the analyzer's portrait-fit pass; the wizard and Builder read it
+    /// as the scene's default crop.
+    func setSceneCropX(_ sceneID: Int64, fraction: Double) throws {
+        try connection.execute("UPDATE scenes SET crop_x_frac = ? WHERE id = ?",
+                               [.real(fraction), .integer(sceneID)])
+    }
+
+    /// Center Stage camera path (SceneCameraPath JSON) recorded during
+    /// analysis; the scene preview animates it and renders reuse it.
+    func setSceneCenterStagePath(_ sceneID: Int64, json: String?) throws {
+        try connection.execute("UPDATE scenes SET center_stage_path = ? WHERE id = ?",
+                               [json.map(SQLValue.text) ?? .null, .integer(sceneID)])
     }
 
     func addGrade(sceneID: Int64, score: Int) throws {

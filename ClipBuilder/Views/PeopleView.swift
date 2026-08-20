@@ -10,10 +10,10 @@ struct PeopleView: View {
     @State private var selectedPersonIDs: Set<Int64> = []
     @State private var tagFilter = ""            // empty = all tags
     @State private var searchText = ""
-    @State private var playingScene: SceneRecord?
     @State private var confirmDelete: PersonRecord?
     @State private var reassignScene: SceneRecord?
     @State private var newPersonName = ""
+    @State private var showGenerateSheet = false
 
     private var selectedPeople: [PersonRecord] {
         store.people.filter { selectedPersonIDs.contains($0.id) }
@@ -27,6 +27,20 @@ struct PeopleView: View {
     /// All usable scenes featuring this person, newest analysis first.
     private func scenes(for person: PersonRecord) -> [SceneRecord] {
         store.scenes.filter { !$0.ignored && $0.tags.contains(person.tag) }
+    }
+
+    /// The person's scenes under the current activity/tag filters — what the
+    /// grid displays and what Generate Video draws from.
+    private func displayedScenes(for person: PersonRecord) -> [SceneRecord] {
+        scenes(for: person).filter { scene in
+            let visible = displayTags(scene)
+            if !tagFilter.isEmpty && !visible.contains(tagFilter) { return false }
+            if !searchText.isEmpty {
+                let query = searchText.lowercased()
+                return visible.contains { $0.lowercased().contains(query) }
+            }
+            return true
+        }
     }
 
     var body: some View {
@@ -52,19 +66,26 @@ struct PeopleView: View {
                 Button {
                     mergeSelected()
                 } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "person.2.crop.square.stack")
-                        Text("Merge \(selectedPeople.count) People")
-                    }
+                    ToolbarBubbleLabel(text: "Merge \(selectedPeople.count) People",
+                                       systemImage: "person.2.crop.square.stack")
                 }
                 .help("These are the same person — combine their scenes under one identity")
             }
+            Button {
+                showGenerateSheet = true
+            } label: {
+                ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
+            }
+            .disabled(selectedPerson.map { displayedScenes(for: $0).isEmpty } ?? true)
+            .help("Describe a video to create from the displayed scenes — this person and the active tag filter carry into the AI Wizard")
         }
-        .sheet(item: $playingScene) { scene in
-            PlayerSheet(url: scene.videoURL,
-                        title: "\(scene.videoFilename) \(scene.startTime.timecode)–\(scene.endTime.timecode)",
-                        startTime: scene.startTime,
-                        endTime: scene.endTime)
+        .sheet(isPresented: $showGenerateSheet) {
+            if let person = selectedPerson {
+                GenerateVideoSheet(source: .scenes(
+                    displayedScenes(for: person),
+                    personKeys: [person.key],
+                    tags: tagFilter.isEmpty ? [] : [tagFilter]))
+            }
         }
         .confirmationDialog(
             "Delete \(confirmDelete?.displayName ?? "person")?",
@@ -143,15 +164,7 @@ struct PeopleView: View {
     private var detail: some View {
         if let person = selectedPerson {
             let allScenes = scenes(for: person)
-            let filtered = allScenes.filter { scene in
-                let visible = displayTags(scene)
-                if !tagFilter.isEmpty && !visible.contains(tagFilter) { return false }
-                if !searchText.isEmpty {
-                    let query = searchText.lowercased()
-                    return visible.contains { $0.lowercased().contains(query) }
-                }
-                return true
-            }
+            let filtered = displayedScenes(for: person)
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     PersonFaceAvatar(person: person, size: 40)
@@ -218,27 +231,17 @@ struct PeopleView: View {
     @ViewBuilder
     private func sceneCard(_ scene: SceneRecord) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button {
-                playingScene = scene
-            } label: {
-                VideoThumbnail(url: scene.videoURL, time: (scene.startTime + scene.endTime) / 2)
-                    .aspectRatio(9 / 16, contentMode: .fit)
-                    .overlay(alignment: .bottomTrailing) {
-                        Text(String(format: "%.1fs", scene.duration))
-                            .font(.caption2.monospacedDigit())
-                            .padding(3)
-                            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
-                            .foregroundStyle(.white)
-                            .padding(4)
-                    }
-                    .overlay {
-                        Image(systemName: "play.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(.white.opacity(0.85))
-                            .shadow(radius: 3)
-                    }
-            }
-            .buttonStyle(.plain)
+            SceneInlinePlayer(scene: scene)
+                .aspectRatio(9 / 16, contentMode: .fit)
+                .overlay(alignment: .bottomTrailing) {
+                    Text(String(format: "%.1fs", scene.duration))
+                        .font(.caption2.monospacedDigit())
+                        .padding(3)
+                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
+                        .foregroundStyle(.white)
+                        .padding(4)
+                        .allowsHitTesting(false)
+                }
 
             Text(scene.videoFilename)
                 .font(.caption2)

@@ -19,6 +19,11 @@ struct WizardView: View {
     @AppStorage("wizard.aiInstructions") private var aiInstructions = ""
     /// Hard duration for the generated reel, in seconds.
     @AppStorage("wizard.targetDuration") private var targetDuration = 10
+    /// Reel recipe: custom / recap / compilation / interview.
+    @AppStorage("wizard.formatPreset") private var formatPreset = "custom"
+    @AppStorage("wizard.includeWatermark") private var includeWatermark = true
+    @AppStorage("wizard.includeHeadline") private var includeHeadline = true
+    @AppStorage("wizard.includeOutro") private var includeOutro = true
     @AppStorage("wizard.limitToSelection") private var limitToSelection = false
     /// Comma-joined analyze-batch IDs — AppStorage can't hold a Set directly.
     @AppStorage("wizard.selectedRunIDs") private var selectedRunIDsRaw = ""
@@ -121,7 +126,7 @@ struct WizardView: View {
         // Loaded once instead of in the Form: availableMusic() lists a
         // directory synchronously, which doesn't belong in a body pass.
         .task { musicCount = WizardEngine.availableMusic().count }
-        // Seed the form from an Analyze "Generate Sample Video" request —
+        // Seed the form from a "Generate Video" request —
         // on arrival, and again in place when its AI interpretation lands.
         .task {
             if let handoff = store.pendingWizardPrompt { applyPromptHandoff(handoff) }
@@ -157,7 +162,7 @@ struct WizardView: View {
             }
 
             if let handoff = store.pendingWizardPrompt {
-                Section("Sample Video Request") {
+                Section("Generate Video Request") {
                     VStack(alignment: .leading, spacing: 6) {
                         HStack(alignment: .firstTextBaseline) {
                             Text("“\(handoff.description)”")
@@ -228,6 +233,27 @@ struct WizardView: View {
                         .buttonStyle(.plain)
                         .help("Remove the template — future generations won't use it")
                     }
+                }
+            }
+
+            Section("Format & Branding") {
+                Picker("Format", selection: $formatPreset) {
+                    Text("Custom").tag("custom")
+                    Text("Fight recap").tag("recap")
+                    Text("Best-of compilation").tag("compilation")
+                    Text("Interview clip").tag("interview")
+                }
+                .help("A recipe the planner must follow: recaps build chronologically to the finish with a result headline; compilations open with a typographic title card and label each fight; interview clips keep speech intact with a name plate")
+                Toggle("Watermark (brand logo)", isOn: $includeWatermark)
+                    .help("Burns the profile's logo into the top-left corner of every frame — set the logo in Settings → Profile")
+                Toggle("Result headline lower-third", isOn: $includeHeadline)
+                    .help("A branded full-video lower-third with the fight result (e.g. “X BEATS Y”), composed from the analyzer's extracted outcomes")
+                Toggle("Branded outro card", isOn: $includeOutro)
+                    .help("Appends a 2.5s end card: logo, brand name, tagline, and follow CTA from the profile's brand kit")
+                if store.activeProfile.logoPath.isEmpty && (includeWatermark || includeOutro) {
+                    Text("No brand logo set — add one in Settings → Profile to get the watermark and a full outro card.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
             }
 
@@ -475,20 +501,29 @@ struct WizardView: View {
         }
     }
 
-    /// Fill the form from an Analyze request. Only fields the user actually
-    /// specified are touched; before/without an AI interpretation the raw
-    /// description rides as instructions so nothing is lost. Overlay choices
-    /// aren't form fields — runWizard() reads them straight from the
+    /// Fill the form from a "Generate Video" request. Only fields the user
+    /// actually specified are touched; before/without an AI interpretation
+    /// the raw description rides as instructions so nothing is lost. Overlay
+    /// choices aren't form fields — runWizard() reads them straight from the
     /// handoff, and the request card shows them.
     private func applyPromptHandoff(_ handoff: WizardPromptHandoff) {
-        if !handoff.videoIDs.isEmpty {
+        if !handoff.runIDs.isEmpty {
+            // Scenes/People hand off the exact batches their displayed
+            // scenes came from.
+            setSelectedRunIDs(handoff.runIDs)
+            limitToSelection = true
+        } else if !handoff.videoIDs.isEmpty {
             // Re-resolved on every handoff update, so batches created by the
             // "analyze first" step are picked up once analysis finishes.
             setSelectedRunIDs(latestRunIDs(forVideoIDs: handoff.videoIDs))
             limitToSelection = true
         }
+        if !handoff.personKeys.isEmpty {
+            sourcePeopleRaw = handoff.personKeys.sorted().joined(separator: ",")
+        }
         guard let parsed = handoff.parsed else {
-            aiInstructions = handoff.description
+            aiInstructions = ([tagFilterLine(handoff.tags), handoff.description]
+                .compactMap { $0 }).joined(separator: "\n")
             return
         }
         if let duration = parsed.targetDurationSeconds { targetDuration = duration }
@@ -496,13 +531,20 @@ struct WizardView: View {
         if let value = parsed.addCaptions { addCaptions = value }
         if let value = parsed.enableTextOverlays { enableTextOverlays = value }
         var lines: [String] = []
-        if !parsed.contentTags.isEmpty {
-            lines.append("Only use footage tagged: \(parsed.contentTags.joined(separator: ", ")). Skip everything else.")
+        let contentTags = handoff.tags + parsed.contentTags.filter { !handoff.tags.contains($0) }
+        if let tagLine = tagFilterLine(contentTags) {
+            lines.append(tagLine)
         }
         if !parsed.residualInstructions.isEmpty {
             lines.append(parsed.residualInstructions)
         }
         aiInstructions = lines.joined(separator: "\n")
+    }
+
+    /// The instruction line that keeps a hand-off's tag filter in force.
+    private func tagFilterLine(_ tags: [String]) -> String? {
+        tags.isEmpty ? nil
+            : "Only use footage tagged: \(tags.joined(separator: ", ")). Skip everything else."
     }
 
     private func parsedSummary(_ parsed: ParsedWizardRequest) -> String {
@@ -533,6 +575,10 @@ struct WizardView: View {
         options.enableTextOverlays = enableTextOverlays
         options.aiInstructions = aiInstructions
         options.targetDurationSeconds = min(180, max(3, targetDuration))
+        options.formatPreset = formatPreset
+        options.includeWatermark = includeWatermark
+        options.includeHeadline = includeHeadline
+        options.includeOutro = includeOutro
         options.selectedRunIDs = limitToSelection ? selectedRunIDs : []
         // People hidden by the batch selection don't filter — only visible
         // picks apply.

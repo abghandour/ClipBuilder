@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     var body: some View {
@@ -160,6 +161,36 @@ private struct ProfileSettingsTab: View {
                 ))
             }
 
+            Section("Brand Kit") {
+                HStack {
+                    TextField("Logo image (watermark + outro)", text: $store.activeProfile.logoPath,
+                              prompt: Text("path to a PNG with transparency"))
+                    Button("Choose…") {
+                        let panel = NSOpenPanel()
+                        panel.canChooseDirectories = false
+                        panel.allowedContentTypes = [.png, .jpeg, .image]
+                        if panel.runModal() == .OK, let url = panel.url {
+                            store.activeProfile.logoPath = url.path
+                        }
+                    }
+                }
+                TextField("Accent color", text: $store.activeProfile.accentColor,
+                          prompt: Text("#E31B23 — used by headlines and cards"))
+                TextField("Tagline", text: $store.activeProfile.tagline,
+                          prompt: Text("shown under the logo on the outro card"))
+                TextField("Caption languages", text: Binding(
+                    get: { store.activeProfile.captionLanguages.joined(separator: ", ") },
+                    set: { value in
+                        store.activeProfile.captionLanguages = value
+                            .split(separator: ",")
+                            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                            .filter { !$0.isEmpty }
+                    }), prompt: Text("en, pt — one caption block per language"))
+                Text("The brand kit drives the wizard's watermark, result headline, and outro card — the pieces that make every reel look like the channel.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Folders") {
                 folderRow(title: "Input folder", path: $store.activeProfile.sourceFolder)
                 folderRow(title: "Output folder", path: $store.activeProfile.outputFolder)
@@ -192,6 +223,63 @@ private struct ProfileSettingsTab: View {
                     var index = 1
                     while store.activeProfile.tagSchema["category\(index)"] != nil { index += 1 }
                     store.activeProfile.tagSchema["category\(index)"] = []
+                }
+            }
+
+            Section("Taste") {
+                Text("What a keeper moment looks like — distilled from sample reels you pick (Instagram → Add to Taste Profile, or study a local file below). Rides into every analysis (as the \"highlight\" tag) and every wizard plan. Edit freely; studying another sample refines rather than replaces.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $store.activeProfile.tasteRubric)
+                    .font(.body)
+                    .frame(minHeight: 90)
+                if !store.activeProfile.tasteExemplarFrames.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(store.activeProfile.tasteExemplarFrames, id: \.self) { path in
+                                if let image = NSImage(contentsOfFile: path) {
+                                    Image(nsImage: image)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 72, height: 72)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        .overlay(alignment: .topTrailing) {
+                                            Button {
+                                                store.removeTasteExemplarFrame(path: path)
+                                            } label: {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .symbolRenderingMode(.palette)
+                                                    .foregroundStyle(.white, .black.opacity(0.6))
+                                            }
+                                            .buttonStyle(.plain)
+                                            .padding(2)
+                                            .help("Remove this example frame")
+                                        }
+                                }
+                            }
+                        }
+                    }
+                    Text("Example frames from your studied samples — attached to every analysis as visual definitions of the rubric (newest 8 kept).")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                HStack {
+                    Button("Study Sample Video…") {
+                        let panel = NSOpenPanel()
+                        panel.allowedContentTypes = [.movie, .mpeg4Movie, .quickTimeMovie]
+                        panel.allowsMultipleSelection = false
+                        if panel.runModal() == .OK, let url = panel.url {
+                            store.studyTasteExemplar(url: url)
+                        }
+                    }
+                    .disabled(store.isStudyingTaste)
+                    if store.isStudyingTaste {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Studying…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 

@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 nonisolated struct WizardOptions: Sendable {
@@ -39,6 +40,12 @@ nonisolated struct WizardOptions: Sendable {
     /// every planned overlay; the text is guaranteed to appear on one clip.
     var pinnedOverlayTemplate: String?
     var pinnedOverlayText: String?
+    /// Reel format recipe: "custom", "recap", "compilation", "interview".
+    var formatPreset = "custom"
+    /// Brand-kit elements burned into the render (need profile assets).
+    var includeWatermark = true
+    var includeHeadline = true
+    var includeOutro = true
 }
 
 /// A plain-language request ("action-packed 15s, fight footage only, use the
@@ -61,11 +68,20 @@ nonisolated struct ParsedWizardRequest: Sendable, Equatable {
     var residualInstructions = ""
 }
 
-/// A "Generate Sample Video" request handed from Analyze to the Wizard;
-/// `parsed` and `statusMessage` update in place while analysis/parsing runs.
+/// A "Generate Video" request handed from the Analyze/Scenes/People screens
+/// to the Wizard; `parsed` and `statusMessage` update in place while
+/// analysis/parsing runs.
 nonisolated struct WizardPromptHandoff: Sendable, Equatable {
     var description: String
     var videoIDs: Set<Int64>
+    /// Exact analyze batches to draw from (Scenes/People hand-offs) — takes
+    /// precedence over `videoIDs`, which resolves to each video's latest batch.
+    var runIDs: Set<Int64> = []
+    /// Source-people filter to apply in the Wizard (person keys).
+    var personKeys: Set<String> = []
+    /// Content tags the displayed scenes were filtered by — ride into the
+    /// Wizard's instructions so only matching footage is used.
+    var tags: [String] = []
     var parsed: ParsedWizardRequest?
     /// Non-nil while the request is still being prepared.
     var statusMessage: String?
@@ -180,6 +196,10 @@ nonisolated struct WizardPlan: Sendable {
     var musicVolume: Int
     var clips: [WizardPlanClip]
     var transitions: [String]
+    /// Result headline for the full-video branded lower-third.
+    var headline: String?
+    /// Typographic intro-card title (compilation format).
+    var introTitle: String?
 }
 
 /// Autonomous Reels generator — the Swift port of wizard.py: cached research
@@ -470,7 +490,59 @@ actor WizardEngine {
                             musicNames: [String],
                             signals: TrainingSignals,
                             people: [PersonRecord],
+                            outcomes: [FightOutcome],
                             options: WizardOptions) -> String {
+        // Fight results the analyzer extracted — the ground truth behind
+        // "headline" and recap storytelling.
+        let namesByKey = Dictionary(uniqueKeysWithValues: people.map { ($0.key, $0.displayName) })
+        var outcomesBlock = ""
+        if !outcomes.isEmpty {
+            let lines = outcomes.map { outcome in
+                let winner = outcome.winnerKey.map { namesByKey[$0] ?? $0 } ?? "unknown winner"
+                let loser = outcome.loserKey.map { namesByKey[$0] ?? $0 } ?? "unknown opponent"
+                return "- \(winner) beat \(loser) by \(outcome.method.uppercased())"
+                    + (outcome.event.map { " at \($0)" } ?? "")
+            }.joined(separator: "\n")
+            outcomesBlock = """
+
+            ## FIGHT OUTCOMES (extracted from the footage — ground truth)
+            \(lines)
+            Base the "headline" and any result claims ONLY on these. Never invent a result.
+
+            """
+        }
+        var presetBlock = ""
+        switch options.formatPreset {
+        case "recap":
+            presetBlock = """
+
+            ## FORMAT: FIGHT RECAP (hard requirements)
+            - Tell the fight CHRONOLOGICALLY: build through the best exchanges to the finish, and END on the finishing sequence or the hand raise/celebration (tags: knockdown, knockout, submission-attempt, celebration).
+            - Set "headline" to the result (e.g. "MILES JOHNS BEATS GIANNI VAZQUEZ") from the FIGHT OUTCOMES block; use last names when the full line exceeds ~6 words.
+            - Keep per-clip text overlays minimal — the headline carries the story.
+
+            """
+        case "compilation":
+            presetBlock = """
+
+            ## FORMAT: BEST-OF COMPILATION (hard requirements)
+            - Pick the highest-impact moments across ALL available sources; order for escalating impact, best moment last.
+            - Set "intro_title" to a punchy 3-6 word ALL-CAPS compilation title (e.g. "BEST KO & TKO'S").
+            - Label clips from different fights with a short banner overlay naming the fighters (use the person: tags to know who is who).
+
+            """
+        case "interview":
+            presetBlock = """
+
+            ## FORMAT: INTERVIEW CLIP (hard requirements)
+            - Pick coherent SPOKEN segments (interview/talking tags); never cut mid-sentence when the moments/dialog hints show sentence boundaries.
+            - One banner overlay naming the speaker on the first clip; no other text overlays.
+            - Keep source audio primary: quiet music at most.
+
+            """
+        default:
+            break
+        }
         let domain = profile.effectiveDomain
         let brand = profile.brandName
 
@@ -634,9 +706,14 @@ actor WizardEngine {
         ## Music Beat Analysis
         \(beatInfo)
 
-        ## Training Signals (CRITICAL — what this user has taught you)
-        \(trainingBlock(signals))
+        \(profile.tasteRubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : """
+        ## Taste Rubric (distilled from reels this user picked as exemplars)
+        A keeper moment looks like this — strongly prefer scenes matching these rules, especially for the hook. Scenes tagged "highlight" already matched them during analysis:
+        \(profile.tasteRubric)
 
+        """)## Training Signals (CRITICAL — what this user has taught you)
+        \(trainingBlock(signals))
+        \(outcomesBlock)\(presetBlock)
         ## Instructions
         Create a video plan optimized for maximum Instagram Reel engagement.
 
@@ -663,6 +740,8 @@ actor WizardEngine {
         {
           "target_duration": <seconds>,
           "rationale": "<brief creative strategy explanation>",
+          "headline": "<ALL-CAPS result headline for the branded lower-third, from FIGHT OUTCOMES (e.g. \"MILES JOHNS BEATS GIANNI VAZQUEZ\"), or null when no outcome applies>",
+          "intro_title": "<3-6 word ALL-CAPS opening title card (compilation format only), or null>",
           "music": {"name": "<music name from list, or null>", "volume": <1-5>},
           "clips": [
             {
@@ -802,36 +881,59 @@ actor WizardEngine {
         if transitions.count > needed { transitions = Array(transitions.prefix(needed)) }
         while transitions.count < needed { transitions.append("fade") }
 
+        func cleanLine(_ value: Any?, maxWords: Int) -> String? {
+            guard let text = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty else { return nil }
+            return text.split(separator: " ").prefix(maxWords).joined(separator: " ")
+        }
         return WizardPlan(targetDuration: (raw["target_duration"] as? NSNumber)?.doubleValue ?? 22,
                           rationale: raw["rationale"] as? String ?? "",
                           musicName: musicName,
                           musicVolume: musicVolume,
                           clips: clips,
-                          transitions: transitions)
+                          transitions: transitions,
+                          headline: cleanLine(raw["headline"], maxWords: 8),
+                          introTitle: cleanLine(raw["intro_title"], maxWords: 7))
     }
 
     // MARK: - Caption phase
+
+    /// Flag emoji per caption language, for the channel's bilingual format.
+    private static let languageFlags: [String: String] = [
+        "en": "🇺🇸", "pt": "🇧🇷", "es": "🇪🇸", "fr": "🇫🇷", "de": "🇩🇪",
+        "it": "🇮🇹", "ja": "🇯🇵", "ko": "🇰🇷", "ru": "🇷🇺", "ar": "🇸🇦",
+    ]
 
     private func captionPrompt(profile: BrandProfile, plan: WizardPlan,
                                duration: Double, tags: [String]) -> String {
         let handle = profile.socials["instagram"]?.handle ?? ""
         let domain = profile.effectiveDomain
+        let languages = profile.captionLanguages.isEmpty ? ["en"] : profile.captionLanguages
+        let languageRule: String
+        if languages.count > 1 {
+            let spec = languages.map { code in
+                "\(Self.languageFlags[code] ?? "") \(code)"
+            }.joined(separator: ", then ")
+            languageRule = "- Write the SAME caption in each of these languages, in this order: \(spec). Start each language block with its flag emoji, separate blocks with a blank line, and put the hashtags ONCE at the very end."
+        } else {
+            languageRule = "- Format: caption text first, then hashtags on a new line"
+        }
         return """
         You are a social media expert for a \(domain) Instagram channel called \(profile.brandName) (\(handle)).
 
         Generate an Instagram Reel caption + hashtags for a video with these details:
         - Duration: \(String(format: "%.0f", duration))s
         - Creative strategy: \(plan.rationale)
-        - Tags/content: \(tags.joined(separator: ", "))
+        \(plan.headline.map { "- Result headline shown on the video: \($0) — the caption must tell this result accurately.\n" } ?? "")- Tags/content: \(tags.joined(separator: ", "))
         - Music: \(plan.musicName ?? "none")
 
         Requirements:
         - Caption should be 1-3 punchy lines that drive engagement (likes, comments, saves, shares)
         - Include a hook or question to encourage comments
         - Add 5-10 relevant hashtags (mix of broad \(domain) hashtags + niche + trending)
-        - Format: caption text first, then hashtags on a new line
+        \(languageRule)
         - Keep it authentic to \(domain) culture
-        - Do NOT use emojis excessively (max 2-3)
+        - Do NOT use emojis excessively (max 2-3 per language block)
 
         Return ONLY the caption text + hashtags, nothing else.
         """
@@ -875,6 +977,8 @@ actor WizardEngine {
         /// The People registry — so instructions can reference detected
         /// people by name.
         var people: [PersonRecord] = []
+        /// Fight results the analyzer extracted, for headline composition.
+        var outcomes: [FightOutcome] = []
     }
 
     private func loadTrainingSignals(database: Database) async -> TrainingSignals {
@@ -929,9 +1033,17 @@ actor WizardEngine {
         emit("Found \(scenes.count) scenes, \(music.count) music tracks, "
              + "\(signals.lessons.count) lesson(s), \(signals.reviews.count) review(s), "
              + "\(signals.feedback.count) feedback entries")
+        // Fight results scoped to the videos actually in play.
+        let videoIDs = Set(scenes.map(\.videoID))
+        let outcomes = ((try? await database.fetchOutcomes()) ?? [])
+            .filter { videoIDs.contains($0.videoID) }
+        if !outcomes.isEmpty {
+            emit("Fight outcomes available for \(outcomes.count) video(s)")
+        }
         return PlanningInputs(research: research, scenes: scenes,
                               sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
-                              music: music, signals: signals, people: people)
+                              music: music, signals: signals, people: people,
+                              outcomes: outcomes)
     }
 
     /// One prompt → AI call → validated plan; nil plan when the response is
@@ -941,7 +1053,7 @@ actor WizardEngine {
         -> (plan: WizardPlan?, prompt: String, response: String) {
         let prompt = planPrompt(profile: profile, research: inputs.research, scenes: inputs.scenes,
                                 musicNames: inputs.music.map(\.name), signals: inputs.signals,
-                                people: inputs.people, options: options)
+                                people: inputs.people, outcomes: inputs.outcomes, options: options)
         let response = try await ai.call(prompt: prompt, task: "wizard",
                                          model: options.modelOverride, timeout: 300, log: emit)
         guard let rawPlan = AIResponseParser.jsonObject(from: response) else {
@@ -1133,6 +1245,7 @@ actor WizardEngine {
         - Analyze-batch filter: \(options.selectedRunIDs.isEmpty ? "all batches" : options.selectedRunIDs.sorted().map(String.init).joined(separator: ", "))
         - People filter: \(options.sourcePeople.isEmpty ? "everyone" : options.sourcePeople.joined(separator: ", "))
         - Reference template: \(options.templateLabel ?? "none")
+        - Format preset: \(options.formatPreset) · watermark: \(yesNo(options.includeWatermark)), headline: \(yesNo(options.includeHeadline)), outro: \(yesNo(options.includeOutro))
         - AI instructions: \(options.aiInstructions.isEmpty ? "none" : options.aiInstructions)
 
         ## People registry at run time
@@ -1144,6 +1257,7 @@ actor WizardEngine {
         - Target duration: \(String(format: "%.1f", plan.targetDuration))s planned, \(String(format: "%.1f", result.duration))s rendered
         - Music: \(plan.musicName ?? "none") (volume \(plan.musicVolume))
         - Transitions: \(plan.transitions.joined(separator: ", "))
+        - Headline: \(plan.headline ?? "none") · Intro title: \(plan.introTitle ?? "none")
         - Rationale: \(plan.rationale)
 
         \(clipsTable)
@@ -1387,6 +1501,21 @@ actor WizardEngine {
         var clipURLs: [URL] = []
         var clipTransitions: [String] = []
 
+        // Brand-kit layers burned onto EVERY clip: the corner watermark and
+        // the full-video result headline. Rendered once, reused per clip.
+        let accent = profile.accentColor.isEmpty ? BrandRenderer.defaultAccent : profile.accentColor
+        var brandOverlays: [URL] = []
+        if options.includeWatermark, let logoURL = profile.logoURL,
+           let png = BrandRenderer.watermark(logoURL: logoURL, to: scratch) {
+            brandOverlays.append(png)
+        }
+        if options.includeHeadline, let headline = plan.headline,
+           let png = BrandRenderer.headline(headline, brandName: profile.brandName,
+                                            accent: accent, to: scratch) {
+            brandOverlays.append(png)
+            emit("Headline: \(headline)")
+        }
+
         // Extract every planned clip concurrently — captions, text overlay
         // and mute are burned in ONE encode pass per clip (they used to be
         // up to three extra full re-encodes each).
@@ -1400,6 +1529,7 @@ actor WizardEngine {
             try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
                                               scene: job.scene, options: options,
                                               captionStyle: captionStyle,
+                                              brandOverlays: brandOverlays,
                                               database: database, scratch: scratch,
                                               emit: emit)
         }
@@ -1415,6 +1545,27 @@ actor WizardEngine {
 
         guard !clipURLs.isEmpty else {
             throw AIError.notConfigured("No clips could be extracted for this plan")
+        }
+
+        // Brand cards: typographic intro for compilations, branded outro for
+        // everything (given brand assets to draw with).
+        if options.formatPreset == "compilation", let title = plan.introTitle,
+           let png = BrandRenderer.titleCard(title, brandName: profile.brandName, accent: accent,
+                                             logoURL: profile.logoURL, to: scratch) {
+            let card = scratch.appendingPathComponent("intro_card.mp4")
+            try await BrandRenderer.cardClip(png: png, duration: 2.0, output: card)
+            clipURLs.insert(card, at: 0)
+            clipTransitions.insert("fade", at: 0)
+            emit("Intro card: \(title)")
+        }
+        if options.includeOutro,
+           profile.logoURL != nil || !(profile.socials["instagram"]?.handle ?? "").isEmpty,
+           let png = BrandRenderer.outroCard(profile: profile, to: scratch) {
+            let card = scratch.appendingPathComponent("outro_card.mp4")
+            try await BrandRenderer.cardClip(png: png, duration: 2.5, output: card)
+            clipTransitions.append("fadeblack")
+            clipURLs.append(card)
+            emit("Branded outro card appended")
         }
 
         emit("Assembling \(clipURLs.count) segments...")
@@ -1463,6 +1614,7 @@ actor WizardEngine {
     private func extractPlannedClip(_ clip: WizardPlanClip, index: Int, of total: Int,
                                     scene: SceneRecord, options: WizardOptions,
                                     captionStyle: CaptionStyle,
+                                    brandOverlays: [URL] = [],
                                     database: Database, scratch: URL,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> URL {
         let duration = clip.end - clip.start
@@ -1482,7 +1634,10 @@ actor WizardEngine {
              String(format: "[%.1fs +%.1fs]", clip.start, duration) +
              " from \(scene.videoFilename)\(mode.isEmpty ? "" : " (\(mode))")")
 
-        var overlays: [RenderEngine.ClipOverlay] = []
+        // Brand layers (watermark, headline) ride every clip start-to-end.
+        var overlays: [RenderEngine.ClipOverlay] = brandOverlays.map {
+            RenderEngine.ClipOverlay(png: $0, x: 0, y: 0, start: 0, end: duration)
+        }
         if options.addCaptions {
             // Transcript times are in source-video time; shift into clip time.
             let renderer = CaptionRenderer(videoWidth: RenderEngine.outputWidth,
@@ -1570,13 +1725,61 @@ actor WizardEngine {
                 || options.centerStagePeople.contains { scene.tags.contains("person:\($0)") }
             if focused {
                 do {
-                    let portrait = try await centerStage.reframeClip(
-                        source: scene.videoURL, start: clip.start, duration: duration,
-                        tuning: .named(options.centerStageCamera),
-                        log: emit)
-                    defer { try? FileManager.default.removeItem(at: portrait) }
-                    emit("Clip \(index + 1) reframed with Center Stage")
-                    try await render.extractClip(source: portrait, start: 0,
+                    // A path recorded at analyze time with the same camera
+                    // preset skips the tracking pass — the render is just
+                    // the export. Preset mismatch or slicing failure falls
+                    // through to live tracking.
+                    var portrait: URL?
+                    if let stored = scene.centerStagePath,
+                       stored.camera == options.centerStageCamera {
+                        let sliced = CenterStageService.slice(
+                            stored.keyframes,
+                            from: max(0, clip.start - scene.startTime),
+                            duration: duration)
+                        if sliced.count >= 2,
+                           let reframed = try? await centerStage.reframeClip(
+                               source: scene.videoURL, start: clip.start,
+                               duration: duration, path: sliced, log: emit) {
+                            emit("Clip \(index + 1) reframed with the camera path recorded at analysis")
+                            portrait = reframed
+                        }
+                    }
+                    let reframed: URL
+                    if let portrait {
+                        reframed = portrait
+                    } else {
+                        // Person markers on the source video make the live
+                        // tracker identity-aware — only the marked people
+                        // are framed, never referees or staff.
+                        let allMarkers = (try? await database.personMarkers(videoID: scene.videoID)) ?? []
+                        let named = allMarkers.filter { $0.personID != nil && !$0.ignored }
+                        let ignored = allMarkers.filter(\.ignored)
+                        let focusPortraits = named.isEmpty ? [] :
+                            await Analyzer.markerPortraits(url: scene.videoURL, markers: named,
+                                                           duration: scene.videoDuration)
+                        let avoidPortraits = ignored.isEmpty ? [] :
+                            await Analyzer.markerPortraits(url: scene.videoURL, markers: ignored,
+                                                           duration: scene.videoDuration)
+                        // User-framed hints pin the camera at their moments.
+                        let hints = ((try? await database.centerStageHints(videoID: scene.videoID)) ?? [])
+                            .filter { $0.atTime >= clip.start - 0.25 && $0.atTime <= clip.end + 0.25 }
+                            .map { hint in
+                                (time: min(max(0, hint.atTime - clip.start), duration),
+                                 crop: CGRect(x: hint.x, y: hint.y,
+                                              width: hint.width, height: hint.height))
+                            }
+                        reframed = try await centerStage.reframeClip(
+                            source: scene.videoURL, start: clip.start, duration: duration,
+                            focusPortraits: focusPortraits,
+                            avoidPortraits: avoidPortraits,
+                            hints: hints,
+                            tuning: .named(options.centerStageCamera),
+                            log: emit)
+                        emit("Clip \(index + 1) reframed with Center Stage"
+                             + (focusPortraits.isEmpty ? "" : " (focused on the marked people)"))
+                    }
+                    defer { try? FileManager.default.removeItem(at: reframed) }
+                    try await render.extractClip(source: reframed, start: 0,
                                                  duration: duration,
                                                  overlays: overlays, mute: options.muteSource,
                                                  output: output)

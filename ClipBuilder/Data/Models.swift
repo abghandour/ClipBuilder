@@ -63,6 +63,22 @@ nonisolated struct PeopleReviewRequest: Identifiable, Sendable {
     var people: [DetectedNewPerson]
 }
 
+/// The result the analyzer extracted from a video: who beat whom, how, and
+/// (when visible) at which event. Drives the wizard's result headlines and
+/// captions for fight-recap reels.
+nonisolated struct FightOutcome: Identifiable, Sendable, Hashable {
+    var id: Int64
+    var videoID: Int64
+    var runID: Int64
+    /// "ko", "tko", "submission", "decision", "draw", "no-contest".
+    var method: String
+    /// Person keys from the registry; nil when the analyzer couldn't tell.
+    var winnerKey: String?
+    var loserKey: String?
+    /// Event name if visible in broadcast graphics (e.g. "UFC 330").
+    var event: String?
+}
+
 /// A user note anchored at a timestamp in a source video — injected into
 /// that video's analysis prompt as highest-priority guidance.
 nonisolated struct VideoNote: Identifiable, Sendable, Hashable {
@@ -75,6 +91,42 @@ nonisolated struct VideoNote: Identifiable, Sendable, Hashable {
 /// A user-drawn box identifying one person at one moment of a video —
 /// ground truth handed to the analyzer so people recognition stops guessing.
 /// Coordinates are normalized (0–1) in display space, top-left origin.
+/// One person the people-only pass found in a specific video, with the
+/// portrait box its roster avatar is cropped from.
+nonisolated struct VideoPersonRecord: Identifiable, Sendable, Hashable {
+    var videoID: Int64
+    var personID: Int64
+    var key: String
+    var name: String
+    var descriptor: String
+    var portraitAt: Double
+    var portraitBox: PortraitBox?
+
+    var id: Int64 { personID }
+    var displayName: String { name.isEmpty ? key : name }
+
+    /// Normalized top-left box around the person at `portraitAt`.
+    nonisolated struct PortraitBox: Codable, Sendable, Hashable {
+        var x: Double
+        var y: Double
+        var w: Double
+        var h: Double
+    }
+}
+
+/// A user-framed Center Stage keyframe: "at this moment, frame it exactly
+/// here." Normalized top-left display coordinates; a hard hint the camera
+/// path passes through, overriding tracking around its timestamp.
+nonisolated struct CameraHint: Identifiable, Sendable, Hashable {
+    var id: Int64
+    var videoID: Int64
+    var atTime: Double
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+}
+
 nonisolated struct PersonMarker: Identifiable, Sendable, Hashable {
     var id: Int64
     var videoID: Int64
@@ -85,6 +137,9 @@ nonisolated struct PersonMarker: Identifiable, Sendable, Hashable {
     var height: Double
     /// nil until the user picks who the box marks.
     var personID: Int64?
+    /// The boxed person must be EXCLUDED for the whole video: never framed
+    /// by Center Stage and never registered/tagged by the analyzer.
+    var ignored = false
 }
 
 /// One analysis pass over a video: when it ran, the instructions and notes
@@ -136,6 +191,7 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var favorite: Bool
     var cropXFrac: Double?
     var freeCropsJSON: String?
+    var centerStagePathJSON: String?
     var tags: [String]
     var gradeAverage: Double?
     var gradeCount: Int
@@ -147,6 +203,30 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
 
     var duration: Double { endTime - startTime }
     var videoURL: URL { URL(fileURLWithPath: videoPath) }
+
+    /// Decoded Center Stage camera path recorded during analysis; nil when
+    /// the scene wasn't tracked (or tracked poorly).
+    var centerStagePath: SceneCameraPath? {
+        guard let data = centerStagePathJSON?.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(SceneCameraPath.self, from: data)
+    }
+}
+
+/// One Center Stage camera keyframe: the crop rect normalized to the source
+/// frame (top-left origin), at a time relative to the scene start.
+nonisolated struct CameraPathKeyframe: Codable, Sendable, Hashable {
+    var t: Double
+    var x: Double
+    var y: Double
+    var w: Double
+    var h: Double
+}
+
+/// A scene's stored Center Stage camera path, with the camera preset it was
+/// computed with — a render only reuses it when the presets match.
+nonisolated struct SceneCameraPath: Codable, Sendable, Hashable {
+    var camera: String
+    var keyframes: [CameraPathKeyframe]
 }
 
 nonisolated struct MomentRecord: Identifiable, Sendable, Hashable {
