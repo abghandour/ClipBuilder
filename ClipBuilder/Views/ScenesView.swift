@@ -15,6 +15,7 @@ struct ScenesView: View {
     @State private var deletingRuns: [AnalysisRun] = []
     @State private var infoRun: AnalysisRun?
     @State private var showGenerateSheet = false
+    @State private var curatingScene: SceneRecord?
 
     /// Sentinel tag for the "All Batches" row — Set-based selection can't
     /// hold a nil the way the old single-selection did.
@@ -56,15 +57,18 @@ struct ScenesView: View {
         Array(Set(store.scenes.flatMap(\.tags))).sorted()
     }
 
-    /// The displayed scenes as a Generate Video source. A person: tag filter
-    /// becomes the Wizard's source-people pick; any other tag rides as a
-    /// content-tag constraint.
+    /// The displayed scenes as a Generate Video source. A person: filter
+    /// (or framed: — the person inside the 9:16 framing) becomes the
+    /// Wizard's source-people pick; any other tag rides as a content-tag
+    /// constraint.
     private var generateSource: GenerateVideoSource {
         var personKeys: Set<String> = []
         var tags: [String] = []
         if let tagFilter {
             if tagFilter.hasPrefix("person:") {
                 personKeys = [String(tagFilter.dropFirst("person:".count))]
+            } else if tagFilter.hasPrefix("framed:") {
+                personKeys = [String(tagFilter.dropFirst("framed:".count))]
             } else {
                 tags = [tagFilter]
             }
@@ -82,7 +86,7 @@ struct ScenesView: View {
                 .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Scenes")
+        .navigationTitle("Raw Scenes")
         .navigationSubtitle("\(filtered.count) scenes")
         .searchable(text: $searchText, prompt: "Filter by file or tag")
         .toolbar {
@@ -125,6 +129,9 @@ struct ScenesView: View {
         }
         .sheet(item: $infoRun) { run in
             BatchInfoSheet(run: run)
+        }
+        .sheet(item: $curatingScene) { scene in
+            CurateSceneSheet(sceneID: scene.id)
         }
     }
 
@@ -249,7 +256,8 @@ struct ScenesView: View {
                             SceneCard(scene: scene,
                                       onTranscript: {
                                           transcriptVideo = store.videos.first { $0.id == scene.videoID }
-                                      })
+                                      },
+                                      onCurate: { curatingScene = scene })
                         }
                     }
                     .padding()
@@ -354,6 +362,8 @@ struct SceneCard: View {
     @Environment(AppStore.self) private var store
     let scene: SceneRecord
     let onTranscript: () -> Void
+    /// Opens the Curate workbench modal (framing + trim → save as curated).
+    var onCurate: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -391,6 +401,22 @@ struct SceneCard: View {
             }
 
             HStack(spacing: 8) {
+                Button {
+                    if scene.curated {
+                        store.curateScene(scene, curated: false)
+                    } else if let onCurate {
+                        onCurate()
+                    } else {
+                        store.curateScene(scene, curated: true)
+                    }
+                } label: {
+                    Image(systemName: scene.curated ? "checkmark.seal.fill" : "checkmark.seal")
+                        .foregroundStyle(scene.curated ? .green : .secondary)
+                }
+                .help(scene.curated
+                      ? "In the Curated set — click to remove"
+                      : "Curate this scene: preview and apply Center Stage, trim, then save it as good to go")
+
                 Button {
                     store.toggleFavorite(scene)
                 } label: {
@@ -441,6 +467,15 @@ struct SceneCard: View {
         .padding(8)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
         .contextMenu {
+            if scene.curated {
+                Button("Remove from Curated") {
+                    store.curateScene(scene, curated: false)
+                }
+            } else {
+                Button("Curate…") {
+                    onCurate?()
+                }
+            }
             Button("Add to Builder") {
                 store.builder.addScene(scene)
                 store.requestedSection = .builder

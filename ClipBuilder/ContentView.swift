@@ -50,6 +50,7 @@ struct ClipBuilderApp: App {
 enum SidebarSection: String, CaseIterable, Identifiable {
     case analyze
     case scenes
+    case curated
     case people
     case instagram
     case music
@@ -63,7 +64,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     /// Source > Videos: footage in, scene detection, reference reels.
-    static let videoSections: [SidebarSection] = [.analyze, .scenes, .people, .instagram]
+    static let videoSections: [SidebarSection] = [.analyze, .scenes, .curated, .people, .instagram]
     /// Source asset libraries: media browsers plus overlay templates.
     static let assetSections: [SidebarSection] = [.music, .fonts, .images, .overlays]
     static let createSections: [SidebarSection] = [.wizard, .builder]
@@ -79,10 +80,11 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .library: return "Library"
-        case .scenes: return "Scenes"
+        case .scenes: return "Raw Scenes"
+        case .curated: return "Curated Scenes"
         case .people: return "People"
         case .builder: return "Builder"
-        case .analyze: return "Analyze"
+        case .analyze: return "Raw Videos"
         case .wizard: return "AI Wizard"
         case .instagram: return "Instagram"
         case .music: return AssetKind.music.title
@@ -96,6 +98,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         switch self {
         case .library: return "film.stack"
         case .scenes: return "square.grid.3x3"
+        case .curated: return "checkmark.seal"
         case .people: return "person.2"
         case .builder: return "timeline.selection"
         case .analyze: return "sparkles.rectangle.stack"
@@ -138,6 +141,7 @@ struct MainWindowView: View {
             switch selection ?? .analyze {
             case .library: LibraryView()
             case .scenes: ScenesView()
+            case .curated: CuratedView()
             case .people: PeopleView()
             case .builder: BuilderView()
             case .analyze: AnalyzeView()

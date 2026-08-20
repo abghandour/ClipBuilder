@@ -14,6 +14,8 @@ nonisolated struct WizardOptions: Sendable {
     var aiInstructions = ""
     /// Restrict scene selection to these analyze batches (empty = all).
     var selectedRunIDs: Set<Int64> = []
+    /// Only pick from scenes the user promoted to the Curated set.
+    var curatedOnly = false
     /// Person keys the footage must feature: when set, only scenes tagged
     /// with at least one of these people are eligible (empty = everyone).
     /// Combines with the batch filter above.
@@ -999,6 +1001,11 @@ actor WizardEngine {
         emit("Loading scenes and music...")
         let people = (try? await database.fetchPeople()) ?? []
         var scenes = try await database.fetchScenes(includeExcluded: false).filter { !$0.ignored }
+        if options.curatedOnly {
+            let before = scenes.count
+            scenes = scenes.filter(\.curated)
+            emit("Curated scenes only: \(scenes.count) of \(before) scene(s)")
+        }
         if !options.selectedRunIDs.isEmpty {
             let before = scenes.count
             scenes = scenes.filter { scene in
@@ -1727,11 +1734,14 @@ actor WizardEngine {
                 do {
                     // A path recorded at analyze time with the same camera
                     // preset skips the tracking pass — the render is just
-                    // the export. Preset mismatch or slicing failure falls
-                    // through to live tracking.
+                    // the export. A static framing from the framing pass is
+                    // the user's explicit choice, so it always wins; other
+                    // preset mismatches (or slicing failure) fall through to
+                    // live tracking.
                     var portrait: URL?
                     if let stored = scene.centerStagePath,
-                       stored.camera == options.centerStageCamera {
+                       stored.camera == options.centerStageCamera
+                        || stored.camera == FramingService.staticCamera {
                         let sliced = CenterStageService.slice(
                             stored.keyframes,
                             from: max(0, clip.start - scene.startTime),

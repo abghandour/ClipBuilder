@@ -21,6 +21,8 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     var visualAnalyzerModel: String?
     var speechAnalyzerProvider: String?
     var speechAnalyzerModel: String?
+    /// When the people-only pass last ran — the gate tag detection requires.
+    var peopleDetectedAt: String?
 
     var url: URL { URL(fileURLWithPath: path) }
 }
@@ -184,8 +186,14 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var id: Int64
     var videoID: Int64
     var runID: Int64?
+    /// Effective range: curation edits already substituted in.
     var startTime: Double
     var endTime: Double
+    /// The range analysis originally detected — the editor's reset target.
+    var originalStart: Double = 0
+    var originalEnd: Double = 0
+    /// Promoted to the Curated set (the wizard can be told to use only these).
+    var curated: Bool = false
     var excluded: Bool
     var ignored: Bool
     var favorite: Bool

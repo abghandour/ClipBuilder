@@ -216,6 +216,7 @@ actor Analyzer {
         In your JSON response, ALSO include a top-level "people" array:
         "people": [{"key": "<known key, or a new kebab-case slug you invent>", "description": "<concise visual description: build, hair, clothing, distinguishing marks>", "suggested_name": "<name from the filename, or null>", "ranges": [{"start": 0.0, "end": 5.2}]}]
         Rules: reuse a known key ONLY when confident it is the same person; invent a new key otherwise; one entry per person; ranges cover where that person is clearly visible.
+        Every time range you return in "tags" that shows a person MUST be covered by that person's ranges here — footage with people but no person attribution is an error. (Footage with nobody in it may still be tagged normally.)
         AND include a top-level "outcome" object IF this video shows a fight/match RESULT — signals: the referee stopping the action, a fighter unconscious or tapping, the hand raise, a victory celebration, broadcast result graphics:
         "outcome": {"method": "<ko|tko|submission|decision|draw|no-contest>", "winner_key": "<person key of the winner, or null if unsure>", "loser_key": "<person key, or null>", "event": "<event name from broadcast graphics/filename (e.g. \"UFC 330\"), or null>"}
         Use "outcome": null when the video shows no result (training, interview, preview). Never guess the winner — null beats wrong.
@@ -643,7 +644,7 @@ actor Analyzer {
                        knownPeople: [PersonRecord] = [],
                        personMarkers: [PersonMarker] = [],
                        detectPeople: Bool = true,
-                       portraitOnly: Bool = false,
+                       autoZoomUnframed: Bool = false,
                        breakdownTags: [String] = [],
                        centerStagePaths: Bool = false,
                        centerStageCamera: String = "balanced",
@@ -1015,14 +1016,11 @@ actor Analyzer {
         // scene's people fit a 9:16 crop, so the wizard can prefer moments
         // where nobody gets cut off, and record where the crop window should
         // sit to keep those people framed — the wizard and Builder read it as
-        // each scene's default crop. Pure Vision — no AI cost. With
-        // portraitOnly the score becomes a hard filter: scenes whose people
-        // spread wider than the crop — or with nobody visible at all — are
-        // auto-hidden, on any aspect ratio.
-        if video.wide || portraitOnly {
+        // each scene's default crop. Pure Vision — no AI cost.
+        if video.wide {
             progress(0.97, "portrait fit")
             let ranges = (try? await database.sceneRanges(runID: runID)) ?? []
-            var good = 0, poor = 0, hidden = 0, crops = 0
+            var good = 0, poor = 0, crops = 0
             for range in ranges {
                 try Task.checkCancellation()
                 guard let result = await Self.portraitFit(url: video.url,
@@ -1031,27 +1029,21 @@ actor Analyzer {
                                                           videoHeight: video.height) else { continue }
                 switch result.fit {
                 case .fits:
-                    if video.wide {
-                        try? await database.addSceneTag(sceneID: range.id, tag: "portrait-fit:good")
-                    }
+                    try? await database.addSceneTag(sceneID: range.id, tag: "portrait-fit:good")
                     good += 1
                 case .tooWide:
-                    if video.wide {
-                        try? await database.addSceneTag(sceneID: range.id, tag: "portrait-fit:poor")
-                    }
+                    try? await database.addSceneTag(sceneID: range.id, tag: "portrait-fit:poor")
                     poor += 1
                 case .noPeople:
                     break
                 }
-                // Even a too-wide scene crops best centered on its people.
-                if video.wide, let cropX = result.cropXFrac {
+                // Even a too-wide scene crops best centered on its people —
+                // but only when the user opted into auto-zooming unframed
+                // scenes; the default leaves them letterboxed until the
+                // framing pass (or the Builder) gives them a real crop.
+                if autoZoomUnframed, let cropX = result.cropXFrac {
                     try? await database.setSceneCropX(range.id, fraction: cropX)
                     crops += 1
-                }
-                if portraitOnly && result.fit != .fits {
-                    try? await database.addSceneTag(sceneID: range.id, tag: "auto-hidden")
-                    try? await database.setSceneExcluded(range.id, excluded: true)
-                    hidden += 1
                 }
             }
             if good + poor > 0 {
@@ -1059,11 +1051,6 @@ actor Analyzer {
             }
             if crops > 0 {
                 log("Recorded a people-centered 9:16 crop position for \(crops) scene(s)")
-            }
-            if portraitOnly {
-                log(hidden > 0
-                    ? "9:16 filter: auto-hid \(hidden) scene(s) that can't crop to portrait with people in frame"
-                    : "9:16 filter: every scene crops to portrait with people in frame")
             }
         }
 

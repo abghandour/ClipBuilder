@@ -39,19 +39,19 @@ struct AnalyzeView: View {
                 .frame(maxWidth: .infinity, minHeight: 120, idealHeight: 160)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Analyze")
+        .navigationTitle("Raw Videos")
         .navigationSubtitle("\(store.videos.count) source videos")
         .toolbar {
             ToolbarItemGroup {
                 // Explicit text + icon content: the toolbar renders plain
                 // Label buttons icon-only regardless of labelStyle.
                 Button {
-                    startAnalysis(of: selectedVideos)
+                    if let video = previewVideo { startAnalysis(of: video) }
                 } label: {
                     ToolbarBubbleLabel(text: "Analyze", systemImage: "sparkles")
                 }
-                .disabled(selection.isEmpty || store.isAnalyzing)
-                .help("Runs a fresh analysis. Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
+                .disabled(previewVideo == nil || store.isAnalyzing)
+                .help("Runs a fresh analysis of the selected video (one at a time). Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
 
                 Button {
                     showGenerateSheet = true
@@ -87,18 +87,15 @@ struct AnalyzeView: View {
     private func presentPrefilledPlan(for video: VideoRecord) {
         store.pendingAnalyzeSetup = nil
         selection = [video.id]
-        pendingDispatch = PendingDispatch(operation: .analyze, videos: [video],
-                                          run: { store.analyze(videos: [video]) })
+        startAnalysis(of: video)
     }
 
     /// The model plan always shows for analysis — it carries the options
     /// (model, sampling, instructions, notes, people detection) for the run.
-    private func withDispatchPlan(videos: [VideoRecord], _ run: @escaping () -> Void) {
-        pendingDispatch = PendingDispatch(operation: .analyze, videos: videos, run: run)
-    }
-
-    private func startAnalysis(of videos: [VideoRecord]) {
-        withDispatchPlan(videos: videos) { store.analyze(videos: videos) }
+    /// Analysis is strictly one video at a time.
+    private func startAnalysis(of video: VideoRecord) {
+        pendingDispatch = PendingDispatch(operation: .analyze, videos: [video],
+                                          run: { store.analyze(videos: [video]) })
     }
 
     /// "16:9"-style label: snap to the common ratios, else reduce by GCD.
@@ -218,8 +215,10 @@ struct AnalyzeView: View {
             .width(60)
         }
         .contextMenu(forSelectionType: Int64.self) { ids in
-            Button("Analyze") {
-                startAnalysis(of: store.videos.filter { ids.contains($0.id) })
+            if ids.count == 1, let video = store.videos.first(where: { ids.contains($0.id) }) {
+                Button("Analyze") {
+                    startAnalysis(of: video)
+                }
             }
             Button("Transcribe") {
                 for video in store.videos.filter({ ids.contains($0.id) }) {
@@ -265,6 +264,7 @@ private struct VideoPreviewPane: View {
     let video: VideoRecord
 
     @State private var player: AVPlayer?
+    @State private var roster: [VideoPersonRecord] = []
 
     var body: some View {
         VStack(spacing: 8) {
@@ -279,11 +279,55 @@ private struct VideoPreviewPane: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+
+            // The video's people roster: build it here, ahead of any run —
+            // the analyze window then only asks which of them to require.
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("People")
+                        .font(.caption.weight(.medium))
+                    Spacer()
+                    if store.isDetectingPeople {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button(roster.isEmpty ? "Detect" : "Re-run") {
+                        Task { roster = await store.detectPeopleInVideo(video) }
+                    }
+                    .controlSize(.small)
+                    .disabled(store.isDetectingPeople)
+                    .help("People-only AI pass: identifies everyone in this video (honoring markers) without a full analysis")
+                }
+                if roster.isEmpty {
+                    Text("Nobody detected yet.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 8) {
+                            ForEach(roster) { entry in
+                                VStack(spacing: 2) {
+                                    VideoPersonAvatar(record: entry, videoURL: video.url,
+                                                      size: 36)
+                                    Text(entry.displayName)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                .frame(width: 48)
+                                .help(entry.descriptor)
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)
         .task(id: video.id) {
             player?.pause()
             player = AVPlayer(url: video.url)
+            roster = await store.videoPeople(for: video.id)
         }
         .onDisappear {
             player?.pause()

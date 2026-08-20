@@ -391,15 +391,16 @@ final class AppStore {
         // sheet (persisted, so muted runs keep the last-used values).
         let instructions = UserDefaults.standard.string(forKey: "analysis.instructions") ?? ""
         let storedInterval = UserDefaults.standard.double(forKey: "analysis.sampleInterval")
-        let detectPeople = UserDefaults.standard.object(forKey: "analysis.detectPeople") == nil
-            ? true : UserDefaults.standard.bool(forKey: "analysis.detectPeople")
-        let portraitOnly = UserDefaults.standard.bool(forKey: "analysis.portraitOnly")
+        // People attribution is mandatory: the people-detection pass gates
+        // tagging, and every scene must carry whoever is in it.
+        let detectPeople = true
+        let autoZoomUnframed = UserDefaults.standard.bool(forKey: "analysis.autoZoomUnframed")
         let breakdownTags: [String] = UserDefaults.standard.bool(forKey: "analysis.autoBreakdown")
             ? (UserDefaults.standard.string(forKey: "analysis.breakdownTags") ?? "")
                 .split(separator: ",").map(String.init)
             : []
-        let centerStagePaths = UserDefaults.standard.bool(forKey: "analysis.centerStagePaths")
-        let centerStageCamera = UserDefaults.standard.string(forKey: "analysis.centerStageCamera") ?? "balanced"
+        // Center Stage moved to curation: paths are computed per scene from
+        // the Raw Scenes "Curate" modal, never during analysis.
         // One-shot trim from the plan sheet — consumed and cleared here so a
         // leftover range never silently applies to a later run.
         let trimStart = UserDefaults.standard.object(forKey: "analysis.trimStart") as? Double
@@ -465,10 +466,8 @@ final class AppStore {
                         knownPeople: knownPeople,
                         personMarkers: markers,
                         detectPeople: detectPeople,
-                        portraitOnly: portraitOnly,
+                        autoZoomUnframed: autoZoomUnframed,
                         breakdownTags: breakdownTags,
-                        centerStagePaths: centerStagePaths,
-                        centerStageCamera: centerStageCamera,
                         trimRange: trimRange,
                         sampleInterval: sampleInterval,
                         force: true,
@@ -1637,6 +1636,72 @@ final class AppStore {
         igAnalyzeTasks[mediaID]?.cancel()
     }
 
+    // MARK: - Curation
+
+    func curateScene(_ scene: SceneRecord, curated: Bool) {
+        guard let database else { return }
+        Task {
+            try? await database.setSceneCurated(scene.id, curated: curated)
+            refreshAll()
+        }
+    }
+
+    /// Apply a curation trim/extend. Passing the original range clears the
+    /// override. A stored camera path is recomputed for the new range so the
+    /// preview stays truthful.
+    func setSceneEditRange(_ scene: SceneRecord, start: Double, end: Double) {
+        guard let database, end > start else { return }
+        let clearing = abs(start - scene.originalStart) < 0.05
+            && abs(end - scene.originalEnd) < 0.05
+        Task {
+            try? await database.setSceneEditRange(scene.id,
+                                                  start: clearing ? nil : start,
+                                                  end: clearing ? nil : end)
+            if scene.centerStagePathJSON != nil, let stored = scene.centerStagePath {
+                await computeCameraPath(sceneID: scene.id, videoID: scene.videoID,
+                                        start: clearing ? scene.originalStart : start,
+                                        end: clearing ? scene.originalEnd : end,
+                                        camera: stored.camera)
+            }
+            refreshAll()
+        }
+    }
+
+    /// Compute (or refresh) one scene's Center Stage path over a range,
+    /// honoring markers, ignores, and hints.
+    func computeCameraPath(sceneID: Int64, videoID: Int64,
+                           start: Double, end: Double, camera: String) async {
+        guard let database, end > start,
+              let video = videos.first(where: { $0.id == videoID }) else { return }
+        let centerStage = CenterStageService()
+        let markers = (try? await database.personMarkers(videoID: videoID)) ?? []
+        let named = markers.filter { $0.personID != nil && !$0.ignored }
+        let ignored = markers.filter(\.ignored)
+        let portraits = named.isEmpty ? []
+            : await Analyzer.markerPortraits(url: video.url, markers: named,
+                                             duration: video.duration)
+        let avoidPortraits = ignored.isEmpty ? []
+            : await Analyzer.markerPortraits(url: video.url, markers: ignored,
+                                             duration: video.duration)
+        let hints = ((try? await database.centerStageHints(videoID: videoID)) ?? [])
+            .filter { $0.atTime >= start - 0.25 && $0.atTime <= end + 0.25 }
+            .map { hint in
+                (time: min(max(0, hint.atTime - start), end - start),
+                 crop: CGRect(x: hint.x, y: hint.y, width: hint.width, height: hint.height))
+            }
+        guard let result = try? await centerStage.cameraPath(
+                source: video.url, start: start, duration: end - start,
+                focusPortraits: portraits, avoidPortraits: avoidPortraits,
+                hints: hints, tuning: .named(camera)),
+              result.keyframes.count >= 2 else { return }
+        let path = SceneCameraPath(camera: camera, keyframes: result.keyframes)
+        if let data = try? JSONEncoder().encode(path),
+           let json = String(data: data, encoding: .utf8) {
+            try? await database.setSceneCenterStagePath(sceneID, json: json)
+        }
+        refreshAll()
+    }
+
     // MARK: - People-only pass
 
     /// A people-only detection is running (one at a time).
@@ -1648,14 +1713,18 @@ final class AppStore {
     }
 
     /// Run (or re-run) the people-only AI pass for one video and return the
-    /// fresh roster.
-    func detectPeopleInVideo(_ video: VideoRecord) async -> [VideoPersonRecord] {
+    /// fresh roster. Provider/model override the dispatcher's routing (the
+    /// analyze sheet passes its picker's live choice).
+    func detectPeopleInVideo(_ video: VideoRecord,
+                             provider: String? = nil,
+                             model: String? = nil) async -> [VideoPersonRecord] {
         guard let database, !isDetectingPeople else { return [] }
         isDetectingPeople = true
         defer { isDetectingPeople = false }
         do {
             let roster = try await analyzer.detectPeopleOnly(
-                video: video, profile: activeProfile, database: database) { message in
+                video: video, profile: activeProfile, database: database,
+                provider: provider, model: model) { message in
                 Task { @MainActor in self.analysisLog.append(message) }
             }
             refreshAll()
@@ -1663,6 +1732,35 @@ final class AppStore {
         } catch {
             presentError("People detection failed", error)
             return (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
+        }
+    }
+
+    // MARK: - Framing pass
+
+    /// A framing-detection pass is running (one at a time).
+    var isDetectingFraming = false
+    var framingProgress = 0.0
+
+    /// Run (or re-run) the local framing pass for one video: a 9:16 rect
+    /// (static) or camera path per scene, plus optional framed: people tags.
+    func detectFraming(video: VideoRecord, camera: String, tagFramedPeople: Bool) async {
+        guard let database, !isDetectingFraming else { return }
+        isDetectingFraming = true
+        framingProgress = 0
+        defer { isDetectingFraming = false }
+        do {
+            _ = try await FramingService.detectFraming(
+                video: video, database: database, camera: camera,
+                tagFramedPeople: tagFramedPeople,
+                log: { message in
+                    Task { @MainActor in self.analysisLog.append(message) }
+                },
+                progress: { fraction in
+                    Task { @MainActor in self.framingProgress = fraction }
+                })
+            refreshAll()
+        } catch {
+            presentError("Framing detection failed", error)
         }
     }
 
@@ -1723,24 +1821,45 @@ final class AppStore {
                 : await Analyzer.markerPortraits(url: video.url, markers: ignored,
                                                  duration: video.duration)
             let hints = (try? await database.centerStageHints(videoID: videoID)) ?? []
+            // The framing moved, so who's inside it may have too — refresh
+            // the framed: tags along with the paths (when the option is on).
+            let tagFramed = (UserDefaults.standard.object(forKey: "analysis.framingTagPeople") as? Bool) ?? true
+            let peopleReferences = tagFramed
+                ? await FramingService.personSignatures(video: video, database: database) : []
             for scene in affected {
                 guard let stored = scene.centerStagePath else { continue }
-                let sceneHints = hints
-                    .filter { $0.atTime >= scene.startTime - 0.25 && $0.atTime <= scene.endTime + 0.25 }
-                    .map { hint in
-                        (time: min(max(0, hint.atTime - scene.startTime), scene.duration),
-                         crop: CGRect(x: hint.x, y: hint.y, width: hint.width, height: hint.height))
+                // Static framings re-derive their rect (the edited hint wins
+                // verbatim) — the tracker would turn them into moving paths.
+                let path: SceneCameraPath?
+                if stored.camera == FramingService.staticCamera {
+                    path = await FramingService.staticScenePath(video: video, scene: scene,
+                                                                hints: hints)
+                } else {
+                    let sceneHints = hints
+                        .filter { $0.atTime >= scene.startTime - 0.25 && $0.atTime <= scene.endTime + 0.25 }
+                        .map { hint in
+                            (time: min(max(0, hint.atTime - scene.startTime), scene.duration),
+                             crop: CGRect(x: hint.x, y: hint.y, width: hint.width, height: hint.height))
+                        }
+                    if let result = try? await centerStage.cameraPath(
+                            source: video.url, start: scene.startTime, duration: scene.duration,
+                            focusPortraits: portraits, avoidPortraits: avoidPortraits,
+                            hints: sceneHints,
+                            tuning: .named(stored.camera)),
+                       result.keyframes.count >= 2 {
+                        path = SceneCameraPath(camera: stored.camera, keyframes: result.keyframes)
+                    } else {
+                        path = nil
                     }
-                guard let result = try? await centerStage.cameraPath(
-                        source: video.url, start: scene.startTime, duration: scene.duration,
-                        focusPortraits: portraits, avoidPortraits: avoidPortraits,
-                        hints: sceneHints,
-                        tuning: .named(stored.camera)),
-                      result.keyframes.count >= 2 else { continue }
-                let path = SceneCameraPath(camera: stored.camera, keyframes: result.keyframes)
-                if let data = try? JSONEncoder().encode(path),
-                   let json = String(data: data, encoding: .utf8) {
-                    try? await database.setSceneCenterStagePath(scene.id, json: json)
+                }
+                guard let path,
+                      let data = try? JSONEncoder().encode(path),
+                      let json = String(data: data, encoding: .utf8) else { continue }
+                try? await database.setSceneCenterStagePath(scene.id, json: json)
+                if tagFramed {
+                    await FramingService.retagFramedPeople(video: video, scene: scene,
+                                                           path: path, database: database,
+                                                           people: peopleReferences)
                 }
             }
             refreshAll()

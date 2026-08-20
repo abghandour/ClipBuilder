@@ -25,6 +25,7 @@ struct WizardView: View {
     @AppStorage("wizard.includeHeadline") private var includeHeadline = true
     @AppStorage("wizard.includeOutro") private var includeOutro = true
     @AppStorage("wizard.limitToSelection") private var limitToSelection = false
+    @AppStorage("wizard.curatedOnly") private var curatedOnly = false
     /// Comma-joined analyze-batch IDs — AppStorage can't hold a Set directly.
     @AppStorage("wizard.selectedRunIDs") private var selectedRunIDsRaw = ""
     /// Comma-joined person keys the footage must feature (empty = everyone).
@@ -314,6 +315,16 @@ struct WizardView: View {
             }
 
             Section("Source Selection") {
+                let curatedCount = store.scenes.count(where: { $0.curated && !$0.excluded && !$0.ignored })
+                Toggle("Use curated scenes only", isOn: $curatedOnly)
+                    .help("Pick footage only from scenes you promoted to Curated Scenes — trimmed, framed, and marked good to go")
+                if curatedOnly {
+                    Text(curatedCount == 0
+                         ? "No curated scenes yet — promote scenes from Raw Scenes (or the Curated Scenes screen) first, or turn this off."
+                         : "\(curatedCount) curated scene(s) available.")
+                        .font(.caption)
+                        .foregroundStyle(curatedCount == 0 ? .orange : .secondary)
+                }
                 Toggle("Limit to selected analyze batches", isOn: $limitToSelection)
                 if limitToSelection {
                     let peopleCounts = batchPeopleCounts
@@ -580,6 +591,7 @@ struct WizardView: View {
         options.includeHeadline = includeHeadline
         options.includeOutro = includeOutro
         options.selectedRunIDs = limitToSelection ? selectedRunIDs : []
+        options.curatedOnly = curatedOnly
         // People hidden by the batch selection don't filter — only visible
         // picks apply.
         let eligibleKeys = Set(eligibleSourcePeople.map(\.key))

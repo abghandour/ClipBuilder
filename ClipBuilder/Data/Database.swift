@@ -47,6 +47,9 @@ actor Database {
         crop_x_frac REAL,
         free_crops TEXT,
         center_stage_path TEXT,
+        curated INTEGER DEFAULT 0,
+        edit_start REAL,
+        edit_end REAL,
         UNIQUE(video_id, run_id, start_time, end_time)
     );
 
@@ -345,8 +348,20 @@ actor Database {
         if !sceneColumns.contains("center_stage_path") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN center_stage_path TEXT")
         }
+        if !sceneColumns.contains("curated") {
+            try connection.execute("ALTER TABLE scenes ADD COLUMN curated INTEGER DEFAULT 0")
+        }
+        if !sceneColumns.contains("edit_start") {
+            try connection.execute("ALTER TABLE scenes ADD COLUMN edit_start REAL")
+        }
+        if !sceneColumns.contains("edit_end") {
+            try connection.execute("ALTER TABLE scenes ADD COLUMN edit_end REAL")
+        }
         if try !connection.columnNames(of: "person_markers").contains("ignored") {
             try connection.execute("ALTER TABLE person_markers ADD COLUMN ignored INTEGER DEFAULT 0")
+        }
+        if try !connection.columnNames(of: "videos").contains("people_detected_at") {
+            try connection.execute("ALTER TABLE videos ADD COLUMN people_detected_at TEXT")
         }
         let generatedColumns = try connection.columnNames(of: "generated_videos")
         if !generatedColumns.contains("deleted") {
@@ -570,11 +585,15 @@ actor Database {
         }
     }
 
-    /// Replace the video's roster with a fresh people-pass result.
+    /// Replace the video's roster with a fresh people-pass result and stamp
+    /// the video as people-detected (the tag-detection gate).
     func replaceVideoPeople(videoID: Int64,
                             entries: [(personID: Int64, portraitAt: Double,
                                        portraitJSON: String?, rangesJSON: String?)]) throws {
         try connection.transaction {
+            try connection.execute("""
+                UPDATE videos SET people_detected_at = datetime('now') WHERE id = ?
+                """, [.integer(videoID)])
             try connection.execute("DELETE FROM video_people WHERE video_id = ?",
                                    [.integer(videoID)])
             for entry in entries {
@@ -639,6 +658,13 @@ actor Database {
                                [.integer(sceneID), .text(tag)])
     }
 
+    /// Drop every tag of one scene sharing a prefix — a re-run of a pass
+    /// that owns that tag family (e.g. "framed:") starts from a clean slate.
+    func removeSceneTags(sceneID: Int64, withPrefix prefix: String) throws {
+        try connection.execute("DELETE FROM scene_tags WHERE scene_id = ? AND tag LIKE ?",
+                               [.integer(sceneID), .text(prefix + "%")])
+    }
+
     /// The person's first user-drawn marker with its video path — the best
     /// possible avatar source, since the box is ground truth for who's in it.
     func markerReference(personID: Int64) throws -> (videoPath: String, marker: PersonMarker)? {
@@ -691,7 +717,8 @@ actor Database {
             visualAnalyzerProvider: row["visual_analyzer_provider"]?.stringValue,
             visualAnalyzerModel: row["visual_analyzer_model"]?.stringValue,
             speechAnalyzerProvider: row["speech_analyzer_provider"]?.stringValue,
-            speechAnalyzerModel: row["speech_analyzer_model"]?.stringValue)
+            speechAnalyzerModel: row["speech_analyzer_model"]?.stringValue,
+            peopleDetectedAt: row["people_detected_at"]?.stringValue)
     }
 
     // MARK: - Scenes
@@ -742,12 +769,20 @@ actor Database {
         return sceneRows.map { row in
             let id = row["id"]?.intValue ?? 0
             let grade = gradesByScene[id]
+            // Curation edits substitute in as THE range, so every consumer
+            // (wizard, builder, previews) honors trims/extensions; originals
+            // ride along for the editor's reset.
+            let originalStart = row["start_time"]?.doubleValue ?? 0
+            let originalEnd = row["end_time"]?.doubleValue ?? 0
             return SceneRecord(
                 id: id,
                 videoID: row["video_id"]?.intValue ?? 0,
                 runID: row["run_id"]?.intValue,
-                startTime: row["start_time"]?.doubleValue ?? 0,
-                endTime: row["end_time"]?.doubleValue ?? 0,
+                startTime: row["edit_start"]?.doubleValue ?? originalStart,
+                endTime: row["edit_end"]?.doubleValue ?? originalEnd,
+                originalStart: originalStart,
+                originalEnd: originalEnd,
+                curated: row["curated"]?.boolValue ?? false,
                 excluded: row["excluded"]?.boolValue ?? false,
                 ignored: row["ignored"]?.boolValue ?? false,
                 favorite: row["favorite"]?.boolValue ?? false,
@@ -780,6 +815,19 @@ actor Database {
     func setSceneCropX(_ sceneID: Int64, fraction: Double) throws {
         try connection.execute("UPDATE scenes SET crop_x_frac = ? WHERE id = ?",
                                [.real(fraction), .integer(sceneID)])
+    }
+
+    /// Promote/demote a scene in the curated set.
+    func setSceneCurated(_ sceneID: Int64, curated: Bool) throws {
+        try connection.execute("UPDATE scenes SET curated = ? WHERE id = ?",
+                               [.integer(curated ? 1 : 0), .integer(sceneID)])
+    }
+
+    /// Curation trim/extend override (nil clears back to the analyzed range).
+    func setSceneEditRange(_ sceneID: Int64, start: Double?, end: Double?) throws {
+        try connection.execute("UPDATE scenes SET edit_start = ?, edit_end = ? WHERE id = ?",
+                               [start.map(SQLValue.real) ?? .null,
+                                end.map(SQLValue.real) ?? .null, .integer(sceneID)])
     }
 
     /// Center Stage camera path (SceneCameraPath JSON) recorded during
