@@ -200,6 +200,7 @@ struct PeopleView: View {
                         description: Text(allScenes.isEmpty
                             ? "This person has no scenes yet."
                             : "No scenes of \(person.displayName) match the current filter."))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12, alignment: .top)],

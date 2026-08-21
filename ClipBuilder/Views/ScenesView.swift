@@ -615,6 +615,9 @@ struct TranscriptSheet: View {
                     "No Transcript",
                     systemImage: "text.quote",
                     description: Text("Transcribe this video from the Raw Videos screen."))
+                    // Fill the sheet's remaining height so the header stays
+                    // pinned to the top instead of centering with it.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(rows) { row in
                     HStack(alignment: .top) {

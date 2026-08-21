@@ -730,6 +730,9 @@ private struct WizardLogPanel: View {
                     "Ready",
                     systemImage: "wand.and.stars",
                     description: Text("The wizard researches best practices, plans a reel from your analyzed scenes and feedback, and renders it to the Library."))
+                    // Fill the remaining pane height — without this the
+                    // whole panel (header included) centers vertically.
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
