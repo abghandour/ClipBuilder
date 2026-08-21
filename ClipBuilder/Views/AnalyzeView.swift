@@ -51,7 +51,9 @@ struct AnalyzeView: View {
                     ToolbarBubbleLabel(text: "Analyze", systemImage: "sparkles")
                 }
                 .disabled(previewVideo == nil || store.isAnalyzing)
-                .help("Runs a fresh analysis of the selected video (one at a time). Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
+                .help(selection.count > 1
+                      ? "Analysis runs one video at a time — select a single video to enable this"
+                      : "Runs a fresh analysis of the selected video (one at a time). Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
 
                 Button {
                     showGenerateSheet = true
@@ -218,6 +220,11 @@ struct AnalyzeView: View {
             if ids.count == 1, let video = store.videos.first(where: { ids.contains($0.id) }) {
                 Button("Analyze") {
                     startAnalysis(of: video)
+                }
+                Button("Rename…") {
+                    renameText = video.filename
+                    renamingID = video.id
+                    renameFocused = true
                 }
             }
             Button("Transcribe") {

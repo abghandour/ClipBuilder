@@ -29,10 +29,6 @@ struct ReviewSheet: View {
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Save Review") { save() }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!hasContent)
             }
             .padding()
 
@@ -79,6 +75,17 @@ struct ReviewSheet: View {
                     .padding(.bottom, 4)
                 }
             }
+
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save Review") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!hasContent)
+            }
+            .padding([.top, .horizontal])
         }
         .padding(.bottom)
         .frame(width: 720)

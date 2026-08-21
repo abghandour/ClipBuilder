@@ -25,6 +25,7 @@ struct HelpSheet: View {
             WebView(page)
         }
         .frame(width: 680, height: 760)
+        .onExitCommand { dismiss() }
         .task {
             // Load the file URL (not an HTML string) so the guide's bundled
             // screenshots resolve as sibling resources.

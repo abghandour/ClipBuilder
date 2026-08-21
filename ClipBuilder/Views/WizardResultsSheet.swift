@@ -18,8 +18,8 @@ struct WizardResultsSheet: View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
                 Text(results.videos.count == 1
-                     ? "Your reel is ready"
-                     : "\(results.videos.count) reels are ready")
+                     ? "Your video is ready"
+                     : "\(results.videos.count) videos are ready")
                     .font(.headline)
                 Text("Watch and rate — every rating trains the wizard. Not what you wanted? Retry runs the same settings again.")
                     .font(.caption)
@@ -53,6 +53,7 @@ struct WizardResultsSheet: View {
             .padding()
         }
         .frame(minWidth: 480)
+        .onExitCommand { dismiss() }
         .onAppear {
             for video in results.videos {
                 players[video.id] = AVPlayer(url: video.url)

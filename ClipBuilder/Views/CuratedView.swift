@@ -9,6 +9,7 @@ struct CuratedView: View {
     @Environment(AppStore.self) private var store
 
     @State private var selectedSceneID: Int64?
+    @State private var showGenerateSheet = false
 
     private var curatedScenes: [SceneRecord] {
         store.scenes.filter { $0.curated && !$0.ignored }
@@ -38,6 +39,20 @@ struct CuratedView: View {
         }
         .navigationTitle("Curated Scenes")
         .navigationSubtitle("\(curatedScenes.count) scenes")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showGenerateSheet = true
+                } label: {
+                    ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
+                }
+                .disabled(curatedScenes.isEmpty)
+                .help("Describe a video to create from the curated scenes — trims and framing carry into the AI Wizard")
+            }
+        }
+        .sheet(isPresented: $showGenerateSheet) {
+            GenerateVideoSheet(source: .scenes(curatedScenes, personKeys: [], tags: []))
+        }
     }
 
     private var sceneList: some View {
@@ -58,15 +73,7 @@ struct CuratedView: View {
                     }
                     Spacer()
                     if let score = scene.score {
-                        Text(String(format: "%.1f", score))
-                            .font(.caption2.bold().monospacedDigit())
-                            .padding(.horizontal, 4)
-                            .padding(.vertical, 1)
-                            .background(score >= 7.5 ? Color.green.opacity(0.8)
-                                        : score >= 5 ? Color.yellow.opacity(0.8)
-                                        : Color.gray.opacity(0.6),
-                                        in: RoundedRectangle(cornerRadius: 4))
-                            .foregroundStyle(.black)
+                        ScoreBadge(score: score, compact: true)
                             .help(scene.narrative ?? "Entertainment score")
                     }
                     if scene.centerStagePathJSON != nil {
@@ -86,6 +93,7 @@ struct CuratedView: View {
                         if selectedSceneID == scene.id { selectedSceneID = nil }
                         store.curateScene(scene, curated: false)
                     }
+                    .help("Takes the scene out of the curated set. Its trims and framing are kept — curate it again to bring it back unchanged.")
                     Button("Add to Builder") {
                         store.builder.addScene(scene)
                         store.requestedSection = .builder
@@ -111,6 +119,7 @@ struct CurateSceneSheet: View {
                 HStack {
                     Spacer()
                     Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                     Button(scene.curated ? "Done" : "Save as Curated") {
                         if !scene.curated {
                             store.curateScene(scene, curated: true)
@@ -259,15 +268,7 @@ struct CuratedSceneEditor: View {
                         .font(.headline)
                         .lineLimit(1)
                     if let score = scene.score {
-                        Text(String(format: "%.1f", score))
-                            .font(.caption.bold().monospacedDigit())
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(score >= 7.5 ? Color.green.opacity(0.8)
-                                        : score >= 5 ? Color.yellow.opacity(0.8)
-                                        : Color.gray.opacity(0.6),
-                                        in: RoundedRectangle(cornerRadius: 4))
-                            .foregroundStyle(.black)
+                        ScoreBadge(score: score)
                             .help("Entertainment score")
                     }
                     if (scene.excitement ?? 0) >= 0.35 {
@@ -297,6 +298,7 @@ struct CuratedSceneEditor: View {
                     store.curateScene(scene, curated: false)
                 }
                 .controlSize(.small)
+                .help("Takes the scene out of the curated set. Its trims and framing are kept — curate it again to bring it back unchanged.")
             }
         }
     }

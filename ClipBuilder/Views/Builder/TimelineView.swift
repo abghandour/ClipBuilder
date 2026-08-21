@@ -119,12 +119,13 @@ struct TrackHeader: View {
                 Button {
                     model.setTrackSequential(!sequential, track: track)
                 } label: {
-                    Text(sequential ? "SEQ" : "FREE")
+                    Text(sequential ? "PACK" : "FREE")
                         .font(.caption2.bold())
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
-                .help(sequential ? "Sequential: clips pack end-to-end" : "Free-form: clips stay where you drop them")
+                .help(sequential ? "Packed: clips snap end-to-end automatically"
+                                 : "Free-form: clips stay where you drop them")
                 Spacer()
             }
         }
@@ -209,6 +210,8 @@ struct TimeRuler: View {
             }
         }
         .contentShape(Rectangle())
+        .resizeCursorOnHover()
+        .help("Click or drag to move the playhead")
         .gesture(DragGesture(minimumDistance: 0)
             .onChanged { value in
                 // Snap before writing and skip no-op writes: @Observable
@@ -314,7 +317,14 @@ struct TimelineClipBlock: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 3) {
                     if clip.wide {
-                        badge("WIDE", color: .orange)
+                        WideBadge(compact: true)
+                    }
+                    if clip.effectiveSpeed != 1 {
+                        SpeedBadge(speed: clip.effectiveSpeed, compact: true)
+                            .help("Plays at \(clip.effectiveSpeed.formatted())× speed")
+                    }
+                    if let score = model.scene(for: clip)?.score {
+                        ScoreBadge(score: score, compact: true)
                     }
                     if clip.muted || (model.document.trackSettings[safe: clip.track]?.muted ?? false) {
                         Image(systemName: "speaker.slash.fill")
@@ -349,6 +359,7 @@ struct TimelineClipBlock: View {
                 .clipShape(RoundedRectangle(cornerRadius: 2))
                 .padding(.vertical, 8)
                 .contentShape(Rectangle().inset(by: -4))
+                .resizeCursorOnHover()
                 .gesture(DragGesture(minimumDistance: 1)
                     .onChanged { value in
                         isTrimming = true
@@ -395,14 +406,6 @@ struct TimelineClipBlock: View {
         .help(model.scene(for: clip)?.videoFilename ?? clip.videoFile ?? "")
     }
 
-    private func badge(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 7, weight: .bold))
-            .padding(.horizontal, 3)
-            .padding(.vertical, 1)
-            .background(color.opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
-            .foregroundStyle(.white)
-    }
 }
 
 // MARK: - Sound lane
@@ -471,6 +474,7 @@ struct SoundBlock: View {
                 .frame(width: 4)
                 .padding(.vertical, 8)
                 .contentShape(Rectangle().inset(by: -4))
+                .resizeCursorOnHover()
                 .gesture(DragGesture(minimumDistance: 1)
                     .onChanged { value in
                         isTrimming = true
@@ -581,6 +585,7 @@ struct OverlayBlockView: View {
                 .frame(width: 4)
                 .padding(.vertical, 8)
                 .contentShape(Rectangle().inset(by: -4))
+                .resizeCursorOnHover()
                 .gesture(DragGesture(minimumDistance: 1)
                     .onChanged { value in
                         isTrimming = true
@@ -657,6 +662,7 @@ struct ImageBlock: View {
                 .frame(width: 4)
                 .padding(.vertical, 8)
                 .contentShape(Rectangle().inset(by: -4))
+                .resizeCursorOnHover()
                 .gesture(DragGesture(minimumDistance: 1)
                     .onChanged { value in
                         isTrimming = true
@@ -738,6 +744,7 @@ struct TextBlock: View {
                 .frame(width: 4)
                 .padding(.vertical, 8)
                 .contentShape(Rectangle().inset(by: -4))
+                .resizeCursorOnHover()
                 .gesture(DragGesture(minimumDistance: 1)
                     .onChanged { value in
                         isTrimming = true

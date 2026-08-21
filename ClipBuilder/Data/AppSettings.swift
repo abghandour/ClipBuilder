@@ -185,6 +185,28 @@ nonisolated enum AICatalog {
         var models: [String]
     }
 
+    /// Friendly display names so raw model IDs never reach the UI.
+    static let modelDisplayNames: [String: String] = [
+        "claude-haiku-4-5-20251001": "Haiku 4.5",
+        "claude-sonnet-4-6": "Sonnet 4.6",
+        "claude-opus-4-8": "Opus 4.8",
+        "claude-fable-5": "Fable 5",
+        "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
+        "gemini-2.5-flash": "Gemini 2.5 Flash",
+        "gemini-2.0-flash": "Gemini 2.0 Flash",
+        "gemini-2.5-pro": "Gemini 2.5 Pro",
+        "gpt-5-nano": "GPT-5 nano",
+        "gpt-5-mini": "GPT-5 mini",
+        "gpt-5-codex": "GPT-5 Codex",
+        "gpt-5": "GPT-5",
+        "o3-mini": "o3-mini",
+        "o3": "o3",
+    ]
+
+    static func modelDisplayName(_ model: String) -> String {
+        modelDisplayNames[model] ?? model
+    }
+
     static let providers: [Provider] = [
         Provider(key: "claude", label: "Claude Code", bin: "claude",
                  defaultModel: "claude-haiku-4-5-20251001", supportsImages: true,

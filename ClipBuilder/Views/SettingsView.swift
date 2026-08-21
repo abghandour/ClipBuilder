@@ -2,10 +2,14 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    @Environment(AppStore.self) private var store
+
     var body: some View {
         TabView {
             ProfileSettingsTab()
                 .tabItem { Label("Profile", systemImage: "person.crop.square") }
+            TasteSettingsTab()
+                .tabItem { Label("Taste", systemImage: "graduationcap") }
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
             AISettingsTab()
@@ -14,6 +18,12 @@ struct SettingsView: View {
                 .tabItem { Label("Instagram", systemImage: "play.rectangle.on.rectangle") }
         }
         .frame(width: 560, height: 520)
+        // Fields edit the live store; closing the window persists them, so
+        // the Save buttons are a convenience rather than a requirement.
+        .onDisappear {
+            store.saveSettings()
+            store.saveActiveProfile()
+        }
     }
 }
 
@@ -28,6 +38,16 @@ private struct InstagramSettingsTab: View {
     var body: some View {
         @Bindable var store = store
         Form {
+            Section("Account") {
+                TextField("Instagram handle", text: Binding(
+                    get: { store.activeProfile.socials["instagram"]?.handle ?? "" },
+                    set: { store.activeProfile.socials["instagram", default: SocialSlot()].handle = $0 }
+                ), prompt: Text("@yourbrand"))
+                Text("The profile's own handle — used as the default account for fetches and tests. Saved with the profile.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Own Account (Graph API)") {
                 if store.settings.instagram.isGraphConnected {
                     LabeledContent("Connected") {
@@ -91,6 +111,7 @@ private struct InstagramSettingsTab: View {
             Section {
                 Button("Save") {
                     store.saveSettings()
+                    store.saveActiveProfile()   // the handle lives on the profile
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -155,10 +176,6 @@ private struct ProfileSettingsTab: View {
                 TextField("Brand name", text: $store.activeProfile.brandName)
                 TextField("Content domain", text: $store.activeProfile.contentDomain,
                           prompt: Text("MMA, cooking, travel…"))
-                TextField("Instagram handle", text: Binding(
-                    get: { store.activeProfile.socials["instagram"]?.handle ?? "" },
-                    set: { store.activeProfile.socials["instagram", default: SocialSlot()].handle = $0 }
-                ))
             }
 
             Section("Brand Kit") {
@@ -226,89 +243,6 @@ private struct ProfileSettingsTab: View {
                 }
             }
 
-            Section("Taste") {
-                Text("What a keeper moment looks like — distilled from sample reels you pick (Instagram → Add to Taste Profile, or study a local file below). Rides into every analysis (as the \"highlight\" tag) and every wizard plan. Edit freely; studying another sample refines rather than replaces.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $store.activeProfile.tasteRubric)
-                    .font(.body)
-                    .frame(minHeight: 90)
-                if !store.activeProfile.tasteExemplarFrames.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(store.activeProfile.tasteExemplarFrames, id: \.self) { path in
-                                if let image = NSImage(contentsOfFile: path) {
-                                    Image(nsImage: image)
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                        .frame(width: 72, height: 72)
-                                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                                        .overlay(alignment: .topTrailing) {
-                                            Button {
-                                                store.removeTasteExemplarFrame(path: path)
-                                            } label: {
-                                                Image(systemName: "xmark.circle.fill")
-                                                    .symbolRenderingMode(.palette)
-                                                    .foregroundStyle(.white, .black.opacity(0.6))
-                                            }
-                                            .buttonStyle(.plain)
-                                            .padding(2)
-                                            .help("Remove this example frame")
-                                        }
-                                }
-                            }
-                        }
-                    }
-                    Text("Example frames from your studied samples — attached to every analysis as visual definitions of the rubric (newest 8 kept).")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                HStack {
-                    Button("Study Sample Video…") {
-                        let panel = NSOpenPanel()
-                        panel.allowedContentTypes = [.movie, .mpeg4Movie, .quickTimeMovie]
-                        panel.allowsMultipleSelection = false
-                        if panel.runModal() == .OK, let url = panel.url {
-                            store.studyTasteExemplar(url: url)
-                        }
-                    }
-                    .disabled(store.isStudyingTaste)
-                    if store.isStudyingTaste {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Studying…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if !store.activeProfile.tasteCategories.isEmpty {
-                    Text("Learned video types — each studied reel is classified into one of these and refines its rubric. The AI Wizard's Video type picker lists them.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ForEach($store.activeProfile.tasteCategories) { $category in
-                        DisclosureGroup {
-                            TextField("Label", text: $category.label)
-                            TextEditor(text: $category.rubric)
-                                .font(.body)
-                                .frame(minHeight: 70)
-                            HStack {
-                                Text("\(category.exemplarFrames.count) example frame(s)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                Spacer()
-                                Button("Delete Type", role: .destructive) {
-                                    store.removeTasteCategory(key: category.key)
-                                }
-                                .controlSize(.small)
-                            }
-                        } label: {
-                            Text("\(category.label) · studied \(category.studiedCount) reel(s)")
-                        }
-                    }
-                }
-            }
-
             Section {
                 Button("Save Profile") {
                     store.saveActiveProfile()
@@ -345,6 +279,131 @@ private struct ProfileSettingsTab: View {
 
 }
 
+// MARK: - Taste
+
+/// Everything taste learning: the global rubric, exemplar frames, local
+/// sample studies, and the learned video-type categories. Reels teach it
+/// from the Instagram screen ("Learn"); this tab is where the lessons live.
+private struct TasteSettingsTab: View {
+    @Environment(AppStore.self) private var store
+    @State private var deletingCategory: TasteCategory?
+
+    var body: some View {
+        @Bindable var store = store
+        Form {
+            Section("Taste Rubric") {
+                Text("What a keeper moment looks like — distilled from sample reels you pick (Instagram → Learn, or a local file below). Rides into every analysis (as the \"highlight\" tag) and every wizard plan. Edit freely; learning from another sample refines rather than replaces.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $store.activeProfile.tasteRubric)
+                    .font(.body)
+                    .frame(minHeight: 90)
+                if !store.activeProfile.tasteExemplarFrames.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(store.activeProfile.tasteExemplarFrames, id: \.self) { path in
+                                if let image = NSImage(contentsOfFile: path) {
+                                    Image(nsImage: image)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 72, height: 72)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        .overlay(alignment: .topTrailing) {
+                                            Button {
+                                                store.removeTasteExemplarFrame(path: path)
+                                            } label: {
+                                                Image(systemName: "xmark.circle.fill")
+                                                    .symbolRenderingMode(.palette)
+                                                    .foregroundStyle(.white, .black.opacity(0.6))
+                                            }
+                                            .buttonStyle(.plain)
+                                            .padding(2)
+                                            .help("Remove this example frame")
+                                        }
+                                }
+                            }
+                        }
+                    }
+                    Text("Example frames from your studied samples — attached to every analysis as visual definitions of the rubric (newest 8 kept).")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                HStack {
+                    Button("Learn from Sample Video…") {
+                        let panel = NSOpenPanel()
+                        panel.allowedContentTypes = [.movie, .mpeg4Movie, .quickTimeMovie]
+                        panel.allowsMultipleSelection = false
+                        if panel.runModal() == .OK, let url = panel.url {
+                            store.studyTasteExemplar(url: url)
+                        }
+                    }
+                    .disabled(store.isStudyingTaste)
+                    if store.isStudyingTaste {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Learning…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Section("Learned Video Types") {
+                if store.activeProfile.tasteCategories.isEmpty {
+                    Text("Nothing learned yet. Select reels on the Instagram screen and use the Learn menu — each reel is classified into a video type (fight highlights, interviews, …) whose rubric it refines. The AI Wizard's Video type picker lists them.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Each learned reel refines one of these rubrics. The AI Wizard's Video type picker lists them.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach($store.activeProfile.tasteCategories) { $category in
+                        DisclosureGroup {
+                            TextField("Label", text: $category.label)
+                            TextEditor(text: $category.rubric)
+                                .font(.body)
+                                .frame(minHeight: 70)
+                            HStack {
+                                Text("\(category.exemplarFrames.count) example frame(s)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                Spacer()
+                                Button("Delete Type…", role: .destructive) {
+                                    deletingCategory = category
+                                }
+                                .controlSize(.small)
+                            }
+                        } label: {
+                            Text("\(category.label) · learned from \(category.studiedCount) reel(s)")
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button("Save Profile") {
+                    store.saveActiveProfile()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .formStyle(.grouped)
+        .confirmationDialog("Delete the \"\(deletingCategory?.label ?? "")\" video type?",
+                            isPresented: Binding(get: { deletingCategory != nil },
+                                                 set: { if !$0 { deletingCategory = nil } })) {
+            Button("Delete Video Type", role: .destructive) {
+                if let category = deletingCategory {
+                    store.removeTasteCategory(key: category.key)
+                }
+                deletingCategory = nil
+            }
+            Button("Cancel", role: .cancel) { deletingCategory = nil }
+        } message: {
+            Text("Its learned rubric and example frames are removed. Reels that taught it would need to be learned again.")
+        }
+    }
+}
+
 // MARK: - General
 
 private struct GeneralSettingsTab: View {
@@ -363,7 +422,7 @@ private struct GeneralSettingsTab: View {
                     Text("Visual (frame sampling)").tag("visual")
                     Text("Speech-first (transcript scenes)").tag("speech")
                 }
-                Text("Visual suits action footage; speech-first suits interviews and tutorials. Speech-first scene detection is not ported yet — transcription itself is available from the Analyze tab.")
+                Text("Visual suits action footage; speech-first suits interviews and tutorials. Speech-first scene detection is not ported yet — transcription itself is available from the Raw Videos screen.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -392,6 +451,9 @@ private struct GeneralSettingsTab: View {
                 Text("Databases and caches live here. Point this at a clip-builder checkout's data/ folder to share scene databases with the Python app, then relaunch.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Required Tools") {
                 ForEach(ToolInstaller.requiredTools, id: \.name) { tool in
                     LabeledContent(tool.name) {
                         switch (missingTools, store.isInstallingTools) {
@@ -448,21 +510,23 @@ private struct AISettingsTab: View {
     // Optimistic until the async CLI check lands, mirroring the plan sheet.
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
 
-    /// The provider label with the same flags the plan sheet shows: the
-    /// catalog's true top pick is always "★ recommended" (installed or
-    /// not); when it's missing, the best installed one is flagged too.
-    private func providerLabel(_ provider: AICatalog.Provider, task: String) -> String {
-        var label = provider.label
-        let chain = AICatalog.recommendedChains[task] ?? []
-        let top = chain.first?.provider ?? AICatalog.taskDefaults[task]
-        let bestAvailable = chain.first { availableProviders.contains($0.provider) }?.provider
-        if provider.key == top {
-            label += "  ★ recommended"
-        } else if provider.key == bestAvailable, bestAvailable != top {
-            label += "  ★ best available"
-        }
-        if !availableProviders.contains(provider.key) { label += "  (not installed)" }
-        return label
+    /// One "provider|model" binding per task, writing both routing fields.
+    private func routingBinding(for task: String) -> Binding<String> {
+        Binding(
+            get: {
+                let provider = store.settings.ai.tasks[task]
+                    ?? AICatalog.taskDefaults[task] ?? "claude"
+                let model = store.settings.ai.taskModels[task]
+                    ?? store.settings.ai.providers[provider]?.model
+                    ?? AICatalog.provider(provider)?.defaultModel ?? ""
+                return ModelPicker.tag(provider: provider, model: model)
+            },
+            set: {
+                let parsed = ModelPicker.parse($0)
+                store.settings.ai.tasks[task] = parsed.provider
+                store.settings.ai.taskModels[task] = parsed.model
+            }
+        )
     }
 
     var body: some View {
@@ -470,20 +534,11 @@ private struct AISettingsTab: View {
         Form {
             Section("Task Routing") {
                 ForEach(AICatalog.tasks, id: \.self) { task in
-                    Picker(AICatalog.taskLabels[task] ?? task, selection: Binding(
-                        get: { store.settings.ai.tasks[task] ?? AICatalog.taskDefaults[task] ?? "claude" },
-                        set: {
-                            store.settings.ai.tasks[task] = $0
-                            // A provider change invalidates the task's model pick.
-                            store.settings.ai.taskModels[task] = nil
-                        }
-                    )) {
-                        ForEach(AICatalog.providers, id: \.key) { provider in
-                            Text(providerLabel(provider, task: task)).tag(provider.key)
-                        }
-                    }
+                    ModelPicker(title: AICatalog.taskLabels[task] ?? task,
+                                task: task, selection: routingBinding(for: task),
+                                availableProviders: availableProviders)
                 }
-                Button("Reset Smart Dispatcher") {
+                Button("Reset to Recommended Models") {
                     store.resetDispatcher()
                 }
                 Text("Restores the recommended model for every task and re-enables the model-plan prompts shown before Analyze and Generate.")
@@ -504,7 +559,7 @@ private struct AISettingsTab: View {
                         set: { store.settings.ai.providers[provider.key, default: AIProviderSettings()].model = $0 }
                     )) {
                         ForEach(provider.models, id: \.self) { model in
-                            Text(model).tag(model)
+                            Text(AICatalog.modelDisplayName(model)).tag(model)
                         }
                     }
                 }
@@ -519,13 +574,7 @@ private struct AISettingsTab: View {
         }
         .formStyle(.grouped)
         .task {
-            var available = Set<String>()
-            for provider in AICatalog.providers {
-                if await store.ai.isProviderAvailable(provider.key) {
-                    available.insert(provider.key)
-                }
-            }
-            availableProviders = available
+            availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
         }
     }
 }
@@ -543,7 +592,7 @@ private struct AvailabilityRow: View {
             case .some(true):
                 Text("Installed").foregroundStyle(.green)
             case .some(false):
-                Text("Not found").foregroundStyle(.orange)
+                Text("Not found").foregroundStyle(.red)
             }
         }
         .task(id: providerKey) {

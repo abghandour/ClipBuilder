@@ -74,6 +74,11 @@ struct ScenesView: View {
         Array(Set(store.scenes.flatMap(\.tags))).sorted()
     }
 
+    /// Any non-default grid filter — fills the toolbar Filter icon.
+    private var filtersActive: Bool {
+        tagFilter != nil || sortByScore || minScore > 0 || showSequenceParts || showHidden
+    }
+
     /// The displayed scenes as a Generate Video source. A person: filter
     /// (or framed: — the person inside the 9:16 framing) becomes the
     /// Wizard's source-people pick; any other tag rides as a content-tag
@@ -116,39 +121,42 @@ struct ScenesView: View {
                 }
             }
             ToolbarItem {
-                Picker("Tag", selection: $tagFilter) {
-                    Text("All Tags").tag(String?.none)
-                    ForEach(allTags, id: \.self) { tag in
-                        Text(tag).tag(String?.some(tag))
+                Menu {
+                    Picker("Tag", selection: $tagFilter) {
+                        Text("All Tags").tag(String?.none)
+                        ForEach(allTags, id: \.self) { tag in
+                            Text(tag).tag(String?.some(tag))
+                        }
                     }
+                    Picker("Order", selection: $sortByScore) {
+                        Label("By time", systemImage: "clock").tag(false)
+                        Label("Top scored", systemImage: "star").tag(true)
+                    }
+                    Picker("Minimum score", selection: $minScore) {
+                        Text("All scores").tag(0.0)
+                        Text("Score ≥ 5").tag(5.0)
+                        Text("Score ≥ 7").tag(7.0)
+                    }
+                    Divider()
+                    Toggle("Show Sequence Actions", isOn: $showSequenceParts)
+                    Toggle("Show Hidden Scenes", isOn: $showHidden)
+                    if filtersActive {
+                        Divider()
+                        Button("Reset Filters") {
+                            tagFilter = nil
+                            sortByScore = false
+                            minScore = 0
+                            showSequenceParts = false
+                            showHidden = false
+                        }
+                    }
+                } label: {
+                    ToolbarBubbleLabel(
+                        text: "Filter",
+                        systemImage: filtersActive ? "line.3.horizontal.decrease.circle.fill"
+                                                   : "line.3.horizontal.decrease.circle")
                 }
-                .pickerStyle(.menu)
-            }
-            ToolbarItem {
-                Picker("Order", selection: $sortByScore) {
-                    Label("By time", systemImage: "clock").tag(false)
-                    Label("Top scored", systemImage: "star").tag(true)
-                }
-                .pickerStyle(.menu)
-                .help("Order the grid by source order or by entertainment score")
-            }
-            ToolbarItem {
-                Picker("Score", selection: $minScore) {
-                    Text("All scores").tag(0.0)
-                    Text("Score ≥ 5").tag(5.0)
-                    Text("Score ≥ 7").tag(7.0)
-                }
-                .pickerStyle(.menu)
-                .help("Only show scenes at or above an entertainment score")
-            }
-            ToolbarItem {
-                Toggle("Sequence Actions", systemImage: "list.bullet.indent",
-                       isOn: $showSequenceParts)
-                    .help("Show the individual actions inside broken-down sequences — hidden by default, the sequence card stands for them")
-            }
-            ToolbarItem {
-                Toggle("Show Hidden", systemImage: "eye.slash", isOn: $showHidden)
-                    .help("Include scenes hidden by low-quality auto-detection or by you")
+                .help("Filter and order the grid: tag, entertainment score, sequence actions, hidden scenes. The icon fills when a filter is active.")
             }
             ToolbarItem {
                 Button {
@@ -376,7 +384,7 @@ private struct BatchInfoSheet: View {
                     dismiss()
                     store.reanalyzeBatch(run)
                 }
-                .help("Opens the Analyze tab with this batch's options loaded into the model plan — adjust anything, then start. The result lands in a new batch.")
+                .help("Opens Raw Videos with this batch's options loaded into the model plan — adjust anything, then start. The result lands in a new batch.")
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
@@ -413,25 +421,13 @@ struct SceneCard: View {
         VStack(alignment: .leading, spacing: 6) {
             SceneInlinePlayer(scene: scene)
                 .aspectRatio(9 / 16, contentMode: .fit)
-                .overlay(alignment: .bottomLeading) {
-                    Text(String(format: "%.1fs", scene.duration))
-                        .font(.caption2.monospacedDigit())
-                        .padding(4)
-                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
-                        .foregroundStyle(.white)
-                        .padding(6)
+                .overlay(alignment: .bottomTrailing) {
+                    DurationBadge(seconds: scene.duration)
                         .allowsHitTesting(false)
                 }
                 .overlay(alignment: .topLeading) {
                     if let score = scene.score {
-                        Text(String(format: "%.1f", score))
-                            .font(.caption2.bold().monospacedDigit())
-                            .padding(4)
-                            .background(score >= 7.5 ? .green.opacity(0.85)
-                                        : score >= 5 ? .yellow.opacity(0.85)
-                                        : .gray.opacity(0.7),
-                                        in: RoundedRectangle(cornerRadius: 4))
-                            .foregroundStyle(.black)
+                        ScoreBadge(score: score)
                             .padding(6)
                             .allowsHitTesting(false)
                             .help(scene.narrative ?? "Entertainment score")
@@ -440,11 +436,7 @@ struct SceneCard: View {
                 .overlay(alignment: .topTrailing) {
                     VStack(alignment: .trailing, spacing: 4) {
                         if scene.wide {
-                            Text("WIDE")
-                                .font(.caption2.bold())
-                                .padding(3)
-                                .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
-                                .foregroundStyle(.white)
+                            WideBadge()
                         }
                         if childCount > 0 {
                             Text("SEQ · \(childCount)")
@@ -452,13 +444,13 @@ struct SceneCard: View {
                                 .padding(3)
                                 .background(.purple.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
                                 .foregroundStyle(.white)
-                                .help("A sequence broken into \(childCount) action scene(s) — show them with the Sequence Actions toolbar toggle")
+                                .help("A sequence broken into \(childCount) action scene(s) — show them with the Sequence Actions toggle in the Filter menu")
                         }
                     }
                     .padding(6)
                     .allowsHitTesting(false)
                 }
-                .overlay(alignment: .bottomTrailing) {
+                .overlay(alignment: .bottomLeading) {
                     if (scene.excitement ?? 0) >= 0.35 {
                         Image(systemName: "speaker.wave.3.fill")
                             .font(.caption2)
@@ -563,6 +555,7 @@ struct SceneCard: View {
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
         .contextMenu {
             if scene.curated {
+                // Non-destructive: trims/framing are kept for re-curation.
                 Button("Remove from Curated") {
                     store.curateScene(scene, curated: false)
                 }
@@ -621,7 +614,7 @@ struct TranscriptSheet: View {
                 ContentUnavailableView(
                     "No Transcript",
                     systemImage: "text.quote",
-                    description: Text("Transcribe this video from the Analyze tab."))
+                    description: Text("Transcribe this video from the Raw Videos screen."))
             } else {
                 List(rows) { row in
                     HStack(alignment: .top) {

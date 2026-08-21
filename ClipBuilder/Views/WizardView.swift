@@ -252,6 +252,11 @@ struct WizardView: View {
                 Toggle("Use background music", isOn: $useMusic)
                 Toggle("Mute source audio (music only)", isOn: $muteSource)
                     .disabled(!useMusic)
+                if !useMusic {
+                    Text("Needs background music on — a fully silent video isn't offered.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 LabeledContent("Music library") {
                     HStack {
                         Text("\(musicCount) tracks")
@@ -428,11 +433,12 @@ struct WizardView: View {
                     Button {
                         startGeneration()
                     } label: {
-                        Label("Generate Reels", systemImage: "wand.and.stars")
+                        Label("Generate Video", systemImage: "wand.and.stars")
                             .frame(maxWidth: .infinity)
                     }
                     .controlSize(.large)
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
                     .disabled(analyzedSceneCount == 0)
                 }
 

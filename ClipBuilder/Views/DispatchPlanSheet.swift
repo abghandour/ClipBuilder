@@ -107,9 +107,6 @@ struct DispatchPlanSheet: View {
     @State private var pendingNewPersonMarker: PersonMarker?
     @State private var newPersonName = ""
 
-    private static let markerColors: [Color] = [.yellow, .green, .cyan, .orange,
-                                                .pink, .purple, .red, .mint]
-
     private static let samplingChoices: [(label: String, value: Double)] = [
         ("Automatic (1–3s by length)", 0),
         ("Every 0.5s", 0.5), ("Every 1s", 1), ("Every 2s", 2),
@@ -157,9 +154,8 @@ struct DispatchPlanSheet: View {
     }
 
     private func markerColor(_ marker: PersonMarker) -> Color {
-        if marker.ignored { return .gray }
-        let index = panelMarkers.firstIndex(where: { $0.id == marker.id }) ?? 0
-        return Self.markerColors[index % Self.markerColors.count]
+        MarkerPalette.color(at: panelMarkers.firstIndex { $0.id == marker.id } ?? 0,
+                            ignored: marker.ignored)
     }
 
     private func markerPersonName(_ marker: PersonMarker) -> String? {
@@ -209,13 +205,7 @@ struct DispatchPlanSheet: View {
             }
         }
         .task {
-            var available = Set<String>()
-            for provider in AICatalog.providers {
-                if await store.ai.isProviderAvailable(provider.key) {
-                    available.insert(provider.key)
-                }
-            }
-            availableProviders = available
+            availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
             seedChoices()
             if operation == .analyze {
                 let locales = await SpeechTranscriber.supportedLocales
@@ -370,12 +360,9 @@ struct DispatchPlanSheet: View {
             Form {
                 // Same "analysis" model task as tag detection — one picker
                 // choice powers both passes; runs here honor it immediately.
-                Picker(AICatalog.taskLabels["analysis"] ?? "analysis",
-                       selection: binding(for: "analysis")) {
-                    ForEach(options(for: "analysis"), id: \.tag) { option in
-                        Text(option.label).tag(option.tag)
-                    }
-                }
+                ModelPicker(title: AICatalog.taskLabels["analysis"] ?? "analysis",
+                            task: "analysis", selection: binding(for: "analysis"),
+                            availableProviders: availableProviders)
                 ForEach(videos) { video in
                     let done = peopleDone(video)
                     HStack {
@@ -442,6 +429,7 @@ struct DispatchPlanSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Continue to Tag Detection") { analyzeTab = .tags }
                     .buttonStyle(.borderedProminent)
                     .disabled(!peopleGateSatisfied)
@@ -503,6 +491,7 @@ struct DispatchPlanSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button(framingScenes.contains(where: { $0.centerStagePathJSON != nil })
                        ? "Re-run Framing" : "Detect Framing") {
                     guard let video = videos.first else { return }
@@ -533,11 +522,9 @@ struct DispatchPlanSheet: View {
 
             Form {
                 ForEach(operation.aiTasks, id: \.self) { task in
-                    Picker(AICatalog.taskLabels[task] ?? task, selection: binding(for: task)) {
-                        ForEach(options(for: task), id: \.tag) { option in
-                            Text(option.label).tag(option.tag)
-                        }
-                    }
+                    ModelPicker(title: AICatalog.taskLabels[task] ?? task,
+                                task: task, selection: binding(for: task),
+                                availableProviders: availableProviders)
                 }
                 if operation == .analyze {
                     if analysisChoice.provider == "gemini" {
@@ -594,6 +581,7 @@ struct DispatchPlanSheet: View {
                 HStack {
                     Spacer()
                     Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                     Button("Start") { start() }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
@@ -757,27 +745,9 @@ struct DispatchPlanSheet: View {
                 set: { choices[task] = $0 })
     }
 
-    /// The catalog's true top pick for the task — flagged in the picker
-    /// even when its provider isn't installed, so the user knows what the
-    /// ideal setup would be.
-    private func topRecommendedTag(for task: String) -> String {
-        if let entry = AICatalog.recommendedChains[task]?.first {
-            return "\(entry.provider)|\(entry.model)"
-        }
-        let key = AICatalog.taskDefaults[task] ?? "claude"
-        return "\(key)|\(AICatalog.provider(key)?.defaultModel ?? "")"
-    }
-
-    /// First recommended chain entry whose CLI is installed, else the
-    /// task default provider with its default model — what actually gets
-    /// pre-selected and run.
+    /// What automatic dispatch would run — used to pre-seed the pickers.
     private func recommendedTag(for task: String) -> String {
-        for entry in AICatalog.recommendedChains[task] ?? []
-        where availableProviders.contains(entry.provider) {
-            return "\(entry.provider)|\(entry.model)"
-        }
-        let key = AICatalog.taskDefaults[task] ?? "claude"
-        return "\(key)|\(AICatalog.provider(key)?.defaultModel ?? "")"
+        ModelPicker.bestAvailableTag(for: task, available: availableProviders)
     }
 
     /// Current effective choice: the user's saved routing when present,
@@ -794,34 +764,6 @@ struct DispatchPlanSheet: View {
                 choices[task] = recommendedTag(for: task)
             }
         }
-    }
-
-    private func options(for task: String) -> [(tag: String, label: String)] {
-        // The catalog's true best is always flagged (installed or not);
-        // when it's missing, the best of what IS installed gets its own
-        // flag so the effective default is legible too.
-        let top = topRecommendedTag(for: task)
-        let bestAvailable = recommendedTag(for: task)
-        var result: [(String, String)] = []
-        for provider in AICatalog.providers {
-            let installed = availableProviders.contains(provider.key)
-            for model in provider.models {
-                let tag = "\(provider.key)|\(model)"
-                var label = "\(provider.label) — \(model)"
-                if tag == top {
-                    label += "  ★ recommended"
-                } else if tag == bestAvailable, bestAvailable != top {
-                    label += "  ★ best available"
-                }
-                if !installed { label += "  (not installed)" }
-                result.append((tag, label))
-            }
-        }
-        // Keep whatever is currently chosen selectable even if it's custom.
-        if let current = choices[task], !result.contains(where: { $0.0 == current }) {
-            result.append((current, current.replacingOccurrences(of: "|", with: " — ")))
-        }
-        return result
     }
 
     private func start() {
@@ -951,18 +893,13 @@ private struct VideoNotesPanel: View {
     @State private var focusPortraits: [Data] = []
     @State private var avoidPortraits: [Data] = []
 
-    /// One distinct color per marker, cycling a fixed palette.
-    private static let markerColors: [Color] = [.yellow, .green, .cyan, .orange,
-                                                .pink, .purple, .red, .mint]
-
     private var video: VideoRecord {
         videos[min(selectedIndex, videos.count - 1)]
     }
 
     private func markerColor(_ marker: PersonMarker) -> Color {
-        if marker.ignored { return .gray }
-        let index = markers.firstIndex(where: { $0.id == marker.id }) ?? 0
-        return Self.markerColors[index % Self.markerColors.count]
+        MarkerPalette.color(at: markers.firstIndex { $0.id == marker.id } ?? 0,
+                            ignored: marker.ignored)
     }
 
     private func markerPersonName(_ marker: PersonMarker) -> String? {

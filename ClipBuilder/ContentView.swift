@@ -115,18 +115,18 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 struct MainWindowView: View {
     @Environment(AppStore.self) private var store
     @State private var selection: SidebarSection? = .analyze
-    @State private var videosExpanded = true
 
     var body: some View {
         @Bindable var store = store
         NavigationSplitView {
+            // Flat, uniform depth: the pipeline sections were previously
+            // collapsible behind a "Videos" disclosure while asset rows sat
+            // flat beside them — the core workflow shouldn't be hideable.
             List(selection: $selection) {
-                Section("Source") {
-                    DisclosureGroup(isExpanded: $videosExpanded) {
-                        sidebarItems(SidebarSection.videoSections)
-                    } label: {
-                        Label("Videos", systemImage: "video")
-                    }
+                Section("Footage") {
+                    sidebarItems(SidebarSection.videoSections)
+                }
+                Section("Assets") {
                     sidebarItems(SidebarSection.assetSections)
                 }
                 Section("Create") {
@@ -157,13 +157,6 @@ struct MainWindowView: View {
             if let requested {
                 selection = requested
                 store.requestedSection = nil
-            }
-        }
-        // ⌘-shortcut or programmatic jumps into a Videos section must reveal
-        // the row even when the disclosure group is collapsed.
-        .onChange(of: selection) { _, selected in
-            if let selected, SidebarSection.videoSections.contains(selected) {
-                videosExpanded = true
             }
         }
         .navigationTitle("ClipBuilder")

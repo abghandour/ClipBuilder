@@ -63,7 +63,7 @@ struct BuilderView: View {
                 Button {
                     showLog.toggle()
                 } label: {
-                    Label("Log", systemImage: "text.alignleft")
+                    ToolbarBubbleLabel(text: "Log", systemImage: "text.alignleft")
                 }
                 .help("Show the render log")
             }
@@ -71,7 +71,7 @@ struct BuilderView: View {
                 Button(role: .destructive) {
                     confirmClear = true
                 } label: {
-                    Label("Clear", systemImage: "trash")
+                    ToolbarBubbleLabel(text: "Clear", systemImage: "trash")
                 }
                 .disabled(model.document.isEmpty)
                 .help("Remove everything from the timeline")
@@ -83,7 +83,7 @@ struct BuilderView: View {
                     } label: {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.small)
-                            Label("Stop", systemImage: "stop.fill")
+                            ToolbarBubbleLabel(text: "Stop", systemImage: "stop.circle")
                         }
                     }
                     .help("Stop the render")
@@ -92,7 +92,7 @@ struct BuilderView: View {
                         showLog = true
                         store.renderBuilderTimeline()
                     } label: {
-                        Label("Generate", systemImage: "play.rectangle.fill")
+                        ToolbarBubbleLabel(text: "Generate Video", systemImage: "play.rectangle.fill")
                     }
                     .disabled(model.document.videoTrack.isEmpty)
                     .help("Render the timeline to a video in the Library")
@@ -223,28 +223,22 @@ struct BuilderView: View {
     // MARK: - Log drawer
 
     private var logDrawer: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                // Lazy: a long render log would otherwise keep a live Text
-                // for every line inside this 110pt drawer.
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(store.builderLog.enumerated()), id: \.offset) { entry in
-                        Text(entry.element)
-                            .font(.caption.monospaced())
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .id(entry.offset)
-                    }
-                }
-                .padding(8)
+        VStack(spacing: 4) {
+            HStack {
+                Text("Render Log")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                LogActions(lines: store.builderLog) { store.builderLog = [] }
             }
-            .frame(height: 110)
-            .background(.background.secondary)
-            .onChange(of: store.builderLog.count) {
-                if let last = store.builderLog.indices.last {
-                    proxy.scrollTo(last, anchor: .bottom)
-                }
-            }
+            .padding(.horizontal, 8)
+            .padding(.top, 6)
+            ActivityLogView(lines: \.builderLog)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
         }
+        .frame(height: 130)
+        .background(.background.secondary)
     }
 
     private func deleteSelection() {

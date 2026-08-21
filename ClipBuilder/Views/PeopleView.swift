@@ -212,6 +212,7 @@ struct PeopleView: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         } else {
             ContentUnavailableView("Select a person", systemImage: "person.crop.square")
         }
@@ -234,13 +235,16 @@ struct PeopleView: View {
             SceneInlinePlayer(scene: scene)
                 .aspectRatio(9 / 16, contentMode: .fit)
                 .overlay(alignment: .bottomTrailing) {
-                    Text(String(format: "%.1fs", scene.duration))
-                        .font(.caption2.monospacedDigit())
-                        .padding(3)
-                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
-                        .foregroundStyle(.white)
-                        .padding(4)
+                    DurationBadge(seconds: scene.duration)
                         .allowsHitTesting(false)
+                }
+                .overlay(alignment: .topLeading) {
+                    if let score = scene.score {
+                        ScoreBadge(score: score)
+                            .padding(6)
+                            .allowsHitTesting(false)
+                            .help(scene.narrative ?? "Entertainment score")
+                    }
                 }
 
             Text(scene.videoFilename)

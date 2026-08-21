@@ -122,12 +122,7 @@ struct LibraryView: View {
                             .shadow(radius: 4)
                     }
                     .overlay(alignment: .bottomTrailing) {
-                        Text(video.duration.timecode)
-                            .font(.caption2.monospacedDigit())
-                            .padding(4)
-                            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
-                            .foregroundStyle(.white)
-                            .padding(6)
+                        DurationBadge(seconds: video.duration)
                     }
             }
             .buttonStyle(.plain)

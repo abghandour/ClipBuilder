@@ -33,14 +33,9 @@ struct OverlayWizardSheet: View {
             dropZone
 
             HStack {
-                Text("Model")
-                Picker("", selection: $modelTag) {
-                    ForEach(modelOptions, id: \.tag) { option in
-                        Text(option.label).tag(option.tag)
-                    }
-                }
-                .labelsHidden()
-                .fixedSize()
+                ModelPicker(title: "Model", task: "overlay", selection: $modelTag,
+                            imageCapableOnly: true, availableProviders: availableProviders)
+                    .fixedSize()
                 Spacer()
             }
 
@@ -63,6 +58,7 @@ struct OverlayWizardSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button(isRunning ? "Extracting…" : "Extract Overlay") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -75,14 +71,11 @@ struct OverlayWizardSheet: View {
             if case .success(let url) = result { setImage(url) }
         }
         .task {
-            var available = Set<String>()
-            for provider in AICatalog.providers {
-                if await store.ai.isProviderAvailable(provider.key) {
-                    available.insert(provider.key)
-                }
+            availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
+            if modelTag.isEmpty {
+                modelTag = ModelPicker.bestAvailableTag(for: "overlay",
+                                                        available: availableProviders)
             }
-            availableProviders = available
-            if modelTag.isEmpty { modelTag = defaultTag }
         }
     }
 
@@ -109,7 +102,10 @@ struct OverlayWizardSheet: View {
         }
         .frame(height: 260)
         .contentShape(Rectangle())
-        .onTapGesture { if preview == nil { showImporter = true } }
+        // Always clickable — replacing a loaded image just re-opens the picker.
+        .onTapGesture { showImporter = true }
+        .help(preview == nil ? "Drop or choose a reference image"
+                             : "Click to choose a different image")
         .dropDestination(for: URL.self) { urls, _ in
             guard let url = urls.first else { return false }
             setImage(url)
@@ -127,36 +123,9 @@ struct OverlayWizardSheet: View {
         preview = image
     }
 
-    // MARK: - Model choice
-
-    private var defaultTag: String {
-        for entry in AICatalog.recommendedChains["overlay"] ?? []
-        where availableProviders.contains(entry.provider) {
-            return "\(entry.provider)|\(entry.model)"
-        }
-        return "claude|claude-sonnet-4-6"
-    }
-
-    private var modelOptions: [(tag: String, label: String)] {
-        var result: [(String, String)] = []
-        for provider in AICatalog.providers where provider.supportsImages {
-            let installed = availableProviders.contains(provider.key)
-            for model in provider.models {
-                let tag = "\(provider.key)|\(model)"
-                var label = "\(provider.label) — \(model)"
-                if tag == defaultTag { label += "  ★ recommended" }
-                if !installed { label += "  (not installed)" }
-                result.append((tag, label))
-            }
-        }
-        return result
-    }
-
     private func run() {
         guard let imageURL else { return }
-        let parts = modelTag.split(separator: "|", maxSplits: 1)
-        let provider = parts.count == 2 ? String(parts[0]) : nil
-        let model = parts.count == 2 ? String(parts[1]) : nil
+        let (provider, model) = ModelPicker.parse(modelTag)
         isRunning = true
         errorMessage = nil
         Task {

@@ -30,6 +30,25 @@ struct GenerateVideoSheet: View {
         }
     }
 
+    /// Spells out exactly what footage rides into the Wizard — the same
+    /// button means "selected videos" on Raw Videos but "displayed scenes +
+    /// filters" on Scenes/People, so the sheet says which.
+    private var sourceDescription: String {
+        switch source {
+        case .videos(let videos):
+            return "Source: \(videos.count) selected video\(videos.count == 1 ? "" : "s")"
+        case .scenes(let scenes, let personKeys, let tags):
+            var parts = ["Source: \(scenes.count) scene\(scenes.count == 1 ? "" : "s") currently displayed"]
+            if !personKeys.isEmpty {
+                parts.append("people: \(personKeys.sorted().joined(separator: ", "))")
+            }
+            if !tags.isEmpty {
+                parts.append("tags: \(tags.joined(separator: ", "))")
+            }
+            return parts.joined(separator: " · ")
+        }
+    }
+
     // MARK: - Request history
 
     private static let historyKey = "analyze.sampleRequestHistory"
@@ -55,6 +74,9 @@ struct GenerateVideoSheet: View {
                 .font(.title3.bold())
             Text("Describe what to create from \(sourceLabel). Mention duration, content, overlays, music — the AI Wizard is filled in from your description, ready to review and run.")
                 .font(.callout)
+                .foregroundStyle(.secondary)
+            Label(sourceDescription, systemImage: "film.stack")
+                .font(.caption)
                 .foregroundStyle(.secondary)
 
             Menu {
@@ -106,6 +128,7 @@ struct GenerateVideoSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
                 Button("Generate") {
                     Self.remember(requestText)
                     switch source {
@@ -118,6 +141,8 @@ struct GenerateVideoSheet: View {
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
+                // ⌘⏎ rather than plain Return — the text editor owns Return.
+                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(requestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }

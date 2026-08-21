@@ -99,6 +99,7 @@ final class AppStore {
     /// Media rows with a cached template analysis (for the selected account).
     var igTemplatedMediaIDs: Set<Int64> = []
     var igAnalyzingMediaIDs: Set<Int64> = []
+    var igDownloadingMediaIDs: Set<Int64> = []
     var isConnectingInstagram = false
     /// A taste-exemplar study is running (one at a time).
     var isStudyingTaste = false
@@ -1636,6 +1637,34 @@ final class AppStore {
 
     func cancelInstagramAnalysis(mediaID: Int64) {
         igAnalyzeTasks[mediaID]?.cancel()
+    }
+
+    /// Download a reel without analyzing it — enough for inline playback.
+    /// Returns the local file URL, or nil on failure (error already shown).
+    func downloadInstagramReel(media: IGMediaRecord) async -> URL? {
+        guard let database,
+              let account = igAccounts.first(where: { $0.id == media.accountID }) else { return nil }
+        igDownloadingMediaIDs.insert(media.id)
+        defer { igDownloadingMediaIDs.remove(media.id) }
+        do {
+            let url = try await instagram.ensureDownloaded(
+                media: media, account: account, database: database,
+                settings: settings.instagram) { message in
+                Task { @MainActor in self.igLog.append(message) }
+            }
+            try? await reloadIGMedia()
+            return url
+        } catch {
+            presentError("Reel download failed", error)
+            return nil
+        }
+    }
+
+    /// The cached template analysis for a reel, decoded — nil if never analyzed.
+    func instagramTemplate(mediaID: Int64) async -> ReelTemplate? {
+        guard let database,
+              let record = try? await database.fetchIGTemplate(mediaID: mediaID) else { return nil }
+        return try? JSONDecoder().decode(ReelTemplate.self, from: Data(record.templateJSON.utf8))
     }
 
     // MARK: - Curation

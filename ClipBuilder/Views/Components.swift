@@ -276,6 +276,7 @@ struct PlayerSheet: View {
             PlayerView(player: player)
                 .frame(minWidth: 420, minHeight: 560)
         }
+        .onExitCommand { dismiss() }
         .onAppear {
             let item = AVPlayerItem(url: url)
             if let endTime, endTime > startTime {
@@ -553,5 +554,204 @@ nonisolated extension Double {
     var timecode: String {
         let total = Int(self.rounded())
         return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+// MARK: - Model picker
+
+/// The one provider/model picker used everywhere an AI action can be
+/// steered: options read "Provider — Model" with ★ recommended (catalog's
+/// top pick, flagged even when not installed), ★ best available (best of
+/// what IS installed when the top pick is missing), and "(not installed)"
+/// suffixes. Selection tags are "provider|model"; "" means automatic
+/// dispatch when `includeAutomatic` is on.
+struct ModelPicker: View {
+    let title: String
+    /// AICatalog task key ("analysis", "wizard", …) driving the ★ flags.
+    let task: String
+    @Binding var selection: String
+    var includeAutomatic = false
+    var imageCapableOnly = false
+    var availableProviders: Set<String>
+
+    var body: some View {
+        Picker(title, selection: $selection) {
+            ForEach(Self.options(for: task, available: availableProviders,
+                                 includeAutomatic: includeAutomatic,
+                                 imageCapableOnly: imageCapableOnly,
+                                 keeping: selection), id: \.tag) { option in
+                Text(option.label).tag(option.tag)
+            }
+        }
+    }
+
+    static func tag(provider: String, model: String) -> String {
+        "\(provider)|\(model)"
+    }
+
+    /// "provider|model" → parts; ("", nil-nil) for automatic/custom tags.
+    static func parse(_ tag: String) -> (provider: String?, model: String?) {
+        let parts = tag.split(separator: "|", maxSplits: 1)
+        guard parts.count == 2 else { return (nil, nil) }
+        return (String(parts[0]), String(parts[1]))
+    }
+
+    /// The catalog's true top pick for the task — flagged in the picker even
+    /// when its provider isn't installed, so the ideal setup stays legible.
+    static func topRecommendedTag(for task: String) -> String {
+        if let entry = AICatalog.recommendedChains[task]?.first {
+            return tag(provider: entry.provider, model: entry.model)
+        }
+        let key = AICatalog.taskDefaults[task] ?? "claude"
+        return tag(provider: key, model: AICatalog.provider(key)?.defaultModel ?? "")
+    }
+
+    /// First recommended chain entry whose CLI is installed — what automatic
+    /// dispatch actually runs.
+    static func bestAvailableTag(for task: String, available: Set<String>) -> String {
+        for entry in AICatalog.recommendedChains[task] ?? []
+        where available.contains(entry.provider) {
+            return tag(provider: entry.provider, model: entry.model)
+        }
+        let key = AICatalog.taskDefaults[task] ?? "claude"
+        return tag(provider: key, model: AICatalog.provider(key)?.defaultModel ?? "")
+    }
+
+    static func options(for task: String, available: Set<String>,
+                        includeAutomatic: Bool, imageCapableOnly: Bool,
+                        keeping current: String? = nil) -> [(tag: String, label: String)] {
+        let top = topRecommendedTag(for: task)
+        let bestAvailable = bestAvailableTag(for: task, available: available)
+        var result: [(tag: String, label: String)] = []
+        if includeAutomatic {
+            result.append(("", "Automatic (best available)"))
+        }
+        for provider in AICatalog.providers {
+            if imageCapableOnly && !provider.supportsImages { continue }
+            let installed = available.contains(provider.key)
+            for model in provider.models {
+                let optionTag = Self.tag(provider: provider.key, model: model)
+                var label = "\(provider.label) — \(AICatalog.modelDisplayName(model))"
+                if optionTag == top {
+                    label += "  ★ recommended"
+                } else if optionTag == bestAvailable, bestAvailable != top {
+                    label += "  ★ best available"
+                }
+                if !installed { label += "  (not installed)" }
+                result.append((optionTag, label))
+            }
+        }
+        // Keep whatever is currently chosen selectable even if it's custom.
+        if let current, !current.isEmpty, !result.contains(where: { $0.tag == current }) {
+            let parsed = parse(current)
+            result.append((current, [parsed.provider, parsed.model.map(AICatalog.modelDisplayName)]
+                .compactMap(\.self).joined(separator: " — ")))
+        }
+        return result
+    }
+
+    /// Probe which provider CLIs are installed — seed pickers optimistically
+    /// with every provider, then swap in the real set when this returns.
+    static func probeAvailability(ai: AIService) async -> Set<String> {
+        var available = Set<String>()
+        for provider in AICatalog.providers {
+            if await ai.isProviderAvailable(provider.key) {
+                available.insert(provider.key)
+            }
+        }
+        return available
+    }
+}
+
+// MARK: - Shared badges
+
+/// Entertainment-score chip — one color scale app-wide:
+/// green ≥ 7.5, yellow ≥ 5, gray below.
+struct ScoreBadge: View {
+    let score: Double
+    var compact = false
+
+    static func color(for score: Double) -> Color {
+        score >= 7.5 ? .green : score >= 5 ? .yellow : .gray
+    }
+
+    var body: some View {
+        Text(String(format: "%.1f", score))
+            .font(compact ? .system(size: 9, weight: .bold).monospacedDigit()
+                          : .caption2.bold().monospacedDigit())
+            .padding(.horizontal, compact ? 4 : 5)
+            .padding(.vertical, compact ? 1 : 2)
+            .background(Self.color(for: score).opacity(0.85),
+                        in: RoundedRectangle(cornerRadius: 4))
+            .foregroundStyle(score >= 5 ? .black : .white)
+    }
+}
+
+/// "WIDE" marker for 16:9 footage that will need cropping — one look
+/// everywhere it appears (scene cards, browser cards, timeline blocks).
+struct WideBadge: View {
+    var compact = false
+
+    var body: some View {
+        Text("WIDE")
+            .font(compact ? .system(size: 8, weight: .bold) : .caption2.bold())
+            .padding(.horizontal, compact ? 3 : 4)
+            .padding(.vertical, 1)
+            .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
+            .foregroundStyle(.white)
+    }
+}
+
+/// Playback-speed marker ("0.5×") for slowed/sped clips — orange, matching
+/// the ReviewSheet's slow-motion label.
+struct SpeedBadge: View {
+    let speed: Double
+    var compact = false
+
+    var body: some View {
+        Text("\(speed.formatted(.number.precision(.fractionLength(0...2))))×")
+            .font(compact ? .system(size: 8, weight: .bold).monospacedDigit()
+                          : .caption2.bold().monospacedDigit())
+            .padding(.horizontal, compact ? 3 : 4)
+            .padding(.vertical, 1)
+            .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
+            .foregroundStyle(.white)
+    }
+}
+
+extension View {
+    /// Horizontal-resize cursor while hovering — the affordance for
+    /// draggable trim handles and scrubbing strips.
+    func resizeCursorOnHover() -> some View {
+        onHover { inside in
+            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+        }
+    }
+}
+
+/// Fixed palette for person-marker boxes — one source of truth for every
+/// view that draws them. Gray = ignored marker.
+enum MarkerPalette {
+    static let colors: [Color] = [.yellow, .green, .cyan, .orange,
+                                  .pink, .purple, .red, .mint]
+
+    static func color(at index: Int, ignored: Bool = false) -> Color {
+        ignored ? .gray : colors[index % colors.count]
+    }
+}
+
+/// Duration bubble overlaid on thumbnails — always bottom-trailing.
+/// Sub-minute durations keep tenths ("3.4s"); longer ones read as m:ss.
+struct DurationBadge: View {
+    let seconds: Double
+
+    var body: some View {
+        Text(seconds < 60 ? String(format: "%.1fs", seconds) : seconds.timecode)
+            .font(.caption2.monospacedDigit())
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
+            .foregroundStyle(.white)
+            .padding(6)
     }
 }

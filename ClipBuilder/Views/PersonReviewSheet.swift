@@ -13,6 +13,10 @@ struct PersonReviewSheet: View {
     @State private var names: [String: String] = [:]
     /// key → existing person id this detection should merge into.
     @State private var mergeTargets: [String: Int64] = [:]
+    /// The pre-filled state — Skip All only warns when the user changed it.
+    @State private var prefilledNames: [String: String] = [:]
+    @State private var prefilledMerges: [String: Int64] = [:]
+    @State private var confirmSkip = false
 
     /// Merge candidates: everyone except the person's own row. Other new
     /// people stay listed — the AI occasionally splits one real person into
@@ -45,8 +49,15 @@ struct PersonReviewSheet: View {
             }
 
             HStack {
-                Button("Skip All") { dismiss() }
-                    .help("Leave everyone unnamed — the People section lists them for later")
+                Button("Skip All") {
+                    if names != prefilledNames || mergeTargets != prefilledMerges {
+                        confirmSkip = true
+                    } else {
+                        dismiss()
+                    }
+                }
+                .keyboardShortcut(.cancelAction)
+                .help("Leave everyone unnamed — the People section lists them for later")
                 Spacer()
                 Button("Done") {
                     store.applyPeopleReview(names: names, merges: mergeTargets)
@@ -57,6 +68,12 @@ struct PersonReviewSheet: View {
             .padding()
         }
         .frame(minWidth: 560, minHeight: 360, idealHeight: 520)
+        .confirmationDialog("Discard the names you entered?", isPresented: $confirmSkip) {
+            Button("Discard and Skip", role: .destructive) { dismiss() }
+            Button("Keep Editing", role: .cancel) {}
+        } message: {
+            Text("Skipping leaves everyone unnamed — the names and merges you set here are not applied.")
+        }
         .onAppear {
             for person in request.people {
                 guard let suggested = person.suggestedName else { continue }
@@ -70,6 +87,8 @@ struct PersonReviewSheet: View {
                 }
                 names[person.key] = suggested
             }
+            prefilledNames = names
+            prefilledMerges = mergeTargets
         }
     }
 

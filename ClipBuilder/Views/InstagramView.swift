@@ -17,6 +17,7 @@ struct InstagramView: View {
 
     @State private var sortOrder: SortOrder = .recent
     @State private var addingAccount = false
+    @State private var removingAccount: IGAccountRecord?
     @State private var newHandle = ""
     @State private var detailMedia: IGMediaRecord?
     /// Reels ticked for batch taste learning (the Learn toolbar menu).
@@ -63,6 +64,17 @@ struct InstagramView: View {
                 Task { studiedIDs = await store.tasteStudiedMediaIDs() }
             }
         }
+        .confirmationDialog("Remove @\(removingAccount?.username ?? "")?",
+                            isPresented: Binding(get: { removingAccount != nil },
+                                                 set: { if !$0 { removingAccount = nil } })) {
+            Button("Remove Account", role: .destructive) {
+                if let account = removingAccount { store.removeInstagramAccount(account) }
+                removingAccount = nil
+            }
+            Button("Cancel", role: .cancel) { removingAccount = nil }
+        } message: {
+            Text("The account's fetched reels, stats, and cached templates are removed from the app. Learned taste lessons are kept.")
+        }
     }
 
     private func learnSelected() {
@@ -105,8 +117,8 @@ struct InstagramView: View {
                 Divider()
                 Button("Add Account…") { addingAccount = true }
                 if let account = selectedAccount {
-                    Button("Remove @\(account.username)", role: .destructive) {
-                        store.removeInstagramAccount(account)
+                    Button("Remove @\(account.username)…", role: .destructive) {
+                        removingAccount = account
                     }
                 }
             } label: {
@@ -235,10 +247,13 @@ struct InstagramView: View {
                 .padding()
             }
             if store.isFetchingInstagram, let last = store.igLog.last {
-                Text(last)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 12)
+                HStack(spacing: 8) {
+                    Text(last)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                    LogActions(lines: store.igLog) { store.igLog = [] }
+                }
+                .padding(.bottom, 12)
             }
         }
     }
@@ -260,8 +275,10 @@ struct InstagramView: View {
                     addingAccount = false
                     newHandle = ""
                 }
+                .keyboardShortcut(.cancelAction)
                 Button("Add") { submitNewHandle() }
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
                     .disabled(newHandle.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
@@ -290,13 +307,7 @@ private struct ReelCard: View {
                     .frame(maxWidth: .infinity)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 if media.duration > 0 {
-                    Text(media.duration.timecode)
-                        .font(.caption2.monospacedDigit())
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
-                        .foregroundStyle(.white)
-                        .padding(6)
+                    DurationBadge(seconds: media.duration)
                 }
             }
             .overlay(alignment: .topLeading) {
@@ -384,11 +395,13 @@ private struct InstagramDetailSheet: View {
     /// "provider|model" for AI actions in this sheet; "" = automatic.
     @State private var modelChoice = ""
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
+    /// Cached template analysis, decoded for the summary section.
+    @State private var template: ReelTemplate?
+    /// Local file once downloaded (tracked here because `media` is a snapshot).
+    @State private var localURL: URL?
 
     private var modelOverride: (provider: String?, model: String?) {
-        let parts = modelChoice.split(separator: "|", maxSplits: 1)
-        guard parts.count == 2 else { return (nil, nil) }
-        return (String(parts[0]), String(parts[1]))
+        ModelPicker.parse(modelChoice)
     }
 
     private var studiedCategoryLabel: String? {
@@ -450,11 +463,17 @@ private struct InstagramDetailSheet: View {
                     statsGrid
                     Divider()
                     ScrollView {
-                        Text(media.caption.isEmpty ? "No caption" : media.caption)
-                            .font(.callout)
-                            .foregroundStyle(media.caption.isEmpty ? .secondary : .primary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(media.caption.isEmpty ? "No caption" : media.caption)
+                                .font(.callout)
+                                .foregroundStyle(media.caption.isEmpty ? .secondary : .primary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if let template {
+                                Divider()
+                                templateSummary(template)
+                            }
+                        }
                     }
                     Divider()
                     templateActions
@@ -464,53 +483,69 @@ private struct InstagramDetailSheet: View {
             .padding([.horizontal, .bottom])
         }
         .onAppear {
-            if let url = media.localVideoURL {
+            localURL = media.localVideoURL
+            if let url = localURL {
                 let player = AVPlayer(url: url)
                 player.play()
                 self.player = player
             }
         }
         .onDisappear { player?.pause() }
+        .onExitCommand { dismiss() }
         .task {
             studiedCategoryKey = await store.tasteStudyCategory(mediaID: media.id)
-            var available = Set<String>()
-            for provider in AICatalog.providers {
-                if await store.ai.isProviderAvailable(provider.key) {
-                    available.insert(provider.key)
-                }
-            }
-            availableProviders = available
+            template = await store.instagramTemplate(mediaID: media.id)
+            availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
         }
         .onChange(of: store.isStudyingTaste) { _, running in
             guard !running else { return }
             Task { studiedCategoryKey = await store.tasteStudyCategory(mediaID: media.id) }
         }
+        .onChange(of: isAnalyzing) { _, running in
+            guard !running else { return }
+            Task { template = await store.instagramTemplate(mediaID: media.id) }
+        }
     }
 
     private var isAnalyzing: Bool { store.igAnalyzingMediaIDs.contains(media.id) }
+    private var isDownloading: Bool { store.igDownloadingMediaIDs.contains(media.id) }
     private var hasTemplate: Bool { store.igTemplatedMediaIDs.contains(media.id) }
 
-    private var modelOptions: [(tag: String, label: String)] {
-        let chain = AICatalog.recommendedChains["analysis"] ?? []
-        let top = chain.first.map { "\($0.provider)|\($0.model)" }
-        let bestAvailable = chain.first { availableProviders.contains($0.provider) }
-            .map { "\($0.provider)|\($0.model)" }
-        var result: [(tag: String, label: String)] = [("", "Automatic (best available)")]
-        for provider in AICatalog.providers {
-            let installed = availableProviders.contains(provider.key)
-            for model in provider.models {
-                let tag = "\(provider.key)|\(model)"
-                var label = "\(provider.label) — \(model)"
-                if tag == top {
-                    label += "  ★ recommended"
-                } else if tag == bestAvailable, bestAvailable != top {
-                    label += "  ★ best available"
+    /// What the analysis distilled — hook, pacing, structure — so the
+    /// template can be judged before generating anything from it.
+    private func templateSummary(_ template: ReelTemplate) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Template", systemImage: "checkmark.seal.fill")
+                .font(.caption.bold())
+                .foregroundStyle(.green)
+            summaryRow("Hook", "\(template.hook.type) — \(template.hook.description)")
+            summaryRow("Pacing", "\(template.cutCount) cuts"
+                + " (\(template.cutsPerMinute.formatted(.number.precision(.fractionLength(0...1))))/min)"
+                + " · \(template.pacingCurve)")
+            if !template.structure.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Structure").font(.caption2.bold()).foregroundStyle(.secondary)
+                    ForEach(Array(template.structure.enumerated()), id: \.offset) { _, phase in
+                        Text("\(phase.start.timecode)–\(phase.end.timecode)  \(phase.phase): \(phase.description)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                if !installed { label += "  (not installed)" }
-                result.append((tag, label))
+            }
+            summaryRow("Why it works", template.whyItWorks)
+        }
+        .textSelection(.enabled)
+    }
+
+    @ViewBuilder
+    private func summaryRow(_ label: String, _ value: String) -> some View {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(.caption2.bold()).foregroundStyle(.secondary)
+                Text(trimmed).font(.caption2)
             }
         }
-        return result
     }
 
     /// Analyze → template ready → Generate Video.
@@ -518,13 +553,10 @@ private struct InstagramDetailSheet: View {
     private var templateActions: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !isAnalyzing {
-                Picker("Model", selection: $modelChoice) {
-                    ForEach(modelOptions, id: \.tag) { option in
-                        Text(option.label).tag(option.tag)
-                    }
-                }
-                .controlSize(.small)
-                .help("Model used when analyzing this reel or adding it to the taste profile")
+                ModelPicker(title: "Model", task: "analysis", selection: $modelChoice,
+                            includeAutomatic: true, availableProviders: availableProviders)
+                    .controlSize(.small)
+                    .help("Model used when analyzing this reel or learning from it")
             }
             if isAnalyzing {
                 HStack(spacing: 6) {
@@ -539,9 +571,6 @@ private struct InstagramDetailSheet: View {
                         .controlSize(.small)
                 }
             } else if hasTemplate {
-                Label("Template ready", systemImage: "checkmark.seal.fill")
-                    .font(.caption)
-                    .foregroundStyle(.green)
                 HStack {
                     Button {
                         store.useTemplateInWizard(media: media)
@@ -565,6 +594,7 @@ private struct InstagramDetailSheet: View {
                 }
                 .controlSize(.small)
                 tasteButton
+                fileActions
             } else {
                 Button {
                     store.analyzeInstagramTemplate(media: media,
@@ -578,6 +608,7 @@ private struct InstagramDetailSheet: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 tasteButton
+                fileActions
             }
         }
     }
@@ -591,17 +622,17 @@ private struct InstagramDetailSheet: View {
                 Label("In taste profile · \(label)", systemImage: "graduationcap.fill")
                     .font(.caption)
                     .foregroundStyle(.purple)
-                    .help("This reel has already been studied — its lessons live in the \"\(label)\" video type (Settings → Profile)")
+                    .help("This reel has already taught the taste profile — its lessons live in the \"\(label)\" video type (Settings → Taste)")
             }
             HStack(spacing: 6) {
-                Button(studiedCategoryKey == nil ? "Add to Taste Profile" : "Study Again",
-                       systemImage: "star.bubble") {
+                Button(studiedCategoryKey == nil ? "Learn from This Reel" : "Learn Again",
+                       systemImage: "graduationcap") {
                     store.studyTasteExemplar(media: media,
                                              provider: modelOverride.provider,
                                              model: modelOverride.model)
                 }
                 .disabled(store.isStudyingTaste)
-                .help("Study this reel as an example of the results you want — what makes its moments good is distilled into the profile's taste rubric (Settings → Profile), which then guides every analysis and generation")
+                .help("Teach the taste profile from this reel — what makes its moments good is distilled into a video-type rubric (Settings → Taste) that guides every analysis and generation")
                 if store.isStudyingTaste {
                     ProgressView()
                         .controlSize(.small)
@@ -609,6 +640,38 @@ private struct InstagramDetailSheet: View {
             }
             .controlSize(.small)
         }
+    }
+
+    /// Local-file row: download for inline playback, then reveal in Finder.
+    @ViewBuilder
+    private var fileActions: some View {
+        HStack(spacing: 6) {
+            if let localURL {
+                Button("Show in Finder", systemImage: "folder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([localURL])
+                }
+                .help("Reveal the downloaded reel file")
+            } else if isDownloading {
+                ProgressView().controlSize(.small)
+                Text(store.igLog.last ?? "Downloading…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Button("Download", systemImage: "arrow.down.circle") {
+                    Task {
+                        if let url = await store.downloadInstagramReel(media: media) {
+                            localURL = url
+                            let player = AVPlayer(url: url)
+                            player.play()
+                            self.player = player
+                        }
+                    }
+                }
+                .help("Download the reel for inline playback without analyzing it")
+            }
+        }
+        .controlSize(.small)
     }
 
     private var statsGrid: some View {
@@ -627,8 +690,25 @@ private struct InstagramDetailSheet: View {
                     Text(media.duration.timecode).monospacedDigit()
                 }
             }
+            if let rank = viewsRank {
+                GridRow {
+                    Text("Rank").foregroundStyle(.secondary)
+                    Text(rank)
+                        .help("Where this reel's view count sits among the account's fetched reels — engagement like this also weights taste learning")
+                }
+            }
         }
         .font(.callout)
+    }
+
+    /// "#3 of 42 by views · top 7%" among the account's fetched reels.
+    private var viewsRank: String? {
+        guard let views = media.stats.views else { return nil }
+        let counts = store.igMedia.compactMap(\.stats.views)
+        guard counts.count >= 5 else { return nil }
+        let rank = counts.filter { $0 > views }.count + 1
+        let percent = max(1, Int((Double(rank) / Double(counts.count) * 100).rounded()))
+        return "#\(rank) of \(counts.count) by views · top \(percent)%"
     }
 
     @ViewBuilder

@@ -107,21 +107,19 @@ struct BrowserSceneCard: View {
             VideoThumbnail(url: scene.videoURL, time: (scene.startTime + scene.endTime) / 2)
                 .aspectRatio(9 / 16, contentMode: .fit)
                 .overlay(alignment: .bottomLeading) {
-                    Text(String(format: "%.1fs", scene.duration))
-                        .font(.caption2.monospacedDigit())
-                        .padding(3)
-                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
-                        .foregroundStyle(.white)
-                        .padding(4)
+                    DurationBadge(seconds: scene.duration)
+                }
+                .overlay(alignment: .topLeading) {
+                    if let score = scene.score {
+                        ScoreBadge(score: score, compact: true)
+                            .padding(4)
+                            .help(scene.narrative ?? "Entertainment score")
+                    }
                 }
                 .overlay(alignment: .topTrailing) {
                     VStack(alignment: .trailing, spacing: 3) {
                         if scene.wide {
-                            Text("WIDE")
-                                .font(.system(size: 8, weight: .bold))
-                                .padding(2)
-                                .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 3))
-                                .foregroundStyle(.white)
+                            WideBadge(compact: true)
                         }
                         if scene.favorite {
                             Image(systemName: "heart.fill")

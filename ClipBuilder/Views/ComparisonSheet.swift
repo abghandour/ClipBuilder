@@ -52,10 +52,13 @@ struct ComparisonSheet: View {
             Button("Skip — don't record a preference") {
                 store.resolveComparison(batch, winner: nil)
             }
+            // Esc = skip: the sheet always has an obvious way out.
+            .keyboardShortcut(.cancelAction)
             .buttonStyle(.borderless)
             .controlSize(.small)
             .padding()
         }
+        .frame(minWidth: 480)
         .onAppear {
             for video in batch.videos {
                 players[video.id] = AVPlayer(url: video.url)
