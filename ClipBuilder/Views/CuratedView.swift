@@ -57,6 +57,18 @@ struct CuratedView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    if let score = scene.score {
+                        Text(String(format: "%.1f", score))
+                            .font(.caption2.bold().monospacedDigit())
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(score >= 7.5 ? Color.green.opacity(0.8)
+                                        : score >= 5 ? Color.yellow.opacity(0.8)
+                                        : Color.gray.opacity(0.6),
+                                        in: RoundedRectangle(cornerRadius: 4))
+                            .foregroundStyle(.black)
+                            .help(scene.narrative ?? "Entertainment score")
+                    }
                     if scene.centerStagePathJSON != nil {
                         Image(systemName: "camera.metering.center.weighted")
                             .foregroundStyle(.secondary)
@@ -240,15 +252,44 @@ struct CuratedSceneEditor: View {
     }
 
     private var header: some View {
-        HStack {
+        HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(scene.videoFilename)
-                    .font(.headline)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(scene.videoFilename)
+                        .font(.headline)
+                        .lineLimit(1)
+                    if let score = scene.score {
+                        Text(String(format: "%.1f", score))
+                            .font(.caption.bold().monospacedDigit())
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(score >= 7.5 ? Color.green.opacity(0.8)
+                                        : score >= 5 ? Color.yellow.opacity(0.8)
+                                        : Color.gray.opacity(0.6),
+                                        in: RoundedRectangle(cornerRadius: 4))
+                            .foregroundStyle(.black)
+                            .help("Entertainment score")
+                    }
+                    if (scene.excitement ?? 0) >= 0.35 {
+                        Image(systemName: "speaker.wave.3.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .help("The crowd reacted during this scene")
+                    }
+                }
                 Text("\(scene.startTime.timecode)–\(scene.endTime.timecode) · "
                      + String(format: "%.1fs", scene.duration))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
+                if let narrative = scene.narrative {
+                    // The story is exactly the context trimming needs —
+                    // keep the payoff it describes inside the range.
+                    Text(narrative)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                        .help(narrative)
+                }
             }
             Spacer()
             if !promoteMode {

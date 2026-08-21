@@ -16,6 +16,9 @@ nonisolated struct WizardOptions: Sendable {
     var selectedRunIDs: Set<Int64> = []
     /// Only pick from scenes the user promoted to the Curated set.
     var curatedOnly = false
+    /// Which taste steers the plan: nil = the profile's main taste rubric,
+    /// "none" = no taste block, "cat:<key>" = that learned category's rubric.
+    var tastePreset: String?
     /// Person keys the footage must feature: when set, only scenes tagged
     /// with at least one of these people are eligible (empty = everyone).
     /// Combines with the batch filter above.
@@ -101,6 +104,12 @@ nonisolated struct WizardPlanClip: Sendable {
     var overlayAnimation: String?
     var overlayKicker: String?
     var overlayAccent: String?
+    /// Playback speed: 1 = normal, 0.5–0.75 = slow motion. Screen time is
+    /// (end - start) / speed.
+    var speed: Double = 1
+    /// Instantly replay this moment in slow motion right after it plays —
+    /// expanded into a second slowed clip during validation.
+    var replay: Bool = false
 }
 
 /// Hand-tuned text overlay looks the wizard's AI picks from by name. The AI
@@ -397,10 +406,19 @@ actor WizardEngine {
             String(format: "[%.1f-%.1f] %.1fs", scene.startTime, scene.endTime, scene.duration) +
             " tags:\(scene.tags.prefix(8).joined(separator: ","))"
         if scene.wide { line += " WIDE" }
+        if let score = scene.score {
+            line += String(format: " score:%.1f/10", score)
+        }
         if let average = scene.gradeAverage, scene.gradeCount > 0 {
             line += String(format: " grade:%.1f/5", average)
         }
+        if let parent = scene.parentSceneID {
+            line += " (action within sequence #\(parent))"
+        }
         if let note { line += " " + note }
+        if let narrative = scene.narrative, !narrative.isEmpty {
+            line += "\n    story: " + String(narrative.prefix(220))
+        }
         return line
     }
 
@@ -543,7 +561,21 @@ actor WizardEngine {
 
             """
         default:
-            break
+            // Learned video types: "cat:<key>" injects that category's
+            // rubric as the format contract.
+            if options.formatPreset.hasPrefix("cat:") {
+                let key = String(options.formatPreset.dropFirst(4))
+                if let category = profile.tasteCategories.first(where: { $0.key == key }) {
+                    presetBlock = """
+
+                    ## VIDEO TYPE: \(category.label.uppercased()) (learned from the user's Instagram exemplars)
+                    This reel must be a \(category.label) video. What a keeper moment looks like for this type:
+                    \(category.rubric)
+                    STRONGLY prefer scenes tagged "highlight:\(category.key)" — they matched this type's rubric during analysis. Build the reel's arc from moments of this kind.
+
+                    """
+                }
+            }
         }
         let domain = profile.effectiveDomain
         let brand = profile.brandName
@@ -689,6 +721,39 @@ actor WizardEngine {
         let musicList = musicNames.isEmpty ? "No music available" : musicNames.joined(separator: ", ")
         let beatInfo = "Beat detection found no clear beats. Use your judgment for cut timing."
 
+        // Which taste steers this plan: the profile's main rubric by default,
+        // a learned category's rubric when the user picked one, or none.
+        // Skipped when the same category already rides in as the format
+        // contract — its rubric would appear twice. A stale pick (category
+        // since deleted) falls back to the profile's rubric.
+        let profileTasteBlock = profile.tasteRubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : """
+        ## Taste Rubric (distilled from reels this user picked as exemplars)
+        A keeper moment looks like this — strongly prefer scenes matching these rules, especially for the hook. Scenes tagged "highlight" already matched them during analysis:
+        \(profile.tasteRubric)
+
+        """
+        let tasteRubricBlock: String
+        switch options.tastePreset {
+        case "none":
+            tasteRubricBlock = ""
+        case let preset? where preset == options.formatPreset:
+            tasteRubricBlock = ""
+        case let preset? where preset.hasPrefix("cat:"):
+            let key = String(preset.dropFirst(4))
+            if let category = profile.tasteCategories.first(where: { $0.key == key }) {
+                tasteRubricBlock = """
+                ## Taste Rubric — \(category.label) (picked for this video)
+                A keeper moment looks like this — strongly prefer scenes matching these rules, especially for the hook. Scenes tagged "highlight:\(category.key)" already matched them during analysis:
+                \(category.rubric)
+
+                """
+            } else {
+                tasteRubricBlock = profileTasteBlock
+            }
+        default:
+            tasteRubricBlock = profileTasteBlock
+        }
+
         return """
         You are an expert video editor creating an Instagram Reel for a \(domain) channel called \(brand). Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
         \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)
@@ -708,12 +773,7 @@ actor WizardEngine {
         ## Music Beat Analysis
         \(beatInfo)
 
-        \(profile.tasteRubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : """
-        ## Taste Rubric (distilled from reels this user picked as exemplars)
-        A keeper moment looks like this — strongly prefer scenes matching these rules, especially for the hook. Scenes tagged "highlight" already matched them during analysis:
-        \(profile.tasteRubric)
-
-        """)## Training Signals (CRITICAL — what this user has taught you)
+        \(tasteRubricBlock)## Training Signals (CRITICAL — what this user has taught you)
         \(trainingBlock(signals))
         \(outcomesBlock)\(presetBlock)
         ## Instructions
@@ -751,6 +811,8 @@ actor WizardEngine {
               "start": <start seconds>,
               "end": <end seconds>,
               "wide_split": <true if this WIDE scene should use split-screen>,
+              "speed": <1.0 normal; 0.5-0.75 = slow motion for a big payoff moment — use sparingly, at most 1-2 slowed clips>,
+              "replay": <true to instantly replay this moment in slow motion right after it plays — reserve for the single best payoff (knockdown/finish); at most one replay per reel>,
               "text_overlay": {"text": "<2-6 word ALL-CAPS line>", "style": "<impact|highlight|banner|minimal>", "animation": "<fade|slide_up|pop|word_reveal>", "kicker": "<1-3 word label or null>", "accent": "<#hex accent color or null for default yellow>"} or null,
               "reason": "<why this clip, why this position>"
             }
@@ -770,6 +832,9 @@ actor WizardEngine {
         \(options.allowWideSplit
             ? "- For WIDE scenes: set \"wide_split\": true to display as split-screen (top + bottom halves, filling the full 9:16 frame with no black bars)"
             : "- Set \"wide_split\" to false for every clip. WIDE scenes are automatically zoomed to a full-height 9:16 window positioned on the action, so they fill the frame — never plan around letterboxing.")
+        - Scenes with "score:X/10" were rated for ENTERTAINMENT (escalation → payoff, boosted by real crowd noise). STRONGLY prefer high-scoring scenes, put the highest-scoring payoff early as the hook, and use the "story:" lines to build a reel with an arc — setup, escalation, payoff — instead of disconnected action.
+        - A scene marked "(action within sequence #N)" is one beat of that sequence. Pick EITHER the whole sequence OR its individual beats — never both, they cover the same footage.
+        - A clip's screen time is (end - start) / speed; a replay adds another (end - start) / 0.5 on top. Account for both when hitting target_duration.
         - The finished reel is VERTICAL 9:16. WIDE scenes may carry a portrait-fit tag: "portrait-fit:good" means the people stand close enough together that the vertical crop holds them all; "portrait-fit:poor" means they are spread out and someone WILL be cut out of frame. STRONGLY prefer portrait-fit:good WIDE scenes; pick a portrait-fit:poor one only when nothing else covers the moment.
         - "text_overlay": only include if text overlays are enabled (see below). Use short punchy text (max 6 words) for impact moments, fighter names, or engagement hooks. null if no text needed for this clip. Only use style/animation names from the lists below.
         \(textOverlayInstruction)
@@ -864,6 +929,9 @@ actor WizardEngine {
                 overlayText = (clipObject["text_overlay"] as? String)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             }
+            // Slow motion: clamp to the renderer's usable atempo band.
+            var speed = (clipObject["speed"] as? NSNumber)?.doubleValue ?? 1
+            speed = speed >= 0.99 ? 1 : min(0.99, max(0.5, speed))
             clips.append(WizardPlanClip(sceneID: sceneID,
                                         start: start,
                                         end: end,
@@ -872,9 +940,33 @@ actor WizardEngine {
                                         overlayStyle: overlayStyle,
                                         overlayAnimation: overlayAnimation,
                                         overlayKicker: overlayKicker,
-                                        overlayAccent: overlayAccent))
+                                        overlayAccent: overlayAccent,
+                                        speed: speed,
+                                        replay: clipObject["replay"] as? Bool ?? false))
         }
         guard !clips.isEmpty else { return nil }
+
+        // Replay directives expand into a second, slowed pass of the same
+        // moment — done after the overlap dedupe so the intentional
+        // repetition isn't trimmed away. One replay per reel.
+        var expanded: [WizardPlanClip] = []
+        var replayUsed = false
+        for clip in clips {
+            expanded.append(clip)
+            if clip.replay, !replayUsed {
+                replayUsed = true
+                var slow = clip
+                slow.replay = false
+                slow.speed = 0.5
+                slow.textOverlay = nil
+                slow.overlayStyle = nil
+                slow.overlayAnimation = nil
+                slow.overlayKicker = nil
+                slow.overlayAccent = nil
+                expanded.append(slow)
+            }
+        }
+        clips = expanded
 
         let needed = max(0, clips.count - 1)
         var transitions = (raw["transitions"] as? [String] ?? []).map {
@@ -1373,7 +1465,8 @@ actor WizardEngine {
         var cursor = 0.0
         for clip in plan.clips {
             guard let scene = sceneMap[clip.sceneID] else { continue }
-            let duration = ((clip.end - clip.start) * 10).rounded() / 10
+            // Screen time — slow motion stretches it beyond the source span.
+            let duration = ((clip.end - clip.start) / clip.speed * 10).rounded() / 10
             guard duration > 0 else { continue }
 
             var timelineClip = TimelineClip()
@@ -1383,6 +1476,7 @@ actor WizardEngine {
             timelineClip.sourceEnd = clip.end
             timelineClip.startTime = cursor
             timelineClip.duration = duration
+            timelineClip.speed = clip.speed == 1 ? nil : clip.speed
             timelineClip.sceneFullDuration = (scene.duration * 10).rounded() / 10
             timelineClip.wide = scene.wide
             timelineClip.cropXFrac = scene.cropXFrac
@@ -1624,14 +1718,19 @@ actor WizardEngine {
                                     brandOverlays: [URL] = [],
                                     database: Database, scratch: URL,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> URL {
-        let duration = clip.end - clip.start
+        // Source seconds consumed vs seconds on screen — slow motion
+        // stretches the latter. Everything time-positioned in the OUTPUT
+        // (overlays, captions, -t) uses `duration`; everything reading the
+        // SOURCE (content box, Center Stage, hints) uses `sourceDuration`.
+        let sourceDuration = clip.end - clip.start
+        let duration = sourceDuration / clip.speed
         // Screen recordings and reposts bake black bars into the pixels, so
         // the file's aspect lies about the footage. Crop to the detected
         // content box and treat the CONTENT's aspect as the wide signal —
         // otherwise a landscape fight inside a portrait recording letterboxes
         // no matter what the user asks for.
         let contentBox = await render.detectContentBox(source: scene.videoURL,
-                                                       start: clip.start, duration: duration)
+                                                       start: clip.start, duration: sourceDuration)
         let contentIsWide = contentBox?.isWide ?? scene.wide
         let useSplit = options.allowWideSplit && clip.wideSplit && scene.wide
         var mode = useSplit ? "split-screen"
@@ -1745,11 +1844,11 @@ actor WizardEngine {
                         let sliced = CenterStageService.slice(
                             stored.keyframes,
                             from: max(0, clip.start - scene.startTime),
-                            duration: duration)
+                            duration: sourceDuration)
                         if sliced.count >= 2,
                            let reframed = try? await centerStage.reframeClip(
                                source: scene.videoURL, start: clip.start,
-                               duration: duration, path: sliced, log: emit) {
+                               duration: sourceDuration, path: sliced, log: emit) {
                             emit("Clip \(index + 1) reframed with the camera path recorded at analysis")
                             portrait = reframed
                         }
@@ -1774,12 +1873,12 @@ actor WizardEngine {
                         let hints = ((try? await database.centerStageHints(videoID: scene.videoID)) ?? [])
                             .filter { $0.atTime >= clip.start - 0.25 && $0.atTime <= clip.end + 0.25 }
                             .map { hint in
-                                (time: min(max(0, hint.atTime - clip.start), duration),
+                                (time: min(max(0, hint.atTime - clip.start), sourceDuration),
                                  crop: CGRect(x: hint.x, y: hint.y,
                                               width: hint.width, height: hint.height))
                             }
                         reframed = try await centerStage.reframeClip(
-                            source: scene.videoURL, start: clip.start, duration: duration,
+                            source: scene.videoURL, start: clip.start, duration: sourceDuration,
                             focusPortraits: focusPortraits,
                             avoidPortraits: avoidPortraits,
                             hints: hints,
@@ -1792,6 +1891,7 @@ actor WizardEngine {
                     try await render.extractClip(source: reframed, start: 0,
                                                  duration: duration,
                                                  overlays: overlays, mute: options.muteSource,
+                                                 speed: clip.speed,
                                                  output: output)
                     return output
                 } catch {
@@ -1804,22 +1904,25 @@ actor WizardEngine {
                                          duration: duration, wide: .split,
                                          contentBox: contentBox,
                                          overlays: overlays, mute: options.muteSource,
+                                         speed: clip.speed,
                                          output: output)
         } else if options.autoCropWide && contentIsWide {
             let xFraction = await render.autoCropXFraction(source: scene.videoURL,
-                                                           start: clip.start, duration: duration,
+                                                           start: clip.start, duration: sourceDuration,
                                                            contentBox: contentBox)
             do {
                 try await render.extractClip(source: scene.videoURL, start: clip.start,
                                              duration: duration, wide: .autoCrop(xFraction),
                                              contentBox: contentBox,
                                              overlays: overlays, mute: options.muteSource,
+                                             speed: clip.speed,
                                              output: output)
             } catch {
                 try await render.extractClip(source: scene.videoURL, start: clip.start,
                                              duration: duration,
                                              contentBox: contentBox,
                                              overlays: overlays, mute: options.muteSource,
+                                             speed: clip.speed,
                                              output: output)
             }
         } else {
@@ -1827,6 +1930,7 @@ actor WizardEngine {
                                          duration: duration,
                                          contentBox: contentBox,
                                          overlays: overlays, mute: options.muteSource,
+                                         speed: clip.speed,
                                          output: output)
         }
         return output

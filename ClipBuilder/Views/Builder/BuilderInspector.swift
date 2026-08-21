@@ -144,6 +144,24 @@ struct ClipInspector: View {
                         cropPreview(fraction: crop)
                     }
                 }
+                Picker("Speed", selection: Binding(
+                    get: { clip.speed ?? 1 },
+                    set: { value in
+                        store.builder.updateClip(clip.uid) { updated in
+                            // Keep the SOURCE span fixed; screen time
+                            // stretches or shrinks with the speed change.
+                            let span = updated.duration * (updated.speed ?? 1)
+                            updated.speed = value == 1 ? nil : value
+                            updated.duration = ((span / value) * 10).rounded() / 10
+                        }
+                    })) {
+                    Text("0.5× slow").tag(0.5)
+                    Text("0.75×").tag(0.75)
+                    Text("1× normal").tag(1.0)
+                    Text("1.5×").tag(1.5)
+                    Text("2×").tag(2.0)
+                }
+                .help("Slow motion or speed-up for this clip — audio tempo follows. The clip's timeline length adjusts to match.")
                 Stepper("Stack order: \(clip.stackOrder)", value: binding(\.stackOrder), in: 0...9)
             }
 

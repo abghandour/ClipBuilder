@@ -50,6 +50,10 @@ actor Database {
         curated INTEGER DEFAULT 0,
         edit_start REAL,
         edit_end REAL,
+        narrative TEXT,
+        score REAL,
+        excitement REAL,
+        parent_scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL,
         UNIQUE(video_id, run_id, start_time, end_time)
     );
 
@@ -110,6 +114,12 @@ actor Database {
         ranges_json TEXT,
         detected_at TEXT DEFAULT (datetime('now')),
         PRIMARY KEY (video_id, person_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS taste_studies (
+        media_id INTEGER PRIMARY KEY,
+        category_key TEXT,
+        studied_at TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS center_stage_hints (
@@ -356,6 +366,18 @@ actor Database {
         }
         if !sceneColumns.contains("edit_end") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN edit_end REAL")
+        }
+        if !sceneColumns.contains("narrative") {
+            try connection.execute("ALTER TABLE scenes ADD COLUMN narrative TEXT")
+        }
+        if !sceneColumns.contains("score") {
+            try connection.execute("ALTER TABLE scenes ADD COLUMN score REAL")
+        }
+        if !sceneColumns.contains("excitement") {
+            try connection.execute("ALTER TABLE scenes ADD COLUMN excitement REAL")
+        }
+        if !sceneColumns.contains("parent_scene_id") {
+            try connection.execute("ALTER TABLE scenes ADD COLUMN parent_scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL")
         }
         if try !connection.columnNames(of: "person_markers").contains("ignored") {
             try connection.execute("ALTER TABLE person_markers ADD COLUMN ignored INTEGER DEFAULT 0")
@@ -608,6 +630,25 @@ actor Database {
         }
     }
 
+    // MARK: - Taste studies (which reels taught the taste profile)
+
+    /// media id → category key of the study that learned from it.
+    func tasteStudies() throws -> [Int64: String] {
+        var result: [Int64: String] = [:]
+        for row in try connection.query("SELECT media_id, category_key FROM taste_studies") {
+            if let id = row["media_id"]?.intValue {
+                result[id] = row["category_key"]?.stringValue ?? "general"
+            }
+        }
+        return result
+    }
+
+    func recordTasteStudy(mediaID: Int64, categoryKey: String) throws {
+        try connection.execute("""
+            INSERT OR REPLACE INTO taste_studies (media_id, category_key) VALUES (?, ?)
+            """, [.integer(mediaID), .text(categoryKey)])
+    }
+
     // MARK: - Center Stage hints (user-framed camera keyframes)
 
     func centerStageHints(videoID: Int64) throws -> [CameraHint] {
@@ -783,6 +824,10 @@ actor Database {
                 originalStart: originalStart,
                 originalEnd: originalEnd,
                 curated: row["curated"]?.boolValue ?? false,
+                narrative: row["narrative"]?.stringValue,
+                score: row["score"]?.doubleValue,
+                excitement: row["excitement"]?.doubleValue,
+                parentSceneID: row["parent_scene_id"]?.intValue,
                 excluded: row["excluded"]?.boolValue ?? false,
                 ignored: row["ignored"]?.boolValue ?? false,
                 favorite: row["favorite"]?.boolValue ?? false,
@@ -815,6 +860,26 @@ actor Database {
     func setSceneCropX(_ sceneID: Int64, fraction: Double) throws {
         try connection.execute("UPDATE scenes SET crop_x_frac = ? WHERE id = ?",
                                [.real(fraction), .integer(sceneID)])
+    }
+
+    /// The analyzer's sequence understanding: what happens in the scene and
+    /// how entertaining it is (0–10, escalation-aware, audio-boosted).
+    func setSceneNarrative(_ sceneID: Int64, narrative: String?, score: Double?) throws {
+        try connection.execute("UPDATE scenes SET narrative = ?, score = ? WHERE id = ?",
+                               [narrative.map(SQLValue.text) ?? .null,
+                                score.map(SQLValue.real) ?? .null, .integer(sceneID)])
+    }
+
+    func setSceneScore(_ sceneID: Int64, score: Double, excitement: Double? = nil) throws {
+        try connection.execute("UPDATE scenes SET score = ?, excitement = COALESCE(?, excitement) WHERE id = ?",
+                               [.real(score), excitement.map(SQLValue.real) ?? .null,
+                                .integer(sceneID)])
+    }
+
+    /// Link a breakdown action to the sequence scene it was cut from.
+    func setSceneParent(_ sceneID: Int64, parentID: Int64) throws {
+        try connection.execute("UPDATE scenes SET parent_scene_id = ? WHERE id = ?",
+                               [.integer(parentID), .integer(sceneID)])
     }
 
     /// Promote/demote a scene in the curated set.

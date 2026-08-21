@@ -194,6 +194,14 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var originalEnd: Double = 0
     /// Promoted to the Curated set (the wizard can be told to use only these).
     var curated: Bool = false
+    /// The analyzer's beat-by-beat story of the sequence.
+    var narrative: String?
+    /// Entertainment score 0–10 (escalation-aware, audio-excitement boosted).
+    var score: Double?
+    /// Crowd-loudness excitement 0–1 measured from the source audio.
+    var excitement: Double?
+    /// Set on breakdown actions: the sequence scene they were cut from.
+    var parentSceneID: Int64?
     var excluded: Bool
     var ignored: Bool
     var favorite: Bool
@@ -359,9 +367,11 @@ nonisolated struct ReviewableClip: Identifiable, Sendable, Hashable {
     var videoFile: String
     var start: Double
     var end: Double
+    /// Playback speed (0.5 = slow-motion replay); screen time stretches.
+    var speed: Double = 1
 
     var id: Int { index }
-    var duration: Double { end - start }
+    var duration: Double { (end - start) / speed }
     var url: URL { URL(fileURLWithPath: videoFile) }
 }
 
@@ -385,7 +395,8 @@ extension GeneratedVideoRecord {
                            sceneID: clip.sceneID,
                            videoFile: clip.videoFile ?? "",
                            start: clip.sourceStart ?? 0,
-                           end: clip.sourceEnd ?? (clip.sourceStart ?? 0) + clip.duration)
+                           end: clip.sourceEnd ?? (clip.sourceStart ?? 0) + clip.sourceSpan,
+                           speed: clip.effectiveSpeed)
         }
     }
 }

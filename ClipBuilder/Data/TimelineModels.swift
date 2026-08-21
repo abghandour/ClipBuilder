@@ -157,14 +157,22 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// Wide clips only: reframe with the Center Stage tracking camera
     /// instead of a static crop.
     var centerStage: Bool = false
+    /// Playback speed (nil = 1×). 0.5 = slow motion; `duration` is screen
+    /// time, so the source span consumed is duration × speed.
+    var speed: Double?
 
     /// Full duration of the referenced scene — editor state used to decide
     /// whether the clip is trimmed. Never encoded; refilled on hydration.
     var sceneFullDuration: Double?
 
+    var effectiveSpeed: Double { speed ?? 1 }
+
+    /// Source seconds this clip consumes (screen duration × speed).
+    var sourceSpan: Double { duration * effectiveSpeed }
+
     var isTrimmedScene: Bool {
         guard sceneID != nil, let full = sceneFullDuration else { return false }
-        return abs(duration - full) > 0.05
+        return abs(sourceSpan - full) > 0.05
     }
 
     static let captionChoices = ["inherit", "none", "top", "middle", "bottom"]
@@ -183,6 +191,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case cropXFrac = "crop_x_frac"
         case freeCrops = "free_crops"
         case centerStage = "center_stage"
+        case speed
     }
 
     init() {}
@@ -205,6 +214,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         cropXFrac = try container.decodeIfPresent(Double.self, forKey: .cropXFrac)
         freeCrops = try container.decodeIfPresent([FreeCrop].self, forKey: .freeCrops)
         centerStage = try container.decodeIfPresent(Bool.self, forKey: .centerStage) ?? false
+        speed = try container.decodeIfPresent(Double.self, forKey: .speed)
         captions = Self.decodeCaptions(container, key: .captions, fallback: "inherit",
                                        valid: Self.captionChoices)
         // The web serializer never writes duration for scene clips; hydration
@@ -249,14 +259,16 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         }
         try container.encode(captions, forKey: .captions)
         try container.encode(centerStage, forKey: .centerStage)
+        try encodeOrNull(speed, in: &container, forKey: .speed)
         if let sceneID, !isTrimmedScene {
             try container.encode(sceneID, forKey: .sceneID)
         } else if let videoFile, let sourceStart {
-            // Trimmed / raw-file clips: identify by file + trimmed extent,
+            // Trimmed / raw-file clips: identify by file + trimmed extent
+            // (in SOURCE seconds — slow motion stretches only screen time),
             // matching the web serializer's video_file fallback.
             try container.encode(videoFile, forKey: .videoFile)
             try container.encode(sourceStart, forKey: .sourceStart)
-            try container.encode(sourceStart + duration, forKey: .sourceEnd)
+            try container.encode(sourceStart + sourceSpan, forKey: .sourceEnd)
         } else if let sceneID {
             try container.encode(sceneID, forKey: .sceneID)
         }
@@ -268,7 +280,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.duration == rhs.duration && lhs.track == rhs.track && lhs.wide == rhs.wide
             && lhs.stackOrder == rhs.stackOrder && lhs.volume == rhs.volume && lhs.muted == rhs.muted
             && lhs.position == rhs.position && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
-            && lhs.centerStage == rhs.centerStage
+            && lhs.centerStage == rhs.centerStage && lhs.speed == rhs.speed
             && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
     }
 

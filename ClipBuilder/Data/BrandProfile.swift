@@ -1,5 +1,44 @@
 import Foundation
 
+/// One learned video type: what a keeper moment looks like for THIS kind of
+/// reel (fight highlights, interviews, …), distilled from studied exemplars.
+/// Categories emerge from studying — the model classifies each reel and
+/// merges its learnings into the matching category.
+nonisolated struct TasteCategory: Codable, Sendable, Hashable, Identifiable {
+    var key: String
+    var label: String
+    var rubric: String
+    /// Saved exemplar frame paths for this category.
+    var exemplarFrames: [String]
+    var studiedCount: Int
+
+    var id: String { key }
+
+    enum CodingKeys: String, CodingKey {
+        case key, label, rubric
+        case exemplarFrames = "exemplar_frames"
+        case studiedCount = "studied_count"
+    }
+
+    init(key: String, label: String, rubric: String = "",
+         exemplarFrames: [String] = [], studiedCount: Int = 0) {
+        self.key = key
+        self.label = label
+        self.rubric = rubric
+        self.exemplarFrames = exemplarFrames
+        self.studiedCount = studiedCount
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decodeIfPresent(String.self, forKey: .key) ?? "general"
+        label = try container.decodeIfPresent(String.self, forKey: .label) ?? key
+        rubric = try container.decodeIfPresent(String.self, forKey: .rubric) ?? ""
+        exemplarFrames = try container.decodeIfPresent([String].self, forKey: .exemplarFrames) ?? []
+        studiedCount = try container.decodeIfPresent(Int.self, forKey: .studiedCount) ?? 0
+    }
+}
+
 /// Brand profile — mirrors the JSON files the Python app keeps at
 /// `~/Documents/ClipBuilder/<name>.json` so both apps can share profiles.
 nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
@@ -26,6 +65,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     /// Saved frames from exemplar reels (absolute JPEG paths) — attached to
     /// analysis calls as visual definitions of the rubric.
     var tasteExemplarFrames: [String]
+    /// Learned video types, each with its own rubric and exemplars.
+    var tasteCategories: [TasteCategory]
 
     var id: String { profileName }
 
@@ -44,6 +85,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case captionLanguages = "caption_languages"
         case tasteRubric = "taste_rubric"
         case tasteExemplarFrames = "taste_exemplar_frames"
+        case tasteCategories = "taste_categories"
     }
 
     init(from decoder: Decoder) throws {
@@ -64,6 +106,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         captionLanguages = try container.decodeIfPresent([String].self, forKey: .captionLanguages) ?? ["en"]
         tasteRubric = try container.decodeIfPresent(String.self, forKey: .tasteRubric) ?? ""
         tasteExemplarFrames = try container.decodeIfPresent([String].self, forKey: .tasteExemplarFrames) ?? []
+        tasteCategories = try container.decodeIfPresent([TasteCategory].self, forKey: .tasteCategories) ?? []
     }
 
     init(name: String) {
@@ -81,6 +124,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         captionLanguages = ["en"]
         tasteRubric = ""
         tasteExemplarFrames = []
+        tasteCategories = []
     }
 
     var logoURL: URL? {

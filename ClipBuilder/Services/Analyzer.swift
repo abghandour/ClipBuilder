@@ -118,6 +118,31 @@ actor Analyzer {
         return await extractFrames(url: url, timestamps: timestamps)
     }
 
+    /// Run an analysis-task AI call, halving the sampled frame grid and
+    /// retrying whenever the provider rejects the request as too long — a
+    /// thinner analysis beats a dead one. Auxiliary frames (markers, notes,
+    /// taste examples) always ride along untouched.
+    private func callThinningFrames(prompt: String, auxiliary: [AIFrame], sampled: [AIFrame],
+                                    video: URL? = nil,
+                                    model: String?, provider: String?,
+                                    log: @escaping @Sendable (String) -> Void) async throws -> String {
+        var frames = sampled
+        while true {
+            do {
+                return try await ai.call(prompt: prompt, task: "analysis",
+                                         frames: auxiliary + frames, video: video,
+                                         model: model, provider: provider,
+                                         timeout: 300, log: log)
+            } catch let error as AIError {
+                guard case .promptTooLong = error, frames.count > 8 else { throw error }
+                frames = frames.enumerated()
+                    .filter { $0.offset.isMultiple(of: 2) }
+                    .map(\.element)
+                log("Prompt too long for the model — retrying with \(frames.count) frames")
+            }
+        }
+    }
+
     private func extractFrames(url: URL, timestamps: [Double]) async -> [AIFrame] {
         let frames = (try? await BoundedConcurrency.map(timestamps, limit: FFmpeg.jobLimit) { _, timestamp in
             await ThumbnailService.jpegFrame(url: url, at: timestamp).map {
@@ -149,23 +174,32 @@ actor Analyzer {
         """
     }
 
-    /// The profile's taste rubric — distilled from exemplar reels the user
-    /// picked. Matching moments additionally get the "highlight" tag.
+    /// The profile's taste knowledge — a general rubric plus per-video-type
+    /// rubrics distilled from exemplar reels. Matching moments get the
+    /// "highlight" tag; type matches also get "highlight:<category>".
     /// `exampleCount` = attached "TASTE EXAMPLE" frames riding along.
-    private static func tasteBlock(_ rubric: String, exampleCount: Int) -> String {
+    private static func tasteBlock(_ rubric: String, categories: [TasteCategory],
+                                   exampleCount: Int) -> String {
         let trimmed = rubric.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-        let examples = exampleCount > 0 ? """
-        \(exampleCount) image(s) labeled "TASTE EXAMPLE n — a keeper moment" ride along with the frames — actual moments from the user's exemplar reels. Treat them as visual definitions of the rubric: moments in THIS video that resemble them deserve the "highlight" tag.
-        """ : ""
-        return """
-
-        ## TASTE RUBRIC (what a keeper moment looks like for this user)
-        \(trimmed)
-        \(examples)
-        In ADDITION to the tag vocabulary below, tag every time range matching one or more of these rubric rules with the tag "highlight". Be selective — "highlight" marks the genuinely strong moments, not everything that vaguely qualifies.
-
-        """
+        let active = categories.filter {
+            !$0.rubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        guard !trimmed.isEmpty || !active.isEmpty else { return "" }
+        var block = "\n## TASTE RUBRIC (what a keeper moment looks like for this user)\n"
+        if !trimmed.isEmpty { block += trimmed + "\n" }
+        if !active.isEmpty {
+            block += "\nVIDEO-TYPE RUBRICS — a range matching one of these ALSO gets that type's own tag:\n"
+            for category in active {
+                block += "- tag \"highlight:\(category.key)\" (\(category.label)):\n"
+                    + category.rubric.split(separator: "\n")
+                        .map { "  \($0)" }.joined(separator: "\n") + "\n"
+            }
+        }
+        if exampleCount > 0 {
+            block += "\n\(exampleCount) image(s) labeled \"TASTE EXAMPLE …\" ride along with the frames — actual moments from the user's exemplar reels. Treat them as visual definitions of these rubrics.\n"
+        }
+        block += "\nIn ADDITION to the tag vocabulary below, tag every time range matching the rules above with \"highlight\" (plus the matching \"highlight:<type>\" tag when a video-type rubric matched). Be selective — highlights mark the genuinely strong moments, not everything that vaguely qualifies.\n"
+        return block
     }
 
     /// Timestamped, per-video notes — the model relates each to the nearest
@@ -260,12 +294,13 @@ actor Analyzer {
                                            markers: [(marker: PersonMarker, person: PersonRecord)],
                                            filename: String,
                                            tasteRubric: String = "",
+                                           tasteCategories: [TasteCategory] = [],
                                            tasteExampleCount: Int = 0,
                                            ignoreCount: Int = 0) -> String {
         """
         You are analyzing frames from a \(domain) video.
         Video duration: \(String(format: "%.1f", duration))s. Frames are shown at their timestamps.
-        \(instructionsBlock(instructions))\(tasteBlock(tasteRubric, exampleCount: tasteExampleCount))\(notesBlock(notes, withReferenceFrames: notesHaveReferenceFrames))\(peopleBlock(knownPeople, filename: filename))\(markerBlock(markers))\(ignoreBlock(ignoreCount))
+        \(instructionsBlock(instructions))\(tasteBlock(tasteRubric, categories: tasteCategories, exampleCount: tasteExampleCount))\(notesBlock(notes, withReferenceFrames: notesHaveReferenceFrames))\(peopleBlock(knownPeople, filename: filename))\(markerBlock(markers))\(ignoreBlock(ignoreCount))
         Your job: produce a TAG-CENTRIC analysis. For each tag that applies to this
         video, provide the TIME RANGES where that tag is present. Also note any
         important moments (dialog, key events).
@@ -278,11 +313,20 @@ actor Analyzer {
             "tag_name": [{"start": 0.0, "end": 5.2}, {"start": 12.0, "end": 18.5}],
             "another_tag": [{"start": 0.0, "end": 30.0}]
           },
+          "sequences": [
+            {"start": 12.0, "end": 18.5, "narrative": "A pressures B against the cage, lands a 3-punch combination; B changes levels, A sprawls and finishes with two knees — B drops to seated.", "score": 8.7, "reason": "escalating exchange with a clear payoff"}
+          ],
           "moments": [
             {"at": 3.5, "note": "clean right hook lands", "dialog": null},
             {"at": 15.0, "note": "coach gives instructions", "dialog": "Mao na cara dele [EN: Hand on his face]"}
           ]
         }
+
+        SEQUENCES — the part that makes highlights good:
+        - For every action time range you tag, add a matching "sequences" entry with the SAME start/end: a beat-by-beat story (1-3 sentences) of what happens, who does what to whom.
+        - "score" is 0-10 for ENTERTAINMENT, not action count. Score the shape of the sequence: pressure → exchange → escalation → visible payoff (a landed shot, a reaction, a takedown, a reversal) scores high; isolated strikes with no consequence score low. A knockdown/finish/near-finish is 9+; a clean escalating exchange 7-9; routine action 4-6; filler under 4.
+        - Pad each sequence's range to include its lead-in and its payoff/reaction — a highlight cut without the reaction feels amputated.
+        - Non-action ranges (arena, backstage, interviews) don't need sequence entries.
 
         RULES:
         - Only include tags that actually appear in the video
@@ -356,8 +400,9 @@ actor Analyzer {
         - Typical actions last 1–8 seconds; quiet stretches between actions may be left untagged
         - Ranges for the same tag must not overlap
         - Anchor timestamps on the frame labels
-        - Return ONLY a JSON object of the form {"tags": {"tag-name": [{"start": 12.0, "end": 15.5}]}} — no markdown fences, no explanation
-        - If nothing distinct happens, return: {"tags": {}}
+        - ALSO return a "sequences" entry per action range: same start/end, "narrative" (a 1-2 sentence beat-by-beat story of the action) and "score" (0-10 ENTERTAINMENT: escalation with a visible payoff scores high, isolated action low)
+        - Return ONLY a JSON object of the form {"tags": {"tag-name": [{"start": 12.0, "end": 15.5}]}, "sequences": [{"start": 12.0, "end": 15.5, "narrative": "...", "score": 7.5}]} — no markdown fences, no explanation
+        - If nothing distinct happens, return: {"tags": {}, "sequences": []}
         """, domain, start, end, tagList(tags), start, end)
     }
 
@@ -368,7 +413,8 @@ actor Analyzer {
                                 domain: String, tags: [String: [String]], allTags: Set<String>,
                                 provider: String?, model: String?,
                                 log: @escaping @Sendable (String) -> Void) async throws
-        -> [String: [(start: Double, end: Double)]] {
+        -> (tags: [String: [(start: Double, end: Double)]],
+            sequences: [(start: Double, end: Double, narrative: String, score: Double)]) {
         let span = window.end - window.start
         let interval = max(0.25, span / Double(Self.maxCustomFrames))
         var timestamps: [Double] = []
@@ -378,15 +424,15 @@ actor Analyzer {
             t += interval
         }
         let frames = await extractFrames(url: url, timestamps: timestamps)
-        guard !frames.isEmpty else { return [:] }
+        guard !frames.isEmpty else { return ([:], []) }
         log(String(format: "Re-examining %.1f–%.1fs with %d dense frames…",
                    window.start, window.end, frames.count))
         let prompt = Self.breakdownPrompt(domain: domain, start: window.start, end: window.end,
                                           tags: tags)
-        let response = try await ai.call(prompt: prompt, task: "analysis", frames: frames,
-                                         model: model, provider: provider, timeout: 300, log: log)
+        let response = try await callThinningFrames(prompt: prompt, auxiliary: [], sampled: frames,
+                                                    model: model, provider: provider, log: log)
         guard let object = AIResponseParser.jsonObject(from: response),
-              let rawTags = object["tags"] as? [String: Any] else { return [:] }
+              let rawTags = object["tags"] as? [String: Any] else { return ([:], []) }
         var cleanTags: [String: [(start: Double, end: Double)]] = [:]
         for (tag, value) in rawTags {
             guard allTags.contains(tag), let ranges = value as? [[String: Any]] else { continue }
@@ -400,7 +446,17 @@ actor Analyzer {
             }
             if !clean.isEmpty { cleanTags[tag] = clean }
         }
-        return cleanTags
+        var sequences: [(start: Double, end: Double, narrative: String, score: Double)] = []
+        for entry in object["sequences"] as? [[String: Any]] ?? [] {
+            let start = max(window.start, ((entry["start"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
+            let end = min(window.end, ((entry["end"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
+            let narrative = (entry["narrative"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard end > start, !narrative.isEmpty else { continue }
+            let score = min(10, max(0, (entry["score"] as? NSNumber)?.doubleValue ?? 5))
+            sequences.append((start, end, narrative, score))
+        }
+        return (cleanTags, sequences)
     }
 
     // MARK: - People-only pass
@@ -470,9 +526,10 @@ actor Analyzer {
                                            knownPeople: knownPeople, markers: namedMarkers,
                                            ignoreCount: ignoreFrames.count,
                                            filename: video.filename)
-        let response = try await ai.call(prompt: prompt, task: "analysis",
-                                         frames: markerFrames + ignoreFrames + frames,
-                                         model: model, provider: provider, timeout: 300, log: log)
+        let response = try await callThinningFrames(prompt: prompt,
+                                                    auxiliary: markerFrames + ignoreFrames,
+                                                    sampled: frames,
+                                                    model: model, provider: provider, log: log)
         guard let object = AIResponseParser.jsonObject(from: response),
               let rawPeople = object["people"] as? [[String: Any]] else {
             throw AIError.emptyResponse("people detection (unparseable JSON)")
@@ -544,25 +601,35 @@ actor Analyzer {
     // MARK: - Taste rubric distillation
 
     private static func tasteRubricPrompt(domain: String, label: String,
-                                          existingRubric: String) -> String {
+                                          existingRubric: String,
+                                          categories: [TasteCategory],
+                                          performance: String) -> String {
         let existing = existingRubric.trimmingCharacters(in: .whitespacesAndNewlines)
+        let categoryList = categories.isEmpty ? "None yet — this reel founds the first category." :
+            categories.map { category in
+                "- key \"\(category.key)\" (\(category.label)), studied \(category.studiedCount) reel(s):\n"
+                    + (category.rubric.isEmpty ? "  (no rubric yet)" :
+                        category.rubric.split(separator: "\n").map { "  \($0)" }.joined(separator: "\n"))
+            }.joined(separator: "\n")
         return """
         You are studying a reference reel ("\(label)")\(domain.isEmpty ? "" : " from the \(domain) domain"). The user hand-picked it because its moments are exactly what they want detected in their own raw footage.
+        \(performance.isEmpty ? "" : "\nPERFORMANCE: \(performance) — weight the patterns of well-performing reels more heavily.\n")
+        FIRST, classify this reel into a VIDEO TYPE category. Existing categories with their current rubrics:
+        \(categoryList)
 
-        CURRENT RUBRIC (refine it — don't start over):
-        \(existing.isEmpty ? "None yet." : existing)
+        STRONGLY prefer an existing category — create a new one ONLY when this reel is clearly a different kind of video (e.g. an interview when only fight-highlight exists). A new category needs a kebab-case key and a short Title Case label.
 
-        From the frames, work out what makes this reel's kept moments worth keeping — the visible action, framing, intensity, reactions, and pacing that distinguish its shots. Then return the UPDATED rubric.
-
+        THEN, from the frames, work out what makes this reel's kept moments worth keeping — the visible action, framing, intensity, reactions, and pacing that distinguish its shots. Return the UPDATED rubric FOR THE CHOSEN CATEGORY (merge with that category's current rubric above).
+        \(existing.isEmpty ? "" : "\nThe user's general rubric (context only — do not return it):\n\(existing)\n")
         Rules for the rubric:
         - 5–12 bullet lines starting with "- ", each concrete and visually checkable in raw footage (e.g. "- a strike visibly landing with the opponent reacting", never "- exciting moments")
-        - Merge with the current rubric: keep rules this reel still supports, sharpen wording, add what it newly teaches, and only drop an existing rule when this reel contradicts it
+        - Merge with the chosen category's current rubric: keep rules this reel still supports, sharpen wording, add what it newly teaches, and only drop an existing rule when this reel contradicts it
         - Describe what to LOOK FOR in unedited footage — ignore the reel's editing, captions, emojis, music, and graphics
 
         Also pick up to 4 of the attached frames that best EXEMPLIFY the rubric — the clearest "this is a keeper moment" images (skip title cards, transitions, and graphics-heavy frames).
 
         Return ONLY a JSON object, no markdown fences, of the form:
-        {"rubric": "<the bullet lines joined by newlines>", "exemplar_frames": [<the chosen frames' timestamps in seconds, from their labels>]}
+        {"category": "<existing key, or a new kebab-case key>", "category_label": "<short Title Case label>", "rubric": "<the bullet lines joined by newlines>", "exemplar_frames": [<the chosen frames' timestamps in seconds, from their labels>]}
         """
     }
 
@@ -572,10 +639,13 @@ actor Analyzer {
     /// rubric text plus the frames the model picked as the clearest visual
     /// examples of it (few-shot images for future analysis calls).
     func distillTasteRubric(video url: URL, label: String, existingRubric: String,
+                            categories: [TasteCategory] = [],
+                            performance: String = "",
                             domain: String,
                             provider: String? = nil, model: String? = nil,
                             log: @escaping @Sendable (String) -> Void) async throws
-        -> (rubric: String, exemplarFrames: [(time: Double, jpeg: Data)]) {
+        -> (categoryKey: String, categoryLabel: String, rubric: String,
+            exemplarFrames: [(time: Double, jpeg: Data)]) {
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let duration = await FFmpeg.duration(of: url)
         guard duration > 0 else {
@@ -592,16 +662,42 @@ actor Analyzer {
         }
         log("Studying \(label) (\(frames.count) frames)…")
         let prompt = Self.tasteRubricPrompt(domain: domain, label: label,
-                                            existingRubric: existingRubric)
-        let response = try await ai.call(prompt: prompt, task: "analysis", frames: frames,
-                                         model: model, provider: provider, timeout: 300, log: log)
+                                            existingRubric: existingRubric,
+                                            categories: categories,
+                                            performance: performance)
+        let response = try await callThinningFrames(prompt: prompt, auxiliary: [], sampled: frames,
+                                                    model: model, provider: provider, log: log)
 
         var rubric = ""
         var pickedTimes: [Double] = []
+        var categoryKey = "general"
+        var categoryLabel = "General"
         if let object = AIResponseParser.jsonObject(from: response) {
             rubric = (object["rubric"] as? String ?? "")
             pickedTimes = (object["exemplar_frames"] as? [Any] ?? [])
                 .compactMap { ($0 as? NSNumber)?.doubleValue }
+            if let raw = (object["category"] as? String)?.lowercased() {
+                let key = raw.map { $0.isLetter || $0.isNumber ? $0 : "-" }
+                    .reduce(into: "") { result, character in
+                        if character != "-" || result.last != "-" { result.append(character) }
+                    }
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+                if !key.isEmpty { categoryKey = key }
+            }
+            // A near-match to an existing key snaps onto it — the model
+            // occasionally pluralizes or re-words its own category names.
+            if let existing = categories.first(where: {
+                $0.key == categoryKey || $0.key.hasPrefix(categoryKey) || categoryKey.hasPrefix($0.key)
+            }) {
+                categoryKey = existing.key
+                categoryLabel = existing.label
+            } else if let label = (object["category_label"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty {
+                categoryLabel = label
+            } else {
+                categoryLabel = categoryKey.split(separator: "-")
+                    .map { $0.capitalized }.joined(separator: " ")
+            }
         }
         if rubric.isEmpty {
             // Older-style plain-text answer: the whole response is the rubric.
@@ -609,6 +705,7 @@ actor Analyzer {
         }
         rubric = rubric.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rubric.isEmpty else { throw AIError.emptyResponse("taste rubric") }
+        log("Classified as \(categoryLabel) (\(categoryKey))")
 
         // Resolve each picked timestamp back to the nearest extracted frame
         // (the labels are "%.1fs", so parse them for the match).
@@ -622,7 +719,7 @@ actor Analyzer {
                   !exemplarFrames.contains(where: { $0.time == nearest.time }) else { continue }
             exemplarFrames.append(nearest)
         }
-        return (rubric, exemplarFrames)
+        return (categoryKey, categoryLabel, rubric, exemplarFrames)
     }
 
     // MARK: - Analysis
@@ -657,10 +754,15 @@ actor Analyzer {
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let tags = profile.effectiveTags
         var allTags = Set(tags.values.flatMap { $0 })
-        // The taste rubric adds a synthetic "highlight" tag for the moments
-        // matching it — accepted alongside the profile vocabulary.
+        // The taste system adds synthetic highlight tags for matching
+        // moments — generic plus one per learned video type.
         if !profile.tasteRubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             allTags.insert("highlight")
+        }
+        for category in profile.tasteCategories
+        where !category.rubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            allTags.insert("highlight")
+            allTags.insert("highlight:\(category.key)")
         }
         let domain = profile.effectiveDomain
         let duration = video.duration > 0 ? video.duration : await FFmpeg.duration(of: video.url)
@@ -750,15 +852,25 @@ actor Analyzer {
             }
         }
 
-        // Few-shot taste examples: frames from the user's exemplar reels,
-        // attached as visual definitions of the taste rubric.
+        // Few-shot taste examples: frames from the user's exemplar reels —
+        // the general library plus a couple per learned video type.
         var tasteFrames: [AIFrame] = []
-        if !profile.tasteRubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            for (index, path) in profile.tasteExemplarFrames.prefix(6).enumerated() {
-                let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
+        let hasTaste = !profile.tasteRubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || profile.tasteCategories.contains {
+                !$0.rubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+        if hasTaste {
+            var entries: [(path: String, label: String)] = profile.tasteExemplarFrames
+                .prefix(4).map { ($0, "TASTE EXAMPLE") }
+            for category in profile.tasteCategories {
+                entries += category.exemplarFrames.suffix(2)
+                    .map { ($0, "TASTE EXAMPLE (\(category.label))") }
+            }
+            for (index, entry) in entries.prefix(8).enumerated() {
+                let url = URL(fileURLWithPath: (entry.path as NSString).expandingTildeInPath)
                 if let data = try? Data(contentsOf: url) {
                     tasteFrames.append(AIFrame(jpeg: data,
-                                               label: "TASTE EXAMPLE \(index + 1) — a keeper moment"))
+                                               label: "\(entry.label) \(index + 1) — a keeper moment"))
                 }
             }
             if !tasteFrames.isEmpty {
@@ -801,6 +913,7 @@ actor Analyzer {
                                              markers: namedMarkers,
                                              filename: video.filename,
                                              tasteRubric: profile.tasteRubric,
+                                             tasteCategories: profile.tasteCategories,
                                              tasteExampleCount: tasteFrames.count,
                                              ignoreCount: ignoreFrames.count)
             tagsToRecord = Array(allTags)
@@ -808,10 +921,29 @@ actor Analyzer {
             log("Extracted \(frames.count) frames, sending for full analysis...")
         }
 
-        let response = try await ai.call(prompt: prompt, task: "analysis",
-                                         frames: referenceFrames + markerFrames + ignoreFrames
-                                             + tasteFrames + frames,
-                                         model: model, provider: provider, timeout: 300, log: log)
+        // Video-native input: when Gemini is the resolved provider and the
+        // whole file is a reasonable upload, it watches the actual video —
+        // motion, impacts, and audio — instead of sampled stills. Trimmed
+        // runs stay frames-only so timestamps remain unambiguous, and any
+        // fallback provider still gets the frames.
+        var nativeVideo: URL?
+        let resolved = await ai.resolveProviderModel(task: "analysis",
+                                                     provider: provider, model: model)
+        if resolved.provider == "gemini", window == nil {
+            let size = ((try? FileManager.default.attributesOfItem(atPath: video.url.path))?[.size]
+                as? NSNumber)?.int64Value ?? .max
+            if size <= 300 * 1024 * 1024 {
+                nativeVideo = video.url
+                log("Attaching the video natively — Gemini reads motion and audio directly")
+            }
+        }
+
+        let response = try await callThinningFrames(
+            prompt: prompt,
+            auxiliary: referenceFrames + markerFrames + ignoreFrames + tasteFrames,
+            sampled: frames,
+            video: nativeVideo,
+            model: model, provider: provider, log: log)
         guard let object = AIResponseParser.jsonObject(from: response) else {
             throw AIError.emptyResponse("analysis (unparseable JSON)")
         }
@@ -890,6 +1022,22 @@ actor Analyzer {
             }
         }
 
+        // Sequence understanding: the beat-by-beat story + entertainment
+        // score per range, attached to the matching scenes after saving.
+        var sequences: [(start: Double, end: Double, narrative: String, score: Double)] = []
+        for entry in object["sequences"] as? [[String: Any]] ?? [] {
+            let start = max(clampStart, ((entry["start"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
+            let end = min(clampEnd, ((entry["end"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
+            let narrative = (entry["narrative"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard end > start, !narrative.isEmpty else { continue }
+            let score = min(10, max(0, (entry["score"] as? NSNumber)?.doubleValue ?? 5))
+            sequences.append((start, end, narrative, score))
+        }
+        // Windows the breakdown split — their scenes become parents of the
+        // action scenes cut from inside them.
+        var brokenWindows: [(start: Double, end: Double)] = []
+
         // Optional dense second pass: scenes carrying one of the chosen
         // breakdown tags get re-examined frame-by-frame and split into their
         // individual actions (combos, exchanges). The sub-ranges replace the
@@ -917,20 +1065,21 @@ actor Analyzer {
                     let sub = try await breakdownScene(url: video.url, window: window,
                                                        domain: domain, tags: tags, allTags: allTags,
                                                        provider: provider, model: model, log: log)
-                    guard !sub.isEmpty else {
+                    guard !sub.tags.isEmpty else {
                         log(String(format: "No distinct actions found in %.1f–%.1fs — keeping the scene whole",
                                    window.start, window.end))
                         continue
                     }
+                    // Hierarchical: the sequence scene is KEPT, its actions
+                    // land inside it and get linked as children after saving
+                    // — the planner can pick the whole story or its beats.
+                    brokenWindows.append(window)
                     // People whose ranges overlap the window ride along onto
                     // each overlapping sub-range, so sub-scenes keep their
                     // people chips (and the wizard's people filter).
                     let personTags = cleanTags.filter { $0.key.hasPrefix("person:") }
-                    for (tag, ranges) in cleanTags {
-                        cleanTags[tag] = ranges.filter { $0.start != window.start || $0.end != window.end }
-                    }
                     var distinct = Set<String>()
-                    for (tag, ranges) in sub {
+                    for (tag, ranges) in sub.tags {
                         cleanTags[tag, default: []].append(contentsOf: ranges)
                         for range in ranges {
                             distinct.insert("\(range.start)-\(range.end)")
@@ -940,7 +1089,8 @@ actor Analyzer {
                             }
                         }
                     }
-                    log(String(format: "Split %.1f–%.1fs into %d sub-scene(s)",
+                    sequences.append(contentsOf: sub.sequences)
+                    log(String(format: "Sequence %.1f–%.1fs kept, %d action scene(s) added inside it",
                                window.start, window.end, distinct.count))
                 } catch is CancellationError {
                     throw CancellationError()
@@ -949,7 +1099,6 @@ actor Analyzer {
                                window.start, window.end))
                 }
             }
-            cleanTags = cleanTags.filter { !$0.value.isEmpty }
         }
 
         progress(0.95, "saving")
@@ -1010,6 +1159,59 @@ actor Analyzer {
             let loser = outcome.loser.map { names[$0] ?? $0 } ?? "?"
             log("Fight outcome: \(winner) beat \(loser) by \(outcome.method.uppercased())"
                 + (outcome.event.map { " (\($0))" } ?? ""))
+        }
+
+        // Sequence stories + entertainment scores land on their scenes;
+        // breakdown actions link to their parent sequence; then crowd
+        // loudness spikes boost the scores of the scenes they land in.
+        let savedRanges = (try? await database.sceneRanges(runID: runID)) ?? []
+        func savedSceneID(start: Double, end: Double, tolerance: Double = 0.3) -> Int64? {
+            savedRanges.first { abs($0.start - start) <= tolerance && abs($0.end - end) <= tolerance }?.id
+        }
+        var scored: [Int64: Double] = [:]
+        for sequence in sequences {
+            guard let id = savedSceneID(start: sequence.start, end: sequence.end) else { continue }
+            try? await database.setSceneNarrative(id, narrative: sequence.narrative,
+                                                  score: sequence.score)
+            scored[id] = sequence.score
+        }
+        if !sequences.isEmpty {
+            log("Sequence stories: \(scored.count) scene(s) scored for entertainment")
+        }
+        for window in brokenWindows {
+            guard let parentID = savedSceneID(start: window.start, end: window.end) else { continue }
+            for range in savedRanges
+                where range.id != parentID
+                    && range.start >= window.start - 0.05 && range.end <= window.end + 0.05
+                    && (range.end - range.start) < (window.end - window.start) - 0.05 {
+                try? await database.setSceneParent(range.id, parentID: parentID)
+            }
+        }
+
+        // Audio excitement: crowd/commentator loudness spikes lift the
+        // scores of the scenes they land in — a knockdown that erupts the
+        // arena outranks a quiet one. Pure ffmpeg RMS; no AI cost.
+        if !scored.isEmpty, await FFmpeg.hasAudioStream(video.url) {
+            progress(0.96, "audio excitement")
+            let curve = await Self.loudnessCurve(url: video.url)
+            if curve.count > 4 {
+                let median = curve.sorted()[curve.count / 2]
+                var boosted = 0
+                for (id, score) in scored {
+                    guard let range = savedRanges.first(where: { $0.id == id }) else { continue }
+                    let lower = max(0, Int(range.start))
+                    let upper = min(curve.count - 1, Int(range.end) + 2)
+                    guard upper >= lower, let peak = curve[lower...upper].max() else { continue }
+                    let excitement = min(1, max(0, (peak - median) / 12))
+                    guard excitement > 0.1 else { continue }
+                    try? await database.setSceneScore(id, score: min(10, score + 1.5 * excitement),
+                                                      excitement: excitement)
+                    boosted += 1
+                }
+                if boosted > 0 {
+                    log("Audio excitement boosted \(boosted) scene score(s)")
+                }
+            }
         }
 
         // Local portrait-fit pass on wide footage: score how well each new
@@ -1134,6 +1336,24 @@ actor Analyzer {
             .sorted { $0.width * $0.height > $1.width * $1.height }
             .prefix(4)
         return primaries.isEmpty ? boxes : Array(primaries)
+    }
+
+    /// Per-second RMS loudness (dB) of the source audio — crowd and
+    /// commentator spikes mark the exciting moments. Pure ffmpeg; empty on
+    /// failure or silence.
+    nonisolated static func loudnessCurve(url: URL) async -> [Double] {
+        guard let output = try? await FFmpeg.run([
+            "-i", url.path, "-map", "a:0", "-vn",
+            "-af", "aresample=8000,asetnsamples=8000,astats=metadata=1:reset=1,"
+                + "ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-",
+            "-f", "null", "-",
+        ], timeout: 300) else { return [] }
+        return output.split(separator: "\n").compactMap { line -> Double? in
+            guard let range = line.range(of: "RMS_level=") else { return nil }
+            let value = Double(line[range.upperBound...].trimmingCharacters(in: .whitespaces))
+            guard let value else { return -70 }
+            return value.isFinite ? value : -70
+        }
     }
 
     /// How a scene's people sit relative to a full-height 9:16 crop.

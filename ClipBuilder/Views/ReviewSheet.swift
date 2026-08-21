@@ -123,9 +123,10 @@ struct ReviewSheet: View {
             .buttonStyle(.plain)
             .help("Play this clip in the preview")
 
-            Text("Clip \(clip.index + 1) · \(String(format: "%.1fs", clip.duration))")
+            Text("Clip \(clip.index + 1) · \(String(format: "%.1fs", clip.duration))"
+                 + (clip.speed == 1 ? "" : String(format: " · %g× slow", clip.speed)))
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(clip.speed == 1 ? .secondary : Color.orange)
 
             ThumbsToggle(value: Binding(
                 get: { clipVerdicts[clip.index] ?? 0 },

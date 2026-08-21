@@ -281,6 +281,32 @@ private struct ProfileSettingsTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+
+                if !store.activeProfile.tasteCategories.isEmpty {
+                    Text("Learned video types — each studied reel is classified into one of these and refines its rubric. The AI Wizard's Video type picker lists them.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    ForEach($store.activeProfile.tasteCategories) { $category in
+                        DisclosureGroup {
+                            TextField("Label", text: $category.label)
+                            TextEditor(text: $category.rubric)
+                                .font(.body)
+                                .frame(minHeight: 70)
+                            HStack {
+                                Text("\(category.exemplarFrames.count) example frame(s)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                Spacer()
+                                Button("Delete Type", role: .destructive) {
+                                    store.removeTasteCategory(key: category.key)
+                                }
+                                .controlSize(.small)
+                            }
+                        } label: {
+                            Text("\(category.label) · studied \(category.studiedCount) reel(s)")
+                        }
+                    }
+                }
             }
 
             Section {
@@ -419,6 +445,26 @@ private struct GeneralSettingsTab: View {
 private struct AISettingsTab: View {
     @Environment(AppStore.self) private var store
 
+    // Optimistic until the async CLI check lands, mirroring the plan sheet.
+    @State private var availableProviders = Set(AICatalog.providers.map(\.key))
+
+    /// The provider label with the same flags the plan sheet shows: the
+    /// catalog's true top pick is always "★ recommended" (installed or
+    /// not); when it's missing, the best installed one is flagged too.
+    private func providerLabel(_ provider: AICatalog.Provider, task: String) -> String {
+        var label = provider.label
+        let chain = AICatalog.recommendedChains[task] ?? []
+        let top = chain.first?.provider ?? AICatalog.taskDefaults[task]
+        let bestAvailable = chain.first { availableProviders.contains($0.provider) }?.provider
+        if provider.key == top {
+            label += "  ★ recommended"
+        } else if provider.key == bestAvailable, bestAvailable != top {
+            label += "  ★ best available"
+        }
+        if !availableProviders.contains(provider.key) { label += "  (not installed)" }
+        return label
+    }
+
     var body: some View {
         @Bindable var store = store
         Form {
@@ -433,7 +479,7 @@ private struct AISettingsTab: View {
                         }
                     )) {
                         ForEach(AICatalog.providers, id: \.key) { provider in
-                            Text(provider.label).tag(provider.key)
+                            Text(providerLabel(provider, task: task)).tag(provider.key)
                         }
                     }
                 }
@@ -472,6 +518,15 @@ private struct AISettingsTab: View {
             }
         }
         .formStyle(.grouped)
+        .task {
+            var available = Set<String>()
+            for provider in AICatalog.providers {
+                if await store.ai.isProviderAvailable(provider.key) {
+                    available.insert(provider.key)
+                }
+            }
+            availableProviders = available
+        }
     }
 }
 

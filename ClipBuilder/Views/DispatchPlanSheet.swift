@@ -540,6 +540,11 @@ struct DispatchPlanSheet: View {
                     }
                 }
                 if operation == .analyze {
+                    if analysisChoice.provider == "gemini" {
+                        Text("Gemini watches the video natively (motion + audio) when the file is under 300 MB and no section is trimmed; otherwise sampled frames are sent.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Picker("Frame sampling", selection: $sampleInterval) {
                         ForEach(Self.samplingChoices, id: \.value) { choice in
                             Text(choice.label).tag(choice.value)
@@ -752,8 +757,20 @@ struct DispatchPlanSheet: View {
                 set: { choices[task] = $0 })
     }
 
+    /// The catalog's true top pick for the task — flagged in the picker
+    /// even when its provider isn't installed, so the user knows what the
+    /// ideal setup would be.
+    private func topRecommendedTag(for task: String) -> String {
+        if let entry = AICatalog.recommendedChains[task]?.first {
+            return "\(entry.provider)|\(entry.model)"
+        }
+        let key = AICatalog.taskDefaults[task] ?? "claude"
+        return "\(key)|\(AICatalog.provider(key)?.defaultModel ?? "")"
+    }
+
     /// First recommended chain entry whose CLI is installed, else the
-    /// task default provider with its default model.
+    /// task default provider with its default model — what actually gets
+    /// pre-selected and run.
     private func recommendedTag(for task: String) -> String {
         for entry in AICatalog.recommendedChains[task] ?? []
         where availableProviders.contains(entry.provider) {
@@ -780,14 +797,22 @@ struct DispatchPlanSheet: View {
     }
 
     private func options(for task: String) -> [(tag: String, label: String)] {
-        let recommended = recommendedTag(for: task)
+        // The catalog's true best is always flagged (installed or not);
+        // when it's missing, the best of what IS installed gets its own
+        // flag so the effective default is legible too.
+        let top = topRecommendedTag(for: task)
+        let bestAvailable = recommendedTag(for: task)
         var result: [(String, String)] = []
         for provider in AICatalog.providers {
             let installed = availableProviders.contains(provider.key)
             for model in provider.models {
                 let tag = "\(provider.key)|\(model)"
                 var label = "\(provider.label) — \(model)"
-                if tag == recommended { label += "  ★ recommended" }
+                if tag == top {
+                    label += "  ★ recommended"
+                } else if tag == bestAvailable, bestAvailable != top {
+                    label += "  ★ best available"
+                }
                 if !installed { label += "  (not installed)" }
                 result.append((tag, label))
             }
@@ -917,6 +942,7 @@ private struct VideoNotesPanel: View {
     @State private var sectionEndObserver: Any?
     @State private var isPlayingSection = false
     @State private var videoPeople: [VideoPersonRecord] = []
+    @State private var loudness: [Double] = []
     // Framing mode: pinned hints plus the live computed suggestion for the
     // paused frame — dragging either pins a hard hint at that moment.
     @State private var framingHints: [CameraHint] = []
@@ -1200,7 +1226,8 @@ private struct VideoNotesPanel: View {
                         .help("Play just the selected section in the player above")
                     }
                     VideoTrimSlider(url: video.url, duration: video.duration,
-                                    start: $trimStart, end: $trimEnd) { time in
+                                    start: $trimStart, end: $trimEnd,
+                                    loudness: loudness) { time in
                         scrub(to: time)
                     }
                 }
@@ -1209,6 +1236,10 @@ private struct VideoNotesPanel: View {
                         trimStart = 0
                         trimEnd = video.duration
                     }
+                }
+                .task(id: "\(video.id)|loudness") {
+                    guard loudness.isEmpty else { return }
+                    loudness = await Analyzer.loudnessCurve(url: video.url)
                 }
             }
 
@@ -1335,6 +1366,7 @@ private struct VideoNotesPanel: View {
             markers = await store.personMarkers(for: video.id)
             videoPeople = await store.videoPeople(for: video.id)
             selectedPeopleKeys = []
+            loudness = []
             framingHints = await store.centerStageHints(for: video.id)
             await reloadFramingPortraits()
         }
@@ -1639,6 +1671,9 @@ struct VideoTrimSlider: View {
     let duration: Double
     @Binding var start: Double
     @Binding var end: Double
+    /// Per-second crowd loudness (dB) — drawn as a sparkline so the loud
+    /// moments are findable while trimming. Empty = no sparkline.
+    var loudness: [Double] = []
     var onScrub: ((Double) -> Void)?
 
     /// Selection start + span captured when a middle drag begins.
@@ -1718,6 +1753,25 @@ struct VideoTrimSlider: View {
             }
             .frame(height: Self.stripHeight)
             .clipShape(RoundedRectangle(cornerRadius: 4))
+            if loudness.count > 4 {
+                GeometryReader { proxy in
+                    let width = proxy.size.width
+                    let sorted = loudness.sorted()
+                    let low = sorted[sorted.count / 2]
+                    let high = max(sorted.last ?? low + 6, low + 6)
+                    Path { path in
+                        path.move(to: CGPoint(x: 0, y: 12))
+                        for (index, value) in loudness.enumerated() {
+                            let x = width * CGFloat(index) / CGFloat(max(1, loudness.count - 1))
+                            let normalized = max(0, min(1, (value - low) / (high - low)))
+                            path.addLine(to: CGPoint(x: x, y: 12 * (1 - CGFloat(normalized))))
+                        }
+                    }
+                    .stroke(.orange.opacity(0.8), lineWidth: 1)
+                }
+                .frame(height: 12)
+                .help("Crowd loudness — the spikes are where the arena reacted")
+            }
             HStack {
                 Text(start.timecode)
                 Spacer()

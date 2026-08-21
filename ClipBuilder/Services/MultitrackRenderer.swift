@@ -32,6 +32,9 @@ actor MultitrackRenderer {
         var effectiveCropXFrac: Double?
         var freeCrops: [FreeCrop]?
         var captionsPosition: String?     // nil = captions off for this clip
+        /// Playback speed (1 = normal): `duration` is screen time; source
+        /// consumption maps through this factor.
+        var speed: Double = 1
     }
 
     nonisolated struct Segment: Sendable {
@@ -53,6 +56,7 @@ actor MultitrackRenderer {
         var stackOrder: Int
         var cropXFrac: Double?
         var freeCrops: [FreeCrop]?
+        var speed: Double = 1
     }
 
     private static let width = RenderEngine.outputWidth
@@ -302,7 +306,8 @@ actor MultitrackRenderer {
                                          effectivePosition: effectivePosition,
                                          effectiveCropXFrac: clip.wide ? effectiveCrop : nil,
                                          freeCrops: clip.freeCrops,
-                                         captionsPosition: captionsResolved == "none" ? nil : captionsResolved))
+                                         captionsPosition: captionsResolved == "none" ? nil : captionsResolved,
+                                         speed: clip.effectiveSpeed))
         }
         return resolved.sorted {
             ($0.track, $0.startTime, $0.stackOrder) < ($1.track, $1.startTime, $1.stackOrder)
@@ -363,33 +368,36 @@ actor MultitrackRenderer {
         emit("Segment \(index + 1)/\(total): compositing \(segment.clips.count) clip(s)…")
         var placements: [Placement] = []
         for clip in segment.clips {
-            let clipOffset = segment.start - clip.startTime
+            // Timeline offsets map into the source through the clip's speed
+            // — a 0.5× clip consumes half a source second per screen second.
+            let clipOffset = (segment.start - clip.startTime) * clip.speed
             placements.append(Placement(sourcePath: clip.sourcePath,
                                         sourceStart: clip.sourceStart + clipOffset,
-                                        sourceDur: segment.duration,
+                                        sourceDur: segment.duration * clip.speed,
                                         isWide: clip.wide,
                                         layer: clip.track,
                                         position: clip.effectivePosition,
                                         muted: clip.muted,
                                         stackOrder: clip.stackOrder,
                                         cropXFrac: clip.effectiveCropXFrac,
-                                        freeCrops: clip.freeCrops))
+                                        freeCrops: clip.freeCrops,
+                                        speed: clip.speed))
         }
 
         // Captions ride the composite's filter graph — no second encode pass.
         var captions: [CaptionOverlay] = []
         for clip in segment.clips {
             guard let captionPosition = clip.captionsPosition, let videoID = clip.videoID else { continue }
-            let clipOffset = segment.start - clip.startTime
+            let clipOffset = (segment.start - clip.startTime) * clip.speed
             let sourceStart = clip.sourceStart + clipOffset
-            let sourceEnd = sourceStart + segment.duration
+            let sourceEnd = sourceStart + segment.duration * clip.speed
             let rows = (try? await database.transcriptSegments(videoID: videoID,
                                                                start: sourceStart, end: sourceEnd)) ?? []
             for row in rows {
-                // Shift to segment-local time and clamp to the window,
-                // like db.py get_transcript_for_clip().
-                let start = max(0, row.start - sourceStart)
-                let end = min(segment.duration, row.end - sourceStart)
+                // Shift to segment-local SCREEN time (slow motion stretches
+                // it) and clamp to the window, like get_transcript_for_clip.
+                let start = max(0, (row.start - sourceStart) / clip.speed)
+                let end = min(segment.duration, (row.end - sourceStart) / clip.speed)
                 guard end > start else { continue }
                 let text = row.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { continue }
@@ -461,9 +469,13 @@ actor MultitrackRenderer {
 
         for (index, placement) in ordered.enumerated() {
             let sourceIndex = index + 2
+            // Slow motion stretches this clip's timestamps inside the
+            // segment; the audio atempo below matches.
+            let pts = placement.speed == 1 ? "setpts=PTS-STARTPTS"
+                : String(format: "setpts=(PTS-STARTPTS)/%.4f", placement.speed)
             if let crops = Self.normalizedFreeCrops(placement.freeCrops), !crops.isEmpty {
                 let splitOuts = (0..<crops.count).map { "[s\(index)_\($0)]" }.joined()
-                filters.append("[\(sourceIndex):v]setpts=PTS-STARTPTS,setsar=1,fps=30," +
+                filters.append("[\(sourceIndex):v]\(pts),setsar=1,fps=30," +
                                "split=\(crops.count)\(splitOuts)")
                 var outs: [(label: String, x: Int, y: Int, z: Int)] = []
                 for (cropIndex, crop) in crops.enumerated() {
@@ -484,20 +496,20 @@ actor MultitrackRenderer {
             let wideCropped = placement.isWide && placement.cropXFrac != nil
             if wideCropped {
                 let fraction = max(0, min(1, placement.cropXFrac ?? 0.5))
-                filters.append(String(format: "[%d:v]setpts=PTS-STARTPTS," +
+                filters.append(String(format: "[%d:v]%@," +
                                       "crop=ih*9/16:ih:(iw-ih*9/16)*%.4f:0," +
                                       "scale=%d:%d:force_original_aspect_ratio=decrease," +
                                       "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black," +
                                       "setsar=1,fps=30[v%d]",
-                                      sourceIndex, fraction, Self.width, Self.height,
+                                      sourceIndex, pts, fraction, Self.width, Self.height,
                                       Self.width, Self.height, index))
             } else {
                 let targetHeight = placement.isWide ? Self.slotHeight : Self.height
-                filters.append(String(format: "[%d:v]setpts=PTS-STARTPTS," +
+                filters.append(String(format: "[%d:v]%@," +
                                       "scale=%d:%d:force_original_aspect_ratio=decrease," +
                                       "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black," +
                                       "setsar=1,fps=30[v%d]",
-                                      sourceIndex, Self.width, targetHeight,
+                                      sourceIndex, pts, Self.width, targetHeight,
                                       Self.width, targetHeight, index))
             }
         }
@@ -537,7 +549,9 @@ actor MultitrackRenderer {
         for (index, placement) in ordered.enumerated() {
             guard !placement.muted else { continue }
             guard await FFmpeg.hasAudioStream(URL(fileURLWithPath: placement.sourcePath)) else { continue }
-            filters.append("[\(index + 2):a]asetpts=PTS-STARTPTS[a\(index)]")
+            let tempo = placement.speed == 1 ? ""
+                : String(format: "atempo=%.4f,", min(2, max(0.5, placement.speed)))
+            filters.append("[\(index + 2):a]\(tempo)asetpts=PTS-STARTPTS[a\(index)]")
             audioLabels.append("[a\(index)]")
         }
         let audioSource: String

@@ -1607,7 +1607,8 @@ final class AppStore {
     }
 
     /// Download (if needed) and AI-analyze one reel into a cached template.
-    func analyzeInstagramTemplate(media: IGMediaRecord, force: Bool = false) {
+    func analyzeInstagramTemplate(media: IGMediaRecord, force: Bool = false,
+                                  provider: String? = nil, model: String? = nil) {
         guard let database,
               let account = igAccounts.first(where: { $0.id == media.accountID }),
               !igAnalyzingMediaIDs.contains(media.id) else { return }
@@ -1618,7 +1619,8 @@ final class AppStore {
             do {
                 try await instagram.analyzeTemplate(media: media, account: account,
                                                     database: database, settings: settings,
-                                                    force: force) { message in
+                                                    force: force,
+                                                    provider: provider, model: model) { message in
                     Task { @MainActor in self.igLog.append(message) }
                 }
                 igTemplatedMediaIDs.insert(media.id)
@@ -1874,40 +1876,54 @@ final class AppStore {
 
     // MARK: - Taste profile
 
-    /// Study an Instagram reel as a taste exemplar: download it if needed,
-    /// distill what makes its moments good, and merge the result into the
-    /// active profile's taste rubric.
-    func studyTasteExemplar(media: IGMediaRecord) {
-        guard let database,
-              let account = igAccounts.first(where: { $0.id == media.accountID }),
-              !isStudyingTaste else { return }
+    /// Study an Instagram reel as a taste exemplar (routes through the
+    /// batch learner so single and multi selections behave identically).
+    func studyTasteExemplar(media: IGMediaRecord, provider: String? = nil, model: String? = nil) {
+        learnFromReels([media], provider: provider, model: model)
+    }
+
+    /// Which category a reel's taste study landed in, if it was studied.
+    func tasteStudyCategory(mediaID: Int64) async -> String? {
+        guard let database else { return nil }
+        return ((try? await database.tasteStudies()) ?? [:])[mediaID]
+    }
+
+    /// Batch-learn from reels: each is downloaded if needed, classified
+    /// into a video-type category (with its engagement stats as weighting
+    /// context), and merged into that category's rubric and exemplars.
+    /// Sequential; a failed reel is skipped, not fatal.
+    func learnFromReels(_ media: [IGMediaRecord], provider: String? = nil, model: String? = nil) {
+        guard let database, !isStudyingTaste, !media.isEmpty else { return }
         isStudyingTaste = true
         let settings = settings.instagram
         let instagram = instagram
-        let analyzer = analyzer
-        let profile = activeProfile
         Task {
             defer { isStudyingTaste = false }
-            do {
-                let video = try await instagram.ensureDownloaded(
-                    media: media, account: account,
-                    database: database, settings: settings) { message in
-                    Task { @MainActor in self.igLog.append(message) }
+            for (index, item) in media.enumerated() {
+                guard let account = igAccounts.first(where: { $0.id == item.accountID }) else { continue }
+                if media.count > 1 {
+                    igLog.append("Learning from reel \(index + 1)/\(media.count)…")
                 }
-                // Pick up the local_video_path the download may have written.
-                try? await reloadIGMedia()
-                let result = try await analyzer.distillTasteRubric(
-                    video: video, label: "@\(account.username) reel",
-                    existingRubric: profile.tasteRubric,
-                    domain: profile.effectiveDomain) { message in
-                    Task { @MainActor in self.igLog.append(message) }
+                do {
+                    let video = try await instagram.ensureDownloaded(
+                        media: item, account: account,
+                        database: database, settings: settings) { message in
+                        Task { @MainActor in self.igLog.append(message) }
+                    }
+                    let label = try await runTasteStudy(
+                        video: video, label: "@\(account.username) reel",
+                        performance: Self.performanceLine(item),
+                        mediaID: item.id,
+                        provider: provider, model: model) { message in
+                        Task { @MainActor in self.igLog.append(message) }
+                    }
+                    igLog.append("Learned into “\(label)”")
+                } catch {
+                    igLog.append("Skipped a reel — \(error.userMessage)")
                 }
-                applyTasteRubric(result.rubric, exemplarFrames: result.exemplarFrames,
-                                 from: profile)
-                igLog.append("Taste rubric updated — review it in Settings → Profile")
-            } catch {
-                presentError("Could not study the reel as a taste exemplar", error)
             }
+            try? await reloadIGMedia()
+            igLog.append("Taste learning finished — review the video types in Settings → Profile")
         }
     }
 
@@ -1915,48 +1931,100 @@ final class AppStore {
     func studyTasteExemplar(url: URL) {
         guard !isStudyingTaste else { return }
         isStudyingTaste = true
-        let analyzer = analyzer
-        let profile = activeProfile
         Task {
             defer { isStudyingTaste = false }
             do {
-                let result = try await analyzer.distillTasteRubric(
-                    video: url, label: url.lastPathComponent,
-                    existingRubric: profile.tasteRubric,
-                    domain: profile.effectiveDomain) { message in
+                _ = try await runTasteStudy(video: url, label: url.lastPathComponent,
+                                            performance: "", mediaID: nil) { message in
                     Task { @MainActor in self.analysisLog.append(message) }
                 }
-                applyTasteRubric(result.rubric, exemplarFrames: result.exemplarFrames,
-                                 from: profile)
             } catch {
                 presentError("Could not study the sample video", error)
             }
         }
     }
 
+    /// Media ids that already taught the taste profile — for the grid badge.
+    func tasteStudiedMediaIDs() async -> Set<Int64> {
+        guard let database else { return [] }
+        return Set(((try? await database.tasteStudies()) ?? [:]).keys)
+    }
+
+    /// "1.2M views, 40K likes" — engagement context the study weights by.
+    private static func performanceLine(_ media: IGMediaRecord) -> String {
+        var parts: [String] = []
+        if let views = media.stats.views { parts.append("\(views.formatted()) views") }
+        if let likes = media.stats.likes { parts.append("\(likes.formatted()) likes") }
+        if let comments = media.stats.comments { parts.append("\(comments.formatted()) comments") }
+        return parts.joined(separator: ", ")
+    }
+
+    /// One study: classify → distill → merge into the category. Returns the
+    /// category label for logging.
+    @discardableResult
+    private func runTasteStudy(video url: URL, label: String, performance: String,
+                               mediaID: Int64?,
+                               provider: String? = nil, model: String? = nil,
+                               log: @escaping @Sendable (String) -> Void) async throws -> String {
+        let profile = activeProfile
+        let result = try await analyzer.distillTasteRubric(
+            video: url, label: label,
+            existingRubric: profile.tasteRubric,
+            categories: profile.tasteCategories,
+            performance: performance,
+            domain: profile.effectiveDomain,
+            provider: provider, model: model, log: log)
+        applyTasteStudy(result, from: profile)
+        if let mediaID, let database {
+            try? await database.recordTasteStudy(mediaID: mediaID,
+                                                 categoryKey: result.categoryKey)
+        }
+        return result.categoryLabel
+    }
+
     /// The study runs against a snapshot — only apply its result if the
-    /// user hasn't switched profiles meanwhile. New exemplar frames are
-    /// written to the profile's taste folder; the library keeps the newest
-    /// eight so prompts stay lean.
-    private func applyTasteRubric(_ rubric: String,
-                                  exemplarFrames: [(time: Double, jpeg: Data)],
-                                  from profile: BrandProfile) {
+    /// user hasn't switched profiles meanwhile. Learnings land on the
+    /// classified category; each category keeps its newest 8 exemplar
+    /// frames so prompts stay lean.
+    private func applyTasteStudy(_ result: (categoryKey: String, categoryLabel: String,
+                                            rubric: String,
+                                            exemplarFrames: [(time: Double, jpeg: Data)]),
+                                 from profile: BrandProfile) {
         guard activeProfile.profileName == profile.profileName else { return }
-        activeProfile.tasteRubric = rubric
-        if !exemplarFrames.isEmpty {
+        var category = activeProfile.tasteCategories.first { $0.key == result.categoryKey }
+            ?? TasteCategory(key: result.categoryKey, label: result.categoryLabel)
+        category.rubric = result.rubric
+        category.studiedCount += 1
+        if !result.exemplarFrames.isEmpty {
             let directory = SettingsStore.tasteFramesDirectory(profileName: profile.profileName)
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let stamp = Int(Date().timeIntervalSince1970)
-            for (index, frame) in exemplarFrames.enumerated() {
-                let url = directory.appendingPathComponent("exemplar-\(stamp)-\(index).jpg")
+            for (index, frame) in result.exemplarFrames.enumerated() {
+                let url = directory
+                    .appendingPathComponent("exemplar-\(result.categoryKey)-\(stamp)-\(index).jpg")
                 guard (try? frame.jpeg.write(to: url)) != nil else { continue }
-                activeProfile.tasteExemplarFrames.append(url.path)
+                category.exemplarFrames.append(url.path)
             }
-            while activeProfile.tasteExemplarFrames.count > 8 {
-                let oldest = activeProfile.tasteExemplarFrames.removeFirst()
+            while category.exemplarFrames.count > 8 {
+                let oldest = category.exemplarFrames.removeFirst()
                 try? FileManager.default.removeItem(atPath: oldest)
             }
         }
+        if let index = activeProfile.tasteCategories.firstIndex(where: { $0.key == category.key }) {
+            activeProfile.tasteCategories[index] = category
+        } else {
+            activeProfile.tasteCategories.append(category)
+        }
+        saveActiveProfile()
+    }
+
+    /// Delete a learned video type and its exemplar frame files.
+    func removeTasteCategory(key: String) {
+        guard let index = activeProfile.tasteCategories.firstIndex(where: { $0.key == key }) else { return }
+        for path in activeProfile.tasteCategories[index].exemplarFrames {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        activeProfile.tasteCategories.remove(at: index)
         saveActiveProfile()
     }
 

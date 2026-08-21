@@ -4,12 +4,16 @@ nonisolated enum AIError: Error, CustomStringConvertible {
     case notConfigured(String)
     case quotaExhausted(String)
     case emptyResponse(String)
+    /// The request exceeded the model's input limit — callers can retry
+    /// with fewer frames instead of failing the run.
+    case promptTooLong(String)
 
     var description: String {
         switch self {
         case .notConfigured(let message): return message
         case .quotaExhausted(let message): return "Quota exhausted: \(message)"
         case .emptyResponse(let provider): return "\(provider) returned an empty response"
+        case .promptTooLong(let provider): return "\(provider): the prompt is too long for the model"
         }
     }
 }
@@ -44,6 +48,16 @@ actor AIService {
     private static func isQuotaError(_ text: String) -> Bool {
         let lowered = text.lowercased()
         return quotaMarkers.contains { lowered.contains($0) }
+    }
+
+    /// The provider rejected the request as exceeding its input limit —
+    /// retrying verbatim can never succeed; callers thin the frames instead.
+    private static func isPromptTooLong(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        return lowered.contains("prompt is too long") || lowered.contains("prompt too long")
+            || lowered.contains("context length") || lowered.contains("too many tokens")
+            || lowered.contains("request too large") || lowered.contains("input is too long")
+            || lowered.contains("exceeds the maximum")
     }
 
     // MARK: - Resolution
@@ -125,6 +139,7 @@ actor AIService {
     func call(prompt: String,
               task: String,
               frames: [AIFrame]? = nil,
+              video: URL? = nil,
               model: String? = nil,
               provider providerOverride: String? = nil,
               timeout: TimeInterval = 300,
@@ -143,6 +158,7 @@ actor AIService {
                 "No AI provider available for \(AICatalog.taskLabels[task] ?? task). Install the claude, gemini, or codex CLI, or check Settings → AI.")
         }
         var lastError: Error?
+        var tooLongError: Error?
         for (index, candidate) in candidates.enumerated() {
             if index > 0 {
                 let label = AICatalog.provider(candidate.provider)?.label ?? candidate.provider
@@ -150,19 +166,23 @@ actor AIService {
             }
             do {
                 return try await callProvider(key: candidate.provider, model: candidate.model,
-                                              prompt: prompt, frames: frames,
+                                              prompt: prompt, frames: frames, video: video,
                                               timeout: timeout, emit: emit)
             } catch let error as AIError {
                 lastError = error
+                if case .promptTooLong = error { tooLongError = error }
                 let label = AICatalog.provider(candidate.provider)?.label ?? candidate.provider
                 emit("\(label) failed: \(error)")
             }
         }
-        throw lastError ?? AIError.emptyResponse("AI dispatch")
+        // When ANY candidate choked on prompt size, surface that — the
+        // caller can shrink the request and retry, which no amount of
+        // provider fallback can do.
+        throw tooLongError ?? lastError ?? AIError.emptyResponse("AI dispatch")
     }
 
     private func callProvider(key: String, model: String?, prompt: String,
-                              frames: [AIFrame]?, timeout: TimeInterval,
+                              frames: [AIFrame]?, video: URL? = nil, timeout: TimeInterval,
                               emit: @escaping @Sendable (String) -> Void) async throws -> String {
         guard let provider = AICatalog.provider(key) else {
             throw AIError.notConfigured("Unknown AI provider: \(key)")
@@ -182,8 +202,13 @@ actor AIService {
             return try await callClaude(binary: binary, prompt: prompt, frames: effectiveFrames,
                                         model: model, timeout: timeout, log: emit)
         case "gemini":
+            // Gemini is video-native: hand it the actual file (motion,
+            // impact, audio) instead of sampled stills when one is offered.
+            if video != nil {
+                emit("Gemini: analyzing the video file natively")
+            }
             return try await callGemini(binary: binary, prompt: prompt, frames: effectiveFrames,
-                                        model: model, timeout: timeout, log: emit)
+                                        video: video, model: model, timeout: timeout, log: emit)
         case "codex":
             return try await callCodex(binary: binary, prompt: prompt,
                                        model: model, timeout: timeout, log: emit)
@@ -250,6 +275,9 @@ actor AIService {
                 if Self.isQuotaError(errorMessage) {
                     throw AIError.quotaExhausted(String(errorMessage.prefix(200)))
                 }
+                if Self.isPromptTooLong(errorMessage) {
+                    throw AIError.promptTooLong("Claude")
+                }
                 let lowered = errorMessage.lowercased()
                 if lowered.contains("auth") || lowered.contains("login") || lowered.contains("api key") {
                     throw AIError.notConfigured("Claude CLI not authenticated. Run 'claude' in Terminal to sign in.")
@@ -294,6 +322,9 @@ actor AIService {
                 if Self.isQuotaError(cliError) {
                     throw AIError.quotaExhausted(String(cliError.prefix(200)))
                 }
+                if Self.isPromptTooLong(cliError) {
+                    throw AIError.promptTooLong("Claude")
+                }
                 let lowered = cliError.lowercased()
                 if lowered.contains("not logged in") || lowered.contains("login")
                     || lowered.contains("auth") || lowered.contains("api key") {
@@ -319,6 +350,7 @@ actor AIService {
     // MARK: - Gemini
 
     private func callGemini(binary: URL, prompt: String, frames: [AIFrame]?,
+                            video: URL? = nil,
                             model: String?, timeout: TimeInterval,
                             log: @Sendable (String) -> Void) async throws -> String {
         var arguments: [String] = []
@@ -326,7 +358,13 @@ actor AIService {
 
         var temporaryDirectory: URL?
         var fullPrompt = prompt
-        if let frames, !frames.isEmpty {
+        if let video {
+            // The real video beats sampled stills: motion, impacts, and the
+            // audio track all inform the analysis. Frames are skipped.
+            fullPrompt = "[Video file — watch it directly] @\(video.path)\n"
+                + "(The complete video is attached; timestamps in the instructions refer to video time.)\n\n"
+                + prompt
+        } else if let frames, !frames.isEmpty {
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("cb_gemini_\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -350,6 +388,7 @@ actor AIService {
         if result.exitCode != 0 {
             let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
             if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
+            if Self.isPromptTooLong(error) { throw AIError.promptTooLong("Gemini") }
             let lowered = error.lowercased()
             if lowered.contains("auth") || lowered.contains("login") || lowered.contains("api key") {
                 throw AIError.notConfigured("Gemini CLI not authenticated. Run 'gemini auth' in Terminal.")

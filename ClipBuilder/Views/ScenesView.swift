@@ -16,6 +16,9 @@ struct ScenesView: View {
     @State private var infoRun: AnalysisRun?
     @State private var showGenerateSheet = false
     @State private var curatingScene: SceneRecord?
+    @State private var sortByScore = false
+    @State private var minScore = 0.0
+    @State private var showSequenceParts = false
 
     /// Sentinel tag for the "All Batches" row — Set-based selection can't
     /// hold a nil the way the old single-selection did.
@@ -41,16 +44,30 @@ struct ScenesView: View {
     private var filteredScenes: [SceneRecord] {
         let needle = searchText.lowercased()
         let runFilter = runFilter
-        return store.scenes.filter { scene in
+        var result = store.scenes.filter { scene in
             if let runFilter, !(scene.runID.map(runFilter.contains) ?? false) { return false }
             if !showHidden && scene.excluded { return false }
             if let tagFilter, !scene.tags.contains(tagFilter) { return false }
+            if minScore > 0, (scene.score ?? -1) < minScore { return false }
             if !needle.isEmpty {
                 let haystack = (scene.videoFilename + " " + scene.tags.joined(separator: " ")).lowercased()
                 if !haystack.contains(needle) { return false }
             }
             return true
         }
+        // Broken-down sequences show as ONE card by default — their action
+        // beats collapse under the parent unless explicitly shown.
+        if !showSequenceParts {
+            let visibleIDs = Set(result.map(\.id))
+            result = result.filter { scene in
+                guard let parent = scene.parentSceneID else { return true }
+                return !visibleIDs.contains(parent)
+            }
+        }
+        if sortByScore {
+            result.sort { ($0.score ?? -1) > ($1.score ?? -1) }
+        }
+        return result
     }
 
     private var allTags: [String] {
@@ -106,6 +123,28 @@ struct ScenesView: View {
                     }
                 }
                 .pickerStyle(.menu)
+            }
+            ToolbarItem {
+                Picker("Order", selection: $sortByScore) {
+                    Label("By time", systemImage: "clock").tag(false)
+                    Label("Top scored", systemImage: "star").tag(true)
+                }
+                .pickerStyle(.menu)
+                .help("Order the grid by source order or by entertainment score")
+            }
+            ToolbarItem {
+                Picker("Score", selection: $minScore) {
+                    Text("All scores").tag(0.0)
+                    Text("Score ≥ 5").tag(5.0)
+                    Text("Score ≥ 7").tag(7.0)
+                }
+                .pickerStyle(.menu)
+                .help("Only show scenes at or above an entertainment score")
+            }
+            ToolbarItem {
+                Toggle("Sequence Actions", systemImage: "list.bullet.indent",
+                       isOn: $showSequenceParts)
+                    .help("Show the individual actions inside broken-down sequences — hidden by default, the sequence card stands for them")
             }
             ToolbarItem {
                 Toggle("Show Hidden", systemImage: "eye.slash", isOn: $showHidden)
@@ -365,6 +404,11 @@ struct SceneCard: View {
     /// Opens the Curate workbench modal (framing + trim → save as curated).
     var onCurate: (() -> Void)?
 
+    /// Actions broken out of this scene (it's a sequence when > 0).
+    private var childCount: Int {
+        store.scenes.count(where: { $0.parentSceneID == scene.id })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             SceneInlinePlayer(scene: scene)
@@ -378,15 +422,52 @@ struct SceneCard: View {
                         .padding(6)
                         .allowsHitTesting(false)
                 }
-                .overlay(alignment: .topTrailing) {
-                    if scene.wide {
-                        Text("WIDE")
-                            .font(.caption2.bold())
-                            .padding(3)
-                            .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
-                            .foregroundStyle(.white)
+                .overlay(alignment: .topLeading) {
+                    if let score = scene.score {
+                        Text(String(format: "%.1f", score))
+                            .font(.caption2.bold().monospacedDigit())
+                            .padding(4)
+                            .background(score >= 7.5 ? .green.opacity(0.85)
+                                        : score >= 5 ? .yellow.opacity(0.85)
+                                        : .gray.opacity(0.7),
+                                        in: RoundedRectangle(cornerRadius: 4))
+                            .foregroundStyle(.black)
                             .padding(6)
                             .allowsHitTesting(false)
+                            .help(scene.narrative ?? "Entertainment score")
+                    }
+                }
+                .overlay(alignment: .topTrailing) {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        if scene.wide {
+                            Text("WIDE")
+                                .font(.caption2.bold())
+                                .padding(3)
+                                .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
+                                .foregroundStyle(.white)
+                        }
+                        if childCount > 0 {
+                            Text("SEQ · \(childCount)")
+                                .font(.caption2.bold())
+                                .padding(3)
+                                .background(.purple.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
+                                .foregroundStyle(.white)
+                                .help("A sequence broken into \(childCount) action scene(s) — show them with the Sequence Actions toolbar toggle")
+                        }
+                    }
+                    .padding(6)
+                    .allowsHitTesting(false)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if (scene.excitement ?? 0) >= 0.35 {
+                        Image(systemName: "speaker.wave.3.fill")
+                            .font(.caption2)
+                            .padding(4)
+                            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
+                            .foregroundStyle(.orange)
+                            .padding(6)
+                            .allowsHitTesting(false)
+                            .help("The crowd reacted here — audio excitement boosted this scene's score")
                     }
                 }
                 .opacity(scene.excluded ? 0.4 : 1)
@@ -396,8 +477,22 @@ struct SceneCard: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
+            if scene.parentSceneID != nil {
+                Text("↳ part of a sequence")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
             if !scene.tags.isEmpty {
                 SceneTagLine(tags: scene.tags)
+            }
+
+            if let narrative = scene.narrative {
+                Text(narrative)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .help(narrative)
             }
 
             HStack(spacing: 8) {

@@ -85,6 +85,7 @@ actor RenderEngine {
                      contentBox: ContentBox? = nil,
                      overlays: [ClipOverlay] = [],
                      mute: Bool = false,
+                     speed: Double = 1,
                      output: URL) async throws {
         let hasAudio = mute ? false : await FFmpeg.hasAudioStream(source)
         var arguments = ["-y", "-ss", String(format: "%.2f", start), "-i", source.path]
@@ -109,6 +110,12 @@ actor RenderEngine {
             filters.append(String(format: "[0:v]crop=iw*%.4f:ih*%.4f:iw*%.4f:ih*%.4f[content]",
                                   box.w, box.h, box.x, box.y))
             sourceStream = "[content]"
+        }
+        // Slow motion (replay/payoff moments): stretch video timestamps;
+        // the matching audio tempo change rides on the -af below.
+        if speed != 1 {
+            filters.append(String(format: "%@setpts=PTS/%.4f[speed]", sourceStream, speed))
+            sourceStream = "[speed]"
         }
         switch wide {
         case .none:
@@ -165,8 +172,11 @@ actor RenderEngine {
         }
 
         arguments += ["-filter_complex", filters.joined(separator: ";"),
-                      "-map", "[vout]", "-map", hasAudio ? "0:a" : "1:a",
-                      "-t", String(format: "%.2f", duration)]
+                      "-map", "[vout]", "-map", hasAudio ? "0:a" : "1:a"]
+        if speed != 1, hasAudio {
+            arguments += ["-af", String(format: "atempo=%.4f", min(2, max(0.5, speed)))]
+        }
+        arguments += ["-t", String(format: "%.2f", duration)]
         try await FFmpeg.run(arguments + FFmpeg.encodeArgs + [output.path], timeout: 900)
     }
 

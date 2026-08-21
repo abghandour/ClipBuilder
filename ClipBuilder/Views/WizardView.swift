@@ -21,6 +21,8 @@ struct WizardView: View {
     @AppStorage("wizard.targetDuration") private var targetDuration = 10
     /// Reel recipe: custom / recap / compilation / interview.
     @AppStorage("wizard.formatPreset") private var formatPreset = "custom"
+    /// "" = profile default, "none" = no taste, "cat:<key>" = a learned category.
+    @AppStorage("wizard.tastePreset") private var tastePreset = ""
     @AppStorage("wizard.includeWatermark") private var includeWatermark = true
     @AppStorage("wizard.includeHeadline") private var includeHeadline = true
     @AppStorage("wizard.includeOutro") private var includeOutro = true
@@ -124,6 +126,12 @@ struct WizardView: View {
         .sheet(item: $pendingDispatch) { pending in
             DispatchPlanSheet(operation: pending.operation, onStart: pending.run)
         }
+        // A "Generate Video" request shows as a modal only while it's being
+        // interpreted (or when interpretation failed); a successful parse
+        // seeds the form below and the modal dismisses on its own.
+        .sheet(isPresented: requestModalPresented) {
+            generateRequestModal
+        }
         // Loaded once instead of in the Form: availableMusic() lists a
         // directory synchronously, which doesn't belong in a body pass.
         .task { musicCount = WizardEngine.availableMusic().count }
@@ -160,42 +168,6 @@ struct WizardView: View {
                         .foregroundStyle(.secondary)
                 }
                 .help("The generated reel is planned to this length (3–180s)")
-            }
-
-            if let handoff = store.pendingWizardPrompt {
-                Section("Generate Video Request") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text("“\(handoff.description)”")
-                            Spacer()
-                            Button {
-                                store.pendingWizardPrompt = nil
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Remove the request — the settings it filled in stay editable below")
-                        }
-                        if let status = handoff.statusMessage {
-                            HStack(spacing: 6) {
-                                ProgressView()
-                                    .controlSize(.small)
-                                Text(status)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        } else if handoff.parseFailed {
-                            Text("Couldn't interpret the request with AI — it was placed in AI Instructions as-is.")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        } else if let parsed = handoff.parsed {
-                            Text(parsedSummary(parsed))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
             }
 
             if let handoff = store.pendingWizardTemplate {
@@ -238,13 +210,31 @@ struct WizardView: View {
             }
 
             Section("Format & Branding") {
-                Picker("Format", selection: $formatPreset) {
+                Picker("Video type", selection: $formatPreset) {
                     Text("Custom").tag("custom")
                     Text("Fight recap").tag("recap")
                     Text("Best-of compilation").tag("compilation")
                     Text("Interview clip").tag("interview")
+                    if !store.activeProfile.tasteCategories.isEmpty {
+                        Divider()
+                        ForEach(store.activeProfile.tasteCategories) { category in
+                            Text("\(category.label) — learned from \(category.studiedCount) reel(s)")
+                                .tag("cat:\(category.key)")
+                        }
+                    }
                 }
-                .help("A recipe the planner must follow: recaps build chronologically to the finish with a result headline; compilations open with a typographic title card and label each fight; interview clips keep speech intact with a name plate")
+                .help("What kind of video to build. Built-in recipes the planner must follow, plus video types learned from your Instagram exemplars — a learned type injects its rubric and prefers scenes that matched it during analysis. Teach new types from the Instagram tab's Learn menu.")
+                Picker("Taste", selection: $tastePreset) {
+                    Text("Profile taste (default)").tag("")
+                    Text("None").tag("none")
+                    if !store.activeProfile.tasteCategories.isEmpty {
+                        Divider()
+                        ForEach(store.activeProfile.tasteCategories) { category in
+                            Text(category.label).tag("cat:\(category.key)")
+                        }
+                    }
+                }
+                .help("Which taste steers scene picking for this video: the profile's main taste rubric (Settings → AI → Taste), one of your learned taste categories, or none at all. Picking the same category as the video type doesn't double it up.")
                 Toggle("Watermark (brand logo)", isOn: $includeWatermark)
                     .help("Burns the profile's logo into the top-left corner of every frame — set the logo in Settings → Profile")
                 Toggle("Result headline lower-third", isOn: $includeHeadline)
@@ -517,6 +507,55 @@ struct WizardView: View {
     /// the raw description rides as instructions so nothing is lost. Overlay
     /// choices aren't form fields — runWizard() reads them straight from the
     /// handoff, and the request card shows them.
+    /// Shown while a request is in flight (statusMessage set) or after a
+    /// failed interpretation; closing it mid-flight cancels the request.
+    private var requestModalPresented: Binding<Bool> {
+        Binding(
+            get: {
+                guard let handoff = store.pendingWizardPrompt else { return false }
+                return handoff.statusMessage != nil || handoff.parseFailed
+            },
+            set: { presented in
+                if !presented { store.pendingWizardPrompt = nil }
+            })
+    }
+
+    private var generateRequestModal: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Generate Video Request", systemImage: "wand.and.stars")
+                .font(.headline)
+            Text("“\(store.pendingWizardPrompt?.description ?? "")”")
+            if let status = store.pendingWizardPrompt?.statusMessage {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(status)
+                        .foregroundStyle(.secondary)
+                }
+            } else if store.pendingWizardPrompt?.parseFailed == true {
+                Label("Couldn't interpret the request with AI — it was placed in AI Instructions as-is.",
+                      systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            HStack {
+                Spacer()
+                if store.pendingWizardPrompt?.statusMessage != nil {
+                    Button("Cancel Request", role: .cancel) {
+                        store.pendingWizardPrompt = nil
+                    }
+                    .help("Drop the request — nothing is applied to the form")
+                } else {
+                    Button("OK") { store.pendingWizardPrompt = nil }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
+    }
+
     private func applyPromptHandoff(_ handoff: WizardPromptHandoff) {
         if !handoff.runIDs.isEmpty {
             // Scenes/People hand off the exact batches their displayed
@@ -558,22 +597,6 @@ struct WizardView: View {
             : "Only use footage tagged: \(tags.joined(separator: ", ")). Skip everything else."
     }
 
-    private func parsedSummary(_ parsed: ParsedWizardRequest) -> String {
-        var parts: [String] = []
-        if let duration = parsed.targetDurationSeconds { parts.append("~\(duration)s") }
-        if !parsed.contentTags.isEmpty {
-            parts.append("footage: \(parsed.contentTags.joined(separator: ", "))")
-        }
-        if let template = parsed.overlayTemplate { parts.append("overlay: \(template)") }
-        if let text = parsed.overlayText { parts.append("text: “\(text)”") }
-        if parsed.useMusic == false { parts.append("no music") }
-        if parsed.addCaptions == true { parts.append("captions") }
-        guard !parts.isEmpty else {
-            return "No specific settings detected — the description rides as AI instructions."
-        }
-        return "Applied: " + parts.joined(separator: " · ")
-    }
-
     private func runWizard() {
         var options = WizardOptions()
         options.useMusic = useMusic
@@ -587,6 +610,7 @@ struct WizardView: View {
         options.aiInstructions = aiInstructions
         options.targetDurationSeconds = min(180, max(3, targetDuration))
         options.formatPreset = formatPreset
+        options.tastePreset = tastePreset.isEmpty ? nil : tastePreset
         options.includeWatermark = includeWatermark
         options.includeHeadline = includeHeadline
         options.includeOutro = includeOutro
@@ -681,6 +705,7 @@ private struct WizardLogPanel: View {
                     .toggleStyle(.checkbox)
                     .controlSize(.small)
                     .help("Log the full prompt sent to the AI for every call")
+                LogActions(lines: store.wizardLog) { store.wizardLog = [] }
                 Spacer()
                 if store.isWizardRunning {
                     ProgressView()

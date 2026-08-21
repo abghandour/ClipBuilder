@@ -121,8 +121,19 @@ actor InstagramService {
             // back to the web path, which downloads via the permalink.)
             var item = IGMediaItem(mediaID: media.mediaID)
             item.permalink = media.permalink
-            try await provider(for: account.username, settings: settings)
-                .downloadVideo(item, to: destination, log: log)
+            do {
+                try await provider(for: account.username, settings: settings)
+                    .downloadVideo(item, to: destination, log: log)
+            } catch {
+                // The Graph API returns no media_url for plenty of reels
+                // (licensed audio, restricted media) — but the permalink
+                // still downloads through the web path: direct CDN first,
+                // then yt-dlp.
+                guard !(item.permalink ?? "").isEmpty else { throw error }
+                log("Graph download failed (\(error.userMessage)) — retrying via the permalink")
+                try await InstagramWebProvider(settings: settings)
+                    .downloadVideo(item, to: destination, log: log)
+            }
         } else {
             // Web rows carry shortcodes the Graph API can't resolve directly.
             // For the connected account, match the shortcode by permalink on
@@ -163,6 +174,7 @@ actor InstagramService {
     @discardableResult
     func analyzeTemplate(media: IGMediaRecord, account: IGAccountRecord, database: Database,
                          settings: InstagramSettings, force: Bool = false,
+                         provider: String? = nil, model: String? = nil,
                          log: @escaping @Sendable (String) -> Void) async throws -> ReelTemplate {
         if !force, let cached = try await database.fetchIGTemplate(mediaID: media.id),
            let template = try? JSONDecoder().decode(ReelTemplate.self,
@@ -198,6 +210,7 @@ actor InstagramService {
         log("Analyzing structure (\(frames.count) frames, \(cuts.count) detected cuts)...")
         let prompt = Self.templatePrompt(media: media, duration: duration, cuts: cuts)
         let response = try await ai.call(prompt: prompt, task: "analysis", frames: frames,
+                                         model: model, provider: provider,
                                          timeout: 300, log: log)
         guard let data = AIResponseParser.jsonData(from: response),
               var template = try? JSONDecoder().decode(ReelTemplate.self, from: data) else {

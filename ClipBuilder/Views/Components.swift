@@ -31,6 +31,34 @@ struct ActivityLogView: View {
     }
 }
 
+/// Copy + clear buttons for a log panel header — used beside every
+/// Activity/Wizard log the app shows.
+struct LogActions: View {
+    let lines: [String]
+    let clear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+            }
+            .help("Copy the whole log to the clipboard")
+            Button(role: .destructive) {
+                clear()
+            } label: {
+                Image(systemName: "trash")
+            }
+            .help("Clear the log")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .disabled(lines.isEmpty)
+    }
+}
+
 /// Icon + text label for toolbar bubble buttons. Toolbars render plain Label
 /// buttons icon-only regardless of labelStyle, so this spells the content
 /// out — with breathing room so the text doesn't touch the bubble edges.

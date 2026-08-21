@@ -185,7 +185,8 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
             downloaded = await download(object["media_url"] as? String, to: destination)
         }
         guard downloaded else {
-            throw InstagramError.fetchFailed("Video download failed for \(item.mediaID)")
+            throw InstagramError.fetchFailed(
+                "Video download failed for \(item.mediaID) — the Graph API returned no usable media_url (common for reels with licensed audio)")
         }
         log("Downloaded reel \(item.mediaID) via the Graph API")
     }

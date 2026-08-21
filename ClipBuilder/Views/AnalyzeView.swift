@@ -350,6 +350,7 @@ private struct AnalysisLogPanel: View {
                     .toggleStyle(.checkbox)
                     .controlSize(.small)
                     .help("Log the full prompt sent to the AI for every call")
+                LogActions(lines: store.analysisLog) { store.analysisLog = [] }
                 Spacer()
                 if store.isAnalyzing {
                     Text(store.analysisStage)

@@ -19,6 +19,10 @@ struct InstagramView: View {
     @State private var addingAccount = false
     @State private var newHandle = ""
     @State private var detailMedia: IGMediaRecord?
+    /// Reels ticked for batch taste learning (the Learn toolbar menu).
+    @State private var learnSelection: Set<Int64> = []
+    /// Reels that already taught the taste profile — badge on their cards.
+    @State private var studiedIDs: Set<Int64> = []
 
     private var sortedMedia: [IGMediaRecord] {
         switch sortOrder {
@@ -53,6 +57,25 @@ struct InstagramView: View {
         .sheet(item: $detailMedia) { media in
             InstagramDetailSheet(media: media, account: selectedAccount)
         }
+        .task { studiedIDs = await store.tasteStudiedMediaIDs() }
+        .onChange(of: store.isStudyingTaste) { _, running in
+            if !running {
+                Task { studiedIDs = await store.tasteStudiedMediaIDs() }
+            }
+        }
+    }
+
+    private func learnSelected() {
+        let items = sortedMedia.filter { learnSelection.contains($0.id) }
+        store.learnFromReels(items)
+        learnSelection = []
+    }
+
+    private func learnTopPerformers() {
+        let top = sortedMedia
+            .sorted { ($0.stats.views ?? 0) > ($1.stats.views ?? 0) }
+            .prefix(5)
+        store.learnFromReels(Array(top))
     }
 
     private var subtitle: String {
@@ -104,6 +127,28 @@ struct InstagramView: View {
             }
             .help("Order reels by recency or performance")
         }
+        ToolbarItem {
+            Menu {
+                Button("Learn from Selected (\(learnSelection.count))") { learnSelected() }
+                    .disabled(learnSelection.isEmpty || store.isStudyingTaste)
+                Button("Learn from Top 5 Performers") { learnTopPerformers() }
+                    .disabled(store.isStudyingTaste || sortedMedia.isEmpty)
+                if !learnSelection.isEmpty {
+                    Divider()
+                    Button("Clear Selection") { learnSelection = [] }
+                }
+            } label: {
+                if store.isStudyingTaste {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Learning…")
+                    }
+                } else {
+                    Label("Learn", systemImage: "graduationcap")
+                }
+            }
+            .help("Teach the taste profile from reels: tick reels with the circle on each card, or learn from your top performers automatically. Each reel is classified into a video type (fight highlights, interviews, …) whose rubric it refines.")
+        }
         ToolbarItem(placement: .primaryAction) {
             if store.isFetchingInstagram {
                 Button {
@@ -150,9 +195,41 @@ struct InstagramView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16, alignment: .top)],
                           spacing: 16) {
                     ForEach(sortedMedia) { media in
+                        let selected = learnSelection.contains(media.id)
                         ReelCard(media: media,
                                  analyzed: store.igTemplatedMediaIDs.contains(media.id))
                             .onTapGesture { detailMedia = media }
+                            .overlay(alignment: .topLeading) {
+                                Button {
+                                    if selected {
+                                        learnSelection.remove(media.id)
+                                    } else {
+                                        learnSelection.insert(media.id)
+                                    }
+                                } label: {
+                                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                        .font(.title3)
+                                        .symbolRenderingMode(.palette)
+                                        .foregroundStyle(.white, selected ? Color.accentColor
+                                                                          : Color.black.opacity(0.45))
+                                        .shadow(radius: 2)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(8)
+                                .help("Select for taste learning (Learn menu in the toolbar)")
+                            }
+                            .overlay(alignment: .topTrailing) {
+                                if studiedIDs.contains(media.id) {
+                                    Image(systemName: "graduationcap.fill")
+                                        .font(.caption)
+                                        .padding(5)
+                                        .background(.purple.opacity(0.85), in: Circle())
+                                        .foregroundStyle(.white)
+                                        .padding(8)
+                                        .allowsHitTesting(false)
+                                        .help("This reel has taught the taste profile")
+                                }
+                            }
                     }
                 }
                 .padding()
@@ -302,6 +379,23 @@ private struct InstagramDetailSheet: View {
     let account: IGAccountRecord?
 
     @State private var player: AVPlayer?
+    /// Category key this reel's taste study landed in (nil = never studied).
+    @State private var studiedCategoryKey: String?
+    /// "provider|model" for AI actions in this sheet; "" = automatic.
+    @State private var modelChoice = ""
+    @State private var availableProviders = Set(AICatalog.providers.map(\.key))
+
+    private var modelOverride: (provider: String?, model: String?) {
+        let parts = modelChoice.split(separator: "|", maxSplits: 1)
+        guard parts.count == 2 else { return (nil, nil) }
+        return (String(parts[0]), String(parts[1]))
+    }
+
+    private var studiedCategoryLabel: String? {
+        guard let key = studiedCategoryKey else { return nil }
+        return store.activeProfile.tasteCategories.first { $0.key == key }?.label
+            ?? key.split(separator: "-").map { $0.capitalized }.joined(separator: " ")
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -316,10 +410,6 @@ private struct InstagramDetailSheet: View {
                     }
                 }
                 Spacer()
-                if let permalink = media.permalink, let url = URL(string: permalink) {
-                    Link("Open on Instagram", destination: url)
-                        .font(.caption)
-                }
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
@@ -330,9 +420,25 @@ private struct InstagramDetailSheet: View {
                     if let player {
                         PlayerView(player: player)
                     } else if let url = media.thumbnailURL, let image = NSImage(contentsOf: url) {
+                        // The still is the link: click-through to Instagram.
                         Image(nsImage: image)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
+                            .overlay(alignment: .bottomTrailing) {
+                                Image(systemName: "arrow.up.right.square")
+                                    .font(.title3)
+                                    .padding(6)
+                                    .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 6))
+                                    .foregroundStyle(.white)
+                                    .padding(8)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if let permalink = media.permalink, let url = URL(string: permalink) {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }
+                            .help("Open on Instagram")
                     } else {
                         Rectangle().fill(.quaternary)
                     }
@@ -365,15 +471,61 @@ private struct InstagramDetailSheet: View {
             }
         }
         .onDisappear { player?.pause() }
+        .task {
+            studiedCategoryKey = await store.tasteStudyCategory(mediaID: media.id)
+            var available = Set<String>()
+            for provider in AICatalog.providers {
+                if await store.ai.isProviderAvailable(provider.key) {
+                    available.insert(provider.key)
+                }
+            }
+            availableProviders = available
+        }
+        .onChange(of: store.isStudyingTaste) { _, running in
+            guard !running else { return }
+            Task { studiedCategoryKey = await store.tasteStudyCategory(mediaID: media.id) }
+        }
     }
 
     private var isAnalyzing: Bool { store.igAnalyzingMediaIDs.contains(media.id) }
     private var hasTemplate: Bool { store.igTemplatedMediaIDs.contains(media.id) }
 
+    private var modelOptions: [(tag: String, label: String)] {
+        let chain = AICatalog.recommendedChains["analysis"] ?? []
+        let top = chain.first.map { "\($0.provider)|\($0.model)" }
+        let bestAvailable = chain.first { availableProviders.contains($0.provider) }
+            .map { "\($0.provider)|\($0.model)" }
+        var result: [(tag: String, label: String)] = [("", "Automatic (best available)")]
+        for provider in AICatalog.providers {
+            let installed = availableProviders.contains(provider.key)
+            for model in provider.models {
+                let tag = "\(provider.key)|\(model)"
+                var label = "\(provider.label) — \(model)"
+                if tag == top {
+                    label += "  ★ recommended"
+                } else if tag == bestAvailable, bestAvailable != top {
+                    label += "  ★ best available"
+                }
+                if !installed { label += "  (not installed)" }
+                result.append((tag, label))
+            }
+        }
+        return result
+    }
+
     /// Analyze → template ready → Generate Video.
     @ViewBuilder
     private var templateActions: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !isAnalyzing {
+                Picker("Model", selection: $modelChoice) {
+                    ForEach(modelOptions, id: \.tag) { option in
+                        Text(option.label).tag(option.tag)
+                    }
+                }
+                .controlSize(.small)
+                .help("Model used when analyzing this reel or adding it to the taste profile")
+            }
             if isAnalyzing {
                 HStack(spacing: 6) {
                     ProgressView()
@@ -407,13 +559,17 @@ private struct InstagramDetailSheet: View {
                     .help("Plan a timeline from this template and edit it manually")
                 }
                 Button("Re-analyze") {
-                    store.analyzeInstagramTemplate(media: media, force: true)
+                    store.analyzeInstagramTemplate(media: media, force: true,
+                                                   provider: modelOverride.provider,
+                                                   model: modelOverride.model)
                 }
                 .controlSize(.small)
                 tasteButton
             } else {
                 Button {
-                    store.analyzeInstagramTemplate(media: media)
+                    store.analyzeInstagramTemplate(media: media,
+                                                   provider: modelOverride.provider,
+                                                   model: modelOverride.model)
                 } label: {
                     Label("Analyze", systemImage: "sparkles")
                 }
@@ -430,18 +586,29 @@ private struct InstagramDetailSheet: View {
     /// analysis, so it's offered in both states.
     @ViewBuilder
     private var tasteButton: some View {
-        HStack(spacing: 6) {
-            Button("Add to Taste Profile", systemImage: "star.bubble") {
-                store.studyTasteExemplar(media: media)
+        VStack(alignment: .leading, spacing: 4) {
+            if let label = studiedCategoryLabel {
+                Label("In taste profile · \(label)", systemImage: "graduationcap.fill")
+                    .font(.caption)
+                    .foregroundStyle(.purple)
+                    .help("This reel has already been studied — its lessons live in the \"\(label)\" video type (Settings → Profile)")
             }
-            .disabled(store.isStudyingTaste)
-            .help("Study this reel as an example of the results you want — what makes its moments good is distilled into the profile's taste rubric (Settings → Profile), which then guides every analysis and generation")
-            if store.isStudyingTaste {
-                ProgressView()
-                    .controlSize(.small)
+            HStack(spacing: 6) {
+                Button(studiedCategoryKey == nil ? "Add to Taste Profile" : "Study Again",
+                       systemImage: "star.bubble") {
+                    store.studyTasteExemplar(media: media,
+                                             provider: modelOverride.provider,
+                                             model: modelOverride.model)
+                }
+                .disabled(store.isStudyingTaste)
+                .help("Study this reel as an example of the results you want — what makes its moments good is distilled into the profile's taste rubric (Settings → Profile), which then guides every analysis and generation")
+                if store.isStudyingTaste {
+                    ProgressView()
+                        .controlSize(.small)
+                }
             }
+            .controlSize(.small)
         }
-        .controlSize(.small)
     }
 
     private var statsGrid: some View {
