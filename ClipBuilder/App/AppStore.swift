@@ -1192,6 +1192,67 @@ final class AppStore {
         builderRenderTask?.cancel()
     }
 
+    // MARK: - Curated wizard
+
+    var isCuratedRendering = false
+
+    /// Render a curated-wizard document through the Builder's multitrack
+    /// pipeline, logging into the wizard's Generation Log. The branded outro
+    /// card (a wizard-assemble feature the multitrack renderer doesn't have)
+    /// is pre-rendered here and appended as a plain video clip.
+    func renderCuratedDocument(_ document: TimelineDocument, includeOutro: Bool) {
+        guard let database, !isCuratedRendering else { return }
+        isCuratedRendering = true
+        wizardLog.append("— Curated video: rendering \(document.videoTrack.count) clip(s) —")
+        let profile = activeProfile
+        let renderer = multitrackRenderer
+        let scenes = self.scenes
+        Task {
+            do {
+                var document = document
+                if includeOutro,
+                   profile.logoURL != nil || !(profile.socials["instagram"]?.handle ?? "").isEmpty {
+                    let scratch = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("CuratedOutro-\(UUID().uuidString)", isDirectory: true)
+                    try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+                    if let png = BrandRenderer.outroCard(profile: profile, to: scratch) {
+                        let card = scratch.appendingPathComponent("outro_card.mp4")
+                        try await BrandRenderer.cardClip(png: png, duration: 2.5, output: card)
+                        var clip = TimelineClip()
+                        clip.videoFile = card.path
+                        clip.sourceStart = 0
+                        clip.sourceEnd = 2.5
+                        clip.duration = 2.5
+                        clip.startTime = document.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0
+                        clip.transIn = "fadeblack"
+                        document.videoTrack.append(clip)
+                        wizardLog.append("Branded outro card appended")
+                    }
+                }
+                let camera = UserDefaults.standard.string(forKey: "wizard.centerStageCamera") ?? "balanced"
+                let result = try await renderer.render(document: document, scenes: scenes,
+                                                       profile: profile, database: database,
+                                                       centerStageCamera: camera) { message in
+                    Task { @MainActor in self.wizardLog.append(message) }
+                }
+                wizardLog.append("VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))")
+            } catch is CancellationError {
+                wizardLog.append("Curated render stopped.")
+            } catch {
+                wizardLog.append("Error: \(error.userMessage)")
+                presentError("Curated video render failed", error)
+            }
+            isCuratedRendering = false
+            refreshAll()
+        }
+    }
+
+    /// Load a curated-wizard document into the Builder for detail work.
+    func openCuratedInBuilder(_ document: TimelineDocument) {
+        builder.loadDocument(document)
+        requestedSection = .builder
+    }
+
     /// Load a generated video's saved timeline back into the builder.
     /// Videos rendered before documents were persisted stored a flat legacy
     /// format — those get a best-effort conversion (clips, transitions,

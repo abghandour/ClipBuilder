@@ -18,6 +18,32 @@ actor RenderEngine {
         "coverleft", "coverright", "revealleft", "revealright", "pixelize",
     ]
 
+    /// Action-pack transitions: recipe bridges (TransitionRecipes) plus the
+    /// flash cuts, which are just very short xfades (see `xfadeAliases`).
+    static let actionTransitions: [String] =
+        TransitionRecipes.names + ["flash_white", "flash_black"]
+
+    /// Every name the timeline/planner may carry (hard cut is nil / "cut").
+    static let allTransitions: [String] = actionTransitions + transitions
+
+    /// Action names that resolve to a plain xfade with a fixed short
+    /// duration — 0.12s of fadewhite reads as a flash frame, not a fade.
+    static let xfadeAliases: [String: (name: String, duration: Double)] = [
+        "flash_white": ("fadewhite", 0.12),
+        "flash_black": ("fadeblack", 0.12),
+    ]
+
+    /// Timeline seconds a transition at a gap consumes (its overlap): plain
+    /// xfades consume the configured crossfade duration, flash cuts their
+    /// fixed 0.12s, recipes whatever their bridge eats, hard cuts nothing.
+    /// The wizard's duration math and beat snapping share this.
+    nonisolated static func consumedOverlap(_ name: String?, xfadeDuration: Double) -> Double {
+        guard let name, name != "cut" else { return 0 }
+        if let alias = xfadeAliases[name] { return alias.duration }
+        if TransitionRecipes.isRecipe(name) { return TransitionRecipes.consumedOverlap(for: name) }
+        return xfadeDuration
+    }
+
     private let workDirectory: URL
 
     init() {
@@ -401,18 +427,32 @@ actor RenderEngine {
 
     /// Concatenate normalized clips with per-gap transitions or hard cuts —
     /// the port of video.py concatenate_clips(). Each transitions entry is an
-    /// xfade name or nil (hard cut). Mixed lists group consecutive clips that
-    /// share transitions, xfade within each group, then plain-concat the
-    /// groups. Falls back to the concat demuxer on degenerate durations.
+    /// xfade name, an action recipe name, "cut"/nil (hard cut). Recipe gaps
+    /// are resolved first into trimmed clips + rendered bridge segments; the
+    /// rest groups consecutive xfade-joined clips, xfades within each group,
+    /// then plain-concats the groups. Falls back to the concat demuxer on
+    /// degenerate durations.
     func concatenate(clips: [URL], transitions: [String?], output: URL) async throws {
         guard !clips.isEmpty else { return }
         if clips.count == 1 {
             try FileManager.default.copyItemReplacing(at: clips[0], to: output)
             return
         }
-        var padded = transitions
+        var padded = transitions.map { $0 == "cut" ? nil : $0 }
         while padded.count < clips.count - 1 { padded.append(nil) }
         padded = Array(padded.prefix(clips.count - 1))
+
+        // Recipe gaps produce intermediate files that must live until the
+        // final concat below, so their scratch is cleaned at function exit.
+        var recipeScratch: URL?
+        defer { if let recipeScratch { try? FileManager.default.removeItem(at: recipeScratch) } }
+        var clips = clips
+        if padded.contains(where: { TransitionRecipes.isRecipe($0) }) {
+            let scratch = try makeScratchDirectory()
+            recipeScratch = scratch
+            (clips, padded) = try await resolveRecipeGaps(clips: clips, transitions: padded,
+                                                          scratch: scratch)
+        }
 
         if padded.allSatisfy({ $0 == nil }) {
             try await concatPlain(clips: clips, output: output)
@@ -466,16 +506,143 @@ actor RenderEngine {
         }
     }
 
-    /// xfade every gap in one pass; throws when durations can't support the
-    /// crossfade so callers can fall back to a plain concat.
+    // MARK: - Action recipe bridges
+
+    /// Replace every gap carrying a TransitionRecipes name with three pieces:
+    /// the outgoing clip minus its tail, a rendered bridge segment, and the
+    /// incoming clip minus its head — all hard-cut. Gaps whose clips are too
+    /// short, and bridges that fail to render, degrade to plain hard cuts.
+    private func resolveRecipeGaps(clips: [URL], transitions: [String?], scratch: URL)
+        async throws -> (clips: [URL], transitions: [String?]) {
+        let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
+            await FFmpeg.duration(of: clip)
+        }
+        let sfxEnabled = SettingsStore.loadSettings().transitions.sfxEnabled
+
+        // A clip must keep >= 0.4s of real content after losing its head to
+        // the previous gap's recipe and its tail to the next gap's.
+        let minRemainder = 0.4
+        var headTrim = [Double](repeating: 0, count: clips.count)
+        var tailTrim = [Double](repeating: 0, count: clips.count)
+        var recipe = [String?](repeating: nil, count: transitions.count)
+        for gap in transitions.indices {
+            guard let name = transitions[gap], TransitionRecipes.isRecipe(name) else { continue }
+            let (tail, head) = TransitionRecipes.pieces(for: name)
+            // The incoming clip may still lose its own tail to the NEXT gap's
+            // recipe — that gap's check sees headTrim[gap + 1] and guards it.
+            guard durations[gap] - headTrim[gap] - tail >= minRemainder,
+                  durations[gap + 1] - head >= minRemainder else { continue }
+            recipe[gap] = name
+            tailTrim[gap] = tail
+            headTrim[gap + 1] = head
+        }
+
+        // Render every bridge; a failed bridge reverts its gap to a hard cut.
+        struct Bridge: Sendable { var gap: Int; var url: URL? }
+        let plans: [(gap: Int, name: String)] = recipe.indices.compactMap { gap in
+            recipe[gap].map { (gap, $0) }
+        }
+        let bridges = try await BoundedConcurrency.map(plans, limit: FFmpeg.jobLimit) { _, plan -> Bridge in
+            let (gap, name) = plan
+            let (tail, head) = TransitionRecipes.pieces(for: name)
+            do {
+                var tailPiece: URL?
+                var headPiece: URL?
+                var lastFrame: URL?
+                if tail > 0 {
+                    tailPiece = scratch.appendingPathComponent("tail_\(gap).mp4")
+                    try await Self.trim(clips[gap], from: durations[gap] - tail,
+                                        duration: tail, output: tailPiece!)
+                }
+                if head > 0 {
+                    headPiece = scratch.appendingPathComponent("head_\(gap).mp4")
+                    try await Self.trim(clips[gap + 1], from: 0, duration: head, output: headPiece!)
+                }
+                if name == "knife_slash" {
+                    lastFrame = scratch.appendingPathComponent("last_\(gap).png")
+                    try await FFmpeg.run(["-y", "-ss", String(format: "%.3f", max(0, durations[gap] - 0.05)),
+                                          "-i", clips[gap].path, "-frames:v", "1",
+                                          "-update", "1", lastFrame!.path], timeout: 60)
+                }
+                var sfx: URL?
+                if sfxEnabled, let kind = TransitionSFX.kind(for: name) {
+                    sfx = await TransitionSFX.url(for: kind, in: scratch)
+                }
+                let bridge = scratch.appendingPathComponent("bridge_\(gap).mp4")
+                try await TransitionRecipes.renderBridge(name: name, tailPiece: tailPiece,
+                                                         headPiece: headPiece, lastFrameA: lastFrame,
+                                                         sfx: sfx, output: bridge)
+                return Bridge(gap: gap, url: bridge)
+            } catch {
+                return Bridge(gap: gap, url: nil)
+            }
+        }
+        let bridgeByGap = Dictionary(uniqueKeysWithValues: bridges.map { ($0.gap, $0.url) })
+        for plan in plans where (bridgeByGap[plan.gap] ?? nil) == nil {
+            recipe[plan.gap] = nil
+            tailTrim[plan.gap] = 0
+            headTrim[plan.gap + 1] = 0
+        }
+
+        // Trim the source clips that lost a head and/or tail to a bridge.
+        let headTrims = headTrim
+        let tailTrims = tailTrim
+        let trimmed = try await BoundedConcurrency.map(Array(clips.indices),
+                                                       limit: FFmpeg.jobLimit) { _, index -> URL in
+            guard headTrims[index] > 0 || tailTrims[index] > 0 else { return clips[index] }
+            let remainder = durations[index] - headTrims[index] - tailTrims[index]
+            let url = scratch.appendingPathComponent("trimmed_\(index).mp4")
+            try await Self.trim(clips[index], from: headTrims[index],
+                                duration: remainder, output: url)
+            return url
+        }
+
+        var outClips: [URL] = [trimmed[0]]
+        var outTransitions: [String?] = []
+        for gap in transitions.indices {
+            if recipe[gap] != nil, let bridge = bridgeByGap[gap] ?? nil {
+                outTransitions.append(nil)
+                outClips.append(bridge)
+                outTransitions.append(nil)
+            } else {
+                outTransitions.append(TransitionRecipes.isRecipe(transitions[gap]) ? nil : transitions[gap])
+            }
+            outClips.append(trimmed[gap + 1])
+        }
+        return (outClips, outTransitions)
+    }
+
+    /// Frame-accurate re-encoded sub-clip of a normalized intermediate.
+    private nonisolated static func trim(_ source: URL, from start: Double,
+                                         duration: Double, output: URL) async throws {
+        try await FFmpeg.run(["-y", "-ss", String(format: "%.3f", max(0, start)),
+                              "-i", source.path,
+                              "-t", String(format: "%.3f", duration)]
+                             + FFmpeg.encodeArgs + [output.path], timeout: 300)
+    }
+
+    /// xfade every gap in one pass with per-gap transition durations (flash
+    /// cuts run 0.12s, regular crossfades the configured duration); throws
+    /// when durations can't support the crossfades so callers can fall back
+    /// to a plain concat.
     private func xfadeAll(clips: [URL], transitions: [String], output: URL) async throws {
         let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
             await FFmpeg.duration(of: clip)
         }
-        let requestedXfade = 0.5
-        let actualXfade = min(requestedXfade, (durations.min() ?? 0) * 0.4)
-        guard actualXfade >= 0.1, durations.allSatisfy({ $0 > actualXfade }) else {
-            throw CocoaError(.featureUnsupported)
+        let configured = SettingsStore.loadSettings().transitions.xfadeDuration
+
+        // Resolve each gap to (xfade name, requested duration), then clamp to
+        // what the adjoining clips can afford. Any gap that can't fit even a
+        // minimal crossfade sinks the whole pass to plain concat.
+        var resolved: [(name: String, duration: Double)] = []
+        for index in 0..<(clips.count - 1) {
+            let raw = transitions[safe: index] ?? "fade"
+            let (name, requested) = Self.xfadeAliases[raw]
+                ?? (Self.transitions.contains(raw) ? raw : "fade", configured)
+            let affordable = min(durations[index], durations[index + 1]) * 0.4
+            let actual = min(requested, affordable)
+            guard actual >= 0.05 else { throw CocoaError(.featureUnsupported) }
+            resolved.append((name, actual))
         }
 
         var arguments = ["-y"]
@@ -486,19 +653,20 @@ actor RenderEngine {
         var filterParts: [String] = []
         var previousVideo = "[0:v]"
         var previousAudio = "[0:a]"
-        var offset = durations[0] - actualXfade
+        var offset = durations[0] - resolved[0].duration
         for index in 1..<clips.count {
-            let name = Self.transitions.contains(transitions[safe: index - 1] ?? "fade")
-                ? (transitions[safe: index - 1] ?? "fade") : "fade"
+            let gap = resolved[index - 1]
             let outVideo = index == clips.count - 1 ? "[vout]" : "[v\(index)]"
             let outAudio = index == clips.count - 1 ? "[aout]" : "[a\(index)]"
-            filterParts.append("\(previousVideo)[\(index):v]xfade=transition=\(name):" +
-                               String(format: "duration=%.3f:offset=%.3f", actualXfade, offset) + outVideo)
+            filterParts.append("\(previousVideo)[\(index):v]xfade=transition=\(gap.name):" +
+                               String(format: "duration=%.3f:offset=%.3f", gap.duration, offset) + outVideo)
             filterParts.append("\(previousAudio)[\(index):a]acrossfade=" +
-                               String(format: "d=%.3f", actualXfade) + outAudio)
+                               String(format: "d=%.3f", gap.duration) + outAudio)
             previousVideo = outVideo
             previousAudio = outAudio
-            offset += durations[index] - actualXfade
+            if index < clips.count - 1 {
+                offset += durations[index] - resolved[index].duration
+            }
         }
 
         try await FFmpeg.run(arguments + [

@@ -494,27 +494,32 @@ struct OverlayTemplateEditor: View {
 /// The 9:16 stage. `time == nil` is edit mode: every item is visible,
 /// clickable, and draggable. With a time, items appear inside their windows
 /// with fade/slide/pop enter and exit effects approximated from the renderer.
-private struct OverlayPreviewCanvas: View {
+struct OverlayPreviewCanvas: View {
     @Binding var composition: OverlayComposition
     @Binding var selection: OverlayItemSelection?
     let time: Double?
+    /// Draw the black stage + thirds grid. False when the canvas sits over
+    /// live video (the curated wizard's overlay preview).
+    var backdrop: Bool = true
 
     var body: some View {
         GeometryReader { geo in
             let frame = geo.size
             let total = composition.duration
             ZStack(alignment: .topLeading) {
-                Rectangle().fill(.black)
-                // Faint thirds grid to help placement.
-                Path { path in
-                    for fraction in [1.0 / 3.0, 2.0 / 3.0] {
-                        path.move(to: CGPoint(x: frame.width * fraction, y: 0))
-                        path.addLine(to: CGPoint(x: frame.width * fraction, y: frame.height))
-                        path.move(to: CGPoint(x: 0, y: frame.height * fraction))
-                        path.addLine(to: CGPoint(x: frame.width, y: frame.height * fraction))
+                if backdrop {
+                    Rectangle().fill(.black)
+                    // Faint thirds grid to help placement.
+                    Path { path in
+                        for fraction in [1.0 / 3.0, 2.0 / 3.0] {
+                            path.move(to: CGPoint(x: frame.width * fraction, y: 0))
+                            path.addLine(to: CGPoint(x: frame.width * fraction, y: frame.height))
+                            path.move(to: CGPoint(x: 0, y: frame.height * fraction))
+                            path.addLine(to: CGPoint(x: frame.width, y: frame.height * fraction))
+                        }
                     }
+                    .stroke(.white.opacity(0.08), lineWidth: 1)
                 }
-                .stroke(.white.opacity(0.08), lineWidth: 1)
 
                 ForEach($composition.images) { $item in
                     let end = item.unbounded ? max(total, item.startTime + 0.5) : item.endTime

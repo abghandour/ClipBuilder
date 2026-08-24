@@ -435,6 +435,29 @@ private struct GeneralSettingsTab: View {
                           prompt: Text("Domain-specific names, code-switching notes…"))
             }
 
+            Section("Transitions") {
+                LabeledContent("Crossfade duration") {
+                    HStack {
+                        Slider(value: $store.settings.transitions.xfadeDuration, in: 0.1...1.0, step: 0.05)
+                            .frame(width: 180)
+                        Text(String(format: "%.2fs", store.settings.transitions.xfadeDuration))
+                            .monospacedDigit()
+                            .frame(width: 48, alignment: .trailing)
+                    }
+                }
+                Text("How long crossfade transitions overlap. Action edits feel best at 0.15-0.35s; flash cuts and action transitions (knife slash, zoom punch, whip…) carry their own fixed timings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Transition sound effects", isOn: $store.settings.transitions.sfxEnabled)
+                Text("Mixes a synthesized whoosh, impact, or slash under action transitions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Snap wizard cuts to music beats", isOn: $store.settings.transitions.beatSnap)
+                Text("After the AI plans a reel, each cut is nudged (up to ±0.35s) onto the nearest strong beat of the selected music.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Storage") {
                 HStack {
                     TextField("Data folder", text: $dataFolder,

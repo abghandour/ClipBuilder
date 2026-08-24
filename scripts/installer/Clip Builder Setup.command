@@ -3,7 +3,7 @@
 #
 # Installs everything Clip Builder needs (ffmpeg, ffprobe, yt-dlp) as
 # standalone binaries — no Homebrew and no Xcode Command Line Tools —
-# optionally installs any of the Claude/Gemini/Codex CLIs (each can also be
+# optionally installs any of the Claude/Gemini/Codex/Qwen/Kimi CLIs (each can also be
 # installed later by re-running this setup), offers to log in to each
 # installed provider, and walks the user through creating their first
 # profile.
@@ -152,6 +152,8 @@ AI_PROVIDERS=(
     "claude|claude|Claude Code (Anthropic)"
     "gemini|gemini|Gemini CLI (Google)"
     "codex|codex|Codex CLI (OpenAI)"
+    "qwen|qwen|Qwen Code (Alibaba)"
+    "kimi|kimi|Kimi Code CLI (Moonshot AI)"
 )
 
 # Gemini's CLI only ships as an npm package. Prefer an existing npm; without
@@ -227,6 +229,10 @@ install_provider() {
             finalize_binary "$BIN_DIR/codex" ;;
         gemini)
             install_npm_cli "@google/gemini-cli" "gemini" ;;
+        qwen)
+            install_npm_cli "@qwen-code/qwen-code" "qwen" ;;
+        kimi)
+            install_npm_cli "@moonshot-ai/kimi-code" "kimi" ;;
     esac
 }
 
@@ -283,6 +289,10 @@ is_signed_in() {
             [[ -f "$HOME/.gemini/oauth_creds.json" || -n "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]] ;;
         codex)
             [[ -f "$HOME/.codex/auth.json" ]] ;;
+        qwen)
+            [[ -f "$HOME/.qwen/oauth_creds.json" ]] ;;
+        kimi)
+            [[ -f "$HOME/.kimi-code/credentials.json" || -f "$HOME/.kimi-code/auth.json" ]] ;;
         *)  return 1 ;;
     esac
 }
@@ -313,6 +323,14 @@ for entry in "${INSTALLED_PROVIDERS[@]}"; do
             codex)
                 echo "    Starting Codex login (a browser window may open)..."
                 "$bin" login || true
+                ;;
+            qwen)
+                echo "    Opening Qwen Code — choose a login method, then type /quit to continue."
+                "$bin" || true
+                ;;
+            kimi)
+                echo "    Opening Kimi Code CLI — type /login to sign in, then /exit to continue."
+                "$bin" || true
                 ;;
         esac
         ok "Done with $label (Clip Builder's Settings → AI shows its status)"

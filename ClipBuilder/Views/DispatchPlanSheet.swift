@@ -1605,12 +1605,26 @@ private struct PersonMarkerBox: View {
 /// so a player can follow it. Times ride under the strip and update live.
 struct VideoTrimSlider: View {
     let url: URL
+    /// Seconds of source the strip spans (the window size, not necessarily
+    /// the whole file).
     let duration: Double
     @Binding var start: Double
     @Binding var end: Double
     /// Per-second crowd loudness (dB) — drawn as a sparkline so the loud
     /// moments are findable while trimming. Empty = no sparkline.
     var loudness: [Double] = []
+    /// Absolute source time of the strip's left edge — the strip windows
+    /// [timeOffset, timeOffset + duration]. The start/end bindings stay in
+    /// absolute source seconds. 0 = the strip spans from the file's start.
+    var timeOffset: Double = 0
+    /// Draw a vertical tick every N seconds over the filmstrip (fine-grain
+    /// windows use 0.5s); nil = no ticks.
+    var tickInterval: Double? = nil
+    /// Smallest selectable span in seconds.
+    var minimumSpan: Double = 1.0
+    /// Hide the start/selected/end caption row (when a second strip nearby
+    /// already shows the same numbers).
+    var showsTimes: Bool = true
     var onScrub: ((Double) -> Void)?
 
     /// Selection start + span captured when a middle drag begins.
@@ -1618,7 +1632,6 @@ struct VideoTrimSlider: View {
 
     private static let handleWidth: CGFloat = 14
     private static let stripHeight: CGFloat = 44
-    private static let minimumSpan = 1.0
     private static let thumbnailCount = 8
     /// Gestures measure in this fixed strip space — measuring in the moving
     /// handles' own space feeds the drag back into itself and jitters.
@@ -1632,6 +1645,19 @@ struct VideoTrimSlider: View {
                 let endX = x(for: end, width: width)
                 ZStack(alignment: .topLeading) {
                     filmstrip(width: width)
+                    if let tickInterval, tickInterval > 0, duration > 0 {
+                        Path { path in
+                            var t = tickInterval
+                            while t < duration - 0.01 {
+                                let tickX = width * CGFloat(t / duration)
+                                path.move(to: CGPoint(x: tickX, y: 0))
+                                path.addLine(to: CGPoint(x: tickX, y: Self.stripHeight))
+                                t += tickInterval
+                            }
+                        }
+                        .stroke(.white.opacity(0.35), lineWidth: 1)
+                        .allowsHitTesting(false)
+                    }
                     // Dim what's outside the selection.
                     Rectangle()
                         .fill(.black.opacity(0.55))
@@ -1660,8 +1686,8 @@ struct VideoTrimSlider: View {
                                 moveAnchor = anchor
                                 let shift = duration > 0 && width > 0
                                     ? Double(value.translation.width / width) * duration : 0
-                                let newStart = min(max(0, anchor.start + shift),
-                                                   max(0, duration - anchor.span))
+                                let newStart = min(max(timeOffset, anchor.start + shift),
+                                                   max(timeOffset, timeOffset + duration - anchor.span))
                                 start = newStart
                                 end = newStart + anchor.span
                                 onScrub?(newStart)
@@ -1673,7 +1699,7 @@ struct VideoTrimSlider: View {
                                              coordinateSpace: .named(Self.stripSpace))
                             .onChanged { value in
                                 let t = time(forX: value.location.x, width: width)
-                                start = min(max(0, t), end - Self.minimumSpan)
+                                start = min(max(timeOffset, t), end - minimumSpan)
                                 onScrub?(start)
                             })
                     handle(icon: "chevron.compact.right")
@@ -1682,7 +1708,7 @@ struct VideoTrimSlider: View {
                                              coordinateSpace: .named(Self.stripSpace))
                             .onChanged { value in
                                 let t = time(forX: value.location.x, width: width)
-                                end = max(min(duration, t), start + Self.minimumSpan)
+                                end = max(min(timeOffset + duration, t), start + minimumSpan)
                                 onScrub?(end)
                             })
                 }
@@ -1709,33 +1735,35 @@ struct VideoTrimSlider: View {
                 .frame(height: 12)
                 .help("Crowd loudness — the spikes are where the arena reacted")
             }
-            HStack {
-                Text(start.timecode)
-                Spacer()
-                Text(String(format: "%.1fs selected", max(0, end - start)))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(end.timecode)
+            if showsTimes {
+                HStack {
+                    Text(start.timecode)
+                    Spacer()
+                    Text(String(format: "%.1fs selected", max(0, end - start)))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(end.timecode)
+                }
+                .font(.caption.monospacedDigit())
             }
-            .font(.caption.monospacedDigit())
         }
     }
 
     private func x(for time: Double, width: CGFloat) -> CGFloat {
         guard duration > 0 else { return 0 }
-        return CGFloat(min(max(0, time / duration), 1)) * width
+        return CGFloat(min(max(0, (time - timeOffset) / duration), 1)) * width
     }
 
     private func time(forX x: CGFloat, width: CGFloat) -> Double {
         guard width > 0 else { return 0 }
-        return Double(min(max(0, x / width), 1)) * duration
+        return timeOffset + Double(min(max(0, x / width), 1)) * duration
     }
 
     private func filmstrip(width: CGFloat) -> some View {
         HStack(spacing: 0) {
             ForEach(0..<Self.thumbnailCount, id: \.self) { index in
                 VideoThumbnail(url: url,
-                               time: duration * (Double(index) + 0.5) / Double(Self.thumbnailCount),
+                               time: timeOffset + duration * (Double(index) + 0.5) / Double(Self.thumbnailCount),
                                cornerRadius: 0)
                     .frame(width: width / CGFloat(Self.thumbnailCount),
                            height: Self.stripHeight)

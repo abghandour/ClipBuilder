@@ -104,8 +104,8 @@ nonisolated struct WizardPlanClip: Sendable {
     var overlayAnimation: String?
     var overlayKicker: String?
     var overlayAccent: String?
-    /// Playback speed: 1 = normal, 0.5–0.75 = slow motion. Screen time is
-    /// (end - start) / speed.
+    /// Playback speed: 1 = normal, 0.5–0.75 = slow motion, 1.25–2 =
+    /// speed-up. Screen time is (end - start) / speed.
     var speed: Double = 1
     /// Instantly replay this moment in slow motion right after it plays —
     /// expanded into a second slowed clip during validation.
@@ -604,9 +604,12 @@ actor WizardEngine {
         // the render, so the planned clip total is padded by the expected
         // transition count or the output lands short of what the user asked.
         var durationDirective = ""
+        let xfadeDuration = SettingsStore.loadSettings().transitions.xfadeDuration
         if let requested = options.targetDurationSeconds {
             let expectedClips = max(1, Int((Double(requested) / 60 * Double(cutsPerMinute)).rounded()))
-            let padded = Double(requested) + 0.5 * Double(expectedClips - 1)
+            // Assume roughly half the gaps get an overlapping transition —
+            // hard cuts and most action transitions consume no time.
+            let padded = Double(requested) + xfadeDuration * 0.5 * Double(expectedClips - 1)
             targetDuration = Int(padded.rounded())
             durationMin = max(3, targetDuration - 2)
             durationMax = targetDuration + 2
@@ -614,7 +617,7 @@ actor WizardEngine {
 
 
             ## REQUIRED DURATION (HARD CONSTRAINT)
-            The user requires the FINISHED reel to run ~\(requested)s. Crossfade transitions each consume ~0.5s of overlap in the final render, so you MUST plan more clip time than \(requested)s: total clip duration = \(requested) + 0.5 × (number of clips − 1). At ~\(expectedClips) clips that is ~\(String(format: "%.1f", padded))s of clips. Set "target_duration" to that padded total, never to \(requested).
+            The user requires the FINISHED reel to run ~\(requested)s. Transitions overlap the clips they join: each crossfade consumes ~\(String(format: "%.2f", xfadeDuration))s, whip_left/whip_right ~0.15s, speed_ramp ~0.3s; "cut" and all other action transitions consume ~0s. You MUST plan more clip time than \(requested)s: total clip duration = \(requested) + the summed overlap of the transitions you pick (~\(String(format: "%.1f", padded))s at ~\(expectedClips) clips with a typical mix). Set "target_duration" to that padded total, never to \(requested).
             """
         }
 
@@ -719,7 +722,11 @@ actor WizardEngine {
         let notes = containmentNotes(scenes)
         let sceneList = scenes.map { sceneLine($0, note: notes[$0.id]) }.joined(separator: "\n")
         let musicList = musicNames.isEmpty ? "No music available" : musicNames.joined(separator: ", ")
-        let beatInfo = "Beat detection found no clear beats. Use your judgment for cut timing."
+        let beatInfo = SettingsStore.loadSettings().transitions.beatSnap && !musicNames.isEmpty
+            ? "After planning, every cut boundary is automatically snapped to the nearest strong beat "
+              + "of the selected music (within ±0.35s). Plan clip durations freely in the 1.5-5s range — "
+              + "exact beat alignment is handled for you."
+            : "Beat detection found no clear beats. Use your judgment for cut timing."
 
         // Which taste steers this plan: the profile's main rubric by default,
         // a learned category's rubric when the user picked one, or none.
@@ -768,7 +775,17 @@ actor WizardEngine {
         \(musicList)
 
         ## Available Transitions
-        \(RenderEngine.transitions.joined(separator: ", "))
+        Hard cut: "cut" — the backbone of fast-paced editing; use it for MOST gaps in high-energy content.
+        Action transitions (aggressive accents for combat/sports/high-energy moments):
+        - "knife_slash" — a blade slashes the screen diagonally; the two halves slide apart revealing the next clip underneath
+        - "zoom_punch" — rapid zoom crash into the cut with a flash frame
+        - "whip_left" / "whip_right" — whip-pan motion smear
+        - "impact_shake" — camera shake on the cut; pair with a hit landing
+        - "glitch" — RGB-split digital glitch on the incoming clip
+        - "speed_ramp" — the outgoing clip accelerates into the cut
+        - "flash_white" / "flash_black" — 2-frame flash cut
+        Crossfades (softer, slower): \(RenderEngine.transitions.joined(separator: ", "))
+        GUIDANCE: match transition energy to content energy. For fast-paced action, use "cut" for most gaps and an action transition as an accent at the biggest moments (roughly every 2-4 cuts, varied — e.g. knife_slash or zoom_punch on a knockdown, impact_shake when a hit lands, speed_ramp into a payoff); reserve crossfades for deliberate slowdowns like the moment before a slow-motion replay. For calm content prefer crossfades throughout.
 
         ## Music Beat Analysis
         \(beatInfo)
@@ -811,7 +828,7 @@ actor WizardEngine {
               "start": <start seconds>,
               "end": <end seconds>,
               "wide_split": <true if this WIDE scene should use split-screen>,
-              "speed": <1.0 normal; 0.5-0.75 = slow motion for a big payoff moment — use sparingly, at most 1-2 slowed clips>,
+              "speed": <playback speed: 1.0 normal; 0.5-0.75 = slow motion for a big payoff moment; 1.25-2.0 = speed-up for a slow build-up, walkout, or grappling stretch worth keeping but not at full length. Use sparingly — at most 1-2 slowed and 1-2 sped-up clips, everything else 1.0>,
               "replay": <true to instantly replay this moment in slow motion right after it plays — reserve for the single best payoff (knockdown/finish); at most one replay per reel>,
               "text_overlay": {"text": "<2-6 word ALL-CAPS line>", "style": "<impact|highlight|banner|minimal>", "animation": "<fade|slide_up|pop|word_reveal>", "kicker": "<1-3 word label or null>", "accent": "<#hex accent color or null for default yellow>"} or null,
               "reason": "<why this clip, why this position>"
@@ -929,9 +946,10 @@ actor WizardEngine {
                 overlayText = (clipObject["text_overlay"] as? String)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            // Slow motion: clamp to the renderer's usable atempo band.
+            // Clamp to the renderer's usable atempo band (0.5–2×), snapping
+            // near-normal values to exactly 1.
             var speed = (clipObject["speed"] as? NSNumber)?.doubleValue ?? 1
-            speed = speed >= 0.99 ? 1 : min(0.99, max(0.5, speed))
+            speed = abs(speed - 1) < 0.05 ? 1 : min(2, max(0.5, speed))
             clips.append(WizardPlanClip(sceneID: sceneID,
                                         start: start,
                                         end: end,
@@ -969,11 +987,12 @@ actor WizardEngine {
         clips = expanded
 
         let needed = max(0, clips.count - 1)
+        let validTransitions = Set(RenderEngine.allTransitions + ["cut"])
         var transitions = (raw["transitions"] as? [String] ?? []).map {
-            RenderEngine.transitions.contains($0) ? $0 : "fade"
+            validTransitions.contains($0) ? $0 : "cut"
         }
         if transitions.count > needed { transitions = Array(transitions.prefix(needed)) }
-        while transitions.count < needed { transitions.append("fade") }
+        while transitions.count < needed { transitions.append("cut") }
 
         func cleanLine(_ value: Any?, maxWords: Int) -> String? {
             guard let text = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1156,11 +1175,74 @@ actor WizardEngine {
         let response = try await ai.call(prompt: prompt, task: "wizard",
                                          model: options.modelOverride, timeout: 300, log: emit)
         guard let rawPlan = AIResponseParser.jsonObject(from: response) else {
+            emit("The planner's response was not valid JSON — raw response:")
+            emit("──── response ────\n\(String(response.prefix(2000)))\n──── end response ────")
             return (nil, prompt, response)
         }
-        let plan = validatePlan(rawPlan, scenes: inputs.sceneMap, musicNames: Set(inputs.music.map(\.name)))
+        var plan = validatePlan(rawPlan, scenes: inputs.sceneMap, musicNames: Set(inputs.music.map(\.name)))
             .map { enforcePinnedOverlays($0, options: options) }
+        if plan == nil {
+            emit("The planner returned JSON, but no usable clips survived validation — raw response:")
+            emit("──── response ────\n\(String(response.prefix(2000)))\n──── end response ────")
+            emit("This usually means the constraints can't be met by the available scenes — e.g. instructions that filter by tags none of the selected footage carries.")
+        }
+        if let validated = plan {
+            plan = await snapCutsToBeats(validated, music: inputs.music,
+                                         sceneMap: inputs.sceneMap, emit: emit)
+        }
         return (plan, prompt, response)
+    }
+
+    /// Retime the plan's cut boundaries onto the music's detected onsets:
+    /// each clip's end nudges (±0.35s) so the cut lands exactly on a beat —
+    /// the thing that makes fast-paced edits feel professionally synced.
+    /// Replay pairs keep their source range so the slow-motion echo matches
+    /// the moment it replays.
+    private func snapCutsToBeats(_ plan: WizardPlan, music: [(name: String, url: URL)],
+                                 sceneMap: [Int64: SceneRecord],
+                                 emit: @escaping @Sendable (String) -> Void) async -> WizardPlan {
+        let settings = SettingsStore.loadSettings().transitions
+        guard settings.beatSnap, plan.clips.count > 1,
+              let name = plan.musicName,
+              let track = music.first(where: { $0.name == name }) else { return plan }
+        let beats = await BeatDetector.shared.onsets(in: track.url)
+        guard beats.count >= 4 else {
+            emit("Beat sync: no clear beats detected in \(name) — keeping planned cut times")
+            return plan
+        }
+
+        var plan = plan
+        var cursor = 0.0        // summed screen time of the clips so far
+        var overlapSum = 0.0    // timeline seconds eaten by transition overlaps
+        var snapped = 0
+        let tolerance = 0.35
+        for index in plan.clips.indices.dropLast() {
+            let clip = plan.clips[index]
+            cursor += (clip.end - clip.start) / clip.speed
+            // Where this cut lands in the finished video.
+            let boundary = cursor - overlapSum
+            overlapSum += RenderEngine.consumedOverlap(plan.transitions[safe: index] ?? "cut",
+                                                       xfadeDuration: settings.xfadeDuration)
+            // The slowed echo of a replay pair must keep the source range.
+            let next = plan.clips[index + 1]
+            let isReplayPair = next.sceneID == clip.sceneID
+                && abs(next.start - clip.start) < 0.01 && next.speed < 1
+            guard !isReplayPair else { continue }
+
+            guard let beat = beats.min(by: { abs($0 - boundary) < abs($1 - boundary) }),
+                  abs(beat - boundary) <= tolerance, abs(beat - boundary) > 0.02 else { continue }
+            let delta = beat - boundary
+            let newEnd = clip.end + delta * clip.speed
+            let sceneEnd = sceneMap[clip.sceneID]?.endTime ?? newEnd
+            guard newEnd > clip.start + 0.8, newEnd <= sceneEnd else { continue }
+            plan.clips[index].end = newEnd
+            cursor += delta
+            snapped += 1
+        }
+        if snapped > 0 {
+            emit("Beat sync: snapped \(snapped)/\(plan.clips.count - 1) cut(s) onto \(name)'s beats")
+        }
+        return plan
     }
 
     /// The prompt asks for the user's pinned overlay choices; this guarantees
@@ -1199,7 +1281,7 @@ actor WizardEngine {
         emit("\nPhase 2: Planning the timeline...")
         guard let plan = try await makePlan(inputs: inputs, options: options, profile: profile,
                                             emit: emit).plan else {
-            throw AIError.emptyResponse("wizard planning (unparseable JSON)")
+            throw AIError.unusableResponse("Reel planning failed: the AI did not produce a usable plan — its raw response is in the log above. If your instructions filter footage by tags, check that the selected footage actually carries those tags.")
         }
         emit("Plan: \(plan.clips.count) clips, ~\(Int(plan.targetDuration))s, music: \(plan.musicName ?? "none")")
         emit("Strategy: \(plan.rationale)")
@@ -1225,7 +1307,7 @@ actor WizardEngine {
         let outcome = try await makePlan(inputs: inputs, options: options, profile: profile,
                                          emit: emit)
         guard let plan = outcome.plan else {
-            throw AIError.emptyResponse("wizard planning (unparseable JSON)")
+            throw AIError.unusableResponse("Reel planning failed: the AI did not produce a usable plan — its raw response is in the log above. If your instructions filter footage by tags, check that the selected footage actually carries those tags.")
         }
         emit("Plan: \(plan.clips.count) clips, ~\(Int(plan.targetDuration))s, music: \(plan.musicName ?? "none")")
         emit("Strategy: \(plan.rationale)")
@@ -1482,7 +1564,8 @@ actor WizardEngine {
             timelineClip.cropXFrac = scene.cropXFrac
             let index = document.videoTrack.count
             if index > 0 {
-                timelineClip.transIn = plan.transitions[safe: index - 1] ?? "fade"
+                let name = plan.transitions[safe: index - 1] ?? "cut"
+                timelineClip.transIn = name == "cut" ? nil : name
             }
             document.videoTrack.append(timelineClip)
 

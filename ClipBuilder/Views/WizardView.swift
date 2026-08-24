@@ -35,6 +35,7 @@ struct WizardView: View {
     @State private var musicCount = 0
     @State private var newLessonText = ""
     @State private var showTrainingGuide = false
+    @State private var showCuratedWizard = false
     @State private var pendingDispatch: PendingDispatch?
 
     private var selectedRunIDs: Set<Int64> {
@@ -442,6 +443,16 @@ struct WizardView: View {
                     .disabled(analyzedSceneCount == 0)
                 }
 
+                Button {
+                    showCuratedWizard = true
+                } label: {
+                    Label("Generate Curated Video", systemImage: "checklist")
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.large)
+                .disabled(analyzedSceneCount == 0 || store.isCuratedRendering)
+                .help("Hand-pick the reel yourself: the app proposes scenes one by one (respecting the Source Selection above) — preview, trim, approve, then overlays, music, and outro. No AI planning involved.")
+
                 if analyzedSceneCount == 0 {
                     Text("Analyze some videos first — the wizard picks from analyzed scenes.")
                         .font(.caption)
@@ -450,6 +461,109 @@ struct WizardView: View {
             }
         }
         .formStyle(.grouped)
+        .sheet(isPresented: $showCuratedWizard) {
+            CuratedWizardSheet(scenes: curatedWizardPool,
+                               targetDuration: min(180, max(3, targetDuration)),
+                               includeOutro: includeOutro,
+                               centerStageDefault: centerStageWide,
+                               batchNames: Dictionary(uniqueKeysWithValues:
+                                   store.analysisRuns.map { ($0.id, $0.name) }),
+                               selectedBatchIDs: limitToSelection
+                                   ? store.analysisRuns.map(\.id).filter(selectedRunIDs.contains)
+                                   : [])
+        }
+    }
+
+    /// The scene queue the Curated wizard proposes from: the same pool the
+    /// AI wizard would draw on (curated-only, batch, and people filters from
+    /// Source Selection), walked in video order — each approval/skip moves
+    /// on to the next moment later in the timeline until the footage runs
+    /// out.
+    ///
+    /// Proposals are individual MOMENTS, never whole-video sequences: a
+    /// person filter that matches a sequence pulls in its breakdown beats
+    /// (the beats don't carry person tags themselves), and any sequence
+    /// whose beats are in the pool is dropped in favor of those beats.
+    private var curatedWizardPool: [SceneRecord] {
+        var pool = store.scenes.filter { !$0.excluded && !$0.ignored }
+        if curatedOnly {
+            pool = pool.filter(\.curated)
+        }
+        if limitToSelection, !selectedRunIDs.isEmpty {
+            let runIDs = selectedRunIDs
+            pool = pool.filter { $0.runID.map(runIDs.contains) ?? false }
+        }
+        let personTags = Set(store.people.filter { selectedSourcePeople.contains($0.key) }.map(\.tag))
+        if !personTags.isEmpty {
+            // Person tags often land only on the whole-fight sequence scene,
+            // not on the atomic beats cut from it — a beat sitting inside a
+            // person-matched scene's time range features that person too.
+            let matched = pool.filter { !personTags.isDisjoint(with: $0.tags) }
+            let matchedIDs = Set(matched.map(\.id))
+            pool = pool.filter { scene in
+                if matchedIDs.contains(scene.id) { return true }
+                if scene.parentSceneID.map(matchedIDs.contains) ?? false { return true }
+                return matched.contains { container in
+                    container.videoID == scene.videoID
+                        && scene.startTime >= container.startTime - 0.5
+                        && scene.endTime <= container.endTime + 0.5
+                }
+            }
+        }
+        // Propose atoms, not containers: a scene that wraps other pool scenes
+        // (by time, the same relation containmentNotes feeds the planner) is
+        // a sequence — its beats represent it. The 1s slack keeps two
+        // near-identical detections from knocking each other out.
+        let byVideo = Dictionary(grouping: pool, by: \.videoID)
+        pool = pool.filter { scene in
+            guard let group = byVideo[scene.videoID] else { return true }
+            return !group.contains {
+                $0.id != scene.id
+                    && $0.startTime >= scene.startTime - 0.25
+                    && $0.endTime <= scene.endTime + 0.25
+                    && $0.duration <= scene.duration - 1.0
+            }
+        }
+        // Center Stage on: skip wide moments the analyzer flagged as
+        // portrait-fit:poor — the people are spread out and the tracked crop
+        // WILL cut someone out of frame.
+        if centerStageWide {
+            pool = pool.filter { !($0.wide && $0.tags.contains("portrait-fit:poor")) }
+        }
+        // The scoring model picks the queue: rank by entertainment score
+        // (crowd excitement as fallback, taste-highlight boost) and keep the
+        // strongest until the shortlist comfortably overfills the target.
+        // No signals at all → propose everything rather than picking blind.
+        func rank(_ scene: SceneRecord) -> Double {
+            var value = scene.score ?? scene.excitement.map { $0 * 10 } ?? -1
+            if scene.tags.contains(where: { $0.hasPrefix("highlight") }) { value += 5 }
+            return value
+        }
+        if pool.contains(where: { rank($0) >= 0 }) {
+            // Rank WITHIN each batch — a global cut would let one strong
+            // batch crowd every other selected batch out of the queue.
+            let groups = Dictionary(grouping: pool) { $0.runID ?? -1 }
+            let batchCount = max(1, groups.count)
+            let totalBudget = max(Double(min(180, max(3, targetDuration))) * 4, 60)
+            let perBatchBudget = max(totalBudget / Double(batchCount), 30)
+            let perBatchMinimum = max(12 / batchCount, 6)
+            var shortlist: [SceneRecord] = []
+            for scenes in groups.values {
+                var total = 0.0
+                var kept = 0
+                for scene in scenes.sorted(by: { rank($0) > rank($1) }) {
+                    if total >= perBatchBudget, kept >= perBatchMinimum { break }
+                    shortlist.append(scene)
+                    total += scene.duration
+                    kept += 1
+                }
+            }
+            pool = shortlist
+        }
+        return pool.sorted {
+            if $0.videoID != $1.videoID { return $0.videoID < $1.videoID }
+            return $0.startTime < $1.startTime
+        }
     }
 
     /// One item in the source-people row: avatar with a selection ring and

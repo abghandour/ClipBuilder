@@ -11,6 +11,7 @@ nonisolated struct AppSettings: Codable, Sendable {
     var theme: String = "default"
     var ai: AIConfig = AIConfig()
     var instagram: InstagramSettings = InstagramSettings()
+    var transitions: TransitionSettings = TransitionSettings()
 
     enum CodingKeys: String, CodingKey {
         case analysisMode = "analysis_mode"
@@ -21,6 +22,7 @@ nonisolated struct AppSettings: Codable, Sendable {
         case theme
         case ai
         case instagram
+        case transitions
     }
 
     init() {}
@@ -38,6 +40,36 @@ nonisolated struct AppSettings: Codable, Sendable {
         theme = try container.decodeIfPresent(String.self, forKey: .theme) ?? "default"
         ai = try container.decodeIfPresent(AIConfig.self, forKey: .ai) ?? AIConfig()
         instagram = try container.decodeIfPresent(InstagramSettings.self, forKey: .instagram) ?? InstagramSettings()
+        transitions = try container.decodeIfPresent(TransitionSettings.self, forKey: .transitions)
+            ?? TransitionSettings()
+    }
+}
+
+/// Transition rendering knobs. `xfadeDuration` replaces the render engine's
+/// old hardcoded 0.5s crossfade — action edits live at 0.1-0.3s. Flash cuts
+/// and action recipe bridges carry their own fixed timings.
+nonisolated struct TransitionSettings: Codable, Sendable {
+    /// Seconds a regular crossfade (xfade) overlaps — 0.1 (snappy) to 1.0.
+    var xfadeDuration: Double = 0.35
+    /// Mix synthesized whoosh/impact/slash sounds under action transitions.
+    var sfxEnabled: Bool = true
+    /// Snap wizard cut boundaries to detected music beats after planning.
+    var beatSnap: Bool = true
+
+    enum CodingKeys: String, CodingKey {
+        case xfadeDuration = "xfade_duration"
+        case sfxEnabled = "sfx_enabled"
+        case beatSnap = "beat_snap"
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        xfadeDuration = try container.decodeIfPresent(Double.self, forKey: .xfadeDuration) ?? 0.35
+        xfadeDuration = min(1.0, max(0.1, xfadeDuration))
+        sfxEnabled = try container.decodeIfPresent(Bool.self, forKey: .sfxEnabled) ?? true
+        beatSnap = try container.decodeIfPresent(Bool.self, forKey: .beatSnap) ?? true
     }
 }
 
@@ -154,21 +186,31 @@ nonisolated enum AICatalog {
         "wizard": [("claude", "claude-fable-5"),
                    ("claude", "claude-sonnet-4-6"),
                    ("gemini", "gemini-2.5-pro"),
-                   ("codex", "gpt-5")],
+                   ("codex", "gpt-5"),
+                   ("kimi", "kimi-code/kimi-for-coding"),
+                   ("qwen", "qwen3-coder-plus")],
         "research": [("claude", "claude-sonnet-4-6"),
                      ("gemini", "gemini-2.5-flash"),
-                     ("codex", "gpt-5-mini")],
+                     ("codex", "gpt-5-mini"),
+                     ("qwen", "qwen3-coder-flash"),
+                     ("kimi", "kimi-code/kimi-for-coding")],
         // Structured extraction: fast + cheap is plenty.
         "parse": [("claude", "claude-haiku-4-5-20251001"),
                   ("gemini", "gemini-2.5-flash"),
-                  ("codex", "gpt-5-mini")],
+                  ("codex", "gpt-5-mini"),
+                  ("qwen", "qwen3-coder-flash"),
+                  ("kimi", "kimi-code/kimi-for-coding")],
         "captions": [("claude", "claude-haiku-4-5-20251001"),
                      ("gemini", "gemini-2.5-flash"),
-                     ("codex", "gpt-5-mini")],
+                     ("codex", "gpt-5-mini"),
+                     ("qwen", "qwen3-coder-flash"),
+                     ("kimi", "kimi-code/kimi-for-coding")],
         "distill": [("claude", "claude-fable-5"),
                     ("claude", "claude-sonnet-4-6"),
                     ("gemini", "gemini-2.5-pro"),
-                    ("codex", "gpt-5")],
+                    ("codex", "gpt-5"),
+                    ("kimi", "kimi-code/kimi-for-coding"),
+                    ("qwen", "qwen3-coder-plus")],
         // Reading overlay layout from one image: multimodal, precision over
         // speed — a stronger model gets positions and colors right.
         "overlay": [("claude", "claude-sonnet-4-6"),
@@ -201,6 +243,9 @@ nonisolated enum AICatalog {
         "gpt-5": "GPT-5",
         "o3-mini": "o3-mini",
         "o3": "o3",
+        "qwen3-coder-flash": "Qwen3 Coder Flash",
+        "qwen3-coder-plus": "Qwen3 Coder Plus",
+        "kimi-code/kimi-for-coding": "Kimi for Coding",
     ]
 
     static func modelDisplayName(_ model: String) -> String {
@@ -218,6 +263,12 @@ nonisolated enum AICatalog {
         Provider(key: "codex", label: "Codex CLI", bin: "codex",
                  defaultModel: "gpt-5-mini", supportsImages: false,
                  models: ["gpt-5-nano", "gpt-5-mini", "o3-mini", "gpt-5-codex", "o3", "gpt-5"]),
+        Provider(key: "qwen", label: "Qwen Code", bin: "qwen",
+                 defaultModel: "qwen3-coder-plus", supportsImages: false,
+                 models: ["qwen3-coder-flash", "qwen3-coder-plus"]),
+        Provider(key: "kimi", label: "Kimi Code CLI", bin: "kimi",
+                 defaultModel: "kimi-code/kimi-for-coding", supportsImages: false,
+                 models: ["kimi-code/kimi-for-coding"]),
     ]
 
     static func provider(_ key: String) -> Provider? {

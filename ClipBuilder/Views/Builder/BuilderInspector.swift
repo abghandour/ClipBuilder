@@ -61,8 +61,9 @@ struct BuilderInspector: View {
     }
 }
 
-/// Transition picker choices: hard cut plus every xfade the engine supports.
-private let transitionChoices = ["cut"] + RenderEngine.transitions
+/// Transition picker choices: hard cut, the action pack (recipe bridges +
+/// flash cuts), then every xfade the engine supports.
+private let transitionChoices = ["cut"] + RenderEngine.actionTransitions + RenderEngine.transitions
 
 struct ClipInspector: View {
     @Environment(AppStore.self) private var store

@@ -7,6 +7,9 @@ nonisolated enum AIError: Error, CustomStringConvertible {
     /// The request exceeded the model's input limit — callers can retry
     /// with fewer frames instead of failing the run.
     case promptTooLong(String)
+    /// The provider answered, but the reply couldn't be used (not JSON, or
+    /// validation left nothing) — the message says what to check.
+    case unusableResponse(String)
 
     var description: String {
         switch self {
@@ -14,6 +17,7 @@ nonisolated enum AIError: Error, CustomStringConvertible {
         case .quotaExhausted(let message): return "Quota exhausted: \(message)"
         case .emptyResponse(let provider): return "\(provider) returned an empty response"
         case .promptTooLong(let provider): return "\(provider): the prompt is too long for the model"
+        case .unusableResponse(let message): return message
         }
     }
 }
@@ -25,8 +29,8 @@ nonisolated struct AIFrame: Sendable {
 }
 
 /// Provider-agnostic AI dispatch — the Swift port of ai_cli.py. Talks to the
-/// locally installed `claude` (stream-json protocol), `gemini`, and `codex`
-/// CLIs so it reuses whatever auth the user already has.
+/// locally installed `claude` (stream-json protocol), `gemini`, `codex`,
+/// `qwen`, and `kimi` CLIs so it reuses whatever auth the user already has.
 actor AIService {
     var config: AIConfig
 
@@ -155,7 +159,7 @@ actor AIService {
                                             model: model, needsImages: frames?.isEmpty == false)
         guard !candidates.isEmpty else {
             throw AIError.notConfigured(
-                "No AI provider available for \(AICatalog.taskLabels[task] ?? task). Install the claude, gemini, or codex CLI, or check Settings → AI.")
+                "No AI provider available for \(AICatalog.taskLabels[task] ?? task). Install the claude, gemini, codex, qwen, or kimi CLI, or check Settings → AI.")
         }
         var lastError: Error?
         var tooLongError: Error?
@@ -212,6 +216,12 @@ actor AIService {
         case "codex":
             return try await callCodex(binary: binary, prompt: prompt,
                                        model: model, timeout: timeout, log: emit)
+        case "qwen":
+            return try await callQwen(binary: binary, prompt: prompt,
+                                      model: model, timeout: timeout, log: emit)
+        case "kimi":
+            return try await callKimi(binary: binary, prompt: prompt,
+                                      model: model, timeout: timeout, log: emit)
         default:
             throw AIError.notConfigured("Unknown AI provider: \(key)")
         }
@@ -427,6 +437,64 @@ actor AIService {
         }
         let text = result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw AIError.emptyResponse("Codex") }
+        return text
+    }
+
+    // MARK: - Qwen Code (text-only)
+
+    private func callQwen(binary: URL, prompt: String, model: String?,
+                          timeout: TimeInterval,
+                          log: @Sendable (String) -> Void) async throws -> String {
+        // Gemini CLI fork: headless mode reads the prompt from stdin, which
+        // sidesteps argv length limits on long transcripts.
+        var arguments: [String] = []
+        if let model { arguments += ["-m", model] }
+        let result = try await ProcessRunner.run(executable: binary, arguments: arguments,
+                                                 stdin: Data(prompt.utf8), timeout: timeout)
+        if result.exitCode != 0 {
+            let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
+            if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
+            if Self.isPromptTooLong(error) { throw AIError.promptTooLong("Qwen") }
+            let lowered = error.lowercased()
+            if lowered.contains("auth") || lowered.contains("login") || lowered.contains("api key") {
+                throw AIError.notConfigured("Qwen Code CLI not authenticated. Run 'qwen' in Terminal to sign in.")
+            }
+            log("Qwen Code CLI error: \(error)")
+            throw AIError.emptyResponse("Qwen")
+        }
+        var text = result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip "Loaded cached credentials." style noise (same as Gemini).
+        if let range = text.range(of: #"^[A-Z][^\n]*credentials\.\s*\n+"#, options: .regularExpression) {
+            text.removeSubrange(range)
+        }
+        guard !text.isEmpty else { throw AIError.emptyResponse("Qwen") }
+        return text
+    }
+
+    // MARK: - Kimi (text-only)
+
+    private func callKimi(binary: URL, prompt: String, model: String?,
+                          timeout: TimeInterval,
+                          log: @Sendable (String) -> Void) async throws -> String {
+        // `kimi -p` runs one prompt non-interactively: assistant text goes to
+        // stdout; thinking and tool progress go to stderr.
+        var arguments: [String] = []
+        if let model { arguments += ["--model", model] }
+        arguments += ["-p", prompt]
+        let result = try await ProcessRunner.run(executable: binary, arguments: arguments, timeout: timeout)
+        if result.exitCode != 0 {
+            let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
+            if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
+            if Self.isPromptTooLong(error) { throw AIError.promptTooLong("Kimi") }
+            let lowered = error.lowercased()
+            if lowered.contains("auth") || lowered.contains("login") || lowered.contains("api key") {
+                throw AIError.notConfigured("Kimi CLI not authenticated. Run 'kimi' in Terminal and sign in with /login.")
+            }
+            log("Kimi CLI error: \(error)")
+            throw AIError.emptyResponse("Kimi")
+        }
+        let text = result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { throw AIError.emptyResponse("Kimi") }
         return text
     }
 }

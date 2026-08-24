@@ -66,7 +66,7 @@ nonisolated private final class ProcessRunState: @unchecked Sendable {
     }
 }
 
-/// Runs external tools (ffmpeg, ffprobe, claude, gemini, codex) off the main
+/// Runs external tools (ffmpeg, ffprobe, claude, gemini, codex, qwen, kimi) off the main
 /// actor, with full stdout/stderr capture and an optional timeout.
 nonisolated enum ProcessRunner {
     static func run(executable: URL,
@@ -225,6 +225,7 @@ nonisolated enum ProcessRunner {
                 ? URL(fileURLWithPath: expanded) : nil
         }
         let prefixes = [managedBinDirectory.path,
+                        NSHomeDirectory() + "/.local/bin",
                         "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/opt/local/bin"]
         for prefix in prefixes {
             let candidate = "\(prefix)/\(tool)"
@@ -232,7 +233,7 @@ nonisolated enum ProcessRunner {
                 return URL(fileURLWithPath: candidate)
             }
         }
-        // Node-based CLIs (claude, gemini, codex) often live in nvm/npm dirs
+        // Node-based CLIs (claude, gemini, codex, qwen, kimi) often live in nvm/npm dirs
         // that only the login shell knows about.
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")

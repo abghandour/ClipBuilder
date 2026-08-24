@@ -105,7 +105,7 @@
     <li>When the installer finishes, a <span class="step-label">Terminal window opens automatically</span> to complete setup. It installs everything Clip Builder needs and walks you through the first-time configuration:
         <ul>
             <li><code>ffmpeg</code> (the video engine) and <code>yt-dlp</code> (video downloads) — standalone builds, no Homebrew or Xcode tools needed;</li>
-            <li>your choice of AI provider CLIs — Claude Code, Gemini CLI, and Codex CLI are each optional, and any of them can be added later from the app (<em>Settings → AI</em>) or by re-running setup;</li>
+            <li>your choice of AI provider CLIs — Claude Code, Gemini CLI, Codex CLI, Qwen Code, and Kimi Code CLI are each optional, and any of them can be added later from the app (<em>Settings → AI</em>) or by re-running setup;</li>
             <li>an optional sign-in to each AI provider (you can also do this later — see section 4);</li>
             <li>your first profile — brand name, content niche, social handles, and Input/Output folders.</li>
         </ul>
@@ -144,7 +144,7 @@
 <div class="note"><strong>Deleting a profile</strong> removes its configuration and scene database, but never touches your source or output video files. The <em>Default</em> profile cannot be deleted.</div>
 
 <h2>4. Sign In to the AI Providers</h2>
-<p>Clip Builder routes its AI work (video analysis, wizard reasoning, caption generation) through locally installed AI command-line tools. During setup you choose which of the three to install — each is optional, and you can add any of them later from the app (<em>Settings → AI</em>). Each installed CLI just needs a one-time sign-in, which the guided setup offers during installation. The app reuses whatever login each tool already has, so there are no API keys to paste into Clip Builder itself.</p>
+<p>Clip Builder routes its AI work (video analysis, wizard reasoning, caption generation) through locally installed AI command-line tools. During setup you choose which of the five to install — each is optional, and you can add any of them later from the app (<em>Settings → AI</em>). Each installed CLI just needs a one-time sign-in, which the guided setup offers during installation. The app reuses whatever login each tool already has, so there are no API keys to paste into Clip Builder itself.</p>
 <p>If you chose "later" during setup (or installed a CLI yourself), here is each provider's sign-in — the <code>npm install</code> line is only needed if the CLI is missing:</p>
 
 <h3>4.1 Claude Code (Anthropic) — default provider</h3>
@@ -167,9 +167,22 @@
     <li>Available models: <code>gpt-5-mini</code> (default), <code>gpt-5-nano</code>, <code>o3-mini</code>, <code>gpt-5-codex</code>, <code>o3</code>, <code>gpt-5</code>.</li>
     <li>Manual install if needed: <code>npm install -g @openai/codex</code></li>
 </ol>
-<div class="note"><strong>Note:</strong> Codex does not support image input, so it can't be used for visual video analysis — prefer Claude or Gemini for the <em>Video analysis</em> task.</div>
+<h3>4.4 Qwen Code (Alibaba)</h3>
+<ol>
+    <li>Run <code>qwen</code> in Terminal and choose a login method (Qwen OAuth is free) when prompted.</li>
+    <li>Available models: <code>qwen3-coder-plus</code> (default), <code>qwen3-coder-flash</code>.</li>
+    <li>Manual install if needed: <code>npm install -g @qwen-code/qwen-code</code></li>
+</ol>
 
-<h3>4.4 Verify and Configure in Clip Builder</h3>
+<h3>4.5 Kimi Code CLI (Moonshot AI)</h3>
+<ol>
+    <li>Run <code>kimi</code> in Terminal and sign in with <code>/login</code> when the interface opens.</li>
+    <li>Available models: <code>kimi-code/kimi-for-coding</code> (default).</li>
+    <li>Manual install if needed: <code>npm install -g @moonshot-ai/kimi-code</code></li>
+</ol>
+<div class="note"><strong>Note:</strong> Codex, Qwen, and Kimi do not support image input in Clip Builder, so they can't be used for visual video analysis — prefer Claude or Gemini for the <em>Video analysis</em> task.</div>
+
+<h3>4.6 Verify and Configure in Clip Builder</h3>
 <ol>
     <li>Open <span class="step-label">Settings → AI</span>.</li>
     <li>Each provider section shows a <em>Status</em> row — it should read <span style="color:#34c759">Installed</span> for every CLI you set up. If it says <span style="color:#f5a623">Not found</span>, either the CLI isn't installed or it isn't on the app's PATH; you can enter an explicit <em>Binary path</em> (e.g. <code>/opt/homebrew/bin/claude</code> — find it with <code>which claude</code>).</li>
