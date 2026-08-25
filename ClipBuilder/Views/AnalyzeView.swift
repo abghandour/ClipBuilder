@@ -177,6 +177,25 @@ struct AnalyzeView: View {
             }
             .width(55)
 
+            TableColumn("Type") { [store] video in
+                // Environment lookups crash inside Table cells on macOS
+                // (cells don't inherit the SwiftUI environment) — capture
+                // the store like the other columns do.
+                Picker("", selection: Binding(
+                    get: { video.videoType ?? "" },
+                    set: { store.setVideoType(video, type: VideoType(rawValue: $0)) }
+                )) {
+                    Text("—").tag("")
+                    ForEach(VideoType.allCases, id: \.rawValue) { type in
+                        Text(type.label).tag(type.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.small)
+                .help("What this footage is — inferred during analysis, editable here. Non-fight types skip fight scoring and fight research, and the AI Wizard sees the type when planning.")
+            }
+            .width(105)
+
             TableColumn("Analysis") { video in
                 if store.isAnalyzing && selection.contains(video.id) {
                     ProgressView()
@@ -222,7 +241,13 @@ struct AnalyzeView: View {
 
             TableColumn("Fight Research") { video in
                 HStack(spacing: 4) {
-                    if store.fightResearchInFlight.contains(video.id) {
+                    // Fight footage only — untyped videos stay empty until
+                    // the Type column says Fight (or Fight Recap).
+                    if video.type?.supportsFightFeatures != true {
+                        Text("—")
+                            .foregroundStyle(.secondary)
+                            .help("Fight research applies to fight videos — set the Type column to Fight to enable it")
+                    } else if store.fightResearchInFlight.contains(video.id) {
                         ProgressView().controlSize(.small)
                         Text("Researching…")
                             .font(.caption)
@@ -327,39 +352,43 @@ private struct VideoPreviewPane: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Fight action graph: pace + per-fighter cumulative score from
-            // the scoring pass — click to seek the player to a moment.
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Fight Action")
-                        .font(.caption.weight(.medium))
-                    Spacer()
-                    if store.fightScoringInFlight.contains(video.id) {
-                        ProgressView()
-                            .controlSize(.small)
+            // Fight action graph: per-fighter activity from the scoring
+            // pass — click to seek the player to a moment. Fight footage
+            // only: untyped videos don't show it either (set the Type
+            // column to Fight to enable).
+            if video.type?.supportsFightFeatures == true {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Fight Action")
+                            .font(.caption.weight(.medium))
+                        Spacer()
+                        if store.fightScoringInFlight.contains(video.id) {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Button(store.fightEvents[video.id]?.isEmpty == false ? "Re-score" : "Score") {
+                            store.scoreFightAction(video: video)
+                        }
+                        .controlSize(.small)
+                        .disabled(store.fightScoringInFlight.contains(video.id))
+                        .help("AI pass over the fight scenes logging strikes, takedowns, and submission attempts per fighter — runs automatically after analysis; progress shows in the analysis log")
                     }
-                    Button(store.fightEvents[video.id]?.isEmpty == false ? "Re-score" : "Score") {
-                        store.scoreFightAction(video: video)
+                    if let events = store.fightEvents[video.id], !events.isEmpty {
+                        FightGraphView(events: events,
+                                       range: 0...max(1, video.duration),
+                                       people: store.people,
+                                       height: 64) { time in
+                            player?.seek(to: CMTime(seconds: time, preferredTimescale: 600),
+                                         toleranceBefore: .zero, toleranceAfter: .zero)
+                        }
+                    } else {
+                        Text("Not scored yet — analyzed fight footage scores automatically; use Score to run it now.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
-                    .controlSize(.small)
-                    .disabled(store.fightScoringInFlight.contains(video.id))
-                    .help("AI pass over the fight scenes logging strikes, takedowns, and submission attempts per fighter — runs automatically after analysis; progress shows in the analysis log")
                 }
-                if let events = store.fightEvents[video.id], !events.isEmpty {
-                    FightGraphView(events: events,
-                                   range: 0...max(1, video.duration),
-                                   people: store.people,
-                                   height: 64) { time in
-                        player?.seek(to: CMTime(seconds: time, preferredTimescale: 600),
-                                     toleranceBefore: .zero, toleranceAfter: .zero)
-                    }
-                } else {
-                    Text("Not scored yet — analyzed fight footage scores automatically; use Score to run it now.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
 
             // The video's people roster: build it here, ahead of any run —
             // the analyze window then only asks which of them to require.

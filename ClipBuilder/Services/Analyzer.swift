@@ -309,6 +309,7 @@ actor Analyzer {
         \(tagList(tags))
         Return a JSON object with this exact structure:
         {
+          "video_type": "<fight|training|interview|recap|other>",
           "tags": {
             "tag_name": [{"start": 0.0, "end": 5.2}, {"start": 12.0, "end": 18.5}],
             "another_tag": [{"start": 0.0, "end": 30.0}]
@@ -329,6 +330,7 @@ actor Analyzer {
         - Non-action ranges (arena, backstage, interviews) don't need sequence entries.
 
         RULES:
+        - "video_type" classifies the WHOLE video: "fight" = an actual competitive bout (a result at stake, referee/cage/ring context), "training" = gym/practice/sparring/pad-work footage, "interview" = talking-head, press, or podcast-style content, "recap" = an edited recap/highlight package about a fight, "other" = anything else. Pick the single best fit for what dominates the video.
         - Only include tags that actually appear in the video
         - Time ranges can overlap -- e.g. "striking" and "high-energy" can cover different ranges
         - A tag can have multiple ranges if it appears at different times
@@ -649,6 +651,15 @@ actor Analyzer {
                           database: Database, provider: String? = nil, model: String? = nil,
                           log: @escaping @Sendable (String) -> Void) async throws -> Int {
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
+        // Only footage typed fight/recap gets the pass — anything else
+        // (including untyped) shouldn't burn a dense AI pass, and the UI
+        // only shows the graph for fight footage. Read the row fresh: the
+        // caller's record predates this run's inference.
+        let currentType = ((try? await database.video(id: video.id)) ?? nil)?.type
+        guard currentType?.supportsFightFeatures == true else {
+            log("\(video.filename): \(currentType?.label ?? "untyped") video — skipping the fight scoring pass (set the Type to Fight to score it)")
+            return 0
+        }
         let fightTags: Set<String> = ["striking", "punching", "kicking", "grappling",
                                       "takedown", "submission", "clinch", "sparring",
                                       "knockdown", "ground-and-pound", "high-energy"]
@@ -1183,6 +1194,11 @@ actor Analyzer {
                        event?.isEmpty == false ? event : nil)
         }
 
+        // Whole-video classification — steers fight-only features and the
+        // wizard. Saved further down, and only when the row has no type yet.
+        let inferredType = isIncremental ? nil
+            : (object["video_type"] as? String).flatMap { VideoType(rawValue: $0.lowercased()) }
+
         var cleanMoments: [(at: Double, note: String, dialog: String?)] = []
         if let rawMoments = object["moments"] as? [[String: Any]] {
             for moment in rawMoments {
@@ -1317,6 +1333,15 @@ actor Analyzer {
                                                     provider: attribution.provider,
                                                     model: attribution.model,
                                                     mode: "visual")
+
+        // A type already on the row wins — it's either the user's manual
+        // pick or an earlier inference; re-analysis never flips it.
+        if let inferredType {
+            if let current = try? await database.video(id: video.id), current.videoType == nil {
+                try? await database.setVideoType(id: video.id, type: inferredType.rawValue)
+                log("\(video.filename): video type — \(inferredType.label)")
+            }
+        }
 
         if let outcome {
             try? await database.saveFightOutcome(videoID: video.id, runID: runID,

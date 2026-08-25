@@ -404,9 +404,11 @@ actor WizardEngine {
 
     // MARK: - Planning phase
 
-    private func sceneLine(_ scene: SceneRecord, note: String? = nil) -> String {
+    private func sceneLine(_ scene: SceneRecord, type: VideoType? = nil,
+                           note: String? = nil) -> String {
         var line = "#\(scene.id): \(scene.videoFilename) " +
             String(format: "[%.1f-%.1f] %.1fs", scene.startTime, scene.endTime, scene.duration) +
+            (type.map { " (\($0.rawValue) video)" } ?? "") +
             " tags:\(scene.tags.prefix(8).joined(separator: ","))"
         if scene.wide { line += " WIDE" }
         if let score = scene.score {
@@ -526,6 +528,7 @@ actor WizardEngine {
                             people: [PersonRecord],
                             outcomes: [FightOutcome],
                             fightResearch: [FightResearchRecord] = [],
+                            videoTypes: [Int64: VideoType] = [:],
                             options: WizardOptions) -> String {
         // Fight results the analyzer extracted — the ground truth behind
         // "headline" and recap storytelling.
@@ -771,7 +774,9 @@ actor WizardEngine {
         }
 
         let notes = containmentNotes(scenes)
-        let sceneList = scenes.map { sceneLine($0, note: notes[$0.id]) }.joined(separator: "\n")
+        let sceneList = scenes.map {
+            sceneLine($0, type: videoTypes[$0.videoID], note: notes[$0.id])
+        }.joined(separator: "\n")
         let musicList = musicNames.isEmpty ? "No music available" : musicNames.joined(separator: ", ")
         let beatInfo = SettingsStore.loadSettings().transitions.beatSnap && !musicNames.isEmpty
             ? "After planning, every cut boundary is automatically snapped to the nearest strong beat "
@@ -846,7 +851,7 @@ actor WizardEngine {
         \(researchJSON)\(buzzBlock)
 
         ## Available Scenes
-        \(sceneList)\(subjectsBlock)
+        \(videoTypes.isEmpty ? "" : "Scenes are annotated with their source video's type (fight, training, interview, recap, other) — match the footage to the reel's intent: fight/recap footage for action reels, interview footage for talking moments, and don't pass off training footage as a real fight.\n")\(sceneList)\(subjectsBlock)
 
         ## Available Music
         \(musicList)
@@ -1187,6 +1192,9 @@ actor WizardEngine {
         var outcomes: [FightOutcome] = []
         /// Saved fight research for the videos in play (empty = off/none).
         var fightResearch: [FightResearchRecord] = []
+        /// Source-video types, so scene lines can say what footage they
+        /// come from (fight vs training vs interview…).
+        var videoTypes: [Int64: VideoType] = [:]
     }
 
     private func loadTrainingSignals(database: Database) async -> TrainingSignals {
@@ -1262,10 +1270,15 @@ actor WizardEngine {
                  ? "Fight research: none saved for the selected footage — run it from Analyze → Fight Research"
                  : "Fight research loaded for \(fightResearch.count) fight(s) — the plan follows the fan narrative")
         }
+        var videoTypes: [Int64: VideoType] = [:]
+        for video in (try? await database.fetchVideos()) ?? [] where videoIDs.contains(video.id) {
+            if let type = video.type { videoTypes[video.id] = type }
+        }
         return PlanningInputs(research: research, scenes: scenes,
                               sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
                               music: music, signals: signals, people: people,
-                              outcomes: outcomes, fightResearch: fightResearch)
+                              outcomes: outcomes, fightResearch: fightResearch,
+                              videoTypes: videoTypes)
     }
 
     /// One prompt → AI call → validated plan; nil plan when the response is
@@ -1276,7 +1289,8 @@ actor WizardEngine {
         let prompt = planPrompt(profile: profile, research: inputs.research, scenes: inputs.scenes,
                                 musicNames: inputs.music.map(\.name), signals: inputs.signals,
                                 people: inputs.people, outcomes: inputs.outcomes,
-                                fightResearch: inputs.fightResearch, options: options)
+                                fightResearch: inputs.fightResearch,
+                                videoTypes: inputs.videoTypes, options: options)
         let response = try await ai.call(prompt: prompt, task: "wizard",
                                          model: options.modelOverride, timeout: 300, log: emit)
         guard let rawPlan = AIResponseParser.jsonObject(from: response) else {

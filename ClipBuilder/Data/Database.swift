@@ -357,7 +357,8 @@ actor Database {
                         "analyzer_provider", "visual_analyzer_provider",
                         "speech_analyzer_provider", "analyzer_model",
                         "visual_analyzer_model", "speech_analyzer_model",
-                        "visual_analyzed_at", "speech_analyzed_at"]),
+                        "visual_analyzed_at", "speech_analyzed_at",
+                        "video_type"]),
             ("wizard_research", ["provider", "model"]),
             ("transcripts", ["provider", "model", "original_text", "words"]),
         ]
@@ -787,7 +788,13 @@ actor Database {
             visualAnalyzerModel: row["visual_analyzer_model"]?.stringValue,
             speechAnalyzerProvider: row["speech_analyzer_provider"]?.stringValue,
             speechAnalyzerModel: row["speech_analyzer_model"]?.stringValue,
-            peopleDetectedAt: row["people_detected_at"]?.stringValue)
+            peopleDetectedAt: row["people_detected_at"]?.stringValue,
+            videoType: row["video_type"]?.stringValue)
+    }
+
+    func setVideoType(id: Int64, type: String?) throws {
+        try connection.execute("UPDATE videos SET video_type = ? WHERE id = ?",
+                               [type.map(SQLValue.text) ?? .null, .integer(id)])
     }
 
     // MARK: - Scenes

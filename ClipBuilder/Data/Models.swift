@@ -23,8 +23,40 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     var speechAnalyzerModel: String?
     /// When the people-only pass last ran — the gate tag detection requires.
     var peopleDetectedAt: String?
+    /// VideoType raw value; nil until the analyzer infers it or the user
+    /// picks one in the Analyze table.
+    var videoType: String?
 
     var url: URL { URL(fileURLWithPath: path) }
+
+    var type: VideoType? { videoType.flatMap(VideoType.init(rawValue:)) }
+}
+
+/// What kind of footage a source video is. The analyzer infers it during the
+/// visual pass (never overwriting a value that's already set); the user can
+/// change it in the Analyze table's Type column. Fight-only features — the
+/// fight-scoring pass and fan-reaction research — skip videos that are known
+/// not to show a fight, and the wizard planner sees the type per scene.
+nonisolated enum VideoType: String, CaseIterable, Sendable {
+    case fight
+    case training
+    case interview
+    case recap
+    case other
+
+    var label: String {
+        switch self {
+        case .fight: "Fight"
+        case .training: "Training"
+        case .interview: "Interview"
+        case .recap: "Fight Recap"
+        case .other: "Other"
+        }
+    }
+
+    /// Fight scoring and fan-reaction research only make sense for footage
+    /// showing an actual bout — a recap still does.
+    var supportsFightFeatures: Bool { self == .fight || self == .recap }
 }
 
 /// A distinct person the analyzer detected across the profile's footage.
