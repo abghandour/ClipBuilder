@@ -1,13 +1,12 @@
 import SwiftUI
 
-/// Fight momentum graph rendered from the scored fight events: a diverging
-/// "tug of war" between the two fighters. The graph is split at a center
-/// line — the leader's momentum grows toward the TOP, the opponent's toward
-/// the BOTTOM. Each landed action is zero-sum (it raises the striker and
-/// takes from the opponent, floored at zero), and consecutive actions by the
-/// same fighter escalate (a combo: 1pt, then 2pt, 3pt…) until a >3s lull or
-/// the opponent lands, which resets that fighter's combo to 1. Divergence
-/// toward one side = that fighter has the momentum.
+/// Fight activity graph rendered from the scored fight events, split at a
+/// center line — one fighter's activity grows toward the TOP, the other's
+/// toward the BOTTOM. Each curve shows how much action that fighter is
+/// landing RIGHT NOW: a landed action adds its points and fades out over
+/// the next 3 seconds, so 3s without action brings the score back to zero.
+/// Taller reach = more action from that fighter; both curves flat on the
+/// center line = nothing is happening.
 struct FightGraphView: View {
     let events: [FightEventRecord]
     /// Source-time window displayed.
@@ -19,9 +18,9 @@ struct FightGraphView: View {
     /// Tap-to-seek (source seconds); nil = inert graph.
     var onSeek: ((Double) -> Void)?
 
-    /// A landed action's combo continues only if the same fighter landed
-    /// again within this window with no opponent action in between.
-    private static let comboWindow: Double = 3.0
+    /// A landed action fades out linearly over this many seconds — with no
+    /// follow-up action the score is back at zero when the window elapses.
+    private static let activityWindow: Double = 3.0
     /// Top fighter, bottom fighter.
     private static let topColor: Color = .red
     private static let bottomColor: Color = .cyan
@@ -32,30 +31,35 @@ struct FightGraphView: View {
         events.filter { $0.time >= range.lowerBound && $0.time <= range.upperBound }
     }
 
+    /// Buckets well under the 3s fade window, so a burst of action and its
+    /// decay back to zero are both visible even on long videos.
     private var bucketCount: Int {
-        max(24, min(160, Int(span / 1.5)))
+        max(48, min(600, Int(span / 0.5)))
     }
 
     private func name(for key: String) -> String {
         people.first { $0.key == key }?.displayName ?? key
     }
 
-    // MARK: - Momentum model
+    // MARK: - Activity model
 
-    private struct Momentum {
+    private struct Activity {
         var topKey: String
         var bottomKey: String
+        /// Total action points over the visible range — the "who did the
+        /// most" tally in the legend.
         var topTotal: Double
         var bottomTotal: Double
-        /// Per-bucket running momentum for each side (≥0).
+        /// Per-bucket current activity for each side (≥0).
         var top: [Double]
         var bottom: [Double]
         var peak: Double
     }
 
-    /// Walk the events in time order, escalating combos and applying the
-    /// zero-sum swing, sampling each side's running momentum into buckets.
-    private func momentum() -> Momentum? {
+    /// Sample each fighter's current activity into buckets: every landed
+    /// action contributes its points, fading linearly to zero over the 3s
+    /// window — so a lull reads as both curves sitting on the center line.
+    private func activity() -> Activity? {
         let attributed = visible.filter { !$0.fighterKey.isEmpty }.sorted { $0.time < $1.time }
         // The two fighters carrying the most action own the two sides; a
         // third detected person (rare) is ignored in the split view.
@@ -68,53 +72,38 @@ struct FightGraphView: View {
         let count = bucketCount
         var top = [Double](repeating: 0, count: count)
         var bottom = [Double](repeating: 0, count: count)
-        var scoreTop = 0.0, scoreBottom = 0.0
-        var comboTop = 0, comboBottom = 0
-        var lastTimeTop = -Double.infinity, lastTimeBottom = -Double.infinity
-        var lastFighter = ""
-        var eventIndex = 0
-
-        func apply(_ event: FightEventRecord) {
-            if event.fighterKey == topKey {
-                let continues = lastFighter == topKey
-                    && event.time - lastTimeTop <= Self.comboWindow
-                comboTop = continues ? comboTop + 1 : 1
-                let delta = event.points * Double(comboTop)
-                scoreTop += delta
-                scoreBottom = max(0, scoreBottom - delta)
-                lastTimeTop = event.time
-                lastFighter = topKey
-            } else if event.fighterKey == bottomKey, !bottomKey.isEmpty {
-                let continues = lastFighter == bottomKey
-                    && event.time - lastTimeBottom <= Self.comboWindow
-                comboBottom = continues ? comboBottom + 1 : 1
-                let delta = event.points * Double(comboBottom)
-                scoreBottom += delta
-                scoreTop = max(0, scoreTop - delta)
-                lastTimeBottom = event.time
-                lastFighter = bottomKey
-            }
-        }
-
+        // Only events inside the fade window matter at each sample time;
+        // both bounds advance monotonically as the sample time moves.
+        var firstLive = 0
         for bucket in 0..<count {
-            let bucketEnd = range.lowerBound + span * Double(bucket + 1) / Double(count)
-            while eventIndex < attributed.count, attributed[eventIndex].time <= bucketEnd {
-                apply(attributed[eventIndex])
-                eventIndex += 1
+            let sampleTime = range.lowerBound + span * Double(bucket + 1) / Double(count)
+            while firstLive < attributed.count,
+                  attributed[firstLive].time < sampleTime - Self.activityWindow {
+                firstLive += 1
             }
-            top[bucket] = scoreTop
-            bottom[bucket] = scoreBottom
+            var index = firstLive
+            while index < attributed.count, attributed[index].time <= sampleTime {
+                let event = attributed[index]
+                let weight = 1 - (sampleTime - event.time) / Self.activityWindow
+                if event.fighterKey == topKey {
+                    top[bucket] += event.points * weight
+                } else if event.fighterKey == bottomKey {
+                    bottom[bucket] += event.points * weight
+                }
+                index += 1
+            }
         }
         let peak = max(1, top.max() ?? 1, bottom.max() ?? 1)
-        return Momentum(topKey: topKey, bottomKey: bottomKey,
-                        topTotal: scoreTop, bottomTotal: scoreBottom,
+        return Activity(topKey: topKey, bottomKey: bottomKey,
+                        topTotal: totals[topKey] ?? 0,
+                        bottomTotal: bottomKey.isEmpty ? 0 : totals[bottomKey] ?? 0,
                         top: top, bottom: bottom, peak: peak)
     }
 
     // MARK: - View
 
     var body: some View {
-        let model = momentum()
+        let model = activity()
         return VStack(alignment: .leading, spacing: 3) {
             if showsLegend, let model {
                 HStack(spacing: 10) {
@@ -168,7 +157,7 @@ struct FightGraphView: View {
                 }
             }
         }
-        .help("Fight momentum: each fighter fills their half from the center line. A landed action lifts the striker and pushes the opponent back (zero-sum); consecutive hits escalate (a combo), resetting after a 3s lull or when the opponent answers. Whoever's area reaches further is winning the exchange.")
+        .help("Fight activity: each fighter fills their half from the center line. A landed action lifts their curve and fades out over 3 seconds, so with no action the score falls back to zero — flat stretches on the center line are lulls, and whoever reaches further is doing the most at that moment. The legend shows each fighter's total action points for the range.")
     }
 
     private func legendChip(_ name: String, score: Double, color: Color, up: Bool) -> some View {
@@ -182,7 +171,7 @@ struct FightGraphView: View {
         }
     }
 
-    /// Filled area between the center line and one fighter's momentum curve,
+    /// Filled area between the center line and one fighter's activity curve,
     /// growing up (toward y=0) or down (toward y=height).
     private func divergingArea(values: [Double], peak: Double, size: CGSize, up: Bool) -> Path {
         let mid = size.height / 2
