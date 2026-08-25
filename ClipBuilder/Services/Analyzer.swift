@@ -598,6 +598,176 @@ actor Analyzer {
         return frames
     }
 
+    // MARK: - Fight scoring pass
+
+    private static func fightScorePrompt(domain: String, windowStart: Double, windowEnd: Double,
+                                         roster: [VideoPersonRecord], hasReferences: Bool) -> String {
+        let fighters = roster.isEmpty
+            ? "  (nobody identified yet — use \"unknown\" for every event)"
+            : roster.map { person in
+                "  - key \"\(person.key)\": \(person.displayName) — \(person.descriptor)"
+            }.joined(separator: "\n")
+        let actions = FightScoring.actionPoints
+            .map { "  - \"\($0.action)\" — \($0.label)" }
+            .joined(separator: "\n")
+        let referenceNote = hasReferences
+            ? "\nA cropped REFERENCE image of each fighter is attached first (labeled \"FIGHTER REFERENCE — <name> (key ...)\"). Study each fighter's kit — shorts color/pattern, waistband text, gloves, tattoos, hair, build — and use it to tell them apart in the action frames. Fighters move around the cage and switch sides between frames; identify them by their KIT and body, never by which side of the frame they are on.\n"
+            : ""
+        return """
+        You are scoring the FIGHT ACTION in a \(domain) video and attributing every action to the correct fighter. Frames are sampled roughly every second across \(String(format: "%.1f", windowStart))s–\(String(format: "%.1f", windowEnd))s and labeled with their timestamps.
+        \(referenceNote)
+        FIGHTERS — attribute every event to one of these keys:
+        \(fighters)
+
+        Log every clearly visible scoring action as one event. Action types:
+        \(actions)
+
+        ATTRIBUTION (this is the most important part — get the fighter right):
+        - "fighter" is the key of the fighter who PERFORMS/LANDS the action — the one throwing the strike, completing the takedown, or attempting the submission. The OTHER fighter is the one receiving it; never credit the action to the fighter getting hit.
+        - Identify the performer by their kit and body (see the references), tracing which fighter's arm/leg/hips initiate the action across the surrounding frames. Read jab/cross/kick origin, who is on top in grappling, who has back control.
+        - For a "knockdown" or "hurt", the fighter is the one who LANDED the blow, not the one who fell or is hurt.
+        - A "takedown" or "reversal" is credited to the fighter who completes it (ends up in control), not the one taken down.
+        - When you genuinely cannot tell which of the two threw it, use "unknown" — but prefer a confident attribution using the kit references. Do not default to "unknown" out of laziness, and do not guess randomly between the two.
+
+        OTHER RULES:
+        - Only log actions you can actually SEE happen in the frames. When consecutive frames show one exchange, log it conservatively — one event per landed action, never one per frame.
+        - Skip officials, coaches, and crowd shots. Skip broadcast replays of an action you already logged.
+        - "t" is the timestamp in seconds, within the window above.
+        - An empty list is a valid answer for a lull with no scoring action.
+
+        Return ONLY a JSON object, no markdown fences:
+        {"events": [{"t": <seconds>, "fighter": "<key or \"unknown\">", "action": "<one of the action types above>"}]}
+        """
+    }
+
+    /// Dedicated fight-scoring pass: dense (~1s) frame sampling over the
+    /// fight scenes only, the model logs point events per fighter, code
+    /// assigns the weights and replaces the video's event list. The pace
+    /// graph and per-fighter score lines render from these events. Returns
+    /// the number of events saved.
+    func scoreFightAction(video: VideoRecord, scenes: [SceneRecord], profile: BrandProfile,
+                          database: Database, provider: String? = nil, model: String? = nil,
+                          log: @escaping @Sendable (String) -> Void) async throws -> Int {
+        guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
+        let fightTags: Set<String> = ["striking", "punching", "kicking", "grappling",
+                                      "takedown", "submission", "clinch", "sparring",
+                                      "knockdown", "ground-and-pound", "high-energy"]
+        let targets = scenes
+            .filter { $0.videoID == video.id && $0.tags.contains(where: fightTags.contains) }
+            .sorted { $0.startTime < $1.startTime }
+        guard !targets.isEmpty else {
+            log("\(video.filename): no fight-action scenes — skipping the fight scoring pass")
+            return 0
+        }
+        // Merge overlapping/adjacent scene ranges, then split into ≤45s
+        // scoring windows so each call stays within the frame budget at 1s.
+        var windows: [(start: Double, end: Double)] = []
+        for scene in targets {
+            if let last = windows.last, scene.startTime - last.end <= 2 {
+                windows[windows.count - 1].end = max(last.end, scene.endTime)
+            } else {
+                windows.append((scene.startTime, scene.endTime))
+            }
+        }
+        windows = windows.flatMap { window -> [(start: Double, end: Double)] in
+            guard window.end - window.start > 45 else { return [window] }
+            var chunks: [(start: Double, end: Double)] = []
+            var cursor = window.start
+            while cursor < window.end {
+                chunks.append((cursor, min(cursor + 45, window.end)))
+                cursor += 45
+            }
+            return chunks
+        }
+        // The video's roster carries the portrait boxes needed for the
+        // visual attribution references.
+        let roster = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
+        let validKeys = Set(roster.map(\.key))
+        // Resolve either the key or the fighter's display name (the model
+        // sometimes answers with the name) to a canonical key.
+        var keyByName: [String: String] = [:]
+        for person in roster where !person.name.isEmpty {
+            keyByName[person.name.lowercased()] = person.key
+        }
+        let validActions = Set(FightScoring.actionKeys)
+        // One cropped reference image per fighter, so the model can tell
+        // them apart by kit/build instead of guessing from a text descriptor.
+        let referenceFrames = await fighterReferenceFrames(url: video.url, roster: roster)
+        if roster.isEmpty {
+            log("\(video.filename): no identified fighters — scoring action but leaving it unattributed. Detect and name the fighters (People) for per-fighter momentum.")
+        } else {
+            log("Attributing action to \(roster.count) fighter(s): \(roster.map(\.displayName).joined(separator: ", "))"
+                + (referenceFrames.count == roster.count ? " (with visual references)"
+                   : " (\(referenceFrames.count) visual reference(s))"))
+        }
+
+        var events: [(time: Double, fighterKey: String, action: String, points: Double)] = []
+        for (index, window) in windows.enumerated() {
+            try Task.checkCancellation()
+            log(String(format: "Scoring fight action %d/%d [%.1fs–%.1fs]…",
+                       index + 1, windows.count, window.start, window.end))
+            let frames = await extractFrames(url: video.url, start: window.start,
+                                             end: window.end, interval: 1.0, log: log)
+            guard !frames.isEmpty else { continue }
+            let prompt = Self.fightScorePrompt(domain: profile.effectiveDomain,
+                                               windowStart: window.start, windowEnd: window.end,
+                                               roster: roster, hasReferences: !referenceFrames.isEmpty)
+            do {
+                let response = try await callThinningFrames(prompt: prompt,
+                                                            auxiliary: referenceFrames,
+                                                            sampled: frames, model: model,
+                                                            provider: provider, log: log)
+                guard let object = AIResponseParser.jsonObject(from: response),
+                      let raw = object["events"] as? [[String: Any]] else {
+                    log("Scoring window returned no usable events JSON — continuing")
+                    continue
+                }
+                for entry in raw {
+                    guard let action = entry["action"] as? String, validActions.contains(action),
+                          let time = (entry["t"] as? NSNumber)?.doubleValue else { continue }
+                    let raw = (entry["fighter"] as? String ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    let resolved = validKeys.contains(raw) ? raw : (keyByName[raw] ?? "")
+                    events.append((time: min(max(window.start, time), window.end),
+                                   fighterKey: resolved,
+                                   action: action,
+                                   points: FightScoring.points(for: action)))
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                log("Fight scoring window failed (\(error)) — continuing")
+            }
+        }
+        events.sort { $0.time < $1.time }
+        try await database.replaceFightEvents(videoID: video.id, events: events)
+        let attributed = events.count { !$0.fighterKey.isEmpty }
+        let share = events.isEmpty ? 0 : Int(Double(attributed) / Double(events.count) * 100)
+        log("\(video.filename): fight action scored — \(events.count) event(s), "
+            + "\(attributed) attributed to a fighter (\(share)%)")
+        if !events.isEmpty, share < 60, !roster.isEmpty {
+            log("Low attribution rate — the fighters may look too similar at this sampling; naming them and adding clearer person markers helps.")
+        }
+        return events.count
+    }
+
+    /// One cropped reference image per identified fighter (from their stored
+    /// portrait box), attached to every scoring call so the model attributes
+    /// action by kit/build rather than a text description alone.
+    private func fighterReferenceFrames(url: URL,
+                                        roster: [VideoPersonRecord]) async -> [AIFrame] {
+        var frames: [AIFrame] = []
+        for person in roster {
+            guard let box = person.portraitBox else { continue }
+            let at = max(0, person.portraitAt)
+            guard let data = await ThumbnailService.jpegFrame(url: url, at: at),
+                  let crop = Self.boxPortrait(from: data, box: box) else { continue }
+            frames.append(AIFrame(jpeg: crop,
+                                  label: "FIGHTER REFERENCE — \(person.displayName) (key \"\(person.key)\")"))
+        }
+        return frames
+    }
+
     // MARK: - Taste rubric distillation
 
     private static func tasteRubricPrompt(domain: String, label: String,
@@ -1441,6 +1611,25 @@ extension Analyzer {
                           y: (marker.y - marker.height * pad) * height,
                           width: marker.width * (1 + 2 * pad) * width,
                           height: marker.height * (1 + 2 * pad) * height)
+            .intersection(CGRect(x: 0, y: 0, width: width, height: height))
+        guard !rect.isEmpty, let cropped = cg.cropping(to: rect) else { return nil }
+        return NSBitmapImageRep(cgImage: cropped)
+            .representation(using: .jpeg, properties: [.compressionFactor: 0.85])
+    }
+
+    /// Crop a person's portrait box (normalized top-left) out of a frame —
+    /// the fight-scoring pass shows one per fighter as a visual attribution
+    /// reference. Padded so the whole fighter (kit, build) is legible.
+    nonisolated static func boxPortrait(from data: Data,
+                                        box: VideoPersonRecord.PortraitBox) -> Data? {
+        guard let image = NSImage(data: data),
+              let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let width = CGFloat(cg.width), height = CGFloat(cg.height)
+        let pad = 0.15
+        let rect = CGRect(x: (box.x - box.w * pad) * width,
+                          y: (box.y - box.h * pad) * height,
+                          width: box.w * (1 + 2 * pad) * width,
+                          height: box.h * (1 + 2 * pad) * height)
             .intersection(CGRect(x: 0, y: 0, width: width, height: height))
         guard !rect.isEmpty, let cropped = cg.cropping(to: rect) else { return nil }
         return NSBitmapImageRep(cgImage: cropped)

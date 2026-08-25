@@ -141,6 +141,20 @@ struct LibraryView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let quality = video.qualityReport {
+                Label(quality.summary, systemImage: quality.verdict == .publishable
+                      ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(quality.verdict == .publishable ? .green : .orange)
+                    .help((quality.failures + quality.warnings).joined(separator: "\n"))
+            }
+            if let stats = video.instagramStats {
+                Text(ReelPerformance.label(stats, duration: video.duration))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
             if !video.caption.isEmpty {
                 Text(video.caption)
                     .font(.caption)

@@ -81,6 +81,82 @@ nonisolated struct FightOutcome: Identifiable, Sendable, Hashable {
     var event: String?
 }
 
+/// One scored fight action from the fight-scoring pass: a timestamped event
+/// attributed to a fighter, worth points. The pace graph and the per-fighter
+/// "who is winning" lines both derive from these rows.
+nonisolated struct FightEventRecord: Identifiable, Sendable, Hashable {
+    var id: Int64
+    var videoID: Int64
+    var time: Double
+    /// Person key from the registry; "" when the model couldn't attribute.
+    var fighterKey: String
+    var action: String
+    var points: Double
+}
+
+/// The point system for scored fight actions — MMA-judging-flavored weights.
+/// Points are stored on each event, so re-weighting only affects new passes.
+nonisolated enum FightScoring {
+    static let actionPoints: [(action: String, points: Double, label: String)] = [
+        ("strike", 1, "Strike landed"),
+        ("significant_strike", 2, "Significant strike"),
+        ("ground_strike", 1, "Ground strike"),
+        ("knockdown", 8, "Knockdown"),
+        ("hurt", 5, "Opponent hurt/wobbled"),
+        ("takedown", 4, "Takedown"),
+        ("submission_attempt", 5, "Submission attempt"),
+        ("dominant_position", 3, "Dominant position gained"),
+        ("reversal", 2, "Reversal/sweep"),
+    ]
+
+    static func points(for action: String) -> Double {
+        actionPoints.first { $0.action == action }?.points ?? 1
+    }
+
+    static var actionKeys: [String] { actionPoints.map(\.action) }
+}
+
+/// Web-crawled fan-reaction research for one video's fight — saved as video
+/// metadata from the Analyze page. `summaryJSON` is the model-distilled,
+/// user-editable story the wizards inject into planning and captions.
+nonisolated struct FightResearchRecord: Identifiable, Sendable, Hashable {
+    var id: Int64
+    var videoID: Int64
+    /// User-confirmed fight identity, e.g. "Jan Blachowicz vs Carlos Ulberg".
+    var fightLabel: String
+    var event: String
+    var fightDate: String
+    /// Story JSON: fight, sentiment, talking_points, controversy,
+    /// story{angle, arc, hook_line, overlay_lines}.
+    var summaryJSON: String
+    /// JSON array of the sources the crawler actually fetched.
+    var sourcesJSON: String
+    var researchedAt: Date?
+    var provider: String?
+    var model: String?
+
+    var summary: [String: Any] {
+        summaryJSON.data(using: .utf8)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+    }
+
+    var sources: [String] {
+        sourcesJSON.data(using: .utf8)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String] } ?? []
+    }
+
+    /// Overlay-text candidates (hook first) for the wizards' suggestions.
+    var overlayLines: [String] {
+        guard let story = summary["story"] as? [String: Any] else { return [] }
+        var lines: [String] = []
+        if let hook = story["hook_line"] as? String, !hook.isEmpty { lines.append(hook) }
+        for line in story["overlay_lines"] as? [String] ?? [] where !line.isEmpty {
+            if !lines.contains(line) { lines.append(line) }
+        }
+        return lines
+    }
+}
+
 /// A user note anchored at a timestamp in a source video — injected into
 /// that video's analysis prompt as highest-priority guidance.
 nonisolated struct VideoNote: Identifiable, Sendable, Hashable {
@@ -280,9 +356,34 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     var captionModel: String?
     var rationale: String?
     var batchID: String?
+    /// Deterministic post-render checks. Nil only for videos created before
+    /// the quality gate shipped.
+    var qualityJSON: String?
+    /// Graph media id after this locally generated video is published.
+    var instagramMediaID: String?
+    /// Joined from the matching Instagram media row when insights arrive.
+    var instagramStats: IGStats?
 
     var url: URL { URL(fileURLWithPath: path) }
     var filename: String { url.lastPathComponent }
+
+    var qualityReport: ReelQualityReport? {
+        guard let qualityJSON, let data = qualityJSON.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ReelQualityReport.self, from: data)
+    }
+
+    var performanceScore: Double? {
+        instagramStats.map(ReelPerformance.score)
+    }
+}
+
+/// A published Wizard reel with enough Graph insights to become a training
+/// signal. It privileges saves and shares relative to reach over raw views.
+nonisolated struct GeneratedPerformanceRecord: Sendable, Hashable {
+    var filename: String
+    var duration: Double
+    var rationale: String?
+    var stats: IGStats
 }
 
 nonisolated struct WizardResearchRecord: Sendable {

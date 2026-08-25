@@ -67,6 +67,19 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var tasteExemplarFrames: [String]
     /// Learned video types, each with its own rubric and exemplars.
     var tasteCategories: [TasteCategory]
+    /// Fight-research sources the crawler fetches for fan reactions (known
+    /// keys: "reddit", "sherdog" — only sources reachable with plain HTTP,
+    /// no logins; X/Instagram are login-walled and not offered).
+    var buzzSources: [String]
+    /// Freeform extra sources — subreddits ("r/ufc") crawl via Reddit's API,
+    /// domains ("mmamania.com") via site-scoped search, URLs fetch directly.
+    var buzzExtraSources: String
+
+    static let knownBuzzSources: [(key: String, label: String)] = [
+        ("reddit", "Reddit (r/MMA and other MMA subreddits)"),
+        ("news", "News coverage (Google News)"),
+        ("sherdog", "Sherdog forums"),
+    ]
 
     var id: String { profileName }
 
@@ -86,6 +99,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case tasteRubric = "taste_rubric"
         case tasteExemplarFrames = "taste_exemplar_frames"
         case tasteCategories = "taste_categories"
+        case buzzSources = "buzz_sources"
+        case buzzExtraSources = "buzz_extra_sources"
     }
 
     init(from decoder: Decoder) throws {
@@ -107,6 +122,16 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         tasteRubric = try container.decodeIfPresent(String.self, forKey: .tasteRubric) ?? ""
         tasteExemplarFrames = try container.decodeIfPresent([String].self, forKey: .tasteExemplarFrames) ?? []
         tasteCategories = try container.decodeIfPresent([TasteCategory].self, forKey: .tasteCategories) ?? []
+        var storedSources = try container.decodeIfPresent([String].self, forKey: .buzzSources)
+            ?? Self.knownBuzzSources.map(\.key)
+        // Lists saved before the news source existed carried the (never
+        // crawlable) x/instagram keys — swap them for news.
+        if storedSources.contains("x") || storedSources.contains("instagram") {
+            storedSources.removeAll { $0 == "x" || $0 == "instagram" }
+            if !storedSources.contains("news") { storedSources.append("news") }
+        }
+        buzzSources = storedSources
+        buzzExtraSources = try container.decodeIfPresent(String.self, forKey: .buzzExtraSources) ?? ""
     }
 
     init(name: String) {
@@ -125,6 +150,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         tasteRubric = ""
         tasteExemplarFrames = []
         tasteCategories = []
+        buzzSources = Self.knownBuzzSources.map(\.key)
+        buzzExtraSources = ""
     }
 
     var logoURL: URL? {

@@ -182,6 +182,28 @@ actor Database {
         researched_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS fight_research (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL UNIQUE REFERENCES videos(id) ON DELETE CASCADE,
+        fight_label TEXT NOT NULL DEFAULT '',
+        event TEXT NOT NULL DEFAULT '',
+        fight_date TEXT NOT NULL DEFAULT '',
+        summary_json TEXT NOT NULL DEFAULT '{}',
+        sources_json TEXT NOT NULL DEFAULT '[]',
+        provider TEXT,
+        model TEXT,
+        researched_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS fight_events (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        at_time REAL NOT NULL,
+        fighter_key TEXT NOT NULL DEFAULT '',
+        action TEXT NOT NULL,
+        points REAL NOT NULL DEFAULT 1
+    );
+
     CREATE TABLE IF NOT EXISTS wizard_feedback (
         id INTEGER PRIMARY KEY,
         generated_video_id INTEGER NOT NULL REFERENCES generated_videos(id) ON DELETE CASCADE,
@@ -388,6 +410,12 @@ actor Database {
         let generatedColumns = try connection.columnNames(of: "generated_videos")
         if !generatedColumns.contains("deleted") {
             try connection.execute("ALTER TABLE generated_videos ADD COLUMN deleted INTEGER DEFAULT 0")
+        }
+        if !generatedColumns.contains("quality_json") {
+            try connection.execute("ALTER TABLE generated_videos ADD COLUMN quality_json TEXT")
+        }
+        if !generatedColumns.contains("instagram_media_id") {
+            try connection.execute("ALTER TABLE generated_videos ADD COLUMN instagram_media_id TEXT")
         }
         try migrateScenesToAnalysisRuns(connection)
         // Databases migrated before batches learned about transcription:
@@ -1222,23 +1250,28 @@ actor Database {
     @discardableResult
     func insertGeneratedVideo(path: String, duration: Double, timelineJSON: String,
                               wizardProvider: String?, wizardModel: String?,
-                              rationale: String? = nil, batchID: String? = nil) throws -> Int64 {
+                              rationale: String? = nil, batchID: String? = nil,
+                              qualityJSON: String? = nil) throws -> Int64 {
         try connection.execute("""
             INSERT INTO generated_videos (path, duration, timeline_json, wizard_provider, wizard_model,
-                                          rationale, batch_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                                          rationale, batch_id, quality_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, [.text(path), .real(duration), .text(timelineJSON),
                   wizardProvider.map(SQLValue.text) ?? .null,
                   wizardModel.map(SQLValue.text) ?? .null,
                   rationale.map(SQLValue.text) ?? .null,
-                  batchID.map(SQLValue.text) ?? .null])
+                  batchID.map(SQLValue.text) ?? .null,
+                  qualityJSON.map(SQLValue.text) ?? .null])
         return connection.lastInsertRowID
     }
 
     func fetchGeneratedVideos() throws -> [GeneratedVideoRecord] {
         try connection.query("""
-            SELECT * FROM generated_videos WHERE COALESCE(deleted, 0) = 0
-            ORDER BY generated_at DESC, id DESC
+            SELECT g.*, m.stats_json AS instagram_stats_json
+            FROM generated_videos g
+            LEFT JOIN ig_media m ON m.media_id = g.instagram_media_id
+            WHERE COALESCE(g.deleted, 0) = 0
+            ORDER BY g.generated_at DESC, g.id DESC
             """).map(Self.generatedVideoRecord)
     }
 
@@ -1254,7 +1287,12 @@ actor Database {
                              captionProvider: row["caption_provider"]?.stringValue,
                              captionModel: row["caption_model"]?.stringValue,
                              rationale: row["rationale"]?.stringValue,
-                             batchID: row["batch_id"]?.stringValue)
+                             batchID: row["batch_id"]?.stringValue,
+                             qualityJSON: row["quality_json"]?.stringValue,
+                             instagramMediaID: row["instagram_media_id"]?.stringValue,
+                             instagramStats: row["instagram_stats_json"]?.stringValue
+                                .flatMap { $0.data(using: .utf8) }
+                                .flatMap { try? JSONDecoder().decode(IGStats.self, from: $0) })
     }
 
     func updateGeneratedCaption(id: Int64, caption: String, provider: String?, model: String?) throws {
@@ -1264,6 +1302,29 @@ actor Database {
                   provider.map(SQLValue.text) ?? .null,
                   model.map(SQLValue.text) ?? .null,
                   .integer(id)])
+    }
+
+    func recentGeneratedPerformance(limit: Int = 12) throws -> [GeneratedPerformanceRecord] {
+        try connection.query("""
+            SELECT g.path, g.duration, g.rationale, m.stats_json
+            FROM generated_videos g JOIN ig_media m ON m.media_id = g.instagram_media_id
+            WHERE COALESCE(g.deleted, 0) = 0
+            ORDER BY g.generated_at DESC, g.id DESC LIMIT ?
+            """, [.integer(Int64(limit))]).compactMap { row in
+                guard let json = row["stats_json"]?.stringValue,
+                      let data = json.data(using: .utf8),
+                      let stats = try? JSONDecoder().decode(IGStats.self, from: data) else { return nil }
+                return GeneratedPerformanceRecord(
+                    filename: URL(fileURLWithPath: row["path"]?.stringValue ?? "").lastPathComponent,
+                    duration: row["duration"]?.doubleValue ?? 0,
+                    rationale: row["rationale"]?.stringValue,
+                    stats: stats)
+            }
+    }
+
+    func markGeneratedVideoPublished(id: Int64, instagramMediaID: String) throws {
+        try connection.execute("UPDATE generated_videos SET instagram_media_id = ? WHERE id = ?",
+                               [.text(instagramMediaID), .integer(id)])
     }
 
     /// Soft delete: the row (plan, rationale, reviews) is retained as a
@@ -1437,6 +1498,88 @@ actor Database {
             """, [.text(topic), .text(resultJSON),
                   provider.map(SQLValue.text) ?? .null,
                   model.map(SQLValue.text) ?? .null])
+    }
+
+    // MARK: - Fight events (action scoring)
+
+    func fetchFightEvents() throws -> [FightEventRecord] {
+        try connection.query("SELECT * FROM fight_events ORDER BY video_id, at_time").map { row in
+            FightEventRecord(id: row["id"]?.intValue ?? 0,
+                             videoID: row["video_id"]?.intValue ?? 0,
+                             time: row["at_time"]?.doubleValue ?? 0,
+                             fighterKey: row["fighter_key"]?.stringValue ?? "",
+                             action: row["action"]?.stringValue ?? "",
+                             points: row["points"]?.doubleValue ?? 1)
+        }
+    }
+
+    /// A scoring pass replaces the video's whole event list.
+    func replaceFightEvents(videoID: Int64,
+                            events: [(time: Double, fighterKey: String,
+                                      action: String, points: Double)]) throws {
+        try connection.execute("DELETE FROM fight_events WHERE video_id = ?", [.integer(videoID)])
+        for event in events {
+            try connection.execute("""
+                INSERT INTO fight_events (video_id, at_time, fighter_key, action, points)
+                VALUES (?, ?, ?, ?, ?)
+                """, [.integer(videoID), .real(event.time), .text(event.fighterKey),
+                      .text(event.action), .real(event.points)])
+        }
+    }
+
+    // MARK: - Fight research
+
+    func fetchFightResearch() throws -> [FightResearchRecord] {
+        try connection.query("SELECT * FROM fight_research ORDER BY video_id").map { row in
+            FightResearchRecord(id: row["id"]?.intValue ?? 0,
+                                videoID: row["video_id"]?.intValue ?? 0,
+                                fightLabel: row["fight_label"]?.stringValue ?? "",
+                                event: row["event"]?.stringValue ?? "",
+                                fightDate: row["fight_date"]?.stringValue ?? "",
+                                summaryJSON: row["summary_json"]?.stringValue ?? "{}",
+                                sourcesJSON: row["sources_json"]?.stringValue ?? "[]",
+                                researchedAt: Self.parseSQLiteDate(row["researched_at"]?.stringValue),
+                                provider: row["provider"]?.stringValue,
+                                model: row["model"]?.stringValue)
+        }
+    }
+
+    func upsertFightResearch(videoID: Int64, fightLabel: String, event: String,
+                             fightDate: String, summaryJSON: String, sourcesJSON: String,
+                             provider: String?, model: String?) throws {
+        try connection.execute("""
+            INSERT INTO fight_research
+                (video_id, fight_label, event, fight_date, summary_json, sources_json,
+                 provider, model, researched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(video_id) DO UPDATE SET
+                fight_label = excluded.fight_label,
+                event = excluded.event,
+                fight_date = excluded.fight_date,
+                summary_json = excluded.summary_json,
+                sources_json = excluded.sources_json,
+                provider = excluded.provider,
+                model = excluded.model,
+                researched_at = excluded.researched_at
+            """, [.integer(videoID), .text(fightLabel), .text(event), .text(fightDate),
+                  .text(summaryJSON), .text(sourcesJSON),
+                  provider.map(SQLValue.text) ?? .null,
+                  model.map(SQLValue.text) ?? .null])
+    }
+
+    /// User edits to the story/identity — keeps sources and timestamp intact.
+    func updateFightResearch(videoID: Int64, fightLabel: String, event: String,
+                             fightDate: String, summaryJSON: String) throws {
+        try connection.execute("""
+            UPDATE fight_research
+            SET fight_label = ?, event = ?, fight_date = ?, summary_json = ?
+            WHERE video_id = ?
+            """, [.text(fightLabel), .text(event), .text(fightDate),
+                  .text(summaryJSON), .integer(videoID)])
+    }
+
+    func deleteFightResearch(videoID: Int64) throws {
+        try connection.execute("DELETE FROM fight_research WHERE video_id = ?", [.integer(videoID)])
     }
 
     func fetchAllFeedback() throws -> [FeedbackRecord] {

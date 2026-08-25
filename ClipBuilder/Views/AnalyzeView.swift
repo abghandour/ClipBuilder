@@ -12,6 +12,7 @@ struct AnalyzeView: View {
     @State private var pendingDispatch: PendingDispatch?
     @State private var renamingID: Int64?
     @State private var renameText = ""
+    @State private var fightResearchTarget: VideoRecord?
     @FocusState private var renameFocused: Bool
 
     /// Exactly one selected video → the preview pane shows it.
@@ -63,6 +64,9 @@ struct AnalyzeView: View {
                 .disabled(selection.isEmpty || store.isAnalyzing)
                 .help("Describe a video to create from the selected footage — the AI Wizard is set up from your description")
             }
+        }
+        .sheet(item: $fightResearchTarget) { video in
+            FightResearchSheet(video: video)
         }
         .sheet(isPresented: $showGenerateSheet) {
             GenerateVideoSheet(source: .videos(selectedVideos))
@@ -215,6 +219,42 @@ struct AnalyzeView: View {
                     .foregroundStyle(.secondary)
             }
             .width(60)
+
+            TableColumn("Fight Research") { video in
+                HStack(spacing: 4) {
+                    if store.fightResearchInFlight.contains(video.id) {
+                        ProgressView().controlSize(.small)
+                        Text("Researching…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if store.fightResearch[video.id] != nil {
+                        Button {
+                            fightResearchTarget = video
+                        } label: {
+                            Label("View", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Fan-reaction research is saved for this fight — click to read and edit it")
+                        Button {
+                            store.refreshFightResearch(video: video)
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Re-crawl the web with the saved fight identity (progress in the analysis log)")
+                    } else {
+                        Button("Research…") {
+                            fightResearchTarget = video
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Identify this video's fight and crawl the web for fan reactions — the wizards can build the reel's story from it")
+                    }
+                }
+            }
+            .width(120)
         }
         .contextMenu(forSelectionType: Int64.self) { ids in
             if ids.count == 1, let video = store.videos.first(where: { ids.contains($0.id) }) {
@@ -286,6 +326,40 @@ private struct VideoPreviewPane: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+
+            // Fight action graph: pace + per-fighter cumulative score from
+            // the scoring pass — click to seek the player to a moment.
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Fight Action")
+                        .font(.caption.weight(.medium))
+                    Spacer()
+                    if store.fightScoringInFlight.contains(video.id) {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Button(store.fightEvents[video.id]?.isEmpty == false ? "Re-score" : "Score") {
+                        store.scoreFightAction(video: video)
+                    }
+                    .controlSize(.small)
+                    .disabled(store.fightScoringInFlight.contains(video.id))
+                    .help("AI pass over the fight scenes logging strikes, takedowns, and submission attempts per fighter — runs automatically after analysis; progress shows in the analysis log")
+                }
+                if let events = store.fightEvents[video.id], !events.isEmpty {
+                    FightGraphView(events: events,
+                                   range: 0...max(1, video.duration),
+                                   people: store.people,
+                                   height: 64) { time in
+                        player?.seek(to: CMTime(seconds: time, preferredTimescale: 600),
+                                     toleranceBefore: .zero, toleranceAfter: .zero)
+                    }
+                } else {
+                    Text("Not scored yet — analyzed fight footage scores automatically; use Score to run it now.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             // The video's people roster: build it here, ahead of any run —
             // the analyze window then only asks which of them to require.

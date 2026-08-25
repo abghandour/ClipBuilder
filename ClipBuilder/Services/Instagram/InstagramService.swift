@@ -256,10 +256,16 @@ actor InstagramService {
     private static func templatePrompt(media: IGMediaRecord, duration: Double,
                                        cuts: [Double]) -> String {
         let stats = media.stats
-        var statsLine = ""
-        if let views = stats.views { statsLine += "\(views) views" }
-        if let likes = stats.likes { statsLine += statsLine.isEmpty ? "\(likes) likes" : ", \(likes) likes" }
-        if let comments = stats.comments { statsLine += statsLine.isEmpty ? "\(comments) comments" : ", \(comments) comments" }
+        var statsParts: [String] = []
+        if let views = stats.views { statsParts.append("\(views) views") }
+        if let reach = stats.reach { statsParts.append("\(reach) reach") }
+        if let likes = stats.likes { statsParts.append("\(likes) likes") }
+        if let comments = stats.comments { statsParts.append("\(comments) comments") }
+        if let saves = stats.saves { statsParts.append("\(saves) saves") }
+        if let shares = stats.shares { statsParts.append("\(shares) shares") }
+        if let watch = stats.avgWatchTime { statsParts.append(String(format: "%.1fs avg watch", watch)) }
+        let statsLine = statsParts.joined(separator: ", ")
+        let qualityLine = statsParts.isEmpty ? "unknown" : String(format: "%.2f", ReelPerformance.score(stats))
         let cutsLine = cuts.isEmpty
             ? "No hard cuts were detected (single take, or soft transitions only)."
             : cuts.map { String(format: "%.2f", $0) }.joined(separator: ", ")
@@ -269,6 +275,7 @@ actor InstagramService {
         Reel facts (authoritative — do not contradict them):
         - Duration: \(String(format: "%.1f", duration))s
         - Performance: \(statsLine.isEmpty ? "unknown" : statsLine)
+        - Normalized quality score: \(qualityLine) (weighted saves, shares, comments and likes per reach; use this to judge how representative the reel is, never copy its content)
         - Caption: \(media.caption.isEmpty ? "(none)" : String(media.caption.prefix(400)))
         - Detected cut timestamps (ffmpeg scene detection): \(cutsLine)
 

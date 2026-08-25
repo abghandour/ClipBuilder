@@ -33,6 +33,7 @@ struct CuratedWizardSheet: View {
     @State private var reelEndObserver: NSObjectProtocol?
     @State private var reelRebuildTask: Task<Void, Never>?
 
+
     init(scenes: [SceneRecord], targetDuration: Int, includeOutro: Bool,
          centerStageDefault: Bool = false, batchNames: [Int64: String] = [:],
          selectedBatchIDs: [Int64] = []) {
@@ -103,6 +104,14 @@ struct CuratedWizardSheet: View {
                 CurateSceneSheet(sceneID: scene.id)
             }
         }
+    }
+
+    /// Fight-action pace across [start, end] of this scene's video, for the
+    /// trim sliders' red sparkline — trim toward the spikes.
+    private func fightPace(for scene: SceneRecord, start: Double, end: Double) -> [Double] {
+        guard let events = store.fightEvents[scene.videoID] else { return [] }
+        return FightGraphView.paceCurve(events: events, start: start, end: end,
+                                        buckets: max(2, Int((end - start).rounded())))
     }
 
     /// Keep the fine-trim window (10s of source) around the selection,
@@ -367,6 +376,8 @@ struct CuratedWizardSheet: View {
                     VideoTrimSlider(url: scene.videoURL,
                                     duration: min(10, scene.videoDuration),
                                     start: $model.editStart, end: $model.editEnd,
+                                    pace: fightPace(for: scene, start: zoomWindowStart,
+                                                    end: zoomWindowStart + min(10, scene.videoDuration)),
                                     timeOffset: zoomWindowStart,
                                     tickInterval: 0.5, minimumSpan: 0.5,
                                     showsTimes: false) { time in
@@ -376,7 +387,9 @@ struct CuratedWizardSheet: View {
                 Text("Clip range — drag to trim or extend into the source footage")
                     .font(.caption.weight(.medium))
                 VideoTrimSlider(url: scene.videoURL, duration: scene.videoDuration,
-                                start: $model.editStart, end: $model.editEnd) { time in
+                                start: $model.editStart, end: $model.editEnd,
+                                pace: fightPace(for: scene, start: 0,
+                                                end: scene.videoDuration)) { time in
                     scrub(to: time)
                 }
                 HStack {
@@ -855,10 +868,85 @@ struct CuratedWizardSheet: View {
                     Text("Action mix").tag("action")
                 }
                 .help("How approved clips join: straight cuts, soft crossfades, or hard cuts with an action accent (knife slash, zoom punch, whip…) every few gaps")
+                Divider()
+                buzzSection
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    // MARK: - Fight story (saved research)
+
+    /// Saved fight research for the videos in this wizard's scene pool —
+    /// run and edited from Analyze → Fight Research.
+    private var poolResearch: [FightResearchRecord] {
+        let videoIDs = Set(model.queue.map(\.videoID))
+        return videoIDs.compactMap { store.fightResearch[$0] }
+            .sorted { $0.fightLabel < $1.fightLabel }
+    }
+
+    /// The distilled fan narrative for this footage, shown beside the
+    /// proposals so scene approval can follow the story fans are telling.
+    @ViewBuilder
+    private var buzzSection: some View {
+        Text("Fight Story")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+        if poolResearch.isEmpty {
+            Text("No fight research for this footage — run it from the Analyze page's Fight Research column, then reopen this wizard.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        ForEach(poolResearch) { record in
+            let summary = record.summary
+            let story = summary["story"] as? [String: Any] ?? [:]
+            VStack(alignment: .leading, spacing: 4) {
+                Text(record.fightLabel)
+                    .font(.caption.weight(.medium))
+                if let sentiment = summary["sentiment"] as? String, !sentiment.isEmpty {
+                    Text(sentiment)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let angle = story["angle"] as? String, !angle.isEmpty {
+                    Label(angle, systemImage: "scope")
+                        .font(.caption)
+                }
+                if let arc = story["arc"] as? String, !arc.isEmpty {
+                    Text(arc)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let hook = story["hook_line"] as? String, !hook.isEmpty {
+                    Label("Hook: \(hook)", systemImage: "quote.opening")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                if let points = summary["talking_points"] as? [[String: Any]], !points.isEmpty {
+                    ForEach(Array(points.prefix(4).enumerated()), id: \.offset) { _, point in
+                        if let moment = point["moment"] as? String {
+                            Text("• \(moment)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .help((point["why_fans_care"] as? String) ?? "")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Overlay-text candidates from every fight's research (hooks first).
+    private var buzzOverlayLines: [String] {
+        var lines: [String] = []
+        for record in poolResearch {
+            for line in record.overlayLines where !lines.contains(line) {
+                lines.append(line)
+            }
+        }
+        return lines
     }
 
     /// The bottom strip: every approved clip as a proportional-width chip.
@@ -973,6 +1061,25 @@ struct CuratedWizardSheet: View {
                             }
                         } else {
                             Text("Template overlays render your saved design; the text above replaces its dynamic line.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    if !buzzOverlayLines.isEmpty {
+                        Section {
+                            ForEach(buzzOverlayLines, id: \.self) { line in
+                                Button(line) {
+                                    if model.picks[index].overlayChoice == CuratedWizardModel.overlayNone {
+                                        model.picks[index].overlayChoice = WizardTextStyle.impact.rawValue
+                                    }
+                                    model.picks[index].overlayText = line
+                                }
+                            }
+                        } header: {
+                            Text("Fan buzz lines")
+                        } footer: {
+                            Text("From the Fight Story research on step 1 — click to use as this clip's overlay text.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

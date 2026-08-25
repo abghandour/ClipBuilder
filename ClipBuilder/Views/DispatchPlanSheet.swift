@@ -1613,6 +1613,10 @@ struct VideoTrimSlider: View {
     /// Per-second crowd loudness (dB) — drawn as a sparkline so the loud
     /// moments are findable while trimming. Empty = no sparkline.
     var loudness: [Double] = []
+    /// Fight-action pace per bucket across the strip's window (from the
+    /// scored fight events) — drawn as a red sparkline so the trim can chase
+    /// the action peaks. Empty = no sparkline.
+    var pace: [Double] = []
     /// Absolute source time of the strip's left edge — the strip windows
     /// [timeOffset, timeOffset + duration]. The start/end bindings stay in
     /// absolute source seconds. 0 = the strip spans from the file's start.
@@ -1734,6 +1738,22 @@ struct VideoTrimSlider: View {
                 }
                 .frame(height: 12)
                 .help("Crowd loudness — the spikes are where the arena reacted")
+            }
+            if pace.count > 1 {
+                GeometryReader { proxy in
+                    let width = proxy.size.width
+                    let peak = max(1, pace.max() ?? 1)
+                    Path { path in
+                        path.move(to: CGPoint(x: 0, y: 12))
+                        for (index, value) in pace.enumerated() {
+                            let x = width * CGFloat(index) / CGFloat(max(1, pace.count - 1))
+                            path.addLine(to: CGPoint(x: x, y: 12 * (1 - CGFloat(value / peak))))
+                        }
+                    }
+                    .stroke(.red.opacity(0.8), lineWidth: 1)
+                }
+                .frame(height: 12)
+                .help("Fight action pace — the spikes are where the points were scored")
             }
             if showsTimes {
                 HStack {

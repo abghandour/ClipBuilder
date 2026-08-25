@@ -16,6 +16,7 @@ struct WizardView: View {
     @AppStorage("wizard.centerStageCamera") private var centerStageCamera = "balanced"
     @AppStorage("wizard.allowWideSplit") private var allowWideSplit = false
     @AppStorage("wizard.enableTextOverlays") private var enableTextOverlays = false
+    @AppStorage("wizard.useFightResearch") private var useFightResearch = false
     @AppStorage("wizard.aiInstructions") private var aiInstructions = ""
     /// Hard duration for the generated reel, in seconds.
     @AppStorage("wizard.targetDuration") private var targetDuration = 10
@@ -213,6 +214,12 @@ struct WizardView: View {
             Section("Format & Branding") {
                 Picker("Video type", selection: $formatPreset) {
                     Text("Custom").tag("custom")
+                    Divider()
+                    Text("MMA finish").tag("mma-finish")
+                    Text("MMA submission sequence").tag("mma-submission")
+                    Text("MMA exchange").tag("mma-exchange")
+                    Text("MMA technique breakdown").tag("mma-technique")
+                    Divider()
                     Text("Fight recap").tag("recap")
                     Text("Best-of compilation").tag("compilation")
                     Text("Interview clip").tag("interview")
@@ -236,6 +243,15 @@ struct WizardView: View {
                     }
                 }
                 .help("Which taste steers scene picking for this video: the profile's main taste rubric (Settings → AI → Taste), one of your learned taste categories, or none at all. Picking the same category as the video type doesn't double it up.")
+                Toggle("Use fight research (fan reactions)", isOn: $useFightResearch)
+                    .help("Injects each fight's saved web research — crawled fan reactions distilled into a story — into planning and captions. Run and edit the research from Analyze → Fight Research.")
+                if useFightResearch {
+                    Text(store.fightResearch.isEmpty
+                         ? "No fight research saved yet — run it from the Analyze page's Fight Research column."
+                         : "\(store.fightResearch.count) fight(s) researched — research for the selected footage is injected automatically.")
+                        .font(.caption)
+                        .foregroundStyle(store.fightResearch.isEmpty ? .orange : .secondary)
+                }
                 Toggle("Watermark (brand logo)", isOn: $includeWatermark)
                     .help("Burns the profile's logo into the top-left corner of every frame — set the logo in Settings → Profile")
                 Toggle("Result headline lower-third", isOn: $includeHeadline)
@@ -727,6 +743,7 @@ struct WizardView: View {
         options.centerStageCamera = centerStageCamera
         options.allowWideSplit = allowWideSplit
         options.enableTextOverlays = enableTextOverlays
+        options.useFightResearch = useFightResearch
         options.aiInstructions = aiInstructions
         options.targetDurationSeconds = min(180, max(3, targetDuration))
         options.formatPreset = formatPreset

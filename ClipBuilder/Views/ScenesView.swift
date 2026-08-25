@@ -298,6 +298,18 @@ struct ScenesView: View {
                     description: Text("Run analysis on your source videos to detect scenes."))
             } else {
                 ScrollView {
+                    // Fight action for the selected batch's video — the pace
+                    // spikes point at the scenes worth curating.
+                    if let run = selectedRun,
+                       let events = store.fightEvents[run.videoID], !events.isEmpty,
+                       let video = store.videos.first(where: { $0.id == run.videoID }) {
+                        FightGraphView(events: events,
+                                       range: 0...max(1, video.duration),
+                                       people: store.people,
+                                       height: 56)
+                            .padding(.horizontal)
+                            .padding(.top, 8)
+                    }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12, alignment: .top)], spacing: 12) {
                         ForEach(filtered) { scene in
                             SceneCard(scene: scene,

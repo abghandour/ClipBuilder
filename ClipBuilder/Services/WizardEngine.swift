@@ -12,6 +12,9 @@ nonisolated struct WizardOptions: Sendable {
     var enableTextOverlays = false
     var useMusic = true
     var aiInstructions = ""
+    /// Inject each in-play video's saved fight research (crawled fan
+    /// reactions, run from the Analyze page) into planning and captions.
+    var useFightResearch = false
     /// Restrict scene selection to these analyze batches (empty = all).
     var selectedRunIDs: Set<Int64> = []
     /// Only pick from scenes the user promoted to the Curated set.
@@ -45,7 +48,7 @@ nonisolated struct WizardOptions: Sendable {
     /// every planned overlay; the text is guaranteed to appear on one clip.
     var pinnedOverlayTemplate: String?
     var pinnedOverlayText: String?
-    /// Reel format recipe: "custom", "recap", "compilation", "interview".
+    /// Reel format recipe: generic types plus MMA-specific editorial recipes.
     var formatPreset = "custom"
     /// Brand-kit elements burned into the render (need profile assets).
     var includeWatermark = true
@@ -489,6 +492,17 @@ actor WizardEngine {
                 }.joined(separator: "\n"))
         }
 
+        if !signals.publishedPerformance.isEmpty {
+            let ranked = signals.publishedPerformance.sorted {
+                ReelPerformance.score($0.stats) > ReelPerformance.score($1.stats)
+            }
+            sections.append("### Published-Reel Performance (normalized by reach; replicate the strongest editorial patterns)\n"
+                + ranked.map { record in
+                    let rationale = record.rationale.map { " · strategy: \($0)" } ?? ""
+                    return "- \(record.filename): \(ReelPerformance.label(record.stats, duration: record.duration))\(rationale)"
+                }.joined(separator: "\n"))
+        }
+
         let recentFeedback = signals.feedback.prefix(5)
         if !recentFeedback.isEmpty {
             sections.append("### Recent Feedback Notes\n"
@@ -511,6 +525,7 @@ actor WizardEngine {
                             signals: TrainingSignals,
                             people: [PersonRecord],
                             outcomes: [FightOutcome],
+                            fightResearch: [FightResearchRecord] = [],
                             options: WizardOptions) -> String {
         // Fight results the analyzer extracted — the ground truth behind
         // "headline" and recap storytelling.
@@ -533,6 +548,42 @@ actor WizardEngine {
         }
         var presetBlock = ""
         switch options.formatPreset {
+        case "mma-finish":
+            presetBlock = """
+
+            ## FORMAT: MMA FINISH (hard requirements)
+            - Make an 8–15 second finish-first reel. The opening 1–1.5 seconds MUST show the cleanest impact, tap, or immediate reaction; then give only enough lead-in to make the payoff intelligible.
+            - Preserve the referee/crowd/commentator reaction after the finish. Use at most one slow-motion replay, and only for the decisive impact.
+            - Text should be factual and minimal: fighter name, round, or verified finish method only. Never imply a result not in FIGHT OUTCOMES.
+
+            """
+        case "mma-submission":
+            presetBlock = """
+
+            ## FORMAT: MMA SUBMISSION SEQUENCE (hard requirements)
+            - Tell a comprehensible technical arc: entry → control/escape attempt → tap or reaction. Do not open on a static hold without an immediate promise in text.
+            - Favor source audio and commentary; use slower, deliberate cuts rather than aggressive transition effects.
+            - Only call a submission/tap when FIGHT OUTCOMES or the analyzed scene explicitly confirms it.
+
+            """
+        case "mma-exchange":
+            presetBlock = """
+
+            ## FORMAT: MMA EXCHANGE (hard requirements)
+            - Build a 12–22 second escalating exchange: pressure → answer/counter → clearest reaction. Include both fighters when possible so the action reads instantly on mute.
+            - Start with the most surprising strike or reaction, then return to the setup. Preserve crowd swell and commentator peak around the payoff.
+            - Use hard cuts as the default; one action transition maximum for the decisive strike.
+
+            """
+        case "mma-technique":
+            presetBlock = """
+
+            ## FORMAT: MMA TECHNIQUE BREAKDOWN (hard requirements)
+            - Make a save-worthy 20–45 second educational reel: show the completed technique first, then a concise setup and the decisive detail.
+            - Use no more than three factual overlays: technique name, setup cue, and key detail. Do not invent technical terminology; use only what is visible or in user instructions.
+            - Prefer clarity, clean framing, and source audio over rapid montage effects.
+
+            """
         case "recap":
             presetBlock = """
 
@@ -761,12 +812,38 @@ actor WizardEngine {
             tasteRubricBlock = profileTasteBlock
         }
 
+        // Saved fight research (crawled fan reactions, run from Analyze and
+        // possibly edited by the user): the story the plan should tell.
+        var buzzBlock = ""
+        if !fightResearch.isEmpty {
+            let blocks = fightResearch.compactMap { record -> String? in
+                guard let data = try? JSONSerialization.data(withJSONObject: record.summary,
+                                                             options: [.prettyPrinted, .sortedKeys]),
+                      let json = String(data: data, encoding: .utf8) else { return nil }
+                return "### \(record.fightLabel)\(record.event.isEmpty ? "" : " — \(record.event)")\n\(json)"
+            }
+            if !blocks.isEmpty {
+                buzzBlock = """
+
+
+                ## FIGHT RESEARCH (fan reactions crawled from the web, reviewed by the user)
+                \(blocks.joined(separator: "\n\n"))
+                Fans are already telling this fight's story — make the reel join that conversation:
+                - Build the reel around "story.angle" and unfold it per "story.arc" (when several fights are in play, each clip follows ITS fight's research).
+                - Open on the moment the research centers on; "story.hook_line" is a strong hook overlay candidate.
+                - Feature the "talking_points" moments prominently — match them to scenes via tags, story lines, and outcomes.
+                - Text overlays may riff on "story.overlay_lines" and the fan sentiment, ALWAYS paraphrased in the brand's voice — never verbatim comments, never usernames.
+                - When this research conflicts with the generic guidance above, the research wins for narrative choices (structure, hook, overlay copy). Hard facts still come ONLY from FIGHT OUTCOMES below.
+                """
+            }
+        }
+
         return """
         You are an expert video editor creating an Instagram Reel for a \(domain) channel called \(brand). Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
         \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)
 
         ## Instagram Reels Research
-        \(researchJSON)
+        \(researchJSON)\(buzzBlock)
 
         ## Available Scenes
         \(sceneList)\(subjectsBlock)
@@ -1017,8 +1094,23 @@ actor WizardEngine {
         "it": "🇮🇹", "ja": "🇯🇵", "ko": "🇰🇷", "ru": "🇷🇺", "ar": "🇸🇦",
     ]
 
+    /// Fan-narrative lines for the caption prompt, from the saved fight
+    /// research: the caption should ride the conversation fans are having.
+    private func captionResearchLines(_ research: [FightResearchRecord]) -> String {
+        let lines = research.compactMap { record -> String? in
+            let summary = record.summary
+            let story = summary["story"] as? [String: Any]
+            let angle = story?["angle"] as? String ?? ""
+            let sentiment = summary["sentiment"] as? String ?? ""
+            guard !angle.isEmpty || !sentiment.isEmpty else { return nil }
+            return "- Fan buzz on \(record.fightLabel): \(sentiment) Story angle: \(angle) — write the caption to join that conversation (paraphrase, no usernames)."
+        }
+        return lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+    }
+
     private func captionPrompt(profile: BrandProfile, plan: WizardPlan,
-                               duration: Double, tags: [String]) -> String {
+                               duration: Double, tags: [String],
+                               fightResearch: [FightResearchRecord] = []) -> String {
         let handle = profile.socials["instagram"]?.handle ?? ""
         let domain = profile.effectiveDomain
         let languages = profile.captionLanguages.isEmpty ? ["en"] : profile.captionLanguages
@@ -1039,7 +1131,7 @@ actor WizardEngine {
         - Creative strategy: \(plan.rationale)
         \(plan.headline.map { "- Result headline shown on the video: \($0) — the caption must tell this result accurately.\n" } ?? "")- Tags/content: \(tags.joined(separator: ", "))
         - Music: \(plan.musicName ?? "none")
-
+        \(captionResearchLines(fightResearch))
         Requirements:
         - Caption should be 1-3 punchy lines that drive engagement (likes, comments, saves, shares)
         - Include a hook or question to encourage comments
@@ -1078,6 +1170,7 @@ actor WizardEngine {
         var reviews: [ReviewSummary] = []
         var preferences: [PreferenceRecord] = []
         var feedback: [FeedbackRecord] = []
+        var publishedPerformance: [GeneratedPerformanceRecord] = []
     }
 
     /// Everything the planning phase needs, loaded once per run.
@@ -1092,13 +1185,16 @@ actor WizardEngine {
         var people: [PersonRecord] = []
         /// Fight results the analyzer extracted, for headline composition.
         var outcomes: [FightOutcome] = []
+        /// Saved fight research for the videos in play (empty = off/none).
+        var fightResearch: [FightResearchRecord] = []
     }
 
     private func loadTrainingSignals(database: Database) async -> TrainingSignals {
         TrainingSignals(lessons: (try? await database.fetchLessons()) ?? [],
                         reviews: (try? await database.fetchReviewSummaries(limit: 10)) ?? [],
                         preferences: (try? await database.fetchPreferences(limit: 10)) ?? [],
-                        feedback: (try? await database.fetchAllFeedback()) ?? [])
+                        feedback: (try? await database.fetchAllFeedback()) ?? [],
+                        publishedPerformance: (try? await database.recentGeneratedPerformance()) ?? [])
     }
 
     private func loadPlanningInputs(options: WizardOptions,
@@ -1158,10 +1254,18 @@ actor WizardEngine {
         if !outcomes.isEmpty {
             emit("Fight outcomes available for \(outcomes.count) video(s)")
         }
+        var fightResearch: [FightResearchRecord] = []
+        if options.useFightResearch {
+            fightResearch = ((try? await database.fetchFightResearch()) ?? [])
+                .filter { videoIDs.contains($0.videoID) }
+            emit(fightResearch.isEmpty
+                 ? "Fight research: none saved for the selected footage — run it from Analyze → Fight Research"
+                 : "Fight research loaded for \(fightResearch.count) fight(s) — the plan follows the fan narrative")
+        }
         return PlanningInputs(research: research, scenes: scenes,
                               sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
                               music: music, signals: signals, people: people,
-                              outcomes: outcomes)
+                              outcomes: outcomes, fightResearch: fightResearch)
     }
 
     /// One prompt → AI call → validated plan; nil plan when the response is
@@ -1171,7 +1275,8 @@ actor WizardEngine {
         -> (plan: WizardPlan?, prompt: String, response: String) {
         let prompt = planPrompt(profile: profile, research: inputs.research, scenes: inputs.scenes,
                                 musicNames: inputs.music.map(\.name), signals: inputs.signals,
-                                people: inputs.people, outcomes: inputs.outcomes, options: options)
+                                people: inputs.people, outcomes: inputs.outcomes,
+                                fightResearch: inputs.fightResearch, options: options)
         let response = try await ai.call(prompt: prompt, task: "wizard",
                                          model: options.modelOverride, timeout: 300, log: emit)
         guard let rawPlan = AIResponseParser.jsonObject(from: response) else {
@@ -1323,7 +1428,8 @@ actor WizardEngine {
         do {
             let caption = try await ai.call(
                 prompt: captionPrompt(profile: profile, plan: plan,
-                                      duration: result.duration, tags: tagsUsed),
+                                      duration: result.duration, tags: tagsUsed,
+                                      fightResearch: inputs.fightResearch),
                 task: "captions", timeout: 60, log: emit)
             captionText = caption.trimmingCharacters(in: .whitespacesAndNewlines)
             let attribution = await ai.resolveProviderModel(task: "captions")
@@ -1767,6 +1873,11 @@ actor WizardEngine {
         }
 
         let finalDuration = await FFmpeg.duration(of: outputURL)
+        let quality = ReelQualityGate.evaluate(plan: plan, scenes: sceneMap, output: outputURL,
+                                               duration: finalDuration, options: options)
+        emit("Quality gate: \(quality.summary)")
+        for warning in quality.warnings { emit("Quality warning: \(warning)") }
+        for failure in quality.failures { emit("Quality failure: \(failure)") }
 
         // Persist the Builder-editable document for this render — clips with
         // their source ranges and transitions, overlay items with timing,
@@ -1783,12 +1894,15 @@ actor WizardEngine {
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 
         let attribution = await ai.resolveProviderModel(task: "wizard", model: options.modelOverride)
+        let qualityJSON = (try? JSONEncoder().encode(quality))
+            .flatMap { String(data: $0, encoding: .utf8) }
         let recordID = try await database.insertGeneratedVideo(path: outputURL.path,
                                                                duration: finalDuration.rounded(toPlaces: 1),
                                                                timelineJSON: timelineJSON,
                                                                wizardProvider: attribution.provider,
                                                                wizardModel: attribution.model,
-                                                               rationale: plan.rationale)
+                                                               rationale: plan.rationale,
+                                                               qualityJSON: qualityJSON)
         return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID)
     }
 

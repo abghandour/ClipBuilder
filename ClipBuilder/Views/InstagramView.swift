@@ -12,6 +12,7 @@ struct InstagramView: View {
         case views = "Views"
         case likes = "Likes"
         case comments = "Comments"
+        case quality = "Quality"
         var id: String { rawValue }
     }
 
@@ -35,6 +36,8 @@ struct InstagramView: View {
             return store.igMedia.sorted { ($0.stats.likes ?? -1) > ($1.stats.likes ?? -1) }
         case .comments:
             return store.igMedia.sorted { ($0.stats.comments ?? -1) > ($1.stats.comments ?? -1) }
+        case .quality:
+            return store.igMedia.sorted { ReelPerformance.score($0.stats) > ReelPerformance.score($1.stats) }
         }
     }
 
@@ -85,7 +88,7 @@ struct InstagramView: View {
 
     private func learnTopPerformers() {
         let top = sortedMedia
-            .sorted { ($0.stats.views ?? 0) > ($1.stats.views ?? 0) }
+            .sorted { ReelPerformance.score($0.stats) > ReelPerformance.score($1.stats) }
             .prefix(5)
         store.learnFromReels(Array(top))
     }
@@ -143,7 +146,7 @@ struct InstagramView: View {
             Menu {
                 Button("Learn from Selected (\(learnSelection.count))") { learnSelected() }
                     .disabled(learnSelection.isEmpty || store.isStudyingTaste)
-                Button("Learn from Top 5 Performers") { learnTopPerformers() }
+                Button("Learn from Top 5 Quality Reels") { learnTopPerformers() }
                     .disabled(store.isStudyingTaste || sortedMedia.isEmpty)
                 if !learnSelection.isEmpty {
                     Divider()
@@ -159,7 +162,7 @@ struct InstagramView: View {
                     Label("Learn", systemImage: "graduationcap")
                 }
             }
-            .help("Teach the taste profile from reels: tick reels with the circle on each card, or learn from your top performers automatically. Each reel is classified into a video type (fight highlights, interviews, …) whose rubric it refines.")
+            .help("Teach the taste profile from reels: tick reels with the circle on each card, or learn from the five strongest normalized save/share/comment performers. Each reel is classified into a video type (fight highlights, interviews, …) whose rubric it refines.")
         }
         ToolbarItem(placement: .primaryAction) {
             if store.isFetchingInstagram {

@@ -178,6 +178,27 @@ private struct ProfileSettingsTab: View {
                           prompt: Text("MMA, cooking, travel…"))
             }
 
+            Section("Fight Research Sources") {
+                ForEach(BrandProfile.knownBuzzSources, id: \.key) { source in
+                    Toggle(source.label, isOn: Binding(
+                        get: { store.activeProfile.buzzSources.contains(source.key) },
+                        set: { enabled in
+                            if enabled {
+                                if !store.activeProfile.buzzSources.contains(source.key) {
+                                    store.activeProfile.buzzSources.append(source.key)
+                                }
+                            } else {
+                                store.activeProfile.buzzSources.removeAll { $0 == source.key }
+                            }
+                        }))
+                }
+                TextField("Extra sources", text: $store.activeProfile.buzzExtraSources,
+                          prompt: Text("r/ufc, mmamania.com — comma-separated"))
+                Text("Crawled with plain web requests (Reddit's public API, site-scoped search) when you run Fight Research from the Analyze page — no logins, which is why X and Instagram aren't offered. The distilled story is saved on the video and the wizards can build the reel's narrative and captions from it. Saved with the profile.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Brand Kit") {
                 HStack {
                     TextField("Logo image (watermark + outro)", text: $store.activeProfile.logoPath,

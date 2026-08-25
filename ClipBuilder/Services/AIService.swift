@@ -147,6 +147,7 @@ actor AIService {
               model: String? = nil,
               provider providerOverride: String? = nil,
               timeout: TimeInterval = 300,
+              webAccess: Bool = false,
               log: (@Sendable (String) -> Void)? = nil) async throws -> String {
         let emit = log ?? { _ in }
         // Verbose logging (the log panels' checkbox): show exactly what the
@@ -171,7 +172,7 @@ actor AIService {
             do {
                 return try await callProvider(key: candidate.provider, model: candidate.model,
                                               prompt: prompt, frames: frames, video: video,
-                                              timeout: timeout, emit: emit)
+                                              timeout: timeout, webAccess: webAccess, emit: emit)
             } catch let error as AIError {
                 lastError = error
                 if case .promptTooLong = error { tooLongError = error }
@@ -187,6 +188,7 @@ actor AIService {
 
     private func callProvider(key: String, model: String?, prompt: String,
                               frames: [AIFrame]?, video: URL? = nil, timeout: TimeInterval,
+                              webAccess: Bool = false,
                               emit: @escaping @Sendable (String) -> Void) async throws -> String {
         guard let provider = AICatalog.provider(key) else {
             throw AIError.notConfigured("Unknown AI provider: \(key)")
@@ -201,10 +203,13 @@ actor AIService {
             effectiveFrames = nil
         }
 
+        if webAccess && key != "claude" {
+            emit("\(provider.label) runs without live web tools here — the research relies on the model's own knowledge.")
+        }
         switch key {
         case "claude":
             return try await callClaude(binary: binary, prompt: prompt, frames: effectiveFrames,
-                                        model: model, timeout: timeout, log: emit)
+                                        model: model, timeout: timeout, webAccess: webAccess, log: emit)
         case "gemini":
             // Gemini is video-native: hand it the actual file (motion,
             // impact, audio) instead of sampled stills when one is offered.
@@ -230,7 +235,7 @@ actor AIService {
     // MARK: - Claude (stream-json protocol)
 
     private func callClaude(binary: URL, prompt: String, frames: [AIFrame]?,
-                            model: String?, timeout: TimeInterval,
+                            model: String?, timeout: TimeInterval, webAccess: Bool = false,
                             log: @Sendable (String) -> Void) async throws -> String {
         var content: [[String: Any]] = []
         for frame in frames ?? [] {
@@ -255,6 +260,9 @@ actor AIService {
                          "--input-format", "stream-json",
                          "--output-format", "stream-json",
                          "--verbose"]
+        // Web research tasks: let the headless CLI actually search and read
+        // pages instead of answering from memory.
+        if webAccess { arguments += ["--allowedTools", "WebSearch,WebFetch"] }
         if let model { arguments += ["--model", model] }
         // Frontier planning models get the maximum extended-thinking budget —
         // the reel plan is the run's brain, and thinking depth shows there.

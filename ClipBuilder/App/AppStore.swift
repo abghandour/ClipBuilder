@@ -35,6 +35,16 @@ final class AppStore {
     var scenes: [SceneRecord] = []
     var analysisRuns: [AnalysisRun] = []
     var people: [PersonRecord] = []
+    /// Saved fight research by video id — the Analyze page's column and the
+    /// wizards' story/caption injection read from here.
+    var fightResearch: [Int64: FightResearchRecord] = [:]
+    /// Videos whose fight research is being crawled right now.
+    var fightResearchInFlight: Set<Int64> = []
+    /// Scored fight-action events by video id — the pace/winning graphs
+    /// under the video and scene timelines render from these.
+    var fightEvents: [Int64: [FightEventRecord]] = [:]
+    /// Videos whose fight-scoring pass is running right now.
+    var fightScoringInFlight: Set<Int64> = []
     var generatedVideos: [GeneratedVideoRecord] = []
     var feedback: [FeedbackRecord] = []
     var lessons: [WizardLesson] = []
@@ -138,6 +148,7 @@ final class AppStore {
     private let wizard: WizardEngine
     private let multitrackRenderer: MultitrackRenderer
     private let instagram: InstagramService
+    private let fightResearchService: FightResearchService
     private var watcher: FolderWatcher?
 
     init() {
@@ -148,6 +159,7 @@ final class AppStore {
         wizard = WizardEngine(ai: ai, render: renderEngine)
         multitrackRenderer = MultitrackRenderer(render: renderEngine)
         instagram = InstagramService(ai: ai)
+        fightResearchService = FightResearchService(ai: ai)
 
         let defaultProfile = ProfileStore.ensureDefaultProfile()
         var loaded = ProfileStore.listProfiles()
@@ -290,6 +302,10 @@ final class AppStore {
             let generated = try await database.fetchGeneratedVideos()
             let feedback = try await database.fetchAllFeedback()
             let lessons = try await database.fetchLessons()
+            let research = (try? await database.fetchFightResearch()) ?? []
+            self.fightResearch = Dictionary(uniqueKeysWithValues: research.map { ($0.videoID, $0) })
+            let events = (try? await database.fetchFightEvents()) ?? []
+            self.fightEvents = Dictionary(grouping: events, by: \.videoID)
             self.videos = videos
             self.scenes = scenes
             self.analysisRuns = analysisRuns
@@ -509,6 +525,23 @@ final class AppStore {
                         } catch {
                             analysisLog.append("\(video.filename): transcription failed — \(error.userMessage)")
                         }
+                    }
+                    // Fight scoring: dense pass over the fight scenes so the
+                    // pace/winning graphs light up right after analysis.
+                    do {
+                        analysisStage = "scoring fight action"
+                        let allScenes = (try? await database.fetchScenes(includeExcluded: true)) ?? []
+                        _ = try await analyzer.scoreFightAction(
+                            video: video, scenes: allScenes.filter { $0.videoID == video.id },
+                            profile: profile, database: database,
+                            provider: provider, model: model,
+                            log: { message in
+                                Task { @MainActor in self.analysisLog.append(message) }
+                            })
+                    } catch is CancellationError {
+                        break
+                    } catch {
+                        analysisLog.append("\(video.filename): fight scoring failed — \(error.userMessage)")
                     }
                     analysisLog.append("\(video.filename): done")
                 } catch is CancellationError {
@@ -1245,6 +1278,104 @@ final class AppStore {
             }
             isCuratedRendering = false
             refreshAll()
+        }
+    }
+
+    // MARK: - Fight research
+
+    /// Best-effort fight identity for the confirm sheet: named people on the
+    /// video, the extracted outcome, and the filename.
+    func guessFightIdentity(video: VideoRecord) async -> FightResearchService.Identity {
+        guard let database else { return FightResearchService.Identity() }
+        let keys = ((try? await database.fetchVideoPeople(videoID: video.id)) ?? []).map(\.key)
+        let outcomes = ((try? await database.fetchOutcomes()) ?? [])
+            .filter { $0.videoID == video.id }
+        return FightResearchService.guessIdentity(video: video, people: people,
+                                                  videoPersonKeys: keys, outcomes: outcomes)
+    }
+
+    /// Run (or re-run) the crawl + summarize for one video, then refresh the
+    /// cached dictionary. Throws with actionable messages.
+    func runFightResearch(video: VideoRecord, identity: FightResearchService.Identity,
+                          log: @escaping @Sendable (String) -> Void) async throws -> FightResearchRecord {
+        guard let database else {
+            throw AIError.notConfigured("No profile database is open")
+        }
+        guard !fightResearchInFlight.contains(video.id) else {
+            throw AIError.notConfigured("Research is already running for this video")
+        }
+        fightResearchInFlight.insert(video.id)
+        defer { fightResearchInFlight.remove(video.id) }
+        let record = try await fightResearchService.run(video: video, identity: identity,
+                                                        profile: activeProfile,
+                                                        database: database, emit: log)
+        fightResearch[video.id] = record
+        return record
+    }
+
+    /// Column-level refresh: re-crawl with the saved identity, logging into
+    /// the analysis log panel.
+    func refreshFightResearch(video: VideoRecord) {
+        guard let existing = fightResearch[video.id],
+              !fightResearchInFlight.contains(video.id) else { return }
+        let identity = FightResearchService.Identity(fighters: existing.fightLabel,
+                                                     event: existing.event,
+                                                     date: existing.fightDate)
+        Task {
+            do {
+                _ = try await runFightResearch(video: video, identity: identity) { message in
+                    Task { @MainActor in self.analysisLog.append("Fight research: \(message)") }
+                }
+            } catch {
+                presentError("Fight research failed for \(video.filename)", error)
+            }
+        }
+    }
+
+    /// User edits from the research sheet — identity + story only; the
+    /// crawled sources and timestamp stay.
+    func saveFightResearchEdits(videoID: Int64, fightLabel: String, event: String,
+                                fightDate: String, summaryJSON: String) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.updateFightResearch(videoID: videoID, fightLabel: fightLabel,
+                                                       event: event, fightDate: fightDate,
+                                                       summaryJSON: summaryJSON)
+                if var record = fightResearch[videoID] {
+                    record.fightLabel = fightLabel
+                    record.event = event
+                    record.fightDate = fightDate
+                    record.summaryJSON = summaryJSON
+                    fightResearch[videoID] = record
+                }
+            } catch {
+                presentError("Could not save the fight research edits", error)
+            }
+        }
+    }
+
+    /// Manual (re-)run of the fight-scoring pass for one video — the same
+    /// pass that runs automatically at the end of analysis.
+    func scoreFightAction(video: VideoRecord) {
+        guard let database, !fightScoringInFlight.contains(video.id) else { return }
+        fightScoringInFlight.insert(video.id)
+        let profile = activeProfile
+        Task {
+            do {
+                let scenes = ((try? await database.fetchScenes(includeExcluded: true)) ?? [])
+                    .filter { $0.videoID == video.id }
+                _ = try await analyzer.scoreFightAction(
+                    video: video, scenes: scenes, profile: profile, database: database,
+                    log: { message in
+                        Task { @MainActor in self.analysisLog.append(message) }
+                    })
+                let events = (try? await database.fetchFightEvents()) ?? []
+                fightEvents = Dictionary(grouping: events, by: \.videoID)
+            } catch {
+                presentError("Fight scoring failed for \(video.filename)", error)
+            }
+            fightScoringInFlight.remove(video.id)
         }
     }
 
@@ -2043,11 +2174,7 @@ final class AppStore {
 
     /// "1.2M views, 40K likes" — engagement context the study weights by.
     private static func performanceLine(_ media: IGMediaRecord) -> String {
-        var parts: [String] = []
-        if let views = media.stats.views { parts.append("\(views.formatted()) views") }
-        if let likes = media.stats.likes { parts.append("\(likes.formatted()) likes") }
-        if let comments = media.stats.comments { parts.append("\(comments.formatted()) comments") }
-        return parts.joined(separator: ", ")
+        ReelPerformance.label(media.stats, duration: media.duration)
     }
 
     /// One study: classify → distill → merge into the category. Returns the
@@ -2157,6 +2284,10 @@ final class AppStore {
                                 shareToFeed: Bool,
                                 log: @escaping @Sendable (String) -> Void)
         async throws -> GraphAPIProvider.PublishedReel {
+        if video.qualityReport?.verdict == .blocked {
+            throw InstagramError.fetchFailed(
+                "This reel failed the release-quality gate. Open it in Builder and render a corrected version before publishing.")
+        }
         guard !isPublishingToInstagram else {
             throw InstagramError.fetchFailed("Another publish is already running")
         }
@@ -2165,6 +2296,11 @@ final class AppStore {
         let result = try await instagram.publishReel(file: video.url, caption: caption,
                                                      shareToFeed: shareToFeed,
                                                      settings: settings.instagram, log: log)
+        if let database {
+            try? await database.markGeneratedVideoPublished(id: video.id,
+                                                            instagramMediaID: result.mediaID)
+            generatedVideos = (try? await database.fetchGeneratedVideos()) ?? generatedVideos
+        }
         let username = settings.instagram.connectedUsername
         if !username.isEmpty {
             refreshInstagram(username: username)

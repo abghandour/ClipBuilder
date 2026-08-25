@@ -292,6 +292,19 @@ struct TimelineClipBlock: View {
     @Environment(AppStore.self) private var store
     let clip: TimelineClip
     let row: Int
+
+    /// Scored fight-action pace mapped through this clip's source range;
+    /// nil when the clip's video has no scored events.
+    private func clipPace(model: BuilderTimelineModel) -> [Double]? {
+        let videoID = model.scene(for: clip)?.videoID
+            ?? store.videos.first { $0.path == clip.videoFile }?.id
+        guard let videoID, let events = store.fightEvents[videoID],
+              let start = clip.sourceStart else { return nil }
+        let pace = FightGraphView.paceCurve(events: events, start: start,
+                                            end: start + clip.sourceSpan,
+                                            buckets: max(2, Int(clip.sourceSpan.rounded())))
+        return pace.isEmpty ? nil : pace
+    }
     let onPlay: (TimelineClip) -> Void
 
     @State private var dragOffset: CGSize = .zero
@@ -314,6 +327,25 @@ struct TimelineClipBlock: View {
             }
             LinearGradient(colors: [.clear, .black.opacity(0.65)],
                            startPoint: .center, endPoint: .bottom)
+            // Fight-action pace across this clip's source range — shows how
+            // much scoring action the trim actually contains.
+            if let pace = clipPace(model: model), pace.count > 1 {
+                GeometryReader { proxy in
+                    let size = proxy.size
+                    let peak = max(1, pace.max() ?? 1)
+                    Path { path in
+                        path.move(to: CGPoint(x: 0, y: size.height))
+                        for (index, value) in pace.enumerated() {
+                            let x = size.width * CGFloat(index) / CGFloat(max(1, pace.count - 1))
+                            let rise = CGFloat(value / peak) * min(16, size.height * 0.4)
+                            path.addLine(to: CGPoint(x: x, y: size.height - rise))
+                        }
+                    }
+                    .stroke(.red.opacity(0.75), lineWidth: 1)
+                }
+                .allowsHitTesting(false)
+                .help("Fight action pace inside this clip — spikes are the scored moments")
+            }
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 3) {
                     if clip.wide {

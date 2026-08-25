@@ -150,12 +150,13 @@ nonisolated struct AIProviderSettings: Codable, Sendable {
 /// Static provider/task metadata ported from ai_cli.py.
 nonisolated enum AICatalog {
     // "wizard" stays the planning task's key for config back-compat.
-    static let tasks = ["analysis", "wizard", "research", "parse", "captions", "distill", "overlay"]
+    static let tasks = ["analysis", "wizard", "research", "fight_research", "parse", "captions", "distill", "overlay"]
 
     static let taskLabels: [String: String] = [
         "analysis": "Video analysis",
         "wizard": "Reel planning",
         "research": "Reels research",
+        "fight_research": "Fight research",
         "parse": "Request parsing",
         "captions": "Caption generation",
         "distill": "Lesson distillation",
@@ -166,6 +167,7 @@ nonisolated enum AICatalog {
         "analysis": "claude",
         "wizard": "claude",
         "research": "claude",
+        "fight_research": "claude",
         "parse": "claude",
         "captions": "claude",
         "distill": "claude",
@@ -194,6 +196,13 @@ nonisolated enum AICatalog {
                      ("codex", "gpt-5-mini"),
                      ("qwen", "qwen3-coder-flash"),
                      ("kimi", "kimi-code/kimi-for-coding")],
+        // Fight research: turns crawled fan chatter into the reel's story —
+        // strong summarization matters more than speed.
+        "fight_research": [("claude", "claude-sonnet-4-6"),
+                           ("gemini", "gemini-2.5-pro"),
+                           ("codex", "gpt-5"),
+                           ("qwen", "qwen3-coder-plus"),
+                           ("kimi", "kimi-code/kimi-for-coding")],
         // Structured extraction: fast + cheap is plenty.
         "parse": [("claude", "claude-haiku-4-5-20251001"),
                   ("gemini", "gemini-2.5-flash"),
