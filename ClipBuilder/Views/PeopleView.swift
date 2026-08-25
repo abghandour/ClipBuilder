@@ -14,6 +14,14 @@ struct PeopleView: View {
     @State private var reassignScene: SceneRecord?
     @State private var newPersonName = ""
     @State private var showGenerateSheet = false
+    @State private var mergeRequest: MergeRequest?
+
+    /// The people a merge sheet is deciding over — snapshotted at open so a
+    /// selection change underneath can't alter what gets merged.
+    struct MergeRequest: Identifiable {
+        let id = UUID()
+        var people: [PersonRecord]
+    }
 
     private var selectedPeople: [PersonRecord] {
         store.people.filter { selectedPersonIDs.contains($0.id) }
@@ -64,12 +72,12 @@ struct PeopleView: View {
         .toolbar {
             if selectedPeople.count > 1 {
                 Button {
-                    mergeSelected()
+                    mergeRequest = MergeRequest(people: selectedPeople)
                 } label: {
                     ToolbarBubbleLabel(text: "Merge \(selectedPeople.count) People",
                                        systemImage: "person.2.crop.square.stack")
                 }
-                .help("These are the same person — combine their scenes under one identity")
+                .help("These are the same person — pick the main record and combine their scenes under one identity")
             }
             Button {
                 showGenerateSheet = true
@@ -78,6 +86,12 @@ struct PeopleView: View {
             }
             .disabled(selectedPerson.map { displayedScenes(for: $0).isEmpty } ?? true)
             .help("Describe a video to create from the displayed scenes — this person and the active tag filter carry into the AI Wizard")
+        }
+        .sheet(item: $mergeRequest) { request in
+            MergePeopleSheet(people: request.people) { main, name in
+                store.mergePeople(request.people, into: main, renamingTo: name)
+                selectedPersonIDs = [main.id]
+            }
         }
         .sheet(isPresented: $showGenerateSheet) {
             if let person = selectedPerson {
@@ -121,17 +135,6 @@ struct PeopleView: View {
         }
     }
 
-    /// Survivor: the first named selection, else the one with most scenes.
-    private func mergeSelected() {
-        let selected = selectedPeople
-        guard selected.count > 1 else { return }
-        let survivor = selected.first { !$0.name.isEmpty }
-            ?? selected.max { scenes(for: $0).count < scenes(for: $1).count }
-            ?? selected[0]
-        selectedPersonIDs = [survivor.id]
-        store.mergePeople(selected, into: survivor)
-    }
-
     // MARK: - People list
 
     private var peopleList: some View {
@@ -141,6 +144,11 @@ struct PeopleView: View {
                       videoCount: Set(scenes(for: person).map(\.videoID)).count)
                 .tag(person.id)
                 .contextMenu {
+                    if selectedPeople.count > 1, selectedPersonIDs.contains(person.id) {
+                        Button("Merge Records…") {
+                            mergeRequest = MergeRequest(people: selectedPeople)
+                        }
+                    }
                     if store.people.count > 1 {
                         Menu("Merge Into") {
                             ForEach(store.people.filter { $0.id != person.id }) { target in
@@ -274,6 +282,90 @@ struct PeopleView: View {
                 }
             }
         }
+    }
+}
+
+/// Merge confirmation modal: every selected person's avatar in a row — the
+/// one the user picks is the Main record whose identity (key, avatar) is
+/// used going forward; the others fold into it. The name field applies to
+/// the merged person.
+private struct MergePeopleSheet: View {
+    let people: [PersonRecord]
+    /// (main record, edited name) — called on Merge.
+    let onMerge: (PersonRecord, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var mainID: Int64
+    @State private var name: String
+
+    init(people: [PersonRecord], onMerge: @escaping (PersonRecord, String) -> Void) {
+        self.people = people
+        self.onMerge = onMerge
+        let main = people.first { !$0.name.isEmpty } ?? people[0]
+        _mainID = State(initialValue: main.id)
+        _name = State(initialValue: main.name)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Merge \(people.count) People")
+                .font(.headline)
+            Text("These records become one person. Click the avatar to use as the main record — its picture and identity carry forward; every other record's scenes fold into it.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(people) { person in
+                        let isMain = person.id == mainID
+                        VStack(spacing: 5) {
+                            PersonFaceAvatar(person: person, size: 64)
+                                .overlay {
+                                    Circle().strokeBorder(
+                                        isMain ? Color.accentColor : .clear, lineWidth: 3)
+                                }
+                            Text(person.displayName)
+                                .font(.caption)
+                                .lineLimit(1)
+                            Text("Main")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .opacity(isMain ? 1 : 0)
+                        }
+                        .frame(width: 86)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            mainID = person.id
+                            // Adopt the new main's name unless the user
+                            // already typed something of their own.
+                            if name.isEmpty { name = person.name }
+                        }
+                        .help(person.descriptor)
+                    }
+                }
+                .padding(2)
+            }
+
+            TextField("Name", text: $name, prompt: Text("Name this person"))
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Merge") {
+                    if let main = people.first(where: { $0.id == mainID }) {
+                        onMerge(main, name)
+                    }
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 400, maxWidth: 560)
     }
 }
 
