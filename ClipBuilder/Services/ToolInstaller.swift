@@ -5,12 +5,19 @@ nonisolated enum ToolInstallError: Error, CustomStringConvertible {
     case downloadFailed(tool: String, reason: String)
     case unzipFailed(tool: String, stderr: String)
     case notInstalledAfterInstall(tools: [String])
+    case installFailed(tool: String, exitCode: Int32, stderr: String)
+    case noInstaller(tool: String, reason: String)
 
     var description: String {
         switch self {
         case .brewFailed(let code, let stderr):
             let tail = stderr.split(separator: "\n").suffix(4).joined(separator: "\n")
             return "brew install failed (exit \(code)): \(tail)"
+        case .installFailed(let tool, let code, let stderr):
+            let tail = stderr.split(separator: "\n").suffix(4).joined(separator: "\n")
+            return "Installing \(tool) failed (exit \(code)): \(tail)"
+        case .noInstaller(let tool, let reason):
+            return "Can't install \(tool): \(reason)"
         case .downloadFailed(let tool, let reason):
             return "Could not download \(tool): \(reason)"
         case .unzipFailed(let tool, let stderr):
@@ -156,5 +163,54 @@ nonisolated enum ToolInstaller {
         guard result.exitCode == 0 else {
             throw ToolInstallError.unzipFailed(tool: tool, stderr: result.stderrText)
         }
+    }
+}
+
+/// Optional AI-provider CLIs (Qwen Code, Kimi Code) installable on demand
+/// from Settings → AI. Deliberately separate from the required tools above:
+/// nothing installs these automatically — the AI dispatcher just routes
+/// around providers that aren't there.
+nonisolated enum ProviderCLIInstaller {
+    /// Provider keys this can install; the rest of the catalog (claude,
+    /// gemini, codex) have their own installers/sign-in flows.
+    static func canInstall(_ key: String) -> Bool { key == "qwen" || key == "kimi" }
+
+    static func install(_ key: String, log: @escaping @Sendable (String) -> Void) async throws {
+        let binary = AICatalog.provider(key)?.bin ?? key
+        let command: String
+        switch key {
+        case "qwen":
+            // Qwen Code ships as an npm package (and a Homebrew formula).
+            if ProcessRunner.locate("npm") != nil {
+                command = "npm install -g @qwen-code/qwen-code@latest"
+            } else if ProcessRunner.locate("brew") != nil {
+                command = "brew install qwen-code"
+            } else {
+                throw ToolInstallError.noInstaller(
+                    tool: "Qwen Code",
+                    reason: "it needs npm (Node.js) or Homebrew — install one of those first")
+            }
+        case "kimi":
+            // Moonshot's official installer: a standalone binary, no Node.
+            command = "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"
+        default:
+            throw ToolInstallError.noInstaller(tool: key, reason: "no installer for this provider")
+        }
+        log("Running: \(command)")
+        // A login shell, so npm/brew living in nvm/Homebrew-on-ARM paths
+        // resolve the same way they do in the user's Terminal.
+        let result = try await ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: ["-lc", command], timeout: 900,
+            environment: ["HOMEBREW_NO_AUTO_UPDATE": "1", "NONINTERACTIVE": "1"])
+        guard result.exitCode == 0 else {
+            throw ToolInstallError.installFailed(tool: binary, exitCode: result.exitCode,
+                                                 stderr: result.stderrText)
+        }
+        ProcessRunner.resetLocateCache()
+        guard ProcessRunner.locate(binary) != nil else {
+            throw ToolInstallError.notInstalledAfterInstall(tools: [binary])
+        }
+        log("\(binary) installed — sign in by running '\(binary)' once in Terminal")
     }
 }

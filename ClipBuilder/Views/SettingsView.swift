@@ -620,6 +620,11 @@ private struct AISettingsTab: View {
         .task {
             availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
         }
+        // A just-installed CLI should show up in the routing pickers too.
+        .onChange(of: store.installingProviderCLIs) { _, installing in
+            guard installing.isEmpty else { return }
+            Task { availableProviders = await ModelPicker.probeAvailability(ai: store.ai) }
+        }
     }
 }
 
@@ -627,6 +632,8 @@ private struct AvailabilityRow: View {
     @Environment(AppStore.self) private var store
     let providerKey: String
     @State private var available: Bool?
+
+    private var isInstalling: Bool { store.installingProviderCLIs.contains(providerKey) }
 
     var body: some View {
         LabeledContent("Status") {
@@ -636,11 +643,27 @@ private struct AvailabilityRow: View {
             case .some(true):
                 Text("Installed").foregroundStyle(.green)
             case .some(false):
-                Text("Not found").foregroundStyle(.red)
+                HStack(spacing: 8) {
+                    Text("Not found").foregroundStyle(.red)
+                    if isInstalling {
+                        ProgressView().controlSize(.small)
+                        Text("Installing…").foregroundStyle(.secondary)
+                    } else if ProviderCLIInstaller.canInstall(providerKey) {
+                        Button("Install") {
+                            store.installProviderCLI(providerKey)
+                        }
+                        .controlSize(.small)
+                        .help("Downloads and installs this CLI (progress in the Analyze screen's activity log). You'll still need to sign in once by running it in Terminal.")
+                    }
+                }
             }
         }
         .task(id: providerKey) {
             available = await store.ai.isProviderAvailable(providerKey)
+        }
+        .onChange(of: isInstalling) { _, installing in
+            guard !installing else { return }
+            Task { available = await store.ai.isProviderAvailable(providerKey) }
         }
     }
 }
