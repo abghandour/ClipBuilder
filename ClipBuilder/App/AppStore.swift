@@ -137,6 +137,8 @@ final class AppStore {
     // Required command-line tools (ffmpeg, ffprobe, yt-dlp)
     var isInstallingTools = false
     private var hasCheckedToolsAtLaunch = false
+    /// Optional AI provider CLIs currently installing (keys: "qwen", "kimi").
+    var installingProviderCLIs: Set<String> = []
 
     // MARK: - Services
 
@@ -769,14 +771,20 @@ final class AppStore {
         }
     }
 
-    /// Merge several people into one. The survivor keeps its name; every
-    /// other selected person's scenes are retagged onto it.
-    func mergePeople(_ selected: [PersonRecord], into survivor: PersonRecord) {
+    /// Merge several people into one: every other selected person's scenes
+    /// are retagged onto the survivor. The survivor keeps its name unless
+    /// the merge sheet supplied an edited one.
+    func mergePeople(_ selected: [PersonRecord], into survivor: PersonRecord,
+                     renamingTo name: String? = nil) {
         guard let database else { return }
         Task {
             do {
                 for person in selected where person.id != survivor.id {
                     try await database.mergePeople(source: person, into: survivor)
+                }
+                if let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !trimmed.isEmpty, trimmed != survivor.name {
+                    try await database.renamePerson(id: survivor.id, name: trimmed)
                 }
                 await refreshAllNow()
             } catch {
@@ -969,6 +977,22 @@ final class AppStore {
                 await refreshAllNow()
             } catch {
                 presentError("Could not save the new name", error)
+            }
+        }
+    }
+
+    /// User pick from the Analyze table's Type column — the manual value
+    /// sticks (analysis only fills the type in when it's empty).
+    func setVideoType(_ video: VideoRecord, type: VideoType?) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.setVideoType(id: video.id, type: type?.rawValue)
+                if let index = videos.firstIndex(where: { $0.id == video.id }) {
+                    videos[index].videoType = type?.rawValue
+                }
+            } catch {
+                presentError("Could not save the video type", error)
             }
         }
     }
@@ -1229,6 +1253,8 @@ final class AppStore {
     // MARK: - Curated wizard
 
     var isCuratedRendering = false
+    /// An exact (real-pipeline) preview render is in flight for the wizard.
+    var isCuratedPreviewRendering = false
 
     /// Render a curated-wizard document through the Builder's multitrack
     /// pipeline, logging into the wizard's Generation Log. The branded outro
@@ -1243,26 +1269,8 @@ final class AppStore {
         let scenes = self.scenes
         Task {
             do {
-                var document = document
-                if includeOutro,
-                   profile.logoURL != nil || !(profile.socials["instagram"]?.handle ?? "").isEmpty {
-                    let scratch = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("CuratedOutro-\(UUID().uuidString)", isDirectory: true)
-                    try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-                    if let png = BrandRenderer.outroCard(profile: profile, to: scratch) {
-                        let card = scratch.appendingPathComponent("outro_card.mp4")
-                        try await BrandRenderer.cardClip(png: png, duration: 2.5, output: card)
-                        var clip = TimelineClip()
-                        clip.videoFile = card.path
-                        clip.sourceStart = 0
-                        clip.sourceEnd = 2.5
-                        clip.duration = 2.5
-                        clip.startTime = document.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0
-                        clip.transIn = "fadeblack"
-                        document.videoTrack.append(clip)
-                        wizardLog.append("Branded outro card appended")
-                    }
-                }
+                let document = try await curatedDocument(document, includeOutro: includeOutro,
+                                                         profile: profile)
                 let camera = UserDefaults.standard.string(forKey: "wizard.centerStageCamera") ?? "balanced"
                 let result = try await renderer.render(document: document, scenes: scenes,
                                                        profile: profile, database: database,
@@ -1278,6 +1286,68 @@ final class AppStore {
             }
             isCuratedRendering = false
             refreshAll()
+        }
+    }
+
+    /// The curated document exactly as a render receives it — the branded
+    /// outro card appended when enabled. Shared by Generate and the exact
+    /// preview so both see the same timeline.
+    private func curatedDocument(_ document: TimelineDocument, includeOutro: Bool,
+                                 profile: BrandProfile) async throws -> TimelineDocument {
+        var document = document
+        if includeOutro,
+           profile.logoURL != nil || !(profile.socials["instagram"]?.handle ?? "").isEmpty {
+            let scratch = FileManager.default.temporaryDirectory
+                .appendingPathComponent("CuratedOutro-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+            if let png = BrandRenderer.outroCard(profile: profile, to: scratch) {
+                let card = scratch.appendingPathComponent("outro_card.mp4")
+                try await BrandRenderer.cardClip(png: png, duration: 2.5, output: card)
+                var clip = TimelineClip()
+                clip.videoFile = card.path
+                clip.sourceStart = 0
+                clip.sourceEnd = 2.5
+                clip.duration = 2.5
+                clip.startTime = document.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0
+                clip.transIn = "fadeblack"
+                document.videoTrack.append(clip)
+                wizardLog.append("Branded outro card appended")
+            }
+        }
+        return document
+    }
+
+    /// Exact preview for the curated wizard: the REAL render pipeline
+    /// (framing, transitions, music, overlays, outro — identical output) to
+    /// a temporary file the reel preview plays. Nothing lands in the
+    /// Library. Returns nil on failure or cancellation.
+    func renderCuratedExactPreview(_ document: TimelineDocument,
+                                   includeOutro: Bool) async -> URL? {
+        guard let database, !isCuratedPreviewRendering else { return nil }
+        isCuratedPreviewRendering = true
+        defer { isCuratedPreviewRendering = false }
+        wizardLog.append("— Exact preview: rendering \(document.videoTrack.count) clip(s) —")
+        let profile = activeProfile
+        let renderer = multitrackRenderer
+        let scenes = self.scenes
+        do {
+            let document = try await curatedDocument(document, includeOutro: includeOutro,
+                                                     profile: profile)
+            let camera = UserDefaults.standard.string(forKey: "wizard.centerStageCamera") ?? "balanced"
+            let result = try await renderer.render(document: document, scenes: scenes,
+                                                   profile: profile, database: database,
+                                                   centerStageCamera: camera,
+                                                   preview: true) { message in
+                Task { @MainActor in self.wizardLog.append(message) }
+            }
+            return result.url
+        } catch is CancellationError {
+            wizardLog.append("Exact preview stopped.")
+            return nil
+        } catch {
+            wizardLog.append("Exact preview failed: \(error.userMessage)")
+            presentError("Exact preview failed", error)
+            return nil
         }
     }
 
@@ -1684,6 +1754,25 @@ final class AppStore {
                 presentError("Could not install required tools", error)
             }
             isInstallingTools = false
+        }
+    }
+
+    /// Optional AI CLIs (qwen, kimi) — never installed automatically; only
+    /// when the user clicks Install on the provider in Settings → AI.
+    func installProviderCLI(_ key: String) {
+        guard !installingProviderCLIs.contains(key) else { return }
+        installingProviderCLIs.insert(key)
+        let label = AICatalog.provider(key)?.label ?? key
+        analysisLog.append("Installing \(label)...")
+        Task {
+            do {
+                try await ProviderCLIInstaller.install(key) { message in
+                    Task { @MainActor in self.analysisLog.append(message) }
+                }
+            } catch {
+                presentError("Could not install \(label)", error)
+            }
+            installingProviderCLIs.remove(key)
         }
     }
 

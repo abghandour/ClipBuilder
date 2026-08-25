@@ -35,6 +35,11 @@ actor MultitrackRenderer {
         /// Playback speed (1 = normal): `duration` is screen time; source
         /// consumption maps through this factor.
         var speed: Double = 1
+        /// The scene's stored Center Stage camera path sliced to this clip's
+        /// source range (t=0 at sourceStart, source seconds). When present,
+        /// the reframe prepass replays it instead of re-tracking — the same
+        /// path the curated preview and workbench show, so WYSIWYG holds.
+        var cameraPath: [CameraPathKeyframe]?
     }
 
     nonisolated struct Segment: Sendable {
@@ -73,9 +78,14 @@ actor MultitrackRenderer {
 
     // MARK: - Entry point
 
+    /// `preview: true` runs the IDENTICAL pipeline (same framing, crops,
+    /// transitions, music, overlays, encode settings — pixel-for-pixel what
+    /// a real render produces) but writes to a temporary file and records
+    /// nothing in the Library. The curated wizard's Exact Preview uses it.
     func render(document: TimelineDocument, scenes: [SceneRecord],
                 profile: BrandProfile, database: Database,
                 centerStageCamera: String = "balanced",
+                preview: Bool = false,
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         // Overlay blocks render as their flattened text/image items.
         let document = document.expandingOverlayBlocks()
@@ -85,14 +95,31 @@ actor MultitrackRenderer {
         // (non-wide) clips.
         var reframedTemp: [URL] = []
         for index in clips.indices where clips[index].centerStage {
+            // The reframe consumes SOURCE time: a 0.5× clip's screen
+            // duration covers half as many source seconds.
+            let sourceSpan = clips[index].duration * clips[index].speed
             do {
-                emit("Clip \(index + 1): Center Stage reframe…")
-                let portrait = try await centerStageService.reframeClip(
-                    source: URL(fileURLWithPath: clips[index].sourcePath),
-                    start: clips[index].sourceStart,
-                    duration: clips[index].duration,
-                    tuning: .named(centerStageCamera),
-                    log: emit)
+                let source = URL(fileURLWithPath: clips[index].sourcePath)
+                let portrait: URL
+                if let path = clips[index].cameraPath {
+                    // Replay the stored path — the exact camera the preview
+                    // showed (including workbench edits). No re-tracking.
+                    emit("Clip \(index + 1): Center Stage reframe (saved camera path)…")
+                    portrait = try await centerStageService.reframeClip(
+                        source: source,
+                        start: clips[index].sourceStart,
+                        duration: sourceSpan,
+                        path: path,
+                        log: emit)
+                } else {
+                    emit("Clip \(index + 1): Center Stage reframe…")
+                    portrait = try await centerStageService.reframeClip(
+                        source: source,
+                        start: clips[index].sourceStart,
+                        duration: sourceSpan,
+                        tuning: .named(centerStageCamera),
+                        log: emit)
+                }
                 reframedTemp.append(portrait)
                 clips[index].sourcePath = portrait.path
                 clips[index].sourceStart = 0
@@ -112,7 +139,10 @@ actor MultitrackRenderer {
         }
 
         let totalDuration = clips.map { $0.startTime + $0.duration }.max() ?? 0
-        let outputURL = try Self.outputFile(profile: profile, totalDuration: totalDuration)
+        let outputURL = preview
+            ? FileManager.default.temporaryDirectory
+                .appendingPathComponent("ExactPreview-\(UUID().uuidString).mp4")
+            : try Self.outputFile(profile: profile, totalDuration: totalDuration)
         let scratch = try await render.makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
 
@@ -244,6 +274,11 @@ actor MultitrackRenderer {
         try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)
         let finalDuration = await FFmpeg.duration(of: outputURL)
 
+        if preview {
+            emit("Exact preview ready (\(finalDuration.timecode))")
+            return RenderResult(url: outputURL, duration: finalDuration)
+        }
+
         // Persist the COMPLETE editable document so "Open in Builder" (in
         // either app) restores every clip flag and layer setting.
         let encoder = JSONEncoder()
@@ -271,11 +306,22 @@ actor MultitrackRenderer {
             var videoID: Int64?
             var sourceStart = 0.0
             var duration = 0.0
+            var cameraPath: [CameraPathKeyframe]?
             if let sceneID = clip.sceneID, let scene = scenesByID[sceneID] {
                 sourcePath = scene.videoPath
                 videoID = scene.videoID
                 sourceStart = clip.sourceStart ?? scene.startTime
                 duration = clip.duration > 0 ? clip.duration : (scene.duration * 10).rounded() / 10
+                // Stored camera path (scene-relative source time) → this
+                // clip's range, so the render replays exactly what the
+                // preview showed instead of re-tracking.
+                if clip.centerStage, clip.wide, let path = scene.centerStagePath,
+                   path.keyframes.count >= 2 {
+                    let sliced = CenterStageService.slice(
+                        path.keyframes, from: sourceStart - scene.startTime,
+                        duration: duration * clip.effectiveSpeed)
+                    if sliced.count >= 2 { cameraPath = sliced }
+                }
             } else if let file = clip.videoFile, let start = clip.sourceStart {
                 sourcePath = file
                 sourceStart = start
@@ -307,7 +353,8 @@ actor MultitrackRenderer {
                                          effectiveCropXFrac: clip.wide ? effectiveCrop : nil,
                                          freeCrops: clip.freeCrops,
                                          captionsPosition: captionsResolved == "none" ? nil : captionsResolved,
-                                         speed: clip.effectiveSpeed))
+                                         speed: clip.effectiveSpeed,
+                                         cameraPath: cameraPath))
         }
         return resolved.sorted {
             ($0.track, $0.startTime, $0.stackOrder) < ($1.track, $1.startTime, $1.stackOrder)

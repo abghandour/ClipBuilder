@@ -32,6 +32,11 @@ struct CuratedWizardSheet: View {
     @State private var reelMuted = true
     @State private var reelEndObserver: NSObjectProtocol?
     @State private var reelRebuildTask: Task<Void, Never>?
+    // Exact preview: the reel rendered through the REAL pipeline to a temp
+    // file — pixel-for-pixel what Generate produces. Any edit invalidates it
+    // back to the live stitched approximation.
+    @State private var exactPreviewURL: URL?
+    @State private var exactPreviewTask: Task<Void, Never>?
 
 
     init(scenes: [SceneRecord], targetDuration: Int, includeOutro: Bool,
@@ -73,10 +78,14 @@ struct CuratedWizardSheet: View {
             teardownReelPlayer()
         }
         .onChange(of: model.picks) { rebuildReelPreview() }
+        // These only affect the render, so the stitched preview needn't
+        // rebuild — but a standing exact preview no longer matches.
+        .onChange(of: model.transitionStyle) { invalidateExactPreviewOnly() }
+        .onChange(of: model.includeOutro) { invalidateExactPreviewOnly() }
         .onChange(of: model.step) { _, step in
-            // The reel column only lives in step 1 — don't keep decoding
+            // The reel column lives in steps 1 and 4 — don't keep decoding
             // (or fighting the overlay step's player) off screen.
-            if step == .scenes {
+            if step == .scenes || step == .outro {
                 if reelPlaying { reelPlayer?.play() }
             } else {
                 reelPlayer?.pause()
@@ -289,10 +298,30 @@ struct CuratedWizardSheet: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                Text("Honors each clip's crop, speed, and Center Stage camera — overlays, music, and transitions are applied at generate.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    if store.isCuratedPreviewRendering {
+                        ProgressView().controlSize(.small)
+                        Text("Rendering exact preview…")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    } else if exactPreviewURL != nil {
+                        Label("Exact — this is the final video", systemImage: "checkmark.seal.fill")
+                            .font(.caption2)
+                            .foregroundStyle(.green)
+                            .help("Rendered by the real pipeline — Generate produces exactly this, pixel for pixel")
+                    } else {
+                        Button("Exact Preview") { renderExactPreview() }
+                            .controlSize(.small)
+                            .help("Render the reel through the real pipeline — framing, transitions, music, overlays, outro — and play the finished file here. Takes about as long as Generate.")
+                    }
+                    Spacer()
+                }
+                if exactPreviewURL == nil, !store.isCuratedPreviewRendering {
+                    Text("Live preview honors each clip's crop, speed, and Center Stage camera — transitions, music, and overlays show in the Exact Preview.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             } else {
                 Spacer()
                 Image(systemName: "film.stack")
@@ -439,6 +468,9 @@ struct CuratedWizardSheet: View {
     /// matches what Generate renders. Rebuilt whenever the picks change.
     private func rebuildReelPreview() {
         reelRebuildTask?.cancel()
+        // Edits outdate any standing exact render — fall back to the live
+        // stitched approximation until Exact Preview is run again.
+        invalidateExactPreviewOnly()
         let picks = model.picks
         guard !picks.isEmpty else {
             teardownReelPlayer()
@@ -478,10 +510,13 @@ struct CuratedWizardSheet: View {
                     hasAudio = false
                 }
                 // Slow motion / speed-up: the inserted source span stretches
-                // or shrinks to the pick's screen time.
+                // or shrinks to the pick's screen time. Screen durations are
+                // rounded to 0.1s exactly like buildDocument, so the preview
+                // timeline matches the render's clip boundaries.
+                let screenSeconds = (pick.duration * 10).rounded() / 10
+                let screen = CMTime(seconds: screenSeconds, preferredTimescale: 600)
                 var segmentDuration = range.duration
-                if pick.speed != 1 {
-                    let screen = CMTime(seconds: pick.duration, preferredTimescale: 600)
+                if pick.speed != 1 || abs(pick.sourceSpan - screenSeconds) > 0.001 {
                     let inserted = CMTimeRange(start: cursor, duration: range.duration)
                     videoTrack.scaleTimeRange(inserted, toDuration: screen)
                     if hasAudio { audioTrack?.scaleTimeRange(inserted, toDuration: screen) }
@@ -600,9 +635,40 @@ struct CuratedWizardSheet: View {
         if reelPlaying { player.play() }
     }
 
+    /// Render the reel through the actual pipeline and play the result —
+    /// what shows afterwards IS the file Generate would produce.
+    private func renderExactPreview() {
+        exactPreviewTask?.cancel()
+        reelRebuildTask?.cancel()
+        let document = model.buildDocument()
+        let includeOutro = model.includeOutro
+        exactPreviewTask = Task {
+            guard let url = await store.renderCuratedExactPreview(document,
+                                                                  includeOutro: includeOutro)
+            else { return }
+            guard !Task.isCancelled else {
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
+            if let old = exactPreviewURL { try? FileManager.default.removeItem(at: old) }
+            exactPreviewURL = url
+            installReelItem(AVPlayerItem(url: url))
+        }
+    }
+
+    /// Drop a standing exact render (the edit made it stale) without
+    /// touching the live stitched preview.
+    private func invalidateExactPreviewOnly() {
+        exactPreviewTask?.cancel()
+        exactPreviewTask = nil
+        if let url = exactPreviewURL { try? FileManager.default.removeItem(at: url) }
+        exactPreviewURL = nil
+    }
+
     private func teardownReelPlayer() {
         reelRebuildTask?.cancel()
         reelRebuildTask = nil
+        invalidateExactPreviewOnly()
         if let reelEndObserver {
             NotificationCenter.default.removeObserver(reelEndObserver)
         }
@@ -1267,28 +1333,35 @@ struct CuratedWizardSheet: View {
         let profile = store.activeProfile
         let hasBrandAssets = profile.logoURL != nil
             || !(profile.socials["instagram"]?.handle ?? "").isEmpty
-        VStack(spacing: 16) {
-            Toggle("Append the branded outro card", isOn: $model.includeOutro)
-                .toggleStyle(.switch)
-                .disabled(!hasBrandAssets)
-            if hasBrandAssets {
-                if model.includeOutro {
-                    OutroCardPreview(profile: profile)
-                        .frame(maxHeight: 360)
-                    Text("A 2.5s end card with the profile's logo, name, tagline, and follow CTA — faded in from black after the last clip.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        HSplitView {
+            VStack(spacing: 16) {
+                Toggle("Append the branded outro card", isOn: $model.includeOutro)
+                    .toggleStyle(.switch)
+                    .disabled(!hasBrandAssets)
+                if hasBrandAssets {
+                    if model.includeOutro {
+                        OutroCardPreview(profile: profile)
+                            .frame(maxHeight: 360)
+                        Text("A 2.5s end card with the profile's logo, name, tagline, and follow CTA — faded in from black after the last clip.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("The reel ends on your last clip.")
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
-                    Text("The reel ends on your last clip.")
-                        .foregroundStyle(.secondary)
+                    Text("No brand assets set — add a logo or Instagram handle in Settings → Profile to get an outro card.")
+                        .foregroundStyle(.orange)
                 }
-            } else {
-                Text("No brand assets set — add a logo or Instagram handle in Settings → Profile to get an outro card.")
-                    .foregroundStyle(.orange)
+                Spacer()
             }
-            Spacer()
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Final check before Generate: run the Exact Preview here and
+            // watch precisely the file that Generate will save.
+            reelPreviewPane
+                .frame(minWidth: 190, idealWidth: 260, maxWidth: 320, maxHeight: .infinity)
         }
-        .padding(24)
     }
 
     // MARK: - Shared pick list (steps 2–3)
@@ -1885,7 +1958,11 @@ final class CuratedWizardModel {
             clip.speed = pick.speed == 1 ? nil : pick.speed
             clip.sceneFullDuration = (pick.scene.duration * 10).rounded() / 10
             clip.wide = pick.scene.wide
-            clip.cropXFrac = pick.scene.cropXFrac
+            // Wide clips always carry a crop: without one the Builder
+            // renderer letterboxes them into a slot band, but the reel
+            // preview shows a full-frame centered 9:16 crop — pin the
+            // centered crop so the render matches the preview.
+            clip.cropXFrac = pick.scene.cropXFrac ?? (pick.scene.wide ? 0.5 : nil)
             clip.centerStage = pick.centerStage
             if let json = pick.scene.freeCropsJSON, let data = json.data(using: .utf8),
                let crops = try? JSONDecoder().decode([FreeCrop].self, from: data), !crops.isEmpty {
