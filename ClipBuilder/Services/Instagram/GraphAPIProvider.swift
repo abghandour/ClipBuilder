@@ -48,6 +48,50 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
         return object
     }
 
+    private func postJSON(_ path: String, form: [String: String]) async throws -> [String: Any] {
+        guard let url = URL(string: "\(Self.base)/\(path)") else {
+            throw InstagramError.fetchFailed("Invalid Graph API path: \(path)")
+        }
+        var request = URLRequest(url: url, timeoutInterval: 60)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded; charset=utf-8",
+                         forHTTPHeaderField: "Content-Type")
+        request.httpBody = Self.formEncode(form.merging(["access_token": token]) { current, _ in current })
+        let (data, _) = try await URLSession.shared.data(for: request)
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw InstagramError.parseFailed("Graph API returned non-JSON for \(path)")
+        }
+        if let error = object["error"] as? [String: Any] {
+            let message = error["message"] as? String ?? "unknown error"
+            switch error["code"] as? Int {
+            case 190:
+                throw InstagramError.fetchFailed(
+                    "Instagram access token expired or invalid — reconnect in Settings → Instagram. (\(message))")
+            case 200, 10:
+                throw InstagramError.fetchFailed(
+                    "Instagram refused the request: \(message) — the connected token likely lacks the "
+                    + "instagram_content_publish permission; reconnect in Settings → Instagram with a token that includes it")
+            default:
+                throw InstagramError.fetchFailed("Graph API: \(message)")
+            }
+        }
+        return object
+    }
+
+    /// Strict form encoding (RFC 3986 unreserved only) so captions with
+    /// newlines, '+', '&', or emoji survive the round trip.
+    private static func formEncode(_ form: [String: String]) -> Data {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return form.map { key, value in
+            let encodedKey = key.addingPercentEncoding(withAllowedCharacters: allowed) ?? key
+            let encodedValue = value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+            return "\(encodedKey)=\(encodedValue)"
+        }
+        .joined(separator: "&")
+        .data(using: .utf8) ?? Data()
+    }
+
     nonisolated struct ResolvedAccount: Sendable {
         var id: String
         var username: String
@@ -219,6 +263,95 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
             throw InstagramError.fetchFailed("Video download failed for \(shortcode)")
         }
         log("Downloaded reel \(shortcode) via the Graph API")
+    }
+
+    // MARK: - Publishing
+
+    nonisolated struct PublishedReel: Sendable {
+        var mediaID: String
+        var permalink: String?
+    }
+
+    /// Publish a local video file to the account as a Reel via the content
+    /// publishing API's resumable upload — no public hosting needed:
+    /// create a REELS container, POST the bytes to rupload.facebook.com,
+    /// poll the container until Instagram finishes processing, then publish.
+    /// Requires the token to carry instagram_content_publish.
+    func publishReel(username: String?, file: URL, caption: String, shareToFeed: Bool,
+                     log: @escaping @Sendable (String) -> Void) async throws -> PublishedReel {
+        let userID: String
+        if let igUserID, !igUserID.isEmpty {
+            userID = igUserID
+        } else {
+            userID = try await resolveAccount(matching: username).id
+        }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
+        let fileSize = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+        guard fileSize > 0 else {
+            throw InstagramError.fetchFailed("\(file.lastPathComponent) is missing or empty")
+        }
+
+        log("Creating the reel container…")
+        let container = try await postJSON("\(userID)/media", form: [
+            "media_type": "REELS",
+            "upload_type": "resumable",
+            "caption": caption,
+            "share_to_feed": shareToFeed ? "true" : "false",
+        ])
+        guard let containerID = container["id"] as? String else {
+            throw InstagramError.parseFailed("The media container response had no id")
+        }
+        guard let uploadURL = (container["uri"] as? String).flatMap(URL.init(string:))
+            ?? URL(string: "https://rupload.facebook.com/ig-api-upload/v23.0/\(containerID)") else {
+            throw InstagramError.fetchFailed("No usable upload URL for container \(containerID)")
+        }
+
+        log(String(format: "Uploading %@ (%.1f MB)…", file.lastPathComponent,
+                   Double(fileSize) / 1_048_576))
+        var request = URLRequest(url: uploadURL, timeoutInterval: 600)
+        request.httpMethod = "POST"
+        request.setValue("OAuth \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("0", forHTTPHeaderField: "offset")
+        request.setValue(String(fileSize), forHTTPHeaderField: "file_size")
+        let (uploadData, _) = try await URLSession.shared.upload(for: request, fromFile: file)
+        let uploadObject = (try? JSONSerialization.jsonObject(with: uploadData)) as? [String: Any] ?? [:]
+        guard uploadObject["success"] as? Bool == true else {
+            let detail = (uploadObject["debug_info"] as? [String: Any])?["message"] as? String
+                ?? String(data: uploadData, encoding: .utf8) ?? "unknown error"
+            throw InstagramError.fetchFailed("Video upload failed: \(detail)")
+        }
+
+        log("Waiting for Instagram to process the video…")
+        // Processing normally takes 15–90s; poll every 5s, give up after 5min.
+        let deadline = Date().addingTimeInterval(300)
+        poll: while true {
+            try await Task.sleep(for: .seconds(5))
+            let status = try await getJSON(containerID, query: ["fields": "status_code,status"])
+            switch status["status_code"] as? String {
+            case "FINISHED":
+                break poll
+            case "ERROR", "EXPIRED":
+                let detail = status["status"] as? String ?? "no detail from Instagram"
+                throw InstagramError.fetchFailed(
+                    "Instagram rejected the video (\(detail)). Reels must be MP4, 3s–15min, ≤1GB — "
+                    + "Clip Builder renders comply, so this usually means an audio/licensing issue")
+            default:
+                guard Date() < deadline else {
+                    throw InstagramError.fetchFailed(
+                        "Timed out after 5 minutes waiting for Instagram to process the video")
+                }
+            }
+        }
+
+        log("Publishing the reel…")
+        let published = try await postJSON("\(userID)/media_publish",
+                                           form: ["creation_id": containerID])
+        guard let mediaID = published["id"] as? String else {
+            throw InstagramError.parseFailed("The publish response had no media id")
+        }
+        let permalink = (try? await getJSON(mediaID, query: ["fields": "permalink"]))?["permalink"] as? String
+        log("Published ✓")
+        return PublishedReel(mediaID: mediaID, permalink: permalink)
     }
 
     private func download(_ remote: String?, to destination: URL) async -> Bool {

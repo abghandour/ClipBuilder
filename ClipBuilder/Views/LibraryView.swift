@@ -16,6 +16,7 @@ struct LibraryView: View {
     @State private var deleting: GeneratedVideoRecord?
     @State private var reviewTarget: GeneratedVideoRecord?
     @State private var builderTarget: GeneratedVideoRecord?
+    @State private var publishTarget: GeneratedVideoRecord?
 
     private var sorted: [GeneratedVideoRecord] {
         switch sortOrder {
@@ -60,6 +61,9 @@ struct LibraryView: View {
         }
         .sheet(item: $reviewTarget) { video in
             ReviewSheet(video: video)
+        }
+        .sheet(item: $publishTarget) { video in
+            InstagramPublishSheet(video: video)
         }
         // Hook for scripts/capture_help_screenshots.sh: accessibility-tree
         // clicking is too flaky to reach the review sheet, so screenshot
@@ -159,6 +163,12 @@ struct LibraryView: View {
                 .labelStyle(.iconOnly)
                 .help("Rate this reel and its clips — the wizard trains on your review")
 
+                Button("Publish to Instagram", systemImage: "paperplane") {
+                    publishTarget = video
+                }
+                .labelStyle(.iconOnly)
+                .help("Publish this video to the connected Instagram account as a Reel")
+
                 Button("Show in Finder", systemImage: "folder") {
                     NSWorkspace.shared.activateFileViewerSelecting([video.url])
                 }
@@ -179,6 +189,9 @@ struct LibraryView: View {
         .contextMenu {
             Button("Open in Builder") {
                 openInBuilder(video)
+            }
+            Button("Publish to Instagram…") {
+                publishTarget = video
             }
             Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([video.url])

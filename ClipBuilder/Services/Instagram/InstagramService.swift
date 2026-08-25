@@ -107,6 +107,25 @@ actor InstagramService {
         return accountID
     }
 
+    /// Publish a rendered video to the connected account as a Reel. Graph
+    /// API only — needs Settings → Instagram connected with a token carrying
+    /// instagram_content_publish.
+    func publishReel(file: URL, caption: String, shareToFeed: Bool,
+                     settings: InstagramSettings,
+                     log: @escaping @Sendable (String) -> Void) async throws -> GraphAPIProvider.PublishedReel {
+        guard settings.isGraphConnected else {
+            throw InstagramError.fetchFailed(
+                "No Instagram account is connected — connect one in Settings → Instagram first")
+        }
+        guard let provider = graphProvider(for: settings.connectedUsername, settings: settings) else {
+            throw InstagramError.fetchFailed(
+                "The Instagram access token is missing from the Keychain — reconnect in Settings → Instagram")
+        }
+        return try await provider.publishReel(username: settings.connectedUsername,
+                                              file: file, caption: caption,
+                                              shareToFeed: shareToFeed, log: log)
+    }
+
     /// Download the reel video if missing; write-through to the
     /// imported_externals registry. Returns the local file URL.
     func ensureDownloaded(media: IGMediaRecord, account: IGAccountRecord, database: Database,

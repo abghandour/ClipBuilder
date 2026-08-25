@@ -101,6 +101,7 @@ final class AppStore {
     var igAnalyzingMediaIDs: Set<Int64> = []
     var igDownloadingMediaIDs: Set<Int64> = []
     var isConnectingInstagram = false
+    var isPublishingToInstagram = false
     /// A taste-exemplar study is running (one at a time).
     var isStudyingTaste = false
     private var igAnalyzeTasks: [Int64: Task<Void, Never>] = [:]
@@ -2146,6 +2147,29 @@ final class AppStore {
             }
             isConnectingInstagram = false
         }
+    }
+
+    /// Publish a Library video to the connected Instagram account as a Reel.
+    /// Progress lines stream to `log`; throws with an actionable message on
+    /// failure. On success the connected account refreshes so the new reel
+    /// shows up in the Instagram tab.
+    func publishReelToInstagram(video: GeneratedVideoRecord, caption: String,
+                                shareToFeed: Bool,
+                                log: @escaping @Sendable (String) -> Void)
+        async throws -> GraphAPIProvider.PublishedReel {
+        guard !isPublishingToInstagram else {
+            throw InstagramError.fetchFailed("Another publish is already running")
+        }
+        isPublishingToInstagram = true
+        defer { isPublishingToInstagram = false }
+        let result = try await instagram.publishReel(file: video.url, caption: caption,
+                                                     shareToFeed: shareToFeed,
+                                                     settings: settings.instagram, log: log)
+        let username = settings.instagram.connectedUsername
+        if !username.isEmpty {
+            refreshInstagram(username: username)
+        }
+        return result
     }
 
     func disconnectInstagram() {

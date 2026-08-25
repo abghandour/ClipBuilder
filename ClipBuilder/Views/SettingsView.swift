@@ -68,7 +68,7 @@ private struct InstagramSettingsTab: View {
                     }
                     .disabled(graphToken.trimmingCharacters(in: .whitespaces).isEmpty
                               || store.isConnectingInstagram)
-                    Text("Paste a long-lived access token from a Meta app with instagram_basic and instagram_manage_insights, for the Facebook page linked to your business/creator account. Stored in the Keychain, never in settings files.")
+                    Text("Paste a long-lived access token from a Meta app with instagram_basic and instagram_manage_insights (add instagram_content_publish to publish reels from the Library), for the Facebook page linked to your business/creator account. Stored in the Keychain, never in settings files.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
