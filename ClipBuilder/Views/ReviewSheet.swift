@@ -134,6 +134,18 @@ struct ReviewSheet: View {
                 .font(.caption2)
                 .foregroundStyle(clip.speed == 1 ? .secondary : Color.orange)
 
+            // The planner's own reason for this pick — rate the intent, not
+            // just the footage; your verdict is stored alongside it.
+            if let intent = video.planClipReasons[clip.index] {
+                Text(intent)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.center)
+                    .frame(width: 90)
+                    .help("The planner picked this clip because: \(intent)")
+            }
+
             ThumbsToggle(value: Binding(
                 get: { clipVerdicts[clip.index] ?? 0 },
                 set: { clipVerdicts[clip.index] = $0 }))

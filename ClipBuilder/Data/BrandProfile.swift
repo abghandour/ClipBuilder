@@ -67,6 +67,10 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var tasteExemplarFrames: [String]
     /// Learned video types, each with its own rubric and exemplars.
     var tasteCategories: [TasteCategory]
+    /// House style distilled across EVERY analyzed Instagram reel (weighted
+    /// by performance): typical hook types, duration band, cut cadence,
+    /// structure, and overlay usage. Injected into every wizard plan.
+    var houseStyle: String
     /// Fight-research sources the crawler fetches for fan reactions (known
     /// keys: "reddit", "sherdog" — only sources reachable with plain HTTP,
     /// no logins; X/Instagram are login-walled and not offered).
@@ -99,6 +103,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case tasteRubric = "taste_rubric"
         case tasteExemplarFrames = "taste_exemplar_frames"
         case tasteCategories = "taste_categories"
+        case houseStyle = "house_style"
         case buzzSources = "buzz_sources"
         case buzzExtraSources = "buzz_extra_sources"
     }
@@ -122,6 +127,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         tasteRubric = try container.decodeIfPresent(String.self, forKey: .tasteRubric) ?? ""
         tasteExemplarFrames = try container.decodeIfPresent([String].self, forKey: .tasteExemplarFrames) ?? []
         tasteCategories = try container.decodeIfPresent([TasteCategory].self, forKey: .tasteCategories) ?? []
+        houseStyle = try container.decodeIfPresent(String.self, forKey: .houseStyle) ?? ""
         var storedSources = try container.decodeIfPresent([String].self, forKey: .buzzSources)
             ?? Self.knownBuzzSources.map(\.key)
         // Lists saved before the news source existed carried the (never
@@ -150,6 +156,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         tasteRubric = ""
         tasteExemplarFrames = []
         tasteCategories = []
+        houseStyle = ""
         buzzSources = Self.knownBuzzSources.map(\.key)
         buzzExtraSources = ""
     }

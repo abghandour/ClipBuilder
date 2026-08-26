@@ -94,6 +94,9 @@ final class AppStore {
     /// Options of the last run — "Retry" in the results sheet re-runs them.
     private(set) var lastWizardOptions: WizardOptions?
     var isDistillingLessons = false
+    var isDistillingHouseStyle = false
+    /// Result line of the last Wizard Brain export/import, for Settings.
+    var wizardBrainStatus: String?
     private var wizardTask: Task<Void, Never>?
 
     // Clip Builder
@@ -1250,6 +1253,139 @@ final class AppStore {
             }
             isDistillingLessons = false
         }
+    }
+
+    /// Distill the profile's house style from every analyzed Instagram reel
+    /// (weighted by performance) and save it — the wizard injects it into
+    /// every plan.
+    func distillHouseStyle() {
+        guard let database, !isDistillingHouseStyle else { return }
+        isDistillingHouseStyle = true
+        let wizard = wizard
+        let existing = activeProfile.houseStyle
+        Task {
+            do {
+                let style = try await wizard.distillHouseStyle(database: database,
+                                                               existing: existing) { message in
+                    Task { @MainActor in self.wizardLog.append(message) }
+                }
+                activeProfile.houseStyle = style
+                saveActiveProfile()
+                wizardLog.append("House style updated from the analyzed reels")
+            } catch {
+                presentError("House style distillation failed", error)
+            }
+            isDistillingHouseStyle = false
+        }
+    }
+
+    // MARK: - Wizard Brain export/import
+
+    /// Write the portable Wizard Brain (lessons + taste + house style, with
+    /// exemplar frames inlined) to a JSON file the user can back up in git
+    /// or hand to another user.
+    func exportWizardBrain(to url: URL) {
+        guard let database else { return }
+        Task {
+            do {
+                let lessons = try await database.fetchLessons()
+                let brain = WizardBrain.assemble(profile: activeProfile, lessons: lessons)
+                try brain.write(to: url)
+                wizardBrainStatus = "Exported \(lessons.count) lesson(s), \(activeProfile.tasteCategories.count) video type(s), taste rubric, and house style to \(url.lastPathComponent)"
+            } catch {
+                presentError("Wizard Brain export failed", error)
+            }
+        }
+    }
+
+    /// Merge a Wizard Brain file into this profile: new lessons are added
+    /// (duplicates by text are skipped, pinned stays pinned), new video-type
+    /// categories are added with their exemplar frames restored to disk, and
+    /// the taste rubric / house style fill in only when empty locally —
+    /// nothing the user already has is overwritten.
+    func importWizardBrain(from url: URL) {
+        guard let database else { return }
+        Task {
+            do {
+                let brain = try WizardBrain.read(from: url)
+                var notes: [String] = []
+
+                let existingTexts = Set((try await database.fetchLessons()).map {
+                    $0.text.lowercased()
+                })
+                var addedLessons = 0
+                var skippedLessons = 0
+                for lesson in brain.lessons {
+                    let text = lesson.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !text.isEmpty else { continue }
+                    if existingTexts.contains(text.lowercased()) {
+                        skippedLessons += 1
+                        continue
+                    }
+                    _ = try await database.addLesson(
+                        text: text, pinned: lesson.pinned,
+                        evidence: lesson.evidence.isEmpty ? "imported" : "\(lesson.evidence) · imported")
+                    addedLessons += 1
+                }
+                lessons = try await database.fetchLessons()
+                notes.append("\(addedLessons) lesson(s) added"
+                             + (skippedLessons > 0 ? " (\(skippedLessons) already present)" : ""))
+
+                var addedCategories = 0
+                var skippedCategories = 0
+                for category in brain.categories {
+                    if activeProfile.tasteCategories.contains(where: { $0.key == category.key }) {
+                        skippedCategories += 1
+                        continue
+                    }
+                    let frames = writeImportedTasteFrames(category.exemplarFramesBase64,
+                                                          key: category.key)
+                    activeProfile.tasteCategories.append(
+                        TasteCategory(key: category.key, label: category.label,
+                                      rubric: category.rubric, exemplarFrames: frames,
+                                      studiedCount: category.studiedCount))
+                    addedCategories += 1
+                }
+                notes.append("\(addedCategories) video type(s) added"
+                             + (skippedCategories > 0 ? " (\(skippedCategories) kept yours)" : ""))
+
+                let localRubricEmpty = activeProfile.tasteRubric
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if localRubricEmpty, !brain.tasteRubric.isEmpty {
+                    activeProfile.tasteRubric = brain.tasteRubric
+                    notes.append("taste rubric imported")
+                } else if !brain.tasteRubric.isEmpty {
+                    notes.append("taste rubric kept yours")
+                }
+                let localHouseStyleEmpty = activeProfile.houseStyle
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if localHouseStyleEmpty, !brain.houseStyle.isEmpty {
+                    activeProfile.houseStyle = brain.houseStyle
+                    notes.append("house style imported")
+                } else if !brain.houseStyle.isEmpty {
+                    notes.append("house style kept yours")
+                }
+                saveActiveProfile()
+                wizardBrainStatus = "Imported \(url.lastPathComponent) (from \"\(brain.profileName)\"): "
+                    + notes.joined(separator: ", ")
+            } catch {
+                presentError("Wizard Brain import failed", error)
+            }
+        }
+    }
+
+    /// Restore inlined exemplar frames to this profile's taste-frames folder.
+    private func writeImportedTasteFrames(_ framesBase64: [String], key: String) -> [String] {
+        let directory = SettingsStore.tasteFramesDirectory(profileName: activeProfile.profileName)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let stamp = Int(Date().timeIntervalSince1970)
+        var paths: [String] = []
+        for (index, base64) in framesBase64.prefix(8).enumerated() {
+            guard let data = Data(base64Encoded: base64) else { continue }
+            let url = directory.appendingPathComponent("imported-\(key)-\(stamp)-\(index).jpg")
+            if (try? data.write(to: url)) != nil { paths.append(url.path) }
+        }
+        return paths
     }
 
     func addLesson(text: String) {

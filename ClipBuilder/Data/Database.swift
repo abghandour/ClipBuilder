@@ -353,7 +353,7 @@ actor Database {
             ("generated_videos", ["caption", "drive_file_id", "drive_link",
                                   "caption_provider", "wizard_provider",
                                   "caption_model", "wizard_model",
-                                  "rationale", "batch_id"]),
+                                  "rationale", "batch_id", "plan_clips_json"]),
             ("videos", ["drive_file_id", "drive_link",
                         "analyzer_provider", "visual_analyzer_provider",
                         "speech_analyzer_provider", "analyzer_model",
@@ -1265,17 +1265,19 @@ actor Database {
     func insertGeneratedVideo(path: String, duration: Double, timelineJSON: String,
                               wizardProvider: String?, wizardModel: String?,
                               rationale: String? = nil, batchID: String? = nil,
-                              qualityJSON: String? = nil) throws -> Int64 {
+                              qualityJSON: String? = nil,
+                              planClipsJSON: String? = nil) throws -> Int64 {
         try connection.execute("""
             INSERT INTO generated_videos (path, duration, timeline_json, wizard_provider, wizard_model,
-                                          rationale, batch_id, quality_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                          rationale, batch_id, quality_json, plan_clips_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [.text(path), .real(duration), .text(timelineJSON),
                   wizardProvider.map(SQLValue.text) ?? .null,
                   wizardModel.map(SQLValue.text) ?? .null,
                   rationale.map(SQLValue.text) ?? .null,
                   batchID.map(SQLValue.text) ?? .null,
-                  qualityJSON.map(SQLValue.text) ?? .null])
+                  qualityJSON.map(SQLValue.text) ?? .null,
+                  planClipsJSON.map(SQLValue.text) ?? .null])
         return connection.lastInsertRowID
     }
 
@@ -1303,6 +1305,7 @@ actor Database {
                              rationale: row["rationale"]?.stringValue,
                              batchID: row["batch_id"]?.stringValue,
                              qualityJSON: row["quality_json"]?.stringValue,
+                             planClipsJSON: row["plan_clips_json"]?.stringValue,
                              instagramMediaID: row["instagram_media_id"]?.stringValue,
                              instagramStats: row["instagram_stats_json"]?.stringValue
                                 .flatMap { $0.data(using: .utf8) }
@@ -1395,6 +1398,7 @@ actor Database {
     func fetchReviewSummaries(limit: Int) throws -> [ReviewSummary] {
         let rows = try connection.query("""
             SELECT r.*, g.path AS video_path, g.rationale AS plan_rationale,
+                   g.plan_clips_json AS plan_clips_json,
                    COALESCE(g.deleted, 0) AS video_deleted
             FROM generation_reviews r JOIN generated_videos g ON g.id = r.generated_video_id
             ORDER BY r.created_at DESC, r.id DESC LIMIT ?
@@ -1409,8 +1413,45 @@ actor Database {
                                  clips: clipRows.map(Self.clipReview),
                                  videoFilename: URL(fileURLWithPath: path).lastPathComponent,
                                  rationale: row["plan_rationale"]?.stringValue,
-                                 videoDeleted: row["video_deleted"]?.boolValue ?? false)
+                                 videoDeleted: row["video_deleted"]?.boolValue ?? false,
+                                 clipReasons: GeneratedVideoRecord.clipReasons(
+                                     fromPlanClipsJSON: row["plan_clips_json"]?.stringValue))
         }
+    }
+
+    /// Reels the user approved (thumbs-up review), newest first, with their
+    /// plan shape — the wizard's positive exemplars.
+    func fetchWinningRecipes(limit: Int = 3) throws -> [WinningRecipeRecord] {
+        try connection.query("""
+            SELECT g.path, g.duration, g.rationale, g.plan_clips_json, m.stats_json
+            FROM generated_videos g
+            JOIN generation_reviews r ON r.generated_video_id = g.id AND r.verdict > 0
+            LEFT JOIN ig_media m ON m.media_id = g.instagram_media_id
+            WHERE COALESCE(g.deleted, 0) = 0
+            ORDER BY r.created_at DESC, r.id DESC LIMIT ?
+            """, [.integer(Int64(limit))]).map { row in
+                WinningRecipeRecord(
+                    filename: URL(fileURLWithPath: row["path"]?.stringValue ?? "").lastPathComponent,
+                    duration: row["duration"]?.doubleValue ?? 0,
+                    rationale: row["rationale"]?.stringValue,
+                    planClipsJSON: row["plan_clips_json"]?.stringValue,
+                    stats: row["stats_json"]?.stringValue
+                        .flatMap { $0.data(using: .utf8) }
+                        .flatMap { try? JSONDecoder().decode(IGStats.self, from: $0) })
+            }
+    }
+
+    /// Every cached reel template analysis with its reel's caption and
+    /// performance stats — the house-style distiller's input.
+    func fetchAllIGTemplates() throws -> [(templateJSON: String, statsJSON: String?)] {
+        try connection.query("""
+            SELECT t.template_json, m.stats_json
+            FROM ig_templates t LEFT JOIN ig_media m ON m.id = t.media_id
+            ORDER BY t.analyzed_at DESC
+            """).map { row in
+                (row["template_json"]?.stringValue ?? "{}",
+                 row["stats_json"]?.stringValue)
+            }
     }
 
     private static func generationReview(_ row: SQLRow) -> GenerationReview {

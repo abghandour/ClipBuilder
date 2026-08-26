@@ -14,7 +14,8 @@ nonisolated struct WizardOptions: Sendable {
     var aiInstructions = ""
     /// Inject each in-play video's saved fight research (crawled fan
     /// reactions, run from the Analyze page) into planning and captions.
-    var useFightResearch = false
+    /// On by default — the research is free story context when it exists.
+    var useFightResearch = true
     /// Restrict scene selection to these analyze batches (empty = all).
     var selectedRunIDs: Set<Int64> = []
     /// Only pick from scenes the user promoted to the Curated set.
@@ -107,6 +108,15 @@ nonisolated struct WizardPlanClip: Sendable {
     var overlayAnimation: String?
     var overlayKicker: String?
     var overlayAccent: String?
+    /// Vertical overlay placement from the plan/reference template:
+    /// "top" (default), "center", or "bottom".
+    var overlayPlacement: String?
+    /// "as_written" keeps the overlay text's casing (reference templates
+    /// with sentence-case text); default uppercases.
+    var overlayCase: String?
+    /// The model's stated reason for this pick — kept through validation so
+    /// reviews can be correlated with intent.
+    var reason: String?
     /// Playback speed: 1 = normal, 0.5–0.75 = slow motion, 1.25–2 =
     /// speed-up. Screen time is (end - start) / speed.
     var speed: Double = 1
@@ -125,6 +135,8 @@ nonisolated enum WizardTextStyle: String, CaseIterable {
     case minimal      // clean bold type with a soft shadow
 
     static let animations = ["fade", "slide_up", "pop", "word_reveal"]
+    static let placements = ["top", "center", "bottom"]
+    static let textCases = ["upper", "as_written"]
 
     /// Accept only #rgb/#rrggbb(aa)-style accents from the model.
     static func sanitizedAccent(_ accent: String?) -> String? {
@@ -134,15 +146,21 @@ nonisolated enum WizardTextStyle: String, CaseIterable {
         return accent
     }
 
-    /// The overlay template for this style: upper-third auto-fit box; the
-    /// caller sets text/timing. `accent` (a #hex from a reference template)
-    /// overrides the default yellow on kicker chips, starred words, and
-    /// tag stripes.
-    func overlayItem(text: String, kicker: String? = nil, accent: String? = nil) -> TextOverlayItem {
+    /// The overlay template for this style: auto-fit box placed per
+    /// `placement` (upper third by default); the caller sets text/timing.
+    /// `accent` (a #hex from a reference template) overrides the default
+    /// yellow on kicker chips, starred words, and tag stripes; `textCase`
+    /// "as_written" keeps the text's casing for sentence-case references.
+    func overlayItem(text: String, kicker: String? = nil, accent: String? = nil,
+                     placement: String? = nil, textCase: String? = nil) -> TextOverlayItem {
         var item = TextOverlayItem()
-        item.text = text.uppercased()
+        item.text = textCase == "as_written" ? text : text.uppercased()
         item.xFrac = 0.5
-        item.yFrac = 0.2
+        switch placement {
+        case "center": item.yFrac = 0.5
+        case "bottom": item.yFrac = 0.76
+        default: item.yFrac = 0.2
+        }
         item.wFrac = 0.82
         item.hFrac = 0.12
         item.boxOpacity = 0
@@ -199,7 +217,9 @@ nonisolated func wizardPlanOverlay(for clip: WizardPlanClip, text: String)
     }
     let style = WizardTextStyle(rawValue: clip.overlayStyle ?? "") ?? .impact
     let item = style.overlayItem(text: text, kicker: clip.overlayKicker,
-                                 accent: clip.overlayAccent)
+                                 accent: clip.overlayAccent,
+                                 placement: clip.overlayPlacement,
+                                 textCase: clip.overlayCase)
     return (OverlayComposition(texts: [item]), false)
 }
 
@@ -219,9 +239,6 @@ nonisolated struct WizardPlan: Sendable {
 /// Autonomous Reels generator — the Swift port of wizard.py: cached research
 /// → AI plan → validation → linear assembly → AI caption.
 actor WizardEngine {
-    static let researchTopic = "instagram_reels"
-    static let researchTTL: TimeInterval = 7 * 24 * 3600
-
     private let ai: AIService
     private let render: RenderEngine
     private let centerStage = CenterStageService()
@@ -244,78 +261,42 @@ actor WizardEngine {
         AssetStore.allFiles(of: .music)
     }
 
-    // MARK: - Research phase
+    // MARK: - Editorial playbook
 
-    private static let researchDefaults: [String: Any] = [
-        "ideal_duration_range": ["min": 15, "max": 30],
-        "optimal_duration": 22,
+    /// Curated combat-sports Reels playbook. This app is specialized for
+    /// MMA/grappling content, so a hand-written, versioned playbook replaces
+    /// the old AI "research" call: it is more reliable than re-asking a model
+    /// for generic best practices, works offline, and never goes stale in a
+    /// cache. Keys mirror the old research JSON so downstream plumbing
+    /// (duration/cadence extraction, prompt injection) is unchanged.
+    static let mmaPlaybook: [String: Any] = [
+        "ideal_duration_range": ["min": 8, "max": 30],
+        "optimal_duration": 18,
         "aspect_ratio": "9:16",
-        "hook_strategy": "Open with the most explosive moment in the first 1-2 seconds.",
-        "pacing_cuts_per_minute": 20,
-        "content_structure": ["hook", "rising action", "payoff"],
-        "music_strategy": "High-energy track that matches the action.",
-        "transition_strategy": "Fast cuts with occasional fades.",
-        "engagement_tips": ["Keep it short", "End strong"],
-        "avoid": ["Dead time", "Slow intros"],
-        "opening_types": ["explosive action"],
-        "closing_strategy": "End on a high note that invites a replay.",
+        "hook_strategy": "The first 1-2 seconds decide everything. Open on the single most violent or "
+            + "surprising visual: the knockdown landing, the tap, a flying technique mid-air, or a raw "
+            + "crowd/corner reaction. Payoff-first beats build-up-first — show the ending, then earn it.",
+        "hook_types": ["finish-first (KO/tap lands in the first second, then rewind to the build-up)",
+                       "reaction-first (crowd eruption or corner losing it, then the moment that caused it)",
+                       "mid-action (drop the viewer inside an exchange already underway)",
+                       "freeze-and-promise (paused frame + bold text promising the payoff)"],
+        "pacing_cuts_per_minute": 24,
+        "content_structure": ["hook (0-2s)", "context/build (2-40%)", "escalation", "payoff", "reaction/outro"],
+        "music_strategy": "High-energy track that matches the action's rhythm; cuts land on beats. Keep "
+            + "real fight audio audible under the music — crowd noise and glove impacts sell authenticity.",
+        "transition_strategy": "Hard cuts as the backbone; one aggressive action transition (impact_shake, "
+            + "zoom_punch, knife_slash) as an accent on the biggest strike; a slow crossfade only into a "
+            + "slow-motion replay.",
+        "engagement_tips": ["End within a beat of the payoff reaction — dead air after the finish kills replays",
+                            "One slow-motion replay of the decisive moment earns saves",
+                            "Name fighters in text — searchers and casuals both need it",
+                            "Loop-friendly endings (cut just before the hook's moment recurs) lift watch time"],
+        "avoid": ["Slow walkout/staredown intros", "More than one replay", "Overlays covering the action",
+                  "Passing off training footage as a real fight", "Claiming results the outcomes don't confirm"],
+        "opening_types": ["knockdown impact", "submission tap", "flying technique", "crowd eruption"],
+        "closing_strategy": "Close on the reaction to the payoff — referee waving it off, corner storming in, "
+            + "opponent's face — not on a fade-out. The last frame should make a viewer replay or share.",
     ]
-
-    private func researchPrompt(domain: String) -> String {
-        """
-        You are an expert social media strategist specializing in Instagram Reels for \(domain) content.
-
-        Based on your knowledge of the current Instagram Reels algorithm and best practices (2025-2026), provide detailed, actionable recommendations for creating \(domain) highlight reels that MAXIMIZE engagement (views, likes, shares, saves, and follows).
-
-        Consider: optimal video duration, pacing, hook strategy (first 1-3s), content structure, music usage, transition style, and what makes \(domain) content go viral on Reels.
-
-        Return a JSON object with EXACTLY this structure:
-        {
-          "ideal_duration_range": {"min": <seconds>, "max": <seconds>},
-          "optimal_duration": <seconds>,
-          "aspect_ratio": "9:16",
-          "hook_strategy": "<detailed strategy for first 1-3 seconds>",
-          "pacing_cuts_per_minute": <number>,
-          "content_structure": ["<phase1>", "<phase2>", ...],
-          "music_strategy": "<how to use music for maximum engagement>",
-          "transition_strategy": "<recommended transition approach for \(domain) content>",
-          "engagement_tips": ["<tip1>", "<tip2>", ...],
-          "avoid": ["<thing to avoid 1>", ...],
-          "opening_types": ["<best hook types for \(domain)>", ...],
-          "closing_strategy": "<how to end for max engagement>"
-        }
-
-        Return ONLY the JSON object. No explanation, no markdown fences.
-        """
-    }
-
-    private func getResearch(profile: BrandProfile, database: Database, model: String?,
-                             emit: @escaping @Sendable (String) -> Void) async -> [String: Any] {
-        if let cached = try? await database.latestResearch(topic: Self.researchTopic),
-           let researchedAt = cached.researchedAt,
-           Date().timeIntervalSince(researchedAt) <= Self.researchTTL,
-           let object = AIResponseParser.jsonObject(from: cached.resultJSON) {
-            emit("Using cached Instagram Reels research (less than 7 days old)")
-            return object
-        }
-        emit("Researching Instagram Reels best practices...")
-        do {
-            let response = try await ai.call(prompt: researchPrompt(domain: profile.effectiveDomain),
-                                             task: "research", model: model, timeout: 300, log: emit)
-            if let object = AIResponseParser.jsonObject(from: response),
-               let data = AIResponseParser.jsonData(from: response),
-               let json = String(data: data, encoding: .utf8) {
-                let attribution = await ai.resolveProviderModel(task: "research", model: model)
-                try? await database.saveResearch(topic: Self.researchTopic, resultJSON: json,
-                                                 provider: attribution.provider, model: attribution.model)
-                emit("Research complete — cached for future runs")
-                return object
-            }
-        } catch {
-            emit("Research failed (\(error)) — using built-in defaults")
-        }
-        return Self.researchDefaults
-    }
 
     // MARK: - Request parsing
 
@@ -404,19 +385,41 @@ actor WizardEngine {
 
     // MARK: - Planning phase
 
+    /// The tags the prompt's RULES key on must survive truncation — sort
+    /// highlight/portrait-fit/person tags to the front before capping.
+    private func prioritizedTags(_ tags: [String], limit: Int = 10) -> [String] {
+        func priority(_ tag: String) -> Int {
+            if tag == "highlight" || tag.hasPrefix("highlight:") { return 0 }
+            if tag.hasPrefix("portrait-fit:") { return 1 }
+            if tag.hasPrefix("person:") { return 2 }
+            if tag == "low-quality" { return 3 }
+            return 4
+        }
+        // Stable within each priority band so the analyzer's ordering holds.
+        return Array(tags.enumerated()
+            .sorted { (priority($0.element), $0.offset) < (priority($1.element), $1.offset) }
+            .map(\.element)
+            .prefix(limit))
+    }
+
     private func sceneLine(_ scene: SceneRecord, type: VideoType? = nil,
                            note: String? = nil) -> String {
         var line = "#\(scene.id): \(scene.videoFilename) " +
             String(format: "[%.1f-%.1f] %.1fs", scene.startTime, scene.endTime, scene.duration) +
             (type.map { " (\($0.rawValue) video)" } ?? "") +
-            " tags:\(scene.tags.prefix(8).joined(separator: ","))"
+            " tags:\(prioritizedTags(scene.tags).joined(separator: ","))"
         if scene.wide { line += " WIDE" }
         if let score = scene.score {
             line += String(format: " score:%.1f/10", score)
         }
+        if let excitement = scene.excitement, excitement >= 0.35 {
+            line += " CROWD-POP"
+        }
         if let average = scene.gradeAverage, scene.gradeCount > 0 {
             line += String(format: " grade:%.1f/5", average)
         }
+        if scene.favorite { line += " ♥FAVORITE" }
+        if scene.curated { line += " CURATED" }
         if let parent = scene.parentSceneID {
             line += " (action within sequence #\(parent))"
         }
@@ -463,6 +466,11 @@ actor WizardEngine {
             var line = "  clip \(clip.clipIndex + 1)"
             if let sceneID = clip.sceneID { line += " (scene #\(sceneID))" }
             line += clip.verdict > 0 ? ": good pick" : ": bad — \(clip.reasons.joined(separator: ", "))"
+            // The planner's own reason for the pick — so a bad verdict
+            // teaches WHICH intent misfired, not just which scene.
+            if let reason = summary.clipReasons[clip.clipIndex] {
+                line += " (planner's intent was: \"\(String(reason.prefix(140)))\")"
+            }
             lines.append(line)
         }
         if !summary.review.note.isEmpty { lines.append("  note: \"\(summary.review.note)\"") }
@@ -472,8 +480,42 @@ actor WizardEngine {
     /// Everything the user has taught the wizard, compact: distilled lessons,
     /// structured review signals, A/B choices, and the latest raw notes —
     /// instead of an unbounded dump of every feedback entry ever written.
+    /// One approved reel's SHAPE (never its scenes): clip count, screen-time
+    /// stats, and the hook's intent, from the stored plan clips.
+    private func winnerLine(_ winner: WinningRecipeRecord) -> String {
+        var parts = [String(format: "%.1fs", winner.duration)]
+        if let data = winner.planClipsJSON?.data(using: .utf8),
+           let clips = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+           !clips.isEmpty {
+            let screenSeconds = clips.map { clip -> Double in
+                let start = (clip["start"] as? NSNumber)?.doubleValue ?? 0
+                let end = (clip["end"] as? NSNumber)?.doubleValue ?? 0
+                let speed = (clip["speed"] as? NSNumber)?.doubleValue ?? 1
+                return max(0, end - start) / max(0.1, speed)
+            }
+            parts.append("\(clips.count) clips")
+            parts.append(String(format: "avg %.1fs/clip", screenSeconds.reduce(0, +) / Double(clips.count)))
+            if let hook = clips.first, let reason = hook["reason"] as? String, !reason.isEmpty {
+                parts.append("hook: \"\(String(reason.prefix(120)))\"")
+            }
+        }
+        if let stats = winner.stats {
+            parts.append(ReelPerformance.label(stats, duration: winner.duration))
+        }
+        var line = "- \(winner.filename): " + parts.joined(separator: " · ")
+        if let rationale = winner.rationale, !rationale.isEmpty {
+            line += "\n  strategy: \(String(rationale.prefix(300)))"
+        }
+        return line
+    }
+
     private func trainingBlock(_ signals: TrainingSignals) -> String {
         var sections: [String] = []
+
+        if !signals.winners.isEmpty {
+            sections.append("### Reels This User APPROVED (your strongest signal — replicate the SHAPE and strategy, never the same scenes)\n"
+                + signals.winners.map(winnerLine).joined(separator: "\n"))
+        }
 
         let learned = signals.lessons.filter { !$0.pinned }
         if !learned.isEmpty {
@@ -701,21 +743,56 @@ actor WizardEngine {
         }
 
         var templateBlock = ""
-        if let templateJSON = options.templateJSON, template != nil {
+        if let templateJSON = options.templateJSON, let template {
             let label = options.templateLabel.map { " (\($0))" } ?? ""
+            // Turn the template's structure phases into an explicit slot
+            // contract — the model fills slots instead of eyeballing JSON.
+            var slotContract = ""
+            if let phases = template["structure"] as? [[String: Any]], !phases.isEmpty {
+                let slots = phases.enumerated().map { index, phase -> String in
+                    let name = phase["phase"] as? String ?? "phase \(index + 1)"
+                    let start = (phase["start"] as? NSNumber)?.doubleValue
+                    let end = (phase["end"] as? NSNumber)?.doubleValue
+                    let range = (start != nil && end != nil)
+                        ? String(format: " %.1f–%.1fs", start!, end!) : ""
+                    let description = phase["description"] as? String ?? ""
+                    return "- Slot \(index + 1) \"\(name)\"\(range): \(description)"
+                }.joined(separator: "\n")
+                slotContract = """
+
+                SLOT CONTRACT derived from the template's structure — fill EVERY slot, in order, keeping each slot's share of the total duration within ±30% of the reference:
+                \(slots)
+                """
+            }
             templateBlock = """
 
 
             ## REFERENCE TEMPLATE (HIGH PRIORITY — replicate this reel's STRUCTURE)
             The user picked a high-performing reel\(label) as the model for this video. Its structural analysis:
             \(templateJSON)
-
-            Replicate the STRUCTURE, never the content: match its hook type and timing, cut rhythm, pacing curve, phase structure, text overlay usage, and overall duration using the scenes available below. When the template conflicts with the research or the key principles, the template wins (user AI instructions still outrank everything).
+            \(slotContract)
+            Replicate the STRUCTURE, never the content: match its hook type and timing, cut rhythm, pacing curve, phase structure, text overlay usage, and overall duration using the scenes available below. When the template conflicts with the playbook or the key principles, the template wins (user AI instructions still outrank everything).
             Also replicate its TEXT DESIGN and EFFECTS with the tools available here:
             - Map "text_style.font_class" to the closest overlay style: condensed-poster/heavy-sans → "impact" (or "highlight" when the reference colors key words), clean-sans → "banner" for labels or "minimal" for quiet text.
             - Match "text_style.animation": word_reveal/karaoke → "word_reveal", pop → "pop", slide → "slide_up", fade/none → "fade".
             - Copy its accent color: set each overlay's "accent" to the reference's text_style.accent hex; use kickers if has_kicker is true.
+            - Match "text_style.placement": set each overlay's "placement" to "top", "center", or "bottom" per the reference; when its text_case is sentence/mixed case, set "text_case" to "as_written".
             - Match "effects.transitions" with the closest names from the available transitions list; mirror its cut rhythm even where an exact effect (whip-pan, flash) is unavailable.
+            """
+        }
+
+        // House style: what ALL the reels this user studies have in common —
+        // always-on background taste; a specific reference template above
+        // overrides it where they conflict.
+        var houseStyleBlock = ""
+        let houseStyle = profile.houseStyle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !houseStyle.isEmpty {
+            houseStyleBlock = """
+
+
+            ## HOUSE STYLE (distilled from every Instagram reel this user studied, weighted by performance)
+            \(houseStyle)
+            Follow this house style by default. A REFERENCE TEMPLATE (if present) outranks it; user AI instructions outrank both.
             """
         }
 
@@ -844,10 +921,10 @@ actor WizardEngine {
         }
 
         return """
-        You are an expert video editor creating an Instagram Reel for a \(domain) channel called \(brand). Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
-        \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)
+        You are an expert combat-sports video editor creating an Instagram Reel for \(brand), a \(domain) channel. You know MMA and grappling: what a knockdown, a submission chain, a scramble, and a real crowd pop look like — and you edit like the best fight-highlight accounts. Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
+        \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)\(houseStyleBlock)
 
-        ## Instagram Reels Research
+        ## MMA Reels Playbook (curated editorial baseline)
         \(researchJSON)\(buzzBlock)
 
         ## Available Scenes
@@ -912,7 +989,7 @@ actor WizardEngine {
               "wide_split": <true if this WIDE scene should use split-screen>,
               "speed": <playback speed: 1.0 normal; 0.5-0.75 = slow motion for a big payoff moment; 1.25-2.0 = speed-up for a slow build-up, walkout, or grappling stretch worth keeping but not at full length. Use sparingly — at most 1-2 slowed and 1-2 sped-up clips, everything else 1.0>,
               "replay": <true to instantly replay this moment in slow motion right after it plays — reserve for the single best payoff (knockdown/finish); at most one replay per reel>,
-              "text_overlay": {"text": "<2-6 word ALL-CAPS line>", "style": "<impact|highlight|banner|minimal>", "animation": "<fade|slide_up|pop|word_reveal>", "kicker": "<1-3 word label or null>", "accent": "<#hex accent color or null for default yellow>"} or null,
+              "text_overlay": {"text": "<2-6 word line>", "style": "<impact|highlight|banner|minimal>", "animation": "<fade|slide_up|pop|word_reveal>", "kicker": "<1-3 word label or null>", "accent": "<#hex accent color or null for default yellow>", "placement": "<top|center|bottom, or null for top>", "text_case": "<as_written to keep your casing, or null for ALL CAPS>"} or null,
               "reason": "<why this clip, why this position>"
             }
           ],
@@ -932,6 +1009,9 @@ actor WizardEngine {
             ? "- For WIDE scenes: set \"wide_split\": true to display as split-screen (top + bottom halves, filling the full 9:16 frame with no black bars)"
             : "- Set \"wide_split\" to false for every clip. WIDE scenes are automatically zoomed to a full-height 9:16 window positioned on the action, so they fill the frame — never plan around letterboxing.")
         - Scenes with "score:X/10" were rated for ENTERTAINMENT (escalation → payoff, boosted by real crowd noise). STRONGLY prefer high-scoring scenes, put the highest-scoring payoff early as the hook, and use the "story:" lines to build a reel with an arc — setup, escalation, payoff — instead of disconnected action.
+        - "grade:X/5" is the USER'S OWN vote on that scene: treat ≥4/5 as must-consider footage, and avoid ≤2.5/5 scenes unless nothing else covers a needed story beat.
+        - "♥FAVORITE" scenes were hand-marked by the user — they love these moments. Strongly prefer them, especially for the hook and the payoff. "CURATED" scenes were hand-trimmed as keepers — prefer them over untouched footage of the same moment.
+        - "CROWD-POP" marks scenes where the real crowd audibly erupted — prime hook and payoff material.
         - A scene marked "(action within sequence #N)" is one beat of that sequence. Pick EITHER the whole sequence OR its individual beats — never both, they cover the same footage.
         - A clip's screen time is (end - start) / speed; a replay adds another (end - start) / 0.5 on top. Account for both when hitting target_duration.
         - The finished reel is VERTICAL 9:16. WIDE scenes may carry a portrait-fit tag: "portrait-fit:good" means the people stand close enough together that the vertical crop holds them all; "portrait-fit:poor" means they are spread out and someone WILL be cut out of frame. STRONGLY prefer portrait-fit:good WIDE scenes; pick a portrait-fit:poor one only when nothing else covers the moment.
@@ -1008,7 +1088,17 @@ actor WizardEngine {
             var overlayAnimation: String?
             var overlayKicker: String?
             var overlayAccent: String?
+            var overlayPlacement: String?
+            var overlayCase: String?
             if let overlayObject = clipObject["text_overlay"] as? [String: Any] {
+                if let placement = overlayObject["placement"] as? String,
+                   WizardTextStyle.placements.contains(placement) {
+                    overlayPlacement = placement
+                }
+                if let textCase = overlayObject["text_case"] as? String,
+                   WizardTextStyle.textCases.contains(textCase) {
+                    overlayCase = textCase
+                }
                 overlayText = (overlayObject["text"] as? String)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 if let style = overlayObject["style"] as? String,
@@ -1032,6 +1122,8 @@ actor WizardEngine {
             // near-normal values to exactly 1.
             var speed = (clipObject["speed"] as? NSNumber)?.doubleValue ?? 1
             speed = abs(speed - 1) < 0.05 ? 1 : min(2, max(0.5, speed))
+            let reason = (clipObject["reason"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             clips.append(WizardPlanClip(sceneID: sceneID,
                                         start: start,
                                         end: end,
@@ -1041,6 +1133,9 @@ actor WizardEngine {
                                         overlayAnimation: overlayAnimation,
                                         overlayKicker: overlayKicker,
                                         overlayAccent: overlayAccent,
+                                        overlayPlacement: overlayPlacement,
+                                        overlayCase: overlayCase,
+                                        reason: reason?.isEmpty == false ? reason : nil,
                                         speed: speed,
                                         replay: clipObject["replay"] as? Bool ?? false))
         }
@@ -1063,6 +1158,9 @@ actor WizardEngine {
                 slow.overlayAnimation = nil
                 slow.overlayKicker = nil
                 slow.overlayAccent = nil
+                slow.overlayPlacement = nil
+                slow.overlayCase = nil
+                slow.reason = nil
                 expanded.append(slow)
             }
         }
@@ -1115,7 +1213,8 @@ actor WizardEngine {
 
     private func captionPrompt(profile: BrandProfile, plan: WizardPlan,
                                duration: Double, tags: [String],
-                               fightResearch: [FightResearchRecord] = []) -> String {
+                               fightResearch: [FightResearchRecord] = [],
+                               captionStyleReference: String? = nil) -> String {
         let handle = profile.socials["instagram"]?.handle ?? ""
         let domain = profile.effectiveDomain
         let languages = profile.captionLanguages.isEmpty ? ["en"] : profile.captionLanguages
@@ -1136,7 +1235,7 @@ actor WizardEngine {
         - Creative strategy: \(plan.rationale)
         \(plan.headline.map { "- Result headline shown on the video: \($0) — the caption must tell this result accurately.\n" } ?? "")- Tags/content: \(tags.joined(separator: ", "))
         - Music: \(plan.musicName ?? "none")
-        \(captionResearchLines(fightResearch))
+        \(captionResearchLines(fightResearch))\(captionStyleReference.map { "- Caption style of the reel the user picked as reference — match its voice and structure: \($0)\n" } ?? "")
         Requirements:
         - Caption should be 1-3 punchy lines that drive engagement (likes, comments, saves, shares)
         - Include a hook or question to encourage comments
@@ -1176,6 +1275,8 @@ actor WizardEngine {
         var preferences: [PreferenceRecord] = []
         var feedback: [FeedbackRecord] = []
         var publishedPerformance: [GeneratedPerformanceRecord] = []
+        /// Thumbs-up reels with their plan shapes — positive exemplars.
+        var winners: [WinningRecipeRecord] = []
     }
 
     /// Everything the planning phase needs, loaded once per run.
@@ -1197,21 +1298,74 @@ actor WizardEngine {
         var videoTypes: [Int64: VideoType] = [:]
     }
 
+    /// Rank the candidate pool (entertainment score, crowd excitement,
+    /// highlight tags, and the user's grades/favorites/curation) and keep
+    /// only enough footage to plan from — small pools pass through whole.
+    /// Kept scenes return in stable source order; parents of kept sequence
+    /// beats ride along so "(action within sequence #N)" notes stay valid.
+    private func shortlistScenes(_ scenes: [SceneRecord], targetSeconds: Int?,
+                                 emit: @escaping @Sendable (String) -> Void) -> [SceneRecord] {
+        let minimumKept = 40
+        guard scenes.count > minimumKept else { return scenes }
+        // Enough footage for the model to choose freely: 6× the requested
+        // duration, and never less than 3 minutes of source.
+        let budget = max(Double((targetSeconds ?? 30) * 6), 180)
+
+        func rank(_ scene: SceneRecord) -> Double {
+            var rank = scene.score ?? scene.excitement.map { $0 * 10 } ?? -1
+            if scene.tags.contains(where: { $0 == "highlight" || $0.hasPrefix("highlight:") }) { rank += 5 }
+            if scene.favorite { rank += 4 }
+            if scene.curated { rank += 2 }
+            if let grade = scene.gradeAverage, scene.gradeCount > 0 { rank += grade - 3 }
+            if scene.tags.contains("low-quality") { rank -= 4 }
+            return rank
+        }
+
+        var kept: [SceneRecord] = []
+        var keptIDs = Set<Int64>()
+        var footage = 0.0
+        for scene in scenes.sorted(by: { rank($0) > rank($1) }) {
+            let mustKeep = scene.favorite || scene.curated
+                || (scene.gradeCount > 0 && (scene.gradeAverage ?? 0) >= 4)
+            guard footage < budget || kept.count < minimumKept || mustKeep else { continue }
+            if keptIDs.insert(scene.id).inserted {
+                kept.append(scene)
+                footage += scene.duration
+            }
+        }
+        // Sequence parents of kept beats stay resolvable.
+        let byID = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
+        for scene in kept {
+            if let parentID = scene.parentSceneID, !keptIDs.contains(parentID),
+               let parent = byID[parentID] {
+                keptIDs.insert(parentID)
+                kept.append(parent)
+            }
+        }
+        guard kept.count < scenes.count else { return scenes }
+        kept.sort {
+            ($0.videoFilename, $0.startTime) < ($1.videoFilename, $1.startTime)
+        }
+        emit("Shortlisted \(kept.count) of \(scenes.count) scenes "
+             + "(~\(Int(footage))s of top-ranked footage; favorites, curated, and top-graded scenes always kept)")
+        return kept
+    }
+
     private func loadTrainingSignals(database: Database) async -> TrainingSignals {
         TrainingSignals(lessons: (try? await database.fetchLessons()) ?? [],
                         reviews: (try? await database.fetchReviewSummaries(limit: 10)) ?? [],
                         preferences: (try? await database.fetchPreferences(limit: 10)) ?? [],
                         feedback: (try? await database.fetchAllFeedback()) ?? [],
-                        publishedPerformance: (try? await database.recentGeneratedPerformance()) ?? [])
+                        publishedPerformance: (try? await database.recentGeneratedPerformance()) ?? [],
+                        winners: (try? await database.fetchWinningRecipes()) ?? [])
     }
 
     private func loadPlanningInputs(options: WizardOptions,
                                     profile: BrandProfile,
                                     database: Database,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> PlanningInputs {
-        emit("Phase 1: Instagram Reels research...")
-        let research = await getResearch(profile: profile, database: database,
-                                         model: options.modelOverride, emit: emit)
+        emit("Phase 1: Loading the MMA Reels playbook...")
+        let research = Self.mmaPlaybook
 
         emit("Loading scenes and music...")
         let people = (try? await database.fetchPeople()) ?? []
@@ -1240,6 +1394,19 @@ actor WizardEngine {
                 ? "No analyzed scenes available. Analyze some videos first."
                 : "No scenes feature the selected people within the current source selection.")
         }
+        // The user's own downvotes are a hard signal: scenes graded ≤2/5
+        // never reach the planner.
+        let gradeFiltered = scenes.filter { scene in
+            !(scene.gradeCount > 0 && (scene.gradeAverage ?? 5) <= 2)
+        }
+        if gradeFiltered.count < scenes.count, !gradeFiltered.isEmpty {
+            emit("Dropped \(scenes.count - gradeFiltered.count) scene(s) the user graded ≤2/5")
+            scenes = gradeFiltered
+        }
+        // Shortlist: rank by analyzed quality and user signals, cap the
+        // candidate pool so the strong scenes aren't diluted by hundreds of
+        // filler lines (and the prompt stays fast and cheap).
+        scenes = shortlistScenes(scenes, targetSeconds: options.targetDurationSeconds, emit: emit)
         if options.templateJSON != nil {
             emit("Using reference template: \(options.templateLabel ?? "Instagram reel")")
         }
@@ -1281,7 +1448,59 @@ actor WizardEngine {
                               videoTypes: videoTypes)
     }
 
-    /// One prompt → AI call → validated plan; nil plan when the response is
+    /// Visual definitions of "a keeper moment" for the planner: exemplar
+    /// frames from the taste category steering this run (or a spread across
+    /// categories), attached to the plan call for multimodal providers.
+    private func tasteExemplarFrames(profile: BrandProfile, options: WizardOptions) -> [AIFrame] {
+        var entries: [(path: String, label: String)] = []
+        if let preset = options.tastePreset, preset.hasPrefix("cat:"),
+           let category = profile.tasteCategories.first(where: { $0.key == String(preset.dropFirst(4)) }) {
+            entries = category.exemplarFrames.suffix(4).map { ($0, "TASTE EXAMPLE (\(category.label))") }
+        } else if options.tastePreset != "none" {
+            entries = profile.tasteExemplarFrames.prefix(2).map { ($0, "TASTE EXAMPLE") }
+            for category in profile.tasteCategories {
+                entries += category.exemplarFrames.suffix(1)
+                    .map { ($0, "TASTE EXAMPLE (\(category.label))") }
+            }
+        }
+        var frames: [AIFrame] = []
+        for (index, entry) in entries.prefix(4).enumerated() {
+            let url = URL(fileURLWithPath: (entry.path as NSString).expandingTildeInPath)
+            if let data = try? Data(contentsOf: url) {
+                frames.append(AIFrame(jpeg: data,
+                                      label: "\(entry.label) \(index + 1) — hooks and payoffs should look like this"))
+            }
+        }
+        return frames
+    }
+
+    /// Deterministic template-adherence checks: planned footage duration and
+    /// cut cadence against the reference reel. An explicit user duration
+    /// outranks the template, so the duration check skips then.
+    private func templateAdherenceFindings(_ plan: WizardPlan, options: WizardOptions) -> [String] {
+        guard let template = options.templateJSON.flatMap({ AIResponseParser.jsonObject(from: $0) })
+        else { return [] }
+        var findings: [String] = []
+        if options.targetDurationSeconds == nil,
+           let duration = (template["duration"] as? NSNumber)?.doubleValue, duration > 3 {
+            let screen = plan.clips.reduce(0.0) { $0 + ($1.end - $1.start) / max(0.1, $1.speed) }
+            if abs(screen - duration) / duration > 0.25 {
+                findings.append(String(format: "Planned footage runs %.1fs but the reference template runs %.1fs — match it within ~25%%.",
+                                       screen, duration))
+            }
+        }
+        if let cuts = (template["cut_count"] as? NSNumber)?.intValue, cuts > 1 {
+            let ratio = Double(plan.clips.count) / Double(cuts)
+            if ratio < 0.6 || ratio > 1.67 {
+                findings.append("The plan has \(plan.clips.count) clips but the reference template cuts \(cuts) times — match its cut cadence.")
+            }
+        }
+        return findings
+    }
+
+    /// One prompt → AI call → validated plan, then a deterministic quality
+    /// check with at most ONE corrective re-plan (weak hook, low-quality or
+    /// badly-fitting footage, template drift). Nil plan when the response is
     /// unusable. Prompt and raw response ride along for the run report.
     private func makePlan(inputs: PlanningInputs, options: WizardOptions, profile: BrandProfile,
                           emit: @escaping @Sendable (String) -> Void) async throws
@@ -1291,20 +1510,75 @@ actor WizardEngine {
                                 people: inputs.people, outcomes: inputs.outcomes,
                                 fightResearch: inputs.fightResearch,
                                 videoTypes: inputs.videoTypes, options: options)
-        let response = try await ai.call(prompt: prompt, task: "wizard",
-                                         model: options.modelOverride, timeout: 300, log: emit)
-        guard let rawPlan = AIResponseParser.jsonObject(from: response) else {
-            emit("The planner's response was not valid JSON — raw response:")
-            emit("──── response ────\n\(String(response.prefix(2000)))\n──── end response ────")
-            return (nil, prompt, response)
+        let frames = tasteExemplarFrames(profile: profile, options: options)
+        if !frames.isEmpty {
+            emit("Attached \(frames.count) taste exemplar frame(s) to the plan call")
         }
-        var plan = validatePlan(rawPlan, scenes: inputs.sceneMap, musicNames: Set(inputs.music.map(\.name)))
-            .map { enforcePinnedOverlays($0, options: options) }
+
+        func requestPlan(_ prompt: String) async throws -> (plan: WizardPlan?, response: String) {
+            let response = try await ai.call(prompt: prompt, task: "wizard",
+                                             frames: frames.isEmpty ? nil : frames,
+                                             model: options.modelOverride, timeout: 300, log: emit)
+            guard let rawPlan = AIResponseParser.jsonObject(from: response) else {
+                emit("The planner's response was not valid JSON — raw response:")
+                emit("──── response ────\n\(String(response.prefix(2000)))\n──── end response ────")
+                return (nil, response)
+            }
+            let plan = validatePlan(rawPlan, scenes: inputs.sceneMap,
+                                    musicNames: Set(inputs.music.map(\.name)))
+                .map { enforcePinnedOverlays($0, options: options) }
+            return (plan, response)
+        }
+
+        var (plan, response) = try await requestPlan(prompt)
         if plan == nil {
             emit("The planner returned JSON, but no usable clips survived validation — raw response:")
             emit("──── response ────\n\(String(response.prefix(2000)))\n──── end response ────")
             emit("This usually means the constraints can't be met by the available scenes — e.g. instructions that filter by tags none of the selected footage carries.")
         }
+
+        // Pre-render quality gate: catch a weak plan BEFORE the render and
+        // give the model one shot at fixing exactly what the gate flagged.
+        if let validated = plan {
+            let report = ReelQualityGate.evaluatePlan(validated, scenes: inputs.sceneMap,
+                                                     options: options)
+            var findings = report.failures + report.warnings
+            let templateFindings = templateAdherenceFindings(validated, options: options)
+            findings += templateFindings
+            if report.verdict != .publishable || !templateFindings.isEmpty {
+                emit("Plan quality check: \(report.summary) — asking the planner to fix:")
+                findings.forEach { emit("  • \($0)") }
+                let retryPrompt = prompt + """
+
+
+                ## YOUR PREVIOUS PLAN FAILED THE QUALITY CHECK — FIX IT AND RE-PLAN
+                Your previous plan (below) was rejected for these reasons:
+                \(findings.map { "- \($0)" }.joined(separator: "\n"))
+                Previous plan JSON:
+                \(response.prefix(4000))
+
+                Produce a corrected COMPLETE plan (same JSON schema as above) that fixes every finding — keep what already worked.
+                """
+                if let retry = try? await requestPlan(retryPrompt), let retryPlan = retry.plan {
+                    let retryReport = ReelQualityGate.evaluatePlan(retryPlan, scenes: inputs.sceneMap,
+                                                                  options: options)
+                    let retryFindings = templateAdherenceFindings(retryPlan, options: options)
+                    if retryReport.score + (retryFindings.isEmpty ? 0 : -10)
+                        >= report.score + (templateFindings.isEmpty ? 0 : -10) {
+                        emit("Re-plan accepted: \(retryReport.summary)")
+                        plan = retryPlan
+                        response = retry.response
+                    } else {
+                        emit("Re-plan scored worse (\(retryReport.summary)) — keeping the first plan")
+                    }
+                } else {
+                    emit("Re-plan failed to produce a usable plan — keeping the first plan")
+                }
+            } else {
+                emit("Plan quality check: \(report.summary)")
+            }
+        }
+
         if let validated = plan {
             plan = await snapCutsToBeats(validated, music: inputs.music,
                                          sceneMap: inputs.sceneMap, emit: emit)
@@ -1438,12 +1712,18 @@ actor WizardEngine {
 
         emit("Generating Instagram caption...")
         let tagsUsed = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
+        // The reference reel's caption style rides into the caption call so
+        // "replicate this reel" covers the caption too.
+        let captionStyleReference = options.templateJSON
+            .flatMap { AIResponseParser.jsonObject(from: $0) }
+            .flatMap { $0["caption_style"] as? String }
         var captionText: String?
         do {
             let caption = try await ai.call(
                 prompt: captionPrompt(profile: profile, plan: plan,
                                       duration: result.duration, tags: tagsUsed,
-                                      fightResearch: inputs.fightResearch),
+                                      fightResearch: inputs.fightResearch,
+                                      captionStyleReference: captionStyleReference),
                 task: "captions", timeout: 60, log: emit)
             captionText = caption.trimmingCharacters(in: .whitespacesAndNewlines)
             let attribution = await ai.resolveProviderModel(task: "captions")
@@ -1592,6 +1872,56 @@ actor WizardEngine {
         } catch {
             emit("Could not save the run report: \(error)")
         }
+    }
+
+    // MARK: - House style distillation
+
+    /// Distill a house style from EVERY cached reel template analysis,
+    /// weighted by each reel's performance stats — the always-on aggregate
+    /// the plan prompt injects on every run (a picked reference template
+    /// still outranks it). Merge semantics: patterns the new pass still
+    /// supports survive, new ones join, contradictions resolve toward the
+    /// better-performing reels.
+    func distillHouseStyle(database: Database, existing: String,
+                           emit: @escaping @Sendable (String) -> Void) async throws -> String {
+        let templates = try await database.fetchAllIGTemplates()
+        guard !templates.isEmpty else {
+            throw AIError.notConfigured("No analyzed reels yet — analyze some Instagram reels first (Instagram → open a reel → Analyze Reel), then distill.")
+        }
+        emit("Distilling house style from \(templates.count) analyzed reel(s)...")
+        let entries = templates.prefix(30).map { entry -> String in
+            var block = entry.templateJSON
+            if let statsJSON = entry.statsJSON, let data = statsJSON.data(using: .utf8),
+               let stats = try? JSONDecoder().decode(IGStats.self, from: data) {
+                block += "\nPERFORMANCE: \(ReelPerformance.label(stats, duration: 0))"
+            }
+            return block
+        }.joined(separator: "\n\n---\n\n")
+        let existingBlock = existing.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "" : """
+
+            ## CURRENT HOUSE STYLE (merge: keep rules the reels still support, sharpen wording, add what they newly teach, drop only on contradiction)
+            \(existing)
+            """
+        let prompt = """
+        You are distilling a combat-sports Instagram channel's HOUSE STYLE from structural analyses of the reels its editor studies. Each block below is one analyzed reel (JSON) — reels with a PERFORMANCE line performed measurably; weight their patterns more heavily.
+
+        ## ANALYZED REELS
+        \(entries)
+        \(existingBlock)
+        Produce the house style as plain text with EXACTLY these five sections, each a header line followed by 2-4 "- " bullets of concrete, checkable rules (no vague advice):
+        HOOK: (typical hook types and first-2-second choices)
+        DURATION & PACING: (duration band, cuts/min, cut rhythm)
+        STRUCTURE: (typical phase arc)
+        TEXT & OVERLAYS: (usage, style, casing, placement)
+        MUSIC & AUDIO: (music role vs source audio)
+
+        Return ONLY that text — no preamble, no markdown fences, no JSON.
+        """
+        let response = try await ai.call(prompt: prompt, task: "distill", timeout: 180, log: emit)
+        let style = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !style.isEmpty else { throw AIError.emptyResponse("house style distillation") }
+        return style
     }
 
     // MARK: - Lessons distillation
@@ -1910,13 +2240,27 @@ actor WizardEngine {
         let attribution = await ai.resolveProviderModel(task: "wizard", model: options.modelOverride)
         let qualityJSON = (try? JSONEncoder().encode(quality))
             .flatMap { String(data: $0, encoding: .utf8) }
+        // The plan's clips with the model's per-clip reasons: reviews show
+        // them, and review signals quote them back ("planner's intent was…").
+        let planClips: [[String: Any]] = plan.clips.enumerated().map { index, clip in
+            var entry: [String: Any] = ["clip_index": index,
+                                        "scene_id": clip.sceneID,
+                                        "start": clip.start.rounded(toPlaces: 2),
+                                        "end": clip.end.rounded(toPlaces: 2),
+                                        "speed": clip.speed]
+            if let reason = clip.reason { entry["reason"] = reason }
+            return entry
+        }
+        let planClipsJSON = (try? JSONSerialization.data(withJSONObject: planClips))
+            .flatMap { String(data: $0, encoding: .utf8) }
         let recordID = try await database.insertGeneratedVideo(path: outputURL.path,
                                                                duration: finalDuration.rounded(toPlaces: 1),
                                                                timelineJSON: timelineJSON,
                                                                wizardProvider: attribution.provider,
                                                                wizardModel: attribution.model,
                                                                rationale: plan.rationale,
-                                                               qualityJSON: qualityJSON)
+                                                               qualityJSON: qualityJSON,
+                                                               planClipsJSON: planClipsJSON)
         return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID)
     }
 

@@ -27,16 +27,26 @@ nonisolated enum ReelQualityGate {
     /// technically invalid output from being silently published.
     static func evaluate(plan: WizardPlan, scenes: [Int64: SceneRecord],
                          output: URL, duration: Double, options: WizardOptions) -> ReelQualityReport {
+        var report = evaluatePlan(plan, scenes: scenes, options: options)
+        if FileManager.default.fileExists(atPath: output.path), duration >= 3, duration <= 900 {
+            report.checks.insert("Playable vertical reel duration: \(String(format: "%.1f", duration))s", at: 0)
+        } else {
+            report.failures.append("Rendered file is missing, empty, or outside Instagram's supported reel duration.")
+            report.verdict = .blocked
+        }
+        return report
+    }
+
+    /// The scene-based half of the gate, runnable on a plan BEFORE any
+    /// rendering — the wizard uses it to re-plan a weak reel instead of
+    /// discovering the weakness after the render.
+    static func evaluatePlan(_ plan: WizardPlan, scenes: [Int64: SceneRecord],
+                             options: WizardOptions) -> ReelQualityReport {
         var score = 100
         var checks: [String] = []
         var warnings: [String] = []
         var failures: [String] = []
 
-        if FileManager.default.fileExists(atPath: output.path), duration >= 3, duration <= 900 {
-            checks.append("Playable vertical reel duration: \(String(format: "%.1f", duration))s")
-        } else {
-            failures.append("Rendered file is missing, empty, or outside Instagram's supported reel duration.")
-        }
         guard let hook = plan.clips.first, let hookScene = scenes[hook.sceneID] else {
             failures.append("No verified opening clip was produced.")
             return ReelQualityReport(score: 0, verdict: .blocked, checks: checks,

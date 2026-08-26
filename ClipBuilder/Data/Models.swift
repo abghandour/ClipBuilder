@@ -411,6 +411,10 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     /// Deterministic post-render checks. Nil only for videos created before
     /// the quality gate shipped.
     var qualityJSON: String?
+    /// The validated plan's clips with the model's per-clip "reason" —
+    /// [{clip_index, scene_id, start, end, speed, reason}]. Nil for videos
+    /// generated before reasons were kept.
+    var planClipsJSON: String?
     /// Graph media id after this locally generated video is published.
     var instagramMediaID: String?
     /// Joined from the matching Instagram media row when insights arrive.
@@ -418,6 +422,25 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
 
     var url: URL { URL(fileURLWithPath: path) }
     var filename: String { url.lastPathComponent }
+
+    /// clip index → the model's stated reason for picking that clip.
+    var planClipReasons: [Int: String] {
+        Self.clipReasons(fromPlanClipsJSON: planClipsJSON)
+    }
+
+    static func clipReasons(fromPlanClipsJSON json: String?) -> [Int: String] {
+        guard let data = json?.data(using: .utf8),
+              let clips = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [:] }
+        var reasons: [Int: String] = [:]
+        for clip in clips {
+            if let index = (clip["clip_index"] as? NSNumber)?.intValue,
+               let reason = clip["reason"] as? String, !reason.isEmpty {
+                reasons[index] = reason
+            }
+        }
+        return reasons
+    }
 
     var qualityReport: ReelQualityReport? {
         guard let qualityJSON, let data = qualityJSON.data(using: .utf8) else { return nil }
@@ -486,6 +509,20 @@ nonisolated struct ReviewSummary: Sendable {
     var videoFilename: String
     var rationale: String?
     var videoDeleted: Bool
+    /// clip index → the planner's stated reason for that pick, so feedback
+    /// can be correlated with the model's intent.
+    var clipReasons: [Int: String] = [:]
+}
+
+/// A generated reel the user approved (thumbs-up review), with its plan
+/// shape — the wizard's positive exemplars ("replicate the shape, not the
+/// scenes").
+nonisolated struct WinningRecipeRecord: Sendable {
+    var filename: String
+    var duration: Double
+    var rationale: String?
+    var planClipsJSON: String?
+    var stats: IGStats?
 }
 
 /// One A/B choice between two variations of the same wizard run.

@@ -16,7 +16,7 @@ struct WizardView: View {
     @AppStorage("wizard.centerStageCamera") private var centerStageCamera = "balanced"
     @AppStorage("wizard.allowWideSplit") private var allowWideSplit = false
     @AppStorage("wizard.enableTextOverlays") private var enableTextOverlays = false
-    @AppStorage("wizard.useFightResearch") private var useFightResearch = false
+    @AppStorage("wizard.useFightResearch") private var useFightResearch = true
     @AppStorage("wizard.aiInstructions") private var aiInstructions = ""
     /// Hard duration for the generated reel, in seconds.
     @AppStorage("wizard.targetDuration") private var targetDuration = 10

@@ -313,7 +313,7 @@ private struct TasteSettingsTab: View {
         @Bindable var store = store
         Form {
             Section("Taste Rubric") {
-                Text("What a keeper moment looks like — distilled from sample reels you pick (Instagram → Learn, or a local file below). Rides into every analysis (as the \"highlight\" tag) and every wizard plan. Edit freely; learning from another sample refines rather than replaces.")
+                Text("What a keeper moment looks like — this profile-wide rubric is yours to write and edit by hand; it rides into every analysis (as the \"highlight\" tag) and every wizard plan. Learning from sample reels refines the per-video-type rubrics below, not this one.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $store.activeProfile.tasteRubric)
@@ -369,6 +369,31 @@ private struct TasteSettingsTab: View {
                 }
             }
 
+            Section("House Style") {
+                Text("What ALL the reels you study have in common — hook types, duration and pacing, structure, overlay and music habits — distilled across every analyzed Instagram reel and weighted by performance. The wizard follows it on every run; a specific reference reel still outranks it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !store.activeProfile.houseStyle.isEmpty {
+                    TextEditor(text: $store.activeProfile.houseStyle)
+                        .font(.body)
+                        .frame(minHeight: 110)
+                }
+                HStack {
+                    Button("Distill House Style from Analyzed Reels") {
+                        store.distillHouseStyle()
+                    }
+                    .disabled(store.isDistillingHouseStyle)
+                    .help("Reads every reel template analysis (Instagram → Analyze Reel) and merges their shared patterns into the house style above")
+                    if store.isDistillingHouseStyle {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Distilling…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             Section("Learned Video Types") {
                 if store.activeProfile.tasteCategories.isEmpty {
                     Text("Nothing learned yet. Select reels on the Instagram screen and use the Learn menu — each reel is classified into a video type (fight highlights, interviews, …) whose rubric it refines. The AI Wizard's Video type picker lists them.")
@@ -398,6 +423,36 @@ private struct TasteSettingsTab: View {
                             Text("\(category.label) · learned from \(category.studiedCount) reel(s)")
                         }
                     }
+                }
+            }
+
+            Section("Wizard Brain") {
+                Text("Everything the wizard has learned that travels — pinned and distilled lessons, taste rubric, video-type rubrics with their example frames, and the house style — as one JSON file. Back it up (it diffs cleanly in git) or hand it to another user; importing merges and never overwrites what you already have.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Export Wizard Brain…") {
+                        let panel = NSSavePanel()
+                        panel.allowedContentTypes = [.json]
+                        panel.nameFieldStringValue = "WizardBrain-\(store.activeProfile.profileName).json"
+                        if panel.runModal() == .OK, let url = panel.url {
+                            store.exportWizardBrain(to: url)
+                        }
+                    }
+                    Button("Import Wizard Brain…") {
+                        let panel = NSOpenPanel()
+                        panel.allowedContentTypes = [.json]
+                        panel.allowsMultipleSelection = false
+                        if panel.runModal() == .OK, let url = panel.url {
+                            store.importWizardBrain(from: url)
+                        }
+                    }
+                }
+                if let status = store.wizardBrainStatus {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
             }
 

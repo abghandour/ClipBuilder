@@ -18,7 +18,9 @@ enum DispatchOperation: String {
     var aiTasks: [String] {
         switch self {
         case .analyze: return ["analysis"]
-        case .generate: return ["research", "wizard", "captions", "parse"]
+        // "research" is gone: the wizard now plans from the built-in MMA
+        // playbook instead of an AI research call.
+        case .generate: return ["wizard", "captions", "parse"]
         }
     }
 

@@ -13,6 +13,7 @@ struct WizardResultsSheet: View {
     @State private var verdicts: [Int64: Int] = [:]
     @State private var reviewTarget: GeneratedVideoRecord?
     @State private var builderTarget: GeneratedVideoRecord?
+    @State private var feedbackDrafts: [Int64: String] = [:]
 
     var body: some View {
         VStack(spacing: 0) {
@@ -118,6 +119,22 @@ struct WizardResultsSheet: View {
                 .controlSize(.small)
             }
 
+            // Free-text note straight into the wizard's training signals —
+            // for anything the thumbs and review dimensions can't say.
+            HStack(spacing: 6) {
+                TextField("Tell the wizard anything…", text: Binding(
+                    get: { feedbackDrafts[video.id] ?? "" },
+                    set: { feedbackDrafts[video.id] = $0 }))
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .onSubmit { saveFeedback(for: video) }
+                Button("Send") { saveFeedback(for: video) }
+                    .controlSize(.small)
+                    .disabled((feedbackDrafts[video.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
+                    .help("Saved as a feedback note — the next runs and lesson distillation read it")
+            }
+            .frame(width: 210)
+
             Button {
                 if store.builder.document.videoTrack.isEmpty {
                     dismiss()
@@ -131,6 +148,13 @@ struct WizardResultsSheet: View {
             .controlSize(.small)
             .help("Open this video's timeline in the Builder to tweak clips, overlays, and music")
         }
+    }
+
+    private func saveFeedback(for video: GeneratedVideoRecord) {
+        let text = (feedbackDrafts[video.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        store.addFeedback(for: video, text: text)
+        feedbackDrafts[video.id] = ""
     }
 
     /// A thumbs tap is a review with just the overall verdict — the full
