@@ -184,6 +184,10 @@ struct MainWindowView: View {
         .sheet(item: $store.pendingPeopleReview) { request in
             PersonReviewSheet(request: request)
         }
+        // Presents after the people review closes when both are pending.
+        .sheet(item: $store.pendingRenameReview) { request in
+            RenameReviewSheet(request: request)
+        }
         .alert("Error", isPresented: Binding(
             get: { store.currentError != nil },
             set: { if !$0 { store.dismissCurrentError() } }

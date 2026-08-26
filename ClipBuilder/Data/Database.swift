@@ -88,6 +88,7 @@ actor Database {
         winner_key TEXT,
         loser_key TEXT,
         event TEXT,
+        round INTEGER,
         created_at TEXT DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_fight_outcomes_video ON fight_outcomes(video_id);
@@ -408,6 +409,9 @@ actor Database {
         if try !connection.columnNames(of: "videos").contains("people_detected_at") {
             try connection.execute("ALTER TABLE videos ADD COLUMN people_detected_at TEXT")
         }
+        if try !connection.columnNames(of: "fight_outcomes").contains("round") {
+            try connection.execute("ALTER TABLE fight_outcomes ADD COLUMN round INTEGER")
+        }
         let generatedColumns = try connection.columnNames(of: "generated_videos")
         if !generatedColumns.contains("deleted") {
             try connection.execute("ALTER TABLE generated_videos ADD COLUMN deleted INTEGER DEFAULT 0")
@@ -542,14 +546,16 @@ actor Database {
     // MARK: - Fight outcomes
 
     func saveFightOutcome(videoID: Int64, runID: Int64, method: String,
-                          winnerKey: String?, loserKey: String?, event: String?) throws {
+                          winnerKey: String?, loserKey: String?, event: String?,
+                          round: Int?) throws {
         try connection.execute("""
-            INSERT INTO fight_outcomes (video_id, run_id, method, winner_key, loser_key, event)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO fight_outcomes (video_id, run_id, method, winner_key, loser_key, event, round)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """, [.integer(videoID), .integer(runID), .text(method),
                   winnerKey.map(SQLValue.text) ?? .null,
                   loserKey.map(SQLValue.text) ?? .null,
-                  event.map(SQLValue.text) ?? .null])
+                  event.map(SQLValue.text) ?? .null,
+                  round.map { SQLValue.integer(Int64($0)) } ?? .null])
     }
 
     /// Latest outcome per video (newer runs win), optionally scoped to runs.
@@ -569,7 +575,8 @@ actor Database {
                                          method: row["method"]?.stringValue ?? "",
                                          winnerKey: row["winner_key"]?.stringValue,
                                          loserKey: row["loser_key"]?.stringValue,
-                                         event: row["event"]?.stringValue))
+                                         event: row["event"]?.stringValue,
+                                         round: row["round"]?.intValue.map(Int.init)))
         }
         return outcomes
     }

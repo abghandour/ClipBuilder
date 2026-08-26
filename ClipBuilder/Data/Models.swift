@@ -111,6 +111,26 @@ nonisolated struct FightOutcome: Identifiable, Sendable, Hashable {
     var loserKey: String?
     /// Event name if visible in broadcast graphics (e.g. "UFC 330").
     var event: String?
+    /// Round number when the fight clock's round indicator was readable
+    /// (e.g. "R5" → 5).
+    var round: Int?
+}
+
+/// One end-of-analysis filename proposal: the analyzer judged the current
+/// name auto-generated (screen-recording default, IMG_…, hex) and built a
+/// descriptive one from the content — people, event, round.
+nonisolated struct RenameSuggestion: Identifiable, Sendable, Hashable {
+    var videoID: Int64
+    var currentFilename: String
+    var suggestedName: String
+
+    var id: Int64 { videoID }
+}
+
+/// Payload for the end-of-analysis rename review sheet.
+nonisolated struct RenameReviewRequest: Identifiable, Sendable {
+    let id = UUID()
+    var suggestions: [RenameSuggestion]
 }
 
 /// One scored fight action from the fight-scoring pass: a timestamped event

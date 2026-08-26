@@ -31,7 +31,12 @@ struct AnalyzeView: View {
                 table
                     .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
                 if let video = previewVideo {
-                    VideoPreviewPane(video: video)
+                    // Research opens through this view's top-level sheet — a
+                    // presentation modifier inside the split child re-reports
+                    // its min size mid-layout and trips AppKit's
+                    // constraint-loop guard (crash).
+                    VideoPreviewPane(video: video,
+                                     onResearch: { fightResearchTarget = video })
                         .frame(minWidth: 240, idealWidth: 320, maxWidth: 440, maxHeight: .infinity)
                 }
             }
@@ -334,6 +339,9 @@ struct AnalyzeView: View {
 private struct VideoPreviewPane: View {
     @Environment(AppStore.self) private var store
     let video: VideoRecord
+    /// Opens the fight-research sheet — presented by the parent view, not
+    /// here: a .sheet inside this split-view child crashes AppKit layout.
+    let onResearch: () -> Void
 
     @State private var player: AVPlayer?
     @State private var roster: [VideoPersonRecord] = []
@@ -341,7 +349,10 @@ private struct VideoPreviewPane: View {
     var body: some View {
         VStack(spacing: 8) {
             PlayerView(player: player)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Bounded height so the info sections below keep their room —
+                // an unbounded player splits the pane 50/50 with the scroll
+                // area and pushes the sections under the fold.
+                .frame(maxWidth: .infinity, minHeight: 140, idealHeight: 230, maxHeight: 260)
                 .background(.black, in: RoundedRectangle(cornerRadius: 8))
             VStack(spacing: 2) {
                 Text(video.filename)
@@ -352,86 +363,149 @@ private struct VideoPreviewPane: View {
                     .foregroundStyle(.secondary)
             }
 
-            // Fight action graph: per-fighter activity from the scoring
-            // pass — click to seek the player to a moment. Fight footage
-            // only: untyped videos don't show it either (set the Type
-            // column to Fight to enable).
+            // The info sections live in a scroll view so the pane never
+            // demands more minimum height than the split view can give —
+            // fixed-height sections here made the pane's min size oscillate
+            // against the player during layout, tripping AppKit's
+            // constraint-loop guard (uncaught NSGenericException crash).
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 8) {
+                    // Fight action graph: per-fighter activity from the scoring
+                    // pass — click to seek the player to a moment. Fight footage
+                    // only: untyped videos don't show it either (set the Type
+                    // column to Fight to enable).
+                    if video.type?.supportsFightFeatures == true {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Fight Action")
+                                    .font(.caption.weight(.medium))
+                                Spacer()
+                                if store.fightScoringInFlight.contains(video.id) {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                                Button(store.fightEvents[video.id]?.isEmpty == false ? "Re-score" : "Score") {
+                                    store.scoreFightAction(video: video)
+                                }
+                                .controlSize(.small)
+                                .disabled(store.fightScoringInFlight.contains(video.id))
+                                .help("AI pass over the fight scenes logging strikes, takedowns, and submission attempts per fighter — runs automatically after analysis; progress shows in the analysis log")
+                            }
+                            if let events = store.fightEvents[video.id], !events.isEmpty {
+                                FightGraphView(events: events,
+                                               range: 0...max(1, video.duration),
+                                               people: store.people,
+                                               height: 64) { time in
+                                    player?.seek(to: CMTime(seconds: time, preferredTimescale: 600),
+                                                 toleranceBefore: .zero, toleranceAfter: .zero)
+                                }
+                            } else {
+                                Text("Not scored yet — analyzed fight footage scores automatically; use Score to run it now.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    // The video's people roster: build it here, ahead of any run —
+                    // the analyze window then only asks which of them to require.
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("People")
+                                .font(.caption.weight(.medium))
+                            Spacer()
+                            if store.isDetectingPeople {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Button(roster.isEmpty ? "Detect" : "Re-run") {
+                                Task { roster = await store.detectPeopleInVideo(video) }
+                            }
+                            .controlSize(.small)
+                            .disabled(store.isDetectingPeople)
+                            .help("People-only AI pass: identifies everyone in this video (honoring markers) without a full analysis")
+                        }
+                        if roster.isEmpty {
+                            Text("Nobody detected yet.")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        } else {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(alignment: .top, spacing: 8) {
+                                    ForEach(roster) { entry in
+                                        VStack(spacing: 2) {
+                                            VideoPersonAvatar(record: entry, videoURL: video.url,
+                                                              size: 36)
+                                            Text(entry.displayName)
+                                                .font(.caption2)
+                                                .foregroundStyle(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        .frame(width: 48)
+                                        .help(entry.descriptor)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                }
+            }
+
+            // Fight research: the same view/refresh/run controls as the
+            // table's Fight Research column, pinned at the pane's bottom
+            // (outside the scroll — its fixed height is small enough not to
+            // re-trip the split view's constraint-loop crash). Fight
+            // footage only.
             if video.type?.supportsFightFeatures == true {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text("Fight Action")
+                        Text("Fight Research")
                             .font(.caption.weight(.medium))
                         Spacer()
-                        if store.fightScoringInFlight.contains(video.id) {
+                        if store.fightResearchInFlight.contains(video.id) {
                             ProgressView()
                                 .controlSize(.small)
+                            Text("Researching…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else if store.fightResearch[video.id] != nil {
+                            Button("View") {
+                                onResearch()
+                            }
+                            .controlSize(.small)
+                            .help("Fan-reaction research is saved for this fight — click to read and edit it")
+                            Button {
+                                store.refreshFightResearch(video: video)
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .controlSize(.small)
+                            .help("Re-crawl the web with the saved fight identity (progress in the analysis log)")
+                        } else {
+                            Button("Research…") {
+                                onResearch()
+                            }
+                            .controlSize(.small)
+                            .help("Identify this video's fight and crawl the web for fan reactions — the wizards can build the reel's story from it")
                         }
-                        Button(store.fightEvents[video.id]?.isEmpty == false ? "Re-score" : "Score") {
-                            store.scoreFightAction(video: video)
-                        }
-                        .controlSize(.small)
-                        .disabled(store.fightScoringInFlight.contains(video.id))
-                        .help("AI pass over the fight scenes logging strikes, takedowns, and submission attempts per fighter — runs automatically after analysis; progress shows in the analysis log")
                     }
-                    if let events = store.fightEvents[video.id], !events.isEmpty {
-                        FightGraphView(events: events,
-                                       range: 0...max(1, video.duration),
-                                       people: store.people,
-                                       height: 64) { time in
-                            player?.seek(to: CMTime(seconds: time, preferredTimescale: 600),
-                                         toleranceBefore: .zero, toleranceAfter: .zero)
-                        }
-                    } else {
-                        Text("Not scored yet — analyzed fight footage scores automatically; use Score to run it now.")
+                    if let record = store.fightResearch[video.id] {
+                        Text(record.fightLabel
+                             + (record.event.isEmpty ? "" : " — \(record.event)"))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else if !store.fightResearchInFlight.contains(video.id) {
+                        Text("Not researched yet.")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            // The video's people roster: build it here, ahead of any run —
-            // the analyze window then only asks which of them to require.
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("People")
-                        .font(.caption.weight(.medium))
-                    Spacer()
-                    if store.isDetectingPeople {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    Button(roster.isEmpty ? "Detect" : "Re-run") {
-                        Task { roster = await store.detectPeopleInVideo(video) }
-                    }
-                    .controlSize(.small)
-                    .disabled(store.isDetectingPeople)
-                    .help("People-only AI pass: identifies everyone in this video (honoring markers) without a full analysis")
-                }
-                if roster.isEmpty {
-                    Text("Nobody detected yet.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 8) {
-                            ForEach(roster) { entry in
-                                VStack(spacing: 2) {
-                                    VideoPersonAvatar(record: entry, videoURL: video.url,
-                                                      size: 36)
-                                    Text(entry.displayName)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                }
-                                .frame(width: 48)
-                                .help(entry.descriptor)
-                            }
-                        }
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)
         .task(id: video.id) {

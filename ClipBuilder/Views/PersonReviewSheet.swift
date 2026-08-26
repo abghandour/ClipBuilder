@@ -28,9 +28,12 @@ struct PersonReviewSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
+                // "To name", not "new": known-but-unnamed people join the
+                // review when analysis lifts their name from on-screen
+                // graphics or the filename.
                 Text(request.people.count == 1
-                     ? "1 new person detected"
-                     : "\(request.people.count) new people detected")
+                     ? "1 person to name"
+                     : "\(request.people.count) people to name")
                     .font(.headline)
                 Text("Name each person, or mark them as someone already detected — their scenes merge under that identity. Skip anyone you don't recognize; they stay editable in People.")
                     .font(.caption)

@@ -244,16 +244,31 @@ actor Analyzer {
         Skip officials and support staff — referees, judges, cornermen, ring/production staff, commentators — unless the user context explicitly asks for them: they get no people entry and no person tags. The subjects are the people the footage is ABOUT.
         KNOWN PEOPLE from this library — when someone in the frames is visually the same person, REUSE their exact key:
         \(known)
-        The video's filename is "\(filename)". Filenames often carry the real names of the people in the footage — use them two ways:
-        - If a filename name matches a KNOWN person's name above, that is strong evidence to reuse their key.
-        - For a person you invent a NEW key for, set "suggested_name" to the filename name you are confident belongs to them (null when unsure or when the filename has no names). Copy names verbatim; never invent one.
+        The video's filename is "\(filename)". Real names come from TWO sources — read both:
+        - ON-SCREEN TEXT (strongest evidence): broadcast graphics such as chyrons/lower-thirds (e.g. "DU PLESSIS ⋯ STRICKLAND" beside the fight clock), corner name banners, tale-of-the-tape cards, scoreboards, walkout captions, commentary name straps. Match each name to the person it labels — a lower-third lists the fighters in their on-screen corner order, and the name usually sits nearest its fighter.
+        - FILENAME: filenames often carry the real names of the people in the footage.
+        Use these names two ways:
+        - If a name matches a KNOWN person's name above, that is strong evidence to reuse their key.
+        - Set "suggested_name" whenever you are confident of a person's real name from these sources: on every NEW key, AND on a reused KNOWN key whose entry above has no user name yet. Copy names as written (normalize ALL-CAPS to standard capitalization); null when unsure — never invent or guess a name.
         In your JSON response, ALSO include a top-level "people" array:
-        "people": [{"key": "<known key, or a new kebab-case slug you invent>", "description": "<concise visual description: build, hair, clothing, distinguishing marks>", "suggested_name": "<name from the filename, or null>", "ranges": [{"start": 0.0, "end": 5.2}]}]
+        "people": [{"key": "<known key, or a new kebab-case slug you invent>", "description": "<concise visual description: build, hair, clothing, distinguishing marks>", "suggested_name": "<name from on-screen graphics or the filename, or null>", "ranges": [{"start": 0.0, "end": 5.2}]}]
         Rules: reuse a known key ONLY when confident it is the same person; invent a new key otherwise; one entry per person; ranges cover where that person is clearly visible.
         Every time range you return in "tags" that shows a person MUST be covered by that person's ranges here — footage with people but no person attribution is an error. (Footage with nobody in it may still be tagged normally.)
         AND include a top-level "outcome" object IF this video shows a fight/match RESULT — signals: the referee stopping the action, a fighter unconscious or tapping, the hand raise, a victory celebration, broadcast result graphics:
-        "outcome": {"method": "<ko|tko|submission|decision|draw|no-contest>", "winner_key": "<person key of the winner, or null if unsure>", "loser_key": "<person key, or null>", "event": "<event name from broadcast graphics/filename (e.g. \"UFC 330\"), or null>"}
+        "outcome": {"method": "<ko|tko|submission|decision|draw|no-contest>", "winner_key": "<person key of the winner, or null if unsure>", "loser_key": "<person key, or null>", "event": "<event name from broadcast graphics/filename (e.g. \"UFC 330\" or a title-fight strap like \"UFC MIDDLEWEIGHT CHAMPIONSHIP\"), or null>", "round": <round number when the fight clock's round indicator is readable (e.g. "R5" → 5), or null>}
         Use "outcome": null when the video shows no result (training, interview, preview). Never guess the winner — null beats wrong.
+
+        """
+    }
+
+    /// Once-per-analysis filename proposal: auto-generated names (screen
+    /// recordings, camera defaults, hex dumps) get a descriptive replacement
+    /// built from what the model actually saw.
+    private static func filenameBlock(_ filename: String) -> String {
+        """
+
+        ## FILENAME SUGGESTION
+        The file is currently named "\(filename)". If that name looks auto-generated or says nothing about the content — screen-recording/camera defaults ("ScreenRecording_…", "IMG_1234", "DSC…"), bare dates/timestamps, hex or UUID strings — include a top-level "suggested_filename": a short human-readable name built from what the footage actually shows: the people (named via on-screen graphics or known people), event, round, and content type. Example: "Du Plessis vs Strickland - UFC Middleweight Championship R5". Plain text only — no file extension, no slashes, colons, or quotes, at most 60 characters. If the current name already describes the content, return "suggested_filename": null.
 
         """
     }
@@ -300,7 +315,7 @@ actor Analyzer {
         """
         You are analyzing frames from a \(domain) video.
         Video duration: \(String(format: "%.1f", duration))s. Frames are shown at their timestamps.
-        \(instructionsBlock(instructions))\(tasteBlock(tasteRubric, categories: tasteCategories, exampleCount: tasteExampleCount))\(notesBlock(notes, withReferenceFrames: notesHaveReferenceFrames))\(peopleBlock(knownPeople, filename: filename))\(markerBlock(markers))\(ignoreBlock(ignoreCount))
+        \(instructionsBlock(instructions))\(tasteBlock(tasteRubric, categories: tasteCategories, exampleCount: tasteExampleCount))\(notesBlock(notes, withReferenceFrames: notesHaveReferenceFrames))\(peopleBlock(knownPeople, filename: filename))\(filenameBlock(filename))\(markerBlock(markers))\(ignoreBlock(ignoreCount))
         Your job: produce a TAG-CENTRIC analysis. For each tag that applies to this
         video, provide the TIME RANGES where that tag is present. Also note any
         important moments (dialog, key events).
@@ -480,10 +495,10 @@ actor Analyzer {
         Skip officials and support staff — referees, judges, cornermen, ring/production staff, commentators — they are not subjects.
         KNOWN PEOPLE from this library — when someone in the frames is visually the same person, REUSE their exact key:
         \(known)
-        The video's filename is "\(filename)". Filenames often carry the subjects' real names — if a name matches a KNOWN person, that supports reusing their key; for a NEW person, offer it as "suggested_name" (null when unsure).
+        The video's filename is "\(filename)". Real names come from two sources: ON-SCREEN TEXT — broadcast graphics like chyrons/lower-thirds, corner name banners, tale-of-the-tape cards, scoreboards, captions (match each name to the person it labels) — and the FILENAME, which often carries the subjects' real names. If a name matches a KNOWN person, that supports reusing their key; set "suggested_name" for a NEW person, or for a reused KNOWN key whose entry above has no user name, whenever you are confident (normalize ALL-CAPS; null when unsure — never guess).
 
         Return ONLY a JSON object, no markdown fences:
-        {"people": [{"key": "<known key, or a new kebab-case slug>", "description": "<concise visual description: build, hair, clothing, marks>", "suggested_name": "<name from the filename, or null>", "ranges": [{"start": 0.0, "end": 5.2}], "portrait": {"at": <timestamp of a frame where this person is clearly and fully visible>, "x": 0.1, "y": 0.2, "w": 0.25, "h": 0.6}}]}
+        {"people": [{"key": "<known key, or a new kebab-case slug>", "description": "<concise visual description: build, hair, clothing, marks>", "suggested_name": "<name from on-screen graphics or the filename, or null>", "ranges": [{"start": 0.0, "end": 5.2}], "portrait": {"at": <timestamp of a frame where this person is clearly and fully visible>, "x": 0.1, "y": 0.2, "w": 0.25, "h": 0.6}}]}
         "portrait" is a normalized top-left box tightly around that person at that frame — it becomes their avatar, so prefer a moment where they are unobstructed and facing the camera.
         """
     }
@@ -909,7 +924,9 @@ actor Analyzer {
     /// and only new tags were added to the schema, runs the cheaper
     /// incremental pass instead. Returns the id of the analyze batch the
     /// results were stored under (nil when the pass was skipped) plus the
-    /// people first detected in this pass, for the end-of-run review sheet.
+    /// people first detected in this pass, for the end-of-run review sheet,
+    /// and a proposed replacement filename when the current one looks
+    /// auto-generated (nil otherwise).
     @discardableResult
     func analyzeVisual(video: VideoRecord,
                        profile: BrandProfile,
@@ -931,7 +948,7 @@ actor Analyzer {
                        force: Bool = false,
                        log: @escaping @Sendable (String) -> Void,
                        progress: @escaping @Sendable (Double, String) -> Void) async throws
-        -> (runID: Int64?, newPeople: [DetectedNewPerson]) {
+        -> (runID: Int64?, newPeople: [DetectedNewPerson], suggestedFilename: String?) {
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let tags = profile.effectiveTags
         var allTags = Set(tags.values.flatMap { $0 })
@@ -974,7 +991,7 @@ actor Analyzer {
         let isIncremental = !force && video.visualAnalyzedAt != nil && !alreadyAnalyzed.isEmpty
         if !force && isIncremental && newTags.isEmpty {
             log("\(video.filename): all tags already analyzed — skipping")
-            return (nil, [])
+            return (nil, [], nil)
         }
 
         progress(0.05, "extracting frames")
@@ -1180,7 +1197,7 @@ actor Analyzer {
 
         // Fight result, when the model saw one — winner/loser keys validated
         // against the people it just reported.
-        var outcome: (method: String, winner: String?, loser: String?, event: String?)?
+        var outcome: (method: String, winner: String?, loser: String?, event: String?, round: Int?)?
         if detectPeople, !isIncremental, let raw = object["outcome"] as? [String: Any],
            let method = (raw["method"] as? String)?.lowercased(),
            ["ko", "tko", "submission", "decision", "draw", "no-contest"].contains(method) {
@@ -1190,8 +1207,26 @@ actor Analyzer {
                 return key
             }
             let event = (raw["event"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let round = (raw["round"] as? NSNumber)?.intValue
             outcome = (method, validKey(raw["winner_key"]), validKey(raw["loser_key"]),
-                       event?.isEmpty == false ? event : nil)
+                       event?.isEmpty == false ? event : nil,
+                       round.flatMap { (1...12).contains($0) ? $0 : nil })
+        }
+
+        // Filename proposal: only offered for auto-generated-looking names
+        // (the prompt gates it), sanitized here so it is always usable as a
+        // file name. One per analysis — the full pass only.
+        var suggestedFilename: String?
+        if !isIncremental, let raw = object["suggested_filename"] as? String {
+            let cleaned = raw
+                .components(separatedBy: CharacterSet(charactersIn: "/\\:\"\n\r"))
+                .joined(separator: " ")
+                .components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+                .joined(separator: " ")
+            let currentBase = (video.filename as NSString).deletingPathExtension
+            if !cleaned.isEmpty, cleaned.caseInsensitiveCompare(currentBase) != .orderedSame {
+                suggestedFilename = String(cleaned.prefix(80))
+            }
         }
 
         // Whole-video classification — steers fight-only features and the
@@ -1307,7 +1342,15 @@ actor Analyzer {
             for person in detectedPeople {
                 try await database.upsertPerson(key: person.key, descriptor: person.description)
             }
-            newPeople = new.map { person in
+            // Known-but-unnamed people whose name the model lifted from
+            // on-screen graphics/filename join the review too, so "Unnamed
+            // person N" finally gets its chyron name confirmed.
+            let unnamedKnown = Set(knownPeople.filter { $0.name.isEmpty }.map(\.key))
+            let reviewable = detectedPeople.filter { person in
+                !known.contains(person.key)
+                    || (unnamedKnown.contains(person.key) && person.suggestedName != nil)
+            }
+            newPeople = reviewable.map { person in
                 DetectedNewPerson(key: person.key, descriptor: person.description,
                                   suggestedName: person.suggestedName,
                                   videoURL: video.url, videoFilename: video.filename,
@@ -1348,12 +1391,18 @@ actor Analyzer {
                                                  method: outcome.method,
                                                  winnerKey: outcome.winner,
                                                  loserKey: outcome.loser,
-                                                 event: outcome.event)
+                                                 event: outcome.event,
+                                                 round: outcome.round)
             let names = Dictionary(uniqueKeysWithValues: knownPeople.map { ($0.key, $0.displayName) })
             let winner = outcome.winner.map { names[$0] ?? $0 } ?? "?"
             let loser = outcome.loser.map { names[$0] ?? $0 } ?? "?"
             log("Fight outcome: \(winner) beat \(loser) by \(outcome.method.uppercased())"
+                + (outcome.round.map { " in round \($0)" } ?? "")
                 + (outcome.event.map { " (\($0))" } ?? ""))
+        }
+
+        if let suggestedFilename {
+            log("Filename looks auto-generated — suggesting \"\(suggestedFilename)\"")
         }
 
         // Sequence stories + entertainment scores land on their scenes;
@@ -1518,7 +1567,7 @@ actor Analyzer {
             }
         }
         progress(1.0, "done")
-        return (runID, newPeople)
+        return (runID, newPeople, suggestedFilename)
     }
 
     /// The detections that matter for framing: boxes nearly as tall as the

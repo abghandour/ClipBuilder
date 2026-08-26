@@ -55,6 +55,9 @@ final class AppStore {
     /// People first detected by the just-finished analysis — presented for
     /// naming/merging as soon as the run ends.
     var pendingPeopleReview: PeopleReviewRequest?
+    /// Filename proposals from the just-finished analysis, for files whose
+    /// names looked auto-generated — presented after the people review.
+    var pendingRenameReview: RenameReviewRequest?
     private var comparisonQueue: [ComparisonBatch] = []
 
     /// FIFO of pending alerts; the main window presents the first entry and
@@ -390,12 +393,17 @@ final class AppStore {
 
     // MARK: - Analysis
 
-    /// Batch name stamped at analysis time: "video name — as of date time".
-    private static func analysisRunName(for video: VideoRecord, at date: Date = .now) -> String {
+    /// Batch name stamped at analysis time: "<video name without extension>
+    /// MM/dd/yy", with a " v<n>" counter from the second batch of the same
+    /// video on (the first stays unsuffixed).
+    private static func analysisRunName(for video: VideoRecord, at date: Date = .now,
+                                        existingBatchCount: Int) -> String {
         let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return "\(video.filename) — as of \(formatter.string(from: date))"
+        formatter.dateFormat = "MM/dd/yy"
+        let base = (video.filename as NSString).deletingPathExtension
+        var name = "\(base) \(formatter.string(from: date))"
+        if existingBatchCount >= 1 { name += " v\(existingBatchCount + 1)" }
+        return name
     }
 
     /// Every run is a full pass that lands in a new analyze batch alongside
@@ -464,6 +472,7 @@ final class AppStore {
             // end. Later videos already treat them as known (people are
             // refetched per video), so keys never repeat across videos.
             var newPeople: [DetectedNewPerson] = []
+            var renameSuggestions: [RenameSuggestion] = []
             for (index, video) in targets.enumerated() {
                 if Task.isCancelled { break }
                 let base = Double(index) / Double(targets.count)
@@ -477,9 +486,14 @@ final class AppStore {
                     // batch keep their identity in the following videos.
                     let knownPeople = (try? await database.fetchPeople()) ?? []
                     let markers = (try? await database.personMarkers(videoID: video.id)) ?? []
-                    let (runID, videoNewPeople) = try await analyzer.analyzeVisual(
+                    // Counted from the DB right before the run, so mid-batch
+                    // additions are seen and the v-counter never repeats.
+                    let existingBatches = ((try? await database.fetchAnalysisRuns()) ?? [])
+                        .count { $0.videoID == video.id }
+                    let (runID, videoNewPeople, suggestedFilename) = try await analyzer.analyzeVisual(
                         video: video, profile: profile, database: database,
-                        runName: Self.analysisRunName(for: video)
+                        runName: Self.analysisRunName(for: video,
+                                                      existingBatchCount: existingBatches)
                             + (trimRange.map { " (\($0.start.timecode)–\($0.end.timecode))" } ?? ""),
                         provider: provider, model: model,
                         instructions: instructions, notes: notes,
@@ -502,6 +516,11 @@ final class AppStore {
                         })
                     let pendingKeys = Set(newPeople.map(\.key))
                     newPeople.append(contentsOf: videoNewPeople.filter { !pendingKeys.contains($0.key) })
+                    if let suggestedFilename {
+                        renameSuggestions.append(RenameSuggestion(videoID: video.id,
+                                                                  currentFilename: video.filename,
+                                                                  suggestedName: suggestedFilename))
+                    }
                     if includeTranscript {
                         // A transcript failure shouldn't undo a good analysis
                         // — log it and keep going.
@@ -551,7 +570,7 @@ final class AppStore {
                 } catch let error as AIError {
                     analysisLog.append("\(video.filename): \(error)")
                     if case .quotaExhausted = error {
-                        analysisLog.append("Quota exhausted — stopping the batch.")
+                        analysisLog.append("Quota exhausted — stopping the run.")
                         break
                     }
                 } catch {
@@ -568,6 +587,11 @@ final class AppStore {
             if !newPeople.isEmpty {
                 pendingPeopleReview = PeopleReviewRequest(people: newPeople)
             }
+            // Presented via its own sheet — it waits behind the people
+            // review when both exist.
+            if !renameSuggestions.isEmpty {
+                pendingRenameReview = RenameReviewRequest(suggestions: renameSuggestions)
+            }
         }
     }
 
@@ -581,7 +605,7 @@ final class AppStore {
     /// to the Analyze tab with the plan sheet open — edit, then re-run.
     func reanalyzeBatch(_ run: AnalysisRun) {
         guard let video = videos.first(where: { $0.id == run.videoID }) else {
-            presentError("The source video for this batch is no longer in the library.")
+            presentError("The source video for this analyze batch is no longer in the library.")
             return
         }
         let defaults = UserDefaults.standard
@@ -974,11 +998,70 @@ final class AppStore {
         Task {
             do {
                 try await database.renameVideo(id: video.id, filename: name, path: destination.path)
+                await renameAnalysisBatches(for: video, newFilename: name)
                 await refreshAllNow()
             } catch {
                 presentError("Could not save the new name", error)
             }
         }
+    }
+
+    /// Batch labels carry the filename — after a video rename, rebuild every
+    /// label still derived from the old name into the current format:
+    /// "<name without extension> MM/dd/yy" (+ " v<n>" from the second batch
+    /// of the video on), keeping a trailing "(start–end)" trim-window
+    /// suffix. Labels the user hand-renamed (no trace of the old filename)
+    /// are left alone.
+    private func renameAnalysisBatches(for video: VideoRecord, newFilename: String) async {
+        guard let database else { return }
+        let oldBase = (video.filename as NSString).deletingPathExtension
+        let newBase = (newFilename as NSString).deletingPathExtension
+        let runs = ((try? await database.fetchAnalysisRuns()) ?? [])
+            .filter { $0.videoID == video.id }
+            .sorted { $0.id < $1.id }
+        // Auto-derived labels: the legacy "… — as of <date>" stamp or the
+        // current "… MM/dd/yy [vN] [(trim)]" one. Catches labels still
+        // carrying a name from before an earlier rename, too.
+        func isDerived(_ label: String) -> Bool {
+            label.contains(video.filename) || label.contains(oldBase)
+                || label.contains(" — as of ")
+                || label.range(of: #"\d{2}/\d{2}/\d{2}( v\d+)?( \([0-9:.]+–[0-9:.]+\))?$"#,
+                               options: .regularExpression) != nil
+        }
+        for (index, run) in runs.enumerated() where isDerived(run.name) {
+            var label = "\(newBase) \(Self.shortDate(run.createdAt))"
+            if index >= 1 { label += " v\(index + 1)" }
+            if let window = run.name.range(of: #" \([0-9:.]+–[0-9:.]+\)$"#,
+                                           options: .regularExpression) {
+                label += String(run.name[window])
+            }
+            try? await database.renameAnalysisRun(id: run.id, name: label)
+        }
+    }
+
+    /// SQLite "YYYY-MM-DD hh:mm:ss" (UTC) → local "MM/dd/yy"; today if
+    /// unparseable. The full timestamp must convert to local time BEFORE
+    /// dropping the time, else late-evening batches land on the wrong day.
+    private static func shortDate(_ sqliteDate: String?) -> String {
+        let output = DateFormatter()
+        output.locale = Locale(identifier: "en_US_POSIX")
+        output.dateFormat = "MM/dd/yy"
+        guard let sqliteDate else { return output.string(from: .now) }
+        let input = DateFormatter()
+        input.locale = Locale(identifier: "en_US_POSIX")
+        input.timeZone = TimeZone(identifier: "UTC")
+        input.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        if let date = input.date(from: sqliteDate) {
+            return output.string(from: date)
+        }
+        // Date-only fallback: keep it in UTC on both ends so the calendar
+        // day survives.
+        input.dateFormat = "yyyy-MM-dd"
+        if let date = input.date(from: String(sqliteDate.prefix(10))) {
+            output.timeZone = TimeZone(identifier: "UTC")
+            return output.string(from: date)
+        }
+        return output.string(from: .now)
     }
 
     /// User pick from the Analyze table's Type column — the manual value
