@@ -114,7 +114,7 @@ struct ScenesView: View {
         .toolbar {
             if let run = selectedRun {
                 ToolbarItem {
-                    Button("Batch Info", systemImage: "info.circle") {
+                    Button("Analyze Batch Info", systemImage: "info.circle") {
                         infoRun = run
                     }
                     .help("All parameters and instructions used for this analyze batch")
@@ -165,7 +165,7 @@ struct ScenesView: View {
                     ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
                 }
                 .disabled(filtered.isEmpty)
-                .help("Describe a video to create from the displayed scenes — the current batch, tag, and search filters carry into the AI Wizard")
+                .help("Describe a video to create from the displayed scenes — the current analyze batch, tag, and search filters carry into the AI Wizard")
             }
         }
         .sheet(isPresented: $showGenerateSheet) {
@@ -187,7 +187,7 @@ struct ScenesView: View {
             Section("Analyze Batches") {
                 HStack {
                     Image(systemName: "square.grid.3x3")
-                    Text("All Batches")
+                    Text("All Analyze Batches")
                     Spacer()
                     Text("\(store.scenes.count)")
                         .foregroundStyle(.secondary)
@@ -215,20 +215,20 @@ struct ScenesView: View {
                     .tag(run.id)
                     .help(batchTooltip(run))
                     .contextMenu {
-                        Button("Batch Info…") {
+                        Button("Analyze Batch Info…") {
                             infoRun = run
                         }
                         Button("Rename…") {
                             renameText = run.name
                             renamingRun = run
                         }
-                        Button("Delete Batch…", role: .destructive) {
+                        Button("Delete Analyze Batch…", role: .destructive) {
                             deletingRuns = [run]
                         }
                         // Right-clicking inside a multi-selection offers the
                         // whole selection; Delete (⌫) does the same.
                         if selectedRunIDs.contains(run.id), selectedRuns.count > 1 {
-                            Button("Delete \(selectedRuns.count) Selected Batches…", role: .destructive) {
+                            Button("Delete \(selectedRuns.count) Selected Analyze Batches…", role: .destructive) {
                                 deletingRuns = selectedRuns
                             }
                         }
@@ -266,7 +266,7 @@ struct ScenesView: View {
             isPresented: Binding(get: { !deletingRuns.isEmpty },
                                  set: { if !$0 { deletingRuns = [] } })
         ) {
-            Button(deletingRuns.count == 1 ? "Delete Batch" : "Delete \(deletingRuns.count) Batches",
+            Button(deletingRuns.count == 1 ? "Delete Analyze Batch" : "Delete \(deletingRuns.count) Analyze Batches",
                    role: .destructive) {
                 for run in deletingRuns {
                     selectedRunIDs.remove(run.id)
@@ -277,8 +277,8 @@ struct ScenesView: View {
             Button("Cancel", role: .cancel) { deletingRuns = [] }
         } message: {
             Text(deletingRuns.count == 1
-                 ? "This deletes the batch's scenes along with their tags and ratings. The source video is not touched."
-                 : "This deletes these batches' scenes along with their tags and ratings. The source videos are not touched.")
+                 ? "This deletes the analyze batch's scenes along with their tags and ratings. The source video is not touched."
+                 : "This deletes these analyze batches' scenes along with their tags and ratings. The source videos are not touched.")
         }
     }
 
@@ -382,7 +382,7 @@ private struct BatchInfoSheet: View {
                             }
                         }
                         if notesAreFallback {
-                            Text("This batch predates note snapshots — showing the video's current notes, which may differ from what the run used.")
+                            Text("This analyze batch predates note snapshots — showing the video's current notes, which may differ from what the run used.")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
@@ -396,7 +396,7 @@ private struct BatchInfoSheet: View {
                     dismiss()
                     store.reanalyzeBatch(run)
                 }
-                .help("Opens Raw Videos with this batch's options loaded into the model plan — adjust anything, then start. The result lands in a new batch.")
+                .help("Opens Raw Videos with this analyze batch's options loaded into the model plan — adjust anything, then start. The result lands in a new analyze batch.")
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)

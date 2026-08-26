@@ -396,7 +396,7 @@ struct WizardView: View {
                         .padding(.vertical, 4)
                     }
                     if !selected.isEmpty {
-                        Text("Only scenes featuring the picked people are used — combined with the batch filter above. Center Stage tracks them in wide footage.")
+                        Text("Only scenes featuring the picked people are used — combined with the analyze batch filter above. Center Stage tracks them in wide footage.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

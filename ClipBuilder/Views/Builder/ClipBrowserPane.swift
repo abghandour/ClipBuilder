@@ -5,10 +5,12 @@ import SwiftUI
 struct ClipBrowserPane: View {
     @Environment(AppStore.self) private var store
 
-    @State private var searchText = ""
     @State private var tagFilter: String?
     @State private var favoritesOnly = false
     @State private var orientation = OrientationFilter.all
+    @State private var batchFilter: Int64?
+    @State private var batchSearch = ""
+    @State private var durationFilter = DurationFilter.any
     @State private var playingScene: SceneRecord?
 
     enum OrientationFilter: String, CaseIterable {
@@ -17,36 +19,134 @@ struct ClipBrowserPane: View {
         case wide = "Wide"
     }
 
-    private var filteredScenes: [SceneRecord] {
-        let needle = searchText.lowercased()
-        return store.scenes.filter { scene in
-            if scene.excluded { return false }
-            if favoritesOnly && !scene.favorite { return false }
-            if orientation == .wide && !scene.wide { return false }
-            if orientation == .vertical && scene.wide { return false }
-            if let tagFilter, !scene.tags.contains(tagFilter) { return false }
-            if !needle.isEmpty {
-                let haystack = (scene.videoFilename + " " + scene.tags.joined(separator: " ")).lowercased()
-                if !haystack.contains(needle) { return false }
+    /// Upper bound on scene length; nil = unbounded.
+    enum DurationFilter: String, CaseIterable {
+        case any = "Any length"
+        case under5 = "< 5s"
+        case under15 = "< 15s"
+        case under30 = "< 30s"
+
+        var maxSeconds: Double? {
+            switch self {
+            case .any: return nil
+            case .under5: return 5
+            case .under15: return 15
+            case .under30: return 30
             }
-            return true
         }
     }
 
-    private var allTags: [String] {
-        Array(Set(store.scenes.flatMap(\.tags))).sorted()
+    /// Every filter except the tag itself — the tag dropdown's counts are
+    /// computed over exactly these scenes, so they stay truthful as the
+    /// batch/duration/orientation/favorites filters change.
+    private func passesNonTagFilters(_ scene: SceneRecord) -> Bool {
+        if scene.excluded { return false }
+        if favoritesOnly && !scene.favorite { return false }
+        if orientation == .wide && !scene.wide { return false }
+        if orientation == .vertical && scene.wide { return false }
+        if let batchFilter, scene.runID != batchFilter { return false }
+        if let maxSeconds = durationFilter.maxSeconds, scene.duration >= maxSeconds { return false }
+        return true
+    }
+
+    private var filteredScenes: [SceneRecord] {
+        store.scenes.filter { scene in
+            passesNonTagFilters(scene)
+                && (tagFilter.map { scene.tags.contains($0) } ?? true)
+        }
+    }
+
+    /// Tags with at least one matching scene, with their scene counts. The
+    /// active tag stays listed even when its count drops to zero, so the
+    /// picker's selection never dangles.
+    private var tagCounts: [(tag: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for scene in store.scenes where passesNonTagFilters(scene) {
+            for tag in Set(scene.tags) { counts[tag, default: 0] += 1 }
+        }
+        if let tagFilter, counts[tagFilter] == nil { counts[tagFilter] = 0 }
+        return counts.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+    }
+
+    /// Analyze batches that actually hold scenes, newest first.
+    private var batches: [AnalysisRun] {
+        store.analysisRuns.filter { $0.sceneCount > 0 }.sorted { $0.id > $1.id }
+    }
+
+    /// Batches matching the batch-name search (partial, case-insensitive).
+    private var matchingBatches: [AnalysisRun] {
+        let needle = batchSearch.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return batches }
+        return batches.filter { $0.name.lowercased().contains(needle) }
+    }
+
+    /// The expanded batch selector at the top of the filter section: a
+    /// name-filterable list (5 rows tall) instead of a popup, so batches are
+    /// scannable at a glance.
+    private var batchList: some View {
+        VStack(spacing: 4) {
+            TextField("Filter analyze batches", text: $batchSearch)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+            ScrollView {
+                VStack(spacing: 1) {
+                    batchRow(name: "All Analyze Batches", count: nil, id: nil)
+                    ForEach(matchingBatches) { run in
+                        batchRow(name: run.name, count: run.sceneCount, id: run.id)
+                    }
+                    if matchingBatches.isEmpty {
+                        Text("No analyze batches match")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(6)
+                    }
+                }
+            }
+            // 5 rows of 22pt + spacing stay visible; the rest scrolls.
+            .frame(height: 116)
+            .background(.quinary, in: RoundedRectangle(cornerRadius: 6))
+        }
+    }
+
+    private func batchRow(name: String, count: Int?, id: Int64?) -> some View {
+        let selected = batchFilter == id
+        return Button {
+            batchFilter = id
+        } label: {
+            HStack(spacing: 6) {
+                Text(name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+                if let count {
+                    Text("\(count)")
+                        .foregroundStyle(selected ? .primary : .secondary)
+                        .monospacedDigit()
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(selected ? AnyShapeStyle(Color.accentColor.opacity(0.3))
+                                 : AnyShapeStyle(.clear),
+                        in: RoundedRectangle(cornerRadius: 4))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(id == nil ? "Show scenes from every analyze batch" : name)
     }
 
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 8) {
-                TextField("Filter scenes", text: $searchText)
-                    .textFieldStyle(.roundedBorder)
+                batchList
                 HStack {
                     Picker("Tag", selection: $tagFilter) {
                         Text("All Tags").tag(String?.none)
-                        ForEach(allTags, id: \.self) { tag in
-                            Text(tag).tag(String?.some(tag))
+                        ForEach(tagCounts, id: \.tag) { entry in
+                            Text("\(entry.tag) (\(entry.count))").tag(String?.some(entry.tag))
                         }
                     }
                     .labelsHidden()
@@ -56,6 +156,14 @@ struct ClipBrowserPane: View {
                         }
                     }
                     .labelsHidden()
+                    Picker("Duration", selection: $durationFilter) {
+                        ForEach(DurationFilter.allCases, id: \.self) { choice in
+                            Text(choice.rawValue).tag(choice)
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                    .help("Only show scenes shorter than this")
                     Toggle(isOn: $favoritesOnly) {
                         Image(systemName: "heart.fill")
                     }
