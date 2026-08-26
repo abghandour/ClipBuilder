@@ -143,7 +143,7 @@ struct CuratedWizardSheet: View {
                 .font(.headline)
             StepIndicator(current: model.step)
             if model.step == .scenes, model.batchIDs.count > 1, let active = model.activeBatchID {
-                Picker("Batch", selection: Binding(get: { active },
+                Picker("Analyze Batch", selection: Binding(get: { active },
                                                    set: { model.switchBatch(to: $0) })) {
                     ForEach(model.batchIDs, id: \.self) { id in
                         Text(model.batchName(id)
@@ -250,6 +250,10 @@ struct CuratedWizardSheet: View {
     @ViewBuilder
     private var scenesStep: some View {
         VStack(spacing: 0) {
+            if !model.proposalList.isEmpty {
+                proposalCarousel
+                Divider()
+            }
             HSplitView {
                 proposalPane
                     .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
@@ -260,6 +264,51 @@ struct CuratedWizardSheet: View {
             }
             Divider()
             timelineStrip
+        }
+    }
+
+    /// The proposal queue across the top: every scene still on offer as a
+    /// small thumbnail, the one being previewed highlighted. Click to jump.
+    private var proposalCarousel: some View {
+        let currentID = model.editingPickID == nil ? model.currentScene?.id : nil
+        return ScrollViewReader { scrollProxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(model.proposalList) { scene in
+                        let isCurrent = scene.id == currentID
+                        VideoThumbnail(url: scene.videoURL, time: scene.startTime + 0.1)
+                            .frame(width: 76, height: 46)
+                            .overlay(alignment: .bottomTrailing) {
+                                Text(String(format: "%.0fs", scene.duration))
+                                    .font(.caption2.monospacedDigit())
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(.black.opacity(0.6), in: Capsule())
+                                    .foregroundStyle(.white)
+                                    .padding(3)
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .strokeBorder(isCurrent ? Color.accentColor : .secondary.opacity(0.3),
+                                                  lineWidth: isCurrent ? 3 : 1)
+                            }
+                            .opacity(isCurrent ? 1 : 0.7)
+                            .onTapGesture { model.jumpToProposal(scene.id) }
+                            .help(scene.videoFilename
+                                  + (scene.score.map { String(format: " — score %.0f/10", $0) } ?? ""))
+                            .id(scene.id)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+            .onChange(of: currentID) { _, id in
+                guard let id else { return }
+                withAnimation { scrollProxy.scrollTo(id, anchor: .center) }
+            }
+            .onAppear {
+                if let currentID { scrollProxy.scrollTo(currentID, anchor: .center) }
+            }
         }
     }
 
@@ -365,16 +414,16 @@ struct CuratedWizardSheet: View {
                 VStack(spacing: 12) {
                     if model.activeBatchIsEmpty, model.batchIDs.count > 1 {
                         ContentUnavailableView(
-                            "Nothing to suggest from this batch",
+                            "Nothing to suggest from this analyze batch",
                             systemImage: "line.3.horizontal.decrease.circle",
-                            description: Text("The wizard's Source Selection filters — picked people, curated-only, Center Stage fit — matched none of this batch's scenes. Adjust those filters and reopen, or switch to another batch."))
+                            description: Text("The wizard's Source Selection filters — picked people, curated-only, Center Stage fit — matched none of this analyze batch's scenes. Adjust those filters and reopen, or switch to another analyze batch."))
                     } else {
                         ContentUnavailableView(
-                            model.batchIDs.count > 1 ? "No more scenes in this batch"
+                            model.batchIDs.count > 1 ? "No more scenes in this analyze batch"
                                                      : "No more scenes to review",
                             systemImage: "checkmark.rectangle.stack",
                             description: Text(model.batchIDs.count > 1
-                                ? "This batch's suggestions are done — switch batches to keep going."
+                                ? "This analyze batch's suggestions are done — switch analyze batches to keep going."
                                 : (model.picks.isEmpty
                                     ? "Every scene in the current source selection has been shown. Adjust the wizard's Source Selection and reopen."
                                     : "You've seen every scene. Reorder or re-trim your picks below, then Continue.")))
@@ -383,7 +432,7 @@ struct CuratedWizardSheet: View {
                         Button {
                             model.cycleBatch(1)
                         } label: {
-                            Label("Next Batch", systemImage: "forward.frame")
+                            Label("Next Analyze Batch", systemImage: "forward.frame")
                         }
                         .buttonStyle(.borderedProminent)
                     }
@@ -396,30 +445,34 @@ struct CuratedWizardSheet: View {
     @ViewBuilder
     private func trimControls(range: ClosedRange<Double>) -> some View {
         if let scene = model.currentScene {
+            // Fine-grain pass: a 10s window with 0.5s ticks, so a 2s
+            // selection isn't a sliver on an 86s filmstrip.
+            let zoomed = model.editEnd - model.editStart < 10 && scene.videoDuration > 10.5
             VStack(alignment: .leading, spacing: 4) {
-                // Fine-grain pass: a 10s window with 0.5s ticks, so a 2s
-                // selection isn't a sliver on an 86s filmstrip.
-                if model.editEnd - model.editStart < 10, scene.videoDuration > 10.5 {
-                    Text("Fine trim — 10s window, 0.5s ticks")
-                        .font(.caption.weight(.medium))
-                    VideoTrimSlider(url: scene.videoURL,
-                                    duration: min(10, scene.videoDuration),
+                Text(zoomed ? "Fine trim — 10s window, 0.5s ticks"
+                            : "Clip range — drag to trim or extend into the source footage")
+                    .font(.caption.weight(.medium))
+                VStack(spacing: 0) {
+                    if zoomed {
+                        VideoTrimSlider(url: scene.videoURL,
+                                        duration: min(10, scene.videoDuration),
+                                        start: $model.editStart, end: $model.editEnd,
+                                        pace: fightPace(for: scene, start: zoomWindowStart,
+                                                        end: zoomWindowStart + min(10, scene.videoDuration)),
+                                        timeOffset: zoomWindowStart,
+                                        tickInterval: 0.5, minimumSpan: 0.5,
+                                        showsTimes: false, stripHeight: 64) { time in
+                            scrub(to: time)
+                        }
+                        zoomConnector(videoDuration: scene.videoDuration)
+                    }
+                    VideoTrimSlider(url: scene.videoURL, duration: scene.videoDuration,
                                     start: $model.editStart, end: $model.editEnd,
-                                    pace: fightPace(for: scene, start: zoomWindowStart,
-                                                    end: zoomWindowStart + min(10, scene.videoDuration)),
-                                    timeOffset: zoomWindowStart,
-                                    tickInterval: 0.5, minimumSpan: 0.5,
-                                    showsTimes: false) { time in
+                                    pace: fightPace(for: scene, start: 0,
+                                                    end: scene.videoDuration)) { time in
                         scrub(to: time)
                     }
-                }
-                Text("Clip range — drag to trim or extend into the source footage")
-                    .font(.caption.weight(.medium))
-                VideoTrimSlider(url: scene.videoURL, duration: scene.videoDuration,
-                                start: $model.editStart, end: $model.editEnd,
-                                pace: fightPace(for: scene, start: 0,
-                                                end: scene.videoDuration)) { time in
-                    scrub(to: time)
+                    .help("Clip range — drag to trim or extend into the source footage")
                 }
                 HStack {
                     Button("Reset to scene") {
@@ -457,6 +510,48 @@ struct CuratedWizardSheet: View {
                 }
             }
         }
+    }
+
+    /// Loupe funnel between the fine-trim strip and the full-clip strip: the
+    /// zoom strip's full width tapers down to the 10s window it magnifies on
+    /// the source filmstrip below, so the two surfaces read as one lens.
+    private func zoomConnector(videoDuration: Double) -> some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let height = proxy.size.height
+            let span = min(10.0, videoDuration)
+            let safeDuration = max(videoDuration, 0.001)
+            let x0 = width * CGFloat(min(1, zoomWindowStart / safeDuration))
+            let x1 = width * CGFloat(min(1, (zoomWindowStart + span) / safeDuration))
+            ZStack {
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: 0))
+                    path.addLine(to: CGPoint(x: width, y: 0))
+                    path.addLine(to: CGPoint(x: x1, y: height))
+                    path.addLine(to: CGPoint(x: x0, y: height))
+                    path.closeSubpath()
+                }
+                .fill(LinearGradient(colors: [.yellow.opacity(0.22), .yellow.opacity(0.05)],
+                                     startPoint: .top, endPoint: .bottom))
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: 0))
+                    path.addLine(to: CGPoint(x: x0, y: height))
+                    path.move(to: CGPoint(x: width, y: 0))
+                    path.addLine(to: CGPoint(x: x1, y: height))
+                }
+                .stroke(.yellow.opacity(0.6), lineWidth: 1)
+                // Underline the magnified window right where it sits on the
+                // full-clip strip.
+                Path { path in
+                    path.move(to: CGPoint(x: x0, y: height - 0.5))
+                    path.addLine(to: CGPoint(x: x1, y: height - 0.5))
+                }
+                .stroke(.yellow.opacity(0.8), lineWidth: 1.5)
+            }
+        }
+        .frame(height: 16)
+        .allowsHitTesting(false)
+        .help("The strip above is a magnified view of this slice of the full clip")
     }
 
     // MARK: - Reel preview
@@ -813,13 +908,13 @@ struct CuratedWizardSheet: View {
                     Button {
                         model.cycleBatch(-1)
                     } label: {
-                        Label("Prev Batch", systemImage: "backward.frame")
+                        Label("Prev Analyze Batch", systemImage: "backward.frame")
                     }
                     .help("Jump to the previous analyze batch's footage (wraps around)")
                     Button {
                         model.cycleBatch(1)
                     } label: {
-                        Label("Next Batch", systemImage: "forward.frame")
+                        Label("Next Analyze Batch", systemImage: "forward.frame")
                     }
                     .help("Jump to the next analyze batch's footage (wraps around)")
                 }
@@ -1683,7 +1778,7 @@ final class CuratedWizardModel {
     }
 
     func batchName(_ id: Int64) -> String {
-        batchNames[id] ?? "Batch \(id)"
+        batchNames[id] ?? "Analyze Batch \(id)"
     }
 
     /// Whether the pool contains anything from this batch at all (false =
@@ -1719,6 +1814,24 @@ final class CuratedWizardModel {
     // MARK: Proposal navigation
 
     private var pickedSceneIDs: Set<Int64> { Set(picks.map(\.scene.id)) }
+
+    /// Unapproved scenes still on offer from the active batch, in queue
+    /// order — the proposal carousel across the top of the scenes step.
+    var proposalList: [SceneRecord] {
+        let picked = pickedSceneIDs
+        return activeQueue.filter { !picked.contains($0.id) }
+    }
+
+    /// Jump the proposal walk straight to a scene tapped in the carousel
+    /// (finishing any pick re-edit first, so its trim isn't lost).
+    func jumpToProposal(_ sceneID: Int64) {
+        guard step == .scenes else { return }
+        if editingPickID != nil { finishEditingPick() }
+        guard let index = activeQueue.firstIndex(where: { $0.id == sceneID }),
+              !pickedSceneIDs.contains(sceneID) else { return }
+        position = index
+        seedEditState()
+    }
 
     /// The scene the player shows: an approved pick under re-edit, or the
     /// queue's current proposal.

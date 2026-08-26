@@ -1629,13 +1629,15 @@ struct VideoTrimSlider: View {
     /// Hide the start/selected/end caption row (when a second strip nearby
     /// already shows the same numbers).
     var showsTimes: Bool = true
+    /// Filmstrip height — the fine-trim loupe uses a taller strip than the
+    /// full-clip one so the magnified view reads as the bigger surface.
+    var stripHeight: CGFloat = 44
     var onScrub: ((Double) -> Void)?
 
     /// Selection start + span captured when a middle drag begins.
     @State private var moveAnchor: (start: Double, span: Double)?
 
     private static let handleWidth: CGFloat = 14
-    private static let stripHeight: CGFloat = 44
     private static let thumbnailCount = 8
     /// Gestures measure in this fixed strip space — measuring in the moving
     /// handles' own space feeds the drag back into itself and jitters.
@@ -1655,7 +1657,7 @@ struct VideoTrimSlider: View {
                             while t < duration - 0.01 {
                                 let tickX = width * CGFloat(t / duration)
                                 path.move(to: CGPoint(x: tickX, y: 0))
-                                path.addLine(to: CGPoint(x: tickX, y: Self.stripHeight))
+                                path.addLine(to: CGPoint(x: tickX, y: stripHeight))
                                 t += tickInterval
                             }
                         }
@@ -1665,16 +1667,16 @@ struct VideoTrimSlider: View {
                     // Dim what's outside the selection.
                     Rectangle()
                         .fill(.black.opacity(0.55))
-                        .frame(width: max(0, startX), height: Self.stripHeight)
+                        .frame(width: max(0, startX), height: stripHeight)
                     Rectangle()
                         .fill(.black.opacity(0.55))
-                        .frame(width: max(0, width - endX), height: Self.stripHeight)
+                        .frame(width: max(0, width - endX), height: stripHeight)
                         .offset(x: endX)
                     // Selection frame.
                     RoundedRectangle(cornerRadius: 4)
                         .strokeBorder(.yellow, lineWidth: 3)
                         .frame(width: max(endX - startX, Self.handleWidth * 2),
-                               height: Self.stripHeight)
+                               height: stripHeight)
                         .offset(x: startX)
                         .allowsHitTesting(false)
                     // Middle drag: slide the whole selection, span unchanged.
@@ -1682,7 +1684,7 @@ struct VideoTrimSlider: View {
                         .fill(.clear)
                         .contentShape(Rectangle())
                         .frame(width: max(0, endX - startX - Self.handleWidth * 2),
-                               height: Self.stripHeight)
+                               height: stripHeight)
                         .offset(x: startX + Self.handleWidth)
                         .gesture(DragGesture(coordinateSpace: .named(Self.stripSpace))
                             .onChanged { value in
@@ -1718,7 +1720,7 @@ struct VideoTrimSlider: View {
                 }
                 .coordinateSpace(name: Self.stripSpace)
             }
-            .frame(height: Self.stripHeight)
+            .frame(height: stripHeight)
             .clipShape(RoundedRectangle(cornerRadius: 4))
             if loudness.count > 4 {
                 GeometryReader { proxy in
@@ -1786,7 +1788,7 @@ struct VideoTrimSlider: View {
                                time: timeOffset + duration * (Double(index) + 0.5) / Double(Self.thumbnailCount),
                                cornerRadius: 0)
                     .frame(width: width / CGFloat(Self.thumbnailCount),
-                           height: Self.stripHeight)
+                           height: stripHeight)
                     .clipped()
             }
         }
@@ -1798,7 +1800,7 @@ struct VideoTrimSlider: View {
                                bottomTrailingRadius: icon.hasSuffix("left") ? 0 : 4,
                                topTrailingRadius: icon.hasSuffix("left") ? 0 : 4)
             .fill(.yellow)
-            .frame(width: Self.handleWidth, height: Self.stripHeight)
+            .frame(width: Self.handleWidth, height: stripHeight)
             .overlay {
                 Image(systemName: icon)
                     .font(.system(size: 11, weight: .bold))
