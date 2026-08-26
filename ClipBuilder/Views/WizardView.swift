@@ -111,7 +111,8 @@ struct WizardView: View {
             configurationForm
                 .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
             WizardLogPanel()
-                .frame(minWidth: 300, idealWidth: 360, maxWidth: 480, maxHeight: .infinity)
+                .rememberedPaneWidth("pane.wizard.log", min: 300, initial: 360, max: 480)
+                .frame(maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("AI Wizard")
@@ -674,22 +675,11 @@ struct WizardView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
-            HStack {
-                Spacer()
-                if store.pendingWizardPrompt?.statusMessage != nil {
-                    Button("Cancel Request", role: .cancel) {
-                        store.pendingWizardPrompt = nil
-                    }
-                    .help("Drop the request — nothing is applied to the form")
-                } else {
-                    Button("OK") { store.pendingWizardPrompt = nil }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                }
-            }
         }
         .padding(20)
         .frame(width: 440)
+        // Closing drops the request — nothing is applied to the form.
+        .modalCloseButton { store.pendingWizardPrompt = nil }
     }
 
     private func applyPromptHandoff(_ handoff: WizardPromptHandoff) {

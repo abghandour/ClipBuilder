@@ -10,9 +10,30 @@ struct CuratedView: View {
 
     @State private var selectedSceneID: Int64?
     @State private var showGenerateSheet = false
+    @State private var batchFilter: Int64?
 
     private var curatedScenes: [SceneRecord] {
         store.scenes.filter { $0.curated && !$0.ignored }
+    }
+
+    /// The curated scenes the list shows, narrowed to the selected analyze
+    /// batch when one is chosen.
+    private var filteredScenes: [SceneRecord] {
+        guard let batchFilter else { return curatedScenes }
+        return curatedScenes.filter { $0.runID == batchFilter }
+    }
+
+    /// Analyze batches that hold curated scenes, with curated-scene counts,
+    /// newest first.
+    private var batches: [AnalyzeBatchFilterList.Batch] {
+        var counts: [Int64: Int] = [:]
+        for scene in curatedScenes {
+            if let runID = scene.runID { counts[runID, default: 0] += 1 }
+        }
+        return store.analysisRuns
+            .filter { counts[$0.id] != nil }
+            .sorted { $0.id > $1.id }
+            .map { .init(id: $0.id, name: $0.name, count: counts[$0.id] ?? 0) }
     }
 
     var body: some View {
@@ -24,9 +45,15 @@ struct CuratedView: View {
                     description: Text("Promote keepers from Raw Scenes — the seal button on a scene card, or right-click → Add to Curated. Here they can be trimmed, extended, and framed; the AI Wizard can then be told to use curated scenes only."))
             } else {
                 HSplitView {
-                    sceneList
-                        .frame(minWidth: 280, idealWidth: 330, maxWidth: 420, maxHeight: .infinity)
-                    if let scene = curatedScenes.first(where: { $0.id == selectedSceneID }) {
+                    VStack(spacing: 0) {
+                        AnalyzeBatchFilterList(batches: batches, selection: $batchFilter)
+                            .padding(10)
+                        Divider()
+                        sceneList
+                    }
+                    .rememberedPaneWidth("pane.curated.list", min: 280, initial: 330, max: 420)
+                    .frame(maxHeight: .infinity)
+                    if let scene = filteredScenes.first(where: { $0.id == selectedSceneID }) {
                         CuratedSceneEditor(scene: scene)
                             .id(scene.id)
                             .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
@@ -57,7 +84,7 @@ struct CuratedView: View {
 
     private var sceneList: some View {
         List(selection: $selectedSceneID) {
-            ForEach(curatedScenes) { scene in
+            ForEach(filteredScenes) { scene in
                 HStack(spacing: 8) {
                     VideoThumbnail(url: scene.videoURL,
                                    time: (scene.startTime + scene.endTime) / 2)
@@ -118,8 +145,6 @@ struct CurateSceneSheet: View {
                 CuratedSceneEditor(scene: scene, promoteMode: !scene.curated)
                 HStack {
                     Spacer()
-                    Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                     Button(scene.curated ? "Done" : "Save as Curated") {
                         if !scene.curated {
                             store.curateScene(scene, curated: true)
@@ -133,11 +158,10 @@ struct CurateSceneSheet: View {
             } else {
                 ContentUnavailableView("Scene not found", systemImage: "questionmark.square")
                     .frame(maxHeight: .infinity)
-                Button("Close") { dismiss() }
-                    .padding()
             }
         }
         .frame(width: 660, height: 780)
+        .modalCloseButton { dismiss() }
     }
 }
 

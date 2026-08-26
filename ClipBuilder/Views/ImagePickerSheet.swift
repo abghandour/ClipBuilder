@@ -60,8 +60,6 @@ struct ImagePickerSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                 Button(selectedPaths.count > 1 ? "Add \(selectedPaths.count) Images" : "Add Image") {
                     let urls = files.map(\.url).filter { selectedPaths.contains($0.path) }
                     dismiss()
@@ -74,6 +72,7 @@ struct ImagePickerSheet: View {
             .padding()
         }
         .frame(width: 560)
+        .modalCloseButton { dismiss() }
         .onAppear { files = AssetStore.allFiles(of: .images) }
     }
 

@@ -37,12 +37,14 @@ struct AnalyzeView: View {
                     // constraint-loop guard (crash).
                     VideoPreviewPane(video: video,
                                      onResearch: { fightResearchTarget = video })
-                        .frame(minWidth: 240, idealWidth: 320, maxWidth: 440, maxHeight: .infinity)
+                        .rememberedPaneWidth("pane.analyze.preview", min: 240, initial: 320, max: 440)
+                        .frame(maxHeight: .infinity)
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity)
             AnalysisLogPanel()
-                .frame(maxWidth: .infinity, minHeight: 120, idealHeight: 160)
+                .rememberedPaneHeight("pane.analyze.log", min: 120, initial: 160)
+                .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("Raw Videos")
@@ -182,24 +184,16 @@ struct AnalyzeView: View {
             }
             .width(55)
 
-            TableColumn("Type") { [store] video in
-                // Environment lookups crash inside Table cells on macOS
-                // (cells don't inherit the SwiftUI environment) — capture
-                // the store like the other columns do.
-                Picker("", selection: Binding(
-                    get: { video.videoType ?? "" },
-                    set: { store.setVideoType(video, type: VideoType(rawValue: $0)) }
-                )) {
-                    Text("—").tag("")
-                    ForEach(VideoType.allCases, id: \.rawValue) { type in
-                        Text(type.label).tag(type.rawValue)
-                    }
+            TableColumn("Type") { video in
+                // Display-only — the editable picker lives in the preview
+                // pane so the grid stays a plain overview.
+                if let type = video.type {
+                    Text(type.label)
+                } else {
+                    Text("—").foregroundStyle(.secondary)
                 }
-                .labelsHidden()
-                .controlSize(.small)
-                .help("What this footage is — inferred during analysis, editable here. Non-fight types skip fight scoring and fight research, and the AI Wizard sees the type when planning.")
             }
-            .width(105)
+            .width(80)
 
             TableColumn("Analysis") { video in
                 if store.isAnalyzing && selection.contains(video.id) {
@@ -214,17 +208,9 @@ struct AnalyzeView: View {
 
             TableColumn("Transcripts") { video in
                 if store.transcribingVideoIDs.contains(video.id) {
-                    HStack(spacing: 4) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Button {
-                            store.cancelTranscription(videoID: video.id)
-                        } label: {
-                            Image(systemName: "stop.circle")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Stop transcribing")
-                    }
+                    ProgressView()
+                        .controlSize(.small)
+                        .help("Transcribing — stop it from the preview pane")
                 } else {
                     countText(transcriptCounts[video.id] ?? 0)
                         .help("Analyze batches that include a transcript")
@@ -245,46 +231,29 @@ struct AnalyzeView: View {
             .width(60)
 
             TableColumn("Fight Research") { video in
+                // Status only — run/view/refresh live in the preview pane.
                 HStack(spacing: 4) {
-                    // Fight footage only — untyped videos stay empty until
-                    // the Type column says Fight (or Fight Recap).
                     if video.type?.supportsFightFeatures != true {
                         Text("—")
                             .foregroundStyle(.secondary)
-                            .help("Fight research applies to fight videos — set the Type column to Fight to enable it")
+                            .help("Fight research applies to fight videos — set the type (in the preview pane) to Fight to enable it")
                     } else if store.fightResearchInFlight.contains(video.id) {
                         ProgressView().controlSize(.small)
                         Text("Researching…")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else if store.fightResearch[video.id] != nil {
-                        Button {
-                            fightResearchTarget = video
-                        } label: {
-                            Label("View", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Fan-reaction research is saved for this fight — click to read and edit it")
-                        Button {
-                            store.refreshFightResearch(video: video)
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .help("Re-crawl the web with the saved fight identity (progress in the analysis log)")
+                        Label("Researched", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .help("Fan-reaction research is saved — view or refresh it from the preview pane")
                     } else {
-                        Button("Research…") {
-                            fightResearchTarget = video
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .help("Identify this video's fight and crawl the web for fan reactions — the wizards can build the reel's story from it")
+                        Text("Not researched")
+                            .foregroundStyle(.tertiary)
+                            .help("Run fight research from the preview pane")
                     }
                 }
             }
-            .width(120)
+            .width(110)
         }
         .contextMenu(forSelectionType: Int64.self) { ids in
             if ids.count == 1, let video = store.videos.first(where: { ids.contains($0.id) }) {
@@ -361,6 +330,45 @@ private struct VideoPreviewPane: View {
                 Text("\(video.duration.timecode) · \(video.width)×\(video.height)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+
+            // Video type — the grid's Type column is display-only; this is
+            // the one editable control for it.
+            HStack {
+                Text("Type")
+                    .font(.caption.weight(.medium))
+                Spacer()
+                Picker("Type", selection: Binding(
+                    get: { video.videoType ?? "" },
+                    set: { store.setVideoType(video, type: VideoType(rawValue: $0)) }
+                )) {
+                    Text("—").tag("")
+                    ForEach(VideoType.allCases, id: \.rawValue) { type in
+                        Text(type.label).tag(type.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+                .help("What this footage is — inferred during analysis, editable here. Non-fight types skip fight scoring and fight research, and the AI Wizard sees the type when planning.")
+            }
+
+            // Transcription in flight: the grid only shows a spinner; the
+            // stop control lives here.
+            if store.transcribingVideoIDs.contains(video.id) {
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Transcribing…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Stop", systemImage: "stop.circle") {
+                        store.cancelTranscription(videoID: video.id)
+                    }
+                    .controlSize(.small)
+                    .help("Stop transcribing this video")
+                }
             }
 
             // The info sections live in a scroll view so the pane never

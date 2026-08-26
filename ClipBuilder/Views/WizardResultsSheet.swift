@@ -41,7 +41,7 @@ struct WizardResultsSheet: View {
                     store.retryWizard()
                     dismiss()
                 } label: {
-                    Label("Retry", systemImage: "arrow.clockwise")
+                    Label("Generate Again", systemImage: "arrow.clockwise")
                 }
                 .help("Generate again with the same settings — a new plan, new videos")
 
@@ -53,7 +53,7 @@ struct WizardResultsSheet: View {
             .padding()
         }
         .frame(minWidth: 480)
-        .onExitCommand { dismiss() }
+        .modalCloseButton { dismiss() }
         .onAppear {
             for video in results.videos {
                 players[video.id] = AVPlayer(url: video.url)

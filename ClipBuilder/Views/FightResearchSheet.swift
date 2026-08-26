@@ -117,8 +117,6 @@ struct FightResearchSheet: View {
 
             Divider()
             HStack {
-                Button("Close") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                 Spacer()
                 if hasResearch {
                     Button("Save Edits") {
@@ -137,6 +135,7 @@ struct FightResearchSheet: View {
             .padding(16)
         }
         .frame(width: 640, height: 640)
+        .modalCloseButton { dismiss() }
         .task { await load() }
     }
 

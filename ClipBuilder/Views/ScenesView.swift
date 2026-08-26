@@ -103,7 +103,8 @@ struct ScenesView: View {
         let filtered = filteredScenes
         HSplitView {
             fileList
-                .frame(minWidth: 220, idealWidth: 260, maxWidth: 340, maxHeight: .infinity)
+                .rememberedPaneWidth("pane.scenes.batches", min: 220, initial: 260, max: 340)
+                .frame(maxHeight: .infinity)
             sceneGrid(filtered)
                 .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -298,18 +299,6 @@ struct ScenesView: View {
                     description: Text("Run analysis on your source videos to detect scenes."))
             } else {
                 ScrollView {
-                    // Fight action for the selected batch's video — the pace
-                    // spikes point at the scenes worth curating.
-                    if let run = selectedRun,
-                       let events = store.fightEvents[run.videoID], !events.isEmpty,
-                       let video = store.videos.first(where: { $0.id == run.videoID }) {
-                        FightGraphView(events: events,
-                                       range: 0...max(1, video.duration),
-                                       people: store.people,
-                                       height: 56)
-                            .padding(.horizontal)
-                            .padding(.top, 8)
-                    }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12, alignment: .top)], spacing: 12) {
                         ForEach(filtered) { scene in
                             SceneCard(scene: scene,
@@ -405,6 +394,7 @@ private struct BatchInfoSheet: View {
         }
         .frame(width: 440)
         .frame(minHeight: 360)
+        .modalCloseButton { dismiss() }
         .task {
             if let snapshot = run.noteSnapshot {
                 notes = snapshot
@@ -656,6 +646,7 @@ struct TranscriptSheet: View {
             }
         }
         .frame(width: 620, height: 480)
+        .modalCloseButton { dismiss() }
         .task { await load() }
         .sheet(item: $editingRow) { row in
             VStack(alignment: .leading, spacing: 12) {
@@ -666,7 +657,6 @@ struct TranscriptSheet: View {
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
                 HStack {
                     Spacer()
-                    Button("Cancel") { editingRow = nil }
                     Button("Save") {
                         save(row, text: editText)
                         editingRow = nil
@@ -676,6 +666,7 @@ struct TranscriptSheet: View {
             }
             .padding()
             .frame(width: 420)
+            .modalCloseButton { editingRow = nil }
         }
     }
 

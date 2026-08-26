@@ -119,11 +119,6 @@ struct InstagramPublishSheet: View {
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
                 } else {
-                    Button("Cancel") {
-                        publishTask?.cancel()
-                        dismiss()
-                    }
-                    .keyboardShortcut(.cancelAction)
                     Spacer()
                     Button {
                         publish()
@@ -146,6 +141,10 @@ struct InstagramPublishSheet: View {
             .padding(16)
         }
         .frame(width: 620, height: 480)
+        .modalCloseButton {
+            publishTask?.cancel()
+            dismiss()
+        }
         .onAppear { caption = video.caption }
         .onDisappear { publishTask?.cancel() }
     }

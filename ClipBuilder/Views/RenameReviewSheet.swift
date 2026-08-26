@@ -61,9 +61,6 @@ struct RenameReviewSheet: View {
             }
 
             HStack {
-                Button("Keep Current Names") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .help("Close without renaming anything")
                 Spacer()
                 Button("Rename") {
                     for suggestion in request.suggestions
@@ -84,5 +81,7 @@ struct RenameReviewSheet: View {
             .padding()
         }
         .frame(minWidth: 480, idealWidth: 540, minHeight: 220, idealHeight: 260)
+        // Closing keeps the current filenames — nothing is renamed.
+        .modalCloseButton { dismiss() }
     }
 }

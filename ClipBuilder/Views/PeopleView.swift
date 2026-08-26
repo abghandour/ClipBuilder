@@ -61,7 +61,8 @@ struct PeopleView: View {
             } else {
                 HSplitView {
                     peopleList
-                        .frame(minWidth: 250, idealWidth: 300, maxWidth: 400, maxHeight: .infinity)
+                        .rememberedPaneWidth("pane.people.list", min: 250, initial: 300, max: 400)
+                        .frame(maxHeight: .infinity)
                     detail
                         .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -352,8 +353,6 @@ private struct MergePeopleSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                 Button("Merge") {
                     if let main = people.first(where: { $0.id == mainID }) {
                         onMerge(main, name)
@@ -366,6 +365,7 @@ private struct MergePeopleSheet: View {
         }
         .padding(20)
         .frame(minWidth: 400, maxWidth: 560)
+        .modalCloseButton { dismiss() }
     }
 }
 

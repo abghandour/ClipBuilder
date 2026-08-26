@@ -127,9 +127,7 @@ struct GenerateVideoSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Generate") {
+                Button("Generate Video") {
                     Self.remember(requestText)
                     switch source {
                     case .videos(let videos):
@@ -148,5 +146,6 @@ struct GenerateVideoSheet: View {
         }
         .padding(20)
         .frame(width: 460)
+        .modalCloseButton { dismiss() }
     }
 }

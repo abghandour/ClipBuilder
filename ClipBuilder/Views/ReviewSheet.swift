@@ -78,8 +78,6 @@ struct ReviewSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                 Button("Save Review") { save() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -88,6 +86,7 @@ struct ReviewSheet: View {
             .padding([.top, .horizontal])
         }
         .padding(.bottom)
+        .modalCloseButton { dismiss() }
         .frame(width: 720)
         .task {
             let player = AVPlayer(url: video.url)

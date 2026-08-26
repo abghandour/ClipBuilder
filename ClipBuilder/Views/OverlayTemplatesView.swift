@@ -33,7 +33,8 @@ struct OverlayTemplatesView: View {
             } else {
                 HSplitView {
                     templateList
-                        .frame(minWidth: 200, idealWidth: 230, maxWidth: 300, maxHeight: .infinity)
+                        .rememberedPaneWidth("pane.overlays.templates", min: 200, initial: 230, max: 300)
+                        .frame(maxHeight: .infinity)
                     if let selectedName, templates.contains(where: { $0.name == selectedName }) {
                         OverlayTemplateEditor(name: selectedName, composition: $composition)
                             .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)

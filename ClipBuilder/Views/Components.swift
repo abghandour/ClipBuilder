@@ -276,7 +276,7 @@ struct PlayerSheet: View {
             PlayerView(player: player)
                 .frame(minWidth: 420, minHeight: 560)
         }
-        .onExitCommand { dismiss() }
+        .modalCloseButton { dismiss() }
         .onAppear {
             let item = AVPlayerItem(url: url)
             if let endTime, endTime > startTime {

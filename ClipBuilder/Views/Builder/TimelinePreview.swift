@@ -228,7 +228,7 @@ struct TimelinePreviewSheet: View {
             }
             .frame(minWidth: 430, minHeight: 620)
         }
-        .onExitCommand { dismiss() }
+        .modalCloseButton { dismiss() }
         .task {
             let model = store.builder
             let plan = model.previewPlan()

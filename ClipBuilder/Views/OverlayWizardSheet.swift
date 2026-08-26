@@ -57,8 +57,6 @@ struct OverlayWizardSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                 Button(isRunning ? "Extracting…" : "Extract Overlay") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -67,6 +65,7 @@ struct OverlayWizardSheet: View {
         }
         .padding(20)
         .frame(width: 460)
+        .modalCloseButton { dismiss() }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.image]) { result in
             if case .success(let url) = result { setImage(url) }
         }

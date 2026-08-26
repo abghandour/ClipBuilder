@@ -204,6 +204,7 @@ struct DispatchPlanSheet: View {
                 }
             }
         }
+        .modalCloseButton { dismiss() }
         .task {
             availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
             seedChoices()
@@ -371,16 +372,6 @@ struct DispatchPlanSheet: View {
                         Text(video.filename)
                             .lineLimit(1)
                         Spacer()
-                        Button(done ? "Re-run" : "Detect") {
-                            let choice = analysisChoice
-                            Task {
-                                _ = await store.detectPeopleInVideo(video,
-                                                                    provider: choice.provider,
-                                                                    model: choice.model)
-                            }
-                        }
-                        .controlSize(.small)
-                        .disabled(store.isDetectingPeople)
                     }
                 }
                 if store.isDetectingPeople {
@@ -428,11 +419,22 @@ struct DispatchPlanSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Continue to Tag Detection") { analyzeTab = .tags }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!peopleGateSatisfied)
+                Button(peopleGateSatisfied ? "Detect People Again" : "Detect People") {
+                    let choice = analysisChoice
+                    // Re-running once everything is done redoes every video;
+                    // otherwise only the pending ones burn model calls.
+                    let targets = peopleGateSatisfied ? videos : videos.filter { !peopleDone($0) }
+                    Task {
+                        for video in targets {
+                            _ = await store.detectPeopleInVideo(video,
+                                                                provider: choice.provider,
+                                                                model: choice.model)
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.isDetectingPeople)
+                .help("Watch each video and record who appears where, using your markers as ground truth — tag detection unlocks once every video has been through it")
             }
             .padding()
         }
@@ -490,10 +492,8 @@ struct DispatchPlanSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
                 Button(framingScenes.contains(where: { $0.centerStagePathJSON != nil })
-                       ? "Re-run Framing" : "Detect Framing") {
+                       ? "Detect Framing Again" : "Detect Framing") {
                     guard let video = videos.first else { return }
                     let camera = framingCamera
                     let tagPeople = framingTagPeople
@@ -580,9 +580,7 @@ struct DispatchPlanSheet: View {
                 }
                 HStack {
                     Spacer()
-                    Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    Button("Start") { start() }
+                    Button(operation == .analyze ? "Analyze Tags" : "Generate Video") { start() }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
                         .disabled(operation == .analyze && !peopleGateSatisfied)
@@ -845,6 +843,7 @@ private struct ManagePromptsSheet: View {
             .padding()
         }
         .frame(width: 380)
+        .modalCloseButton { dismiss() }
     }
 }
 
@@ -1624,6 +1623,9 @@ struct VideoTrimSlider: View {
     /// Draw a vertical tick every N seconds over the filmstrip (fine-grain
     /// windows use 0.5s); nil = no ticks.
     var tickInterval: Double? = nil
+    /// Draw a ruler of tick marks under the filmstrip every N seconds, with
+    /// a taller mark on every second one; nil = no ruler.
+    var rulerInterval: Double? = nil
     /// Smallest selectable span in seconds.
     var minimumSpan: Double = 1.0
     /// Hide the start/selected/end caption row (when a second strip nearby
@@ -1722,6 +1724,27 @@ struct VideoTrimSlider: View {
             }
             .frame(height: stripHeight)
             .clipShape(RoundedRectangle(cornerRadius: 4))
+            if let rulerInterval, rulerInterval > 0, duration > 0 {
+                GeometryReader { proxy in
+                    let width = proxy.size.width
+                    Path { path in
+                        var t = 0.0
+                        var index = 0
+                        while t <= duration + 0.001 {
+                            let x = width * CGFloat(t / duration)
+                            path.move(to: CGPoint(x: x, y: 0))
+                            // Every second mark is taller, so the ruler
+                            // reads at a glance without labels.
+                            path.addLine(to: CGPoint(x: x, y: index.isMultiple(of: 2) ? 8 : 4))
+                            index += 1
+                            t += rulerInterval
+                        }
+                    }
+                    .stroke(.secondary.opacity(0.8), lineWidth: 1)
+                }
+                .frame(height: 8)
+                .help(String(format: "Tick marks every %.1fs", rulerInterval))
+            }
             if loudness.count > 4 {
                 GeometryReader { proxy in
                     let width = proxy.size.width

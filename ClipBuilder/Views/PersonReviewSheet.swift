@@ -59,10 +59,9 @@ struct PersonReviewSheet: View {
                         dismiss()
                     }
                 }
-                .keyboardShortcut(.cancelAction)
                 .help("Leave everyone unnamed — the People section lists them for later")
                 Spacer()
-                Button("Done") {
+                Button("Apply Names & Merges") {
                     store.applyPeopleReview(names: names, merges: mergeTargets)
                     dismiss()
                 }
@@ -71,6 +70,14 @@ struct PersonReviewSheet: View {
             .padding()
         }
         .frame(minWidth: 560, minHeight: 360, idealHeight: 520)
+        // Closing skips the review — confirm first when edits would be lost.
+        .modalCloseButton {
+            if names != prefilledNames || mergeTargets != prefilledMerges {
+                confirmSkip = true
+            } else {
+                dismiss()
+            }
+        }
         .confirmationDialog("Discard the names you entered?", isPresented: $confirmSkip) {
             Button("Discard and Skip", role: .destructive) { dismiss() }
             Button("Keep Editing", role: .cancel) {}

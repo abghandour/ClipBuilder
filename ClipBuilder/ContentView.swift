@@ -45,8 +45,9 @@ struct ClipBuilderApp: App {
     }
 }
 
-/// Case order follows the workflow (footage in → finished reel out); it also
-/// drives the sidebar order and the ⌘1–⌘9 shortcuts.
+/// Case order follows the workflow (footage in → finished reel out) and
+/// drives the ⌘1–⌘9 shortcuts; the sidebar displays its groups in its own
+/// order (Assets first) without renumbering the shortcuts.
 enum SidebarSection: String, CaseIterable, Identifiable {
     case analyze
     case scenes
@@ -116,23 +117,28 @@ struct MainWindowView: View {
     @Environment(AppStore.self) private var store
     @State private var selection: SidebarSection? = .analyze
 
+    // Each sidebar group's disclosure state survives relaunches. Note the
+    // ⌘1–⌘9 shortcuts follow the workflow order (SidebarSection.allCases),
+    // not this display order.
+    @AppStorage("sidebar.expanded.assets") private var assetsExpanded = true
+    @AppStorage("sidebar.expanded.footage") private var footageExpanded = true
+    @AppStorage("sidebar.expanded.create") private var createExpanded = true
+    @AppStorage("sidebar.expanded.output") private var outputExpanded = true
+
     var body: some View {
         @Bindable var store = store
         NavigationSplitView {
-            // Flat, uniform depth: the pipeline sections were previously
-            // collapsible behind a "Videos" disclosure while asset rows sat
-            // flat beside them — the core workflow shouldn't be hideable.
             List(selection: $selection) {
-                Section("Footage") {
-                    sidebarItems(SidebarSection.videoSections)
-                }
-                Section("Assets") {
+                Section("Assets", isExpanded: $assetsExpanded) {
                     sidebarItems(SidebarSection.assetSections)
                 }
-                Section("Create") {
+                Section("Footage", isExpanded: $footageExpanded) {
+                    sidebarItems(SidebarSection.videoSections)
+                }
+                Section("Create", isExpanded: $createExpanded) {
                     sidebarItems(SidebarSection.createSections)
                 }
-                Section("Output") {
+                Section("Output", isExpanded: $outputExpanded) {
                     sidebarItems(SidebarSection.outputSections)
                 }
             }

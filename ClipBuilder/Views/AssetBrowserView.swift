@@ -502,6 +502,7 @@ private struct ImagePreviewSheet: View {
                     .frame(minWidth: 420, minHeight: 320)
             }
         }
+        .modalCloseButton { dismiss() }
         .task {
             image = NSImage(contentsOf: url)
             loadFailed = image == nil

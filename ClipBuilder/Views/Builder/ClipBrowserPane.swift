@@ -9,7 +9,6 @@ struct ClipBrowserPane: View {
     @State private var favoritesOnly = false
     @State private var orientation = OrientationFilter.all
     @State private var batchFilter: Int64?
-    @State private var batchSearch = ""
     @State private var durationFilter = DurationFilter.any
     @State private var playingScene: SceneRecord?
 
@@ -69,79 +68,17 @@ struct ClipBrowserPane: View {
     }
 
     /// Analyze batches that actually hold scenes, newest first.
-    private var batches: [AnalysisRun] {
-        store.analysisRuns.filter { $0.sceneCount > 0 }.sorted { $0.id > $1.id }
-    }
-
-    /// Batches matching the batch-name search (partial, case-insensitive).
-    private var matchingBatches: [AnalysisRun] {
-        let needle = batchSearch.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !needle.isEmpty else { return batches }
-        return batches.filter { $0.name.lowercased().contains(needle) }
-    }
-
-    /// The expanded batch selector at the top of the filter section: a
-    /// name-filterable list (5 rows tall) instead of a popup, so batches are
-    /// scannable at a glance.
-    private var batchList: some View {
-        VStack(spacing: 4) {
-            TextField("Filter analyze batches", text: $batchSearch)
-                .textFieldStyle(.roundedBorder)
-                .controlSize(.small)
-            ScrollView {
-                VStack(spacing: 1) {
-                    batchRow(name: "All Analyze Batches", count: nil, id: nil)
-                    ForEach(matchingBatches) { run in
-                        batchRow(name: run.name, count: run.sceneCount, id: run.id)
-                    }
-                    if matchingBatches.isEmpty {
-                        Text("No analyze batches match")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(6)
-                    }
-                }
-            }
-            // 5 rows of 22pt + spacing stay visible; the rest scrolls.
-            .frame(height: 116)
-            .background(.quinary, in: RoundedRectangle(cornerRadius: 6))
-        }
-    }
-
-    private func batchRow(name: String, count: Int?, id: Int64?) -> some View {
-        let selected = batchFilter == id
-        return Button {
-            batchFilter = id
-        } label: {
-            HStack(spacing: 6) {
-                Text(name)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
-                if let count {
-                    Text("\(count)")
-                        .foregroundStyle(selected ? .primary : .secondary)
-                        .monospacedDigit()
-                }
-            }
-            .font(.callout)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? AnyShapeStyle(Color.accentColor.opacity(0.3))
-                                 : AnyShapeStyle(.clear),
-                        in: RoundedRectangle(cornerRadius: 4))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(id == nil ? "Show scenes from every analyze batch" : name)
+    private var batches: [AnalyzeBatchFilterList.Batch] {
+        store.analysisRuns
+            .filter { $0.sceneCount > 0 }
+            .sorted { $0.id > $1.id }
+            .map { .init(id: $0.id, name: $0.name, count: $0.sceneCount) }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 8) {
-                batchList
+                AnalyzeBatchFilterList(batches: batches, selection: $batchFilter)
                 HStack {
                     Picker("Tag", selection: $tagFilter) {
                         Text("All Tags").tag(String?.none)

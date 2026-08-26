@@ -17,9 +17,10 @@ struct CuratedWizardSheet: View {
     @State private var isScrubbing = false
     @State private var scrubResumeTask: Task<Void, Never>?
     // Pause/mute for the proposal/overlay preview player — persists across
-    // scene changes and steps so a muted preview stays muted.
-    @State private var previewPlaying = true
-    @State private var previewMuted = false
+    // scene changes, steps, and app launches so a muted preview stays muted.
+    // Native-control changes are captured into these on every player swap.
+    @AppStorage("curatedWizard.previewAutoplay") private var previewPlaying = true
+    @AppStorage("curatedWizard.previewMuted") private var previewMuted = false
     /// Left edge of the fine-trim strip's 10s window (absolute source time).
     @State private var zoomWindowStart: Double = 0
     @State private var showFramingSheet = false
@@ -28,8 +29,8 @@ struct CuratedWizardSheet: View {
     // Reel-preview column: the approved picks stitched into one looping
     // composition (cuts only — overlays/music/transitions render at generate).
     @State private var reelPlayer: AVPlayer?
-    @State private var reelPlaying = true
-    @State private var reelMuted = true
+    @AppStorage("curatedWizard.reelAutoplay") private var reelPlaying = true
+    @AppStorage("curatedWizard.reelMuted") private var reelMuted = true
     @State private var reelEndObserver: NSObjectProtocol?
     @State private var reelRebuildTask: Task<Void, Never>?
     // Exact preview: the reel rendered through the REAL pipeline to a temp
@@ -66,7 +67,8 @@ struct CuratedWizardSheet: View {
             Divider()
             footer
         }
-        .frame(minWidth: 1080, idealWidth: 1180, minHeight: 660, idealHeight: 740)
+        .frame(minWidth: 1080, idealWidth: 1280, maxWidth: .infinity,
+               minHeight: 660, idealHeight: 840, maxHeight: .infinity)
         .onAppear {
             syncPlayer()
             refreshZoomWindow(force: true)
@@ -78,9 +80,10 @@ struct CuratedWizardSheet: View {
             teardownReelPlayer()
         }
         .onChange(of: model.picks) { rebuildReelPreview() }
-        // These only affect the render, so the stitched preview needn't
+        // Only affects the render, so the stitched preview needn't
         // rebuild — but a standing exact preview no longer matches.
-        .onChange(of: model.transitionStyle) { invalidateExactPreviewOnly() }
+        // (Transition changes don't invalidate: the picker only stamps
+        // FUTURE adds; edits to a pick's transition flow through picks.)
         .onChange(of: model.includeOutro) { invalidateExactPreviewOnly() }
         .onChange(of: model.step) { _, step in
             // The reel column lives in steps 1 and 4 — don't keep decoding
@@ -139,6 +142,17 @@ struct CuratedWizardSheet: View {
 
     private var header: some View {
         HStack(spacing: 12) {
+            Button {
+                teardownPlayer()
+                dismiss()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .font(.title3)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .help("Close — your picks are discarded")
             Label("Curated Video", systemImage: "checklist")
                 .font(.headline)
             StepIndicator(current: model.step)
@@ -170,17 +184,6 @@ struct CuratedWizardSheet: View {
                 .font(.callout)
                 .help("How long the finished reel should run")
             }
-            Button {
-                teardownPlayer()
-                dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
-                    .font(.title3)
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.cancelAction)
-            .help("Close — your picks are discarded")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -257,13 +260,17 @@ struct CuratedWizardSheet: View {
             HSplitView {
                 proposalPane
                     .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
-                proposalInfoPane
-                    .frame(minWidth: 220, idealWidth: 260, maxWidth: 320, maxHeight: .infinity)
-                reelPreviewPane
-                    .frame(minWidth: 190, idealWidth: 230, maxWidth: 300, maxHeight: .infinity)
+                // Reel preview + the approved-clips list share the right
+                // column — the old bottom reel strip's height now belongs
+                // to the scene player, which wide footage sorely needs.
+                VStack(spacing: 0) {
+                    reelPreviewPane
+                    Divider()
+                    reelListPane
+                }
+                .rememberedPaneWidth("pane.curatedWizard.reel", min: 200, initial: 250, max: 340)
+                .frame(maxHeight: .infinity)
             }
-            Divider()
-            timelineStrip
         }
     }
 
@@ -325,6 +332,9 @@ struct CuratedWizardSheet: View {
             if let reelPlayer {
                 PlayerFillView(player: reelPlayer)
                     .aspectRatio(9 / 16, contentMode: .fit)
+                    // Capped so the reel list below keeps its room in the
+                    // shared right column.
+                    .frame(maxHeight: 360)
                     .background(.black, in: RoundedRectangle(cornerRadius: 8))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 HStack(spacing: 10) {
@@ -404,10 +414,6 @@ struct CuratedWizardSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                HStack {
-                    previewControls
-                    Spacer()
-                }
                 trimControls(range: range)
                 actionButtons
             } else {
@@ -460,7 +466,8 @@ struct CuratedWizardSheet: View {
                                         pace: fightPace(for: scene, start: zoomWindowStart,
                                                         end: zoomWindowStart + min(10, scene.videoDuration)),
                                         timeOffset: zoomWindowStart,
-                                        tickInterval: 0.5, minimumSpan: 0.5,
+                                        tickInterval: 0.5, rulerInterval: 0.5,
+                                        minimumSpan: 0.5,
                                         showsTimes: false, stripHeight: 64) { time in
                             scrub(to: time)
                         }
@@ -469,7 +476,8 @@ struct CuratedWizardSheet: View {
                     VideoTrimSlider(url: scene.videoURL, duration: scene.videoDuration,
                                     start: $model.editStart, end: $model.editEnd,
                                     pace: fightPace(for: scene, start: 0,
-                                                    end: scene.videoDuration)) { time in
+                                                    end: scene.videoDuration),
+                                    rulerInterval: Self.coarseRulerInterval(scene.videoDuration)) { time in
                         scrub(to: time)
                     }
                     .help("Clip range — drag to trim or extend into the source footage")
@@ -509,6 +517,17 @@ struct CuratedWizardSheet: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Ruler spacing for the full-clip strip — coarser than the loupe's
+    /// 0.5s: clean steps that keep roughly 10–30 marks across any length.
+    private static func coarseRulerInterval(_ duration: Double) -> Double {
+        switch duration {
+        case ..<20: return 1
+        case ..<60: return 2
+        case ..<180: return 5
+        default: return 10
         }
     }
 
@@ -928,11 +947,12 @@ struct CuratedWizardSheet: View {
                 Button {
                     model.skipCurrent()
                 } label: {
-                    Label("Next Scene", systemImage: "chevron.forward")
+                    Label("Skip Scene", systemImage: "chevron.forward")
                 }
                 .keyboardShortcut(.delete, modifiers: [])
                 .help("Not this one — show the next moment (⌫)")
                 Spacer()
+                transitionPicker(selection: $model.transitionStyle)
                 Button {
                     approveAndCurate()
                 } label: {
@@ -944,12 +964,27 @@ struct CuratedWizardSheet: View {
                 .help("Approve this clip: it joins the reel AND is saved to Curated Scenes with this trim, then the next moment shows (↩)")
             } else {
                 Spacer()
+                if let index = model.picks.firstIndex(where: { $0.id == model.editingPickID }) {
+                    transitionPicker(selection: $model.picks[index].transition)
+                }
                 Button("Done Editing") { finishEditingAndSync() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .help("Save the new trim for this approved clip (updates its Curated Scenes entry too)")
             }
         }
+    }
+
+    /// The transition applied to the clip being added (or re-edited) —
+    /// lives beside Add to Reel so what's selected is what the add uses.
+    private func transitionPicker(selection: Binding<String>) -> some View {
+        Picker("Transition", selection: selection) {
+            Text("Hard cut").tag("cut")
+            Text("Crossfade").tag("fade")
+            Text("Action mix").tag("action")
+        }
+        .fixedSize()
+        .help("How this clip joins the reel: a straight cut, a soft crossfade, or hard cuts with an action accent (knife slash, zoom punch, whip…) every few gaps. Each added scene keeps the transition selected when it was added.")
     }
 
     /// Approving does double duty: the clip joins the reel, and the scene is
@@ -980,63 +1015,6 @@ struct CuratedWizardSheet: View {
         }
     }
 
-    /// Metadata for the scene on offer: where it came from, its score, tags,
-    /// and how much of the queue is left.
-    @ViewBuilder
-    private var proposalInfoPane: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                if let scene = model.currentScene {
-                    Text(model.editingPickID == nil ? "Proposed scene" : "Editing approved clip")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-                    Text(scene.videoFilename)
-                        .font(.callout.weight(.medium))
-                        .lineLimit(2)
-                    LabeledContent("Scene length",
-                                   value: String(format: "%.1fs", scene.duration))
-                    if let score = scene.score {
-                        LabeledContent("Score", value: String(format: "%.0f/10", score))
-                    }
-                    if scene.wide {
-                        Label("Wide footage — auto-cropped to portrait",
-                              systemImage: "rectangle.expand.vertical")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if let narrative = scene.narrative, !narrative.isEmpty {
-                        Text(narrative)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if !scene.tags.isEmpty {
-                        // Wrap tags as simple lines — enough to judge content.
-                        Text(scene.tags.joined(separator: " · "))
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                    Divider()
-                }
-                if model.editingPickID == nil {
-                    Text("\(model.remainingProposals) suggested moment\(model.remainingProposals == 1 ? "" : "s") left — the model picked the strongest, in video order")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Picker("Transitions", selection: $model.transitionStyle) {
-                    Text("Hard cuts").tag("cut")
-                    Text("Crossfades").tag("fade")
-                    Text("Action mix").tag("action")
-                }
-                .help("How approved clips join: straight cuts, soft crossfades, or hard cuts with an action accent (knife slash, zoom punch, whip…) every few gaps")
-                Divider()
-                buzzSection
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
     // MARK: - Fight story (saved research)
 
     /// Saved fight research for the videos in this wizard's scene pool —
@@ -1045,58 +1023,6 @@ struct CuratedWizardSheet: View {
         let videoIDs = Set(model.queue.map(\.videoID))
         return videoIDs.compactMap { store.fightResearch[$0] }
             .sorted { $0.fightLabel < $1.fightLabel }
-    }
-
-    /// The distilled fan narrative for this footage, shown beside the
-    /// proposals so scene approval can follow the story fans are telling.
-    @ViewBuilder
-    private var buzzSection: some View {
-        Text("Fight Story")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
-        if poolResearch.isEmpty {
-            Text("No fight research for this footage — run it from the Analyze page's Fight Research column, then reopen this wizard.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-        }
-        ForEach(poolResearch) { record in
-            let summary = record.summary
-            let story = summary["story"] as? [String: Any] ?? [:]
-            VStack(alignment: .leading, spacing: 4) {
-                Text(record.fightLabel)
-                    .font(.caption.weight(.medium))
-                if let sentiment = summary["sentiment"] as? String, !sentiment.isEmpty {
-                    Text(sentiment)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let angle = story["angle"] as? String, !angle.isEmpty {
-                    Label(angle, systemImage: "scope")
-                        .font(.caption)
-                }
-                if let arc = story["arc"] as? String, !arc.isEmpty {
-                    Text(arc)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if let hook = story["hook_line"] as? String, !hook.isEmpty {
-                    Label("Hook: \(hook)", systemImage: "quote.opening")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-                if let points = summary["talking_points"] as? [[String: Any]], !points.isEmpty {
-                    ForEach(Array(points.prefix(4).enumerated()), id: \.offset) { _, point in
-                        if let moment = point["moment"] as? String {
-                            Text("• \(moment)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .help((point["why_fans_care"] as? String) ?? "")
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// Overlay-text candidates from every fight's research (hooks first).
@@ -1110,62 +1036,74 @@ struct CuratedWizardSheet: View {
         return lines
     }
 
-    /// The bottom strip: every approved clip as a proportional-width chip.
-    /// Drag to reorder, click to re-edit its trim, context-menu to remove.
-    private var timelineStrip: some View {
+    /// The reel so far as a vertical list in the right column: numbered
+    /// rows, drag to reorder, click to re-edit a trim, context-menu to
+    /// remove. Replaces the old bottom strip so the player keeps the height.
+    private var reelListPane: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Your reel — drag to reorder, click to re-trim")
-                .font(.caption)
+            Text("Your Reel")
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
+                .textCase(.uppercase)
+                .padding(.horizontal, 10)
                 .padding(.top, 8)
-            ScrollView(.horizontal, showsIndicators: true) {
-                HStack(spacing: 6) {
-                    ForEach(model.picks) { pick in
-                        pickChip(pick)
-                            .draggable(pick.id.uuidString)
-                            .dropDestination(for: String.self) { items, _ in
-                                model.movePick(idString: items.first, before: pick.id)
-                            }
+                .help("Drag to reorder, click to re-trim")
+            if model.picks.isEmpty {
+                Text("Approved scenes land here.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 10)
+                Spacer(minLength: 0)
+            } else {
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(Array(model.picks.enumerated()), id: \.element.id) { index, pick in
+                            reelRow(pick, number: index + 1)
+                                .draggable(pick.id.uuidString)
+                                .dropDestination(for: String.self) { items, _ in
+                                    model.movePick(idString: items.first, before: pick.id)
+                                }
+                        }
                     }
-                    if model.picks.isEmpty {
-                        Text("Approved scenes land here")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .frame(height: 56)
-                    }
+                    .padding(.horizontal, 10)
+                    .padding(.bottom, 8)
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 8)
-            }
-            // Dropping past the last chip appends.
-            .dropDestination(for: String.self) { items, _ in
-                model.movePick(idString: items.first, before: nil)
+                // Dropping past the last row appends.
+                .dropDestination(for: String.self) { items, _ in
+                    model.movePick(idString: items.first, before: nil)
+                }
             }
         }
-        .frame(height: 96)
+        .frame(minHeight: 130)
     }
 
-    private func pickChip(_ pick: CuratedWizardModel.Pick) -> some View {
-        let width = max(52, min(160, pick.duration * 18))
+    private func reelRow(_ pick: CuratedWizardModel.Pick, number: Int) -> some View {
         let isEditing = model.editingPickID == pick.id
-        return VStack(spacing: 2) {
-            VideoThumbnail(url: pick.scene.videoURL, time: pick.trimStart + 0.1)
-                .frame(width: width, height: 56)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(isEditing ? Color.accentColor : .clear, lineWidth: 2)
-                }
-                .overlay(alignment: .bottomTrailing) {
-                    if pick.speed != 1 {
-                        SpeedBadge(speed: pick.speed, compact: true)
-                            .padding(3)
-                    }
-                }
-            Text(String(format: "%.1fs", pick.duration))
+        return HStack(spacing: 8) {
+            Text("\(number)")
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
+                .frame(width: 14, alignment: .trailing)
+            VideoThumbnail(url: pick.scene.videoURL, time: pick.trimStart + 0.1)
+                .frame(width: 56, height: 34)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(String(format: "%.1fs", pick.duration))
+                    .font(.caption.monospacedDigit())
+                Text(pick.scene.videoFilename)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+            if pick.speed != 1 {
+                SpeedBadge(speed: pick.speed, compact: true)
+            }
         }
+        .padding(4)
+        .background(isEditing ? AnyShapeStyle(Color.accentColor.opacity(0.22))
+                              : AnyShapeStyle(.quinary),
+                    in: RoundedRectangle(cornerRadius: 6))
         .onTapGesture { model.beginEditingPick(pick.id) }
         .contextMenu {
             Button("Re-trim") { model.beginEditingPick(pick.id) }
@@ -1455,7 +1393,8 @@ struct CuratedWizardSheet: View {
             // Final check before Generate: run the Exact Preview here and
             // watch precisely the file that Generate will save.
             reelPreviewPane
-                .frame(minWidth: 190, idealWidth: 260, maxWidth: 320, maxHeight: .infinity)
+                .rememberedPaneWidth("pane.curatedWizard.outroPreview", min: 190, initial: 260, max: 320)
+                .frame(maxHeight: .infinity)
         }
     }
 
@@ -1485,7 +1424,7 @@ struct CuratedWizardSheet: View {
                 .tag(pick.id)
             }
         }
-        .frame(minWidth: 240, idealWidth: 280, maxWidth: 340)
+        .rememberedPaneWidth("pane.curatedWizard.pickList", min: 240, initial: 280, max: 340)
     }
 
     // MARK: - Preview player
@@ -1540,6 +1479,10 @@ struct CuratedWizardSheet: View {
             Task { @MainActor in
                 guard let player = self.player, !self.isScrubbing,
                       let range = model.currentLoopRange else { return }
+                // Track native-control mute changes as they happen.
+                if player.isMuted != self.previewMuted {
+                    self.previewMuted = player.isMuted
+                }
                 let seconds = time.seconds
                 if seconds >= range.upperBound || seconds < range.lowerBound - 0.5 {
                     player.seek(to: CMTime(seconds: range.lowerBound, preferredTimescale: 600),
@@ -1550,6 +1493,15 @@ struct CuratedWizardSheet: View {
     }
 
     private func teardownPlayer() {
+        // The proposal player shows native controls — pausing or muting
+        // there bypasses our state, so read the player's actual state before
+        // letting it go and the next video starts the same way.
+        if let player {
+            previewMuted = player.isMuted
+            if !isScrubbing {
+                previewPlaying = player.rate > 0
+            }
+        }
         scrubResumeTask?.cancel()
         scrubResumeTask = nil
         isScrubbing = false
@@ -1673,6 +1625,9 @@ final class CuratedWizardModel {
         /// Playback speed (1 = normal): 0.5/0.75 slow motion, 1.5/2 speed-up.
         var speed: Double = 1
         var centerStage: Bool = false
+        /// Transition INTO this clip — captured from the picker at approval
+        /// time (cut | fade | action), so each add keeps what was selected.
+        var transition: String = "cut"
         var overlayChoice: String = CuratedWizardModel.overlayNone
         var overlayText: String = ""
         var overlayKicker: String = ""
@@ -1715,6 +1670,7 @@ final class CuratedWizardModel {
     var targetDuration: Double
     var includeOutro: Bool
     var step: Step = .scenes
+    /// The picker's live value — stamped onto each pick as it's approved.
     var transitionStyle = "cut"       // cut | fade | action
     /// Wide proposals start with Center Stage on when the wizard form has it
     /// enabled for wide footage.
@@ -1815,11 +1771,51 @@ final class CuratedWizardModel {
 
     private var pickedSceneIDs: Set<Int64> { Set(picks.map(\.scene.id)) }
 
+    /// Merged picked source intervals per video — the footage the reel
+    /// already contains, with overlapping trims collapsed.
+    private var pickedIntervalsByVideo: [Int64: [(start: Double, end: Double)]] {
+        var byVideo: [Int64: [(start: Double, end: Double)]] = [:]
+        for pick in picks {
+            byVideo[pick.scene.videoID, default: []].append((pick.trimStart, pick.trimEnd))
+        }
+        return byVideo.mapValues { intervals in
+            var merged: [(start: Double, end: Double)] = []
+            for interval in intervals.sorted(by: { $0.start < $1.start }) {
+                if let last = merged.last, interval.start <= last.end {
+                    merged[merged.count - 1].end = max(last.end, interval.end)
+                } else {
+                    merged.append(interval)
+                }
+            }
+            return merged
+        }
+    }
+
+    /// Whether a scene is off the proposal walk: approved itself, or its
+    /// footage is already in the reel — at least half its range lies inside
+    /// approved picks of the same video. That drops sub-scenes of a longer
+    /// approved clip and re-offers of a moment whose trim was widened, and
+    /// (being computed live) brings proposals back when a pick is removed.
+    private func proposalExclusionTest() -> (SceneRecord) -> Bool {
+        let picked = pickedSceneIDs
+        let intervals = pickedIntervalsByVideo
+        return { scene in
+            if picked.contains(scene.id) { return true }
+            guard let ranges = intervals[scene.videoID] else { return false }
+            let duration = max(0.1, scene.endTime - scene.startTime)
+            var covered = 0.0
+            for range in ranges {
+                covered += max(0, min(range.end, scene.endTime) - max(range.start, scene.startTime))
+            }
+            return covered / duration >= 0.5
+        }
+    }
+
     /// Unapproved scenes still on offer from the active batch, in queue
     /// order — the proposal carousel across the top of the scenes step.
     var proposalList: [SceneRecord] {
-        let picked = pickedSceneIDs
-        return activeQueue.filter { !picked.contains($0.id) }
+        let excluded = proposalExclusionTest()
+        return activeQueue.filter { !excluded($0) }
     }
 
     /// Jump the proposal walk straight to a scene tapped in the carousel
@@ -1827,8 +1823,10 @@ final class CuratedWizardModel {
     func jumpToProposal(_ sceneID: Int64) {
         guard step == .scenes else { return }
         if editingPickID != nil { finishEditingPick() }
+        let excluded = proposalExclusionTest()
         guard let index = activeQueue.firstIndex(where: { $0.id == sceneID }),
-              !pickedSceneIDs.contains(sceneID) else { return }
+              let scene = activeQueue.first(where: { $0.id == sceneID }),
+              !excluded(scene) else { return }
         position = index
         seedEditState()
     }
@@ -1888,9 +1886,10 @@ final class CuratedWizardModel {
     private func proposal(at index: Int) -> SceneRecord? {
         let list = activeQueue
         guard index >= 0, index < list.count else { return nil }
-        let picked = pickedSceneIDs
-        // Skip over scenes that were approved already.
-        for scene in list[index...] where !picked.contains(scene.id) {
+        let excluded = proposalExclusionTest()
+        // Skip over scenes that were approved already or whose footage the
+        // reel now covers.
+        for scene in list[index...] where !excluded(scene) {
             return scene
         }
         return nil
@@ -1898,15 +1897,15 @@ final class CuratedWizardModel {
 
     var remainingProposals: Int {
         let list = activeQueue
-        let picked = pickedSceneIDs
+        let excluded = proposalExclusionTest()
         guard position < list.count else { return 0 }
-        return list[position...].count { !picked.contains($0.id) }
+        return list[position...].count { !excluded($0) }
     }
 
     var hasPreviousProposal: Bool {
         let list = activeQueue
-        let picked = pickedSceneIDs
-        return list[..<min(position, list.count)].contains { !picked.contains($0.id) }
+        let excluded = proposalExclusionTest()
+        return list[..<min(position, list.count)].contains { !excluded($0) }
     }
 
     private func seedEditState() {
@@ -1934,10 +1933,10 @@ final class CuratedWizardModel {
     func goToPreviousProposal() {
         guard editingPickID == nil else { return }
         let list = activeQueue
-        let picked = pickedSceneIDs
+        let excluded = proposalExclusionTest()
         var index = position - 1
         while index >= 0 {
-            if index < list.count, !picked.contains(list[index].id) { break }
+            if index < list.count, !excluded(list[index]) { break }
             index -= 1
         }
         guard index >= 0 else { return }
@@ -1950,6 +1949,7 @@ final class CuratedWizardModel {
         var pick = Pick(scene: scene, trimStart: editStart, trimEnd: editEnd)
         pick.speed = editSpeed
         pick.centerStage = editCenterStage && scene.wide
+        pick.transition = transitionStyle
         picks.append(pick)
         advancePastPicked()
         seedEditState()
@@ -1957,8 +1957,8 @@ final class CuratedWizardModel {
 
     private func advancePastPicked() {
         let list = activeQueue
-        let picked = pickedSceneIDs
-        while position < list.count, picked.contains(list[position].id) {
+        let excluded = proposalExclusionTest()
+        while position < list.count, excluded(list[position]) {
             position += 1
         }
     }
@@ -2082,7 +2082,7 @@ final class CuratedWizardModel {
                 clip.freeCrops = crops
             }
             if index > 0 {
-                switch transitionStyle {
+                switch pick.transition {
                 case "fade":
                     clip.transIn = "fade"
                 case "action" where index % 3 == 0:

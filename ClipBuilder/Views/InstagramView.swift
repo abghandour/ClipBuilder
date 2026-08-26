@@ -274,18 +274,17 @@ struct InstagramView: View {
                 .foregroundStyle(.secondary)
             HStack {
                 Spacer()
-                Button("Cancel") {
-                    addingAccount = false
-                    newHandle = ""
-                }
-                .keyboardShortcut(.cancelAction)
-                Button("Add") { submitNewHandle() }
+                Button("Add Account") { submitNewHandle() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(newHandle.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
         .padding(20)
+        .modalCloseButton {
+            addingAccount = false
+            newHandle = ""
+        }
     }
 
     private func submitNewHandle() {
@@ -494,7 +493,7 @@ private struct InstagramDetailSheet: View {
             }
         }
         .onDisappear { player?.pause() }
-        .onExitCommand { dismiss() }
+        .modalCloseButton { dismiss() }
         .task {
             studiedCategoryKey = await store.tasteStudyCategory(mediaID: media.id)
             template = await store.instagramTemplate(mediaID: media.id)
@@ -570,7 +569,7 @@ private struct InstagramDetailSheet: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer()
-                    Button("Stop") { store.cancelInstagramAnalysis(mediaID: media.id) }
+                    Button("Stop Analysis") { store.cancelInstagramAnalysis(mediaID: media.id) }
                         .controlSize(.small)
                 }
             } else if hasTemplate {
@@ -590,7 +589,7 @@ private struct InstagramDetailSheet: View {
                     }
                     .help("Plan a timeline from this template and edit it manually")
                 }
-                Button("Re-analyze") {
+                Button("Analyze Reel Again") {
                     store.analyzeInstagramTemplate(media: media, force: true,
                                                    provider: modelOverride.provider,
                                                    model: modelOverride.model)
@@ -604,7 +603,7 @@ private struct InstagramDetailSheet: View {
                                                    provider: modelOverride.provider,
                                                    model: modelOverride.model)
                 } label: {
-                    Label("Analyze", systemImage: "sparkles")
+                    Label("Analyze Reel", systemImage: "sparkles")
                 }
                 .buttonStyle(.borderedProminent)
                 Text("Downloads the reel and studies its hook, pacing, and structure so the Wizard can replicate them with your footage.")
@@ -628,7 +627,7 @@ private struct InstagramDetailSheet: View {
                     .help("This reel has already taught the taste profile — its lessons live in the \"\(label)\" video type (Settings → Taste)")
             }
             HStack(spacing: 6) {
-                Button(studiedCategoryKey == nil ? "Learn from This Reel" : "Learn Again",
+                Button(studiedCategoryKey == nil ? "Learn from This Reel" : "Learn from This Reel Again",
                        systemImage: "graduationcap") {
                     store.studyTasteExemplar(media: media,
                                              provider: modelOverride.provider,
@@ -661,7 +660,7 @@ private struct InstagramDetailSheet: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else {
-                Button("Download", systemImage: "arrow.down.circle") {
+                Button("Download Reel", systemImage: "arrow.down.circle") {
                     Task {
                         if let url = await store.downloadInstagramReel(media: media) {
                             localURL = url
