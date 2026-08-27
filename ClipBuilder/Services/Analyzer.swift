@@ -247,11 +247,12 @@ actor Analyzer {
         The video's filename is "\(filename)". Real names come from TWO sources — read both:
         - ON-SCREEN TEXT (strongest evidence): broadcast graphics such as chyrons/lower-thirds (e.g. "DU PLESSIS ⋯ STRICKLAND" beside the fight clock), corner name banners, tale-of-the-tape cards, scoreboards, walkout captions, commentary name straps. Match each name to the person it labels — a lower-third lists the fighters in their on-screen corner order, and the name usually sits nearest its fighter.
         - FILENAME: filenames often carry the real names of the people in the footage.
-        Use these names two ways:
+        Use these names three ways:
         - If a name matches a KNOWN person's name above, that is strong evidence to reuse their key.
         - Set "suggested_name" whenever you are confident of a person's real name from these sources: on every NEW key, AND on a reused KNOWN key whose entry above has no user name yet. Copy names as written (normalize ALL-CAPS to standard capitalization); null when unsure — never invent or guess a name.
+        - If a KNOWN person's registered name above is MISSPELLED — the on-screen graphics or the person's standard, well-documented spelling shows the correct form — set "corrected_name" on their entry to the fixed spelling (accents and capitalization included). Fix ONLY the spelling of the SAME name: never substitute a different person's name or swap in a nickname; null when the registered name is already right or you are unsure.
         In your JSON response, ALSO include a top-level "people" array:
-        "people": [{"key": "<known key, or a new kebab-case slug you invent>", "description": "<concise visual description: build, hair, clothing, distinguishing marks>", "suggested_name": "<name from on-screen graphics or the filename, or null>", "ranges": [{"start": 0.0, "end": 5.2}]}]
+        "people": [{"key": "<known key, or a new kebab-case slug you invent>", "description": "<concise visual description: build, hair, clothing, distinguishing marks>", "suggested_name": "<name from on-screen graphics or the filename, or null>", "corrected_name": "<fixed spelling of a known person's misspelled registered name, or null>", "ranges": [{"start": 0.0, "end": 5.2}]}]
         Rules: reuse a known key ONLY when confident it is the same person; invent a new key otherwise; one entry per person; ranges cover where that person is clearly visible.
         Every time range you return in "tags" that shows a person MUST be covered by that person's ranges here — footage with people but no person attribution is an error. (Footage with nobody in it may still be tagged normally.)
         AND include a top-level "outcome" object IF this video shows a fight/match RESULT — signals: the referee stopping the action, a fighter unconscious or tapping, the hand raise, a victory celebration, broadcast result graphics:
@@ -263,14 +264,61 @@ actor Analyzer {
 
     /// Once-per-analysis filename proposal: auto-generated names (screen
     /// recordings, camera defaults, hex dumps) get a descriptive replacement
-    /// built from what the model actually saw.
+    /// built from what the model actually saw; a descriptive name that
+    /// misspells a person or event gets its spelling fixed.
     private static func filenameBlock(_ filename: String) -> String {
         """
 
         ## FILENAME SUGGESTION
-        The file is currently named "\(filename)". If that name looks auto-generated or says nothing about the content — screen-recording/camera defaults ("ScreenRecording_…", "IMG_1234", "DSC…"), bare dates/timestamps, hex or UUID strings — include a top-level "suggested_filename": a short human-readable name built from what the footage actually shows: the people (named via on-screen graphics or known people), event, round, and content type. Example: "Du Plessis vs Strickland - UFC Middleweight Championship R5". Plain text only — no file extension, no slashes, colons, or quotes, at most 60 characters. If the current name already describes the content, return "suggested_filename": null.
+        The file is currently named "\(filename)". Include a top-level "suggested_filename" in TWO cases:
+        - The name looks auto-generated or says nothing about the content — screen-recording/camera defaults ("ScreenRecording_…", "IMG_1234", "DSC…"), bare dates/timestamps, hex or UUID strings: build a short human-readable name from what the footage actually shows: the people (named via on-screen graphics or known people), event, round, and content type. Example: "Du Plessis vs Strickland - UFC Middleweight Championship R5".
+        - The name describes the content but MISSPELLS a person's or event's name: return the same name with ONLY the spelling fixed (use the person's standard, well-documented spelling).
+        Plain text only — no file extension, no slashes, colons, or quotes, at most 60 characters. If the current name already describes the content and is spelled correctly, return "suggested_filename": null.
 
         """
+    }
+
+    /// A model-proposed filename made safe for disk: path/quote characters
+    /// stripped, whitespace collapsed, length capped — nil when nothing
+    /// usable remains or it just matches the current name anyway.
+    static func sanitizedFilenameSuggestion(_ raw: String, currentFilename: String) -> String? {
+        let cleaned = raw
+            .components(separatedBy: CharacterSet(charactersIn: "/\\:\"\n\r"))
+            .joined(separator: " ")
+            .components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let currentBase = (currentFilename as NSString).deletingPathExtension
+        guard !cleaned.isEmpty,
+              cleaned.caseInsensitiveCompare(currentBase) != .orderedSame else { return nil }
+        return String(cleaned.prefix(80))
+    }
+
+    /// True when `candidate` is plausibly the same name as `current` with
+    /// only its spelling fixed — accents, capitalization, a few letters —
+    /// measured as a small edit distance between the case/diacritic-folded
+    /// strings. The gate that keeps a model "correction" from ever replacing
+    /// a person's name with a different person's.
+    static func isSpellingFix(of current: String, candidate: String) -> Bool {
+        func folded(_ name: String) -> [Character] {
+            Array(name.folding(options: [.diacriticInsensitive, .caseInsensitive],
+                               locale: nil))
+        }
+        let a = folded(current), b = folded(candidate)
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        // Levenshtein, single-row.
+        var row = Array(0...b.count)
+        for (i, charA) in a.enumerated() {
+            var previous = row[0]
+            row[0] = i + 1
+            for (j, charB) in b.enumerated() {
+                let cost = charA == charB ? previous : min(previous, row[j], row[j + 1]) + 1
+                previous = row[j + 1]
+                row[j + 1] = cost
+            }
+        }
+        // A third of the name, at least one edit — "Sean" → "Juan" (2 edits
+        // on 4 letters) must fail while "Blanchowics" → "Blachowicz" passes.
+        return row[b.count] <= max(1, min(a.count, b.count) / 3)
     }
 
     /// The ground-truth block for user-drawn identity boxes: each marker has
@@ -496,9 +544,10 @@ actor Analyzer {
         KNOWN PEOPLE from this library — when someone in the frames is visually the same person, REUSE their exact key:
         \(known)
         The video's filename is "\(filename)". Real names come from two sources: ON-SCREEN TEXT — broadcast graphics like chyrons/lower-thirds, corner name banners, tale-of-the-tape cards, scoreboards, captions (match each name to the person it labels) — and the FILENAME, which often carries the subjects' real names. If a name matches a KNOWN person, that supports reusing their key; set "suggested_name" for a NEW person, or for a reused KNOWN key whose entry above has no user name, whenever you are confident (normalize ALL-CAPS; null when unsure — never guess).
-
+        If a KNOWN person's registered name above is MISSPELLED — the on-screen graphics or the person's standard, well-documented spelling shows the correct form — set "corrected_name" on their entry to the fixed spelling (accents and capitalization included). Fix ONLY the spelling of the SAME name: never substitute a different person's name or swap in a nickname; null when the registered name is already right or you are unsure.
+        \(filenameBlock(filename))
         Return ONLY a JSON object, no markdown fences:
-        {"people": [{"key": "<known key, or a new kebab-case slug>", "description": "<concise visual description: build, hair, clothing, marks>", "suggested_name": "<name from on-screen graphics or the filename, or null>", "ranges": [{"start": 0.0, "end": 5.2}], "portrait": {"at": <timestamp of a frame where this person is clearly and fully visible>, "x": 0.1, "y": 0.2, "w": 0.25, "h": 0.6}}]}
+        {"people": [{"key": "<known key, or a new kebab-case slug>", "description": "<concise visual description: build, hair, clothing, marks>", "suggested_name": "<name from on-screen graphics or the filename, or null>", "corrected_name": "<fixed spelling of a known person's misspelled registered name, or null>", "ranges": [{"start": 0.0, "end": 5.2}], "portrait": {"at": <timestamp of a frame where this person is clearly and fully visible>, "x": 0.1, "y": 0.2, "w": 0.25, "h": 0.6}}], "suggested_filename": "<per the FILENAME SUGGESTION section, or null>"}
         "portrait" is a normalized top-left box tightly around that person at that frame — it becomes their avatar, so prefer a moment where they are unobstructed and facing the camera.
         """
     }
@@ -506,11 +555,14 @@ actor Analyzer {
     /// People-only pass: identify everyone in the video (reusing known
     /// identities, honoring person and ignore markers), upsert the registry,
     /// and record the roster on the video with portrait boxes for avatars.
-    /// No tagging happens. Returns the fresh roster.
+    /// No tagging happens. Misspelled registered names the model can correct
+    /// from on-screen graphics are fixed in place; a filename proposal
+    /// (auto-generated or misspelled current name) rides along for review.
+    /// Returns the fresh roster plus that proposal.
     func detectPeopleOnly(video: VideoRecord, profile: BrandProfile, database: Database,
                           provider: String? = nil, model: String? = nil,
                           log: @escaping @Sendable (String) -> Void) async throws
-        -> [VideoPersonRecord] {
+        -> (roster: [VideoPersonRecord], suggestedFilename: String?) {
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let duration = video.duration > 0 ? video.duration : await FFmpeg.duration(of: video.url)
         let frames = await extractFrames(url: video.url, start: 0, end: duration,
@@ -555,6 +607,10 @@ actor Analyzer {
         var entries: [(key: String, descriptor: String, portraitAt: Double,
                        portraitJSON: String?, rangesJSON: String?)] = []
         var seenKeys = Set<String>()
+        // Spelling fixes for known, already-named people (unnamed people are
+        // named through the review flows instead).
+        let knownByKey = Dictionary(uniqueKeysWithValues: knownPeople.map { ($0.key, $0) })
+        var corrections: [(person: PersonRecord, name: String)] = []
         for raw in rawPeople {
             let rawKey = (raw["key"] as? String ?? "").lowercased()
             var key = rawKey.map { $0.isLetter || $0.isNumber ? $0 : "-" }
@@ -567,6 +623,13 @@ actor Analyzer {
             seenKeys.insert(key)
             let descriptor = (raw["description"] as? String ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let corrected = (raw["corrected_name"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !corrected.isEmpty,
+               let existing = knownByKey[key], !existing.name.isEmpty,
+               corrected != existing.name,
+               Self.isSpellingFix(of: existing.name, candidate: corrected) {
+                corrections.append((existing, corrected))
+            }
             var portraitAt = duration / 2
             var portraitJSON: String?
             if let portrait = raw["portrait"] as? [String: Any] {
@@ -593,13 +656,19 @@ actor Analyzer {
         for entry in entries {
             try await database.upsertPerson(key: entry.key, descriptor: entry.descriptor)
         }
+        for (person, corrected) in corrections {
+            try await database.renamePerson(id: person.id, name: corrected)
+            log("Fixed spelling: \"\(person.name)\" → \"\(corrected)\"")
+        }
         let idsByKey = Dictionary(uniqueKeysWithValues:
             ((try? await database.fetchPeople()) ?? []).map { ($0.key, $0.id) })
         try await database.replaceVideoPeople(videoID: video.id, entries: entries.compactMap { entry in
             idsByKey[entry.key].map { ($0, entry.portraitAt, entry.portraitJSON, entry.rangesJSON) }
         })
         log("People: \(entries.count) found in \(video.filename)")
-        return (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
+        let suggestedFilename = (object["suggested_filename"] as? String)
+            .flatMap { Self.sanitizedFilenameSuggestion($0, currentFilename: video.filename) }
+        return ((try? await database.fetchVideoPeople(videoID: video.id)) ?? [], suggestedFilename)
     }
 
     /// Portrait AIFrames for a list of markers, labeled by index.
@@ -1164,7 +1233,8 @@ actor Analyzer {
         // People breakdown: each detected person becomes a registry upsert
         // plus "person:<key>" tag ranges (searchable exactly like other tags).
         var detectedPeople: [(key: String, description: String,
-                              suggestedName: String?, firstSeen: (start: Double, end: Double))] = []
+                              suggestedName: String?, correctedName: String?,
+                              firstSeen: (start: Double, end: Double))] = []
         if detectPeople, !isIncremental, let rawPeople = object["people"] as? [[String: Any]] {
             var seenKeys = Set<String>()
             for entry in rawPeople {
@@ -1181,6 +1251,8 @@ actor Analyzer {
                     .trimmingCharacters(in: .whitespacesAndNewlines)
                 let suggestedName = (entry["suggested_name"] as? String)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
+                let correctedName = (entry["corrected_name"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 var clean: [(Double, Double)] = []
                 for range in entry["ranges"] as? [[String: Any]] ?? [] {
                     let start = max(clampStart, ((range["start"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
@@ -1190,6 +1262,7 @@ actor Analyzer {
                 guard !clean.isEmpty else { continue }
                 detectedPeople.append((key, description,
                                        suggestedName?.isEmpty == false ? suggestedName : nil,
+                                       correctedName?.isEmpty == false ? correctedName : nil,
                                        clean[0]))
                 cleanTags["person:\(key)", default: []].append(contentsOf: clean)
             }
@@ -1213,20 +1286,13 @@ actor Analyzer {
                        round.flatMap { (1...12).contains($0) ? $0 : nil })
         }
 
-        // Filename proposal: only offered for auto-generated-looking names
-        // (the prompt gates it), sanitized here so it is always usable as a
-        // file name. One per analysis — the full pass only.
+        // Filename proposal: offered for auto-generated-looking names and
+        // for descriptive names with a misspelled person/event (the prompt
+        // gates it), sanitized here so it is always usable as a file name.
+        // One per analysis — the full pass only.
         var suggestedFilename: String?
         if !isIncremental, let raw = object["suggested_filename"] as? String {
-            let cleaned = raw
-                .components(separatedBy: CharacterSet(charactersIn: "/\\:\"\n\r"))
-                .joined(separator: " ")
-                .components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                .joined(separator: " ")
-            let currentBase = (video.filename as NSString).deletingPathExtension
-            if !cleaned.isEmpty, cleaned.caseInsensitiveCompare(currentBase) != .orderedSame {
-                suggestedFilename = String(cleaned.prefix(80))
-            }
+            suggestedFilename = Self.sanitizedFilenameSuggestion(raw, currentFilename: video.filename)
         }
 
         // Whole-video classification — steers fight-only features and the
@@ -1341,6 +1407,22 @@ actor Analyzer {
                 + " — \(summary)")
             for person in detectedPeople {
                 try await database.upsertPerson(key: person.key, descriptor: person.description)
+            }
+            // Spelling fixes for known, already-named people: the model
+            // flagged a registered name it can see is misspelled (broadcast
+            // graphics, the fighter's standard spelling). Only near-identical
+            // names are accepted, so a "correction" can never swap in a
+            // different person; unnamed people go through the review sheet
+            // via suggested_name instead.
+            let knownByKey = Dictionary(uniqueKeysWithValues: knownPeople.map { ($0.key, $0) })
+            for person in detectedPeople {
+                guard let correction = person.correctedName,
+                      let existing = knownByKey[person.key],
+                      !existing.name.isEmpty,
+                      correction != existing.name,
+                      Self.isSpellingFix(of: existing.name, candidate: correction) else { continue }
+                try await database.renamePerson(id: existing.id, name: correction)
+                log("Fixed spelling: \"\(existing.name)\" → \"\(correction)\"")
             }
             // Known-but-unnamed people whose name the model lifted from
             // on-screen graphics/filename join the review too, so "Unnamed

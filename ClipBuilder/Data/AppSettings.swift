@@ -150,7 +150,7 @@ nonisolated struct AIProviderSettings: Codable, Sendable {
 /// Static provider/task metadata ported from ai_cli.py.
 nonisolated enum AICatalog {
     // "wizard" stays the planning task's key for config back-compat.
-    static let tasks = ["analysis", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay"]
+    static let tasks = ["analysis", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay", "naming"]
 
     static let taskLabels: [String: String] = [
         "analysis": "Video analysis",
@@ -162,6 +162,7 @@ nonisolated enum AICatalog {
         "captions": "Caption generation",
         "distill": "Lesson distillation",
         "overlay": "Overlay extraction",
+        "naming": "File naming",
     ]
 
     static let taskDefaults: [String: String] = [
@@ -174,6 +175,7 @@ nonisolated enum AICatalog {
         "captions": "claude",
         "distill": "claude",
         "overlay": "claude",
+        "naming": "claude",
     ]
 
     /// The smart dispatcher's curated preference chains: best first, each a
@@ -233,6 +235,13 @@ nonisolated enum AICatalog {
         "overlay": [("claude", "claude-sonnet-4-6"),
                     ("gemini", "gemini-2.5-pro"),
                     ("gemini", "gemini-2.5-flash")],
+        // File Name Wizard: one short name from stored metadata — text-only,
+        // fast + cheap is plenty.
+        "naming": [("claude", "claude-haiku-4-5-20251001"),
+                   ("gemini", "gemini-2.5-flash"),
+                   ("codex", "gpt-5-mini"),
+                   ("qwen", "qwen3-coder-flash"),
+                   ("kimi", "kimi-code/kimi-for-coding")],
     ]
 
     struct Provider: Sendable {

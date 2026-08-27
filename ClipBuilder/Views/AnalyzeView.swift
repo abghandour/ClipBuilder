@@ -9,6 +9,7 @@ struct AnalyzeView: View {
     @State private var selection: Set<Int64> = []
     @State private var isDropTargeted = false
     @State private var showGenerateSheet = false
+    @State private var showNameWizard = false
     @State private var pendingDispatch: PendingDispatch?
     @State private var renamingID: Int64?
     @State private var renameText = ""
@@ -66,6 +67,15 @@ struct AnalyzeView: View {
                       : "Runs a fresh analysis of the selected video. Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
 
                 Button {
+                    showNameWizard = true
+                } label: {
+                    ToolbarBubbleLabel(text: selection.count > 1 ? "Name \(selection.count) Files" : "Name File",
+                                       systemImage: "textformat")
+                }
+                .disabled(selection.isEmpty || store.isAnalyzing)
+                .help("File Name Wizard: builds a descriptive name for each selected file from what's on record — people detected, video type, fight research, scene stories — and shows every proposal for review before renaming. Analyze-batch names derived from a file update with it.")
+
+                Button {
                     showGenerateSheet = true
                 } label: {
                     ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
@@ -79,6 +89,9 @@ struct AnalyzeView: View {
         }
         .sheet(isPresented: $showGenerateSheet) {
             GenerateVideoSheet(source: .videos(selectedVideos))
+        }
+        .sheet(isPresented: $showNameWizard) {
+            FileNameWizardSheet(videos: selectedVideos)
         }
         .sheet(item: $pendingDispatch) { pending in
             DispatchPlanSheet(operation: pending.operation, videos: pending.videos,
@@ -273,6 +286,12 @@ struct AnalyzeView: View {
                     renameText = video.filename
                     renamingID = video.id
                     renameFocused = true
+                }
+            }
+            if !videos.isEmpty {
+                Button("File Name Wizard…") {
+                    selection = ids
+                    showNameWizard = true
                 }
             }
             Button("Transcribe") {

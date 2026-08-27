@@ -1072,6 +1072,63 @@ final class AppStore {
         return output.string(from: .now)
     }
 
+    // MARK: - File Name Wizard
+
+    /// Build a descriptive filename proposal for each video from the
+    /// metadata already on record — people detection, video type, fight
+    /// outcome/research, scene narratives, moments, transcript — one
+    /// text-only AI call per video (no frame extraction). Returns sanitized
+    /// proposals for the review sheet; a video whose best name is its
+    /// current one is skipped. Applying a proposal goes through
+    /// `renameVideo`, so derived analyze-batch labels follow (scene titles
+    /// join the videos table and follow automatically).
+    func suggestFileNames(for videos: [VideoRecord], provider: String?, model: String?,
+                          log: @escaping @Sendable (String) -> Void) async throws -> [RenameSuggestion] {
+        guard let database else { throw AIError.notConfigured("No profile is open.") }
+        // Latest outcome per video, fetched once for the whole batch.
+        let outcomes = (try? await database.fetchOutcomes()) ?? []
+        var suggestions: [RenameSuggestion] = []
+        var lastError: Error?
+        for (index, video) in videos.enumerated() {
+            log("Naming \(video.filename) (\(index + 1)/\(videos.count))…")
+            let scenes = (try? await database.fetchScenes(videoID: video.id)) ?? []
+            let people = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
+            let moments = (try? await database.moments(videoID: video.id)) ?? []
+            let transcripts = (try? await database.fetchTranscripts(videoID: video.id)) ?? []
+            let prompt = FileNamer.prompt(video: video, scenes: scenes, people: people,
+                                          outcome: outcomes.first { $0.videoID == video.id },
+                                          research: fightResearch[video.id],
+                                          moments: moments, transcripts: transcripts)
+            do {
+                let response = try await ai.call(prompt: prompt, task: "naming",
+                                                 model: model, provider: provider,
+                                                 timeout: 180, log: log)
+                guard let (name, reason) = FileNamer.parseSuggestion(from: response) else {
+                    log("\(video.filename): the model returned no usable name")
+                    continue
+                }
+                let currentBase = (video.filename as NSString).deletingPathExtension
+                guard name.caseInsensitiveCompare(currentBase) != .orderedSame else {
+                    log("\(video.filename): the current name is already the best fit")
+                    continue
+                }
+                if let reason { log("\(video.filename) → \(name) (\(reason))") }
+                suggestions.append(RenameSuggestion(videoID: video.id,
+                                                    currentFilename: video.filename,
+                                                    suggestedName: name))
+            } catch let error as AIError {
+                // A dead quota dooms every remaining call — stop the batch.
+                if case .quotaExhausted = error { throw error }
+                lastError = error
+                log("\(video.filename): \(error)")
+            }
+        }
+        // Partial results beat an error; an error beats silently proposing
+        // nothing.
+        if suggestions.isEmpty, let lastError { throw lastError }
+        return suggestions
+    }
+
     /// User pick from the Analyze table's Type column — the manual value
     /// sticks (analysis only fills the type in when it's empty).
     func setVideoType(_ video: VideoRecord, type: VideoType?) {
@@ -2300,10 +2357,20 @@ final class AppStore {
         isDetectingPeople = true
         defer { isDetectingPeople = false }
         do {
-            let roster = try await analyzer.detectPeopleOnly(
+            let (roster, suggestedFilename) = try await analyzer.detectPeopleOnly(
                 video: video, profile: activeProfile, database: database,
                 provider: provider, model: model) { message in
                 Task { @MainActor in self.analysisLog.append(message) }
+            }
+            // A filename fix the pass noticed (auto-generated or misspelled
+            // name) goes through the same review sheet as end-of-analysis
+            // proposals — it presents once no other sheet is in the way.
+            if let suggestedFilename {
+                pendingRenameReview = RenameReviewRequest(suggestions: [
+                    RenameSuggestion(videoID: video.id,
+                                     currentFilename: video.filename,
+                                     suggestedName: suggestedFilename),
+                ])
             }
             refreshAll()
             return roster
