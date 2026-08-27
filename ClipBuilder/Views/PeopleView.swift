@@ -15,6 +15,13 @@ struct PeopleView: View {
     @State private var newPersonName = ""
     @State private var showGenerateSheet = false
     @State private var mergeRequest: MergeRequest?
+    /// How aggressively near-simultaneous takes collapse into one card —
+    /// shared app-wide with every other scene surface.
+    @AppStorage(SceneStacks.levelKey) private var stackLevelRaw = SceneStackLevel.standard.rawValue
+    /// Card whose stack picker popover is open (long-press a stacked card).
+    @State private var stackPickerSceneID: Int64?
+    /// Scene playing in the stack picker's large-preview player.
+    @State private var previewScene: SceneRecord?
 
     /// The people a merge sheet is deciding over — snapshotted at open so a
     /// selection change underneath can't alter what gets merged.
@@ -38,9 +45,12 @@ struct PeopleView: View {
     }
 
     /// The person's scenes under the current activity/tag filters — what the
-    /// grid displays and what Generate Video draws from.
-    private func displayedScenes(for person: PersonRecord) -> [SceneRecord] {
-        scenes(for: person).filter { scene in
+    /// grid displays and what Generate Video draws from. Takes of the same
+    /// moment collapse behind their best one (`stacks` maps each fronting
+    /// card's id to the whole stack).
+    private func displayedContents(for person: PersonRecord)
+        -> (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]]) {
+        let filtered = scenes(for: person).filter { scene in
             let visible = displayTags(scene)
             if !tagFilter.isEmpty && !visible.contains(tagFilter) { return false }
             if !searchText.isEmpty {
@@ -49,6 +59,17 @@ struct PeopleView: View {
             }
             return true
         }
+        var scenes: [SceneRecord] = []
+        var stacks: [Int64: [SceneRecord]] = [:]
+        for stack in SceneStacks.group(filtered, level: .from(stackLevelRaw)) {
+            scenes.append(stack[0])
+            if stack.count > 1 { stacks[stack[0].id] = stack }
+        }
+        return (scenes, stacks)
+    }
+
+    private func displayedScenes(for person: PersonRecord) -> [SceneRecord] {
+        displayedContents(for: person).scenes
     }
 
     var body: some View {
@@ -101,6 +122,11 @@ struct PeopleView: View {
                     personKeys: [person.key],
                     tags: tagFilter.isEmpty ? [] : [tagFilter]))
             }
+        }
+        .sheet(item: $previewScene) { scene in
+            PlayerSheet(url: scene.videoURL,
+                        title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
+                        startTime: scene.startTime, endTime: scene.endTime)
         }
         .confirmationDialog(
             "Delete \(confirmDelete?.displayName ?? "person")?",
@@ -173,7 +199,8 @@ struct PeopleView: View {
     private var detail: some View {
         if let person = selectedPerson {
             let allScenes = scenes(for: person)
-            let filtered = displayedScenes(for: person)
+            let contents = displayedContents(for: person)
+            let filtered = contents.scenes
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     PersonFaceAvatar(person: person, size: 40)
@@ -199,6 +226,7 @@ struct PeopleView: View {
                         }
                     }
                     .fixedSize()
+                    SceneStackLevelPicker(compact: true)
                 }
                 .padding()
 
@@ -215,7 +243,7 @@ struct PeopleView: View {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12, alignment: .top)],
                                   spacing: 12) {
                             ForEach(filtered) { scene in
-                                sceneCard(scene)
+                                sceneCard(scene, stack: contents.stacks[scene.id])
                             }
                         }
                         .padding([.horizontal, .bottom])
@@ -240,7 +268,7 @@ struct PeopleView: View {
     }
 
     @ViewBuilder
-    private func sceneCard(_ scene: SceneRecord) -> some View {
+    private func sceneCard(_ scene: SceneRecord, stack: [SceneRecord]? = nil) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             SceneInlinePlayer(scene: scene)
                 .aspectRatio(9 / 16, contentMode: .fit)
@@ -256,6 +284,14 @@ struct PeopleView: View {
                             .help(scene.narrative ?? "Entertainment score")
                     }
                 }
+                .overlay(alignment: .topTrailing) {
+                    if let stack {
+                        SceneStackBadge(count: stack.count,
+                                        userPicked: scene.stackChoice,
+                                        action: { stackPickerSceneID = scene.id })
+                            .padding(6)
+                    }
+                }
 
             Text(scene.videoFilename)
                 .font(.caption2)
@@ -265,7 +301,30 @@ struct PeopleView: View {
         }
         .padding(8)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+        .sceneStackDeck(count: stack?.count ?? 1)
+        .onLongPressGesture(minimumDuration: 0.35) {
+            if stack != nil { stackPickerSceneID = scene.id }
+        }
+        .popover(isPresented: Binding(
+            get: { stackPickerSceneID == scene.id },
+            set: { if !$0 { stackPickerSceneID = nil } })
+        ) {
+            if let stack {
+                SceneStackPicker(members: stack,
+                                 onPick: { pick in
+                                     stackPickerSceneID = nil
+                                     store.chooseStackBest(pick, among: stack)
+                                 },
+                                 onPreview: { previewScene = $0 })
+            }
+        }
         .contextMenu {
+            if let stack {
+                Button("Choose Best of \(stack.count) Similar Scenes…") {
+                    stackPickerSceneID = scene.id
+                }
+                Divider()
+            }
             if let person = selectedPerson {
                 Menu("Not \(person.displayName) — move scene to") {
                     ForEach(store.people.filter { $0.id != person.id }) { other in

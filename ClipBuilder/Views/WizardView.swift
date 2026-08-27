@@ -34,6 +34,9 @@ struct WizardView: View {
     @AppStorage("wizard.selectedRunIDs") private var selectedRunIDsRaw = ""
     /// Comma-joined person keys the footage must feature (empty = everyone).
     @AppStorage("wizard.sourcePeople") private var sourcePeopleRaw = ""
+    /// App-wide similar-scene grouping level — the pool collapses each
+    /// stack of takes to its best one at this aggressiveness.
+    @AppStorage(SceneStacks.levelKey) private var stackLevelRaw = SceneStackLevel.standard.rawValue
     @State private var musicCount = 0
     @State private var newLessonText = ""
     @State private var showTrainingGuide = false
@@ -571,6 +574,11 @@ struct WizardView: View {
                     && $0.duration <= scene.duration - 1.0
             }
         }
+        // Stacked takes of one moment collapse to their best one (the
+        // user's remembered pick when made, otherwise the AI's) — siblings
+        // would only re-propose the same moment and eat the shortlist
+        // budget. Follows the app-wide grouping level.
+        pool = SceneStacks.tops(pool, level: .from(stackLevelRaw))
         // Center Stage on: skip wide moments the analyzer flagged as
         // portrait-fit:poor — the people are spread out and the tracked crop
         // WILL cut someone out of frame.

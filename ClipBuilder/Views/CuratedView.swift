@@ -11,6 +11,13 @@ struct CuratedView: View {
     @State private var selectedSceneID: Int64?
     @State private var showGenerateSheet = false
     @State private var batchFilter: Int64?
+    /// How aggressively near-simultaneous takes collapse into one row —
+    /// shared app-wide with every other scene surface.
+    @AppStorage(SceneStacks.levelKey) private var stackLevelRaw = SceneStackLevel.standard.rawValue
+    /// Row whose stack picker popover is open.
+    @State private var stackPickerSceneID: Int64?
+    /// Scene playing in the stack picker's large-preview player.
+    @State private var previewScene: SceneRecord?
 
     private var curatedScenes: [SceneRecord] {
         store.scenes.filter { $0.curated && !$0.ignored }
@@ -21,6 +28,18 @@ struct CuratedView: View {
     private var filteredScenes: [SceneRecord] {
         guard let batchFilter else { return curatedScenes }
         return curatedScenes.filter { $0.runID == batchFilter }
+    }
+
+    /// The list's rows plus, for every row fronting a stack of takes of the
+    /// same moment, the whole stack behind it (best take first).
+    private var listContents: (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]]) {
+        var scenes: [SceneRecord] = []
+        var stacks: [Int64: [SceneRecord]] = [:]
+        for stack in SceneStacks.group(filteredScenes, level: .from(stackLevelRaw)) {
+            scenes.append(stack[0])
+            if stack.count > 1 { stacks[stack[0].id] = stack }
+        }
+        return (scenes, stacks)
     }
 
     /// Analyze batches that hold curated scenes, with curated-scene counts,
@@ -48,6 +67,13 @@ struct CuratedView: View {
                     VStack(spacing: 0) {
                         AnalyzeBatchFilterList(batches: batches, selection: $batchFilter)
                             .padding(10)
+                        HStack {
+                            SceneStackLevelPicker(compact: true)
+                            Spacer()
+                        }
+                        .controlSize(.small)
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 8)
                         Divider()
                         sceneList
                     }
@@ -78,13 +104,24 @@ struct CuratedView: View {
             }
         }
         .sheet(isPresented: $showGenerateSheet) {
-            GenerateVideoSheet(source: .scenes(curatedScenes, personKeys: [], tags: []))
+            // Stacked takes collapse to their best one — siblings would only
+            // hand the wizard the same moment twice.
+            GenerateVideoSheet(source: .scenes(
+                SceneStacks.tops(curatedScenes, level: .from(stackLevelRaw)),
+                personKeys: [], tags: []))
+        }
+        .sheet(item: $previewScene) { scene in
+            PlayerSheet(url: scene.videoURL,
+                        title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
+                        startTime: scene.startTime, endTime: scene.endTime)
         }
     }
 
     private var sceneList: some View {
-        List(selection: $selectedSceneID) {
-            ForEach(filteredScenes) { scene in
+        let contents = listContents
+        return List(selection: $selectedSceneID) {
+            ForEach(contents.scenes) { scene in
+                let stack = contents.stacks[scene.id]
                 HStack(spacing: 8) {
                     VideoThumbnail(url: scene.videoURL,
                                    time: (scene.startTime + scene.endTime) / 2)
@@ -99,6 +136,12 @@ struct CuratedView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    if let stack {
+                        SceneStackBadge(count: stack.count,
+                                        userPicked: scene.stackChoice,
+                                        compact: true,
+                                        action: { stackPickerSceneID = scene.id })
+                    }
                     if let score = scene.score {
                         ScoreBadge(score: score, compact: true)
                             .help(scene.narrative ?? "Entertainment score")
@@ -118,6 +161,12 @@ struct CuratedView: View {
                 }
                 .tag(scene.id)
                 .contextMenu {
+                    if let stack {
+                        Button("Choose Best of \(stack.count) Similar Scenes…") {
+                            stackPickerSceneID = scene.id
+                        }
+                        Divider()
+                    }
                     Button("Remove from Curated") {
                         if selectedSceneID == scene.id { selectedSceneID = nil }
                         store.curateScene(scene, curated: false)
@@ -126,6 +175,19 @@ struct CuratedView: View {
                     Button("Add to Builder") {
                         store.builder.addScene(scene)
                         store.requestedSection = .builder
+                    }
+                }
+                .popover(isPresented: Binding(
+                    get: { stackPickerSceneID == scene.id },
+                    set: { if !$0 { stackPickerSceneID = nil } })
+                ) {
+                    if let stack {
+                        SceneStackPicker(members: stack,
+                                         onPick: { pick in
+                                             stackPickerSceneID = nil
+                                             store.chooseStackBest(pick, among: stack)
+                                         },
+                                         onPreview: { previewScene = $0 })
                     }
                 }
             }

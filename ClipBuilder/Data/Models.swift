@@ -330,6 +330,9 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var excitement: Double?
     /// Set on breakdown actions: the sequence scene they were cut from.
     var parentSceneID: Int64?
+    /// The user hand-picked this scene as the best of its stack of
+    /// near-simultaneous scenes — it overrides the AI's pick on top.
+    var stackChoice: Bool = false
     var excluded: Bool
     var ignored: Bool
     var favorite: Bool

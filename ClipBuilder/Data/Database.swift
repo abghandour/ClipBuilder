@@ -403,6 +403,9 @@ actor Database {
         if !sceneColumns.contains("parent_scene_id") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN parent_scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL")
         }
+        if !sceneColumns.contains("stack_choice") {
+            try connection.execute("ALTER TABLE scenes ADD COLUMN stack_choice INTEGER DEFAULT 0")
+        }
         if try !connection.columnNames(of: "person_markers").contains("ignored") {
             try connection.execute("ALTER TABLE person_markers ADD COLUMN ignored INTEGER DEFAULT 0")
         }
@@ -877,6 +880,7 @@ actor Database {
                 score: row["score"]?.doubleValue,
                 excitement: row["excitement"]?.doubleValue,
                 parentSceneID: row["parent_scene_id"]?.intValue,
+                stackChoice: row["stack_choice"]?.boolValue ?? false,
                 excluded: row["excluded"]?.boolValue ?? false,
                 ignored: row["ignored"]?.boolValue ?? false,
                 favorite: row["favorite"]?.boolValue ?? false,
@@ -924,6 +928,13 @@ actor Database {
         try connection.execute("UPDATE scenes SET score = ?, excitement = COALESCE(?, excitement) WHERE id = ?",
                                [.real(score), excitement.map(SQLValue.real) ?? .null,
                                 .integer(sceneID)])
+    }
+
+    /// Mark/unmark a scene as the user's hand-picked best of its stack of
+    /// near-simultaneous scenes — it replaces the AI's pick on top.
+    func setSceneStackChoice(_ sceneID: Int64, chosen: Bool) throws {
+        try connection.execute("UPDATE scenes SET stack_choice = ? WHERE id = ?",
+                               [.integer(chosen ? 1 : 0), .integer(sceneID)])
     }
 
     /// Link a breakdown action to the sequence scene it was cut from.

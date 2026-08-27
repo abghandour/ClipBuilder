@@ -1142,6 +1142,26 @@ final class AppStore {
         }
     }
 
+    /// Pin one scene as the best of its stack of near-simultaneous scenes —
+    /// it moves on top of the collapsed card and stays there. Clears the pin
+    /// from the other members so exactly one scene per stack holds it;
+    /// re-picking the AI's own choice just records it explicitly.
+    func chooseStackBest(_ scene: SceneRecord, among members: [SceneRecord]) {
+        guard let database else { return }
+        Task {
+            do {
+                for member in members where member.stackChoice && member.id != scene.id {
+                    try await database.setSceneStackChoice(member.id, chosen: false)
+                    updateScene(member.id) { $0.stackChoice = false }
+                }
+                try await database.setSceneStackChoice(scene.id, chosen: true)
+                updateScene(scene.id) { $0.stackChoice = true }
+            } catch {
+                presentError("Could not save the pick", error)
+            }
+        }
+    }
+
     func setExcluded(_ scene: SceneRecord, excluded: Bool) {
         guard let database else { return }
         Task {

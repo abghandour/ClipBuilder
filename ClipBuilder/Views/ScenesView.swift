@@ -19,6 +19,13 @@ struct ScenesView: View {
     @State private var sortByScore = false
     @State private var minScore = 0.0
     @State private var showSequenceParts = false
+    /// How aggressively near-simultaneous takes collapse into one card —
+    /// shared app-wide with every other scene surface.
+    @AppStorage(SceneStacks.levelKey) private var stackLevelRaw = SceneStackLevel.standard.rawValue
+    /// Card whose stack picker popover is open (long-press a stacked card).
+    @State private var stackPickerID: Int64?
+
+    private var stackLevel: SceneStackLevel { .from(stackLevelRaw) }
 
     // Grid selection: click selects, ⌘-click toggles, ⇧-click extends, and
     // the keyboard drives the whole triage loop (arrows move, Space
@@ -53,7 +60,16 @@ struct ScenesView: View {
         return runs.count == 1 ? runs[0] : nil
     }
 
-    private var filteredScenes: [SceneRecord] {
+    /// The grid's contents after filters and collapses: the visible cards,
+    /// plus every stacked card's full member list (best take first).
+    private struct GridContents {
+        var scenes: [SceneRecord] = []
+        /// Top-card scene id → the whole stack behind it. Only real stacks
+        /// (2+ members) are listed; every other card is a plain scene.
+        var stacks: [Int64: [SceneRecord]] = [:]
+    }
+
+    private var gridContents: GridContents {
         let needle = searchText.lowercased()
         let runFilter = runFilter
         var result = store.scenes.filter { scene in
@@ -76,10 +92,17 @@ struct ScenesView: View {
                 return !visibleIDs.contains(parent)
             }
         }
-        if sortByScore {
-            result.sort { ($0.score ?? -1) > ($1.score ?? -1) }
+        // Takes of the same moment collapse behind their best one — the
+        // user's remembered pick when they made one, otherwise the AI's.
+        var contents = GridContents()
+        for stack in SceneStacks.group(result, level: stackLevel) {
+            contents.scenes.append(stack[0])
+            if stack.count > 1 { contents.stacks[stack[0].id] = stack }
         }
-        return result
+        if sortByScore {
+            contents.scenes.sort { ($0.score ?? -1) > ($1.score ?? -1) }
+        }
+        return contents
     }
 
     private var allTags: [String] {
@@ -107,24 +130,30 @@ struct ScenesView: View {
                 tags = [tagFilter]
             }
         }
-        return .scenes(filteredScenes, personKeys: personKeys, tags: tags)
+        return .scenes(gridContents.scenes, personKeys: personKeys, tags: tags)
     }
 
     var body: some View {
         // Filter once per body pass — the subtitle and grid share the result.
-        let filtered = filteredScenes
+        let contents = gridContents
+        let filtered = contents.scenes
+        // Takes tucked behind stack cards, so the subtitle can say how many
+        // scenes the grouped grid really covers.
+        let stackedAway = contents.stacks.values.reduce(0) { $0 + $1.count - 1 }
         HSplitView {
             fileList
                 .rememberedPaneWidth("pane.scenes.batches", min: 220, initial: 260, max: 340)
                 .frame(maxHeight: .infinity)
-            sceneGrid(filtered)
+            sceneGrid(contents)
                 .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("Raw Scenes")
         .navigationSubtitle(selectedSceneIDs.count > 1
                             ? "\(selectedSceneIDs.count) of \(filtered.count) scenes selected"
-                            : "\(filtered.count) scenes")
+                            : stackedAway > 0
+                                ? "\(filtered.count) moments — \(filtered.count + stackedAway) scenes"
+                                : "\(filtered.count) scenes")
         .searchable(text: $searchText, prompt: "Filter by file or tag")
         .toolbar {
             if let run = selectedRun {
@@ -153,6 +182,7 @@ struct ScenesView: View {
                         Text("Score ≥ 7").tag(7.0)
                     }
                     Divider()
+                    SceneStackLevelPicker()
                     Toggle("Show Sequence Actions", isOn: $showSequenceParts)
                     Toggle("Show Hidden Scenes", isOn: $showHidden)
                     if filtersActive {
@@ -171,7 +201,7 @@ struct ScenesView: View {
                         systemImage: filtersActive ? "line.3.horizontal.decrease.circle.fill"
                                                    : "line.3.horizontal.decrease.circle")
                 }
-                .help("Filter and order the grid: tag, entertainment score, sequence actions, hidden scenes. The icon fills when a filter is active.")
+                .help("Filter and order the grid: tag, entertainment score, similar-scene grouping, sequence actions, hidden scenes. The icon fills when a filter is active.")
             }
             ToolbarItem {
                 Button {
@@ -310,8 +340,9 @@ struct ScenesView: View {
         return lines.joined(separator: "\n")
     }
 
-    private func sceneGrid(_ filtered: [SceneRecord]) -> some View {
-        Group {
+    private func sceneGrid(_ contents: GridContents) -> some View {
+        let filtered = contents.scenes
+        return Group {
             if filtered.isEmpty {
                 ContentUnavailableView(
                     "No Scenes",
@@ -322,7 +353,7 @@ struct ScenesView: View {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: Theme.spaceM, alignment: .top)], spacing: Theme.spaceM) {
                             ForEach(filtered) { scene in
-                                gridCard(scene, in: filtered)
+                                gridCard(scene, in: contents)
                                     .id(scene.id)
                             }
                         }
@@ -355,8 +386,11 @@ struct ScenesView: View {
 
     /// One selectable grid cell: the card, its selection ring, and the
     /// click-to-select handling (⌘ toggles, ⇧ extends from the anchor).
-    private func gridCard(_ scene: SceneRecord, in filtered: [SceneRecord]) -> some View {
-        SceneCard(scene: scene,
+    /// Cards fronting a stack also carry the long-press → picker popover.
+    private func gridCard(_ scene: SceneRecord, in contents: GridContents) -> some View {
+        let filtered = contents.scenes
+        let stack = contents.stacks[scene.id]
+        return SceneCard(scene: scene,
                   onTranscript: {
                       transcriptVideo = store.videos.first { $0.id == scene.videoID }
                   },
@@ -368,7 +402,9 @@ struct ScenesView: View {
                             curate: { bulkSetCurated(in: filtered) },
                             hide: { bulkSetHidden(in: filtered) },
                             addToBuilder: { bulkAddToBuilder(in: filtered) })
-                      : nil)
+                      : nil,
+                  stackMembers: stack,
+                  onPickFromStack: stack != nil ? { stackPickerID = scene.id } : nil)
             .overlay {
                 if selectedSceneIDs.contains(scene.id) {
                     RoundedRectangle(cornerRadius: Theme.cardRadius)
@@ -378,6 +414,22 @@ struct ScenesView: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 handleCardClick(scene, in: filtered)
+            }
+            .onLongPressGesture(minimumDuration: 0.35) {
+                if stack != nil { stackPickerID = scene.id }
+            }
+            .popover(isPresented: Binding(
+                get: { stackPickerID == scene.id },
+                set: { if !$0 { stackPickerID = nil } })
+            ) {
+                if let stack {
+                    SceneStackPicker(members: stack,
+                                     onPick: { pick in
+                                         stackPickerID = nil
+                                         store.chooseStackBest(pick, among: stack)
+                                     },
+                                     onPreview: { previewScene = $0 })
+                }
             }
             .accessibilityAddTraits(selectedSceneIDs.contains(scene.id) ? .isSelected : [])
     }
@@ -640,10 +692,20 @@ struct SceneCard: View {
     var onCurate: (() -> Void)?
     /// Present when the card sits inside a multi-selection.
     var bulkActions: SceneBulkActions?
+    /// Set when this card fronts a stack of near-simultaneous takes (2+
+    /// members, this scene first) — draws the stack badge and deck chrome.
+    var stackMembers: [SceneRecord]?
+    /// Opens the stack picker (also reachable by long-pressing the card).
+    var onPickFromStack: (() -> Void)?
 
     /// Actions broken out of this scene (it's a sequence when > 0).
     private var childCount: Int {
         store.scenes.count(where: { $0.parentSceneID == scene.id })
+    }
+
+    /// Takes hidden behind this card (0 when it isn't a stack).
+    private var stackedCount: Int {
+        max(0, (stackMembers?.count ?? 0) - 1)
     }
 
     var body: some View {
@@ -674,6 +736,10 @@ struct SceneCard: View {
                                 .background(.purple.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
                                 .foregroundStyle(.white)
                                 .help("A sequence broken into \(childCount) action scene(s) — show them with the Sequence Actions toggle in the Filter menu")
+                        }
+                        if stackedCount > 0 {
+                            SceneStackBadge(count: stackedCount + 1,
+                                            userPicked: scene.stackChoice)
                         }
                     }
                     .padding(6)
@@ -793,6 +859,7 @@ struct SceneCard: View {
         }
         .padding(Theme.spaceS)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+        .sceneStackDeck(count: stackedCount + 1)
         .contextMenu {
             if let bulk = bulkActions {
                 Section("\(bulk.count) Selected Scenes") {
@@ -801,6 +868,12 @@ struct SceneCard: View {
                     Button("Curate / Uncurate") { bulk.curate() }
                     Button("Hide / Unhide") { bulk.hide() }
                     Button("Add to Builder") { bulk.addToBuilder() }
+                }
+                Divider()
+            }
+            if let onPickFromStack {
+                Button("Choose Best of \(stackedCount + 1) Similar Scenes…") {
+                    onPickFromStack()
                 }
                 Divider()
             }

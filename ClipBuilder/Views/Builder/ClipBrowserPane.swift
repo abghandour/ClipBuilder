@@ -11,6 +11,11 @@ struct ClipBrowserPane: View {
     @State private var batchFilter: Int64?
     @State private var durationFilter = DurationFilter.any
     @State private var playingScene: SceneRecord?
+    /// How aggressively near-simultaneous takes collapse into one card —
+    /// shared app-wide with every other scene surface.
+    @AppStorage(SceneStacks.levelKey) private var stackLevelRaw = SceneStackLevel.standard.rawValue
+    /// Card whose stack picker popover is open (via badge or context menu).
+    @State private var stackPickerSceneID: Int64?
 
     enum OrientationFilter: String, CaseIterable {
         case all = "All"
@@ -53,6 +58,18 @@ struct ClipBrowserPane: View {
             passesNonTagFilters(scene)
                 && (tagFilter.map { scene.tags.contains($0) } ?? true)
         }
+    }
+
+    /// The grid's cards plus, for every card fronting a stack of takes of
+    /// the same moment, the whole stack behind it (best take first).
+    private var gridContents: (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]]) {
+        var scenes: [SceneRecord] = []
+        var stacks: [Int64: [SceneRecord]] = [:]
+        for stack in SceneStacks.group(filteredScenes, level: .from(stackLevelRaw)) {
+            scenes.append(stack[0])
+            if stack.count > 1 { stacks[stack[0].id] = stack }
+        }
+        return (scenes, stacks)
     }
 
     /// Tags with at least one matching scene, with their scene counts. The
@@ -106,6 +123,7 @@ struct ClipBrowserPane: View {
                     }
                     .toggleStyle(.button)
                     .help("Favorites only")
+                    SceneStackLevelPicker(compact: true)
                 }
                 .controlSize(.small)
             }
@@ -113,7 +131,8 @@ struct ClipBrowserPane: View {
 
             Divider()
 
-            if filteredScenes.isEmpty {
+            let contents = gridContents
+            if contents.scenes.isEmpty {
                 ContentUnavailableView("No Scenes", systemImage: "square.grid.3x3",
                                        description: Text("Analyze source videos, then drag scenes onto the timeline."))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -121,10 +140,27 @@ struct ClipBrowserPane: View {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 110), spacing: 8, alignment: .top)],
                               spacing: 8) {
-                        ForEach(filteredScenes) { scene in
+                        ForEach(contents.scenes) { scene in
+                            let stack = contents.stacks[scene.id]
                             BrowserSceneCard(scene: scene,
                                              onAdd: { store.builder.addScene(scene) },
-                                             onPlay: { playingScene = scene })
+                                             onPlay: { playingScene = scene },
+                                             stackMembers: stack,
+                                             onPickFromStack: stack != nil
+                                                 ? { stackPickerSceneID = scene.id } : nil)
+                                .popover(isPresented: Binding(
+                                    get: { stackPickerSceneID == scene.id },
+                                    set: { if !$0 { stackPickerSceneID = nil } })
+                                ) {
+                                    if let stack {
+                                        SceneStackPicker(members: stack,
+                                                         onPick: { pick in
+                                                             stackPickerSceneID = nil
+                                                             store.chooseStackBest(pick, among: stack)
+                                                         },
+                                                         onPreview: { playingScene = $0 })
+                                    }
+                                }
                         }
                     }
                     .padding(10)
@@ -146,6 +182,12 @@ struct BrowserSceneCard: View {
     let scene: SceneRecord
     let onAdd: () -> Void
     let onPlay: () -> Void
+    /// Set when this card fronts a stack of near-simultaneous takes (2+
+    /// members, this scene first) — draws the stack badge.
+    var stackMembers: [SceneRecord]?
+    /// Opens the stack picker (badge click or context menu — long-press is
+    /// taken by dragging here).
+    var onPickFromStack: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -170,6 +212,12 @@ struct BrowserSceneCard: View {
                             Image(systemName: "heart.fill")
                                 .font(.system(size: 9))
                                 .foregroundStyle(.red)
+                        }
+                        if let stackMembers, stackMembers.count > 1 {
+                            SceneStackBadge(count: stackMembers.count,
+                                            userPicked: scene.stackChoice,
+                                            compact: true,
+                                            action: onPickFromStack)
                         }
                     }
                     .padding(4)
@@ -197,6 +245,11 @@ struct BrowserSceneCard: View {
         .contextMenu {
             Button("Add to Timeline") { onAdd() }
             Button("Play") { onPlay() }
+            if let onPickFromStack, let stackMembers {
+                Button("Choose Best of \(stackMembers.count) Similar Scenes…") {
+                    onPickFromStack()
+                }
+            }
         }
     }
 }
