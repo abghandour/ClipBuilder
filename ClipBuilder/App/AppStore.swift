@@ -965,6 +965,39 @@ final class AppStore {
         return (URL(fileURLWithPath: reference.videoPath), reference.marker)
     }
 
+    /// Hide/unhide a person on the People screen. Hidden people keep their
+    /// identity — detection still reuses their key and their scene tags stay
+    /// — they just move to the Hidden bucket at the bottom of the list.
+    func setPersonHidden(_ person: PersonRecord, hidden: Bool) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.setPersonHidden(id: person.id, hidden: hidden)
+                people = try await database.fetchPeople()
+            } catch {
+                presentError("Could not update the person", error)
+            }
+        }
+    }
+
+    /// Hand-pick a person's avatar frame — or reset to automatic with nils.
+    /// The picked frame + face box render everywhere the avatar shows.
+    func setPersonAvatar(_ person: PersonRecord, videoID: Int64?, time: Double?,
+                         box: VideoPersonRecord.PortraitBox?) {
+        guard let database else { return }
+        let boxJSON = box.flatMap { try? JSONEncoder().encode($0) }
+            .flatMap { String(data: $0, encoding: .utf8) }
+        Task {
+            do {
+                try await database.setPersonAvatar(id: person.id, videoID: videoID,
+                                                   time: time, boxJSON: boxJSON)
+                people = try await database.fetchPeople()
+            } catch {
+                presentError("Could not save the avatar", error)
+            }
+        }
+    }
+
     /// "New Person…" from a marker's dropdown — creates the registry entry
     /// and refreshes the people list. Returns the new record.
     func createPerson(named name: String) async -> PersonRecord? {
@@ -1127,6 +1160,329 @@ final class AppStore {
         // nothing.
         if suggestions.isEmpty, let lastError { throw lastError }
         return suggestions
+    }
+
+    // MARK: - AI Curator
+
+    /// Judge the given uncurated scenes against the taste rubric (with the
+    /// user's grading history and existing Curated picks as worked examples)
+    /// and return proposed promotions for review. Chunked so any library
+    /// size fits in the model's context.
+    func proposeCuration(for candidates: [SceneRecord], provider: String?, model: String?,
+                         log: @escaping @Sendable (String) -> Void) async throws -> [SceneCurator.Proposal] {
+        let profile = activeProfile
+        let graded = scenes.filter { $0.lastGrade != nil }
+        let curatedExamples = scenes.filter(\.curated)
+        var proposals: [SceneCurator.Proposal] = []
+        var start = 0
+        while start < candidates.count {
+            let chunk = Array(candidates[start..<min(start + SceneCurator.batchSize, candidates.count)])
+            if candidates.count > SceneCurator.batchSize {
+                log("Judging scenes \(start + 1)–\(start + chunk.count) of \(candidates.count)…")
+            }
+            let prompt = SceneCurator.prompt(candidates: chunk, rubric: profile.tasteRubric,
+                                             categories: profile.tasteCategories,
+                                             graded: graded, curatedExamples: curatedExamples)
+            let response = try await ai.call(prompt: prompt, task: "curate",
+                                             model: model, provider: provider,
+                                             timeout: 240, log: log)
+            proposals += SceneCurator.parse(response, validIDs: Set(chunk.map(\.id)))
+            start += SceneCurator.batchSize
+        }
+        return proposals
+    }
+
+    /// Apply the reviewed curator picks in one pass — batched DB writes and
+    /// a single refresh, unlike per-scene `curateScene`.
+    func applyCuration(sceneIDs: [Int64]) {
+        guard let database else { return }
+        Task {
+            for id in sceneIDs {
+                try? await database.setSceneCurated(id, curated: true)
+            }
+            await refreshAllNow()
+        }
+    }
+
+    // MARK: - Natural-language scene search
+
+    /// "The moment Ulberg hurts Błachowicz against the fence" → ranked scene
+    /// ids from the candidate set, matched by the model on narratives, tags,
+    /// people, and timing.
+    func findScenes(matching query: String, in candidates: [SceneRecord],
+                    provider: String?, model: String?,
+                    log: @escaping @Sendable (String) -> Void) async throws -> [Int64] {
+        // Most recent scenes win when the library outgrows one call.
+        let scoped = candidates.count > SceneFinder.maxCandidates
+            ? Array(candidates.sorted { $0.id > $1.id }.prefix(SceneFinder.maxCandidates))
+            : candidates
+        if scoped.count < candidates.count {
+            log("Searching the \(scoped.count) most recent of \(candidates.count) scenes")
+        }
+        let prompt = SceneFinder.prompt(query: query, scenes: scoped, people: people)
+        let response = try await ai.call(prompt: prompt, task: "search",
+                                         model: model, provider: provider,
+                                         timeout: 120, log: log)
+        return SceneFinder.parse(response, validIDs: Set(scoped.map(\.id)))
+    }
+
+    // MARK: - Soundbite finder
+
+    /// Mine a video's transcript for its most quotable self-contained
+    /// moments. Throws a friendly error when the video has no transcript.
+    func findSoundbites(in video: VideoRecord, provider: String?, model: String?,
+                        log: @escaping @Sendable (String) -> Void) async throws -> [SoundbiteFinder.Soundbite] {
+        guard let database else { throw AIError.notConfigured("No profile is open.") }
+        let transcript = ((try? await database.fetchTranscripts(videoID: video.id)) ?? [])
+            .filter { !$0.isTranslation }
+        guard !transcript.isEmpty else {
+            throw AIError.notConfigured("\(video.filename) has no transcript yet — run Transcribe on it first.")
+        }
+        let prompt = SoundbiteFinder.prompt(video: video, transcript: transcript)
+        let response = try await ai.call(prompt: prompt, task: "soundbites",
+                                         model: model, provider: provider,
+                                         timeout: 180, log: log)
+        let soundbites = SoundbiteFinder.parse(response, duration: video.duration)
+        guard !soundbites.isEmpty else {
+            throw AIError.unusableResponse("The model found no usable soundbites in the transcript.")
+        }
+        return soundbites
+    }
+
+    // MARK: - Cover frame picker
+
+    /// Sample frames across a rendered reel and have a multimodal model rank
+    /// the best thumbnail candidates for the Library card.
+    func proposeCoverFrames(for video: GeneratedVideoRecord, provider: String?, model: String?,
+                            log: @escaping @Sendable (String) -> Void) async throws -> [CoverFramePicker.Candidate] {
+        let times = CoverFramePicker.sampleTimes(duration: video.duration)
+        log("Sampling \(times.count) frames…")
+        var frames: [AIFrame] = []
+        for time in times {
+            if let jpeg = await ThumbnailService.jpegFrame(url: video.url, at: time,
+                                                          maxDimension: 768) {
+                frames.append(AIFrame(jpeg: jpeg, label: String(format: "%.1fs", time)))
+            }
+        }
+        guard !frames.isEmpty else {
+            throw AIError.notConfigured("No frames could be read from \(video.filename).")
+        }
+        let response = try await ai.call(prompt: CoverFramePicker.prompt(filename: video.filename,
+                                                                         duration: video.duration),
+                                         task: "cover", frames: frames,
+                                         model: model, provider: provider,
+                                         timeout: 180, log: log)
+        let candidates = CoverFramePicker.parse(response, sampledTimes: times)
+        guard !candidates.isEmpty else {
+            throw AIError.unusableResponse("The model returned no usable cover picks.")
+        }
+        return candidates
+    }
+
+    /// Remember the picked cover frame and patch the card in place.
+    func setCoverFrame(_ video: GeneratedVideoRecord, time: Double) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.updateGeneratedCover(id: video.id, time: time)
+                if let index = generatedVideos.firstIndex(where: { $0.id == video.id }) {
+                    generatedVideos[index].coverTime = time
+                }
+            } catch {
+                presentError("Could not save the cover frame", error)
+            }
+        }
+    }
+
+    // MARK: - Trim suggestion
+
+    /// AI skim of the whole video proposing the section worth analyzing —
+    /// fills the plan sheet's trim slider.
+    func suggestTrim(for video: VideoRecord) async throws -> (start: Double, end: Double, reason: String) {
+        try await analyzer.suggestTrim(video: video) { message in
+            Task { @MainActor in self.analysisLog.append(message) }
+        }
+    }
+
+    // MARK: - Duplicate detection
+
+    /// Scan the library for the same footage imported more than once —
+    /// metadata plus one mid-video frame per video, grouped with a keep
+    /// recommendation. Report-only; an empty result means no duplicates.
+    func findDuplicateVideos(provider: String?, model: String?,
+                             log: @escaping @Sendable (String) -> Void) async throws -> [DuplicateFinder.Group] {
+        guard let database else { throw AIError.notConfigured("No profile is open.") }
+        guard videos.count >= 2 else {
+            throw AIError.notConfigured("Fewer than two videos in the library — nothing to compare.")
+        }
+        let scoped = Array(videos.prefix(DuplicateFinder.maxVideos))
+        if scoped.count < videos.count {
+            log("Comparing the first \(scoped.count) of \(videos.count) videos")
+        }
+        var lines: [String] = []
+        var frames: [AIFrame] = []
+        for video in scoped {
+            let people = ((try? await database.fetchVideoPeople(videoID: video.id)) ?? [])
+                .map(\.displayName)
+            var line = "- id \(video.id) | \(video.filename) | \(Int(video.duration))s | \(video.width)×\(video.height)"
+            if let type = video.type?.label { line += " | \(type)" }
+            if !people.isEmpty { line += " | people: \(people.joined(separator: ", "))" }
+            if let research = fightResearch[video.id] { line += " | fight: \(research.fightLabel)" }
+            lines.append(line)
+            if let jpeg = await ThumbnailService.jpegFrame(url: video.url, at: video.duration / 2,
+                                                          maxDimension: 512) {
+                frames.append(AIFrame(jpeg: jpeg, label: "id \(video.id): \(video.filename)"))
+            }
+        }
+        let response = try await ai.call(prompt: DuplicateFinder.prompt(inventory: lines.joined(separator: "\n")),
+                                         task: "dedupe", frames: frames,
+                                         model: model, provider: provider,
+                                         timeout: 240, log: log)
+        return DuplicateFinder.parse(response, validIDs: Set(scoped.map(\.id)))
+    }
+
+    // MARK: - Content gap report
+
+    /// A strategist's pass over the whole pipeline — what to post next,
+    /// what's sitting unused, what's blocking output — as a checklist
+    /// referencing actual files.
+    func generateGapReport(provider: String?, model: String?,
+                           log: @escaping @Sendable (String) -> Void) async throws -> [GapReporter.Section] {
+        guard let database else { throw AIError.notConfigured("No profile is open.") }
+        var sceneCounts: [Int64: (total: Int, curated: Int)] = [:]
+        for scene in scenes where !scene.excluded {
+            sceneCounts[scene.videoID, default: (0, 0)].total += 1
+            if scene.curated { sceneCounts[scene.videoID, default: (0, 0)].curated += 1 }
+        }
+        let batchCounts = Dictionary(grouping: analysisRuns, by: \.videoID).mapValues(\.count)
+        var inventory: [String] = []
+        let videoLines = videos.map { video in
+            var line = "- \(video.filename) | \(Int(video.duration))s | \(video.type?.label ?? "unclassified")"
+            let counts = sceneCounts[video.id] ?? (0, 0)
+            line += " | \(batchCounts[video.id] ?? 0) analyze batch(es), \(counts.total) scenes, \(counts.curated) curated"
+            if fightResearch[video.id] != nil { line += " | fight research done" }
+            return line
+        }
+        inventory.append("## SOURCE VIDEOS (\(videos.count))\n" + (videoLines.isEmpty ? "(none)" : videoLines.joined(separator: "\n")))
+
+        let generatedLines = generatedVideos.map { video in
+            var line = "- \(video.filename) | \(Int(video.duration))s | generated \(video.generatedAt ?? "?")"
+            if let critique = video.critique { line += " | critic \(critique.score)/100" }
+            if let stats = video.instagramStats {
+                line += " | PUBLISHED — \(ReelPerformance.label(stats, duration: video.duration))"
+            } else if video.instagramMediaID != nil {
+                line += " | published (no insights yet)"
+            } else {
+                line += " | NOT published"
+            }
+            return line
+        }
+        inventory.append("## GENERATED REELS (\(generatedVideos.count))\n" + (generatedLines.isEmpty ? "(none yet)" : generatedLines.joined(separator: "\n")))
+
+        for account in igAccounts where account.isOwn {
+            let media = (try? await database.fetchIGMedia(accountID: account.id)) ?? []
+            let latest = media.compactMap(\.postedAt).max()
+            var line = "@\(account.username): \(media.count) reels fetched"
+            if let latest {
+                line += ", most recent posted \(latest.formatted(date: .abbreviated, time: .omitted))"
+            }
+            inventory.append("## INSTAGRAM ACCOUNT\n" + line)
+        }
+        inventory.append("## TRAINING\n\(lessons.count) learned lesson(s), taste rubric \(activeProfile.tasteRubric.isEmpty ? "EMPTY" : "written"), house style \(activeProfile.houseStyle.isEmpty ? "EMPTY" : "written")")
+
+        let response = try await ai.call(prompt: GapReporter.prompt(inventory: inventory.joined(separator: "\n\n"),
+                                                                    domain: activeProfile.effectiveDomain),
+                                         task: "gap", model: model, provider: provider,
+                                         timeout: 240, log: log)
+        let sections = GapReporter.parse(response)
+        guard !sections.isEmpty else {
+            throw AIError.unusableResponse("The report couldn't be read from the model's reply.")
+        }
+        return sections
+    }
+
+    // MARK: - Instagram performance lessons
+
+    /// A performance-lesson distillation is running (one at a time).
+    var isDistillingPerformanceLessons = false
+
+    /// Correlate published reels' Instagram insights (and the account's own
+    /// reels) with their traits, and distill lessons the wizard's planner
+    /// treats as guidance. Replaces only its own previous batch of lessons.
+    func distillPerformanceLessons() {
+        guard let database, !isDistillingPerformanceLessons else { return }
+        isDistillingPerformanceLessons = true
+        Task {
+            do {
+                let published = generatedVideos.filter { $0.instagramStats != nil }
+                var ownMedia: [IGMediaRecord] = []
+                for account in igAccounts where account.isOwn {
+                    ownMedia += (try? await database.fetchIGMedia(accountID: account.id)) ?? []
+                }
+                guard published.count >= 3 || ownMedia.count >= 5 else {
+                    throw AIError.notConfigured("Not enough performance data yet — publish reels or refresh an owned Instagram account first.")
+                }
+                igLog.append("Distilling lessons from \(published.count) published reel(s) and \(ownMedia.count) account reel(s)…")
+                let response = try await ai.call(
+                    prompt: PerformanceLessons.prompt(published: published, ownMedia: ownMedia),
+                    task: "distill", timeout: 240,
+                    log: { message in Task { @MainActor in self.igLog.append(message) } })
+                let distilled = PerformanceLessons.parse(response)
+                guard !distilled.isEmpty else {
+                    throw AIError.unusableResponse("No lessons came back from the model.")
+                }
+                // Replace only this pass's previous lessons — review-distilled
+                // and pinned lessons are untouched.
+                for lesson in (try? await database.fetchLessons()) ?? []
+                where !lesson.pinned && lesson.evidence.hasPrefix(PerformanceLessons.evidencePrefix) {
+                    try? await database.deleteLesson(id: lesson.id)
+                }
+                for lesson in distilled.prefix(PerformanceLessons.maxLessons) {
+                    _ = try? await database.addLesson(
+                        text: lesson.text, pinned: false,
+                        evidence: "\(PerformanceLessons.evidencePrefix): \(lesson.evidence)")
+                }
+                lessons = (try? await database.fetchLessons()) ?? lessons
+                igLog.append("Added \(min(PerformanceLessons.maxLessons, distilled.count)) performance lesson(s) — see AI Wizard → Learned Lessons.")
+            } catch {
+                presentError("Could not distill performance lessons", error)
+            }
+            isDistillingPerformanceLessons = false
+        }
+    }
+
+    // MARK: - Profile starter
+
+    /// Turn the brand interview into a founding taste rubric, house style,
+    /// and starter categories — reviewed in the sheet before applying.
+    func generateProfileStarter(audience: String, tone: String, inspiration: String, avoid: String,
+                                provider: String?, model: String?,
+                                log: @escaping @Sendable (String) -> Void) async throws -> ProfileStarter.Result {
+        let prompt = ProfileStarter.prompt(domain: activeProfile.effectiveDomain,
+                                           brand: activeProfile.brandName,
+                                           audience: audience, tone: tone,
+                                           inspiration: inspiration, avoid: avoid)
+        let response = try await ai.call(prompt: prompt, task: "onboard",
+                                         model: model, provider: provider,
+                                         timeout: 240, log: log)
+        guard let result = ProfileStarter.parse(response) else {
+            throw AIError.unusableResponse("The style documents couldn't be read from the model's reply.")
+        }
+        return result
+    }
+
+    /// Write the reviewed starter into the profile. New categories are
+    /// appended; an existing key is never overwritten (studying may have
+    /// refined it already).
+    func applyProfileStarter(_ result: ProfileStarter.Result,
+                             rubric: Bool, houseStyle: Bool, categories: Bool) {
+        if rubric { activeProfile.tasteRubric = result.rubric }
+        if houseStyle { activeProfile.houseStyle = result.houseStyle }
+        if categories {
+            let existing = Set(activeProfile.tasteCategories.map(\.key))
+            activeProfile.tasteCategories += result.categories.filter { !existing.contains($0.key) }
+        }
+        saveActiveProfile()
     }
 
     /// User pick from the Analyze table's Type column — the manual value

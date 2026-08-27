@@ -193,6 +193,19 @@ struct BrowserSceneCard: View {
         VStack(alignment: .leading, spacing: 4) {
             VideoThumbnail(url: scene.videoURL, time: (scene.startTime + scene.endTime) / 2)
                 .aspectRatio(9 / 16, contentMode: .fit)
+                // The drag handle covers the middle of the thumbnail but
+                // stays clear of the corner controls: the AppKit drag
+                // session captures every left-click inside its frame (z
+                // order notwithstanding), which used to make the stack
+                // badge and + unclickable. Double-click to play rides on
+                // the same handle.
+                .overlay {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .draggable("scene:\(scene.id)")
+                        .simultaneousGesture(TapGesture(count: 2).onEnded { onPlay() })
+                        .padding(.vertical, 28)
+                }
                 .overlay(alignment: .bottomLeading) {
                     DurationBadge(seconds: scene.duration)
                 }
@@ -223,14 +236,15 @@ struct BrowserSceneCard: View {
                     .padding(4)
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    Button(action: onAdd) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(.white, Color.accentColor)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Add to timeline")
-                    .padding(4)
+                    // Tap gesture, not a Button — the card's drag
+                    // interaction eats Button click tracking.
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white, Color.accentColor)
+                        .contentShape(Circle())
+                        .onTapGesture(perform: onAdd)
+                        .help("Add to timeline")
+                        .padding(4)
                 }
             Text(scene.videoFilename)
                 .font(.system(size: 9))
@@ -240,8 +254,6 @@ struct BrowserSceneCard: View {
                 SceneTagLine(tags: scene.tags)
             }
         }
-        .draggable("scene:\(scene.id)")
-        .highPriorityGesture(TapGesture(count: 2).onEnded { onPlay() })
         .contextMenu {
             Button("Add to Timeline") { onAdd() }
             Button("Play") { onPlay() }

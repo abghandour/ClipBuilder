@@ -40,6 +40,7 @@ struct WizardView: View {
     @State private var musicCount = 0
     @State private var newLessonText = ""
     @State private var showTrainingGuide = false
+    @State private var showGapReport = false
     @State private var showCuratedWizard = false
     @State private var pendingDispatch: PendingDispatch?
 
@@ -122,10 +123,17 @@ struct WizardView: View {
         .navigationTitle("AI Wizard")
         .navigationSubtitle("\(analyzedSceneCount) scenes available")
         .toolbar {
+            Button("Content Gaps", systemImage: "checklist") {
+                showGapReport = true
+            }
+            .help("AI strategist's report over the whole pipeline: what to post next, what's sitting unused, what's blocking output")
             Button("Training Guide", systemImage: "questionmark.circle") {
                 showTrainingGuide = true
             }
             .help("How to train the wizard for better results")
+        }
+        .sheet(isPresented: $showGapReport) {
+            GapReportSheet()
         }
         .sheet(isPresented: $showTrainingGuide) {
             HelpSheet()

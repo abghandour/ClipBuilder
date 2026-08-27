@@ -507,6 +507,18 @@ actor AIService {
     }
 }
 
+/// Filters an AI log stream down to short, human progress lines for a
+/// sheet's one-line status: the verbose prompt dumps ("────" blocks) and
+/// multi-line payloads that flow through `log:` never reach the UI.
+nonisolated enum AIProgressLine {
+    static func from(_ message: String) -> String? {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("────"),
+              !trimmed.contains("\n"), trimmed.count <= 160 else { return nil }
+        return trimmed
+    }
+}
+
 /// Extracts a JSON object/array from an AI response that may be wrapped in
 /// markdown fences or prose — the Swift port of analyzer.py's parser.
 nonisolated enum AIResponseParser {

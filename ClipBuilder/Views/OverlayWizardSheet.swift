@@ -131,7 +131,7 @@ struct OverlayWizardSheet: View {
             do {
                 let name = try await store.extractOverlayTemplate(
                     from: imageURL, provider: provider, model: model) { message in
-                    Task { @MainActor in statusLine = message }
+                    if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
                 }
                 onCreated(name)
                 dismiss()

@@ -308,6 +308,7 @@ private struct ProfileSettingsTab: View {
 private struct TasteSettingsTab: View {
     @Environment(AppStore.self) private var store
     @State private var deletingCategory: TasteCategory?
+    @State private var showProfileStarter = false
 
     var body: some View {
         @Bindable var store = store
@@ -352,6 +353,13 @@ private struct TasteSettingsTab: View {
                         .foregroundStyle(.tertiary)
                 }
                 HStack {
+                    Button("Generate Starting Style…") {
+                        showProfileStarter = true
+                    }
+                    .help("Answer a short brand interview and the AI writes this profile's founding taste rubric, house style, and starter categories — reviewed before anything is saved")
+                    .sheet(isPresented: $showProfileStarter) {
+                        ProfileStarterSheet()
+                    }
                     Button("Learn from Sample Video…") {
                         let panel = NSOpenPanel()
                         panel.allowedContentTypes = [.movie, .mpeg4Movie, .quickTimeMovie]

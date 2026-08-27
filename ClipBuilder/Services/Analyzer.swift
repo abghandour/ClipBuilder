@@ -671,6 +671,49 @@ actor Analyzer {
         return ((try? await database.fetchVideoPeople(videoID: video.id)) ?? [], suggestedFilename)
     }
 
+    // MARK: - Trim suggestion
+
+    /// Skim ~24 sparse frames across the whole video and propose the section
+    /// worth analyzing — screen-recording chrome, menus, replays, and dead
+    /// air trimmed off before the expensive dense pass spends tokens on them.
+    func suggestTrim(video: VideoRecord, provider: String? = nil, model: String? = nil,
+                     log: @escaping @Sendable (String) -> Void) async throws
+        -> (start: Double, end: Double, reason: String) {
+        guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
+        let duration = video.duration > 0 ? video.duration : await FFmpeg.duration(of: video.url)
+        let frames = await extractFrames(url: video.url, start: 0, end: duration,
+                                         interval: max(2, duration / 24), log: log)
+        guard !frames.isEmpty else {
+            throw FFmpegError.commandFailed(tool: "frame extraction", exitCode: 1,
+                                            stderr: "no frames could be extracted from \(video.filename)")
+        }
+        let prompt = """
+        You are deciding which SECTION of a \(String(format: "%.0f", duration))s video ("\(video.filename)") is worth a detailed AI analysis. The frames below are sparse samples labeled with their timestamps.
+
+        Find the window holding the actual content — the footage itself. EXCLUDE from the window: app/menu chrome at the start or end of a screen recording, title cards, long static shots of nothing happening, end screens, and trailing dead air. Broadcast replays inside the content still count as content.
+
+        Return ONLY a JSON object:
+        {"start": <seconds>, "end": <seconds>, "reason": "<at most 15 words on what was cut off>"}
+        When the whole video is content, return the full range with reason "all content".
+        """
+        let response = try await ai.call(prompt: prompt, task: "trim", frames: frames,
+                                         model: model, provider: provider,
+                                         timeout: 180, log: log)
+        guard let object = AIResponseParser.jsonObject(from: response),
+              let rawStart = (object["start"] as? NSNumber)?.doubleValue,
+              let rawEnd = (object["end"] as? NSNumber)?.doubleValue else {
+            throw AIError.unusableResponse("The trim suggestion couldn't be read from the model's reply.")
+        }
+        let start = min(max(0, rawStart), duration)
+        let end = min(max(start, rawEnd), duration)
+        guard end - start >= 3 else {
+            throw AIError.unusableResponse("The model proposed a window under 3 seconds — ignored.")
+        }
+        let reason = (object["reason"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (start, end, reason)
+    }
+
     /// Portrait AIFrames for a list of markers, labeled by index.
     private func withPortraits(url: URL, duration: Double, markers: [PersonMarker],
                                label: (Int) -> String) async -> [AIFrame] {

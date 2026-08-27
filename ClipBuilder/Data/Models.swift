@@ -67,6 +67,20 @@ nonisolated struct PersonRecord: Identifiable, Sendable, Hashable {
     var key: String
     var name: String
     var descriptor: String
+    /// Tucked into the People screen's Hidden bucket — identity untouched,
+    /// so detection still reuses the key and scene tags stay.
+    var hidden: Bool = false
+    /// Hand-picked avatar override: the frame (video + time) plus the
+    /// normalized face box (top-left origin). Nil = automatic (marker
+    /// portrait, else the first scene's largest face).
+    var avatarVideoID: Int64? = nil
+    var avatarTime: Double? = nil
+    var avatarBoxJSON: String? = nil
+
+    var avatarBox: VideoPersonRecord.PortraitBox? {
+        avatarBoxJSON?.data(using: .utf8)
+            .flatMap { try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: $0) }
+    }
 
     /// The scene tag the analyzer records for footage featuring this person.
     var tag: String { "person:\(key)" }
@@ -429,6 +443,9 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     var instagramMediaID: String?
     /// Joined from the matching Instagram media row when insights arrive.
     var instagramStats: IGStats?
+    /// Cover-frame time (AI-proposed or user-picked) for the Library card's
+    /// thumbnail; nil falls back to a near-start frame.
+    var coverTime: Double? = nil
 
     var url: URL { URL(fileURLWithPath: path) }
     var filename: String { url.lastPathComponent }

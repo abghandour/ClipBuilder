@@ -150,7 +150,7 @@ nonisolated struct AIProviderSettings: Codable, Sendable {
 /// Static provider/task metadata ported from ai_cli.py.
 nonisolated enum AICatalog {
     // "wizard" stays the planning task's key for config back-compat.
-    static let tasks = ["analysis", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay", "naming"]
+    static let tasks = ["analysis", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay", "naming", "curate", "search", "soundbites", "cover", "dedupe", "trim", "gap", "onboard"]
 
     static let taskLabels: [String: String] = [
         "analysis": "Video analysis",
@@ -163,6 +163,14 @@ nonisolated enum AICatalog {
         "distill": "Lesson distillation",
         "overlay": "Overlay extraction",
         "naming": "File naming",
+        "curate": "Scene curation",
+        "search": "Library search",
+        "soundbites": "Soundbite finding",
+        "cover": "Cover frame picking",
+        "dedupe": "Duplicate detection",
+        "trim": "Trim suggestion",
+        "gap": "Content gap report",
+        "onboard": "Profile starter",
     ]
 
     static let taskDefaults: [String: String] = [
@@ -176,6 +184,14 @@ nonisolated enum AICatalog {
         "distill": "claude",
         "overlay": "claude",
         "naming": "claude",
+        "curate": "claude",
+        "search": "claude",
+        "soundbites": "claude",
+        "cover": "claude",
+        "dedupe": "claude",
+        "trim": "claude",
+        "gap": "claude",
+        "onboard": "claude",
     ]
 
     /// The smart dispatcher's curated preference chains: best first, each a
@@ -242,6 +258,49 @@ nonisolated enum AICatalog {
                    ("codex", "gpt-5-mini"),
                    ("qwen", "qwen3-coder-flash"),
                    ("kimi", "kimi-code/kimi-for-coding")],
+        // AI Curator judges scenes against the taste rubric — taste judgment,
+        // not extraction, so a stronger text model leads.
+        "curate": [("claude", "claude-sonnet-4-6"),
+                   ("gemini", "gemini-2.5-pro"),
+                   ("codex", "gpt-5"),
+                   ("qwen", "qwen3-coder-plus"),
+                   ("kimi", "kimi-code/kimi-for-coding")],
+        // Natural-language scene search: interactive, so latency wins.
+        "search": [("claude", "claude-haiku-4-5-20251001"),
+                   ("gemini", "gemini-2.5-flash"),
+                   ("codex", "gpt-5-mini"),
+                   ("qwen", "qwen3-coder-flash"),
+                   ("kimi", "kimi-code/kimi-for-coding")],
+        // Quote extraction from a transcript: structured text work.
+        "soundbites": [("claude", "claude-haiku-4-5-20251001"),
+                       ("gemini", "gemini-2.5-flash"),
+                       ("codex", "gpt-5-mini"),
+                       ("qwen", "qwen3-coder-flash"),
+                       ("kimi", "kimi-code/kimi-for-coding")],
+        // Cover frame picking looks at candidate frames: multimodal + cheap.
+        "cover": [("gemini", "gemini-2.5-flash"),
+                  ("claude", "claude-sonnet-4-6"),
+                  ("claude", "claude-haiku-4-5-20251001")],
+        // Duplicate detection compares sampled frames across videos.
+        "dedupe": [("gemini", "gemini-2.5-flash"),
+                   ("claude", "claude-sonnet-4-6"),
+                   ("gemini", "gemini-2.5-pro")],
+        // Trim suggestion skims sparse frames for filler vs. content.
+        "trim": [("gemini", "gemini-2.5-flash"),
+                 ("claude", "claude-sonnet-4-6"),
+                 ("claude", "claude-haiku-4-5-20251001")],
+        // Content gap report reasons over the whole library's state.
+        "gap": [("claude", "claude-sonnet-4-6"),
+                ("gemini", "gemini-2.5-pro"),
+                ("codex", "gpt-5"),
+                ("qwen", "qwen3-coder-plus"),
+                ("kimi", "kimi-code/kimi-for-coding")],
+        // Profile starter writes the brand's founding rubric — one-shot
+        // quality matters most.
+        "onboard": [("claude", "claude-fable-5"),
+                    ("claude", "claude-sonnet-4-6"),
+                    ("gemini", "gemini-2.5-pro"),
+                    ("codex", "gpt-5")],
     ]
 
     struct Provider: Sendable {

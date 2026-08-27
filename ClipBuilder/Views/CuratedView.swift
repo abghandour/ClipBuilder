@@ -10,6 +10,7 @@ struct CuratedView: View {
 
     @State private var selectedSceneID: Int64?
     @State private var showGenerateSheet = false
+    @State private var showAICurate = false
     @State private var batchFilter: Int64?
     /// How aggressively near-simultaneous takes collapse into one row —
     /// shared app-wide with every other scene surface.
@@ -55,6 +56,17 @@ struct CuratedView: View {
             .map { .init(id: $0.id, name: $0.name, count: counts[$0.id] ?? 0) }
     }
 
+    /// Uncurated stack-top scenes the AI Curator can propose from — scoped
+    /// to the selected batch when one is chosen.
+    private var curateCandidates: [SceneRecord] {
+        let pool = store.scenes.filter { scene in
+            guard !scene.curated, !scene.excluded, !scene.ignored else { return false }
+            if let batchFilter { return scene.runID == batchFilter }
+            return true
+        }
+        return SceneStacks.tops(pool, level: .from(stackLevelRaw))
+    }
+
     var body: some View {
         Group {
             if curatedScenes.isEmpty {
@@ -93,6 +105,15 @@ struct CuratedView: View {
         .navigationTitle("Curated Scenes")
         .navigationSubtitle("\(curatedScenes.count) scenes")
         .toolbar {
+            ToolbarItem {
+                Button {
+                    showAICurate = true
+                } label: {
+                    ToolbarBubbleLabel(text: "AI Curate", systemImage: "checkmark.seal")
+                }
+                .disabled(curateCandidates.isEmpty)
+                .help("The AI judges the library's uncurated scenes against your taste rubric and grading history and proposes additions here — every pick reviewed before applying")
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button {
                     showGenerateSheet = true
@@ -102,6 +123,9 @@ struct CuratedView: View {
                 .disabled(curatedScenes.isEmpty)
                 .help("Describe a video to create from the curated scenes — trims and framing carry into the AI Wizard")
             }
+        }
+        .sheet(isPresented: $showAICurate) {
+            AICurateSheet(candidates: curateCandidates)
         }
         .sheet(isPresented: $showGenerateSheet) {
             // Stacked takes collapse to their best one — siblings would only

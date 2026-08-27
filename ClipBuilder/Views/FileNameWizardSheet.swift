@@ -133,7 +133,7 @@ struct FileNameWizardSheet: View {
             do {
                 let results = try await store.suggestFileNames(
                     for: videos, provider: provider, model: model) { message in
-                    Task { @MainActor in statusLine = message }
+                    if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
                 }
                 if results.isEmpty {
                     errorMessage = "No renames to propose — the current names already match the content."

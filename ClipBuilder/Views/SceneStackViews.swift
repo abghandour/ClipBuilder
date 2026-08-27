@@ -54,8 +54,12 @@ struct SceneStackBadge: View {
     var body: some View {
         Group {
             if let action {
-                Button(action: action) { label }
-                    .buttonStyle(.plain)
+                // A tap gesture, not a Button: on draggable cards (the
+                // Builder browser) the drag interaction eats Button click
+                // tracking, while gestures still win their arena.
+                label
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: action)
             } else {
                 label
             }
@@ -118,15 +122,16 @@ struct SceneStackPicker: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            ScrollView {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: Theme.spaceM, alignment: .top)],
-                          spacing: Theme.spaceM) {
+            // One horizontal strip of takes — the side-by-side comparison is
+            // the point, so more takes scroll sideways, never off the bottom.
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: Theme.spaceM) {
                     ForEach(members) { member in
                         memberCell(member)
+                            .frame(width: 160)
                     }
                 }
             }
-            .frame(maxHeight: 460)
         }
         .padding(Theme.spaceL)
         .frame(width: 520)

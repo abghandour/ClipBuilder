@@ -409,6 +409,18 @@ actor Database {
         if try !connection.columnNames(of: "person_markers").contains("ignored") {
             try connection.execute("ALTER TABLE person_markers ADD COLUMN ignored INTEGER DEFAULT 0")
         }
+        // People screen's Hidden bucket — display-only, identity untouched.
+        let peopleColumns = try connection.columnNames(of: "people")
+        if !peopleColumns.contains("hidden") {
+            try connection.execute("ALTER TABLE people ADD COLUMN hidden INTEGER DEFAULT 0")
+        }
+        // Hand-picked avatar: frame (video + time) and normalized face box.
+        // NULL = automatic (marker portrait, else the first scene's face).
+        if !peopleColumns.contains("avatar_video_id") {
+            try connection.execute("ALTER TABLE people ADD COLUMN avatar_video_id INTEGER")
+            try connection.execute("ALTER TABLE people ADD COLUMN avatar_time REAL")
+            try connection.execute("ALTER TABLE people ADD COLUMN avatar_box TEXT")
+        }
         if try !connection.columnNames(of: "videos").contains("people_detected_at") {
             try connection.execute("ALTER TABLE videos ADD COLUMN people_detected_at TEXT")
         }
@@ -427,6 +439,11 @@ actor Database {
         }
         if !generatedColumns.contains("instagram_media_id") {
             try connection.execute("ALTER TABLE generated_videos ADD COLUMN instagram_media_id TEXT")
+        }
+        // Cover-frame pick (AI-proposed or user-chosen) — the Library card's
+        // thumbnail time; NULL falls back to the old near-start frame.
+        if !generatedColumns.contains("cover_time") {
+            try connection.execute("ALTER TABLE generated_videos ADD COLUMN cover_time REAL")
         }
         try migrateScenesToAnalysisRuns(connection)
         // Databases migrated before batches learned about transcription:
@@ -1113,8 +1130,30 @@ actor Database {
             PersonRecord(id: row["id"]?.intValue ?? 0,
                          key: row["key"]?.stringValue ?? "",
                          name: row["name"]?.stringValue ?? "",
-                         descriptor: row["descriptor"]?.stringValue ?? "")
+                         descriptor: row["descriptor"]?.stringValue ?? "",
+                         hidden: (row["hidden"]?.intValue ?? 0) != 0,
+                         avatarVideoID: row["avatar_video_id"]?.intValue,
+                         avatarTime: row["avatar_time"]?.doubleValue,
+                         avatarBoxJSON: row["avatar_box"]?.stringValue)
         }
+    }
+
+    /// Save (or clear, with nils) a person's hand-picked avatar frame.
+    func setPersonAvatar(id: Int64, videoID: Int64?, time: Double?, boxJSON: String?) throws {
+        try connection.execute("""
+            UPDATE people SET avatar_video_id = ?, avatar_time = ?, avatar_box = ? WHERE id = ?
+            """, [videoID.map(SQLValue.integer) ?? .null,
+                  time.map(SQLValue.real) ?? .null,
+                  boxJSON.map(SQLValue.text) ?? .null,
+                  .integer(id)])
+    }
+
+    /// Tuck a person into (or bring them back from) the People screen's
+    /// Hidden bucket. Identity is untouched — detection still reuses their
+    /// key and their scene tags stay.
+    func setPersonHidden(id: Int64, hidden: Bool) throws {
+        try connection.execute("UPDATE people SET hidden = ? WHERE id = ?",
+                               [.integer(hidden ? 1 : 0), .integer(id)])
     }
 
     /// Register a detected person, refreshing the visual descriptor with the
@@ -1329,7 +1368,15 @@ actor Database {
                              instagramMediaID: row["instagram_media_id"]?.stringValue,
                              instagramStats: row["instagram_stats_json"]?.stringValue
                                 .flatMap { $0.data(using: .utf8) }
-                                .flatMap { try? JSONDecoder().decode(IGStats.self, from: $0) })
+                                .flatMap { try? JSONDecoder().decode(IGStats.self, from: $0) },
+                             coverTime: row["cover_time"]?.doubleValue)
+    }
+
+    /// Remember the picked cover frame — the Library card renders its
+    /// thumbnail at this time from then on.
+    func updateGeneratedCover(id: Int64, time: Double) throws {
+        try connection.execute("UPDATE generated_videos SET cover_time = ? WHERE id = ?",
+                               [.real(time), .integer(id)])
     }
 
     /// Attach the AI critic's post-render review to a generated video.

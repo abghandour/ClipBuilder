@@ -17,6 +17,7 @@ struct LibraryView: View {
     @State private var reviewTarget: GeneratedVideoRecord?
     @State private var builderTarget: GeneratedVideoRecord?
     @State private var publishTarget: GeneratedVideoRecord?
+    @State private var coverTarget: GeneratedVideoRecord?
 
     private var sorted: [GeneratedVideoRecord] {
         switch sortOrder {
@@ -74,6 +75,9 @@ struct LibraryView: View {
         .sheet(item: $publishTarget) { video in
             InstagramPublishSheet(video: video)
         }
+        .sheet(item: $coverTarget) { video in
+            CoverFrameSheet(video: video)
+        }
         // Hook for scripts/capture_help_screenshots.sh: accessibility-tree
         // clicking is too flaky to reach the review sheet, so screenshot
         // captures launch the app with this argument instead.
@@ -126,7 +130,8 @@ struct LibraryView: View {
             Button {
                 playing = video
             } label: {
-                VideoThumbnail(url: video.url, time: min(0.5, video.duration / 2))
+                VideoThumbnail(url: video.url,
+                               time: video.coverTime ?? min(0.5, video.duration / 2))
                     .accessibilityLabel("Play \(video.filename)")
                     .aspectRatio(9 / 16, contentMode: .fit)
                     .overlay {
@@ -235,6 +240,9 @@ struct LibraryView: View {
         .contextMenu {
             Button("Open in Builder") {
                 openInBuilder(video)
+            }
+            Button("Pick Cover Frame…") {
+                coverTarget = video
             }
             Button("Publish to Instagram…") {
                 publishTarget = video

@@ -14,6 +14,8 @@ struct AnalyzeView: View {
     @State private var renamingID: Int64?
     @State private var renameText = ""
     @State private var fightResearchTarget: VideoRecord?
+    @State private var soundbiteVideo: VideoRecord?
+    @State private var showDuplicateScan = false
     @FocusState private var renameFocused: Bool
 
     /// Exactly one selected video → the preview pane shows it.
@@ -92,6 +94,12 @@ struct AnalyzeView: View {
         }
         .sheet(isPresented: $showNameWizard) {
             FileNameWizardSheet(videos: selectedVideos)
+        }
+        .sheet(item: $soundbiteVideo) { video in
+            SoundbiteSheet(video: video)
+        }
+        .sheet(isPresented: $showDuplicateScan) {
+            DuplicateReportSheet()
         }
         .sheet(item: $pendingDispatch) { pending in
             DispatchPlanSheet(operation: pending.operation, videos: pending.videos,
@@ -294,6 +302,11 @@ struct AnalyzeView: View {
                     showNameWizard = true
                 }
             }
+            if ids.count == 1, let video = videos.first {
+                Button("Find Soundbites…") {
+                    soundbiteVideo = video
+                }
+            }
             Button("Transcribe") {
                 for video in store.videos.filter({ ids.contains($0.id) }) {
                     store.transcribe(video: video)
@@ -302,6 +315,10 @@ struct AnalyzeView: View {
             Button("Generate Video…") {
                 selection = ids
                 showGenerateSheet = true
+            }
+            Divider()
+            Button("Scan for Duplicates…") {
+                showDuplicateScan = true
             }
         }
         .dropDestination(for: URL.self) { urls, _ in

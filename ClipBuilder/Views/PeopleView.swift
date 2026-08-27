@@ -15,6 +15,8 @@ struct PeopleView: View {
     @State private var newPersonName = ""
     @State private var showGenerateSheet = false
     @State private var mergeRequest: MergeRequest?
+    /// Person whose avatar picker sheet is open.
+    @State private var avatarPickerPerson: PersonRecord?
     /// How aggressively near-simultaneous takes collapse into one card —
     /// shared app-wide with every other scene surface.
     @AppStorage(SceneStacks.levelKey) private var stackLevelRaw = SceneStackLevel.standard.rawValue
@@ -34,9 +36,17 @@ struct PeopleView: View {
         store.people.filter { selectedPersonIDs.contains($0.id) }
     }
 
+    private var visiblePeople: [PersonRecord] {
+        store.people.filter { !$0.hidden }
+    }
+
+    private var hiddenPeople: [PersonRecord] {
+        store.people.filter(\.hidden)
+    }
+
     /// Detail shows a single person; with a multi-selection the first one.
     private var selectedPerson: PersonRecord? {
-        selectedPeople.first ?? store.people.first
+        selectedPeople.first ?? visiblePeople.first ?? store.people.first
     }
 
     /// All usable scenes featuring this person, newest analysis first.
@@ -90,7 +100,9 @@ struct PeopleView: View {
             }
         }
         .navigationTitle("People")
-        .navigationSubtitle("\(store.people.count) detected")
+        .navigationSubtitle(hiddenPeople.isEmpty
+                            ? "\(store.people.count) detected"
+                            : "\(visiblePeople.count) detected · \(hiddenPeople.count) hidden")
         .toolbar {
             if selectedPeople.count > 1 {
                 Button {
@@ -127,6 +139,9 @@ struct PeopleView: View {
             PlayerSheet(url: scene.videoURL,
                         title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
                         startTime: scene.startTime, endTime: scene.endTime)
+        }
+        .sheet(item: $avatarPickerPerson) { person in
+            AvatarPickerSheet(person: person)
         }
         .confirmationDialog(
             "Delete \(confirmDelete?.displayName ?? "person")?",
@@ -165,32 +180,57 @@ struct PeopleView: View {
     // MARK: - People list
 
     private var peopleList: some View {
-        List(store.people, selection: $selectedPersonIDs) { person in
-            PersonRow(person: person,
-                      sceneCount: scenes(for: person).count,
-                      videoCount: Set(scenes(for: person).map(\.videoID)).count)
-                .tag(person.id)
-                .contextMenu {
-                    if selectedPeople.count > 1, selectedPersonIDs.contains(person.id) {
-                        Button("Merge Records…") {
-                            mergeRequest = MergeRequest(people: selectedPeople)
-                        }
+        List(selection: $selectedPersonIDs) {
+            ForEach(visiblePeople) { person in
+                personRow(person)
+            }
+            // Officials, one-off bystanders, joke detections — out of the
+            // way but never deleted, so their identity keeps working.
+            if !hiddenPeople.isEmpty {
+                Section("Hidden People") {
+                    ForEach(hiddenPeople) { person in
+                        personRow(person)
                     }
-                    if store.people.count > 1 {
-                        Menu("Merge Into") {
-                            ForEach(store.people.filter { $0.id != person.id }) { target in
-                                Button(target.displayName) {
-                                    store.mergePeople(source: person, into: target)
-                                }
+                }
+            }
+        }
+        .listStyle(.inset)
+    }
+
+    private func personRow(_ person: PersonRecord) -> some View {
+        PersonRow(person: person,
+                  sceneCount: scenes(for: person).count,
+                  videoCount: Set(scenes(for: person).map(\.videoID)).count)
+            .tag(person.id)
+            .contextMenu {
+                if selectedPeople.count > 1, selectedPersonIDs.contains(person.id) {
+                    Button("Merge Records…") {
+                        mergeRequest = MergeRequest(people: selectedPeople)
+                    }
+                }
+                if store.people.count > 1 {
+                    Menu("Merge Into") {
+                        ForEach(store.people.filter { $0.id != person.id }) { target in
+                            Button(target.displayName) {
+                                store.mergePeople(source: person, into: target)
                             }
                         }
                     }
-                    Button("Delete", role: .destructive) {
-                        confirmDelete = person
-                    }
                 }
-        }
-        .listStyle(.inset)
+                Button("Choose Avatar…") {
+                    avatarPickerPerson = person
+                }
+                .help("Pick which face is this person's avatar — the automatic crop can grab the wrong face when two people share the frame")
+                Button(person.hidden ? "Unhide" : "Hide") {
+                    store.setPersonHidden(person, hidden: !person.hidden)
+                }
+                .help(person.hidden
+                      ? "Move this person back into the main list"
+                      : "Tuck this person into the Hidden bucket at the bottom — their identity and scene tags stay")
+                Button("Delete", role: .destructive) {
+                    confirmDelete = person
+                }
+            }
     }
 
     // MARK: - Detail
@@ -204,6 +244,9 @@ struct PeopleView: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
                     PersonFaceAvatar(person: person, size: 40)
+                        .contentShape(Circle())
+                        .onTapGesture { avatarPickerPerson = person }
+                        .help("Click to choose which face is this person's avatar")
                     VStack(alignment: .leading, spacing: 2) {
                         Text(person.displayName)
                             .font(.headline)

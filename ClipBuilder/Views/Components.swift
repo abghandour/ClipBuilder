@@ -127,12 +127,19 @@ struct PersonFaceAvatar: View {
 
     @State private var image: NSImage?
     /// Whose face `image` holds — the same view instance can be handed a
-    /// different person (e.g. the People detail header on selection change).
-    @State private var loadedPersonID: Int64?
+    /// different person (e.g. the People detail header on selection change),
+    /// and the same person can get a new hand-picked avatar.
+    @State private var loadedKey: String?
 
     private var initials: String {
         person.name.split(separator: " ").prefix(2)
             .compactMap(\.first).map(String.init).joined()
+    }
+
+    /// Reload key: person plus their avatar override, so a fresh pick
+    /// re-renders in place.
+    private var avatarKey: String {
+        "\(person.id)|\(person.avatarVideoID ?? -1)|\(person.avatarTime ?? -1)"
     }
 
     var body: some View {
@@ -160,10 +167,23 @@ struct PersonFaceAvatar: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
-        .task(id: person.id) {
-            guard loadedPersonID != person.id else { return }
+        .task(id: avatarKey) {
+            guard loadedKey != avatarKey else { return }
             image = nil
-            loadedPersonID = person.id
+            loadedKey = avatarKey
+            // The user's hand-picked avatar frame wins over everything.
+            if let videoID = person.avatarVideoID, let time = person.avatarTime,
+               let video = store.videos.first(where: { $0.id == videoID }),
+               let frame = await ThumbnailService.jpegFrame(url: video.url, at: time,
+                                                            maxDimension: 720) {
+                // Stored top-left normalized box → Vision's bottom-left.
+                var faceBox = person.avatarBox.map { box in
+                    CGRect(x: box.x, y: 1 - box.y - box.h, width: box.w, height: box.h)
+                }
+                if faceBox == nil { faceBox = await Self.detectFace(in: frame) }
+                image = Self.avatarImage(from: frame, faceBox: faceBox)
+                if image != nil { return }
+            }
             // A user-drawn marker is ground truth for who's in the box —
             // crop to it first, then find the face INSIDE it. Without this,
             // two people sharing a scene both get the frame's largest face.
@@ -188,17 +208,24 @@ struct PersonFaceAvatar: View {
 
     /// Largest detected face as a normalized bounding box (bottom-left
     /// origin, Vision convention); nil when no face is found.
-    nonisolated private static func detectFace(in data: Data) async -> CGRect? {
+    nonisolated static func detectFace(in data: Data) async -> CGRect? {
+        await detectFaces(in: data).first
+    }
+
+    /// Every detected face, largest first, as normalized bounding boxes
+    /// (bottom-left origin, Vision convention). The avatar picker offers
+    /// each one as a candidate crop.
+    nonisolated static func detectFaces(in data: Data) async -> [CGRect] {
         let request = VNDetectFaceRectanglesRequest()
         try? VNImageRequestHandler(data: data).perform([request])
         return (request.results ?? [])
-            .max { $0.boundingBox.width < $1.boundingBox.width }?
-            .boundingBox
+            .map(\.boundingBox)
+            .sorted { $0.width > $1.width }
     }
 
     /// Square crop centered on the face (with generous headroom), falling
     /// back to a centered square when no face was detected.
-    private static func avatarImage(from data: Data, faceBox: CGRect?) -> NSImage? {
+    static func avatarImage(from data: Data, faceBox: CGRect?) -> NSImage? {
         guard let source = NSImage(data: data),
               let cg = source.cgImage(forProposedRect: nil, context: nil, hints: nil)
         else { return nil }

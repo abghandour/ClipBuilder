@@ -148,6 +148,14 @@ struct InstagramView: View {
                     .disabled(learnSelection.isEmpty || store.isStudyingTaste)
                 Button("Learn from Top 5 Quality Reels") { learnTopPerformers() }
                     .disabled(store.isStudyingTaste || sortedMedia.isEmpty)
+                Divider()
+                Button(store.isDistillingPerformanceLessons
+                       ? "Distilling Performance Lessons…"
+                       : "Distill Performance Lessons") {
+                    store.distillPerformanceLessons()
+                }
+                .disabled(store.isDistillingPerformanceLessons)
+                .help("Correlates published reels' insights and this account's own reels with their traits, and distills what performs into the wizard's Learned Lessons")
                 if !learnSelection.isEmpty {
                     Divider()
                     Button("Clear Selection") { learnSelection = [] }

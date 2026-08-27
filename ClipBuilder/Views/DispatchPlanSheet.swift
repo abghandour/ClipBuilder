@@ -882,6 +882,9 @@ private struct VideoNotesPanel: View {
 
     @State private var notes: [VideoNote] = []
     @State private var noteText = ""
+    /// AI trim suggestion in flight / its outcome line under the slider.
+    @State private var isSuggestingTrim = false
+    @State private var trimSuggestionNote: String?
     @State private var currentTime = 0.0
     @State private var timeObserver: Any?
     @State private var sectionEndObserver: Any?
@@ -1153,6 +1156,18 @@ private struct VideoNotesPanel: View {
                             .font(.caption.weight(.medium))
                         Spacer()
                         Button {
+                            suggestTrim()
+                        } label: {
+                            if isSuggestingTrim {
+                                Label("Suggesting…", systemImage: "sparkles")
+                            } else {
+                                Label("Suggest Trim", systemImage: "sparkles")
+                            }
+                        }
+                        .controlSize(.small)
+                        .disabled(isSuggestingTrim)
+                        .help("AI skims sparse frames across the whole video and sets the slider to the section worth analyzing — recording chrome, title cards, and dead air trimmed off. Cheap: ~24 frames, one call.")
+                        Button {
                             if isPlayingSection {
                                 stopSectionPlayback()
                             } else {
@@ -1169,6 +1184,12 @@ private struct VideoNotesPanel: View {
                                     start: $trimStart, end: $trimEnd,
                                     loudness: loudness) { time in
                         scrub(to: time)
+                    }
+                    if let trimSuggestionNote {
+                        Text(trimSuggestionNote)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
                     }
                 }
                 .onAppear {
@@ -1344,6 +1365,27 @@ private struct VideoNotesPanel: View {
             }
             stopSectionPlayback()
             player?.pause()
+        }
+    }
+
+    /// AI skim of the whole video → the trim slider jumps to the proposed
+    /// content window, with the model's reason (or the error) shown under it.
+    private func suggestTrim() {
+        isSuggestingTrim = true
+        trimSuggestionNote = nil
+        let target = video
+        Task {
+            do {
+                let suggestion = try await store.suggestTrim(for: target)
+                trimStart = suggestion.start
+                trimEnd = suggestion.end
+                trimSuggestionNote = suggestion.reason.isEmpty
+                    ? "AI trim: \(suggestion.start.timecode)–\(suggestion.end.timecode)"
+                    : "AI trim: \(suggestion.start.timecode)–\(suggestion.end.timecode) — \(suggestion.reason)"
+            } catch {
+                trimSuggestionNote = error.userMessage
+            }
+            isSuggestingTrim = false
         }
     }
 

@@ -24,6 +24,11 @@ struct ScenesView: View {
     @AppStorage(SceneStacks.levelKey) private var stackLevelRaw = SceneStackLevel.standard.rawValue
     /// Card whose stack picker popover is open (long-press a stacked card).
     @State private var stackPickerID: Int64?
+    @State private var showAskSheet = false
+    @State private var showAICurate = false
+    /// Active AI search: the query plus its ranked scene ids — the grid
+    /// narrows to these (rank order) until cleared from the banner.
+    @State private var aiMatches: (query: String, ids: [Int64])?
 
     private var stackLevel: SceneStackLevel { .from(stackLevelRaw) }
 
@@ -83,6 +88,11 @@ struct ScenesView: View {
             }
             return true
         }
+        // An active AI search narrows to its matches on top of the filters.
+        if let aiMatches {
+            let allowed = Set(aiMatches.ids)
+            result = result.filter { allowed.contains($0.id) }
+        }
         // Broken-down sequences show as ONE card by default — their action
         // beats collapse under the parent unless explicitly shown.
         if !showSequenceParts {
@@ -101,8 +111,31 @@ struct ScenesView: View {
         }
         if sortByScore {
             contents.scenes.sort { ($0.score ?? -1) > ($1.score ?? -1) }
+        } else if let aiMatches {
+            // Best match first, the way the model ranked them.
+            let rank = Dictionary(uniqueKeysWithValues:
+                aiMatches.ids.enumerated().map { ($1, $0) })
+            contents.scenes.sort { (rank[$0.id] ?? .max) < (rank[$1.id] ?? .max) }
         }
         return contents
+    }
+
+    /// Scenes the AI search runs against: the current batch scope, hidden
+    /// scenes excluded — grid filters like tags deliberately don't narrow
+    /// the query's reach.
+    private var searchCandidates: [SceneRecord] {
+        store.scenes.filter { scene in
+            if let runFilter, !(scene.runID.map(runFilter.contains) ?? false) { return false }
+            return !scene.excluded
+        }
+    }
+
+    /// The AI Curator's pool: uncurated cards currently in view (stack tops
+    /// only). A multi-selection narrows the judging to just those cards.
+    private var curateCandidates: [SceneRecord] {
+        let pool = gridContents.scenes.filter { !$0.curated && !$0.excluded }
+        let selected = pool.filter { selectedSceneIDs.contains($0.id) }
+        return selected.count >= 2 ? selected : pool
     }
 
     private var allTags: [String] {
@@ -144,8 +177,14 @@ struct ScenesView: View {
             fileList
                 .rememberedPaneWidth("pane.scenes.batches", min: 220, initial: 260, max: 340)
                 .frame(maxHeight: .infinity)
-            sceneGrid(contents)
-                .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                if let aiMatches {
+                    aiSearchBanner(aiMatches)
+                    Divider()
+                }
+                sceneGrid(contents)
+            }
+            .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("Raw Scenes")
@@ -163,6 +202,15 @@ struct ScenesView: View {
                     }
                     .help("All parameters and instructions used for this analyze batch")
                 }
+            }
+            ToolbarItem {
+                Button {
+                    showAskSheet = true
+                } label: {
+                    ToolbarBubbleLabel(text: "Ask", systemImage: "sparkle.magnifyingglass")
+                }
+                .disabled(searchCandidates.isEmpty)
+                .help("Describe a moment in plain language — the AI reads every scene's story, tags, and people and filters the grid to the matches, best first")
             }
             ToolbarItem {
                 Menu {
@@ -205,6 +253,15 @@ struct ScenesView: View {
             }
             ToolbarItem {
                 Button {
+                    showAICurate = true
+                } label: {
+                    ToolbarBubbleLabel(text: "AI Curate", systemImage: "checkmark.seal")
+                }
+                .disabled(curateCandidates.isEmpty)
+                .help("The AI judges the uncurated scenes in view against your taste rubric and grading history and proposes keepers for the Curated set — every pick reviewed before applying. Select 2+ scenes to judge just those.")
+            }
+            ToolbarItem {
+                Button {
                     showGenerateSheet = true
                 } label: {
                     ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
@@ -215,6 +272,15 @@ struct ScenesView: View {
         }
         .sheet(isPresented: $showGenerateSheet) {
             GenerateVideoSheet(source: generateSource)
+        }
+        .sheet(isPresented: $showAskSheet) {
+            SceneSearchSheet(candidates: searchCandidates) { query, ids in
+                aiMatches = (query, ids)
+                selectedSceneIDs = []
+            }
+        }
+        .sheet(isPresented: $showAICurate) {
+            AICurateSheet(candidates: curateCandidates)
         }
         .sheet(item: $transcriptVideo) { video in
             TranscriptSheet(video: video)
@@ -230,6 +296,23 @@ struct ScenesView: View {
                         title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
                         startTime: scene.startTime, endTime: scene.endTime)
         }
+    }
+
+    /// Strip above the grid while an AI search filters it — says what was
+    /// asked and clears back to the full grid.
+    private func aiSearchBanner(_ match: (query: String, ids: [Int64])) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkle.magnifyingglass")
+                .foregroundStyle(.secondary)
+            Text("AI search: “\(match.query)”")
+                .font(.callout)
+                .lineLimit(1)
+            Spacer()
+            Button("Clear") { aiMatches = nil }
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
     }
 
     private var fileList: some View {
