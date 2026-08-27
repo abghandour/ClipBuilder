@@ -414,6 +414,10 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     /// Deterministic post-render checks. Nil only for videos created before
     /// the quality gate shipped.
     var qualityJSON: String?
+    /// The AI critic's review of the rendered reel (score, issues, notes,
+    /// regenerate recommendation). Nil when the critique loop was off or the
+    /// video predates it.
+    var critiqueJSON: String?
     /// The validated plan's clips with the model's per-clip "reason" —
     /// [{clip_index, scene_id, start, end, speed, reason}]. Nil for videos
     /// generated before reasons were kept.
@@ -448,6 +452,11 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     var qualityReport: ReelQualityReport? {
         guard let qualityJSON, let data = qualityJSON.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(ReelQualityReport.self, from: data)
+    }
+
+    var critique: ReelCritique? {
+        guard let critiqueJSON, let data = critiqueJSON.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ReelCritique.self, from: data)
     }
 
     var performanceScore: Double? {

@@ -15,6 +15,15 @@ struct WizardResultsSheet: View {
     @State private var builderTarget: GeneratedVideoRecord?
     @State private var feedbackDrafts: [Int64: String] = [:]
 
+    /// The critic's favorite among this run's versions — badged "Best".
+    private var bestCritiquedID: Int64? {
+        let scored = results.videos.compactMap { video in
+            video.critique.map { (video.id, $0.score) }
+        }
+        guard scored.count > 1 else { return nil }
+        return scored.max { $0.1 < $1.1 }?.0
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
@@ -22,7 +31,9 @@ struct WizardResultsSheet: View {
                      ? "Your video is ready"
                      : "\(results.videos.count) videos are ready")
                     .font(.headline)
-                Text("Watch and rate — every rating trains the wizard. Not what you wanted? Retry runs the same settings again.")
+                Text(results.videos.count > 1 && bestCritiquedID != nil
+                     ? "The critic reviewed each version — its favorite is marked. Watch and rate; every rating trains the wizard."
+                     : "Watch and rate — every rating trains the wizard. Not what you wanted? Retry runs the same settings again.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -97,6 +108,10 @@ struct WizardResultsSheet: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
+            if let critique = video.critique {
+                critiqueLine(critique, isBest: video.id == bestCritiquedID)
+            }
+
             if let rationale = video.rationale, !rationale.isEmpty {
                 Text(rationale)
                     .font(.caption2)
@@ -148,6 +163,58 @@ struct WizardResultsSheet: View {
             .controlSize(.small)
             .help("Open this video's timeline in the Builder to tweak clips, overlays, and music")
         }
+    }
+
+    /// The critic's take on this version: score (colored by band), one-line
+    /// summary, and the full strengths/issues/notes in the tooltip.
+    @ViewBuilder
+    private func critiqueLine(_ critique: ReelCritique, isBest: Bool) -> some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 6) {
+                Label(critique.shortLabel, systemImage: "checkmark.seal.text")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(critique.score >= 85 ? .green
+                                     : critique.score >= 70 ? .yellow : .orange)
+                if isBest {
+                    Text("BEST")
+                        .font(.badgeCompact)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1)
+                        .background(.green.opacity(0.85), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
+                        .foregroundStyle(.black)
+                        .accessibilityLabel("Critic's favorite version")
+                }
+            }
+            if !critique.summary.isEmpty {
+                Text(critique.summary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(width: 210)
+        .help(critiqueTooltip(critique))
+    }
+
+    private func critiqueTooltip(_ critique: ReelCritique) -> String {
+        var lines: [String] = []
+        if !critique.strengths.isEmpty {
+            lines.append("Strengths:")
+            lines.append(contentsOf: critique.strengths.map { "  • \($0)" })
+        }
+        if !critique.issues.isEmpty {
+            lines.append("Issues:")
+            lines.append(contentsOf: critique.issues.map { "  • \($0)" })
+        }
+        if !critique.notes.isEmpty {
+            lines.append("Notes for the next version:")
+            lines.append(contentsOf: critique.notes.map { "  • \($0)" })
+        }
+        if let model = critique.model ?? critique.provider {
+            lines.append("Judged by \(model)")
+        }
+        return lines.isEmpty ? critique.summary : lines.joined(separator: "\n")
     }
 
     private func saveFeedback(for video: GeneratedVideoRecord) {

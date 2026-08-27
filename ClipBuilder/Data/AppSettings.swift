@@ -150,11 +150,12 @@ nonisolated struct AIProviderSettings: Codable, Sendable {
 /// Static provider/task metadata ported from ai_cli.py.
 nonisolated enum AICatalog {
     // "wizard" stays the planning task's key for config back-compat.
-    static let tasks = ["analysis", "wizard", "research", "fight_research", "parse", "captions", "distill", "overlay"]
+    static let tasks = ["analysis", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay"]
 
     static let taskLabels: [String: String] = [
         "analysis": "Video analysis",
         "wizard": "Reel planning",
+        "critique": "Reel critique",
         "research": "Reels research",
         "fight_research": "Fight research",
         "parse": "Request parsing",
@@ -166,6 +167,7 @@ nonisolated enum AICatalog {
     static let taskDefaults: [String: String] = [
         "analysis": "claude",
         "wizard": "claude",
+        "critique": "claude",
         "research": "claude",
         "fight_research": "claude",
         "parse": "claude",
@@ -191,6 +193,12 @@ nonisolated enum AICatalog {
                    ("codex", "gpt-5"),
                    ("kimi", "kimi-code/kimi-for-coding"),
                    ("qwen", "qwen3-coder-plus")],
+        // Post-render critique: a multimodal judge that watches the rendered
+        // frames. Deliberately leads with a DIFFERENT model than planning so
+        // the planner isn't grading its own work.
+        "critique": [("claude", "claude-sonnet-4-6"),
+                     ("gemini", "gemini-2.5-pro"),
+                     ("claude", "claude-fable-5")],
         "research": [("claude", "claude-sonnet-4-6"),
                      ("gemini", "gemini-2.5-flash"),
                      ("codex", "gpt-5-mini"),

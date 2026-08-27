@@ -24,6 +24,7 @@ struct WizardView: View {
     @AppStorage("wizard.formatPreset") private var formatPreset = "custom"
     /// "" = profile default, "none" = no taste, "cat:<key>" = a learned category.
     @AppStorage("wizard.tastePreset") private var tastePreset = ""
+    @AppStorage("wizard.critiqueLoop") private var critiqueLoop = true
     @AppStorage("wizard.includeWatermark") private var includeWatermark = true
     @AppStorage("wizard.includeHeadline") private var includeHeadline = true
     @AppStorage("wizard.includeOutro") private var includeOutro = true
@@ -259,6 +260,13 @@ struct WizardView: View {
                          : "\(store.fightResearch.count) fight(s) researched — research for the selected footage is injected automatically.")
                         .font(.caption)
                         .foregroundStyle(store.fightResearch.isEmpty ? .orange : .secondary)
+                }
+                Toggle("AI critique & auto-retry", isOn: $critiqueLoop)
+                    .help("After each render, a critic model watches the finished reel and scores it against your taste. If it sees a clearly better version, the wizard re-plans with the critic's notes and renders again — up to 3 versions total, all kept in the Library with their reviews.")
+                if critiqueLoop {
+                    Text("Up to 3 versions per run — each extra version is a full plan + render cycle.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 Toggle("Watermark (brand logo)", isOn: $includeWatermark)
                     .help("Burns the profile's logo into the top-left corner of every frame — set the logo in Settings → Profile")
@@ -759,6 +767,7 @@ struct WizardView: View {
         options.aiInstructions = aiInstructions
         options.targetDurationSeconds = min(180, max(3, targetDuration))
         options.formatPreset = formatPreset
+        options.critiqueLoop = critiqueLoop
         options.tastePreset = tastePreset.isEmpty ? nil : tastePreset
         options.includeWatermark = includeWatermark
         options.includeHeadline = includeHeadline

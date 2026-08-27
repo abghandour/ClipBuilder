@@ -51,6 +51,10 @@ nonisolated struct WizardOptions: Sendable {
     var pinnedOverlayText: String?
     /// Reel format recipe: generic types plus MMA-specific editorial recipes.
     var formatPreset = "custom"
+    /// After each render, an AI critic reviews the rendered reel; when it
+    /// recommends a retry the wizard re-plans with the critic's notes and
+    /// renders again — up to 3 versions total, all kept with their reviews.
+    var critiqueLoop = true
     /// Brand-kit elements burned into the render (need profile assets).
     var includeWatermark = true
     var includeHeadline = true
@@ -1503,13 +1507,19 @@ actor WizardEngine {
     /// badly-fitting footage, template drift). Nil plan when the response is
     /// unusable. Prompt and raw response ride along for the run report.
     private func makePlan(inputs: PlanningInputs, options: WizardOptions, profile: BrandProfile,
+                          critiqueFeedback: String? = nil,
                           emit: @escaping @Sendable (String) -> Void) async throws
         -> (plan: WizardPlan?, prompt: String, response: String) {
-        let prompt = planPrompt(profile: profile, research: inputs.research, scenes: inputs.scenes,
+        var prompt = planPrompt(profile: profile, research: inputs.research, scenes: inputs.scenes,
                                 musicNames: inputs.music.map(\.name), signals: inputs.signals,
                                 people: inputs.people, outcomes: inputs.outcomes,
                                 fightResearch: inputs.fightResearch,
                                 videoTypes: inputs.videoTypes, options: options)
+        // A critic reviewed the previous rendered version — its notes become
+        // binding instructions for this plan.
+        if let critiqueFeedback {
+            prompt += critiqueFeedback
+        }
         let frames = tasteExemplarFrames(profile: profile, options: options)
         if !frames.isEmpty {
             emit("Attached \(frames.count) taste exemplar frame(s) to the plan call")
@@ -1695,60 +1705,148 @@ actor WizardEngine {
                                                   database: database, emit: emit)
         let sceneMap = inputs.sceneMap
 
-        try Task.checkCancellation()
-        emit("\nPhase 2: Planning the timeline...")
-        let outcome = try await makePlan(inputs: inputs, options: options, profile: profile,
-                                         emit: emit)
-        guard let plan = outcome.plan else {
-            throw AIError.unusableResponse("Reel planning failed: the AI did not produce a usable plan — its raw response is in the log above. If your instructions filter footage by tags, check that the selected footage actually carries those tags.")
+        // The critique loop: render, have the critic watch the result, and
+        // when it recommends a retry re-plan with its notes — up to 3
+        // versions total. Every version is kept with its review.
+        let maxVersions = options.critiqueLoop ? 3 : 1
+        var critiques: [ReelCritique] = []
+        var critiqueFeedback: String?
+        var producedCount = 0
+
+        for attempt in 1...maxVersions {
+            try Task.checkCancellation()
+            if attempt > 1 {
+                emit("\n══════ Version \(attempt) — rebuilding from the critique ══════")
+            }
+            emit("\nPhase 2: Planning the timeline...")
+            let outcome = try await makePlan(inputs: inputs, options: options, profile: profile,
+                                             critiqueFeedback: critiqueFeedback, emit: emit)
+            guard let plan = outcome.plan else {
+                if producedCount > 0 {
+                    emit("Re-plan failed — keeping the \(producedCount) version(s) already rendered.")
+                    break
+                }
+                throw AIError.unusableResponse("Reel planning failed: the AI did not produce a usable plan — its raw response is in the log above. If your instructions filter footage by tags, check that the selected footage actually carries those tags.")
+            }
+            emit("Plan: \(plan.clips.count) clips, ~\(Int(plan.targetDuration))s, music: \(plan.musicName ?? "none")")
+            emit("Strategy: \(plan.rationale)")
+
+            emit("\nPhase 3: Assembling the video...")
+            let result: AssemblyResult
+            do {
+                result = try await assemble(plan: plan, music: inputs.music, options: options,
+                                            profile: profile, database: database,
+                                            sceneMap: sceneMap, emit: emit)
+            } catch where producedCount > 0 && !(error is CancellationError) {
+                // A later version failing to render shouldn't discard the
+                // versions already produced.
+                emit("Version \(attempt) failed to render (\(error.userMessage)) — keeping the earlier version(s).")
+                break
+            }
+
+            emit("Generating Instagram caption...")
+            let tagsUsed = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
+            // The reference reel's caption style rides into the caption call so
+            // "replicate this reel" covers the caption too.
+            let captionStyleReference = options.templateJSON
+                .flatMap { AIResponseParser.jsonObject(from: $0) }
+                .flatMap { $0["caption_style"] as? String }
+            var captionText: String?
+            do {
+                let caption = try await ai.call(
+                    prompt: captionPrompt(profile: profile, plan: plan,
+                                          duration: result.duration, tags: tagsUsed,
+                                          fightResearch: inputs.fightResearch,
+                                          captionStyleReference: captionStyleReference),
+                    task: "captions", timeout: 60, log: emit)
+                captionText = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+                let attribution = await ai.resolveProviderModel(task: "captions")
+                try await database.updateGeneratedCaption(id: result.recordID,
+                                                          caption: captionText ?? "",
+                                                          provider: attribution.provider,
+                                                          model: attribution.model)
+                emit("Caption generated!")
+            } catch {
+                emit("Caption generation failed: \(error)")
+            }
+
+            // Everything a model needs to diagnose this reel, next to it.
+            let planAttribution = await ai.resolveProviderModel(task: "wizard",
+                                                                model: options.modelOverride)
+            writeRunReport(for: result, profile: profile,
+                           options: options, inputs: inputs, plan: plan,
+                           planPrompt: outcome.prompt, planResponse: outcome.response,
+                           planAttribution: planAttribution, caption: captionText,
+                           logLines: recorder.lines(), sceneMap: sceneMap,
+                           emit: emit)
+
+            emit("VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))")
+            emit("Video complete! \(String(format: "%.1f", result.duration))s -> \(result.url.lastPathComponent)")
+            producedCount += 1
+
+            guard options.critiqueLoop else { break }
+            emit("\nPhase 4: AI critique of version \(attempt)...")
+            let critique: ReelCritique
+            do {
+                critique = try await ReelCritic.critique(video: result.url,
+                                                         duration: result.duration,
+                                                         plan: plan, sceneMap: sceneMap,
+                                                         options: options, profile: profile,
+                                                         attempt: attempt, previous: critiques,
+                                                         ai: ai, emit: emit)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                emit("Critique failed (\(error.userMessage)) — keeping this version and stopping the loop.")
+                break
+            }
+            if let json = (try? JSONEncoder().encode(critique))
+                .flatMap({ String(data: $0, encoding: .utf8) }) {
+                try? await database.updateGeneratedCritique(id: result.recordID, critiqueJSON: json)
+            }
+            emit("Critique: \(critique.score)/100 — \(critique.summary)")
+            critique.issues.forEach { emit("  • issue: \($0)") }
+            critiques.append(critique)
+
+            if critique.regenerate, attempt < maxVersions {
+                critique.notes.forEach { emit("  → note: \($0)") }
+                emit("The critic requests another version — re-planning with its notes.")
+                critiqueFeedback = Self.critiqueFeedbackBlock(critique, attempt: attempt,
+                                                              previousPlanJSON: outcome.response)
+            } else if critique.regenerate {
+                emit("The critic would try again, but the \(maxVersions)-version cap is reached.")
+                break
+            } else {
+                emit("The critic is satisfied — no further versions.")
+                break
+            }
         }
-        emit("Plan: \(plan.clips.count) clips, ~\(Int(plan.targetDuration))s, music: \(plan.musicName ?? "none")")
-        emit("Strategy: \(plan.rationale)")
 
-        emit("\nPhase 3: Assembling the video...")
-        let result = try await assemble(plan: plan, music: inputs.music, options: options,
-                                        profile: profile, database: database,
-                                        sceneMap: sceneMap, emit: emit)
+        emit("\nAll done! Generated \(producedCount) video\(producedCount == 1 ? "" : "s")")
+    }
 
-        emit("Generating Instagram caption...")
-        let tagsUsed = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
-        // The reference reel's caption style rides into the caption call so
-        // "replicate this reel" covers the caption too.
-        let captionStyleReference = options.templateJSON
-            .flatMap { AIResponseParser.jsonObject(from: $0) }
-            .flatMap { $0["caption_style"] as? String }
-        var captionText: String?
-        do {
-            let caption = try await ai.call(
-                prompt: captionPrompt(profile: profile, plan: plan,
-                                      duration: result.duration, tags: tagsUsed,
-                                      fightResearch: inputs.fightResearch,
-                                      captionStyleReference: captionStyleReference),
-                task: "captions", timeout: 60, log: emit)
-            captionText = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-            let attribution = await ai.resolveProviderModel(task: "captions")
-            try await database.updateGeneratedCaption(id: result.recordID,
-                                                      caption: captionText ?? "",
-                                                      provider: attribution.provider,
-                                                      model: attribution.model)
-            emit("Caption generated!")
-        } catch {
-            emit("Caption generation failed: \(error)")
+    /// The critic's review, phrased as binding instructions for the next
+    /// plan attempt — appended to the standard planning prompt.
+    private static func critiqueFeedbackBlock(_ critique: ReelCritique, attempt: Int,
+                                              previousPlanJSON: String) -> String {
+        var lines = ["\n\n## A CRITIC REVIEWED THE RENDERED VERSION \(attempt) — BUILD A BETTER ONE"]
+        lines.append("It watched the actual rendered frames and scored the reel \(critique.score)/100: \(critique.summary)")
+        if !critique.issues.isEmpty {
+            lines.append("Issues visible in the rendered video:")
+            lines.append(contentsOf: critique.issues.map { "- \($0)" })
         }
-
-        // Everything a model needs to diagnose this reel, next to it.
-        let planAttribution = await ai.resolveProviderModel(task: "wizard",
-                                                            model: options.modelOverride)
-        writeRunReport(for: result, profile: profile,
-                       options: options, inputs: inputs, plan: plan,
-                       planPrompt: outcome.prompt, planResponse: outcome.response,
-                       planAttribution: planAttribution, caption: captionText,
-                       logLines: recorder.lines(), sceneMap: sceneMap,
-                       emit: emit)
-
-        emit("VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))")
-        emit("Video complete! \(String(format: "%.1f", result.duration))s -> \(result.url.lastPathComponent)")
-        emit("\nAll done! Generated 1 video")
+        if !critique.notes.isEmpty {
+            lines.append("Apply every one of these improvement notes:")
+            lines.append(contentsOf: critique.notes.map { "- \($0)" })
+        }
+        if !critique.strengths.isEmpty {
+            lines.append("Keep what already worked:")
+            lines.append(contentsOf: critique.strengths.map { "- \($0)" })
+        }
+        lines.append("Previous plan JSON (yours):")
+        lines.append(String(previousPlanJSON.prefix(4000)))
+        lines.append("Produce a NEW complete plan (same JSON schema as above) that fixes every issue — do not repeat the previous plan unchanged.")
+        return lines.joined(separator: "\n")
     }
 
     /// Thread-safe accumulating log — the run's full emit stream, replayed

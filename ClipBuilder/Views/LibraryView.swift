@@ -169,6 +169,16 @@ struct LibraryView: View {
                           : (quality.failures + quality.warnings).joined(separator: "\n"))
                       + "\nClick to review the reel.")
             }
+            if let critique = video.critique {
+                Label("\(critique.shortLabel)\(critique.summary.isEmpty ? "" : " · \(critique.summary)")",
+                      systemImage: "checkmark.seal.text")
+                    .font(.caption2)
+                    .foregroundStyle(critique.score >= 85 ? .green
+                                     : critique.score >= 70 ? .secondary : .orange)
+                    .lineLimit(1)
+                    .help(([critique.summary]
+                           + critique.issues.map { "• \($0)" }).joined(separator: "\n"))
+            }
             if let stats = video.instagramStats {
                 Text(ReelPerformance.label(stats, duration: video.duration))
                     .font(.caption2)

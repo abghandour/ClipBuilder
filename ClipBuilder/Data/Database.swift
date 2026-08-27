@@ -416,6 +416,9 @@ actor Database {
         if !generatedColumns.contains("deleted") {
             try connection.execute("ALTER TABLE generated_videos ADD COLUMN deleted INTEGER DEFAULT 0")
         }
+        if !generatedColumns.contains("critique_json") {
+            try connection.execute("ALTER TABLE generated_videos ADD COLUMN critique_json TEXT")
+        }
         if !generatedColumns.contains("quality_json") {
             try connection.execute("ALTER TABLE generated_videos ADD COLUMN quality_json TEXT")
         }
@@ -1310,11 +1313,18 @@ actor Database {
                              rationale: row["rationale"]?.stringValue,
                              batchID: row["batch_id"]?.stringValue,
                              qualityJSON: row["quality_json"]?.stringValue,
+                             critiqueJSON: row["critique_json"]?.stringValue,
                              planClipsJSON: row["plan_clips_json"]?.stringValue,
                              instagramMediaID: row["instagram_media_id"]?.stringValue,
                              instagramStats: row["instagram_stats_json"]?.stringValue
                                 .flatMap { $0.data(using: .utf8) }
                                 .flatMap { try? JSONDecoder().decode(IGStats.self, from: $0) })
+    }
+
+    /// Attach the AI critic's post-render review to a generated video.
+    func updateGeneratedCritique(id: Int64, critiqueJSON: String) throws {
+        try connection.execute("UPDATE generated_videos SET critique_json = ? WHERE id = ?",
+                               [.text(critiqueJSON), .integer(id)])
     }
 
     func updateGeneratedCaption(id: Int64, caption: String, provider: String?, model: String?) throws {
