@@ -249,12 +249,12 @@ private struct ProfileSettingsTab: View {
                                 .map { $0.trimmingCharacters(in: .whitespaces) }
                                 .filter { !$0.isEmpty } }
                         ))
-                        Button {
+                        Button("Remove Category", systemImage: "minus.circle") {
                             store.activeProfile.tagSchema.removeValue(forKey: category)
-                        } label: {
-                            Image(systemName: "minus.circle")
                         }
+                        .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
+                        .help("Remove this tag category")
                     }
                 }
                 Button("Add Category") {
@@ -333,11 +333,13 @@ private struct TasteSettingsTab: View {
                                             Button {
                                                 store.removeTasteExemplarFrame(path: path)
                                             } label: {
-                                                Image(systemName: "xmark.circle.fill")
+                                                Label("Remove Exemplar Frame", systemImage: "xmark.circle.fill")
                                                     .symbolRenderingMode(.palette)
                                                     .foregroundStyle(.white, .black.opacity(0.6))
                                             }
+                                            .labelStyle(.iconOnly)
                                             .buttonStyle(.plain)
+                                            .help("Remove this exemplar frame")
                                             .padding(2)
                                             .help("Remove this example frame")
                                         }

@@ -171,6 +171,12 @@ struct WizardView: View {
                         .foregroundStyle(.secondary)
                 }
                 .help("The generated reel is planned to this length (3–180s)")
+                // Clamp typed values on commit so the field always shows the
+                // duration the run will actually use.
+                .onChange(of: targetDuration) { _, value in
+                    let clamped = min(180, max(3, value))
+                    if clamped != value { targetDuration = clamped }
+                }
             }
 
             if let handoff = store.pendingWizardTemplate {
@@ -203,9 +209,10 @@ struct WizardView: View {
                         Button {
                             store.pendingWizardTemplate = nil
                         } label: {
-                            Image(systemName: "xmark.circle.fill")
+                            Label("Remove Template", systemImage: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
                         }
+                        .labelStyle(.iconOnly)
                         .buttonStyle(.plain)
                         .help("Remove the template — future generations won't use it")
                     }
@@ -285,11 +292,10 @@ struct WizardView: View {
                             NSWorkspace.shared.open(WizardEngine.musicDirectory)
                         }
                         .controlSize(.small)
-                        Button {
+                        Button("Refresh Track Count", systemImage: "arrow.clockwise") {
                             musicCount = WizardEngine.availableMusic().count
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
                         }
+                        .labelStyle(.iconOnly)
                         .controlSize(.small)
                         .help("Re-count tracks after adding music")
                     }
@@ -437,47 +443,13 @@ struct WizardView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section {
-                if store.isWizardRunning {
-                    Button(role: .destructive) {
-                        store.cancelWizard()
-                    } label: {
-                        Label("Stop Generating", systemImage: "stop.fill")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(.bordered)
-                } else {
-                    Button {
-                        startGeneration()
-                    } label: {
-                        Label("Generate Video", systemImage: "wand.and.stars")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(analyzedSceneCount == 0)
-                }
-
-                Button {
-                    showCuratedWizard = true
-                } label: {
-                    Label("Generate Curated Video", systemImage: "checklist")
-                        .frame(maxWidth: .infinity)
-                }
-                .controlSize(.large)
-                .disabled(analyzedSceneCount == 0 || store.isCuratedRendering)
-                .help("Hand-pick the reel yourself: the app proposes scenes one by one (respecting the Source Selection above) — preview, trim, approve, then overlays, music, and outro. No AI planning involved.")
-
-                if analyzedSceneCount == 0 {
-                    Text("Analyze some videos first — the wizard picks from analyzed scenes.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-            }
         }
         .formStyle(.grouped)
+        // The primary action stays on screen no matter how long the form
+        // grows — pinned under the scroll instead of being its last section.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            generationBar
+        }
         .sheet(isPresented: $showCuratedWizard) {
             CuratedWizardSheet(scenes: curatedWizardPool,
                                targetDuration: min(180, max(3, targetDuration)),
@@ -489,6 +461,56 @@ struct WizardView: View {
                                    ? store.analysisRuns.map(\.id).filter(selectedRunIDs.contains)
                                    : [])
         }
+    }
+
+    /// Pinned action bar under the configuration form: the wizard's primary
+    /// action (Generate/Stop) plus the hand-picked alternative, always
+    /// visible at any window size.
+    private var generationBar: some View {
+        VStack(spacing: 8) {
+            if analyzedSceneCount == 0 {
+                Text("Analyze some videos first — the wizard picks from analyzed scenes.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack(spacing: 10) {
+                Button {
+                    showCuratedWizard = true
+                } label: {
+                    Label("Generate Curated Video", systemImage: "checklist")
+                }
+                .disabled(analyzedSceneCount == 0 || store.isCuratedRendering)
+                .help("Hand-pick the reel yourself: the app proposes scenes one by one (respecting the Source Selection above) — preview, trim, approve, then overlays, music, and outro. No AI planning involved.")
+
+                Spacer()
+
+                if store.isWizardRunning {
+                    Button(role: .destructive) {
+                        store.cancelWizard()
+                    } label: {
+                        Label("Stop Generating", systemImage: "stop.fill")
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.bordered)
+                } else {
+                    Button {
+                        startGeneration()
+                    } label: {
+                        Label("Generate Video", systemImage: "wand.and.stars")
+                    }
+                    .controlSize(.large)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(analyzedSceneCount == 0)
+                    .help("Plan and render a reel from the settings above (⌘⏎)")
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
     }
 
     /// The scene queue the Curated wizard proposes from: the same pool the
@@ -781,9 +803,11 @@ private struct LessonRow: View {
             Button {
                 store.updateLesson(lesson, pinned: !lesson.pinned)
             } label: {
-                Image(systemName: lesson.pinned ? "pin.fill" : "pin")
+                Label(lesson.pinned ? "Unpin Lesson" : "Pin Lesson",
+                      systemImage: lesson.pinned ? "pin.fill" : "pin")
                     .foregroundStyle(lesson.pinned ? .orange : .secondary)
             }
+            .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
             .help(lesson.pinned ? "Pinned: permanent hard constraint. Click to unpin."
                                 : "Click to pin — the distiller never replaces pinned lessons")
@@ -806,9 +830,10 @@ private struct LessonRow: View {
             Button {
                 store.deleteLesson(lesson)
             } label: {
-                Image(systemName: "trash")
+                Label("Delete Lesson", systemImage: "trash")
                     .foregroundStyle(.secondary)
             }
+            .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
             .help("Delete this lesson")
         }
@@ -843,6 +868,13 @@ private struct WizardLogPanel: View {
 
             if let status = store.wizardStatus {
                 progressCard(status)
+                    .padding(.horizontal)
+            }
+
+            // A failed run gets a banner with a way forward, not just a red
+            // line buried in the scrollback.
+            if let failure = store.wizardFailureMessage {
+                failureCard(failure)
                     .padding(.horizontal)
             }
 
@@ -933,6 +965,35 @@ private struct WizardLogPanel: View {
         }
         .padding(10)
         .background(.quinary, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// What went wrong and what to do next, shown until dismissed or retried.
+    private func failureCard(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label("Generation failed", systemImage: "exclamationmark.triangle.fill")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            HStack {
+                Button("Try Again") {
+                    store.wizardFailureMessage = nil
+                    store.retryWizard()
+                }
+                .controlSize(.small)
+                .help("Re-run the generation with the same settings")
+                Spacer()
+                Button("Dismiss") {
+                    store.wizardFailureMessage = nil
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderless)
+            }
+        }
+        .padding(10)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private static func elapsedString(from start: Date, to now: Date) -> String {

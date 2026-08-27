@@ -20,6 +20,18 @@ struct ScenesView: View {
     @State private var minScore = 0.0
     @State private var showSequenceParts = false
 
+    // Grid selection: click selects, ⌘-click toggles, ⇧-click extends, and
+    // the keyboard drives the whole triage loop (arrows move, Space
+    // previews, ⏎ curates, G/B grade, F favorite, H hide, C curate).
+    @State private var selectedSceneIDs: Set<Int64> = []
+    @State private var selectionAnchorID: Int64?
+    /// Columns currently laid out by the adaptive grid — keeps ↑/↓ movement
+    /// honest at any window width.
+    @State private var gridColumns = 1
+    /// Scene playing in the Space-bar quick preview.
+    @State private var previewScene: SceneRecord?
+    @FocusState private var gridFocused: Bool
+
     /// Sentinel tag for the "All Batches" row — Set-based selection can't
     /// hold a nil the way the old single-selection did.
     private static let allBatchesID: Int64 = -1
@@ -110,7 +122,9 @@ struct ScenesView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("Raw Scenes")
-        .navigationSubtitle("\(filtered.count) scenes")
+        .navigationSubtitle(selectedSceneIDs.count > 1
+                            ? "\(selectedSceneIDs.count) of \(filtered.count) scenes selected"
+                            : "\(filtered.count) scenes")
         .searchable(text: $searchText, prompt: "Filter by file or tag")
         .toolbar {
             if let run = selectedRun {
@@ -180,6 +194,11 @@ struct ScenesView: View {
         }
         .sheet(item: $curatingScene) { scene in
             CurateSceneSheet(sceneID: scene.id)
+        }
+        .sheet(item: $previewScene) { scene in
+            PlayerSheet(url: scene.videoURL,
+                        title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
+                        startTime: scene.startTime, endTime: scene.endTime)
         }
     }
 
@@ -258,6 +277,7 @@ struct ScenesView: View {
                 if let run = renamingRun { store.renameAnalysisRun(run, to: renameText) }
                 renamingRun = nil
             }
+            .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button("Cancel", role: .cancel) { renamingRun = nil }
         }
         .confirmationDialog(
@@ -298,20 +318,215 @@ struct ScenesView: View {
                     systemImage: "square.grid.3x3",
                     description: Text("Run analysis on your source videos to detect scenes."))
             } else {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12, alignment: .top)], spacing: 12) {
-                        ForEach(filtered) { scene in
-                            SceneCard(scene: scene,
-                                      onTranscript: {
-                                          transcriptVideo = store.videos.first { $0.id == scene.videoID }
-                                      },
-                                      onCurate: { curatingScene = scene })
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: Theme.spaceM, alignment: .top)], spacing: Theme.spaceM) {
+                            ForEach(filtered) { scene in
+                                gridCard(scene, in: filtered)
+                                    .id(scene.id)
+                            }
+                        }
+                        .padding()
+                        // Column count feeds ↑/↓ keyboard movement.
+                        .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width in
+                            gridColumns = max(1, Int((width - 32 + Theme.spaceM) / (180 + Theme.spaceM)))
                         }
                     }
-                    .padding()
+                    .focusable()
+                    .focusEffectDisabled()
+                    .focused($gridFocused)
+                    .onMoveCommand { direction in
+                        moveSelection(direction, in: filtered, proxy: proxy)
+                    }
+                    .onExitCommand {
+                        selectedSceneIDs = []
+                        selectionAnchorID = nil
+                    }
+                    .onDeleteCommand {
+                        bulkSetHidden(in: filtered)
+                    }
+                    .onKeyPress(phases: .down) { press in
+                        handleKey(press, in: filtered)
+                    }
                 }
             }
         }
+    }
+
+    /// One selectable grid cell: the card, its selection ring, and the
+    /// click-to-select handling (⌘ toggles, ⇧ extends from the anchor).
+    private func gridCard(_ scene: SceneRecord, in filtered: [SceneRecord]) -> some View {
+        SceneCard(scene: scene,
+                  onTranscript: {
+                      transcriptVideo = store.videos.first { $0.id == scene.videoID }
+                  },
+                  onCurate: { curatingScene = scene },
+                  bulkActions: selectedSceneIDs.count > 1 && selectedSceneIDs.contains(scene.id)
+                      ? SceneBulkActions(
+                            count: selectedSceneIDs.count,
+                            grade: { score in bulkGrade(score, in: filtered) },
+                            curate: { bulkSetCurated(in: filtered) },
+                            hide: { bulkSetHidden(in: filtered) },
+                            addToBuilder: { bulkAddToBuilder(in: filtered) })
+                      : nil)
+            .overlay {
+                if selectedSceneIDs.contains(scene.id) {
+                    RoundedRectangle(cornerRadius: Theme.cardRadius)
+                        .strokeBorder(Color.accentColor, lineWidth: 2.5)
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                handleCardClick(scene, in: filtered)
+            }
+            .accessibilityAddTraits(selectedSceneIDs.contains(scene.id) ? .isSelected : [])
+    }
+
+    // MARK: - Grid selection & keyboard triage
+
+    /// The selection in the grid's display order.
+    private func orderedSelection(in filtered: [SceneRecord]) -> [SceneRecord] {
+        filtered.filter { selectedSceneIDs.contains($0.id) }
+    }
+
+    private func handleCardClick(_ scene: SceneRecord, in filtered: [SceneRecord]) {
+        let modifiers = NSEvent.modifierFlags
+        if modifiers.contains(.command) {
+            if selectedSceneIDs.contains(scene.id) {
+                selectedSceneIDs.remove(scene.id)
+            } else {
+                selectedSceneIDs.insert(scene.id)
+                selectionAnchorID = scene.id
+            }
+        } else if modifiers.contains(.shift), let anchor = selectionAnchorID,
+                  let anchorIndex = filtered.firstIndex(where: { $0.id == anchor }),
+                  let clickedIndex = filtered.firstIndex(where: { $0.id == scene.id }) {
+            let range = min(anchorIndex, clickedIndex)...max(anchorIndex, clickedIndex)
+            selectedSceneIDs = Set(filtered[range].map(\.id))
+        } else {
+            selectedSceneIDs = [scene.id]
+            selectionAnchorID = scene.id
+        }
+        gridFocused = true
+    }
+
+    private func moveSelection(_ direction: MoveCommandDirection,
+                               in filtered: [SceneRecord], proxy: ScrollViewProxy) {
+        guard !filtered.isEmpty else { return }
+        let current = selectionAnchorID.flatMap { id in
+            filtered.firstIndex(where: { $0.id == id })
+        }
+        var next: Int
+        switch (current, direction) {
+        case (nil, _): next = 0
+        case (let index?, .left): next = max(0, index - 1)
+        case (let index?, .right): next = min(filtered.count - 1, index + 1)
+        case (let index?, .up): next = index - gridColumns >= 0 ? index - gridColumns : index
+        case (let index?, .down): next = index + gridColumns < filtered.count ? index + gridColumns : index
+        @unknown default: return
+        }
+        let target = filtered[next]
+        if NSEvent.modifierFlags.contains(.shift), let index = current {
+            // ⇧-arrows extend from the current position; the anchor moves so
+            // repeated presses keep growing the run.
+            let range = min(index, next)...max(index, next)
+            selectedSceneIDs.formUnion(filtered[range].map(\.id))
+        } else {
+            selectedSceneIDs = [target.id]
+        }
+        selectionAnchorID = target.id
+        withAnimation { proxy.scrollTo(target.id) }
+    }
+
+    /// Grid keys: Space previews, ⏎ opens the Curate workbench, G/5 grades
+    /// good, B/1 grades bad, F favorites, C curates, ⌘A selects all.
+    private func handleKey(_ press: KeyPress, in filtered: [SceneRecord]) -> KeyPress.Result {
+        let selection = orderedSelection(in: filtered)
+        if press.modifiers.contains(.command) {
+            if press.characters == "a" {
+                selectedSceneIDs = Set(filtered.map(\.id))
+                selectionAnchorID = filtered.last?.id
+                return .handled
+            }
+            return .ignored
+        }
+        switch press.characters {
+        case " ":
+            guard let scene = selection.last ?? selection.first else { return .ignored }
+            previewScene = scene
+            return .handled
+        case "\r":
+            guard selection.count == 1, let scene = selection.first else { return .ignored }
+            curatingScene = scene
+            return .handled
+        case "g", "5":
+            guard !selection.isEmpty else { return .ignored }
+            bulkGrade(5, in: filtered)
+            return .handled
+        case "b", "1":
+            guard !selection.isEmpty else { return .ignored }
+            bulkGrade(1, in: filtered)
+            return .handled
+        case "f":
+            guard !selection.isEmpty else { return .ignored }
+            bulkToggleFavorite(in: filtered)
+            return .handled
+        case "h":
+            guard !selection.isEmpty else { return .ignored }
+            bulkSetHidden(in: filtered)
+            return .handled
+        case "c":
+            guard !selection.isEmpty else { return .ignored }
+            bulkSetCurated(in: filtered)
+            return .handled
+        default:
+            return .ignored
+        }
+    }
+
+    private func bulkGrade(_ score: Int, in filtered: [SceneRecord]) {
+        for scene in orderedSelection(in: filtered) {
+            store.grade(scene, score: score)
+        }
+    }
+
+    private func bulkToggleFavorite(in filtered: [SceneRecord]) {
+        // "Make it so" semantics: any non-favorite → favorite all.
+        let selection = orderedSelection(in: filtered)
+        let makeFavorite = selection.contains { !$0.favorite }
+        for scene in selection where scene.favorite != makeFavorite {
+            store.toggleFavorite(scene)
+        }
+    }
+
+    private func bulkSetCurated(in filtered: [SceneRecord]) {
+        let selection = orderedSelection(in: filtered)
+        guard !selection.isEmpty else { return }
+        // Single scene goes through the full Curate workbench; a batch is
+        // marked curated directly (trim/framing stay editable afterwards).
+        if selection.count == 1, let scene = selection.first, !scene.curated {
+            curatingScene = scene
+            return
+        }
+        let makeCurated = selection.contains { !$0.curated }
+        for scene in selection where scene.curated != makeCurated {
+            store.curateScene(scene, curated: makeCurated)
+        }
+    }
+
+    private func bulkSetHidden(in filtered: [SceneRecord]) {
+        let selection = orderedSelection(in: filtered)
+        let hide = selection.contains { !$0.excluded }
+        for scene in selection where scene.excluded != hide {
+            store.setExcluded(scene, excluded: hide)
+        }
+    }
+
+    private func bulkAddToBuilder(in filtered: [SceneRecord]) {
+        for scene in orderedSelection(in: filtered) {
+            store.builder.addScene(scene)
+        }
+        store.requestedSection = .builder
     }
 }
 
@@ -407,12 +622,24 @@ private struct BatchInfoSheet: View {
     }
 }
 
+/// Actions a SceneCard offers in its context menu when it's part of a
+/// multi-selection — supplied by the grid, which owns the selection.
+struct SceneBulkActions {
+    var count: Int
+    var grade: (Int) -> Void
+    var curate: () -> Void
+    var hide: () -> Void
+    var addToBuilder: () -> Void
+}
+
 struct SceneCard: View {
     @Environment(AppStore.self) private var store
     let scene: SceneRecord
     let onTranscript: () -> Void
     /// Opens the Curate workbench modal (framing + trim → save as curated).
     var onCurate: (() -> Void)?
+    /// Present when the card sits inside a multi-selection.
+    var bulkActions: SceneBulkActions?
 
     /// Actions broken out of this scene (it's a sequence when > 0).
     private var childCount: Int {
@@ -499,7 +726,8 @@ struct SceneCard: View {
                         store.curateScene(scene, curated: true)
                     }
                 } label: {
-                    Image(systemName: scene.curated ? "checkmark.seal.fill" : "checkmark.seal")
+                    Label(scene.curated ? "Remove from Curated" : "Curate Scene",
+                          systemImage: scene.curated ? "checkmark.seal.fill" : "checkmark.seal")
                         .foregroundStyle(scene.curated ? .green : .secondary)
                 }
                 .help(scene.curated
@@ -509,22 +737,29 @@ struct SceneCard: View {
                 Button {
                     store.toggleFavorite(scene)
                 } label: {
-                    Image(systemName: scene.favorite ? "heart.fill" : "heart")
+                    Label(scene.favorite ? "Unfavorite" : "Favorite",
+                          systemImage: scene.favorite ? "heart.fill" : "heart")
                         .foregroundStyle(scene.favorite ? .red : .secondary)
                 }
-                .help("Favorite")
+                .help(scene.favorite ? "Remove from favorites" : "Favorite")
 
+                // The last grade stays stamped on the card, so graded scenes
+                // are tellable from ungraded while triaging the grid.
                 Button {
                     store.grade(scene, score: 5)
                 } label: {
-                    Image(systemName: "hand.thumbsup")
+                    Label("Good Scene",
+                          systemImage: (scene.lastGrade ?? 0) >= 3 ? "hand.thumbsup.fill" : "hand.thumbsup")
+                        .foregroundStyle((scene.lastGrade ?? 0) >= 3 ? .green : .secondary)
                 }
                 .help("Good scene (grade 5)")
 
                 Button {
                     store.grade(scene, score: 1)
                 } label: {
-                    Image(systemName: "hand.thumbsdown")
+                    Label("Bad Scene",
+                          systemImage: scene.lastGrade.map { $0 < 3 } == true ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                        .foregroundStyle(scene.lastGrade.map { $0 < 3 } == true ? .red : .secondary)
                 }
                 .help("Bad scene (grade 1)")
 
@@ -532,6 +767,7 @@ struct SceneCard: View {
                     Text(String(format: "%.1f", average))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
+                        .help("Average of \(scene.gradeCount) grade\(scene.gradeCount == 1 ? "" : "s")")
                 }
 
                 Spacer()
@@ -539,23 +775,35 @@ struct SceneCard: View {
                 Button {
                     onTranscript()
                 } label: {
-                    Image(systemName: "text.quote")
+                    Label("Transcript", systemImage: "text.quote")
                 }
                 .help("Transcript")
 
                 Button {
                     store.setExcluded(scene, excluded: !scene.excluded)
                 } label: {
-                    Image(systemName: scene.excluded ? "eye" : "eye.slash")
+                    Label(scene.excluded ? "Unhide Scene" : "Hide Scene",
+                          systemImage: scene.excluded ? "eye" : "eye.slash")
                 }
                 .help(scene.excluded ? "Unhide scene" : "Hide scene")
             }
+            .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
             .controlSize(.small)
         }
-        .padding(8)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+        .padding(Theme.spaceS)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
         .contextMenu {
+            if let bulk = bulkActions {
+                Section("\(bulk.count) Selected Scenes") {
+                    Button("Grade Good") { bulk.grade(5) }
+                    Button("Grade Bad") { bulk.grade(1) }
+                    Button("Curate / Uncurate") { bulk.curate() }
+                    Button("Hide / Unhide") { bulk.hide() }
+                    Button("Add to Builder") { bulk.addToBuilder() }
+                }
+                Divider()
+            }
             if scene.curated {
                 // Non-destructive: trims/framing are kept for re-curation.
                 Button("Remove from Curated") {

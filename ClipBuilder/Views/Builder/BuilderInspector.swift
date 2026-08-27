@@ -187,11 +187,10 @@ struct ClipInspector: View {
                                 .foregroundStyle(.secondary)
                             Text("Crop \(index + 1)")
                             Spacer()
-                            Button {
+                            Button("Remove Crop", systemImage: "trash") {
                                 removeCrop(at: index)
-                            } label: {
-                                Image(systemName: "trash")
                             }
+                            .labelStyle(.iconOnly)
                             .buttonStyle(.plain)
                             .foregroundStyle(.secondary)
                             .help("Remove this crop")

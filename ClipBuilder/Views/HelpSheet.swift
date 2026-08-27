@@ -8,6 +8,7 @@ struct HelpSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var page = WebPage()
+    @State private var guideMissing = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,14 +23,25 @@ struct HelpSheet: View {
 
             Divider()
 
-            WebView(page)
+            if guideMissing {
+                ContentUnavailableView(
+                    "Training Guide unavailable",
+                    systemImage: "questionmark.circle",
+                    description: Text("The bundled guide couldn't be loaded from this copy of the app. Reinstalling Clip Builder restores it."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                WebView(page)
+            }
         }
         .frame(width: 680, height: 760)
         .modalCloseButton { dismiss() }
         .task {
             // Load the file URL (not an HTML string) so the guide's bundled
             // screenshots resolve as sibling resources.
-            guard let url = Bundle.main.url(forResource: "TrainingGuide", withExtension: "html") else { return }
+            guard let url = Bundle.main.url(forResource: "TrainingGuide", withExtension: "html") else {
+                guideMissing = true
+                return
+            }
             page.load(URLRequest(url: url))
         }
     }

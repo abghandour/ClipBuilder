@@ -48,12 +48,21 @@ struct LibraryView: View {
         .navigationSubtitle("\(store.generatedVideos.count) videos")
         .toolbar {
             ToolbarItem {
-                Picker("Sort", selection: $sortOrder) {
-                    ForEach(SortOrder.allCases, id: \.self) { order in
-                        Text(order.rawValue).tag(order)
+                // A named menu instead of a bare Picker — the toolbar showed
+                // only the selected value ("Newest") with nothing saying what
+                // the control was.
+                Menu {
+                    Picker("Sort", selection: $sortOrder) {
+                        ForEach(SortOrder.allCases, id: \.self) { order in
+                            Text(order.rawValue).tag(order)
+                        }
                     }
+                    .pickerStyle(.inline)
+                } label: {
+                    ToolbarBubbleLabel(text: "Sort: \(sortOrder.rawValue)",
+                                       systemImage: "arrow.up.arrow.down")
                 }
-                .pickerStyle(.menu)
+                .help("Order the library's videos")
             }
         }
         .sheet(item: $playing) { video in
@@ -118,6 +127,7 @@ struct LibraryView: View {
                 playing = video
             } label: {
                 VideoThumbnail(url: video.url, time: min(0.5, video.duration / 2))
+                    .accessibilityLabel("Play \(video.filename)")
                     .aspectRatio(9 / 16, contentMode: .fit)
                     .overlay {
                         Image(systemName: "play.circle.fill")
@@ -142,11 +152,22 @@ struct LibraryView: View {
             }
 
             if let quality = video.qualityReport {
-                Label(quality.summary, systemImage: quality.verdict == .publishable
-                      ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(quality.verdict == .publishable ? .green : .orange)
-                    .help((quality.failures + quality.warnings).joined(separator: "\n"))
+                // "Review required" is an instruction — clicking it opens the
+                // review instead of leaving the details buried in a tooltip.
+                Button {
+                    reviewTarget = video
+                } label: {
+                    Label(quality.summary, systemImage: quality.verdict == .publishable
+                          ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(quality.verdict == .publishable ? .green : .orange)
+                }
+                .buttonStyle(.plain)
+                .help("Quality gate: "
+                      + ((quality.failures + quality.warnings).joined(separator: "\n").isEmpty
+                          ? quality.summary
+                          : (quality.failures + quality.warnings).joined(separator: "\n"))
+                      + "\nClick to review the reel.")
             }
             if let stats = video.instagramStats {
                 Text(ReelPerformance.label(stats, duration: video.duration))
@@ -187,6 +208,7 @@ struct LibraryView: View {
                     NSWorkspace.shared.activateFileViewerSelecting([video.url])
                 }
                 .labelStyle(.iconOnly)
+                .help("Show the video file in Finder")
 
                 Spacer()
 
@@ -198,8 +220,8 @@ struct LibraryView: View {
             .buttonStyle(.borderless)
             .controlSize(.small)
         }
-        .padding(10)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+        .padding(Theme.cardPadding)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
         .contextMenu {
             Button("Open in Builder") {
                 openInBuilder(video)

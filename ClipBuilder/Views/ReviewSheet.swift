@@ -125,6 +125,7 @@ struct ReviewSheet: View {
             } label: {
                 VideoThumbnail(url: clip.url, time: (clip.start + clip.end) / 2)
                     .frame(width: 76, height: 135)
+                    .accessibilityLabel("Play clip \(clip.index + 1)")
             }
             .buttonStyle(.plain)
             .help("Play this clip in the preview")
@@ -198,16 +199,17 @@ struct ThumbsToggle: View {
             Button {
                 value = value == 1 ? 0 : 1
             } label: {
-                Image(systemName: value == 1 ? "hand.thumbsup.fill" : "hand.thumbsup")
+                Label("Thumbs Up", systemImage: value == 1 ? "hand.thumbsup.fill" : "hand.thumbsup")
                     .foregroundStyle(value == 1 ? .green : .secondary)
             }
             Button {
                 value = value == -1 ? 0 : -1
             } label: {
-                Image(systemName: value == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                Label("Thumbs Down", systemImage: value == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown")
                     .foregroundStyle(value == -1 ? .red : .secondary)
             }
         }
+        .labelStyle(.iconOnly)
         .buttonStyle(.borderless)
     }
 }

@@ -178,7 +178,7 @@ struct PreviewPlayButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "play.circle.fill")
+            Label("Play Timeline Preview", systemImage: "play.circle.fill")
                 .font(.system(size: 52))
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(.white, .black.opacity(hovering ? 0.75 : 0.55))
@@ -186,6 +186,7 @@ struct PreviewPlayButton: View {
                 .scaleEffect(hovering ? 1.08 : 1)
                 .animation(.easeOut(duration: 0.12), value: hovering)
         }
+        .labelStyle(.iconOnly)
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help("Play the timeline instantly without rendering")

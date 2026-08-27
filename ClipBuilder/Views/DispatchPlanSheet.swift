@@ -337,13 +337,13 @@ struct DispatchPlanSheet: View {
 
             Spacer()
 
-            Button {
+            Button("Delete Marker", systemImage: "trash") {
                 Task { panelMarkers = await store.deletePersonMarker(marker) }
-            } label: {
-                Image(systemName: "trash")
             }
+            .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
             .controlSize(.small)
+            .help("Delete this person marker")
         }
     }
 
@@ -595,7 +595,9 @@ struct DispatchPlanSheet: View {
     /// The trim range to hand to the run; nil when the handles still span
     /// the whole video (= no trim).
     private var trimRange: (start: Double, end: Double)? {
-        guard let video = videos.first, trimEnd > trimStart else { return nil }
+        // Fine-trim is a single-video concept — the engine ignores it on
+        // multi-video runs, so don't persist one that would never apply.
+        guard videos.count == 1, let video = videos.first, trimEnd > trimStart else { return nil }
         if trimStart <= 0.05, trimEnd >= video.duration - 0.05 { return nil }
         return (max(0, trimStart), min(video.duration, trimEnd))
     }
@@ -821,14 +823,14 @@ private struct ManagePromptsSheet: View {
                             dismiss()
                         }
                         .controlSize(.small)
-                        Button {
+                        Button("Delete Prompt", systemImage: "trash") {
                             prompts.removeAll { $0.id == prompt.id }
                             PromptStore.save(prompts)
-                        } label: {
-                            Image(systemName: "trash")
                         }
+                        .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
                         .controlSize(.small)
+                        .help("Delete this saved prompt")
                     }
                     .help(prompt.text)
                 }
@@ -1226,13 +1228,13 @@ private struct VideoNotesPanel: View {
                                     }
                                     .buttonStyle(.borderless)
                                     .help("Jump the player to this pinned framing")
-                                    Button {
+                                    Button("Delete Framing Hint", systemImage: "trash") {
                                         Task { framingHints = await store.deleteCameraHint(hint) }
-                                    } label: {
-                                        Image(systemName: "trash")
                                     }
+                                    .labelStyle(.iconOnly)
                                     .buttonStyle(.borderless)
                                     .controlSize(.small)
+                                    .help("Delete this pinned framing")
                                 }
                             }
                         }
@@ -1269,13 +1271,13 @@ private struct VideoNotesPanel: View {
                                 }
                                 .buttonStyle(.borderless)
                                 .help("Jump the player to this note's moment")
-                                Button {
+                                Button("Delete Note", systemImage: "trash") {
                                     Task { notes = await store.deleteVideoNote(note) }
-                                } label: {
-                                    Image(systemName: "trash")
                                 }
+                                .labelStyle(.iconOnly)
                                 .buttonStyle(.borderless)
                                 .controlSize(.small)
+                                .help("Delete this note")
                             }
                         }
                     }
@@ -1712,6 +1714,19 @@ struct VideoTrimSlider: View {
                                 start = min(max(timeOffset, t), end - minimumSpan)
                                 onScrub?(start)
                             })
+                        // Drag-only handles are unreachable for assistive
+                        // tech — expose each as an adjustable element.
+                        .accessibilityElement()
+                        .accessibilityLabel("Trim start")
+                        .accessibilityValue(start.timecode)
+                        .accessibilityAdjustableAction { direction in
+                            switch direction {
+                            case .increment: start = min(start + 0.5, end - minimumSpan)
+                            case .decrement: start = max(timeOffset, start - 0.5)
+                            @unknown default: break
+                            }
+                            onScrub?(start)
+                        }
                     handle(icon: "chevron.compact.right")
                         .offset(x: endX - Self.handleWidth)
                         .gesture(DragGesture(minimumDistance: 0,
@@ -1721,6 +1736,17 @@ struct VideoTrimSlider: View {
                                 end = max(min(timeOffset + duration, t), start + minimumSpan)
                                 onScrub?(end)
                             })
+                        .accessibilityElement()
+                        .accessibilityLabel("Trim end")
+                        .accessibilityValue(end.timecode)
+                        .accessibilityAdjustableAction { direction in
+                            switch direction {
+                            case .increment: end = min(timeOffset + duration, end + 0.5)
+                            case .decrement: end = max(end - 0.5, start + minimumSpan)
+                            @unknown default: break
+                            }
+                            onScrub?(end)
+                        }
                 }
                 .coordinateSpace(name: Self.stripSpace)
             }

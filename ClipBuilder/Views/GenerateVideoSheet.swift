@@ -16,7 +16,7 @@ struct GenerateVideoSheet: View {
     let source: GenerateVideoSource
 
     @State private var requestText = ""
-    @State private var history = Self.loadHistory()
+    @State private var history: [String] = []
 
     private var unanalyzedCount: Int {
         guard case .videos(let videos) = source else { return 0 }
@@ -51,15 +51,26 @@ struct GenerateVideoSheet: View {
 
     // MARK: - Request history
 
-    private static let historyKey = "analyze.sampleRequestHistory"
+    /// Pre-profile-scoping key — seeds a profile's history on first use so
+    /// nothing already remembered is lost.
+    private static let legacyHistoryKey = "analyze.sampleRequestHistory"
 
-    private static func loadHistory() -> [String] {
-        UserDefaults.standard.stringArray(forKey: historyKey) ?? []
+    /// Histories are per brand profile: requests written for one brand's
+    /// audience shouldn't surface while working in another.
+    private var historyKey: String {
+        "analyze.sampleRequestHistory.\(store.activeProfile.profileName)"
+    }
+
+    private func loadHistory() -> [String] {
+        if let scoped = UserDefaults.standard.stringArray(forKey: historyKey) {
+            return scoped
+        }
+        return UserDefaults.standard.stringArray(forKey: Self.legacyHistoryKey) ?? []
     }
 
     /// Newest first, deduplicated case-insensitively, capped — typing a
     /// fresh description automatically remembers it for next time.
-    private static func remember(_ text: String) {
+    private func remember(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         var entries = loadHistory()
@@ -89,7 +100,9 @@ struct GenerateVideoSheet: View {
                 }
                 Divider()
                 Button("Clear History", role: .destructive) {
-                    UserDefaults.standard.removeObject(forKey: Self.historyKey)
+                    // Writing an empty scoped list also stops the legacy
+                    // fallback from resurrecting the cleared entries.
+                    UserDefaults.standard.set([String](), forKey: historyKey)
                     history = []
                 }
             } label: {
@@ -128,7 +141,7 @@ struct GenerateVideoSheet: View {
             HStack {
                 Spacer()
                 Button("Generate Video") {
-                    Self.remember(requestText)
+                    remember(requestText)
                     switch source {
                     case .videos(let videos):
                         store.generateSampleVideo(description: requestText, videos: videos)
@@ -147,5 +160,6 @@ struct GenerateVideoSheet: View {
         .padding(20)
         .frame(width: 460)
         .modalCloseButton { dismiss() }
+        .task { history = loadHistory() }
     }
 }

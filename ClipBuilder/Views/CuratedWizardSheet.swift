@@ -146,10 +146,11 @@ struct CuratedWizardSheet: View {
                 teardownPlayer()
                 dismiss()
             } label: {
-                Image(systemName: "xmark.circle.fill")
+                Label("Close", systemImage: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
                     .font(.title3)
             }
+            .labelStyle(.iconOnly)
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
             .help("Close — your picks are discarded")

@@ -62,20 +62,25 @@ struct AnalyzeBatchFilterList: View {
                 Spacer(minLength: 0)
                 if let count {
                     Text("\(count)")
-                        .foregroundStyle(selected ? .primary : .secondary)
+                        .foregroundStyle(selected ? AnyShapeStyle(.white.opacity(0.85))
+                                                  : AnyShapeStyle(.secondary))
                         .monospacedDigit()
                 }
             }
             .font(.callout)
+            // Full accent + white, matching sidebar selection — the old 30%
+            // tint was barely distinguishable from an unselected row.
+            .foregroundStyle(selected ? AnyShapeStyle(.white) : AnyShapeStyle(.primary))
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(selected ? AnyShapeStyle(Color.accentColor.opacity(0.3))
+            .background(selected ? AnyShapeStyle(Color.accentColor)
                                  : AnyShapeStyle(.clear),
                         in: RoundedRectangle(cornerRadius: 4))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(id == nil ? "Show scenes from every analyze batch" : name)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

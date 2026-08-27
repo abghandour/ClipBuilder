@@ -39,20 +39,17 @@ struct LogActions: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button {
+            Button("Copy Log", systemImage: "doc.on.doc") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(lines.joined(separator: "\n"), forType: .string)
-            } label: {
-                Image(systemName: "doc.on.doc")
             }
             .help("Copy the whole log to the clipboard")
-            Button(role: .destructive) {
+            Button("Clear Log", systemImage: "trash", role: .destructive) {
                 clear()
-            } label: {
-                Image(systemName: "trash")
             }
             .help("Clear the log")
         }
+        .labelStyle(.iconOnly)
         .buttonStyle(.borderless)
         .controlSize(.small)
         .disabled(lines.isEmpty)
@@ -421,6 +418,14 @@ struct SceneInlinePlayer: View {
         .onTapGesture {
             if player == nil { play() } else { stop() }
         }
+        // The tap gesture is invisible to assistive tech — expose the same
+        // toggle as a named, activatable element.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(player == nil ? "Play scene preview" : "Stop scene preview")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction {
+            if player == nil { play() } else { stop() }
+        }
         .onDisappear { stop() }
     }
 
@@ -677,12 +682,11 @@ struct ScoreBadge: View {
 
     var body: some View {
         Text(String(format: "%.1f", score))
-            .font(compact ? .system(size: 9, weight: .bold).monospacedDigit()
-                          : .caption2.bold().monospacedDigit())
+            .font(compact ? .badgeCompact : .badge)
             .padding(.horizontal, compact ? 4 : 5)
             .padding(.vertical, compact ? 1 : 2)
             .background(Self.color(for: score).opacity(0.85),
-                        in: RoundedRectangle(cornerRadius: 4))
+                        in: RoundedRectangle(cornerRadius: Theme.chipRadius))
             .foregroundStyle(score >= 5 ? .black : .white)
     }
 }
@@ -694,10 +698,10 @@ struct WideBadge: View {
 
     var body: some View {
         Text("WIDE")
-            .font(compact ? .system(size: 8, weight: .bold) : .caption2.bold())
+            .font(compact ? .badgeCompact : .badge)
             .padding(.horizontal, compact ? 3 : 4)
             .padding(.vertical, 1)
-            .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
+            .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
             .foregroundStyle(.white)
     }
 }
@@ -710,11 +714,10 @@ struct SpeedBadge: View {
 
     var body: some View {
         Text("\(speed.formatted(.number.precision(.fractionLength(0...2))))×")
-            .font(compact ? .system(size: 8, weight: .bold).monospacedDigit()
-                          : .caption2.bold().monospacedDigit())
+            .font(compact ? .badgeCompact : .badge)
             .padding(.horizontal, compact ? 3 : 4)
             .padding(.vertical, 1)
-            .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
+            .background(.orange.opacity(0.85), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
             .foregroundStyle(.white)
     }
 }
@@ -750,7 +753,7 @@ struct DurationBadge: View {
             .font(.caption2.monospacedDigit())
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4))
+            .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
             .foregroundStyle(.white)
             .padding(6)
     }

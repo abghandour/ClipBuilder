@@ -339,6 +339,9 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var tags: [String]
     var gradeAverage: Double?
     var gradeCount: Int
+    /// The most recent grade the user gave this scene — drives the filled
+    /// thumbs on scene cards so graded scenes are tellable from ungraded.
+    var lastGrade: Int?
     // Denormalized from the joined videos row for display/rendering.
     var videoPath: String
     var videoFilename: String

@@ -107,11 +107,13 @@ struct CuratedView: View {
                         Image(systemName: "camera.metering.center.weighted")
                             .foregroundStyle(.secondary)
                             .help("Has a Center Stage camera path")
+                            .accessibilityLabel("Has a Center Stage camera path")
                     }
                     if scene.startTime != scene.originalStart || scene.endTime != scene.originalEnd {
                         Image(systemName: "timeline.selection")
                             .foregroundStyle(.orange)
                             .help("Range edited from the analyzed original")
+                            .accessibilityLabel("Range edited from the analyzed original")
                     }
                 }
                 .tag(scene.id)

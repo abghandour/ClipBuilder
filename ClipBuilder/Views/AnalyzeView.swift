@@ -54,14 +54,16 @@ struct AnalyzeView: View {
                 // Explicit text + icon content: the toolbar renders plain
                 // Label buttons icon-only regardless of labelStyle.
                 Button {
-                    if let video = previewVideo { startAnalysis(of: video) }
+                    let videos = selectedVideos
+                    if !videos.isEmpty { startAnalysis(of: videos) }
                 } label: {
-                    ToolbarBubbleLabel(text: "Analyze", systemImage: "sparkles")
+                    ToolbarBubbleLabel(text: selection.count > 1 ? "Analyze \(selection.count)" : "Analyze",
+                                       systemImage: "sparkles")
                 }
-                .disabled(previewVideo == nil || store.isAnalyzing)
+                .disabled(selection.isEmpty || store.isAnalyzing)
                 .help(selection.count > 1
-                      ? "Analysis runs one video at a time — select a single video to enable this"
-                      : "Runs a fresh analysis of the selected video (one at a time). Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
+                      ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
+                      : "Runs a fresh analysis of the selected video. Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
 
                 Button {
                     showGenerateSheet = true
@@ -100,15 +102,16 @@ struct AnalyzeView: View {
     private func presentPrefilledPlan(for video: VideoRecord) {
         store.pendingAnalyzeSetup = nil
         selection = [video.id]
-        startAnalysis(of: video)
+        startAnalysis(of: [video])
     }
 
     /// The model plan always shows for analysis — it carries the options
     /// (model, sampling, instructions, notes, people detection) for the run.
-    /// Analysis is strictly one video at a time.
-    private func startAnalysis(of video: VideoRecord) {
-        pendingDispatch = PendingDispatch(operation: .analyze, videos: [video],
-                                          run: { store.analyze(videos: [video]) })
+    /// A multi-selection runs back to back under one plan, one analyze batch
+    /// per video; fine-trim only applies to single-video runs.
+    private func startAnalysis(of videos: [VideoRecord]) {
+        pendingDispatch = PendingDispatch(operation: .analyze, videos: videos,
+                                          run: { store.analyze(videos: videos) })
     }
 
     /// "16:9"-style label: snap to the common ratios, else reduce by GCD.
@@ -149,7 +152,12 @@ struct AnalyzeView: View {
                             .textFieldStyle(.roundedBorder)
                             .focused($renameFocused)
                             .onSubmit {
-                                store.renameVideo(video, to: renameText)
+                                // An emptied field cancels instead of saving
+                                // a nameless file.
+                                let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !trimmed.isEmpty {
+                                    store.renameVideo(video, to: trimmed)
+                                }
                                 renamingID = nil
                             }
                             .onExitCommand { renamingID = nil }
@@ -172,17 +180,11 @@ struct AnalyzeView: View {
             }
             .width(70)
 
-            TableColumn("Size") { video in
-                Text("\(video.width)×\(video.height)")
+            TableColumn("Format") { video in
+                Text("\(video.width)×\(video.height) · \(Self.aspectRatioLabel(width: video.width, height: video.height))")
                     .foregroundStyle(.secondary)
             }
-            .width(90)
-
-            TableColumn("Ratio") { video in
-                Text(Self.aspectRatioLabel(width: video.width, height: video.height))
-                    .foregroundStyle(.secondary)
-            }
-            .width(55)
+            .width(130)
 
             TableColumn("Type") { video in
                 // Display-only — the editable picker lives in the preview
@@ -255,11 +257,18 @@ struct AnalyzeView: View {
             }
             .width(110)
         }
+        // The empty-row stripes render as detached gray bars on this macOS,
+        // reading as debris under a short table — rows separate fine without
+        // them.
+        .alternatingRowBackgrounds(.disabled)
         .contextMenu(forSelectionType: Int64.self) { ids in
-            if ids.count == 1, let video = store.videos.first(where: { ids.contains($0.id) }) {
-                Button("Analyze") {
-                    startAnalysis(of: video)
+            let videos = store.videos.filter { ids.contains($0.id) }
+            if !videos.isEmpty {
+                Button(videos.count == 1 ? "Analyze" : "Analyze \(videos.count) Videos") {
+                    startAnalysis(of: videos)
                 }
+            }
+            if ids.count == 1, let video = videos.first {
                 Button("Rename…") {
                     renameText = video.filename
                     renamingID = video.id
@@ -485,11 +494,10 @@ private struct VideoPreviewPane: View {
                             }
                             .controlSize(.small)
                             .help("Fan-reaction research is saved for this fight — click to read and edit it")
-                            Button {
+                            Button("Refresh Research", systemImage: "arrow.clockwise") {
                                 store.refreshFightResearch(video: video)
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
                             }
+                            .labelStyle(.iconOnly)
                             .controlSize(.small)
                             .help("Re-crawl the web with the saved fight identity (progress in the analysis log)")
                         } else {

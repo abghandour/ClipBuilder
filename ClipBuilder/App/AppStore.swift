@@ -93,6 +93,11 @@ final class AppStore {
     var wizardResults: WizardRunResults?
     /// Options of the last run — "Retry" in the results sheet re-runs them.
     private(set) var lastWizardOptions: WizardOptions?
+    /// Why the last generation produced nothing — shown as a banner in the
+    /// wizard's log panel with a Try Again, instead of only a red log line.
+    var wizardFailureMessage: String?
+    /// Presents the Training Guide sheet from the main window (Help menu).
+    var showTrainingGuide = false
     var isDistillingLessons = false
     var isDistillingHouseStyle = false
     /// Result line of the last Wizard Brain export/import, for Settings.
@@ -1158,6 +1163,7 @@ final class AppStore {
                     let total = ($0.gradeAverage ?? 0) * Double($0.gradeCount) + Double(score)
                     $0.gradeCount += 1
                     $0.gradeAverage = total / Double($0.gradeCount)
+                    $0.lastGrade = score
                 }
             } catch {
                 presentError("Could not save the rating", error)
@@ -1770,6 +1776,7 @@ final class AppStore {
         isWizardRunning = true
         wizardLog = []
         lastWizardOptions = options
+        wizardFailureMessage = nil
         wizardStatus = WizardRunStatus(stage: "Starting…", fraction: 0)
         let profile = activeProfile
         let wizard = wizard
@@ -1791,6 +1798,11 @@ final class AppStore {
                 .sorted { $0.id < $1.id }
             if !fresh.isEmpty {
                 wizardResults = WizardRunResults(videos: fresh)
+            } else if !Task.isCancelled {
+                // Nothing produced and the user didn't stop it — surface the
+                // failure where the user is looking instead of leaving only a
+                // red line in the log scrollback.
+                wizardFailureMessage = Self.failureSummary(from: wizardLog)
             }
             queueComparisons(previousIDs: previousIDs)
         }
@@ -1888,6 +1900,20 @@ final class AppStore {
 
     func cancelWizard() {
         wizardTask?.cancel()
+    }
+
+    /// The most useful line of a failed run's log: the DONE:error payload
+    /// when the engine reported one, else the last error-prefixed line.
+    private static func failureSummary(from log: [String]) -> String {
+        if let done = log.last(where: { $0.hasPrefix("DONE:error") }) {
+            let detail = done.dropFirst("DONE:error".count)
+                .trimmingCharacters(in: CharacterSet(charactersIn: ": "))
+            return detail.isEmpty ? "The generation failed." : detail
+        }
+        if let error = log.last(where: { $0.hasPrefix("Error") }) {
+            return error
+        }
+        return "The run finished without producing a video — see the log for details."
     }
 
     // MARK: - Updates

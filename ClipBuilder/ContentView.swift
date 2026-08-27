@@ -25,15 +25,21 @@ struct ClipBuilderApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             }
-            // ⌘1–⌘9 section switching, routed through requestedSection —
+            // ⌘1–⌘8 section switching, routed through requestedSection —
             // the same channel views use — so the sidebar stays in sync.
+            // Only the workflow sections carry numbers; asset browsers don't.
             CommandGroup(after: .sidebar) {
                 Divider()
-                ForEach(SidebarSection.allCases) { section in
+                ForEach(SidebarSection.allCases.filter { $0.shortcut != nil }) { section in
                     Button(section.title) {
                         store.requestedSection = section
                     }
                     .keyboardShortcut(section.shortcut ?? "0", modifiers: .command)
+                }
+            }
+            CommandGroup(before: .help) {
+                Button("Training Guide") {
+                    store.showTrainingGuide = true
                 }
             }
         }
@@ -45,9 +51,10 @@ struct ClipBuilderApp: App {
     }
 }
 
-/// Case order follows the workflow (footage in → finished reel out) and
-/// drives the ⌘1–⌘9 shortcuts; the sidebar displays its groups in its own
-/// order (Assets first) without renumbering the shortcuts.
+/// Case order follows the workflow (footage in → finished reel out). The
+/// ⌘1–⌘8 shortcuts number the workflow rows in the order the sidebar
+/// displays them (Footage → Create → Output, Assets unnumbered), and each
+/// row shows its shortcut so the mapping is learnable from the screen.
 enum SidebarSection: String, CaseIterable, Identifiable {
     case analyze
     case scenes
@@ -71,11 +78,29 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     static let createSections: [SidebarSection] = [.wizard, .builder]
     static let outputSections: [SidebarSection] = [.library]
 
-    /// ⌘1–⌘9 in workflow order; the tenth section wraps to ⌘0.
+    /// ⌘1–⌘8 matching the sidebar's visible top-to-bottom workflow order
+    /// (Footage, then Create, then Output). Asset browsers have no number.
+    private var shortcutDigit: Character? {
+        switch self {
+        case .analyze: return "1"
+        case .scenes: return "2"
+        case .curated: return "3"
+        case .people: return "4"
+        case .instagram: return "5"
+        case .wizard: return "6"
+        case .builder: return "7"
+        case .library: return "8"
+        case .music, .fonts, .images, .overlays: return nil
+        }
+    }
+
     var shortcut: KeyEquivalent? {
-        guard let index = Self.allCases.firstIndex(of: self), index < 10,
-              let digit = "\((index + 1) % 10)".first else { return nil }
-        return KeyEquivalent(digit)
+        shortcutDigit.map { KeyEquivalent($0) }
+    }
+
+    /// "⌘1"-style badge for the sidebar row.
+    var shortcutLabel: String? {
+        shortcutDigit.map { "⌘\($0)" }
     }
 
     var title: String {
@@ -117,9 +142,7 @@ struct MainWindowView: View {
     @Environment(AppStore.self) private var store
     @State private var selection: SidebarSection? = .analyze
 
-    // Each sidebar group's disclosure state survives relaunches. Note the
-    // ⌘1–⌘9 shortcuts follow the workflow order (SidebarSection.allCases),
-    // not this display order.
+    // Each sidebar group's disclosure state survives relaunches.
     @AppStorage("sidebar.expanded.assets") private var assetsExpanded = true
     @AppStorage("sidebar.expanded.footage") private var footageExpanded = true
     @AppStorage("sidebar.expanded.create") private var createExpanded = true
@@ -130,16 +153,16 @@ struct MainWindowView: View {
         NavigationSplitView {
             List(selection: $selection) {
                 Section("Assets", isExpanded: $assetsExpanded) {
-                    sidebarItems(SidebarSection.assetSections)
+                    sidebarItems(SidebarSection.assetSections, tint: Theme.assetsTint)
                 }
                 Section("Footage", isExpanded: $footageExpanded) {
-                    sidebarItems(SidebarSection.videoSections)
+                    sidebarItems(SidebarSection.videoSections, tint: Theme.footageTint)
                 }
                 Section("Create", isExpanded: $createExpanded) {
-                    sidebarItems(SidebarSection.createSections)
+                    sidebarItems(SidebarSection.createSections, tint: Theme.createTint)
                 }
                 Section("Output", isExpanded: $outputExpanded) {
-                    sidebarItems(SidebarSection.outputSections)
+                    sidebarItems(SidebarSection.outputSections, tint: Theme.outputTint)
                 }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
@@ -165,7 +188,7 @@ struct MainWindowView: View {
                 store.requestedSection = nil
             }
         }
-        .navigationTitle("ClipBuilder")
+        .navigationTitle("Clip Builder")
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Picker("Profile", selection: Binding(
@@ -199,8 +222,16 @@ struct MainWindowView: View {
             set: { if !$0 { store.dismissCurrentError() } }
         )) {
             Button("OK", role: .cancel) {}
+            Button("Copy Details") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(store.currentError?.message ?? "",
+                                               forType: .string)
+            }
         } message: {
             Text(store.currentError?.message ?? "")
+        }
+        .sheet(isPresented: $store.showTrainingGuide) {
+            HelpSheet()
         }
         .alert(updateAlertTitle, isPresented: Binding(
             get: { store.updateCheckResult != nil },
@@ -242,11 +273,18 @@ struct MainWindowView: View {
         }
     }
 
-    /// Rows for one sidebar group.
-    private func sidebarItems(_ sections: [SidebarSection]) -> some View {
+    /// Rows for one sidebar group: tinted icon (one hue per group, Mail
+    /// style), the visible ⌘-shortcut so the mapping is learnable on sight.
+    private func sidebarItems(_ sections: [SidebarSection], tint: Color) -> some View {
         ForEach(sections) { section in
-            Label(section.title, systemImage: section.systemImage)
-                .tag(section)
+            Label {
+                Text(section.title)
+            } icon: {
+                Image(systemName: section.systemImage)
+                    .foregroundStyle(tint)
+            }
+            .badge(section.shortcutLabel.map { Text($0).monospaced() })
+            .tag(section)
         }
     }
 

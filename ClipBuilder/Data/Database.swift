@@ -841,12 +841,16 @@ actor Database {
         }
 
         let gradeRows = try connection.query(
-            "SELECT scene_id, AVG(score) AS avg, COUNT(*) AS n FROM grades" + sceneScope + " GROUP BY scene_id",
+            "SELECT scene_id, AVG(score) AS avg, COUNT(*) AS n, "
+                + "(SELECT score FROM grades g2 WHERE g2.scene_id = grades.scene_id ORDER BY g2.id DESC LIMIT 1) AS last "
+                + "FROM grades" + sceneScope + " GROUP BY scene_id",
             scopeParams)
-        var gradesByScene: [Int64: (Double, Int)] = [:]
+        var gradesByScene: [Int64: (average: Double, count: Int, last: Int?)] = [:]
         for row in gradeRows {
             guard let sceneID = row["scene_id"]?.intValue else { continue }
-            gradesByScene[sceneID] = (row["avg"]?.doubleValue ?? 0, Int(row["n"]?.intValue ?? 0))
+            gradesByScene[sceneID] = (row["avg"]?.doubleValue ?? 0,
+                                      Int(row["n"]?.intValue ?? 0),
+                                      row["last"]?.intValue.map(Int.init))
         }
 
         return sceneRows.map { row in
@@ -877,8 +881,9 @@ actor Database {
                 freeCropsJSON: row["free_crops"]?.stringValue,
                 centerStagePathJSON: row["center_stage_path"]?.stringValue,
                 tags: tagsByScene[id]?.sorted() ?? [],
-                gradeAverage: grade?.0,
-                gradeCount: grade?.1 ?? 0,
+                gradeAverage: grade?.average,
+                gradeCount: grade?.count ?? 0,
+                lastGrade: grade?.last,
                 videoPath: row["video_path"]?.stringValue ?? "",
                 videoFilename: row["video_filename"]?.stringValue ?? "",
                 videoDuration: row["video_duration"]?.doubleValue ?? 0,

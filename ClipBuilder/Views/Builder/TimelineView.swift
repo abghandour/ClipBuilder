@@ -94,13 +94,13 @@ struct TrackHeader: View {
                 Text("Track \(Self.numerals[safe: track] ?? "\(track + 1)")")
                     .font(.caption.bold())
                 Spacer()
-                Button {
+                Button("Track Settings", systemImage: "gearshape") {
                     showSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
                 }
+                .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .controlSize(.small)
+                .help("Volume, sequential playback, and other track settings")
                 .popover(isPresented: $showSettings) {
                     TrackSettingsPopover(track: track)
                 }

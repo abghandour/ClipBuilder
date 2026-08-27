@@ -21,6 +21,7 @@ struct InstagramPublishSheet: View {
     @State private var phase: Phase = .idle
     @State private var progress: [String] = []
     @State private var publishTask: Task<Void, Never>?
+    @State private var confirmStopPublishing = false
 
     private var isPublishing: Bool { phase == .publishing }
     private var connected: Bool { store.settings.instagram.isGraphConnected }
@@ -141,9 +142,26 @@ struct InstagramPublishSheet: View {
             .padding(16)
         }
         .frame(width: 620, height: 480)
+        // Everywhere else Esc/✕ is a harmless dismiss; here it would kill an
+        // upload in flight — confirm before aborting the one high-stakes
+        // operation in the app.
         .modalCloseButton {
-            publishTask?.cancel()
-            dismiss()
+            if isPublishing {
+                confirmStopPublishing = true
+            } else {
+                publishTask?.cancel()
+                dismiss()
+            }
+        }
+        .confirmationDialog("Stop publishing this reel?",
+                            isPresented: $confirmStopPublishing) {
+            Button("Stop Publishing", role: .destructive) {
+                publishTask?.cancel()
+                dismiss()
+            }
+            Button("Keep Publishing", role: .cancel) {}
+        } message: {
+            Text("The upload to Instagram is still in progress. Stopping abandons it — nothing will be posted.")
         }
         .onAppear { caption = video.caption }
         .onDisappear { publishTask?.cancel() }
