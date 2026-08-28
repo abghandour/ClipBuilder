@@ -155,6 +155,12 @@ struct LibraryView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // Every model that touched this reel: planner, caption writer,
+            // critic, cover picker — one badge per distinct model.
+            ProvenanceRow(entries: [("Planned by", video.planProvenance),
+                                    ("Caption by", video.captionProvenance),
+                                    ("Critiqued by", video.critiqueProvenance),
+                                    ("Cover picked by", video.coverProvenance)])
 
             if let quality = video.qualityReport {
                 // "Review required" is an instruction — clicking it opens the

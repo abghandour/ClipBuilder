@@ -97,10 +97,11 @@ actor FightResearchService {
         emit("Fetched \(corpus.count) source(s): \(Set(fetched).sorted().joined(separator: ", "))")
 
         emit("Summarizing fan reactions into a story…")
-        let summaryJSON = try await summarize(identity: identity, corpus: corpus,
-                                              profile: profile, modelOverride: modelOverride,
-                                              emit: emit)
-        let attribution = await ai.resolveProviderModel(task: "fight_research", model: modelOverride)
+        let summary = try await summarize(identity: identity, corpus: corpus,
+                                          profile: profile, modelOverride: modelOverride,
+                                          emit: emit)
+        let summaryJSON = summary.value
+        let attribution = summary.provenance
         let sourcesJSON = String(data: (try? JSONSerialization.data(withJSONObject: fetched)) ?? Data("[]".utf8),
                                  encoding: .utf8) ?? "[]"
         try await database.upsertFightResearch(videoID: video.id,
@@ -148,7 +149,7 @@ actor FightResearchService {
         do {
             let response = try await ai.call(prompt: prompt, task: "fight_research",
                                              model: modelOverride, timeout: 120, log: emit)
-            guard let object = AIResponseParser.jsonObject(from: response) else { return fallback }
+            guard let object = AIResponseParser.jsonObject(from: response.text) else { return fallback }
             let queries = (object["queries"] as? [String] ?? []).prefix(4)
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
@@ -558,7 +559,7 @@ actor FightResearchService {
 
     private func summarize(identity: Identity, corpus: [CorpusEntry], profile: BrandProfile,
                            modelOverride: String?,
-                           emit: @escaping @Sendable (String) -> Void) async throws -> String {
+                           emit: @escaping @Sendable (String) -> Void) async throws -> AIOutcome<String> {
         let excerpts = corpus.map { "=== SOURCE: \($0.source) ===\n\($0.text)" }
             .joined(separator: "\n\n")
         let prompt = """
@@ -594,11 +595,11 @@ actor FightResearchService {
         """
         let response = try await ai.call(prompt: prompt, task: "fight_research",
                                          model: modelOverride, timeout: 300, log: emit)
-        guard let data = AIResponseParser.jsonData(from: response),
+        guard let data = AIResponseParser.jsonData(from: response.text),
               let json = String(data: data, encoding: .utf8),
               AIResponseParser.jsonObject(from: json) != nil else {
             throw AIError.unusableResponse("The summarizer did not return usable story JSON")
         }
-        return json
+        return AIOutcome(value: json, provenance: response.provenance)
     }
 }

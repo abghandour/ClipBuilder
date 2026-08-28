@@ -353,15 +353,24 @@ actor Database {
             ("generated_videos", ["caption", "drive_file_id", "drive_link",
                                   "caption_provider", "wizard_provider",
                                   "caption_model", "wizard_model",
-                                  "rationale", "batch_id", "plan_clips_json"]),
+                                  "rationale", "batch_id", "plan_clips_json",
+                                  "cover_provider", "cover_model"]),
             ("videos", ["drive_file_id", "drive_link",
                         "analyzer_provider", "visual_analyzer_provider",
                         "speech_analyzer_provider", "analyzer_model",
                         "visual_analyzer_model", "speech_analyzer_model",
                         "visual_analyzed_at", "speech_analyzed_at",
-                        "video_type"]),
+                        "video_type",
+                        "naming_provider", "naming_model",
+                        "people_provider", "people_model"]),
             ("wizard_research", ["provider", "model"]),
             ("transcripts", ["provider", "model", "original_text", "words"]),
+            // AI provenance: which provider/model produced each artifact.
+            // NULL = human-made (or predates provenance tracking).
+            ("scenes", ["curated_provider", "curated_model"]),
+            ("fight_events", ["provider", "model"]),
+            ("video_notes", ["provider", "model"]),
+            ("wizard_lessons", ["provider", "model"]),
         ]
         for (table, columns) in textColumns {
             let existing = try connection.columnNames(of: table)
@@ -553,13 +562,21 @@ actor Database {
             VideoNote(id: row["id"]?.intValue ?? 0,
                       videoID: videoID,
                       atTime: row["at_time"]?.doubleValue ?? 0,
-                      note: row["note"]?.stringValue ?? "")
+                      note: row["note"]?.stringValue ?? "",
+                      provider: row["provider"]?.stringValue,
+                      model: row["model"]?.stringValue)
         }
     }
 
-    func addVideoNote(videoID: Int64, at atTime: Double, note: String) throws {
-        try connection.execute("INSERT INTO video_notes (video_id, at_time, note) VALUES (?, ?, ?)",
-                               [.integer(videoID), .real(atTime), .text(note)])
+    /// `provenance` marks an AI-written note (a saved soundbite); nil = the
+    /// user typed it.
+    func addVideoNote(videoID: Int64, at atTime: Double, note: String,
+                      provenance: AIProvenance? = nil) throws {
+        try connection.execute("""
+            INSERT INTO video_notes (video_id, at_time, note, provider, model) VALUES (?, ?, ?, ?, ?)
+            """, [.integer(videoID), .real(atTime), .text(note),
+                  provenance.map { SQLValue.text($0.provider) } ?? .null,
+                  provenance?.model.map(SQLValue.text) ?? .null])
     }
 
     func deleteVideoNote(id: Int64) throws {
@@ -667,14 +684,21 @@ actor Database {
     }
 
     /// Replace the video's roster with a fresh people-pass result and stamp
-    /// the video as people-detected (the tag-detection gate).
+    /// the video as people-detected (the tag-detection gate), recording
+    /// which model did the detecting.
     func replaceVideoPeople(videoID: Int64,
                             entries: [(personID: Int64, portraitAt: Double,
-                                       portraitJSON: String?, rangesJSON: String?)]) throws {
+                                       portraitJSON: String?, rangesJSON: String?)],
+                            provenance: AIProvenance? = nil) throws {
         try connection.transaction {
             try connection.execute("""
-                UPDATE videos SET people_detected_at = datetime('now') WHERE id = ?
-                """, [.integer(videoID)])
+                UPDATE videos SET people_detected_at = datetime('now'),
+                    people_provider = COALESCE(?, people_provider),
+                    people_model = COALESCE(?, people_model)
+                WHERE id = ?
+                """, [provenance.map { SQLValue.text($0.provider) } ?? .null,
+                      provenance?.model.map(SQLValue.text) ?? .null,
+                      .integer(videoID)])
             try connection.execute("DELETE FROM video_people WHERE video_id = ?",
                                    [.integer(videoID)])
             for entry in entries {
@@ -786,10 +810,16 @@ actor Database {
     }
 
     /// Rename support: the file was already moved on disk; scenes join the
-    /// videos table, so their paths follow automatically.
-    func renameVideo(id: Int64, filename: String, path: String) throws {
-        try connection.execute("UPDATE videos SET filename = ?, path = ? WHERE id = ?",
-                               [.text(filename), .text(path), .integer(id)])
+    /// videos table, so their paths follow automatically. `provenance` is
+    /// the model that proposed the name; nil (a hand rename) clears it.
+    func renameVideo(id: Int64, filename: String, path: String,
+                     provenance: AIProvenance? = nil) throws {
+        try connection.execute("""
+            UPDATE videos SET filename = ?, path = ?, naming_provider = ?, naming_model = ? WHERE id = ?
+            """, [.text(filename), .text(path),
+                  provenance.map { SQLValue.text($0.provider) } ?? .null,
+                  provenance?.model.map(SQLValue.text) ?? .null,
+                  .integer(id)])
     }
 
     func fetchVideos() throws -> [VideoRecord] {
@@ -819,6 +849,10 @@ actor Database {
             speechAnalyzerProvider: row["speech_analyzer_provider"]?.stringValue,
             speechAnalyzerModel: row["speech_analyzer_model"]?.stringValue,
             peopleDetectedAt: row["people_detected_at"]?.stringValue,
+            peopleProvider: row["people_provider"]?.stringValue,
+            peopleModel: row["people_model"]?.stringValue,
+            namingProvider: row["naming_provider"]?.stringValue,
+            namingModel: row["naming_model"]?.stringValue,
             videoType: row["video_type"]?.stringValue)
     }
 
@@ -893,6 +927,8 @@ actor Database {
                 originalStart: originalStart,
                 originalEnd: originalEnd,
                 curated: row["curated"]?.boolValue ?? false,
+                curatedProvider: row["curated_provider"]?.stringValue,
+                curatedModel: row["curated_model"]?.stringValue,
                 narrative: row["narrative"]?.stringValue,
                 score: row["score"]?.doubleValue,
                 excitement: row["excitement"]?.doubleValue,
@@ -960,10 +996,16 @@ actor Database {
                                [.integer(parentID), .integer(sceneID)])
     }
 
-    /// Promote/demote a scene in the curated set.
-    func setSceneCurated(_ sceneID: Int64, curated: Bool) throws {
-        try connection.execute("UPDATE scenes SET curated = ? WHERE id = ?",
-                               [.integer(curated ? 1 : 0), .integer(sceneID)])
+    /// Promote/demote a scene in the curated set. `provenance` records the
+    /// AI Curator that picked it; nil = the user's own pick (or a demotion).
+    func setSceneCurated(_ sceneID: Int64, curated: Bool, provenance: AIProvenance? = nil) throws {
+        let stamp = curated ? provenance : nil
+        try connection.execute("""
+            UPDATE scenes SET curated = ?, curated_provider = ?, curated_model = ? WHERE id = ?
+            """, [.integer(curated ? 1 : 0),
+                  stamp.map { SQLValue.text($0.provider) } ?? .null,
+                  stamp?.model.map(SQLValue.text) ?? .null,
+                  .integer(sceneID)])
     }
 
     /// Curation trim/extend override (nil clears back to the analyzed range).
@@ -1369,14 +1411,21 @@ actor Database {
                              instagramStats: row["instagram_stats_json"]?.stringValue
                                 .flatMap { $0.data(using: .utf8) }
                                 .flatMap { try? JSONDecoder().decode(IGStats.self, from: $0) },
-                             coverTime: row["cover_time"]?.doubleValue)
+                             coverTime: row["cover_time"]?.doubleValue,
+                             coverProvider: row["cover_provider"]?.stringValue,
+                             coverModel: row["cover_model"]?.stringValue)
     }
 
     /// Remember the picked cover frame — the Library card renders its
-    /// thumbnail at this time from then on.
-    func updateGeneratedCover(id: Int64, time: Double) throws {
-        try connection.execute("UPDATE generated_videos SET cover_time = ? WHERE id = ?",
-                               [.real(time), .integer(id)])
+    /// thumbnail at this time from then on. `provenance` is the model that
+    /// ranked the frame; nil = a hand pick.
+    func updateGeneratedCover(id: Int64, time: Double, provenance: AIProvenance? = nil) throws {
+        try connection.execute("""
+            UPDATE generated_videos SET cover_time = ?, cover_provider = ?, cover_model = ? WHERE id = ?
+            """, [.real(time),
+                  provenance.map { SQLValue.text($0.provider) } ?? .null,
+                  provenance?.model.map(SQLValue.text) ?? .null,
+                  .integer(id)])
     }
 
     /// Attach the AI critic's post-render review to a generated video.
@@ -1573,14 +1622,22 @@ actor Database {
             WizardLesson(id: $0["id"]?.intValue ?? 0,
                          text: $0["text"]?.stringValue ?? "",
                          pinned: $0["pinned"]?.boolValue ?? false,
-                         evidence: $0["evidence"]?.stringValue ?? "")
+                         evidence: $0["evidence"]?.stringValue ?? "",
+                         provider: $0["provider"]?.stringValue,
+                         model: $0["model"]?.stringValue,
+                         createdAt: $0["created_at"]?.stringValue)
         }
     }
 
+    /// `provenance` is the model that distilled the lesson; nil = user-written.
     @discardableResult
-    func addLesson(text: String, pinned: Bool, evidence: String) throws -> Int64 {
-        try connection.execute("INSERT INTO wizard_lessons (text, pinned, evidence) VALUES (?, ?, ?)",
-                               [.text(text), .integer(pinned ? 1 : 0), .text(evidence)])
+    func addLesson(text: String, pinned: Bool, evidence: String,
+                   provenance: AIProvenance? = nil) throws -> Int64 {
+        try connection.execute("""
+            INSERT INTO wizard_lessons (text, pinned, evidence, provider, model) VALUES (?, ?, ?, ?, ?)
+            """, [.text(text), .integer(pinned ? 1 : 0), .text(evidence),
+                  provenance.map { SQLValue.text($0.provider) } ?? .null,
+                  provenance?.model.map(SQLValue.text) ?? .null])
         return connection.lastInsertRowID
     }
 
@@ -1596,12 +1653,16 @@ actor Database {
 
     /// Distillation output replaces machine-learned lessons; pinned lessons
     /// are user-owned and never touched.
-    func replaceLearnedLessons(_ lessons: [(text: String, evidence: String)]) throws {
+    func replaceLearnedLessons(_ lessons: [(text: String, evidence: String)],
+                               provenance: AIProvenance? = nil) throws {
         try connection.transaction {
             try connection.execute("DELETE FROM wizard_lessons WHERE pinned = 0")
             for lesson in lessons {
-                try connection.execute("INSERT INTO wizard_lessons (text, pinned, evidence) VALUES (?, 0, ?)",
-                                       [.text(lesson.text), .text(lesson.evidence)])
+                try connection.execute("""
+                    INSERT INTO wizard_lessons (text, pinned, evidence, provider, model) VALUES (?, 0, ?, ?, ?)
+                    """, [.text(lesson.text), .text(lesson.evidence),
+                          provenance.map { SQLValue.text($0.provider) } ?? .null,
+                          provenance?.model.map(SQLValue.text) ?? .null])
             }
         }
     }
@@ -1637,21 +1698,29 @@ actor Database {
                              time: row["at_time"]?.doubleValue ?? 0,
                              fighterKey: row["fighter_key"]?.stringValue ?? "",
                              action: row["action"]?.stringValue ?? "",
-                             points: row["points"]?.doubleValue ?? 1)
+                             points: row["points"]?.doubleValue ?? 1,
+                             provider: row["provider"]?.stringValue,
+                             model: row["model"]?.stringValue)
         }
     }
 
-    /// A scoring pass replaces the video's whole event list.
+    /// A scoring pass replaces the video's whole event list, stamped with
+    /// the model that logged the events.
     func replaceFightEvents(videoID: Int64,
                             events: [(time: Double, fighterKey: String,
-                                      action: String, points: Double)]) throws {
-        try connection.execute("DELETE FROM fight_events WHERE video_id = ?", [.integer(videoID)])
-        for event in events {
-            try connection.execute("""
-                INSERT INTO fight_events (video_id, at_time, fighter_key, action, points)
-                VALUES (?, ?, ?, ?, ?)
-                """, [.integer(videoID), .real(event.time), .text(event.fighterKey),
-                      .text(event.action), .real(event.points)])
+                                      action: String, points: Double)],
+                            provenance: AIProvenance? = nil) throws {
+        try connection.transaction {
+            try connection.execute("DELETE FROM fight_events WHERE video_id = ?", [.integer(videoID)])
+            for event in events {
+                try connection.execute("""
+                    INSERT INTO fight_events (video_id, at_time, fighter_key, action, points, provider, model)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, [.integer(videoID), .real(event.time), .text(event.fighterKey),
+                          .text(event.action), .real(event.points),
+                          provenance.map { SQLValue.text($0.provider) } ?? .null,
+                          provenance?.model.map(SQLValue.text) ?? .null])
+            }
         }
     }
 

@@ -24,6 +24,8 @@ struct ProfileStarterSheet: View {
     @State private var houseStyle = ""
     @State private var categories: [TasteCategory] = []
     @State private var hasResult = false
+    /// The model that wrote the drafts — stamped on the profile when applied.
+    @State private var provenance: AIProvenance?
     @State private var applyRubric = true
     @State private var applyHouseStyle = true
     @State private var applyCategories = true
@@ -107,8 +109,13 @@ struct ProfileStarterSheet: View {
     private var review: some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
-                Text("Review the generated style")
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text("Review the generated style")
+                        .font(.headline)
+                    if let provenance {
+                        ProvenanceBadge(provenance: provenance, style: .full, role: "Written by")
+                    }
+                }
                 Text("Edit anything, uncheck what you don't want written, then Apply.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -163,7 +170,7 @@ struct ProfileStarterSheet: View {
                         ProfileStarter.Result(rubric: rubric, houseStyle: houseStyle,
                                               categories: categories),
                         rubric: applyRubric, houseStyle: applyHouseStyle,
-                        categories: applyCategories)
+                        categories: applyCategories, provenance: provenance)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -185,9 +192,10 @@ struct ProfileStarterSheet: View {
                     provider: provider, model: model) { message in
                     if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
                 }
-                rubric = result.rubric
-                houseStyle = result.houseStyle
-                categories = result.categories
+                rubric = result.value.rubric
+                houseStyle = result.value.houseStyle
+                categories = result.value.categories
+                provenance = result.provenance
                 hasResult = true
             } catch {
                 errorMessage = error.userMessage

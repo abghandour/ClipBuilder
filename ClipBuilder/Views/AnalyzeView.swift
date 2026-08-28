@@ -194,6 +194,9 @@ struct AnalyzeView: View {
                                 renameFocused = true
                             }
                             .help("Double-click to rename")
+                        if let provenance = video.namingProvenance {
+                            ProvenanceBadge(provenance: provenance, role: "Named by", size: 11)
+                        }
                     }
                 }
             }
@@ -227,8 +230,13 @@ struct AnalyzeView: View {
                     ProgressView()
                         .controlSize(.small)
                 } else {
-                    countText(batchCounts[video.id] ?? 0)
-                        .help("Analyze batches for this video — manage them on the Scenes screen")
+                    HStack(spacing: 4) {
+                        countText(batchCounts[video.id] ?? 0)
+                            .help("Analyze batches for this video — manage them on the Scenes screen")
+                        if (batchCounts[video.id] ?? 0) > 0, let provenance = video.visualAnalysisProvenance {
+                            ProvenanceBadge(provenance: provenance, role: "Analyzed by", size: 11)
+                        }
+                    }
                 }
             }
             .width(70)
@@ -239,17 +247,27 @@ struct AnalyzeView: View {
                         .controlSize(.small)
                         .help("Transcribing — stop it from the preview pane")
                 } else {
-                    countText(transcriptCounts[video.id] ?? 0)
-                        .help("Analyze batches that include a transcript")
+                    HStack(spacing: 4) {
+                        countText(transcriptCounts[video.id] ?? 0)
+                            .help("Analyze batches that include a transcript")
+                        if (transcriptCounts[video.id] ?? 0) > 0 {
+                            ProvenanceBadge(provenance: .appleSpeech(), role: "Transcribed by", size: 11)
+                        }
+                    }
                 }
             }
             .width(80)
 
             TableColumn("People") { video in
-                countText(peopleCounts[video.id]?.count ?? 0)
-                    .help("Distinct people recognized in this video — see the People section")
+                HStack(spacing: 4) {
+                    countText(peopleCounts[video.id]?.count ?? 0)
+                        .help("Distinct people recognized in this video — see the People section")
+                    if (peopleCounts[video.id]?.count ?? 0) > 0, let provenance = video.peopleProvenance {
+                        ProvenanceBadge(provenance: provenance, role: "Detected by", size: 11)
+                    }
+                }
             }
-            .width(55)
+            .width(70)
 
             TableColumn("Scenes") { video in
                 Text("\(sceneCounts[video.id] ?? 0)")
@@ -269,10 +287,13 @@ struct AnalyzeView: View {
                         Text("Researching…")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                    } else if store.fightResearch[video.id] != nil {
+                    } else if let research = store.fightResearch[video.id] {
                         Label("Researched", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                             .help("Fan-reaction research is saved — view or refresh it from the preview pane")
+                        if let provenance = research.provenance {
+                            ProvenanceBadge(provenance: provenance, role: "Researched by", size: 11)
+                        }
                     } else {
                         Text("Not researched")
                             .foregroundStyle(.tertiary)

@@ -843,13 +843,14 @@ final class AppStore {
                         log("\(current.filename): nothing new to curate")
                     } else {
                         do {
-                            let proposals = try await proposeCuration(for: pool, provider: nil,
-                                                                      model: nil, log: relay)
-                            for proposal in proposals {
-                                try? await database.setSceneCurated(proposal.sceneID, curated: true)
+                            let curation = try await proposeCuration(for: pool, provider: nil,
+                                                                     model: nil, log: relay)
+                            for proposal in curation.value {
+                                try? await database.setSceneCurated(proposal.sceneID, curated: true,
+                                                                    provenance: curation.provenance)
                             }
                             await refreshAllNow()
-                            log("\(current.filename): curated \(proposals.count) of \(pool.count) scenes")
+                            log("\(current.filename): curated \(curation.value.count) of \(pool.count) scenes")
                         } catch {
                             log("\(current.filename): curation failed — \(error.userMessage)")
                         }
@@ -915,9 +916,10 @@ final class AppStore {
                     for reelID in pipelineGenerated.map(\.id) where !Task.isCancelled {
                         guard let reel = generatedVideos.first(where: { $0.id == reelID }),
                               reel.coverTime == nil else { continue }
-                        if let top = try? await proposeCoverFrames(for: reel, provider: nil,
-                                                                   model: nil, log: { _ in }).first {
-                            setCoverFrame(reel, time: top.time)
+                        if let picks = try? await proposeCoverFrames(for: reel, provider: nil,
+                                                                     model: nil, log: { _ in }),
+                           let top = picks.value.first {
+                            setCoverFrame(reel, time: top.time, provenance: picks.provenance)
                             log("\(reel.filename): cover set at \(top.time.timecode)")
                         }
                     }
@@ -944,7 +946,8 @@ final class AppStore {
                             guard let video = videos.first(where: { $0.id == suggestion.videoID })
                             else { continue }
                             log("Renamed \(suggestion.currentFilename) → \(suggestion.suggestedName)")
-                            renameVideo(video, to: suggestion.suggestedName)
+                            renameVideo(video, to: suggestion.suggestedName,
+                                        provenance: suggestion.provenance)
                         }
                         await refreshAllNow()
                     }
@@ -1120,12 +1123,13 @@ final class AppStore {
         let frame = AIFrame(jpeg: imageData, label: "reference frame")
         let response = try await ai.call(prompt: prompt, task: "overlay", frames: [frame],
                                          model: model, provider: provider, timeout: 180, log: log)
-        guard let object = AIResponseParser.jsonObject(from: response),
+        guard let object = AIResponseParser.jsonObject(from: response.text),
               let rawOverlays = object["overlays"] as? [[String: Any]], !rawOverlays.isEmpty else {
             throw AIError.emptyResponse("overlay extraction (no overlays found)")
         }
 
         var composition = OverlayComposition()
+        composition.provenance = response.provenance
         var croppedCount = 0
         for raw in rawOverlays {
             let x = (raw["x"] as? NSNumber)?.doubleValue ?? 0.5
@@ -1326,10 +1330,13 @@ final class AppStore {
     }
 
     /// Add a timestamped note; returns the video's refreshed note list.
-    func addVideoNote(videoID: Int64, at atTime: Double, text: String) async -> [VideoNote] {
+    /// `provenance` marks AI-written notes (saved soundbites).
+    func addVideoNote(videoID: Int64, at atTime: Double, text: String,
+                      provenance: AIProvenance? = nil) async -> [VideoNote] {
         guard let database else { return [] }
         do {
-            try await database.addVideoNote(videoID: videoID, at: atTime, note: text)
+            try await database.addVideoNote(videoID: videoID, at: atTime, note: text,
+                                            provenance: provenance)
         } catch {
             presentError("Could not save the note", error)
         }
@@ -1444,7 +1451,9 @@ final class AppStore {
     /// Rename a source video: move the file in the Input folder and update
     /// its row (scenes join the videos table, so they follow). Content
     /// hashing means the folder watcher won't re-register it as new.
-    func renameVideo(_ video: VideoRecord, to rawName: String) {
+    /// `provenance` is the model that proposed the name (the File Name
+    /// Wizard, the pipeline's rename step); nil for a hand rename.
+    func renameVideo(_ video: VideoRecord, to rawName: String, provenance: AIProvenance? = nil) {
         guard let database else { return }
         var name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "/", with: "-")
@@ -1467,7 +1476,8 @@ final class AppStore {
         }
         Task {
             do {
-                try await database.renameVideo(id: video.id, filename: name, path: destination.path)
+                try await database.renameVideo(id: video.id, filename: name, path: destination.path,
+                                               provenance: provenance)
                 await renameAnalysisBatches(for: video, newFilename: name)
                 await refreshAllNow()
             } catch {
@@ -1565,7 +1575,7 @@ final class AppStore {
                 let response = try await ai.call(prompt: prompt, task: "naming",
                                                  model: model, provider: provider,
                                                  timeout: 180, log: log)
-                guard let (name, reason) = FileNamer.parseSuggestion(from: response) else {
+                guard let (name, reason) = FileNamer.parseSuggestion(from: response.text) else {
                     log("\(video.filename): the model returned no usable name")
                     continue
                 }
@@ -1577,7 +1587,8 @@ final class AppStore {
                 if let reason { log("\(video.filename) → \(name) (\(reason))") }
                 suggestions.append(RenameSuggestion(videoID: video.id,
                                                     currentFilename: video.filename,
-                                                    suggestedName: name))
+                                                    suggestedName: name,
+                                                    provenance: response.provenance))
             } catch let error as AIError {
                 // A dead quota dooms every remaining call — stop the batch.
                 if case .quotaExhausted = error { throw error }
@@ -1598,11 +1609,13 @@ final class AppStore {
     /// and return proposed promotions for review. Chunked so any library
     /// size fits in the model's context.
     func proposeCuration(for candidates: [SceneRecord], provider: String?, model: String?,
-                         log: @escaping @Sendable (String) -> Void) async throws -> [SceneCurator.Proposal] {
+                         log: @escaping @Sendable (String) -> Void) async throws
+        -> AIOutcome<[SceneCurator.Proposal]> {
         let profile = activeProfile
         let graded = scenes.filter { $0.lastGrade != nil }
         let curatedExamples = scenes.filter(\.curated)
         var proposals: [SceneCurator.Proposal] = []
+        var provenance: AIProvenance?
         var start = 0
         while start < candidates.count {
             let chunk = Array(candidates[start..<min(start + SceneCurator.batchSize, candidates.count)])
@@ -1615,19 +1628,23 @@ final class AppStore {
             let response = try await ai.call(prompt: prompt, task: "curate",
                                              model: model, provider: provider,
                                              timeout: 240, log: log)
-            proposals += SceneCurator.parse(response, validIDs: Set(chunk.map(\.id)))
+            proposals += SceneCurator.parse(response.text, validIDs: Set(chunk.map(\.id)))
+            provenance = response.provenance
             start += SceneCurator.batchSize
         }
-        return proposals
+        return AIOutcome(value: proposals,
+                         provenance: provenance
+                             ?? AIProvenance(provider: provider ?? "claude", model: model, task: "curate"))
     }
 
     /// Apply the reviewed curator picks in one pass — batched DB writes and
-    /// a single refresh, unlike per-scene `curateScene`.
-    func applyCuration(sceneIDs: [Int64]) {
+    /// a single refresh, unlike per-scene `curateScene`. `provenance` is the
+    /// curator that proposed them, stamped on each scene.
+    func applyCuration(sceneIDs: [Int64], provenance: AIProvenance?) {
         guard let database else { return }
         Task {
             for id in sceneIDs {
-                try? await database.setSceneCurated(id, curated: true)
+                try? await database.setSceneCurated(id, curated: true, provenance: provenance)
             }
             await refreshAllNow()
         }
@@ -1640,7 +1657,7 @@ final class AppStore {
     /// people, and timing.
     func findScenes(matching query: String, in candidates: [SceneRecord],
                     provider: String?, model: String?,
-                    log: @escaping @Sendable (String) -> Void) async throws -> [Int64] {
+                    log: @escaping @Sendable (String) -> Void) async throws -> AIOutcome<[Int64]> {
         // Most recent scenes win when the library outgrows one call.
         let scoped = candidates.count > SceneFinder.maxCandidates
             ? Array(candidates.sorted { $0.id > $1.id }.prefix(SceneFinder.maxCandidates))
@@ -1652,7 +1669,8 @@ final class AppStore {
         let response = try await ai.call(prompt: prompt, task: "search",
                                          model: model, provider: provider,
                                          timeout: 120, log: log)
-        return SceneFinder.parse(response, validIDs: Set(scoped.map(\.id)))
+        return AIOutcome(value: SceneFinder.parse(response.text, validIDs: Set(scoped.map(\.id))),
+                         provenance: response.provenance)
     }
 
     // MARK: - Soundbite finder
@@ -1660,7 +1678,8 @@ final class AppStore {
     /// Mine a video's transcript for its most quotable self-contained
     /// moments. Throws a friendly error when the video has no transcript.
     func findSoundbites(in video: VideoRecord, provider: String?, model: String?,
-                        log: @escaping @Sendable (String) -> Void) async throws -> [SoundbiteFinder.Soundbite] {
+                        log: @escaping @Sendable (String) -> Void) async throws
+        -> AIOutcome<[SoundbiteFinder.Soundbite]> {
         guard let database else { throw AIError.notConfigured("No profile is open.") }
         let transcript = ((try? await database.fetchTranscripts(videoID: video.id)) ?? [])
             .filter { !$0.isTranslation }
@@ -1671,11 +1690,11 @@ final class AppStore {
         let response = try await ai.call(prompt: prompt, task: "soundbites",
                                          model: model, provider: provider,
                                          timeout: 180, log: log)
-        let soundbites = SoundbiteFinder.parse(response, duration: video.duration)
+        let soundbites = SoundbiteFinder.parse(response.text, duration: video.duration)
         guard !soundbites.isEmpty else {
             throw AIError.unusableResponse("The model found no usable soundbites in the transcript.")
         }
-        return soundbites
+        return AIOutcome(value: soundbites, provenance: response.provenance)
     }
 
     // MARK: - Cover frame picker
@@ -1683,7 +1702,8 @@ final class AppStore {
     /// Sample frames across a rendered reel and have a multimodal model rank
     /// the best thumbnail candidates for the Library card.
     func proposeCoverFrames(for video: GeneratedVideoRecord, provider: String?, model: String?,
-                            log: @escaping @Sendable (String) -> Void) async throws -> [CoverFramePicker.Candidate] {
+                            log: @escaping @Sendable (String) -> Void) async throws
+        -> AIOutcome<[CoverFramePicker.Candidate]> {
         let times = CoverFramePicker.sampleTimes(duration: video.duration)
         log("Sampling \(times.count) frames…")
         var frames: [AIFrame] = []
@@ -1701,21 +1721,24 @@ final class AppStore {
                                          task: "cover", frames: frames,
                                          model: model, provider: provider,
                                          timeout: 180, log: log)
-        let candidates = CoverFramePicker.parse(response, sampledTimes: times)
+        let candidates = CoverFramePicker.parse(response.text, sampledTimes: times)
         guard !candidates.isEmpty else {
             throw AIError.unusableResponse("The model returned no usable cover picks.")
         }
-        return candidates
+        return AIOutcome(value: candidates, provenance: response.provenance)
     }
 
     /// Remember the picked cover frame and patch the card in place.
-    func setCoverFrame(_ video: GeneratedVideoRecord, time: Double) {
+    /// `provenance` is the model that ranked it; nil for a hand pick.
+    func setCoverFrame(_ video: GeneratedVideoRecord, time: Double, provenance: AIProvenance? = nil) {
         guard let database else { return }
         Task {
             do {
-                try await database.updateGeneratedCover(id: video.id, time: time)
+                try await database.updateGeneratedCover(id: video.id, time: time, provenance: provenance)
                 if let index = generatedVideos.firstIndex(where: { $0.id == video.id }) {
                     generatedVideos[index].coverTime = time
+                    generatedVideos[index].coverProvider = provenance?.provider
+                    generatedVideos[index].coverModel = provenance?.model
                 }
             } catch {
                 presentError("Could not save the cover frame", error)
@@ -1727,7 +1750,8 @@ final class AppStore {
 
     /// AI skim of the whole video proposing the section worth analyzing —
     /// fills the plan sheet's trim slider.
-    func suggestTrim(for video: VideoRecord) async throws -> (start: Double, end: Double, reason: String) {
+    func suggestTrim(for video: VideoRecord) async throws
+        -> (start: Double, end: Double, reason: String, provenance: AIProvenance) {
         try await analyzer.suggestTrim(video: video) { message in
             Task { @MainActor in self.analysisLog.append(message) }
         }
@@ -1739,7 +1763,8 @@ final class AppStore {
     /// metadata plus one mid-video frame per video, grouped with a keep
     /// recommendation. Report-only; an empty result means no duplicates.
     func findDuplicateVideos(provider: String?, model: String?,
-                             log: @escaping @Sendable (String) -> Void) async throws -> [DuplicateFinder.Group] {
+                             log: @escaping @Sendable (String) -> Void) async throws
+        -> AIOutcome<[DuplicateFinder.Group]> {
         guard let database else { throw AIError.notConfigured("No profile is open.") }
         guard videos.count >= 2 else {
             throw AIError.notConfigured("Fewer than two videos in the library — nothing to compare.")
@@ -1767,7 +1792,8 @@ final class AppStore {
                                          task: "dedupe", frames: frames,
                                          model: model, provider: provider,
                                          timeout: 240, log: log)
-        return DuplicateFinder.parse(response, validIDs: Set(scoped.map(\.id)))
+        return AIOutcome(value: DuplicateFinder.parse(response.text, validIDs: Set(scoped.map(\.id))),
+                         provenance: response.provenance)
     }
 
     // MARK: - Content gap report
@@ -1776,7 +1802,8 @@ final class AppStore {
     /// what's sitting unused, what's blocking output — as a checklist
     /// referencing actual files.
     func generateGapReport(provider: String?, model: String?,
-                           log: @escaping @Sendable (String) -> Void) async throws -> [GapReporter.Section] {
+                           log: @escaping @Sendable (String) -> Void) async throws
+        -> AIOutcome<[GapReporter.Section]> {
         guard let database else { throw AIError.notConfigured("No profile is open.") }
         var sceneCounts: [Int64: (total: Int, curated: Int)] = [:]
         for scene in scenes where !scene.excluded {
@@ -1823,11 +1850,11 @@ final class AppStore {
                                                                     domain: activeProfile.effectiveDomain),
                                          task: "gap", model: model, provider: provider,
                                          timeout: 240, log: log)
-        let sections = GapReporter.parse(response)
+        let sections = GapReporter.parse(response.text)
         guard !sections.isEmpty else {
             throw AIError.unusableResponse("The report couldn't be read from the model's reply.")
         }
-        return sections
+        return AIOutcome(value: sections, provenance: response.provenance)
     }
 
     // MARK: - Instagram performance lessons
@@ -1856,7 +1883,7 @@ final class AppStore {
                     prompt: PerformanceLessons.prompt(published: published, ownMedia: ownMedia),
                     task: "distill", timeout: 240,
                     log: { message in Task { @MainActor in self.igLog.append(message) } })
-                let distilled = PerformanceLessons.parse(response)
+                let distilled = PerformanceLessons.parse(response.text)
                 guard !distilled.isEmpty else {
                     throw AIError.unusableResponse("No lessons came back from the model.")
                 }
@@ -1869,7 +1896,8 @@ final class AppStore {
                 for lesson in distilled.prefix(PerformanceLessons.maxLessons) {
                     _ = try? await database.addLesson(
                         text: lesson.text, pinned: false,
-                        evidence: "\(PerformanceLessons.evidencePrefix): \(lesson.evidence)")
+                        evidence: "\(PerformanceLessons.evidencePrefix): \(lesson.evidence)",
+                        provenance: response.provenance)
                 }
                 lessons = (try? await database.fetchLessons()) ?? lessons
                 igLog.append("Added \(min(PerformanceLessons.maxLessons, distilled.count)) performance lesson(s) — see AI Wizard → Learned Lessons.")
@@ -1886,7 +1914,8 @@ final class AppStore {
     /// and starter categories — reviewed in the sheet before applying.
     func generateProfileStarter(audience: String, tone: String, inspiration: String, avoid: String,
                                 provider: String?, model: String?,
-                                log: @escaping @Sendable (String) -> Void) async throws -> ProfileStarter.Result {
+                                log: @escaping @Sendable (String) -> Void) async throws
+        -> AIOutcome<ProfileStarter.Result> {
         let prompt = ProfileStarter.prompt(domain: activeProfile.effectiveDomain,
                                            brand: activeProfile.brandName,
                                            audience: audience, tone: tone,
@@ -1894,19 +1923,27 @@ final class AppStore {
         let response = try await ai.call(prompt: prompt, task: "onboard",
                                          model: model, provider: provider,
                                          timeout: 240, log: log)
-        guard let result = ProfileStarter.parse(response) else {
+        guard let result = ProfileStarter.parse(response.text) else {
             throw AIError.unusableResponse("The style documents couldn't be read from the model's reply.")
         }
-        return result
+        return AIOutcome(value: result, provenance: response.provenance)
     }
 
     /// Write the reviewed starter into the profile. New categories are
     /// appended; an existing key is never overwritten (studying may have
-    /// refined it already).
+    /// refined it already). `provenance` is stamped on whichever documents
+    /// are written.
     func applyProfileStarter(_ result: ProfileStarter.Result,
-                             rubric: Bool, houseStyle: Bool, categories: Bool) {
-        if rubric { activeProfile.tasteRubric = result.rubric }
-        if houseStyle { activeProfile.houseStyle = result.houseStyle }
+                             rubric: Bool, houseStyle: Bool, categories: Bool,
+                             provenance: AIProvenance?) {
+        if rubric {
+            activeProfile.tasteRubric = result.rubric
+            activeProfile.tasteRubricProvenance = provenance
+        }
+        if houseStyle {
+            activeProfile.houseStyle = result.houseStyle
+            activeProfile.houseStyleProvenance = provenance
+        }
         if categories {
             let existing = Set(activeProfile.tasteCategories.map(\.key))
             activeProfile.tasteCategories += result.categories.filter { !existing.contains($0.key) }
@@ -2137,7 +2174,8 @@ final class AppStore {
                                                                existing: existing) { message in
                     Task { @MainActor in self.wizardLog.append(message) }
                 }
-                activeProfile.houseStyle = style
+                activeProfile.houseStyle = style.value
+                activeProfile.houseStyleProvenance = style.provenance
                 saveActiveProfile()
                 wizardLog.append("House style updated from the analyzed reels")
             } catch {

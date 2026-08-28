@@ -78,6 +78,11 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     /// Freeform extra sources — subreddits ("r/ufc") crawl via Reddit's API,
     /// domains ("mmamania.com") via site-scoped search, URLs fetch directly.
     var buzzExtraSources: String
+    /// The model that wrote the taste rubric (profile starter); nil when
+    /// hand-written or predating provenance.
+    var tasteRubricProvenance: AIProvenance?
+    /// The model that distilled the house style.
+    var houseStyleProvenance: AIProvenance?
 
     static let knownBuzzSources: [(key: String, label: String)] = [
         ("reddit", "Reddit (r/MMA and other MMA subreddits)"),
@@ -106,6 +111,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case houseStyle = "house_style"
         case buzzSources = "buzz_sources"
         case buzzExtraSources = "buzz_extra_sources"
+        case tasteRubricProvenance = "taste_rubric_provenance"
+        case houseStyleProvenance = "house_style_provenance"
     }
 
     init(from decoder: Decoder) throws {
@@ -138,6 +145,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         }
         buzzSources = storedSources
         buzzExtraSources = try container.decodeIfPresent(String.self, forKey: .buzzExtraSources) ?? ""
+        tasteRubricProvenance = try container.decodeIfPresent(AIProvenance.self, forKey: .tasteRubricProvenance)
+        houseStyleProvenance = try container.decodeIfPresent(AIProvenance.self, forKey: .houseStyleProvenance)
     }
 
     init(name: String) {
@@ -159,6 +168,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         houseStyle = ""
         buzzSources = Self.knownBuzzSources.map(\.key)
         buzzExtraSources = ""
+        tasteRubricProvenance = nil
+        houseStyleProvenance = nil
     }
 
     var logoURL: URL? {

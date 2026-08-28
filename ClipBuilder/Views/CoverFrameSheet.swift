@@ -14,6 +14,8 @@ struct CoverFrameSheet: View {
     @State private var modelTag = ""
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
     @State private var candidates: [CoverFramePicker.Candidate]?
+    /// The model that ranked the candidates — stamped on the chosen cover.
+    @State private var provenance: AIProvenance?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -25,10 +27,13 @@ struct CoverFrameSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if let candidates {
+                if let provenance {
+                    ProvenanceBadge(provenance: provenance, style: .full, role: "Ranked by")
+                }
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(candidates) { candidate in
                         Button {
-                            store.setCoverFrame(video, time: candidate.time)
+                            store.setCoverFrame(video, time: candidate.time, provenance: provenance)
                             dismiss()
                         } label: {
                             VStack(spacing: 6) {
@@ -110,10 +115,12 @@ struct CoverFrameSheet: View {
         errorMessage = nil
         Task {
             do {
-                candidates = try await store.proposeCoverFrames(
+                let picks = try await store.proposeCoverFrames(
                     for: video, provider: provider, model: model) { message in
                     if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
                 }
+                candidates = picks.value
+                provenance = picks.provenance
             } catch {
                 errorMessage = error.userMessage
             }

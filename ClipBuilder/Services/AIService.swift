@@ -139,7 +139,8 @@ actor AIService {
     /// for `task`. The configured choice runs first; if it fails with an AI
     /// error (quota exhausted, not authenticated, empty response) the
     /// dispatcher fails over down the recommended chain, logging the switch,
-    /// so a single provider outage never kills a run.
+    /// so a single provider outage never kills a run. The reply carries the
+    /// provider/model that actually answered, for provenance stamping.
     func call(prompt: String,
               task: String,
               frames: [AIFrame]? = nil,
@@ -148,7 +149,7 @@ actor AIService {
               provider providerOverride: String? = nil,
               timeout: TimeInterval = 300,
               webAccess: Bool = false,
-              log: (@Sendable (String) -> Void)? = nil) async throws -> String {
+              log: (@Sendable (String) -> Void)? = nil) async throws -> AIResponse {
         let emit = log ?? { _ in }
         // Verbose logging (the log panels' checkbox): show exactly what the
         // model receives, for every task.
@@ -170,9 +171,15 @@ actor AIService {
                 emit("Falling back to \(label) (\(candidate.model ?? "default model"))...")
             }
             do {
-                return try await callProvider(key: candidate.provider, model: candidate.model,
-                                              prompt: prompt, frames: frames, video: video,
-                                              timeout: timeout, webAccess: webAccess, emit: emit)
+                let text = try await callProvider(key: candidate.provider, model: candidate.model,
+                                                  prompt: prompt, frames: frames, video: video,
+                                                  timeout: timeout, webAccess: webAccess, emit: emit)
+                // The candidate that answered is the provenance — a
+                // prediction made before the call would misattribute
+                // anything produced after a failover.
+                return AIResponse(text: text, provider: candidate.provider,
+                                  model: candidate.model ?? AICatalog.provider(candidate.provider)?.defaultModel,
+                                  task: task, fellBack: index > 0)
             } catch let error as AIError {
                 lastError = error
                 if case .promptTooLong = error { tooLongError = error }

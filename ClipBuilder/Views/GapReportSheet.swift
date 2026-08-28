@@ -13,6 +13,7 @@ struct GapReportSheet: View {
     @State private var modelTag = ""
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
     @State private var sections: [GapReporter.Section]?
+    @State private var provenance: AIProvenance?
 
     var body: some View {
         Group {
@@ -78,9 +79,14 @@ struct GapReportSheet: View {
 
     private func report(_ sections: [GapReporter.Section]) -> some View {
         VStack(spacing: 0) {
-            Text("Content Gaps")
-                .font(.headline)
-                .padding()
+            HStack(spacing: 8) {
+                Text("Content Gaps")
+                    .font(.headline)
+                if let provenance {
+                    ProvenanceBadge(provenance: provenance, style: .full, role: "Written by")
+                }
+            }
+            .padding()
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
@@ -127,10 +133,12 @@ struct GapReportSheet: View {
         errorMessage = nil
         Task {
             do {
-                sections = try await store.generateGapReport(
+                let report = try await store.generateGapReport(
                     provider: provider, model: model) { message in
                     if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
                 }
+                sections = report.value
+                provenance = report.provenance
             } catch {
                 errorMessage = error.userMessage
             }

@@ -5,6 +5,9 @@ import Foundation
 nonisolated struct OverlayComposition: Codable, Sendable, Equatable {
     var texts: [TextOverlayItem] = []
     var images: [ImageOverlayItem] = []
+    /// Set when the Overlay Wizard extracted this design from a reference
+    /// frame — the model that did it; nil for hand-built templates.
+    var provenance: AIProvenance? = nil
 
     var isEmpty: Bool { texts.isEmpty && images.isEmpty }
 
@@ -27,9 +30,10 @@ nonisolated struct OverlayComposition: Codable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         texts = try container.decodeIfPresent([TextOverlayItem].self, forKey: .texts) ?? []
         images = try container.decodeIfPresent([ImageOverlayItem].self, forKey: .images) ?? []
+        provenance = try container.decodeIfPresent(AIProvenance.self, forKey: .provenance)
     }
 
-    enum CodingKeys: String, CodingKey { case texts, images }
+    enum CodingKeys: String, CodingKey { case texts, images, provenance }
 }
 
 /// One saved overlay design. Identity is the file name (like brand

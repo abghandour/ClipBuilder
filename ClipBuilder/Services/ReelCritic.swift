@@ -78,14 +78,13 @@ nonisolated enum ReelCritic {
                                                         previous: previous),
                                          task: "critique", frames: frames,
                                          timeout: 180, log: emit)
-        guard let object = AIResponseParser.jsonObject(from: response) else {
+        guard let object = AIResponseParser.jsonObject(from: response.text) else {
             throw AIError.unusableResponse("The critic's response was not valid JSON.")
         }
         func strings(_ key: String) -> [String] {
             (object[key] as? [Any])?.compactMap { $0 as? String } ?? []
         }
         let score = max(0, min(100, (object["score"] as? NSNumber)?.intValue ?? 0))
-        let attribution = await ai.resolveProviderModel(task: "critique")
         var critique = ReelCritique(
             score: score,
             summary: (object["summary"] as? String) ?? "",
@@ -94,8 +93,8 @@ nonisolated enum ReelCritic {
             notes: strings("notes"),
             regenerate: (object["regenerate"] as? Bool)
                 ?? ((object["regenerate"] as? NSNumber)?.boolValue ?? false),
-            provider: attribution.provider,
-            model: attribution.model)
+            provider: response.provider,
+            model: response.model)
         // A judge that likes the reel doesn't get to demand a rebuild, and a
         // rebuild request without notes gives the planner nothing to fix.
         if critique.score >= 85 { critique.regenerate = false }

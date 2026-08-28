@@ -175,6 +175,10 @@ struct WizardResultsSheet: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(critique.score >= 85 ? .green
                                      : critique.score >= 70 ? .yellow : .orange)
+                if let judge = AIProvenance(provider: critique.provider, model: critique.model,
+                                            task: "critique") {
+                    ProvenanceBadge(provenance: judge, role: "Judged by", size: 11)
+                }
                 if isBest {
                     Text("BEST")
                         .font(.badgeCompact)
@@ -211,8 +215,8 @@ struct WizardResultsSheet: View {
             lines.append("Notes for the next version:")
             lines.append(contentsOf: critique.notes.map { "  • \($0)" })
         }
-        if let model = critique.model ?? critique.provider {
-            lines.append("Judged by \(model)")
+        if let judge = AIProvenance(provider: critique.provider, model: critique.model) {
+            lines.append("Judged by \(judge.shortLabel)")
         }
         return lines.isEmpty ? critique.summary : lines.joined(separator: "\n")
     }

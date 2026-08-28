@@ -170,11 +170,17 @@ struct CuratedView: View {
                         ScoreBadge(score: score, compact: true)
                             .help(scene.narrative ?? "Entertainment score")
                     }
+                    if let curation = scene.curationProvenance {
+                        ProvenanceBadge(provenance: curation, role: "Curated by", size: 11)
+                    }
                     if scene.centerStagePathJSON != nil {
                         Image(systemName: "camera.metering.center.weighted")
                             .foregroundStyle(.secondary)
                             .help("Has a Center Stage camera path")
                             .accessibilityLabel("Has a Center Stage camera path")
+                        if let framing = scene.framingProvenance {
+                            ProvenanceBadge(provenance: framing, role: "Framed by", size: 11)
+                        }
                     }
                     if scene.startTime != scene.originalStart || scene.endTime != scene.originalEnd {
                         Image(systemName: "timeline.selection")

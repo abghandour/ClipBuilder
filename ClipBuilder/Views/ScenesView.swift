@@ -28,7 +28,7 @@ struct ScenesView: View {
     @State private var showAICurate = false
     /// Active AI search: the query plus its ranked scene ids — the grid
     /// narrows to these (rank order) until cleared from the banner.
-    @State private var aiMatches: (query: String, ids: [Int64])?
+    @State private var aiMatches: (query: String, ids: [Int64], provenance: AIProvenance)?
 
     private var stackLevel: SceneStackLevel { .from(stackLevelRaw) }
 
@@ -274,8 +274,8 @@ struct ScenesView: View {
             GenerateVideoSheet(source: generateSource)
         }
         .sheet(isPresented: $showAskSheet) {
-            SceneSearchSheet(candidates: searchCandidates) { query, ids in
-                aiMatches = (query, ids)
+            SceneSearchSheet(candidates: searchCandidates) { query, ids, provenance in
+                aiMatches = (query, ids, provenance)
                 selectedSceneIDs = []
             }
         }
@@ -300,13 +300,14 @@ struct ScenesView: View {
 
     /// Strip above the grid while an AI search filters it — says what was
     /// asked and clears back to the full grid.
-    private func aiSearchBanner(_ match: (query: String, ids: [Int64])) -> some View {
+    private func aiSearchBanner(_ match: (query: String, ids: [Int64], provenance: AIProvenance)) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "sparkle.magnifyingglass")
                 .foregroundStyle(.secondary)
             Text("AI search: “\(match.query)”")
                 .font(.callout)
                 .lineLimit(1)
+            ProvenanceBadge(provenance: match.provenance, style: .model, role: "Ranked by")
             Spacer()
             Button("Clear") { aiMatches = nil }
                 .controlSize(.small)
@@ -341,6 +342,9 @@ struct ScenesView: View {
                             }
                         }
                         Spacer()
+                        if let provenance = run.provenance {
+                            ProvenanceBadge(provenance: provenance, role: "Analyzed by", size: 12)
+                        }
                         Text("\(run.sceneCount)")
                             .foregroundStyle(.secondary)
                             .font(.caption)
@@ -418,7 +422,7 @@ struct ScenesView: View {
 
     private func batchTooltip(_ run: AnalysisRun) -> String {
         var lines = ["Analyzed \(run.createdAt ?? "—")"]
-        if let model = run.model { lines.append("Model: \(run.provider.map { "\($0) — " } ?? "")\(model)") }
+        if let provenance = run.provenance { lines.append("Model: \(provenance.shortLabel)") }
         if !run.instructions.isEmpty { lines.append("Instructions: \(run.instructions)") }
         return lines.joined(separator: "\n")
     }
@@ -693,7 +697,13 @@ private struct BatchInfoSheet: View {
             Form {
                 LabeledContent("Source video", value: run.videoFilename)
                 LabeledContent("Analyzed", value: run.createdAt ?? "—")
-                LabeledContent("Model", value: run.model.map { "\(run.provider.map { "\($0) — " } ?? "")\($0)" } ?? "—")
+                LabeledContent("Model") {
+                    if let provenance = run.provenance {
+                        ProvenanceBadge(provenance: provenance, style: .full, role: "Analyzed by")
+                    } else {
+                        Text("—")
+                    }
+                }
                 LabeledContent("Frame sampling", value: samplingLabel)
                 LabeledContent("Transcript included", value: run.hasTranscript ? "Yes" : "No")
                 LabeledContent("Scenes", value: "\(run.sceneCount)")
@@ -791,6 +801,11 @@ struct SceneCard: View {
         max(0, (stackMembers?.count ?? 0) - 1)
     }
 
+    /// The analyze batch that produced this scene — its provider/model.
+    private var analysisProvenance: AIProvenance? {
+        store.analysisRuns.first { $0.id == scene.runID }?.provenance
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             SceneInlinePlayer(scene: scene)
@@ -800,12 +815,18 @@ struct SceneCard: View {
                         .allowsHitTesting(false)
                 }
                 .overlay(alignment: .topLeading) {
-                    if let score = scene.score {
-                        ScoreBadge(score: score)
-                            .padding(6)
-                            .allowsHitTesting(false)
-                            .help(scene.narrative ?? "Entertainment score")
+                    HStack(spacing: 4) {
+                        if let score = scene.score {
+                            ScoreBadge(score: score)
+                                .allowsHitTesting(false)
+                                .help(scene.narrative ?? "Entertainment score")
+                        }
+                        if let analysisProvenance {
+                            ProvenanceBadge(provenance: analysisProvenance, role: "Analyzed by",
+                                            size: 11, plated: true)
+                        }
                     }
+                    .padding(6)
                 }
                 .overlay(alignment: .topTrailing) {
                     VStack(alignment: .trailing, spacing: 4) {
@@ -882,6 +903,9 @@ struct SceneCard: View {
                 .help(scene.curated
                       ? "In the Curated set — click to remove"
                       : "Curate this scene: preview and apply Center Stage, trim, then save it as good to go")
+                if let curation = scene.curationProvenance {
+                    ProvenanceBadge(provenance: curation, role: "Curated by", size: 11)
+                }
 
                 Button {
                     store.toggleFavorite(scene)
@@ -995,10 +1019,14 @@ struct TranscriptSheet: View {
                 VStack(alignment: .leading) {
                     Text("Transcript — \(video.filename)")
                         .font(.headline)
-                    if let provider = rows.first?.provider {
-                        Text("Transcribed by \(provider)\(rows.first?.model.map { " (\($0))" } ?? "")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    if let provenance = rows.first?.provenance {
+                        HStack(spacing: 4) {
+                            Text("Transcribed by")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ProvenanceBadge(provenance: provenance, style: .full,
+                                            role: "Transcribed by", size: 12)
+                        }
                     }
                 }
                 Spacer()

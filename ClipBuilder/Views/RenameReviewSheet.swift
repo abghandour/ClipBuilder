@@ -11,10 +11,15 @@ struct RenameReviewSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
-                Text(request.suggestions.count == 1
-                     ? "Rename suggestion"
-                     : "\(request.suggestions.count) rename suggestions")
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text(request.suggestions.count == 1
+                         ? "Rename suggestion"
+                         : "\(request.suggestions.count) rename suggestions")
+                        .font(.headline)
+                    if let provenance = request.suggestions.first?.provenance {
+                        ProvenanceBadge(provenance: provenance, style: .full, role: "Named by")
+                    }
+                }
                 Text("These filenames look auto-generated or misspelled, so the analyzer built corrected names from what it saw. Edit them, uncheck any you want to keep, then Rename.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -89,7 +94,9 @@ struct RenameSuggestionEditor: View {
                     guard !name.isEmpty,
                           let video = store.videos.first(where: { $0.id == suggestion.videoID })
                     else { continue }
-                    store.renameVideo(video, to: name)
+                    // An edited proposal is still the model's work in origin;
+                    // the stamp says which model proposed the name.
+                    store.renameVideo(video, to: name, provenance: suggestion.provenance)
                 }
                 onApplied()
             }

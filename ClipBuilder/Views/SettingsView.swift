@@ -317,6 +317,14 @@ private struct TasteSettingsTab: View {
                 Text("What a keeper moment looks like — this profile-wide rubric is yours to write and edit by hand; it rides into every analysis (as the \"highlight\" tag) and every wizard plan. Learning from sample reels refines the per-video-type rubrics below, not this one.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let provenance = store.activeProfile.tasteRubricProvenance {
+                    HStack(spacing: 4) {
+                        Text("Drafted by")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ProvenanceBadge(provenance: provenance, style: .full, role: "Drafted by", size: 12)
+                    }
+                }
                 TextEditor(text: $store.activeProfile.tasteRubric)
                     .font(.body)
                     .frame(minHeight: 90)
@@ -384,6 +392,15 @@ private struct TasteSettingsTab: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !store.activeProfile.houseStyle.isEmpty {
+                    if let provenance = store.activeProfile.houseStyleProvenance {
+                        HStack(spacing: 4) {
+                            Text("Distilled by")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            ProvenanceBadge(provenance: provenance, style: .full,
+                                            role: "Distilled by", size: 12)
+                        }
+                    }
                     TextEditor(text: $store.activeProfile.houseStyle)
                         .font(.body)
                         .frame(minHeight: 110)
@@ -514,7 +531,12 @@ private struct GeneralSettingsTab: View {
             }
 
             Section("Transcription") {
-                LabeledContent("Engine", value: "Apple SpeechAnalyzer (on-device)")
+                LabeledContent("Engine") {
+                    HStack(spacing: 6) {
+                        ProvenanceBadge(provenance: .appleSpeech(), role: "Transcribed by")
+                        Text("Apple SpeechAnalyzer (on-device)")
+                    }
+                }
                 TextField("Language code", text: $store.settings.transcribeLanguage,
                           prompt: Text("Auto (current locale)"))
                 TextField("Vocabulary hint", text: $store.settings.transcribeHint,

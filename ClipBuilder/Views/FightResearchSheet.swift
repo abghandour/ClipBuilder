@@ -23,6 +23,7 @@ struct FightResearchSheet: View {
     @State private var talkingPointsText = ""      // "moment | why fans care" per line
     @State private var sources: [String] = []
     @State private var researchedAt: Date?
+    @State private var provenance: AIProvenance?
 
     @State private var running = false
     @State private var progress: [String] = []
@@ -92,8 +93,14 @@ struct FightResearchSheet: View {
                 if hasResearch {
                     Section("Story — editable, the wizards use exactly this") {
                         LabeledContent("Researched") {
-                            Text(researchedAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "—")
-                                .foregroundStyle(.secondary)
+                            HStack(spacing: 6) {
+                                Text(researchedAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "—")
+                                    .foregroundStyle(.secondary)
+                                if let provenance {
+                                    ProvenanceBadge(provenance: provenance, style: .full,
+                                                    role: "Summarized by", size: 12)
+                                }
+                            }
                         }
                         if !sources.isEmpty {
                             LabeledContent("Sources fetched") {
@@ -168,6 +175,7 @@ struct FightResearchSheet: View {
         fightDate = record.fightDate
         sources = record.sources
         researchedAt = record.researchedAt
+        provenance = record.provenance
         let summary = record.summary
         sentiment = summary["sentiment"] as? String ?? ""
         controversy = summary["controversy"] as? String ?? ""

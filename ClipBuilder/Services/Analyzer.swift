@@ -125,7 +125,7 @@ actor Analyzer {
     private func callThinningFrames(prompt: String, auxiliary: [AIFrame], sampled: [AIFrame],
                                     video: URL? = nil,
                                     model: String?, provider: String?,
-                                    log: @escaping @Sendable (String) -> Void) async throws -> String {
+                                    log: @escaping @Sendable (String) -> Void) async throws -> AIResponse {
         var frames = sampled
         while true {
             do {
@@ -496,7 +496,7 @@ actor Analyzer {
                                           tags: tags)
         let response = try await callThinningFrames(prompt: prompt, auxiliary: [], sampled: frames,
                                                     model: model, provider: provider, log: log)
-        guard let object = AIResponseParser.jsonObject(from: response),
+        guard let object = AIResponseParser.jsonObject(from: response.text),
               let rawTags = object["tags"] as? [String: Any] else { return ([:], []) }
         var cleanTags: [String: [(start: Double, end: Double)]] = [:]
         for (tag, value) in rawTags {
@@ -599,7 +599,7 @@ actor Analyzer {
                                                     auxiliary: markerFrames + ignoreFrames,
                                                     sampled: frames,
                                                     model: model, provider: provider, log: log)
-        guard let object = AIResponseParser.jsonObject(from: response),
+        guard let object = AIResponseParser.jsonObject(from: response.text),
               let rawPeople = object["people"] as? [[String: Any]] else {
             throw AIError.emptyResponse("people detection (unparseable JSON)")
         }
@@ -664,7 +664,7 @@ actor Analyzer {
             ((try? await database.fetchPeople()) ?? []).map { ($0.key, $0.id) })
         try await database.replaceVideoPeople(videoID: video.id, entries: entries.compactMap { entry in
             idsByKey[entry.key].map { ($0, entry.portraitAt, entry.portraitJSON, entry.rangesJSON) }
-        })
+        }, provenance: response.provenance)
         log("People: \(entries.count) found in \(video.filename)")
         let suggestedFilename = (object["suggested_filename"] as? String)
             .flatMap { Self.sanitizedFilenameSuggestion($0, currentFilename: video.filename) }
@@ -678,7 +678,7 @@ actor Analyzer {
     /// air trimmed off before the expensive dense pass spends tokens on them.
     func suggestTrim(video: VideoRecord, provider: String? = nil, model: String? = nil,
                      log: @escaping @Sendable (String) -> Void) async throws
-        -> (start: Double, end: Double, reason: String) {
+        -> (start: Double, end: Double, reason: String, provenance: AIProvenance) {
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let duration = video.duration > 0 ? video.duration : await FFmpeg.duration(of: video.url)
         let frames = await extractFrames(url: video.url, start: 0, end: duration,
@@ -699,7 +699,7 @@ actor Analyzer {
         let response = try await ai.call(prompt: prompt, task: "trim", frames: frames,
                                          model: model, provider: provider,
                                          timeout: 180, log: log)
-        guard let object = AIResponseParser.jsonObject(from: response),
+        guard let object = AIResponseParser.jsonObject(from: response.text),
               let rawStart = (object["start"] as? NSNumber)?.doubleValue,
               let rawEnd = (object["end"] as? NSNumber)?.doubleValue else {
             throw AIError.unusableResponse("The trim suggestion couldn't be read from the model's reply.")
@@ -711,7 +711,7 @@ actor Analyzer {
         }
         let reason = (object["reason"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return (start, end, reason)
+        return (start, end, reason, response.provenance)
     }
 
     /// Portrait AIFrames for a list of markers, labeled by index.
@@ -840,6 +840,9 @@ actor Analyzer {
         }
 
         var events: [(time: Double, fighterKey: String, action: String, points: Double)] = []
+        // The model that answered the (last) scoring window — stamped on
+        // every event row.
+        var scoringProvenance: AIProvenance?
         for (index, window) in windows.enumerated() {
             try Task.checkCancellation()
             log(String(format: "Scoring fight action %d/%d [%.1fs–%.1fs]…",
@@ -855,7 +858,8 @@ actor Analyzer {
                                                             auxiliary: referenceFrames,
                                                             sampled: frames, model: model,
                                                             provider: provider, log: log)
-                guard let object = AIResponseParser.jsonObject(from: response),
+                scoringProvenance = response.provenance
+                guard let object = AIResponseParser.jsonObject(from: response.text),
                       let raw = object["events"] as? [[String: Any]] else {
                     log("Scoring window returned no usable events JSON — continuing")
                     continue
@@ -878,7 +882,8 @@ actor Analyzer {
             }
         }
         events.sort { $0.time < $1.time }
-        try await database.replaceFightEvents(videoID: video.id, events: events)
+        try await database.replaceFightEvents(videoID: video.id, events: events,
+                                              provenance: scoringProvenance)
         let attributed = events.count { !$0.fighterKey.isEmpty }
         let share = events.isEmpty ? 0 : Int(Double(attributed) / Double(events.count) * 100)
         log("\(video.filename): fight action scored — \(events.count) event(s), "
@@ -980,7 +985,7 @@ actor Analyzer {
         var pickedTimes: [Double] = []
         var categoryKey = "general"
         var categoryLabel = "General"
-        if let object = AIResponseParser.jsonObject(from: response) {
+        if let object = AIResponseParser.jsonObject(from: response.text) {
             rubric = (object["rubric"] as? String ?? "")
             pickedTimes = (object["exemplar_frames"] as? [Any] ?? [])
                 .compactMap { ($0 as? NSNumber)?.doubleValue }
@@ -1009,7 +1014,7 @@ actor Analyzer {
         }
         if rubric.isEmpty {
             // Older-style plain-text answer: the whole response is the rubric.
-            rubric = response.replacingOccurrences(of: "```", with: "")
+            rubric = response.text.replacingOccurrences(of: "```", with: "")
         }
         rubric = rubric.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rubric.isEmpty else { throw AIError.emptyResponse("taste rubric") }
@@ -1254,7 +1259,7 @@ actor Analyzer {
             sampled: frames,
             video: nativeVideo,
             model: model, provider: provider, log: log)
-        guard let object = AIResponseParser.jsonObject(from: response) else {
+        guard let object = AIResponseParser.jsonObject(from: response.text) else {
             throw AIError.emptyResponse("analysis (unparseable JSON)")
         }
 
@@ -1482,7 +1487,9 @@ actor Analyzer {
                                   sampleTime: (person.firstSeen.start + person.firstSeen.end) / 2)
             }
         }
-        let attribution = await ai.resolveProviderModel(task: "analysis", provider: provider, model: model)
+        // The provider that actually answered (after any failover) is the
+        // batch's provenance.
+        let attribution = (provider: response.provider, model: response.model)
         // Notes live on the video and can change later — snapshot the set
         // this run actually used so the batch info stays truthful.
         let noteSnapshot = notes

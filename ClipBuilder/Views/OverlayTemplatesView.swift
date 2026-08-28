@@ -114,12 +114,18 @@ struct OverlayTemplatesView: View {
 
     private var templateList: some View {
         List(templates, selection: $selectedName) { template in
-            VStack(alignment: .leading, spacing: 2) {
-                Text(template.name)
-                Text(summary(of: template.composition))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(template.name)
+                    Text(summary(of: template.composition))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if let provenance = template.composition.provenance {
+                    ProvenanceBadge(provenance: provenance, role: "Extracted by", size: 12)
+                }
             }
             .tag(template.name)
             .contextMenu {

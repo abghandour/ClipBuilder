@@ -8,8 +8,9 @@ struct SceneSearchSheet: View {
     @Environment(\.dismiss) private var dismiss
     /// Scenes in the current batch scope — what the query runs against.
     let candidates: [SceneRecord]
-    /// Delivers (query, ranked scene ids) back to the grid.
-    var onResults: (String, [Int64]) -> Void
+    /// Delivers (query, ranked scene ids, the model that ranked them) back
+    /// to the grid.
+    var onResults: (String, [Int64], AIProvenance) -> Void
 
     @State private var query = ""
     @State private var isRunning = false
@@ -91,10 +92,10 @@ struct SceneSearchSheet: View {
                                                      provider: provider, model: model) { message in
                     if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
                 }
-                if ids.isEmpty {
+                if ids.value.isEmpty {
                     errorMessage = "No scenes match that — try describing what's visible, or name the people involved."
                 } else {
-                    onResults(trimmed, ids)
+                    onResults(trimmed, ids.value, ids.provenance)
                     dismiss()
                 }
             } catch {

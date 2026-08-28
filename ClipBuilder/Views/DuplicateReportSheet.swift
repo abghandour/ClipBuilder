@@ -14,6 +14,7 @@ struct DuplicateReportSheet: View {
     @State private var modelTag = ""
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
     @State private var groups: [DuplicateFinder.Group]?
+    @State private var provenance: AIProvenance?
 
     private var videosByID: [Int64: VideoRecord] {
         Dictionary(uniqueKeysWithValues: store.videos.map { ($0.id, $0) })
@@ -91,8 +92,13 @@ struct DuplicateReportSheet: View {
         } else {
             VStack(spacing: 0) {
                 VStack(spacing: 4) {
-                    Text("\(groups.count) duplicate group\(groups.count == 1 ? "" : "s")")
-                        .font(.headline)
+                    HStack(spacing: 8) {
+                        Text("\(groups.count) duplicate group\(groups.count == 1 ? "" : "s")")
+                            .font(.headline)
+                        if let provenance {
+                            ProvenanceBadge(provenance: provenance, style: .full, role: "Compared by")
+                        }
+                    }
                     Text("KEEP marks the recommended copy. Nothing is deleted — reveal a lesser copy in Finder to clean up yourself.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -159,10 +165,12 @@ struct DuplicateReportSheet: View {
         errorMessage = nil
         Task {
             do {
-                groups = try await store.findDuplicateVideos(
+                let report = try await store.findDuplicateVideos(
                     provider: provider, model: model) { message in
                     if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
                 }
+                groups = report.value
+                provenance = report.provenance
             } catch {
                 errorMessage = error.userMessage
             }

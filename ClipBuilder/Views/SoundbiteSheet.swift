@@ -16,6 +16,8 @@ struct SoundbiteSheet: View {
     @State private var modelTag = ""
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
     @State private var soundbites: [SoundbiteFinder.Soundbite]?
+    /// The model that mined them — stamped on the saved notes.
+    @State private var provenance: AIProvenance?
     @State private var included: [Double: Bool] = [:]
     @State private var isSaving = false
 
@@ -84,8 +86,13 @@ struct SoundbiteSheet: View {
     private func results(_ soundbites: [SoundbiteFinder.Soundbite]) -> some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
-                Text("\(soundbites.count) soundbite\(soundbites.count == 1 ? "" : "s")")
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text("\(soundbites.count) soundbite\(soundbites.count == 1 ? "" : "s")")
+                        .font(.headline)
+                    if let provenance {
+                        ProvenanceBadge(provenance: provenance, style: .full, role: "Found by")
+                    }
+                }
                 Text("Checked soundbites save as timestamped video notes — they guide the next analysis and show in the plan sheet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -151,10 +158,12 @@ struct SoundbiteSheet: View {
         errorMessage = nil
         Task {
             do {
-                soundbites = try await store.findSoundbites(
+                let found = try await store.findSoundbites(
                     in: video, provider: provider, model: model) { message in
                     if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
                 }
+                soundbites = found.value
+                provenance = found.provenance
             } catch {
                 errorMessage = error.userMessage
             }
@@ -170,7 +179,8 @@ struct SoundbiteSheet: View {
                 if !soundbite.overlayLine.isEmpty {
                     note += " — overlay: “\(soundbite.overlayLine)”"
                 }
-                _ = await store.addVideoNote(videoID: video.id, at: soundbite.start, text: note)
+                _ = await store.addVideoNote(videoID: video.id, at: soundbite.start, text: note,
+                                             provenance: provenance)
             }
             isSaving = false
             dismiss()

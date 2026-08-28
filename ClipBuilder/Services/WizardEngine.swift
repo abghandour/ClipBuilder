@@ -238,6 +238,41 @@ nonisolated struct WizardPlan: Sendable {
     var headline: String?
     /// Typographic intro-card title (compilation format).
     var introTitle: String?
+    /// The planner's kebab-case name for the output file ("du-plessis-
+    /// strickland-split-decision"); nil falls back to the headline/title.
+    var fileName: String?
+    /// The provider/model that wrote this plan (after any failover).
+    var provenance: AIProvenance? = nil
+
+    /// A filesystem-safe slug: lowercase ASCII letters/digits joined by
+    /// single hyphens, capped at 60 characters; nil when nothing survives.
+    static func slug(_ text: String?) -> String? {
+        guard let text else { return nil }
+        let folded = text.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: nil)
+            .lowercased()
+        var result = ""
+        for character in folded {
+            if character.isASCII, character.isLetter || character.isNumber {
+                result.append(character)
+            } else if result.last != "-" {
+                result.append("-")
+            }
+        }
+        result = result.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        if result.count > 60 {
+            result = String(result.prefix(60))
+            if let cut = result.lastIndex(of: "-"), result.distance(from: cut, to: result.endIndex) < 12 {
+                result = String(result[..<cut])
+            }
+        }
+        return result.isEmpty ? nil : result
+    }
+
+    /// The name the rendered file gets: the planner's own, else one built
+    /// from the headline or intro title, else "reel".
+    var outputBaseName: String {
+        fileName ?? Self.slug(headline) ?? Self.slug(introTitle) ?? "reel"
+    }
 }
 
 /// Autonomous Reels generator — the Swift port of wizard.py: cached research
@@ -357,7 +392,7 @@ actor WizardEngine {
                                         templateNames: templateNames,
                                         tagVocabulary: tagVocabulary)
         let response = try await ai.call(prompt: prompt, task: "parse", timeout: 120, log: emit)
-        guard let object = AIResponseParser.jsonObject(from: response) else {
+        guard let object = AIResponseParser.jsonObject(from: response.text) else {
             throw AIError.emptyResponse("request parsing (unparseable JSON)")
         }
 
@@ -984,6 +1019,7 @@ actor WizardEngine {
           "rationale": "<brief creative strategy explanation>",
           "headline": "<ALL-CAPS result headline for the branded lower-third, from FIGHT OUTCOMES (e.g. \"MILES JOHNS BEATS GIANNI VAZQUEZ\"), or null when no outcome applies>",
           "intro_title": "<3-6 word ALL-CAPS opening title card (compilation format only), or null>",
+          "file_name": "<3-6 word lowercase kebab-case name for the output file saying what the reel IS — the fighters/people or event plus the story angle, e.g. \"du-plessis-strickland-split-decision\" or \"negao-pad-work-highlights\"; letters, digits and hyphens only, no extension>",
           "music": {"name": "<music name from list, or null>", "volume": <1-5>},
           "clips": [
             {
@@ -1190,7 +1226,8 @@ actor WizardEngine {
                           clips: clips,
                           transitions: transitions,
                           headline: cleanLine(raw["headline"], maxWords: 8),
-                          introTitle: cleanLine(raw["intro_title"], maxWords: 7))
+                          introTitle: cleanLine(raw["intro_title"], maxWords: 7),
+                          fileName: WizardPlan.slug(raw["file_name"] as? String))
     }
 
     // MARK: - Caption phase
@@ -1526,17 +1563,19 @@ actor WizardEngine {
         }
 
         func requestPlan(_ prompt: String) async throws -> (plan: WizardPlan?, response: String) {
-            let response = try await ai.call(prompt: prompt, task: "wizard",
-                                             frames: frames.isEmpty ? nil : frames,
-                                             model: options.modelOverride, timeout: 300, log: emit)
+            let reply = try await ai.call(prompt: prompt, task: "wizard",
+                                          frames: frames.isEmpty ? nil : frames,
+                                          model: options.modelOverride, timeout: 300, log: emit)
+            let response = reply.text
             guard let rawPlan = AIResponseParser.jsonObject(from: response) else {
                 emit("The planner's response was not valid JSON — raw response:")
                 emit("──── response ────\n\(String(response.prefix(2000)))\n──── end response ────")
                 return (nil, response)
             }
-            let plan = validatePlan(rawPlan, scenes: inputs.sceneMap,
+            var plan = validatePlan(rawPlan, scenes: inputs.sceneMap,
                                     musicNames: Set(inputs.music.map(\.name)))
                 .map { enforcePinnedOverlays($0, options: options) }
+            plan?.provenance = reply.provenance
             return (plan, response)
         }
 
@@ -1759,20 +1798,19 @@ actor WizardEngine {
                                           fightResearch: inputs.fightResearch,
                                           captionStyleReference: captionStyleReference),
                     task: "captions", timeout: 60, log: emit)
-                captionText = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-                let attribution = await ai.resolveProviderModel(task: "captions")
+                captionText = caption.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 try await database.updateGeneratedCaption(id: result.recordID,
                                                           caption: captionText ?? "",
-                                                          provider: attribution.provider,
-                                                          model: attribution.model)
+                                                          provider: caption.provider,
+                                                          model: caption.model)
                 emit("Caption generated!")
             } catch {
                 emit("Caption generation failed: \(error)")
             }
 
             // Everything a model needs to diagnose this reel, next to it.
-            let planAttribution = await ai.resolveProviderModel(task: "wizard",
-                                                                model: options.modelOverride)
+            let planAttribution = (provider: plan.provenance?.provider ?? "unknown",
+                                   model: plan.provenance?.model)
             writeRunReport(for: result, profile: profile,
                            options: options, inputs: inputs, plan: plan,
                            planPrompt: outcome.prompt, planResponse: outcome.response,
@@ -1981,7 +2019,7 @@ actor WizardEngine {
     /// supports survive, new ones join, contradictions resolve toward the
     /// better-performing reels.
     func distillHouseStyle(database: Database, existing: String,
-                           emit: @escaping @Sendable (String) -> Void) async throws -> String {
+                           emit: @escaping @Sendable (String) -> Void) async throws -> AIOutcome<String> {
         let templates = try await database.fetchAllIGTemplates()
         guard !templates.isEmpty else {
             throw AIError.notConfigured("No analyzed reels yet — analyze some Instagram reels first (Instagram → open a reel → Analyze Reel), then distill.")
@@ -2017,9 +2055,9 @@ actor WizardEngine {
         Return ONLY that text — no preamble, no markdown fences, no JSON.
         """
         let response = try await ai.call(prompt: prompt, task: "distill", timeout: 180, log: emit)
-        let style = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        let style = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !style.isEmpty else { throw AIError.emptyResponse("house style distillation") }
-        return style
+        return AIOutcome(value: style, provenance: response.provenance)
     }
 
     // MARK: - Lessons distillation
@@ -2070,7 +2108,7 @@ actor WizardEngine {
         """
 
         let response = try await ai.call(prompt: prompt, task: "distill", timeout: 180, log: emit)
-        guard let object = AIResponseParser.jsonObject(from: response),
+        guard let object = AIResponseParser.jsonObject(from: response.text),
               let rawLessons = object["lessons"] as? [[String: Any]] else {
             throw AIError.emptyResponse("lesson distillation (unparseable JSON)")
         }
@@ -2079,7 +2117,7 @@ actor WizardEngine {
                   !text.isEmpty else { return nil }
             return (text, (raw["evidence"] as? String) ?? "")
         }
-        try await database.replaceLearnedLessons(distilled)
+        try await database.replaceLearnedLessons(distilled, provenance: response.provenance)
         return distilled.count
     }
 
@@ -2335,7 +2373,9 @@ actor WizardEngine {
         let timelineJSON = (try? JSONEncoder().encode(document))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 
-        let attribution = await ai.resolveProviderModel(task: "wizard", model: options.modelOverride)
+        // The planner that actually answered — not a prediction of the
+        // dispatcher's first choice.
+        let attribution = (provider: plan.provenance?.provider, model: plan.provenance?.model)
         let qualityJSON = (try? JSONEncoder().encode(quality))
             .flatMap { String(data: $0, encoding: .utf8) }
         // The plan's clips with the model's per-clip reasons: reviews show
@@ -2598,13 +2638,18 @@ actor WizardEngine {
                                                                        isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
+        // "<what-it-is>-<duration>s.mp4", e.g. du-plessis-strickland-split-
+        // decision-18s.mp4 — the planner names the reel as part of the plan;
+        // a second render of the same name gets -2, -3, … (the .md run
+        // report sits next to the mp4 under the same base name).
         let totalDuration = Int(plan.clips.reduce(0) { $0 + ($1.end - $1.start) }.rounded())
-        let existing = (try? FileManager.default.contentsOfDirectory(at: directory,
-                                                                     includingPropertiesForKeys: nil)) ?? []
-        let counter = (existing
-            .filter { $0.lastPathComponent.hasPrefix("wiz-") }
-            .compactMap { Int($0.deletingPathExtension().lastPathComponent.split(separator: "-").last ?? "") }
-            .max() ?? 0) + 1
-        return directory.appendingPathComponent("wiz-\(totalDuration)-\(counter).mp4")
+        let base = "\(plan.outputBaseName)-\(totalDuration)s"
+        var url = directory.appendingPathComponent("\(base).mp4")
+        var counter = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = directory.appendingPathComponent("\(base)-\(counter).mp4")
+            counter += 1
+        }
+        return url
     }
 }

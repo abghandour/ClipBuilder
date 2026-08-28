@@ -843,10 +843,17 @@ private struct LessonRow: View {
                     .onSubmit {
                         store.updateLesson(lesson, text: text)
                     }
-                if !lesson.evidence.isEmpty {
-                    Text(lesson.evidence)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                if !lesson.evidence.isEmpty || lesson.provenance != nil {
+                    HStack(spacing: 4) {
+                        if let provenance = lesson.provenance {
+                            ProvenanceBadge(provenance: provenance, role: "Distilled by", size: 11)
+                        }
+                        if !lesson.evidence.isEmpty {
+                            Text(lesson.evidence)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
                 }
             }
 

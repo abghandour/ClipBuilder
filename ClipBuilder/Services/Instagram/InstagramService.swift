@@ -231,7 +231,7 @@ actor InstagramService {
         let response = try await ai.call(prompt: prompt, task: "analysis", frames: frames,
                                          model: model, provider: provider,
                                          timeout: 300, log: log)
-        guard let data = AIResponseParser.jsonData(from: response),
+        guard let data = AIResponseParser.jsonData(from: response.text),
               var template = try? JSONDecoder().decode(ReelTemplate.self, from: data) else {
             throw InstagramError.parseFailed("the AI's template analysis was not valid JSON")
         }
@@ -246,9 +246,8 @@ actor InstagramService {
         let json = (try? JSONEncoder().encode(template))
             .flatMap { String(data: $0, encoding: .utf8) }
             ?? String(data: data, encoding: .utf8) ?? "{}"
-        let attribution = await ai.resolveProviderModel(task: "analysis")
         try await database.saveIGTemplate(mediaID: media.id, templateJSON: json,
-                                          provider: attribution.provider, model: attribution.model)
+                                          provider: response.provider, model: response.model)
         log("Template analysis saved")
         return template
     }

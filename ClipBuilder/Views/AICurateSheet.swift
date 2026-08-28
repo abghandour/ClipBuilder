@@ -18,6 +18,8 @@ struct AICurateSheet: View {
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
     /// Proposals from the finished run — flips the sheet into review mode.
     @State private var proposals: [SceneCurator.Proposal]?
+    /// The curator that made the proposals — stamped on every applied pick.
+    @State private var provenance: AIProvenance?
     @State private var included: [Int64: Bool] = [:]
 
     private var scenesByID: [Int64: SceneRecord] {
@@ -89,8 +91,13 @@ struct AICurateSheet: View {
     private func review(_ proposals: [SceneCurator.Proposal]) -> some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
-                Text("\(proposals.count) proposed promotion\(proposals.count == 1 ? "" : "s")")
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text("\(proposals.count) proposed promotion\(proposals.count == 1 ? "" : "s")")
+                        .font(.headline)
+                    if let provenance {
+                        ProvenanceBadge(provenance: provenance, style: .full, role: "Curated by")
+                    }
+                }
                 Text("Uncheck any you disagree with, then Curate. Everything else stays as it is.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -144,7 +151,7 @@ struct AICurateSheet: View {
                 Button(count == 1 ? "Curate 1 Scene" : "Curate \(count) Scenes") {
                     store.applyCuration(sceneIDs: proposals
                         .filter { included[$0.sceneID] ?? true }
-                        .map(\.sceneID))
+                        .map(\.sceneID), provenance: provenance)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -165,10 +172,11 @@ struct AICurateSheet: View {
                     for: candidates, provider: provider, model: model) { message in
                     if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
                 }
-                if results.isEmpty {
+                if results.value.isEmpty {
                     errorMessage = "The curator promoted nothing — none of these scenes clearly met the rubric."
                 } else {
-                    proposals = results
+                    proposals = results.value
+                    provenance = results.provenance
                 }
             } catch {
                 errorMessage = error.userMessage

@@ -114,6 +114,9 @@ struct FightGraphView: View {
                                    color: Self.bottomColor, up: false)
                     }
                     Spacer()
+                    if let provenance = visible.first?.provenance {
+                        ProvenanceBadge(provenance: provenance, role: "Scored by", size: 11)
+                    }
                 }
             }
             GeometryReader { geo in

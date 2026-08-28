@@ -885,6 +885,7 @@ private struct VideoNotesPanel: View {
     /// AI trim suggestion in flight / its outcome line under the slider.
     @State private var isSuggestingTrim = false
     @State private var trimSuggestionNote: String?
+    @State private var trimSuggestionProvenance: AIProvenance?
     @State private var currentTime = 0.0
     @State private var timeObserver: Any?
     @State private var sectionEndObserver: Any?
@@ -1186,10 +1187,16 @@ private struct VideoNotesPanel: View {
                         scrub(to: time)
                     }
                     if let trimSuggestionNote {
-                        Text(trimSuggestionNote)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            if let trimSuggestionProvenance {
+                                ProvenanceBadge(provenance: trimSuggestionProvenance,
+                                                role: "Suggested by", size: 11)
+                            }
+                            Text(trimSuggestionNote)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
                     }
                 }
                 .onAppear {
@@ -1283,6 +1290,10 @@ private struct VideoNotesPanel: View {
                                         Text(note.atTime.timecode)
                                             .font(.caption.monospacedDigit())
                                             .foregroundStyle(.tint)
+                                        if let provenance = note.provenance {
+                                            ProvenanceBadge(provenance: provenance,
+                                                            role: "Written by", size: 11)
+                                        }
                                         Text(note.note)
                                             .font(.caption)
                                             .multilineTextAlignment(.leading)
@@ -1373,12 +1384,14 @@ private struct VideoNotesPanel: View {
     private func suggestTrim() {
         isSuggestingTrim = true
         trimSuggestionNote = nil
+        trimSuggestionProvenance = nil
         let target = video
         Task {
             do {
                 let suggestion = try await store.suggestTrim(for: target)
                 trimStart = suggestion.start
                 trimEnd = suggestion.end
+                trimSuggestionProvenance = suggestion.provenance
                 trimSuggestionNote = suggestion.reason.isEmpty
                     ? "AI trim: \(suggestion.start.timecode)–\(suggestion.end.timecode)"
                     : "AI trim: \(suggestion.start.timecode)–\(suggestion.end.timecode) — \(suggestion.reason)"

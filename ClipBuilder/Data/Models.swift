@@ -23,6 +23,12 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     var speechAnalyzerModel: String?
     /// When the people-only pass last ran — the gate tag detection requires.
     var peopleDetectedAt: String?
+    /// The model that detected this video's people roster.
+    var peopleProvider: String? = nil
+    var peopleModel: String? = nil
+    /// The model that proposed the current filename; nil = named by hand.
+    var namingProvider: String? = nil
+    var namingModel: String? = nil
     /// VideoType raw value; nil until the analyzer infers it or the user
     /// picks one in the Analyze table.
     var videoType: String?
@@ -30,6 +36,23 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     var url: URL { URL(fileURLWithPath: path) }
 
     var type: VideoType? { videoType.flatMap(VideoType.init(rawValue:)) }
+
+    /// Who ran the latest visual analysis pass.
+    var visualAnalysisProvenance: AIProvenance? {
+        AIProvenance(provider: visualAnalyzerProvider, model: visualAnalyzerModel,
+                     task: "analysis", sqliteDate: visualAnalyzedAt)
+    }
+
+    /// Who detected the people roster.
+    var peopleProvenance: AIProvenance? {
+        AIProvenance(provider: peopleProvider, model: peopleModel,
+                     task: "people", sqliteDate: peopleDetectedAt)
+    }
+
+    /// Who proposed the current filename (nil = renamed by hand or never).
+    var namingProvenance: AIProvenance? {
+        AIProvenance(provider: namingProvider, model: namingModel, task: "naming")
+    }
 }
 
 /// What kind of footage a source video is. The analyzer infers it during the
@@ -137,6 +160,8 @@ nonisolated struct RenameSuggestion: Identifiable, Sendable, Hashable {
     var videoID: Int64
     var currentFilename: String
     var suggestedName: String
+    /// The model that proposed the name — stamped on the video when applied.
+    var provenance: AIProvenance? = nil
 
     var id: Int64 { videoID }
 }
@@ -158,6 +183,13 @@ nonisolated struct FightEventRecord: Identifiable, Sendable, Hashable {
     var fighterKey: String
     var action: String
     var points: Double
+    /// The model that logged this event.
+    var provider: String? = nil
+    var model: String? = nil
+
+    var provenance: AIProvenance? {
+        AIProvenance(provider: provider, model: model, task: "analysis")
+    }
 }
 
 /// The point system for scored fight actions — MMA-judging-flavored weights.
@@ -201,6 +233,10 @@ nonisolated struct FightResearchRecord: Identifiable, Sendable, Hashable {
     var provider: String?
     var model: String?
 
+    var provenance: AIProvenance? {
+        AIProvenance(provider: provider, model: model, task: "fight_research", at: researchedAt)
+    }
+
     var summary: [String: Any] {
         summaryJSON.data(using: .utf8)
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
@@ -230,6 +266,13 @@ nonisolated struct VideoNote: Identifiable, Sendable, Hashable {
     var videoID: Int64
     var atTime: Double
     var note: String
+    /// Set on AI-written notes (saved soundbites); nil = the user's own.
+    var provider: String? = nil
+    var model: String? = nil
+
+    var provenance: AIProvenance? {
+        AIProvenance(provider: provider, model: model, task: "soundbites")
+    }
 }
 
 /// A user-drawn box identifying one person at one moment of a video —
@@ -311,6 +354,11 @@ nonisolated struct AnalysisRun: Identifiable, Sendable, Hashable {
 
     var videoURL: URL { URL(fileURLWithPath: videoPath) }
 
+    /// Who analyzed this batch.
+    var provenance: AIProvenance? {
+        AIProvenance(provider: provider, model: model, task: "analysis", sqliteDate: createdAt)
+    }
+
     /// Decoded note snapshot; nil when this batch predates note snapshots.
     var noteSnapshot: [AnalysisRunNote]? {
         guard let data = notesJSON?.data(using: .utf8) else { return nil }
@@ -336,6 +384,9 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var originalEnd: Double = 0
     /// Promoted to the Curated set (the wizard can be told to use only these).
     var curated: Bool = false
+    /// The AI Curator that promoted it; nil = the user's own pick.
+    var curatedProvider: String? = nil
+    var curatedModel: String? = nil
     /// The analyzer's beat-by-beat story of the sequence.
     var narrative: String?
     /// Entertainment score 0–10 (escalation-aware, audio-excitement boosted).
@@ -367,6 +418,17 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
 
     var duration: Double { endTime - startTime }
     var videoURL: URL { URL(fileURLWithPath: videoPath) }
+
+    /// Who promoted this scene to Curated, when it was the AI Curator.
+    var curationProvenance: AIProvenance? {
+        guard curated else { return nil }
+        return AIProvenance(provider: curatedProvider, model: curatedModel, task: "curate")
+    }
+
+    /// Center Stage paths are computed on-device by Apple Vision tracking.
+    var framingProvenance: AIProvenance? {
+        centerStagePathJSON == nil ? nil : .appleVision(task: "framing")
+    }
 
     /// Decoded Center Stage camera path recorded during analysis; nil when
     /// the scene wasn't tracked (or tracked poorly).
@@ -413,6 +475,10 @@ nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable {
     var wordsJSON: String?
     var provider: String?
     var model: String?
+
+    var provenance: AIProvenance? {
+        AIProvenance(provider: provider, model: model, task: "transcribe")
+    }
 }
 
 nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
@@ -446,9 +512,34 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     /// Cover-frame time (AI-proposed or user-picked) for the Library card's
     /// thumbnail; nil falls back to a near-start frame.
     var coverTime: Double? = nil
+    /// The model that ranked the cover frame; nil = picked by hand.
+    var coverProvider: String? = nil
+    var coverModel: String? = nil
 
     var url: URL { URL(fileURLWithPath: path) }
     var filename: String { url.lastPathComponent }
+
+    var planProvenance: AIProvenance? {
+        AIProvenance(provider: wizardProvider, model: wizardModel, task: "wizard",
+                     sqliteDate: generatedAt)
+    }
+
+    var captionProvenance: AIProvenance? {
+        guard !caption.isEmpty else { return nil }
+        return AIProvenance(provider: captionProvider, model: captionModel, task: "captions",
+                            sqliteDate: generatedAt)
+    }
+
+    var critiqueProvenance: AIProvenance? {
+        guard let critique else { return nil }
+        return AIProvenance(provider: critique.provider, model: critique.model, task: "critique",
+                            sqliteDate: generatedAt)
+    }
+
+    var coverProvenance: AIProvenance? {
+        guard coverTime != nil else { return nil }
+        return AIProvenance(provider: coverProvider, model: coverModel, task: "cover")
+    }
 
     /// clip index → the model's stated reason for picking that clip.
     var planClipReasons: [Int: String] {
@@ -500,6 +591,10 @@ nonisolated struct WizardResearchRecord: Sendable {
     var researchedAt: Date?
     var provider: String?
     var model: String?
+
+    var provenance: AIProvenance? {
+        AIProvenance(provider: provider, model: model, task: "research", at: researchedAt)
+    }
 }
 
 nonisolated struct FeedbackRecord: Identifiable, Sendable, Hashable {
@@ -573,6 +668,14 @@ nonisolated struct WizardLesson: Identifiable, Sendable, Hashable {
     var text: String
     var pinned: Bool
     var evidence: String
+    /// The model that distilled it; nil = user-written.
+    var provider: String? = nil
+    var model: String? = nil
+    var createdAt: String? = nil
+
+    var provenance: AIProvenance? {
+        AIProvenance(provider: provider, model: model, task: "distill", sqliteDate: createdAt)
+    }
 }
 
 /// Variations from one wizard run, presented side by side for an A/B pick.

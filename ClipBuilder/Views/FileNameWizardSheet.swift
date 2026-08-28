@@ -109,10 +109,15 @@ struct FileNameWizardSheet: View {
     private func review(_ suggestions: [RenameSuggestion]) -> some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
-                Text(suggestions.count == 1
-                     ? "Rename suggestion"
-                     : "\(suggestions.count) rename suggestions")
-                    .font(.headline)
+                HStack(spacing: 8) {
+                    Text(suggestions.count == 1
+                         ? "Rename suggestion"
+                         : "\(suggestions.count) rename suggestions")
+                        .font(.headline)
+                    if let provenance = suggestions.first?.provenance {
+                        ProvenanceBadge(provenance: provenance, style: .full, role: "Named by")
+                    }
+                }
                 Text("Edit any name, uncheck files you want to keep as they are, then Rename.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
