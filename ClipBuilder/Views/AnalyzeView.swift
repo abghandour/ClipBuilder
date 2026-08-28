@@ -16,6 +16,7 @@ struct AnalyzeView: View {
     @State private var fightResearchTarget: VideoRecord?
     @State private var soundbiteVideo: VideoRecord?
     @State private var showDuplicateScan = false
+    @State private var showAnalyzeWizard = false
     @FocusState private var renameFocused: Bool
 
     /// Exactly one selected video → the preview pane shows it.
@@ -39,7 +40,8 @@ struct AnalyzeView: View {
                     // its min size mid-layout and trips AppKit's
                     // constraint-loop guard (crash).
                     VideoPreviewPane(video: video,
-                                     onResearch: { fightResearchTarget = video })
+                                     onResearch: { fightResearchTarget = video },
+                                     onNameWizard: { showNameWizard = true })
                         .rememberedPaneWidth("pane.analyze.preview", min: 240, initial: 320, max: 440)
                         .frame(maxHeight: .infinity)
                 }
@@ -57,6 +59,14 @@ struct AnalyzeView: View {
                 // Explicit text + icon content: the toolbar renders plain
                 // Label buttons icon-only regardless of labelStyle.
                 Button {
+                    showAnalyzeWizard = true
+                } label: {
+                    ToolbarBubbleLabel(text: "Wizard Pipeline", systemImage: "wand.and.rays")
+                }
+                .disabled(selection.isEmpty || store.isPipelineRunning)
+                .help("Fire and forget: runs every automated step for the selected videos — people, transcription, analysis, research, naming, curation, framing, generation, critique, covers — in the background while you keep using the app")
+
+                Button {
                     let videos = selectedVideos
                     if !videos.isEmpty { startAnalysis(of: videos) }
                 } label: {
@@ -67,15 +77,6 @@ struct AnalyzeView: View {
                 .help(selection.count > 1
                       ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
                       : "Runs a fresh analysis of the selected video. Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
-
-                Button {
-                    showNameWizard = true
-                } label: {
-                    ToolbarBubbleLabel(text: selection.count > 1 ? "Name \(selection.count) Files" : "Name File",
-                                       systemImage: "textformat")
-                }
-                .disabled(selection.isEmpty || store.isAnalyzing)
-                .help("File Name Wizard: builds a descriptive name for each selected file from what's on record — people detected, video type, fight research, scene stories — and shows every proposal for review before renaming. Analyze-batch names derived from a file update with it.")
 
                 Button {
                     showGenerateSheet = true
@@ -100,6 +101,9 @@ struct AnalyzeView: View {
         }
         .sheet(isPresented: $showDuplicateScan) {
             DuplicateReportSheet()
+        }
+        .sheet(isPresented: $showAnalyzeWizard) {
+            AnalyzeWizardSheet(videos: selectedVideos)
         }
         .sheet(item: $pendingDispatch) { pending in
             DispatchPlanSheet(operation: pending.operation, videos: pending.videos,
@@ -356,6 +360,9 @@ private struct VideoPreviewPane: View {
     /// Opens the fight-research sheet — presented by the parent view, not
     /// here: a .sheet inside this split-view child crashes AppKit layout.
     let onResearch: () -> Void
+    /// Opens the File Name Wizard for this video — same parent-presented
+    /// sheet rule.
+    let onNameWizard: () -> Void
 
     @State private var player: AVPlayer?
     @State private var roster: [VideoPersonRecord] = []
@@ -369,9 +376,18 @@ private struct VideoPreviewPane: View {
                 .frame(maxWidth: .infinity, minHeight: 140, idealHeight: 230, maxHeight: 260)
                 .background(.black, in: RoundedRectangle(cornerRadius: 8))
             VStack(spacing: 2) {
-                Text(video.filename)
-                    .font(.caption)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(video.filename)
+                        .font(.caption)
+                        .lineLimit(1)
+                    Button(action: onNameWizard) {
+                        Image(systemName: "wand.and.sparkles")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.mini)
+                    .help("File Name Wizard: builds a descriptive name for this file from what's on record — people, type, fight research, scene stories — reviewed before renaming")
+                }
                 Text("\(video.duration.timecode) · \(video.width)×\(video.height)")
                     .font(.caption2)
                     .foregroundStyle(.secondary)

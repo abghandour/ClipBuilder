@@ -416,7 +416,8 @@ final class AppStore {
 
     /// Every run is a full pass that lands in a new analyze batch alongside
     /// any earlier ones — delete unwanted batches from the Scenes screen.
-    func analyze(videos targets: [VideoRecord], provider: String? = nil, model: String? = nil) {
+    func analyze(videos targets: [VideoRecord], provider: String? = nil, model: String? = nil,
+                 includeFightScoring: Bool = true) {
         guard let database, !isAnalyzing else { return }
         isAnalyzing = true
         analysisLog = []
@@ -557,20 +558,22 @@ final class AppStore {
                     }
                     // Fight scoring: dense pass over the fight scenes so the
                     // pace/winning graphs light up right after analysis.
-                    do {
-                        analysisStage = "scoring fight action"
-                        let allScenes = (try? await database.fetchScenes(includeExcluded: true)) ?? []
-                        _ = try await analyzer.scoreFightAction(
-                            video: video, scenes: allScenes.filter { $0.videoID == video.id },
-                            profile: profile, database: database,
-                            provider: provider, model: model,
-                            log: { message in
-                                Task { @MainActor in self.analysisLog.append(message) }
-                            })
-                    } catch is CancellationError {
-                        break
-                    } catch {
-                        analysisLog.append("\(video.filename): fight scoring failed — \(error.userMessage)")
+                    if includeFightScoring {
+                        do {
+                            analysisStage = "scoring fight action"
+                            let allScenes = (try? await database.fetchScenes(includeExcluded: true)) ?? []
+                            _ = try await analyzer.scoreFightAction(
+                                video: video, scenes: allScenes.filter { $0.videoID == video.id },
+                                profile: profile, database: database,
+                                provider: provider, model: model,
+                                log: { message in
+                                    Task { @MainActor in self.analysisLog.append(message) }
+                                })
+                        } catch is CancellationError {
+                            break
+                        } catch {
+                            analysisLog.append("\(video.filename): fight scoring failed — \(error.userMessage)")
+                        }
                     }
                     analysisLog.append("\(video.filename): done")
                 } catch is CancellationError {
@@ -605,6 +608,432 @@ final class AppStore {
 
     func cancelAnalysis() {
         analysisTask?.cancel()
+    }
+
+    // MARK: - Wizard Pipeline
+
+    /// Fire-and-forget orchestration state — the bottom bar renders from
+    /// these while the run works through its steps in the background.
+    var isPipelineRunning = false
+    var pipelineLog: [String] = []
+    var pipelineProgress: Double = 0
+    var pipelineStage = ""
+    /// Opens the full pipeline log sheet (clicking the bottom bar).
+    var showPipelineLog = false
+    private var pipelineTask: Task<Void, Never>?
+    // The run's plan + per-unit done marks ("people:12", "analysis:12",
+    // "naming", …) so Resume re-enters exactly where the run stopped instead
+    // of redoing (and re-billing) finished steps.
+    private var pipelineTargets: [VideoRecord] = []
+    private var pipelineOptions: PipelineOptions?
+    private var pipelineDone: Set<String> = []
+    private var pipelineRunIDs: [Int64: Int64] = [:]
+    /// Reels rendered so far this run — the combined results sheet at the
+    /// end covers pre-stop renders too.
+    private var pipelineGenerated: [GeneratedVideoRecord] = []
+    /// New-people review captured mid-run and re-queued when the run ends —
+    /// the pipeline never prompts while it works.
+    private var pipelineDeferredPeople: PeopleReviewRequest?
+
+    /// A stopped run with remaining work — the bottom bar offers Resume.
+    var canResumePipeline: Bool {
+        !isPipelineRunning && pipelineStage == "stopped" && pipelineOptions != nil
+    }
+
+    /// One Wizard Pipeline run: every checked step for the selected videos,
+    /// sequentially, while the app stays usable. People, transcription, and
+    /// the analysis batch run as phases; research, curation, framing,
+    /// generation, and covers follow per video; renames apply automatically
+    /// at the end. Review prompts (new people) are deferred to the end — the
+    /// run never stops to ask.
+    func startPipeline(videos targets: [VideoRecord], options: PipelineOptions) {
+        guard !isPipelineRunning, !targets.isEmpty else { return }
+        guard !isAnalyzing, !isWizardRunning else {
+            presentError("Another analysis or generation is already running — stop it or let it finish first.")
+            return
+        }
+        pipelineTargets = targets
+        pipelineOptions = options
+        pipelineDone = []
+        pipelineRunIDs = [:]
+        pipelineGenerated = []
+        pipelineDeferredPeople = nil
+        pipelineLog = ["Wizard Pipeline: \(targets.count) video(s)"]
+        runPipeline()
+    }
+
+    /// Pick a stopped run back up — finished steps are skipped via their
+    /// done marks.
+    func resumePipeline() {
+        guard canResumePipeline else { return }
+        guard !isAnalyzing, !isWizardRunning else {
+            presentError("Another analysis or generation is already running — stop it or let it finish first.")
+            return
+        }
+        pipelineLog.append("Resuming…")
+        runPipeline()
+    }
+
+    private func runPipeline() {
+        guard let database, let options = pipelineOptions else { return }
+        let targets = pipelineTargets
+        isPipelineRunning = true
+        pipelineStage = "starting"
+
+        // One progress unit per (step, video); naming runs once for all.
+        var totalUnits = 0
+        if options.detectPeople { totalUnits += targets.count }
+        if options.transcribe { totalUnits += targets.count }
+        if options.analyze || options.fightScoring { totalUnits += targets.count }
+        if options.fightResearch { totalUnits += targets.count }
+        if options.curate { totalUnits += targets.count }
+        if options.framing { totalUnits += targets.count }
+        if options.generate { totalUnits += targets.count }
+        if options.generate && options.coverFrame { totalUnits += targets.count }
+        if options.proposeNames { totalUnits += 1 }
+        let total = Double(max(1, totalUnits))
+
+        pipelineTask = Task {
+            var unitsDone = Double(pipelineDone.count)
+            pipelineProgress = min(1, unitsDone / total)
+            // Mark a unit finished; done units are skipped on Resume.
+            func finish(_ key: String) {
+                pipelineDone.insert(key)
+                unitsDone += 1
+                pipelineProgress = min(1, unitsDone / total)
+            }
+            func completed(_ key: String) -> Bool { pipelineDone.contains(key) }
+            func log(_ message: String) { pipelineLog.append(message) }
+            // Sendable relay for service `log:` closures.
+            let relay: @Sendable (String) -> Void = { message in
+                Task { @MainActor in self.pipelineLog.append(message) }
+            }
+            // The run never prompts: rename proposals from inner passes are
+            // superseded by the pipeline's own rename step, and new-people
+            // reviews queue for the end.
+            func swallowPrompts() {
+                if options.proposeNames { pendingRenameReview = nil }
+                if let people = pendingPeopleReview {
+                    pipelineDeferredPeople = people
+                    pendingPeopleReview = nil
+                }
+            }
+
+            // 1. People roster + portraits per video.
+            if options.detectPeople {
+                for video in targets where !completed("people:\(video.id)") {
+                    if Task.isCancelled { break }
+                    pipelineStage = "people — \(video.filename)"
+                    log("Detecting people in \(video.filename)…")
+                    _ = await detectPeopleInVideo(video)
+                    swallowPrompts()
+                    finish("people:\(video.id)")
+                }
+            }
+
+            // 2. Transcription (skips videos that already have one).
+            if options.transcribe {
+                let transcription = transcription
+                let language = settings.transcribeLanguage
+                for video in targets where !completed("transcribe:\(video.id)") {
+                    if Task.isCancelled { break }
+                    pipelineStage = "transcribing — \(video.filename)"
+                    let existing = (try? await database.fetchTranscripts(videoID: video.id)) ?? []
+                    if existing.isEmpty {
+                        log("Transcribing \(video.filename)…")
+                        do {
+                            _ = try await transcription.transcribe(video: video, database: database,
+                                                                   languageCode: language, log: relay)
+                        } catch {
+                            log("\(video.filename): transcription failed — \(error.userMessage)")
+                        }
+                    } else {
+                        log("\(video.filename): transcript already exists")
+                    }
+                    finish("transcribe:\(video.id)")
+                }
+            }
+
+            // 3. The analysis batch — one analyze() call covers every video
+            // still lacking one (fight scoring rides inside per the
+            // checkbox); the fresh run ids scope the follow-up steps.
+            if options.analyze, !Task.isCancelled {
+                let pending = targets.filter { !completed("analysis:\($0.id)") }
+                if !pending.isEmpty {
+                    let before = Dictionary(grouping: analysisRuns, by: \.videoID)
+                        .mapValues { Set($0.map(\.id)) }
+                    pipelineStage = "analyzing \(pending.count) video(s)"
+                    log("Analyzing \(pending.count) video(s) — full details in the Raw Videos activity log")
+                    analyze(videos: pending, includeFightScoring: options.fightScoring)
+                    await analysisTask?.value
+                    await refreshAllNow()
+                    swallowPrompts()
+                    for video in pending {
+                        let prior = before[video.id] ?? []
+                        if let fresh = analysisRuns.first(where: { $0.videoID == video.id && !prior.contains($0.id) }) {
+                            pipelineRunIDs[video.id] = fresh.id
+                            log("\(video.filename): analyzed into “\(fresh.name)”")
+                            finish("analysis:\(video.id)")
+                        }
+                        // No fresh run (cancelled mid-batch) — left unmarked
+                        // so Resume analyzes it.
+                    }
+                }
+            } else if options.fightScoring {
+                for video in targets where !completed("analysis:\(video.id)") {
+                    if Task.isCancelled { break }
+                    let current = videos.first { $0.id == video.id } ?? video
+                    if current.type?.supportsFightFeatures == false {
+                        log("\(video.filename): not a fight — scoring skipped")
+                    } else {
+                        pipelineStage = "fight scoring — \(video.filename)"
+                        let allScenes = (try? await database.fetchScenes(includeExcluded: true)) ?? []
+                        do {
+                            _ = try await analyzer.scoreFightAction(
+                                video: current, scenes: allScenes.filter { $0.videoID == video.id },
+                                profile: activeProfile, database: database,
+                                provider: nil, model: nil, log: relay)
+                        } catch {
+                            log("\(video.filename): fight scoring failed — \(error.userMessage)")
+                        }
+                    }
+                    finish("analysis:\(video.id)")
+                }
+            }
+
+            // 4. Per-video follow-ups.
+            for video in targets {
+                if Task.isCancelled { break }
+                // Analysis may have (re)classified the video — work from the
+                // fresh record.
+                let current = videos.first { $0.id == video.id } ?? video
+                let runID = pipelineRunIDs[video.id]
+
+                if options.fightResearch, !completed("research:\(video.id)") {
+                    pipelineStage = "fight research — \(current.filename)"
+                    if fightResearch[current.id] != nil {
+                        log("\(current.filename): fight research already on record")
+                    } else if current.type?.supportsFightFeatures == false {
+                        log("\(current.filename): not a fight — research skipped")
+                    } else {
+                        let identity = await guessFightIdentity(video: current)
+                        if identity.fighters.trimmingCharacters(in: .whitespaces).isEmpty {
+                            log("\(current.filename): couldn't derive the fight identity — research skipped")
+                        } else {
+                            do {
+                                _ = try await runFightResearch(video: current, identity: identity,
+                                                               log: relay)
+                                log("\(current.filename): fight research done (\(identity.fighters))")
+                            } catch {
+                                log("\(current.filename): fight research failed — \(error.userMessage)")
+                            }
+                        }
+                    }
+                    finish("research:\(video.id)")
+                }
+
+                if options.curate, !completed("curate:\(video.id)") {
+                    if Task.isCancelled { break }
+                    pipelineStage = "curating — \(current.filename)"
+                    let pool = scenes.filter { scene in
+                        scene.videoID == current.id && !scene.curated && !scene.excluded
+                            && (runID == nil || scene.runID == runID)
+                    }
+                    if pool.isEmpty {
+                        log("\(current.filename): nothing new to curate")
+                    } else {
+                        do {
+                            let proposals = try await proposeCuration(for: pool, provider: nil,
+                                                                      model: nil, log: relay)
+                            for proposal in proposals {
+                                try? await database.setSceneCurated(proposal.sceneID, curated: true)
+                            }
+                            await refreshAllNow()
+                            log("\(current.filename): curated \(proposals.count) of \(pool.count) scenes")
+                        } catch {
+                            log("\(current.filename): curation failed — \(error.userMessage)")
+                        }
+                    }
+                    finish("curate:\(video.id)")
+                }
+
+                if options.framing, !completed("framing:\(video.id)") {
+                    if Task.isCancelled { break }
+                    pipelineStage = "framing — \(current.filename)"
+                    let defaults = UserDefaults.standard
+                    let camera = defaults.string(forKey: "analysis.framingCamera")
+                        ?? FramingService.staticCamera
+                    let tagPeople = defaults.object(forKey: "analysis.framingTagPeople") == nil
+                        ? true : defaults.bool(forKey: "analysis.framingTagPeople")
+                    log("Framing \(current.filename)…")
+                    await detectFraming(video: current, camera: camera, tagFramedPeople: tagPeople)
+                    finish("framing:\(video.id)")
+                }
+
+                if options.generate, !completed("generate:\(video.id)") {
+                    if Task.isCancelled { break }
+                    pipelineStage = "generating — \(current.filename)"
+                    var wizard = Self.wizardOptionsFromForm()
+                    wizard.selectedRunIDs = runID.map { [$0] }
+                        ?? Set(analysisRuns.filter { $0.videoID == current.id }.map(\.id))
+                    // Curated scope only when this video's batch actually has
+                    // curated scenes (holds across Resume, unlike a counter).
+                    wizard.curatedOnly = options.curate && scenes.contains { scene in
+                        scene.videoID == current.id && scene.curated
+                            && (runID == nil || scene.runID == runID)
+                    }
+                    wizard.critiqueLoop = options.critique
+                    if wizard.selectedRunIDs.isEmpty {
+                        log("\(current.filename): no analyze batch to generate from — skipped")
+                    } else {
+                        log("Generating a reel from \(current.filename)…")
+                        let before = Set(generatedVideos.map(\.id))
+                        runWizard(options: wizard)
+                        await wizardTask?.value
+                        await refreshAllNow()
+                        let fresh = generatedVideos.filter { !before.contains($0.id) }
+                            .sorted { $0.id < $1.id }
+                        // One combined results sheet at the end beats a
+                        // pop-up per video mid-run.
+                        wizardResults = nil
+                        if fresh.isEmpty {
+                            log("\(current.filename): generation produced nothing"
+                                + (wizardFailureMessage.map { " — \($0)" } ?? ""))
+                        } else {
+                            pipelineGenerated += fresh
+                            log("\(current.filename): \(fresh.count) reel(s) rendered")
+                        }
+                    }
+                    finish("generate:\(video.id)")
+                }
+
+                if options.generate && options.coverFrame, !completed("cover:\(video.id)") {
+                    if Task.isCancelled { break }
+                    pipelineStage = "cover frames — \(current.filename)"
+                    // Per-video reel tracking doesn't survive Resume, so this
+                    // covers any of the run's reels still lacking a cover.
+                    for reelID in pipelineGenerated.map(\.id) where !Task.isCancelled {
+                        guard let reel = generatedVideos.first(where: { $0.id == reelID }),
+                              reel.coverTime == nil else { continue }
+                        if let top = try? await proposeCoverFrames(for: reel, provider: nil,
+                                                                   model: nil, log: { _ in }).first {
+                            setCoverFrame(reel, time: top.time)
+                            log("\(reel.filename): cover set at \(top.time.timecode)")
+                        }
+                    }
+                    finish("cover:\(video.id)")
+                }
+            }
+
+            // 5. File renames — applied automatically in pipeline mode
+            // ("fire and forget"); derived analyze-batch labels follow via
+            // renameVideo.
+            if options.proposeNames, !completed("naming"), !Task.isCancelled {
+                pipelineStage = "renaming files"
+                pendingRenameReview = nil
+                let current = targets.map { target in
+                    videos.first { $0.id == target.id } ?? target
+                }
+                do {
+                    let suggestions = try await suggestFileNames(for: current, provider: nil,
+                                                                 model: nil, log: relay)
+                    if suggestions.isEmpty {
+                        log("No file renames needed")
+                    } else {
+                        for suggestion in suggestions {
+                            guard let video = videos.first(where: { $0.id == suggestion.videoID })
+                            else { continue }
+                            log("Renamed \(suggestion.currentFilename) → \(suggestion.suggestedName)")
+                            renameVideo(video, to: suggestion.suggestedName)
+                        }
+                        await refreshAllNow()
+                    }
+                } catch {
+                    log("File naming failed — \(error.userMessage)")
+                }
+                finish("naming")
+            }
+
+            await refreshAllNow()
+            swallowPrompts()
+            if Task.isCancelled {
+                pipelineStage = "stopped"
+                log("Wizard Pipeline stopped — Resume in the bottom bar picks up where it left off.")
+            } else {
+                if !pipelineGenerated.isEmpty {
+                    wizardResults = WizardRunResults(videos: pipelineGenerated)
+                }
+                // Deferred mid-run prompts present now that the run is over.
+                if let people = pipelineDeferredPeople {
+                    pendingPeopleReview = people
+                    pipelineDeferredPeople = nil
+                }
+                pipelineProgress = 1
+                pipelineStage = "done"
+                log("Wizard Pipeline finished — \(pipelineGenerated.count) reel(s) ready.")
+                pipelineOptions = nil
+            }
+            isPipelineRunning = false
+        }
+    }
+
+    /// The Wizard form's persisted settings as WizardOptions — mirrors
+    /// WizardView.runWizard()'s mapping (keep the two in sync) so pipeline
+    /// reels honor the same format, branding, audio, and duration the user
+    /// set up on the AI Wizard screen. Batch scoping, curatedOnly, and the
+    /// critique flag stay the pipeline's to decide; the source-people filter
+    /// deliberately doesn't apply (a per-video run could end up with zero
+    /// eligible scenes).
+    private static func wizardOptionsFromForm() -> WizardOptions {
+        let defaults = UserDefaults.standard
+        func bool(_ key: String, default fallback: Bool) -> Bool {
+            defaults.object(forKey: key) == nil ? fallback : defaults.bool(forKey: key)
+        }
+        var options = WizardOptions()
+        options.muteSource = bool("wizard.muteSource", default: false)
+        options.useMusic = bool("wizard.useMusic", default: true)
+            && !WizardEngine.availableMusic().isEmpty
+        options.addCaptions = bool("wizard.addCaptions", default: false)
+        options.autoCropWide = bool("wizard.autoCropWide", default: true)
+        options.centerStageWide = bool("wizard.centerStageWide", default: false)
+        options.centerStageCamera = defaults.string(forKey: "wizard.centerStageCamera") ?? "balanced"
+        options.allowWideSplit = bool("wizard.allowWideSplit", default: false)
+        options.enableTextOverlays = bool("wizard.enableTextOverlays", default: false)
+        options.useFightResearch = bool("wizard.useFightResearch", default: true)
+        options.aiInstructions = defaults.string(forKey: "wizard.aiInstructions") ?? ""
+        let duration = defaults.object(forKey: "wizard.targetDuration") == nil
+            ? 10 : defaults.integer(forKey: "wizard.targetDuration")
+        options.targetDurationSeconds = min(180, max(3, duration))
+        options.formatPreset = defaults.string(forKey: "wizard.formatPreset") ?? "custom"
+        let taste = defaults.string(forKey: "wizard.tastePreset") ?? ""
+        options.tastePreset = taste.isEmpty ? nil : taste
+        options.includeWatermark = bool("wizard.includeWatermark", default: true)
+        options.includeHeadline = bool("wizard.includeHeadline", default: true)
+        options.includeOutro = bool("wizard.includeOutro", default: true)
+        return options
+    }
+
+    /// Stop the run: the pipeline task plus whichever inner engine (analysis
+    /// or wizard) is mid-flight right now.
+    func cancelPipeline() {
+        pipelineLog.append("Stopping…")
+        pipelineTask?.cancel()
+        cancelAnalysis()
+        cancelWizard()
+    }
+
+    /// Clear the finished run's bottom bar (the log and any resumable state
+    /// go with it).
+    func dismissPipelineBar() {
+        guard !isPipelineRunning else { return }
+        pipelineStage = ""
+        pipelineProgress = 0
+        pipelineLog = []
+        pipelineOptions = nil
+        pipelineTargets = []
+        pipelineDone = []
+        pipelineRunIDs = [:]
+        pipelineGenerated = []
     }
 
     // MARK: - Analyze batches
