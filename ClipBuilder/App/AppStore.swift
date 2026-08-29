@@ -1000,6 +1000,8 @@ final class AppStore {
         options.autoCropWide = bool("wizard.autoCropWide", default: true)
         options.centerStageWide = bool("wizard.centerStageWide", default: false)
         options.centerStageCamera = defaults.string(forKey: "wizard.centerStageCamera") ?? "balanced"
+        options.screenCropLayouts = WizardOptions.screenCropLayoutsFromDefaults()
+        options.allowedTransitions = WizardOptions.allowedTransitionsFromDefaults()
         options.allowWideSplit = bool("wizard.allowWideSplit", default: false)
         options.enableTextOverlays = bool("wizard.enableTextOverlays", default: false)
         options.useFightResearch = bool("wizard.useFightResearch", default: true)

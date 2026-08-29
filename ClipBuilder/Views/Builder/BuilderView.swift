@@ -144,12 +144,12 @@ struct BuilderView: View {
                     value: Binding(
                         get: { model.document.trackCount },
                         set: { model.setTrackCount($0) }),
-                    in: 1...3)
+                    in: 1...TimelineDocument.maxTracks)
                 // Without a fixed size the bar's width pressure crushes the
                 // label into a one-character-per-line vertical stack.
                 .fixedSize()
                 .lineLimit(1)
-                .help("How many video tracks the timeline shows (1–3)")
+                .help("How many video tracks the timeline shows (1–\(TimelineDocument.maxTracks))")
 
             Divider().frame(height: 16)
 

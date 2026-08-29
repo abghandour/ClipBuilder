@@ -69,6 +69,9 @@ struct ClipInspector: View {
     @Environment(AppStore.self) private var store
     let clip: TimelineClip
 
+    /// "Layout/Area" references from the Screen Crop library.
+    @State private var screenCropChoices: [String] = []
+
     var body: some View {
         let model = store.builder
         VStack(alignment: .leading, spacing: 12) {
@@ -88,12 +91,13 @@ struct ClipInspector: View {
 
             Picker("Transition in", selection: transitionBinding(\.transIn)) {
                 ForEach(transitionChoices, id: \.self) { name in
-                    Text(name).tag(name)
+                    Text(TransitionCatalog.title(for: name)).tag(name)
                 }
             }
+            .help("Effects are previewed in Assets → Effects")
             Picker("Transition out", selection: transitionBinding(\.transOut)) {
                 ForEach(transitionChoices, id: \.self) { name in
-                    Text(name).tag(name)
+                    Text(TransitionCatalog.title(for: name)).tag(name)
                 }
             }
 
@@ -165,6 +169,36 @@ struct ClipInspector: View {
                 .help("Slow motion or speed-up for this clip — audio tempo follows. The clip's timeline length adjusts to match.")
                 Stepper("Stack order: \(clip.stackOrder)", value: binding(\.stackOrder), in: 0...9)
             }
+
+            Divider()
+
+            Picker("Screen crop", selection: Binding(
+                get: { clip.screenCrop ?? "" },
+                set: { value in
+                    store.builder.updateClip(clip.uid) { $0.screenCrop = value.isEmpty ? nil : value }
+                })) {
+                Text("None").tag("")
+                ForEach(screenCropChoices, id: \.self) { reference in
+                    Text(reference).tag(reference)
+                }
+                if let current = clip.screenCrop, !screenCropChoices.contains(current) {
+                    Text("\(current) (missing)").tag(current)
+                }
+            }
+            .help("Frame this clip into a named area of the 9:16 frame (a tracking camera keeps the people inside it) — draw areas in Assets → Screen Crop. Lower layers show through the masked part.")
+            .onAppear { screenCropChoices = ScreenCropStore.allReferences() }
+
+            Menu {
+                ForEach(ScreenCropStore.all().filter { !$0.areas.isEmpty }) { layout in
+                    Button("\(layout.name) — \(layout.areas.map(\.name).joined(separator: " · "))") {
+                        store.builder.applyLayout(layout, from: clip.uid)
+                    }
+                }
+            } label: {
+                Label("Apply Layout…", systemImage: "rectangle.split.2x1")
+            }
+            .controlSize(.small)
+            .help("This clip and the clips after it on its track (one per area) move onto separate tracks at this clip's start, each framed into its area — a different video in every part of the frame.")
 
             Divider()
 

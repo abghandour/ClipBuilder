@@ -65,6 +65,8 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case fonts
     case images
     case overlays
+    case effects
+    case screenCrops
     case wizard
     case builder
     case library
@@ -74,7 +76,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     /// Source > Videos: footage in, scene detection, reference reels.
     static let videoSections: [SidebarSection] = [.analyze, .scenes, .curated, .people, .instagram]
     /// Source asset libraries: media browsers plus overlay templates.
-    static let assetSections: [SidebarSection] = [.music, .fonts, .images, .overlays]
+    static let assetSections: [SidebarSection] = [.music, .fonts, .images, .overlays, .effects, .screenCrops]
     static let createSections: [SidebarSection] = [.wizard, .builder]
     static let outputSections: [SidebarSection] = [.library]
 
@@ -90,7 +92,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .wizard: return "6"
         case .builder: return "7"
         case .library: return "8"
-        case .music, .fonts, .images, .overlays: return nil
+        case .music, .fonts, .images, .overlays, .effects, .screenCrops: return nil
         }
     }
 
@@ -117,6 +119,8 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .fonts: return AssetKind.fonts.title
         case .images: return AssetKind.images.title
         case .overlays: return "Overlays"
+        case .effects: return "Effects"
+        case .screenCrops: return "Screen Crop"
         }
     }
 
@@ -134,6 +138,8 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .fonts: return AssetKind.fonts.systemImage
         case .images: return AssetKind.images.systemImage
         case .overlays: return "character.textbox"
+        case .effects: return "sparkles.tv"
+        case .screenCrops: return "crop"
         }
     }
 }
@@ -180,6 +186,8 @@ struct MainWindowView: View {
             case .fonts: AssetBrowserView(kind: .fonts)
             case .images: AssetBrowserView(kind: .images)
             case .overlays: OverlayTemplatesView()
+            case .effects: EffectsView()
+            case .screenCrops: ScreenCropsView()
             }
         }
         .onChange(of: store.requestedSection) { _, requested in

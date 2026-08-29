@@ -45,6 +45,42 @@ nonisolated struct WizardOptions: Sendable {
     /// features one of them get the tracking camera (others auto-crop);
     /// empty = every wide clip, tracking all people on screen.
     var centerStagePeople: [String] = []
+    /// Screen-crop layouts (by name) the planner may use to show several
+    /// scenes at once, each area framed by its own tracking camera. Empty =
+    /// the feature is off and "screen_crop"/"layout" in a plan are ignored.
+    var screenCropLayouts: [String] = []
+    /// Transition names the planner may use; nil = any. "cut" is always
+    /// allowed.
+    var allowedTransitions: [String]? = nil
+
+    // The AI Wizard form persists these in UserDefaults; the pipeline and
+    // the form read them through the same helpers.
+    static let useScreenCropsKey = "wizard.useScreenCrops"
+    static let screenCropLayoutsKey = "wizard.screenCropLayouts"
+    static let limitTransitionsKey = "wizard.limitTransitions"
+    static let allowedTransitionsKey = "wizard.allowedTransitions"
+
+    /// Layouts the form allows: none when the toggle is off; every layout
+    /// when it's on but nothing is picked.
+    static func screenCropLayoutsFromDefaults() -> [String] {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: useScreenCropsKey) else { return [] }
+        let picked = (defaults.string(forKey: screenCropLayoutsKey) ?? "")
+            .split(separator: ",").map(String.init)
+        let existing = ScreenCropStore.all().filter { !$0.areas.isEmpty }.map(\.name)
+        let chosen = existing.filter { picked.contains($0) }
+        return picked.isEmpty ? existing : chosen
+    }
+
+    /// nil = any transition; otherwise the checked names (possibly empty =
+    /// hard cuts only).
+    static func allowedTransitionsFromDefaults() -> [String]? {
+        let defaults = UserDefaults.standard
+        guard defaults.bool(forKey: limitTransitionsKey) else { return nil }
+        let valid = Set(RenderEngine.allTransitions)
+        return (defaults.string(forKey: allowedTransitionsKey) ?? "")
+            .split(separator: ",").map(String.init).filter(valid.contains)
+    }
     /// Overlay choices the user named explicitly. The template is forced onto
     /// every planned overlay; the text is guaranteed to appear on one clip.
     var pinnedOverlayTemplate: String?
@@ -127,6 +163,23 @@ nonisolated struct WizardPlanClip: Sendable {
     /// Instantly replay this moment in slow motion right after it plays —
     /// expanded into a second slowed clip during validation.
     var replay: Bool = false
+    /// Screen Crop reference ("Layout/Area") from the library: only that
+    /// area of the frame shows for this clip (the footage is framed INTO
+    /// the area by a tracking camera).
+    var screenCrop: String? = nil
+    /// A multi-scene block: this clip's scene fills `screenCrop`'s area and
+    /// `areaClips` fill the layout's other areas, all for this clip's
+    /// duration.
+    var layout: String? = nil
+    var areaClips: [WizardPlanAreaClip] = []
+}
+
+/// One extra scene inside a layout block, in the named area.
+nonisolated struct WizardPlanAreaClip: Sendable {
+    var area: String
+    var sceneID: Int64
+    var start: Double
+    var end: Double
 }
 
 /// Hand-tuned text overlay looks the wizard's AI picks from by name. The AI
@@ -959,6 +1012,24 @@ actor WizardEngine {
             }
         }
 
+        // The layouts the user allowed (Use custom crops): the planner can
+        // show several scenes at once, one per area, or mask one clip to a
+        // single area.
+        let screenCropLayouts = options.screenCropLayouts
+            .compactMap { ScreenCropStore.layout(named: $0) }
+            .filter { !$0.areas.isEmpty }
+        let screenCropBlock = screenCropLayouts.isEmpty ? "" : """
+        ## Available Screen Crops (layouts)
+        A layout splits the 9:16 frame into named areas; each area gets its OWN scene, and a tracking camera frames that scene's people inside the area (pan + zoom follow the fighters, so the area shape is filled with the action). Use a layout block when simultaneous footage tells the story better — two angles of the same exchange, a reaction next to the action, before/after, two fighters' walkouts side by side. 1-3 blocks per reel at most, at meaningful moments; never on every clip.
+        \(screenCropLayouts.map { layout in
+            "- layout \"\(layout.name)\" — areas: " + layout.areas.map {
+                "\"\($0.name)\" (\($0.summary))"
+            }.joined(separator: ", ")
+        }.joined(separator: "\n"))
+        To use one: on a clip set "layout" to the layout name, "screen_crop" to "<layout>/<area>" for the clip's own scene, and "areas" to one entry per REMAINING area of that layout — every area filled, all playing for this clip's duration (the area scenes are trimmed to it). A "screen_crop" without "layout" masks that single clip to one area (the rest of the frame is black) — use sparingly.
+
+        """
+
         return """
         You are an expert combat-sports video editor creating an Instagram Reel for \(brand), a \(domain) channel. You know MMA and grappling: what a knockdown, a submission chain, a scramble, and a real crowd pop look like — and you edit like the best fight-highlight accounts. Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
         \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)\(houseStyleBlock)
@@ -973,21 +1044,12 @@ actor WizardEngine {
         \(musicList)
 
         ## Available Transitions
-        Hard cut: "cut" — the backbone of fast-paced editing; use it for MOST gaps in high-energy content.
-        Action transitions (aggressive accents for combat/sports/high-energy moments):
-        - "knife_slash" — a blade slashes the screen diagonally; the two halves slide apart revealing the next clip underneath
-        - "zoom_punch" — rapid zoom crash into the cut with a flash frame
-        - "whip_left" / "whip_right" — whip-pan motion smear
-        - "impact_shake" — camera shake on the cut; pair with a hit landing
-        - "glitch" — RGB-split digital glitch on the incoming clip
-        - "speed_ramp" — the outgoing clip accelerates into the cut
-        - "flash_white" / "flash_black" — 2-frame flash cut
-        Crossfades (softer, slower): \(RenderEngine.transitions.joined(separator: ", "))
+        \(TransitionCatalog.promptBlock(allowed: options.allowedTransitions))
         GUIDANCE: match transition energy to content energy. For fast-paced action, use "cut" for most gaps and an action transition as an accent at the biggest moments (roughly every 2-4 cuts, varied — e.g. knife_slash or zoom_punch on a knockdown, impact_shake when a hit lands, speed_ramp into a payoff); reserve crossfades for deliberate slowdowns like the moment before a slow-motion replay. For calm content prefer crossfades throughout.
 
         ## Music Beat Analysis
         \(beatInfo)
-
+        \(screenCropBlock)
         \(tasteRubricBlock)## Training Signals (CRITICAL — what this user has taught you)
         \(trainingBlock(signals))
         \(outcomesBlock)\(presetBlock)
@@ -1029,6 +1091,9 @@ actor WizardEngine {
               "wide_split": <true if this WIDE scene should use split-screen>,
               "speed": <playback speed: 1.0 normal; 0.5-0.75 = slow motion for a big payoff moment; 1.25-2.0 = speed-up for a slow build-up, walkout, or grappling stretch worth keeping but not at full length. Use sparingly — at most 1-2 slowed and 1-2 sped-up clips, everything else 1.0>,
               "replay": <true to instantly replay this moment in slow motion right after it plays — reserve for the single best payoff (knockdown/finish); at most one replay per reel>,
+              "screen_crop": <"Layout/Area" from Available Screen Crops when listed and it deliberately fits the clip, else null — most clips are null>,
+              "layout": <a layout name from Available Screen Crops to show several scenes at once in this clip's slot, else null>,
+              "areas": <when "layout" is set: [{"area": "<remaining area name>", "scene_id": <id>, "start": <seconds>, "end": <seconds>}, ...] covering every other area of the layout; else null>,
               "text_overlay": {"text": "<2-6 word line>", "style": "<impact|highlight|banner|minimal>", "animation": "<fade|slide_up|pop|word_reveal>", "kicker": "<1-3 word label or null>", "accent": "<#hex accent color or null for default yellow>", "placement": "<top|center|bottom, or null for top>", "text_case": "<as_written to keep your casing, or null for ALL CAPS>"} or null,
               "reason": "<why this clip, why this position>"
             }
@@ -1045,6 +1110,7 @@ actor WizardEngine {
         - only use scene IDs from the list above
         - only use music names from the list above (or null)
         - only use transition names from the list above
+        - "screen_crop" and "layout" must be null unless Available Screen Crops lists them; area names must belong to the chosen layout, and area scenes follow the same no-overlap rule as clips
         \(options.allowWideSplit
             ? "- For WIDE scenes: set \"wide_split\": true to display as split-screen (top + bottom halves, filling the full 9:16 frame with no black bars)"
             : "- Set \"wide_split\" to false for every clip. WIDE scenes are automatically zoomed to a full-height 9:16 window positioned on the action, so they fill the frame — never plan around letterboxing.")
@@ -1085,7 +1151,8 @@ actor WizardEngine {
     /// footage an earlier clip already uses, sanitize music and transitions.
     private func validatePlan(_ raw: [String: Any],
                               scenes: [Int64: SceneRecord],
-                              musicNames: Set<String>) -> WizardPlan? {
+                              musicNames: Set<String>,
+                              options: WizardOptions) -> WizardPlan? {
         var musicName: String?
         var musicVolume = 3
         if let music = raw["music"] as? [String: Any] {
@@ -1097,6 +1164,16 @@ actor WizardEngine {
 
         var clips: [WizardPlanClip] = []
         var usedRanges: [Int64: [(start: Double, end: Double)]] = [:]
+        // Screen-crop layouts the user allowed, matched case-insensitively
+        // and stored in their canonical spelling (nothing when the feature
+        // is off, so stray plan fields are dropped).
+        let allowedLayouts = Dictionary(
+            options.screenCropLayouts.compactMap { ScreenCropStore.layout(named: $0) }
+                .map { ($0.name.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first })
+        let screenCropReferences = Dictionary(
+            allowedLayouts.values.flatMap(\.references).map { ($0.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first })
         for clipObject in raw["clips"] as? [[String: Any]] ?? [] {
             guard let sceneID = (clipObject["scene_id"] as? NSNumber)?.int64Value,
                   let scene = scenes[sceneID] else { continue }
@@ -1164,6 +1241,45 @@ actor WizardEngine {
             speed = abs(speed - 1) < 0.05 ? 1 : min(2, max(0.5, speed))
             let reason = (clipObject["reason"] as? String)?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            var screenCrop = (clipObject["screen_crop"] as? String)
+                .flatMap { screenCropReferences[$0.trimmingCharacters(in: .whitespaces).lowercased()] }
+            // Layout block: the clip's own scene takes `screen_crop`'s area
+            // (or the layout's first), the "areas" entries fill the rest.
+            var layoutName: String?
+            var areaClips: [WizardPlanAreaClip] = []
+            if let rawLayout = clipObject["layout"] as? String,
+               let layout = allowedLayouts[rawLayout.trimmingCharacters(in: .whitespaces).lowercased()] {
+                let prefix = layout.name.lowercased() + "/"
+                if screenCrop?.lowercased().hasPrefix(prefix) != true { screenCrop = layout.references.first }
+                var usedAreas = Set<String>()
+                if let own = screenCrop { usedAreas.insert(String(own.dropFirst(prefix.count)).lowercased()) }
+                for raw in clipObject["areas"] as? [[String: Any]] ?? [] {
+                    guard let areaName = (raw["area"] as? String)?.trimmingCharacters(in: .whitespaces),
+                          let areaDef = layout.areas.first(where: { $0.name.caseInsensitiveCompare(areaName) == .orderedSame }),
+                          !usedAreas.contains(areaDef.name.lowercased()),
+                          let areaSceneID = (raw["scene_id"] as? NSNumber)?.int64Value,
+                          let areaScene = scenes[areaSceneID] else { continue }
+                    var areaStart = max(areaScene.startTime,
+                                        (raw["start"] as? NSNumber)?.doubleValue ?? areaScene.startTime)
+                    var areaEnd = min(areaScene.endTime,
+                                      (raw["end"] as? NSNumber)?.doubleValue ?? areaScene.endTime)
+                    if areaEnd - areaStart < 0.5 {
+                        areaStart = areaScene.startTime
+                        areaEnd = min(areaScene.endTime, areaStart + (end - start))
+                    }
+                    guard areaEnd - areaStart >= 0.5 else { continue }
+                    // Same footage-once rule as the main clips.
+                    let areaUsed = usedRanges[areaScene.videoID] ?? []
+                    let areaOverlap = areaUsed.reduce(0.0) { $0 + max(0, min(areaEnd, $1.end) - max(areaStart, $1.start)) }
+                    guard areaOverlap <= 0.5 else { continue }
+                    usedRanges[areaScene.videoID, default: []].append((areaStart, areaEnd))
+                    usedAreas.insert(areaDef.name.lowercased())
+                    areaClips.append(WizardPlanAreaClip(area: areaDef.name, sceneID: areaSceneID,
+                                                        start: areaStart.rounded(toPlaces: 2),
+                                                        end: areaEnd.rounded(toPlaces: 2)))
+                }
+                layoutName = areaClips.isEmpty ? nil : layout.name
+            }
             clips.append(WizardPlanClip(sceneID: sceneID,
                                         start: start,
                                         end: end,
@@ -1177,7 +1293,10 @@ actor WizardEngine {
                                         overlayCase: overlayCase,
                                         reason: reason?.isEmpty == false ? reason : nil,
                                         speed: speed,
-                                        replay: clipObject["replay"] as? Bool ?? false))
+                                        replay: clipObject["replay"] as? Bool ?? false,
+                                        screenCrop: screenCrop,
+                                        layout: layoutName,
+                                        areaClips: areaClips))
         }
         guard !clips.isEmpty else { return nil }
 
@@ -1207,7 +1326,7 @@ actor WizardEngine {
         clips = expanded
 
         let needed = max(0, clips.count - 1)
-        let validTransitions = Set(RenderEngine.allTransitions + ["cut"])
+        let validTransitions = Set((options.allowedTransitions ?? RenderEngine.allTransitions) + ["cut"])
         var transitions = (raw["transitions"] as? [String] ?? []).map {
             validTransitions.contains($0) ? $0 : "cut"
         }
@@ -1573,7 +1692,7 @@ actor WizardEngine {
                 return (nil, response)
             }
             var plan = validatePlan(rawPlan, scenes: inputs.sceneMap,
-                                    musicNames: Set(inputs.music.map(\.name)))
+                                    musicNames: Set(inputs.music.map(\.name)), options: options)
                 .map { enforcePinnedOverlays($0, options: options) }
             plan?.provenance = reply.provenance
             return (plan, response)
@@ -2148,12 +2267,38 @@ actor WizardEngine {
             timelineClip.sceneFullDuration = (scene.duration * 10).rounded() / 10
             timelineClip.wide = scene.wide
             timelineClip.cropXFrac = scene.cropXFrac
-            let index = document.videoTrack.count
+            timelineClip.screenCrop = clip.screenCrop
+            let index = document.videoTrack.filter { $0.track == 0 }.count
             if index > 0 {
                 let name = plan.transitions[safe: index - 1] ?? "cut"
                 timelineClip.transIn = name == "cut" ? nil : name
             }
             document.videoTrack.append(timelineClip)
+            // A layout block's other areas become muted clips on their own
+            // (free-form) tracks, stacked over the same slot.
+            if let layoutName = clip.layout {
+                for (slot, areaClip) in clip.areaClips.enumerated() {
+                    guard let areaScene = sceneMap[areaClip.sceneID] else { continue }
+                    let track = min(TimelineDocument.maxTracks - 1, slot + 1)
+                    var extra = TimelineClip()
+                    extra.sceneID = areaClip.sceneID
+                    extra.videoFile = areaScene.videoPath
+                    extra.sourceStart = areaClip.start
+                    extra.sourceEnd = areaClip.end
+                    extra.startTime = cursor
+                    extra.duration = duration
+                    extra.speed = timelineClip.speed
+                    extra.sceneFullDuration = (areaScene.duration * 10).rounded() / 10
+                    extra.wide = areaScene.wide
+                    extra.cropXFrac = areaScene.cropXFrac
+                    extra.track = track
+                    extra.muted = true
+                    extra.screenCrop = ScreenCropStore.reference(layout: layoutName, area: areaClip.area)
+                    document.videoTrack.append(extra)
+                    document.trackCount = max(document.trackCount, track + 1)
+                    document.trackSequential[track] = false
+                }
+            }
 
             if let text = clip.textOverlay, !text.isEmpty {
                 let (composition, isTemplate) = wizardPlanOverlay(for: clip, text: text)
@@ -2297,7 +2442,7 @@ actor WizardEngine {
         let captionStyle = profile.captions
         let extracted = try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
             try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
-                                              scene: job.scene, options: options,
+                                              scene: job.scene, sceneMap: sceneMap, options: options,
                                               captionStyle: captionStyle,
                                               brandOverlays: brandOverlays,
                                               database: database, scratch: scratch,
@@ -2405,8 +2550,22 @@ actor WizardEngine {
     /// One planned clip → one normalized file in a single decode→encode pass:
     /// wide handling, caption overlays, text overlay and mute all ride the
     /// same ffmpeg filter graph.
+    /// Identity references for the tracking camera: the source video's
+    /// named person markers (focus) and ignored ones (avoid).
+    private func markerPortraits(scene: SceneRecord, database: Database) async -> (focus: [Data], avoid: [Data]) {
+        let allMarkers = (try? await database.personMarkers(videoID: scene.videoID)) ?? []
+        let named = allMarkers.filter { $0.personID != nil && !$0.ignored }
+        let ignored = allMarkers.filter(\.ignored)
+        let focus = named.isEmpty ? []
+            : await Analyzer.markerPortraits(url: scene.videoURL, markers: named, duration: scene.videoDuration)
+        let avoid = ignored.isEmpty ? []
+            : await Analyzer.markerPortraits(url: scene.videoURL, markers: ignored, duration: scene.videoDuration)
+        return (focus, avoid)
+    }
+
     private func extractPlannedClip(_ clip: WizardPlanClip, index: Int, of total: Int,
-                                    scene: SceneRecord, options: WizardOptions,
+                                    scene: SceneRecord, sceneMap: [Int64: SceneRecord] = [:],
+                                    options: WizardOptions,
                                     captionStyle: CaptionStyle,
                                     brandOverlays: [URL] = [],
                                     database: Database, scratch: URL,
@@ -2417,6 +2576,11 @@ actor WizardEngine {
         // SOURCE (content box, Center Stage, hints) uses `sourceDuration`.
         let sourceDuration = clip.end - clip.start
         let duration = sourceDuration / clip.speed
+        // Screen crop: the named area's mask rides into every render path.
+        let mask = ScreenCropStore.maskFile(reference: clip.screenCrop, in: scratch)
+        if clip.screenCrop != nil, mask == nil {
+            emit("Clip \(index + 1): screen crop \"\(clip.screenCrop ?? "")\" not found — rendering unmasked")
+        }
         // Screen recordings and reposts bake black bars into the pixels, so
         // the file's aspect lies about the footage. Crop to the detected
         // content box and treat the CONTENT's aspect as the wide signal —
@@ -2515,6 +2679,54 @@ actor WizardEngine {
         }
 
         let output = scratch.appendingPathComponent("clip_\(index).mp4")
+        // Screen crop: the footage is framed INTO the area (tracking camera
+        // at the area's aspect) so the people fill it, then masked. A
+        // layout block also frames every other area's scene and stacks
+        // them all into one composite clip.
+        if let area = ScreenCropStore.area(reference: clip.screenCrop) {
+            let portraits = await markerPortraits(scene: scene, database: database)
+            let tuning = CenterStageService.Tuning.named(options.centerStageCamera)
+            let framed = try await AreaFramer.frame(source: scene.videoURL, start: clip.start,
+                                                    duration: sourceDuration, area: area,
+                                                    focusPortraits: portraits.focus,
+                                                    avoidPortraits: portraits.avoid,
+                                                    tuning: tuning, centerStage: centerStage,
+                                                    scratch: scratch, log: emit)
+            if let layoutName = clip.layout, let layout = ScreenCropStore.layout(named: layoutName),
+               !clip.areaClips.isEmpty, let mask {
+                let main = scratch.appendingPathComponent("clip_\(index)_main.mp4")
+                try await render.extractClip(source: framed, start: 0, duration: duration,
+                                             overlays: overlays, mute: options.muteSource,
+                                             speed: clip.speed, output: main)
+                var entries: [(clip: URL, mask: URL)] = [(main, mask)]
+                for (areaIndex, areaClip) in clip.areaClips.enumerated() {
+                    guard let areaScene = sceneMap[areaClip.sceneID],
+                          let areaDef = layout.areas.first(where: { $0.name == areaClip.area }),
+                          let areaMask = ScreenCropStore.maskFile(
+                              reference: ScreenCropStore.reference(layout: layout.name, area: areaDef.name),
+                              in: scratch) else { continue }
+                    let areaPortraits = await markerPortraits(scene: areaScene, database: database)
+                    let areaSourceDuration = min(areaClip.end - areaClip.start, sourceDuration)
+                    let areaFramed = try await AreaFramer.frame(
+                        source: areaScene.videoURL, start: areaClip.start,
+                        duration: areaSourceDuration, area: areaDef,
+                        focusPortraits: areaPortraits.focus, avoidPortraits: areaPortraits.avoid,
+                        tuning: tuning, centerStage: centerStage, scratch: scratch, log: emit)
+                    let areaOutput = scratch.appendingPathComponent("clip_\(index)_area\(areaIndex).mp4")
+                    try await render.extractClip(source: areaFramed, start: 0,
+                                                 duration: areaSourceDuration / clip.speed,
+                                                 mute: true, speed: clip.speed, output: areaOutput)
+                    entries.append((areaOutput, areaMask))
+                }
+                try await render.compositeAreas(entries, duration: duration, output: output)
+                emit("Clip \(index + 1): layout \"\(layout.name)\" — \(entries.count) scene(s) on screen")
+                return output
+            }
+            try await render.extractClip(source: framed, start: 0, duration: duration,
+                                         overlays: overlays, mute: options.muteSource,
+                                         speed: clip.speed, mask: mask, output: output)
+            return output
+        }
         // Center Stage: reframe the wide sub-range with the tracking camera,
         // then burn overlays/captions/mute into the portrait intermediate
         // through the normal (non-wide) path. With chosen people, only
@@ -2585,6 +2797,7 @@ actor WizardEngine {
                                                  duration: duration,
                                                  overlays: overlays, mute: options.muteSource,
                                                  speed: clip.speed,
+                                                 mask: mask,
                                                  output: output)
                     return output
                 } catch {
@@ -2598,6 +2811,7 @@ actor WizardEngine {
                                          contentBox: contentBox,
                                          overlays: overlays, mute: options.muteSource,
                                          speed: clip.speed,
+                                         mask: mask,
                                          output: output)
         } else if options.autoCropWide && contentIsWide {
             let xFraction = await render.autoCropXFraction(source: scene.videoURL,
@@ -2609,6 +2823,7 @@ actor WizardEngine {
                                              contentBox: contentBox,
                                              overlays: overlays, mute: options.muteSource,
                                              speed: clip.speed,
+                                             mask: mask,
                                              output: output)
             } catch {
                 try await render.extractClip(source: scene.videoURL, start: clip.start,
@@ -2616,6 +2831,7 @@ actor WizardEngine {
                                              contentBox: contentBox,
                                              overlays: overlays, mute: options.muteSource,
                                              speed: clip.speed,
+                                             mask: mask,
                                              output: output)
             }
         } else {
@@ -2624,6 +2840,7 @@ actor WizardEngine {
                                          contentBox: contentBox,
                                          overlays: overlays, mute: options.muteSource,
                                          speed: clip.speed,
+                                         mask: mask,
                                          output: output)
         }
         return output

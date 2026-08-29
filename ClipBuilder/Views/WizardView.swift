@@ -16,6 +16,13 @@ struct WizardView: View {
     @AppStorage("wizard.centerStageCamera") private var centerStageCamera = "balanced"
     @AppStorage("wizard.allowWideSplit") private var allowWideSplit = false
     @AppStorage("wizard.enableTextOverlays") private var enableTextOverlays = false
+    /// Screen-crop layouts the planner may use (Use custom crops).
+    @AppStorage(WizardOptions.useScreenCropsKey) private var useScreenCrops = false
+    @AppStorage(WizardOptions.screenCropLayoutsKey) private var screenCropLayoutsRaw = ""
+    /// Transitions the planner may use; empty raw = any.
+    @AppStorage(WizardOptions.limitTransitionsKey) private var limitTransitions = false
+    @AppStorage(WizardOptions.allowedTransitionsKey) private var allowedTransitionsRaw = ""
+    @State private var availableLayouts: [ScreenCropLayout] = []
     @AppStorage("wizard.useFightResearch") private var useFightResearch = true
     @AppStorage("wizard.aiInstructions") private var aiInstructions = ""
     /// Hard duration for the generated reel, in seconds.
@@ -149,7 +156,10 @@ struct WizardView: View {
         }
         // Loaded once instead of in the Form: availableMusic() lists a
         // directory synchronously, which doesn't belong in a body pass.
-        .task { musicCount = WizardEngine.availableMusic().count }
+        .task {
+            musicCount = WizardEngine.availableMusic().count
+            availableLayouts = ScreenCropStore.all().filter { !$0.areas.isEmpty }
+        }
         // Seed the form from a "Generate Video" request —
         // on arrival, and again in place when its AI interpretation lands.
         .task {
@@ -350,6 +360,76 @@ struct WizardView: View {
                 Toggle("Allow split-screen for wide footage", isOn: $allowWideSplit)
                     .help("Lets the AI stack a wide scene's left/right halves top and bottom. Off = wide footage always zooms to fill the frame instead.")
                 Toggle("AI text overlays", isOn: $enableTextOverlays)
+            }
+
+            Section("Layouts & Effects") {
+                Toggle("Use custom crops (screen-crop layouts)", isOn: $useScreenCrops)
+                    .help("Lets the AI show several scenes at once: a layout splits the frame into areas, each area gets its own scene, and a tracking camera keeps the fighters inside it. Draw layouts in Assets → Screen Crop.")
+                if useScreenCrops {
+                    let picked = Set(screenCropLayoutsRaw.split(separator: ",").map(String.init))
+                    ForEach(availableLayouts) { layout in
+                        Toggle(isOn: Binding(
+                            get: { picked.contains(layout.name) },
+                            set: { on in
+                                var set = picked
+                                if on { set.insert(layout.name) } else { set.remove(layout.name) }
+                                screenCropLayoutsRaw = set.sorted().joined(separator: ",")
+                            })) {
+                            HStack(spacing: 6) {
+                                Text(layout.name)
+                                Text(layout.areas.map(\.name).joined(separator: " · "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if ScreenCropStore.isBuiltIn(layout.name) {
+                                    Text("built-in")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                    }
+                    Text(picked.isEmpty
+                         ? "Nothing picked — the AI may use any of the layouts above."
+                         : "The AI may use the picked layouts freely (1–3 blocks per reel).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Toggle("Limit transitions", isOn: $limitTransitions)
+                    .help("Off: the AI picks any transition it thinks looks best. On: only the checked effects are offered (hard cuts are always allowed). Preview them in Assets → Effects.")
+                if limitTransitions {
+                    let allowed = Set(allowedTransitionsRaw.split(separator: ",").map(String.init))
+                    ForEach(TransitionEffect.Category.allCases.filter { $0 != .cut }, id: \.self) { category in
+                        let members = TransitionCatalog.all.filter { $0.category == category }
+                        DisclosureGroup {
+                            ForEach(members) { effect in
+                                Toggle(isOn: Binding(
+                                    get: { allowed.contains(effect.name) },
+                                    set: { on in setTransitions([effect.name], allowed: on) })) {
+                                    HStack {
+                                        Text(effect.title)
+                                        Text(effect.name)
+                                            .font(.caption2.monospaced())
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Text("\(category.title) (\(members.count { allowed.contains($0.name) })/\(members.count))")
+                                Spacer()
+                                Button("All") { setTransitions(members.map(\.name), allowed: true) }
+                                    .controlSize(.mini)
+                                Button("None") { setTransitions(members.map(\.name), allowed: false) }
+                                    .controlSize(.mini)
+                            }
+                        }
+                    }
+                    Text(allowed.isEmpty
+                         ? "Nothing checked — every gap will be a hard cut."
+                         : "\(allowed.count) transition\(allowed.count == 1 ? "" : "s") allowed, plus hard cuts.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("Source Selection") {
@@ -769,6 +849,14 @@ struct WizardView: View {
             : "Only use footage tagged: \(tags.joined(separator: ", ")). Skip everything else."
     }
 
+    private func setTransitions(_ names: [String], allowed: Bool) {
+        var set = Set(allowedTransitionsRaw.split(separator: ",").map(String.init))
+        for name in names {
+            if allowed { set.insert(name) } else { set.remove(name) }
+        }
+        allowedTransitionsRaw = set.sorted().joined(separator: ",")
+    }
+
     private func runWizard() {
         var options = WizardOptions()
         options.useMusic = useMusic
@@ -779,6 +867,8 @@ struct WizardView: View {
         options.centerStageCamera = centerStageCamera
         options.allowWideSplit = allowWideSplit
         options.enableTextOverlays = enableTextOverlays
+        options.screenCropLayouts = WizardOptions.screenCropLayoutsFromDefaults()
+        options.allowedTransitions = WizardOptions.allowedTransitionsFromDefaults()
         options.useFightResearch = useFightResearch
         options.aiInstructions = aiInstructions
         options.targetDurationSeconds = min(180, max(3, targetDuration))

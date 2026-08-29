@@ -400,7 +400,7 @@ final class BuilderTimelineModel {
     /// Sequential tracks pack end-to-end from 0 in start-time order; free-form
     /// tracks keep clips where the user put them (overlaps render layered).
     func resolveLayout(track: Int) {
-        guard track >= 0, track < 3, document.trackSequential[track] else { return }
+        guard track >= 0, track < TimelineDocument.maxTracks, document.trackSequential[track] else { return }
         let sorted = clips(inTrack: track).sorted { $0.startTime < $1.startTime }
         var cursor = 0.0
         for clip in sorted {
@@ -412,15 +412,41 @@ final class BuilderTimelineModel {
     }
 
     func setTrackSequential(_ sequential: Bool, track: Int) {
-        guard track >= 0, track < 3 else { return }
+        guard track >= 0, track < TimelineDocument.maxTracks else { return }
         registerUndo("Change Track Layout")
         document.trackSequential[track] = sequential
         resolveLayout(track: track)
         documentDidChange()
     }
 
+    /// Lay a screen-crop layout over the timeline: the anchor clip plus
+    /// the clips that follow it on its track (one per area, in time order)
+    /// move onto tracks 0…n at the anchor's start time, each masked to its
+    /// area (the first keeps its audio, the rest are muted). Tracks grow to
+    /// fit and switch to free-form so the clips can overlap in time.
+    func applyLayout(_ layout: ScreenCropLayout, from uid: UUID) {
+        guard let anchor = clip(uid), !layout.areas.isEmpty else { return }
+        registerUndo("Apply Layout")
+        let followers = clips(inTrack: anchor.track)
+            .filter { $0.uid != anchor.uid && $0.startTime >= anchor.startTime }
+            .sorted { $0.startTime < $1.startTime }
+        let members = Array(([anchor] + followers).prefix(layout.areas.count))
+        let needed = min(TimelineDocument.maxTracks, members.count)
+        if document.trackCount < needed { document.trackCount = needed }
+        for (slot, member) in members.prefix(needed).enumerated() {
+            guard let index = clipIndex(member.uid) else { continue }
+            document.videoTrack[index].track = slot
+            document.videoTrack[index].startTime = anchor.startTime
+            document.videoTrack[index].screenCrop =
+                ScreenCropStore.reference(layout: layout.name, area: layout.areas[slot].name)
+            if slot > 0 { document.videoTrack[index].muted = true }
+            document.trackSequential[slot] = false
+        }
+        documentDidChange()
+    }
+
     func setTrackCount(_ count: Int) {
-        let clamped = min(3, max(1, count))
+        let clamped = min(TimelineDocument.maxTracks, max(1, count))
         guard clamped != document.trackCount else { return }
         registerUndo("Change Track Count")
         document.trackCount = clamped

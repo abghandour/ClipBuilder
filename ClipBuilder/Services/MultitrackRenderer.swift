@@ -31,6 +31,8 @@ actor MultitrackRenderer {
         var effectivePosition: String
         var effectiveCropXFrac: Double?
         var freeCrops: [FreeCrop]?
+        /// Screen Crop reference ("Layout/Area") masking this clip.
+        var screenCrop: String?
         var captionsPosition: String?     // nil = captions off for this clip
         /// Playback speed (1 = normal): `duration` is screen time; source
         /// consumption maps through this factor.
@@ -61,6 +63,7 @@ actor MultitrackRenderer {
         var stackOrder: Int
         var cropXFrac: Double?
         var freeCrops: [FreeCrop]?
+        var screenCrop: String?
         var speed: Double = 1
     }
 
@@ -126,6 +129,35 @@ actor MultitrackRenderer {
                 clips[index].wide = false
             } catch {
                 emit("Center Stage failed for clip \(index + 1) (\(error)) — using the static crop")
+            }
+        }
+        // Screen-crop prepass: a clip with an area is framed INTO that area
+        // (tracking camera at the area's aspect, black elsewhere) before the
+        // compositor masks it — so the fighters fill the area rather than
+        // whatever part of the full frame the polygon happens to cover.
+        let framingScratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cb_areas_\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: framingScratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: framingScratch) }
+        for index in clips.indices {
+            guard clips[index].freeCrops?.isEmpty != false,
+                  let area = ScreenCropStore.area(reference: clips[index].screenCrop) else { continue }
+            let sourceSpan = clips[index].duration * clips[index].speed
+            do {
+                emit("Clip \(index + 1): framing into \"\(clips[index].screenCrop ?? "")\"…")
+                let framed = try await AreaFramer.frame(
+                    source: URL(fileURLWithPath: clips[index].sourcePath),
+                    start: clips[index].sourceStart, duration: sourceSpan, area: area,
+                    tuning: .named(centerStageCamera), centerStage: centerStageService,
+                    scratch: framingScratch, log: emit)
+                clips[index].sourcePath = framed.path
+                clips[index].sourceStart = 0
+                clips[index].wide = false
+                clips[index].centerStage = false
+                clips[index].cameraPath = nil
+                clips[index].effectiveCropXFrac = nil
+            } catch {
+                emit("Clip \(index + 1): area framing failed (\(error)) — masking the full frame")
             }
         }
         defer { for url in reframedTemp { try? FileManager.default.removeItem(at: url) } }
@@ -330,7 +362,7 @@ actor MultitrackRenderer {
             }
             guard let sourcePath, duration > 0 else { continue }
 
-            let track = min(max(0, clip.track), 2)
+            let track = min(max(0, clip.track), TimelineDocument.maxTracks - 1)
             let trackSettings = settings[safe: track] ?? TrackSettings()
             let effectivePosition = clip.position ?? trackSettings.defaultPosition
             let effectiveCrop = clip.cropXFrac ?? trackSettings.defaultCropXFrac
@@ -352,6 +384,7 @@ actor MultitrackRenderer {
                                          effectivePosition: effectivePosition,
                                          effectiveCropXFrac: clip.wide ? effectiveCrop : nil,
                                          freeCrops: clip.freeCrops,
+                                         screenCrop: clip.screenCrop,
                                          captionsPosition: captionsResolved == "none" ? nil : captionsResolved,
                                          speed: clip.effectiveSpeed,
                                          cameraPath: cameraPath))
@@ -428,6 +461,7 @@ actor MultitrackRenderer {
                                         stackOrder: clip.stackOrder,
                                         cropXFrac: clip.effectiveCropXFrac,
                                         freeCrops: clip.freeCrops,
+                                        screenCrop: clip.screenCrop,
                                         speed: clip.speed))
         }
 
@@ -510,6 +544,17 @@ actor MultitrackRenderer {
                           "-i", placement.sourcePath]
         }
         for caption in captions { arguments += ["-i", caption.png.path] }
+        // Screen-crop masks: one PNG input per masked placement (after the
+        // captions), looped for the segment so alphamerge has a frame for
+        // every video frame.
+        let maskDirectory = output.deletingLastPathComponent()
+        var maskInputs: [Int: Int] = [:]   // placement index → input index
+        for (index, placement) in ordered.enumerated() where placement.freeCrops?.isEmpty != false {
+            guard let mask = ScreenCropStore.maskFile(reference: placement.screenCrop, in: maskDirectory)
+            else { continue }
+            maskInputs[index] = 2 + ordered.count + captions.count + maskInputs.count
+            arguments += ["-loop", "1", "-t", String(format: "%.3f", duration), "-i", mask.path]
+        }
 
         var filters: [String] = []
         var freeCropOutputs: [Int: [(label: String, x: Int, y: Int)]] = [:]
@@ -561,6 +606,13 @@ actor MultitrackRenderer {
             }
         }
 
+        // Screen crops: the mask's gray level becomes the clip's alpha, so
+        // the overlay chain composites only the named area.
+        for (index, inputIndex) in maskInputs {
+            filters.append("[\(inputIndex):v]format=gray,scale=\(Self.width):\(Self.height)[mk\(index)]")
+            filters.append("[v\(index)][mk\(index)]alphamerge[vm\(index)]")
+        }
+
         // Overlay chain — bottom layer first.
         var overlaySteps: [(label: String, x: Int, y: Int)] = []
         for (index, placement) in ordered.enumerated() {
@@ -571,7 +623,13 @@ actor MultitrackRenderer {
             let wideCropped = placement.isWide && placement.cropXFrac != nil
             let y = (placement.isWide && !wideCropped)
                 ? (Self.slotY[placement.position] ?? 0) : 0
-            overlaySteps.append(("v\(index)", 0, y))
+            // A masked slot-band clip still lands in its band; the mask is
+            // full-frame, so it's shifted by the band's offset.
+            if maskInputs[index] != nil {
+                overlaySteps.append(("vm\(index)", 0, y))
+            } else {
+                overlaySteps.append(("v\(index)", 0, y))
+            }
         }
         var previous = "[0:v]"
         for (stepIndex, step) in overlaySteps.enumerated() {

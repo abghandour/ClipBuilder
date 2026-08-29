@@ -9,6 +9,10 @@ import SwiftUI
 struct PreviewPane: View {
     @Environment(AppStore.self) private var store
 
+    /// Screen-crop areas referenced by the document, resolved once per
+    /// change so the preview can mask clips the way the render will.
+    @State private var cropAreas: [String: ScreenCropArea] = [:]
+
     var body: some View {
         let model = store.builder
         // Snap the preview time to the 0.5s grid so scrubbing reuses cached
@@ -52,6 +56,13 @@ struct PreviewPane: View {
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .aspectRatio(9 / 16, contentMode: .fit)
+        .task(id: Set(model.document.videoTrack.compactMap(\.screenCrop))) {
+            var resolved: [String: ScreenCropArea] = [:]
+            for reference in Set(model.document.videoTrack.compactMap(\.screenCrop)) {
+                if let area = ScreenCropStore.area(reference: reference) { resolved[reference] = area }
+            }
+            cropAreas = resolved
+        }
     }
 
     private func fittedFrame(in size: CGSize) -> CGSize {
@@ -66,16 +77,40 @@ struct PreviewPane: View {
             let sourceTime = model.sourceTime(for: clip, atTimeline: time)
             let settings = model.document.trackSettings[safe: clip.track] ?? TrackSettings()
             let cropped = clip.wide && (clip.cropXFrac ?? settings.defaultCropXFrac) != nil
-            if clip.wide && !cropped {
-                // Slot band: 1080x640 at top/center/bottom.
-                let position = clip.position ?? settings.defaultPosition
-                let slotIndex = ["top": 0, "center": 1, "bottom": 2][position] ?? 0
-                VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
-                    .frame(width: frame.width, height: frame.height / 3)
-                    .offset(y: CGFloat(slotIndex) * frame.height / 3)
-            } else {
-                VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
-                    .frame(width: frame.width, height: frame.height)
+            let area = clip.screenCrop.flatMap { cropAreas[$0] }
+            Group {
+                if let area {
+                    // Screen crop: the render frames the footage INTO the
+                    // area's bounding box (tracking camera) — approximate
+                    // with a center-filled thumbnail there.
+                    let box = AreaFramer.pixelBounds(of: area)
+                    let scale = frame.width / CGFloat(RenderEngine.outputWidth)
+                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: box.width * scale, height: box.height * scale)
+                        .clipped()
+                        .offset(x: box.minX * scale, y: box.minY * scale)
+                } else if clip.wide && !cropped {
+                    // Slot band: 1080x640 at top/center/bottom.
+                    let position = clip.position ?? settings.defaultPosition
+                    let slotIndex = ["top": 0, "center": 1, "bottom": 2][position] ?? 0
+                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                        .frame(width: frame.width, height: frame.height / 3)
+                        .offset(y: CGFloat(slotIndex) * frame.height / 3)
+                } else {
+                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                        .frame(width: frame.width, height: frame.height)
+                }
+            }
+            // Screen crop: only the named area stays visible, like the
+            // render's alpha mask — lower layers show through the rest.
+            .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+            .mask {
+                if let area {
+                    ScreenCropPolygon(points: area.points)
+                } else {
+                    Rectangle()
+                }
             }
         }
     }

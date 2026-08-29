@@ -195,7 +195,9 @@ actor CenterStageService {
         var displayOrigin: CGPoint
     }
 
-    private func loadSource(_ url: URL) async throws -> SourceInfo {
+    /// `requireWide` = the classic 9:16 reframe, which only makes sense on
+    /// landscape footage; area framing (any target aspect) accepts anything.
+    private func loadSource(_ url: URL, requireWide: Bool = true) async throws -> SourceInfo {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw CenterStageError(message: "The file has no video track.")
@@ -204,7 +206,7 @@ actor CenterStageService {
         let preferredTransform = try await track.load(.preferredTransform)
         let displayRect = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
         let size = CGSize(width: abs(displayRect.width), height: abs(displayRect.height))
-        guard size.width > size.height else {
+        guard !requireWide || size.width > size.height else {
             throw CenterStageError(message: "Center Stage needs widescreen (landscape) footage.")
         }
         return SourceInfo(asset: asset, track: track, size: size,
@@ -219,15 +221,20 @@ actor CenterStageService {
     /// `focusRanges` (clip-relative) optionally mark when the people the user
     /// picked are on screen — outside those ranges the camera eases back to
     /// the full frame instead of chasing whoever happens to be visible.
+    /// `frame` is the output size (default 1080×1920): a screen-crop area's
+    /// bounding box makes the camera track people at THAT aspect, so the
+    /// footage fills the area instead of a 9:16 window.
     func reframeClip(source: URL, start: Double, duration: Double,
                      focusRanges: [(start: Double, end: Double)] = [],
                      focusPortraits: [Data] = [],
                      avoidPortraits: [Data] = [],
                      hints: [(time: Double, crop: CGRect)] = [],
                      tuning: Tuning = .balanced,
+                     frame: CGSize? = nil,
                      log: (@Sendable (String) -> Void)? = nil) async throws -> URL {
         let emit = log ?? { _ in }
-        let info = try await loadSource(source)
+        let renderSize = frame ?? Self.defaultRenderSize
+        let info = try await loadSource(source, requireWide: frame == nil)
 
         // Rotated sources (portrait-stored with a rotation flag) need Vision
         // told the display orientation, or people are hunted in sideways
@@ -251,16 +258,19 @@ actor CenterStageService {
         }
 
         let keyframes = cameraPath(from: targets, size: info.size, duration: duration,
-                                   tuning: tuning, hints: hints)
+                                   tuning: tuning, hints: hints,
+                                   aspect: renderSize.width / renderSize.height)
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("centerstage_\(UUID().uuidString).mp4")
         try await export(asset: info.asset, track: info.track, size: info.size,
                          preferredTransform: info.preferredTransform,
                          displayOrigin: info.displayOrigin,
                          start: start, duration: duration,
-                         keyframes: keyframes, output: output)
+                         keyframes: keyframes, renderSize: renderSize, output: output)
         return output
     }
+
+    static let defaultRenderSize = CGSize(width: RenderEngine.outputWidth, height: RenderEngine.outputHeight)
 
     /// Reframe `[start, start+duration]` using a precomputed camera path
     /// (clip-relative, normalized keyframes) — skips the tracking pass, so
@@ -556,8 +566,8 @@ actor CenterStageService {
     /// zoomed out when they spread, biased toward heads, clamped inside the
     /// frame. Returned in pixels.
     nonisolated static func desiredCrop(forUnion union: CGRect, size: CGSize,
-                                        tuning: Tuning) -> CGRect {
-        let aspect = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight)
+                                        tuning: Tuning,
+                                        aspect: Double = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight)) -> CGRect {
         let unionPixels = CGRect(x: union.minX * size.width,
                                  y: union.minY * size.height,
                                  width: union.width * size.width,
@@ -568,6 +578,8 @@ actor CenterStageService {
         var cropHeight = max(neededHeight, neededWidth / aspect,
                              size.height * tuning.minCropHeightFraction)
         cropHeight = min(cropHeight, size.height)
+        // A wide target aspect on a narrow source: the width is the limit.
+        if cropHeight * aspect > size.width { cropHeight = size.width / aspect }
         let cropWidth = cropHeight * aspect
         // Center on the union, biased toward the upper body/head.
         let centerX = unionPixels.midX
@@ -581,8 +593,8 @@ actor CenterStageService {
 
     /// A user hint rect (normalized, top-left) as a legal pixel crop:
     /// 9:16 aspect re-derived from its height and clamped into the frame.
-    nonisolated static func hintCrop(_ hint: CGRect, size: CGSize) -> CGRect {
-        let aspect = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight)
+    nonisolated static func hintCrop(_ hint: CGRect, size: CGSize,
+                                     aspect: Double = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight)) -> CGRect {
         var height = min(hint.height * size.height, size.height)
         var width = height * aspect
         if width > size.width {
@@ -613,16 +625,17 @@ actor CenterStageService {
     /// then tracking resumes. Downsampled to keyframes for the ramps.
     private func cameraPath(from targets: [Target], size: CGSize, duration: Double,
                             tuning: Tuning,
-                            hints: [(time: Double, crop: CGRect)] = []) -> [Keyframe] {
-        let aspect = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight)   // 0.5625
+                            hints: [(time: Double, crop: CGRect)] = [],
+                            aspect: Double = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight)) -> [Keyframe] {
         let pixelHints = hints
-            .map { (time: $0.time, crop: Self.hintCrop($0.crop, size: size)) }
+            .map { (time: $0.time, crop: Self.hintCrop($0.crop, size: size, aspect: aspect)) }
             .sorted { $0.time < $1.time }
         var hintIndex = 0
 
         // Dead-zone + exponential smoothing over the analysis cadence.
         // `pinned` entries (hints) survive keyframe downsampling verbatim.
-        var current = Self.desiredCrop(forUnion: targets[0].union, size: size, tuning: tuning)
+        var current = Self.desiredCrop(forUnion: targets[0].union, size: size, tuning: tuning,
+                                       aspect: aspect)
         var smoothed: [(time: Double, crop: CGRect, pinned: Bool)] = [(0, current, false)]
         let alpha = tuning.smoothing
         for target in targets {
@@ -633,7 +646,8 @@ actor CenterStageService {
                 smoothed.append((hint.time, current, true))
                 hintIndex += 1
             }
-            var desired = Self.desiredCrop(forUnion: target.union, size: size, tuning: tuning)
+            var desired = Self.desiredCrop(forUnion: target.union, size: size, tuning: tuning,
+                                           aspect: aspect)
             if hintIndex < pixelHints.count {
                 let hint = pixelHints[hintIndex]
                 let lead = hint.time - target.time
@@ -690,7 +704,9 @@ actor CenterStageService {
                         preferredTransform: CGAffineTransform,
                         displayOrigin: CGPoint,
                         start: Double, duration: Double,
-                        keyframes: [Keyframe], output: URL) async throws {
+                        keyframes: [Keyframe],
+                        renderSize: CGSize = CenterStageService.defaultRenderSize,
+                        output: URL) async throws {
         let composition = AVMutableComposition()
         let range = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
                                 duration: CMTime(seconds: duration, preferredTimescale: 600))
@@ -711,7 +727,7 @@ actor CenterStageService {
         // display origin must be shifted out first — without it the whole
         // frame lands off-canvas and the export renders black.
         func transform(for crop: CGRect) -> CGAffineTransform {
-            let scale = Double(RenderEngine.outputWidth) / crop.width
+            let scale = renderSize.width / crop.width
             return preferredTransform
                 .concatenating(CGAffineTransform(translationX: -displayOrigin.x, y: -displayOrigin.y))
                 .concatenating(CGAffineTransform(translationX: -crop.minX, y: -crop.minY))
@@ -739,8 +755,7 @@ actor CenterStageService {
         instruction.layerInstructions = [layerInstruction]
 
         let videoComposition = AVMutableVideoComposition()
-        videoComposition.renderSize = CGSize(width: RenderEngine.outputWidth,
-                                             height: RenderEngine.outputHeight)
+        videoComposition.renderSize = renderSize
         videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
         videoComposition.instructions = [instruction]
 

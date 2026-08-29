@@ -12,10 +12,17 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     var imageOverlays: [ImageOverlayItem] = []
     var overlayBlocks: [OverlayBlockItem] = []
     var trackSettings: [TrackSettings] = TimelineDocument.defaultTrackSettings
-    var trackCount: Int = 1                       // 1...3 visible video tracks
-    var trackSequential: [Bool] = [true, true, true]
+    var trackCount: Int = 1                       // 1...maxTracks visible video tracks
+    var trackSequential: [Bool] = Array(repeating: true, count: TimelineDocument.maxTracks)
+
+    /// Video tracks the timeline can show — enough for a screen-crop
+    /// layout with one clip per area (the Python app only knows three).
+    static let maxTracks = 6
 
     static let defaultTrackSettings: [TrackSettings] = [
+        TrackSettings(defaultPosition: "top"),
+        TrackSettings(defaultPosition: "center"),
+        TrackSettings(defaultPosition: "bottom"),
         TrackSettings(defaultPosition: "top"),
         TrackSettings(defaultPosition: "center"),
         TrackSettings(defaultPosition: "bottom"),
@@ -47,19 +54,20 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         imageOverlays = try container.decodeIfPresent([ImageOverlayItem].self, forKey: .imageOverlays) ?? []
         overlayBlocks = try container.decodeIfPresent([OverlayBlockItem].self, forKey: .overlayBlocks) ?? []
         var settings = try container.decodeIfPresent([TrackSettings].self, forKey: .trackSettings) ?? []
-        // Always keep exactly 3 entries with the UI's positional defaults.
+        // Always keep exactly maxTracks entries with the UI's positional defaults.
         let defaults = Self.defaultTrackSettings
-        for index in 0..<3 where index >= settings.count {
+        for index in 0..<Self.maxTracks where index >= settings.count {
             settings.append(defaults[index])
         }
-        for index in 0..<3 where settings[index].defaultPosition.isEmpty {
+        for index in 0..<Self.maxTracks where settings[index].defaultPosition.isEmpty {
             settings[index].defaultPosition = defaults[index].defaultPosition
         }
-        trackSettings = Array(settings.prefix(3))
-        trackCount = min(3, max(1, try container.decodeIfPresent(Int.self, forKey: .trackCount) ?? 1))
-        var sequential = try container.decodeIfPresent([Bool].self, forKey: .trackSequential) ?? [true, true, true]
-        while sequential.count < 3 { sequential.append(true) }
-        trackSequential = Array(sequential.prefix(3))
+        trackSettings = Array(settings.prefix(Self.maxTracks))
+        trackCount = min(Self.maxTracks, max(1, try container.decodeIfPresent(Int.self, forKey: .trackCount) ?? 1))
+        var sequential = try container.decodeIfPresent([Bool].self, forKey: .trackSequential)
+            ?? Array(repeating: true, count: Self.maxTracks)
+        while sequential.count < Self.maxTracks { sequential.append(true) }
+        trackSequential = Array(sequential.prefix(Self.maxTracks))
     }
 
     /// Flatten overlay blocks into concrete text/image items (for rendering
@@ -153,6 +161,10 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     var transOut: String?
     var cropXFrac: Double?
     var freeCrops: [FreeCrop]?
+    /// A Screen Crop reference ("Layout/Area"): only that area of the 9:16
+    /// frame stays visible for this clip (the rest is transparent, so lower
+    /// layers show through). Nil = unmasked.
+    var screenCrop: String?
     var captions: String = "inherit"   // inherit | none | top | middle | bottom
     /// Wide clips only: reframe with the Center Stage tracking camera
     /// instead of a static crop.
@@ -190,6 +202,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case transOut = "trans_out"
         case cropXFrac = "crop_x_frac"
         case freeCrops = "free_crops"
+        case screenCrop = "screen_crop"
         case centerStage = "center_stage"
         case speed
     }
@@ -213,6 +226,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         transOut = try container.decodeIfPresent(String.self, forKey: .transOut)
         cropXFrac = try container.decodeIfPresent(Double.self, forKey: .cropXFrac)
         freeCrops = try container.decodeIfPresent([FreeCrop].self, forKey: .freeCrops)
+        screenCrop = try container.decodeIfPresent(String.self, forKey: .screenCrop)
         centerStage = try container.decodeIfPresent(Bool.self, forKey: .centerStage) ?? false
         speed = try container.decodeIfPresent(Double.self, forKey: .speed)
         captions = Self.decodeCaptions(container, key: .captions, fallback: "inherit",
@@ -257,6 +271,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         } else {
             try container.encodeNil(forKey: .freeCrops)
         }
+        try encodeOrNull(screenCrop, in: &container, forKey: .screenCrop)
         try container.encode(captions, forKey: .captions)
         try container.encode(centerStage, forKey: .centerStage)
         try encodeOrNull(speed, in: &container, forKey: .speed)
@@ -282,6 +297,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.position == rhs.position && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
             && lhs.centerStage == rhs.centerStage && lhs.speed == rhs.speed
             && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
+            && lhs.screenCrop == rhs.screenCrop
     }
 
     var id: UUID { uid }

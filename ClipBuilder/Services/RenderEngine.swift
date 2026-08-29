@@ -106,12 +106,16 @@ actor RenderEngine {
     /// burn any overlays — all in ONE decode→encode pass (captions, text and
     /// mute used to be separate full re-encodes). Sources without audio get a
     /// silent stereo track so every intermediate clip is concat-compatible.
+    /// `mask` is a screen-crop PNG (white = visible): the finished frame is
+    /// alpha-masked with it and composited over black, so only the named
+    /// area of the clip shows.
     func extractClip(source: URL, start: Double, duration: Double,
                      wide: WideTreatment = .none,
                      contentBox: ContentBox? = nil,
                      overlays: [ClipOverlay] = [],
                      mute: Bool = false,
                      speed: Double = 1,
+                     mask: URL? = nil,
                      output: URL) async throws {
         let hasAudio = mute ? false : await FFmpeg.hasAudioStream(source)
         var arguments = ["-y", "-ss", String(format: "%.2f", start), "-i", source.path]
@@ -126,9 +130,16 @@ actor RenderEngine {
                 arguments += ["-i", overlay.png.path]
             }
         }
+        let maskIndex = overlayBase + overlays.count
+        if let mask {
+            arguments += ["-loop", "1", "-t", String(format: "%.2f", duration), "-i", mask.path]
+        }
 
         var filters: [String] = []
-        let baseLabel = overlays.isEmpty ? "[vout]" : "[base]"
+        // With a mask, the overlay chain's result is an intermediate the
+        // masking stage turns into [vout].
+        let finalLabel = mask == nil ? "[vout]" : "[premask]"
+        let baseLabel = overlays.isEmpty ? finalLabel : "[base]"
         // Baked-in bars come off first, so the wide treatments below see the
         // real footage; every later iw/ih refers to the cropped stream.
         var sourceStream = "[0:v]"
@@ -165,7 +176,7 @@ actor RenderEngine {
         // Overlay chain (single-frame PNG inputs persist via repeatlast).
         var previous = baseLabel
         for (index, overlay) in overlays.enumerated() {
-            let outLabel = index == overlays.count - 1 ? "[vout]" : "[ovl\(index)]"
+            let outLabel = index == overlays.count - 1 ? finalLabel : "[ovl\(index)]"
             var inputLabel = "[\(overlayBase + index):v]"
             var xExpr = "\(overlay.x)"
             var yExpr = "\(overlay.y)"
@@ -196,6 +207,13 @@ actor RenderEngine {
             filters.append(step + outLabel)
             previous = outLabel
         }
+        if mask != nil {
+            filters.append("[\(maskIndex):v]format=gray,scale=\(Self.outputWidth):\(Self.outputHeight)[maskv]")
+            filters.append("\(finalLabel)[maskv]alphamerge[masked]")
+            filters.append(String(format: "color=c=black:s=%dx%d:r=30:d=%.2f[maskbg]",
+                                  Self.outputWidth, Self.outputHeight, duration))
+            filters.append("[maskbg][masked]overlay=shortest=1,format=yuv420p[vout]")
+        }
 
         arguments += ["-filter_complex", filters.joined(separator: ";"),
                       "-map", "[vout]", "-map", hasAudio ? "0:a" : "1:a"]
@@ -204,6 +222,40 @@ actor RenderEngine {
         }
         arguments += ["-t", String(format: "%.2f", duration)]
         try await FFmpeg.run(arguments + FFmpeg.encodeArgs + [output.path], timeout: 900)
+    }
+
+    /// A screen-crop layout block: every entry is a normalized 1080×1920
+    /// clip already framed into its area, paired with the area's mask PNG.
+    /// Each is alpha-masked and stacked over black; the first entry's audio
+    /// is the block's audio. Shorter entries hold their last frame.
+    func compositeAreas(_ entries: [(clip: URL, mask: URL)], duration: Double,
+                        output: URL) async throws {
+        guard !entries.isEmpty else { throw AIError.unusableResponse("A layout block needs at least one area clip.") }
+        let w = Self.outputWidth
+        let h = Self.outputHeight
+        var arguments: [String] = ["-y", "-f", "lavfi", "-i",
+                                   String(format: "color=c=black:s=%dx%d:r=30:d=%.3f", w, h, duration)]
+        var filters: [String] = []
+        var previous = "[0:v]"
+        for (index, entry) in entries.enumerated() {
+            let clipIndex = 1 + index * 2
+            let maskIndex = clipIndex + 1
+            arguments += ["-i", entry.clip.path,
+                          "-loop", "1", "-t", String(format: "%.3f", duration), "-i", entry.mask.path]
+            filters.append("[\(maskIndex):v]format=gray,scale=\(w):\(h)[mk\(index)]")
+            filters.append("[\(clipIndex):v]scale=\(w):\(h),setsar=1,fps=30[v\(index)]")
+            filters.append("[v\(index)][mk\(index)]alphamerge[am\(index)]")
+            let outLabel = index == entries.count - 1 ? "[stack]" : "[o\(index)]"
+            filters.append("\(previous)[am\(index)]overlay=x=0:y=0:shortest=0:eof_action=repeat\(outLabel)")
+            previous = outLabel
+        }
+        filters.append("[stack]format=yuv420p[vout]")
+        arguments += ["-filter_complex", filters.joined(separator: ";"),
+                      "-map", "[vout]", "-map", "1:a?",
+                      "-t", String(format: "%.3f", duration)]
+        arguments += FFmpeg.encodeArgs
+        arguments.append(output.path)
+        try await FFmpeg.run(arguments, timeout: 900)
     }
 
     /// Plain trim + normalize (no overlays).
