@@ -53,6 +53,11 @@ nonisolated struct WizardOptions: Sendable {
     /// allowed.
     var allowedTransitions: [String]? = nil
 
+    /// What performs on the connected Instagram account (measured from its
+    /// reels) — steers the planner's numbers, the caption's hashtags, and
+    /// the critic's engagement forecast. Nil until report data exists.
+    var accountBenchmarks: AccountBenchmarks? = nil
+
     // The AI Wizard form persists these in UserDefaults; the pipeline and
     // the form read them through the same helpers.
     static let useScreenCropsKey = "wizard.useScreenCrops"
@@ -787,6 +792,27 @@ actor WizardEngine {
             }
         }
 
+        // The account's own measurements outrank the playbook's generic
+        // numbers; a reference template and an explicit duration still win.
+        var benchmarksBlock = ""
+        if let benchmarks = options.accountBenchmarks {
+            if template == nil, let min = benchmarks.durationSweetSpotMin, let max = benchmarks.durationSweetSpotMax,
+               let target = benchmarks.durationTopMedian, min < max {
+                targetDuration = target
+                durationMin = min
+                durationMax = max
+            }
+            if template == nil, let cuts = benchmarks.cutsPerMinuteTop, cuts > 0 {
+                cutsPerMinute = cuts
+            }
+            benchmarksBlock = """
+
+
+            ## THIS ACCOUNT'S BENCHMARKS (measured from its Instagram insights — outranks the generic playbook)
+            \(benchmarks.plannerBlock())
+            """
+        }
+
         // An explicit user duration beats research and template alike. It
         // bounds the FINISHED file: each crossfade eats ~0.5s of overlap in
         // the render, so the planned clip total is padded by the expected
@@ -1032,7 +1058,7 @@ actor WizardEngine {
 
         return """
         You are an expert combat-sports video editor creating an Instagram Reel for \(brand), a \(domain) channel. You know MMA and grappling: what a knockdown, a submission chain, a scramble, and a real crowd pop look like — and you edit like the best fight-highlight accounts. Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
-        \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)\(houseStyleBlock)
+        \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)\(houseStyleBlock)\(benchmarksBlock)
 
         ## MMA Reels Playbook (curated editorial baseline)
         \(researchJSON)\(buzzBlock)
@@ -1374,7 +1400,8 @@ actor WizardEngine {
     private func captionPrompt(profile: BrandProfile, plan: WizardPlan,
                                duration: Double, tags: [String],
                                fightResearch: [FightResearchRecord] = [],
-                               captionStyleReference: String? = nil) -> String {
+                               captionStyleReference: String? = nil,
+                               benchmarks: AccountBenchmarks? = nil) -> String {
         let handle = profile.socials["instagram"]?.handle ?? ""
         let domain = profile.effectiveDomain
         let languages = profile.captionLanguages.isEmpty ? ["en"] : profile.captionLanguages
@@ -1395,11 +1422,11 @@ actor WizardEngine {
         - Creative strategy: \(plan.rationale)
         \(plan.headline.map { "- Result headline shown on the video: \($0) — the caption must tell this result accurately.\n" } ?? "")- Tags/content: \(tags.joined(separator: ", "))
         - Music: \(plan.musicName ?? "none")
-        \(captionResearchLines(fightResearch))\(captionStyleReference.map { "- Caption style of the reel the user picked as reference — match its voice and structure: \($0)\n" } ?? "")
+        \(captionResearchLines(fightResearch))\(captionStyleReference.map { "- Caption style of the reel the user picked as reference — match its voice and structure: \($0)\n" } ?? "")\(benchmarks?.captionBlock() ?? "")
         Requirements:
         - Caption should be 1-3 punchy lines that drive engagement (likes, comments, saves, shares)
         - Include a hook or question to encourage comments
-        - Add 5-10 relevant hashtags (mix of broad \(domain) hashtags + niche + trending)
+        - Add 5-10 relevant hashtags (mix of broad \(domain) hashtags + niche + trending); when measured hashtags are listed above, lead with the ones that fit this reel
         \(languageRule)
         - Keep it authentic to \(domain) culture
         - Do NOT use emojis excessively (max 2-3 per language block)
@@ -1915,7 +1942,8 @@ actor WizardEngine {
                     prompt: captionPrompt(profile: profile, plan: plan,
                                           duration: result.duration, tags: tagsUsed,
                                           fightResearch: inputs.fightResearch,
-                                          captionStyleReference: captionStyleReference),
+                                          captionStyleReference: captionStyleReference,
+                                          benchmarks: options.accountBenchmarks),
                     task: "captions", timeout: 60, log: emit)
                 captionText = caption.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 try await database.updateGeneratedCaption(id: result.recordID,

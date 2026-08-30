@@ -26,6 +26,41 @@ struct InstagramPublishSheet: View {
     private var isPublishing: Bool { phase == .publishing }
     private var connected: Bool { store.settings.instagram.isGraphConnected }
 
+    /// What the account's own numbers say about timing and hashtags.
+    @ViewBuilder
+    private func publishTips(_ benchmarks: AccountBenchmarks) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !benchmarks.bestPostingSlots.isEmpty {
+                Label("Best times to post: " + benchmarks.bestPostingSlots.map(\.label).joined(separator: ", ")
+                      + " (your local time — where this account's reels reached the most)",
+                      systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if benchmarks.topHashtags.contains(where: { $0.lift >= 1 }) {
+                HStack(spacing: 8) {
+                    Button("Add Top Hashtags") { addTopHashtags(benchmarks) }
+                        .controlSize(.small)
+                        .disabled(isPublishing)
+                        .help("Appends the hashtags that ride this account's best-reaching posts")
+                    Text(benchmarks.topHashtags.filter { $0.lift >= 1 }.prefix(5).map(\.tag).joined(separator: " "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private func addTopHashtags(_ benchmarks: AccountBenchmarks) {
+        let present = Set(ReportHTML.matches(#"(#[\p{L}0-9_]+)"#, in: caption).map { $0[0].lowercased() })
+        let missing = benchmarks.topHashtags.filter { $0.lift >= 1 }.prefix(6).map(\.tag)
+            .filter { !present.contains($0.lowercased()) }
+        guard !missing.isEmpty else { return }
+        caption = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+            + (caption.isEmpty ? "" : "\n") + missing.joined(separator: " ")
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -76,6 +111,10 @@ struct InstagramPublishSheet: View {
                     Toggle("Also show in the main feed", isOn: $shareToFeed)
                         .disabled(isPublishing)
                         .help("Off = the reel appears only in the Reels tab, not the profile feed")
+
+                    if let benchmarks = store.igBenchmarks {
+                        publishTips(benchmarks)
+                    }
 
                     if !progress.isEmpty {
                         VStack(alignment: .leading, spacing: 3) {

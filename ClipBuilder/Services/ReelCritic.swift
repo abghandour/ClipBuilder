@@ -14,11 +14,18 @@ nonisolated struct ReelCritique: Codable, Sendable, Hashable {
     var notes: [String]
     /// The critic's recommendation to build another version.
     var regenerate: Bool
+    /// 0–100: how the critic expects THIS account's audience to respond
+    /// (saves, shares, watch-through), judged against the account
+    /// benchmarks. Nil when no benchmarks were available.
+    var forecast: Int? = nil
+    var forecastReasons: [String]? = nil
     /// Which judge produced this review.
     var provider: String?
     var model: String?
 
-    var shortLabel: String { "AI critique \(score)/100" }
+    var shortLabel: String {
+        "AI critique \(score)/100" + (forecast.map { " · forecast \($0)" } ?? "")
+    }
 }
 
 /// Watches a rendered reel (sampled frames + the plan that produced it) and
@@ -93,6 +100,9 @@ nonisolated enum ReelCritic {
             notes: strings("notes"),
             regenerate: (object["regenerate"] as? Bool)
                 ?? ((object["regenerate"] as? NSNumber)?.boolValue ?? false),
+            forecast: options.accountBenchmarks == nil ? nil
+                : (object["engagement_forecast"] as? NSNumber).map { max(0, min(100, $0.intValue)) },
+            forecastReasons: strings("forecast_reasons").isEmpty ? nil : strings("forecast_reasons"),
             provider: response.provider,
             model: response.model)
         // A judge that likes the reel doesn't get to demand a rebuild, and a
@@ -100,6 +110,14 @@ nonisolated enum ReelCritic {
         if critique.score >= 85 { critique.regenerate = false }
         if critique.regenerate && critique.notes.isEmpty && critique.issues.isEmpty {
             critique.regenerate = false
+        }
+        // A weak engagement forecast is a reason to try again even when the
+        // craft is fine; its reasons ride into the re-plan as notes.
+        if let reasons = critique.forecastReasons, !reasons.isEmpty {
+            critique.notes += reasons.map { "Engagement: \($0)" }
+        }
+        if let forecast = critique.forecast, forecast < 55, critique.score < 92, !critique.notes.isEmpty {
+            critique.regenerate = true
         }
         return critique
     }
@@ -142,6 +160,10 @@ nonisolated enum ReelCritic {
             lines.append("\n## House style")
             lines.append(profile.houseStyle)
         }
+        if let benchmarks = options.accountBenchmarks {
+            lines.append("\n## This account's audience (forecast against THIS, not generic best practice)")
+            lines.append(benchmarks.criticBlock())
+        }
         if !previous.isEmpty {
             lines.append("\n## Earlier versions of this same run")
             for (index, earlier) in previous.enumerated() {
@@ -159,7 +181,9 @@ nonisolated enum ReelCritic {
           "strengths": ["<what genuinely works>"],
           "issues": ["<specific problems visible in the rendered frames>"],
           "notes": ["<concrete, actionable instructions for the planner's next attempt — name clips by number>"],
-          "regenerate": <true only if score < 85 AND the issues are fixable by re-planning from the same footage>
+          "regenerate": <true only if score < 85 AND the issues are fixable by re-planning from the same footage>,
+          "engagement_forecast": <0-100: how THIS account's audience will respond (saves, shares, watch-through), judged against the account benchmarks above — 50 = a typical reel for the account, 75+ = top quartile; omit when no benchmarks were given>,
+          "forecast_reasons": ["<what in the rendered reel drives or drags the forecast, tied to the top/bottom-quartile traits — specific, actionable for the planner>"]
         }
         """)
         return lines.joined(separator: "\n")

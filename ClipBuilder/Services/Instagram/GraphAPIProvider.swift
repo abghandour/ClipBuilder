@@ -33,17 +33,31 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
         guard let url = components.url else {
             throw InstagramError.fetchFailed("Invalid Graph API URL for \(path)")
         }
+        return try await getJSON(url: url, label: path)
+    }
+
+    /// Absolute-URL variant — `paging.next` links already carry the token.
+    func getJSON(url: URL, label: String) async throws -> [String: Any] {
         let (data, _) = try await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 30))
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw InstagramError.parseFailed("Graph API returned non-JSON for \(path)")
+            throw InstagramError.parseFailed("Graph API returned non-JSON for \(label)")
         }
         if let error = object["error"] as? [String: Any] {
             let message = error["message"] as? String ?? "unknown error"
-            if (error["code"] as? Int) == 190 {
+            switch error["code"] as? Int {
+            case 190:
                 throw InstagramError.fetchFailed(
                     "Instagram access token expired or invalid — reconnect in Settings → Instagram. (\(message))")
+            case 4, 17, 32, 613:
+                throw InstagramError.fetchFailed(
+                    "Instagram rate limit reached (\(message)) — the next Refresh resumes where this one stopped")
+            case 10, 200:
+                throw InstagramError.fetchFailed(
+                    "Instagram refused \(label): \(message) — the connected token may lack a permission "
+                    + "(instagram_manage_insights, instagram_manage_comments, pages_read_engagement)")
+            default:
+                throw InstagramError.fetchFailed("Graph API: \(message)")
             }
-            throw InstagramError.fetchFailed("Graph API: \(message)")
         }
         return object
     }
@@ -361,5 +375,254 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
         else { return false }
         try? FileManager.default.removeItem(at: destination)
         return (try? FileManager.default.moveItem(at: temporary, to: destination)) != nil
+    }
+}
+
+// MARK: - Report data (account insights, all media, comments, demographics)
+
+/// One post of any type from `/{ig-user}/media`.
+nonisolated struct IGGraphMediaNode: Sendable {
+    var id: String
+    var caption: String = ""
+    var mediaType: String?           // IMAGE | VIDEO | CAROUSEL_ALBUM
+    var productType: String?         // FEED | REELS | STORY
+    var mediaURL: String?
+    var thumbnailURL: String?
+    var permalink: String?
+    var timestamp: Date?
+    var likeCount: Int?
+    var commentsCount: Int?
+
+    var shortcode: String? { GraphAPIProvider.shortcode(from: permalink) }
+}
+
+nonisolated struct IGGraphComment: Sendable {
+    var id: String
+    var text: String
+    var timestamp: Date?
+    var username: String?
+    var fromID: String?
+    var likeCount: Int
+    var hidden: Bool
+    var parentID: String?
+}
+
+/// One value from `/{ig-user}/insights` (`metric_type=total_value`),
+/// optionally one slice of a breakdown.
+nonisolated struct IGGraphInsightValue: Sendable {
+    var metric: String
+    var dimension: String = ""
+    var breakdown: String = ""
+    var value: Double
+}
+
+extension GraphAPIProvider {
+    /// The same provider with a different token (the Page token for
+    /// account-level insights and comments).
+    func withToken(_ token: String) -> GraphAPIProvider {
+        GraphAPIProvider(token: token, igUserID: igUserID)
+    }
+
+    static func shortcode(from permalink: String?) -> String? { IGShortcode.parse(permalink) }
+
+    private static func parseTimestamp(_ value: Any?) -> Date? {
+        guard let string = value as? String else { return nil }
+        return Database.parseISODate(string)
+    }
+
+    /// Page access token for the page that owns `igUserID` — peace-grappler
+    /// uses it for every IG call; account insights and comments are the ones
+    /// that need it. Nil when the token has no page access.
+    func pageAccessToken(igUserID: String) async throws -> String? {
+        let object = try await getJSON("me/accounts", query: [
+            "fields": "id,access_token,instagram_business_account{id}",
+        ])
+        let pages = object["data"] as? [[String: Any]] ?? []
+        let page = pages.first {
+            (($0["instagram_business_account"] as? [String: Any])?["id"] as? String) == igUserID
+        } ?? pages.first { $0["instagram_business_account"] != nil }
+        return page?["access_token"] as? String
+    }
+
+    func fetchAccountDetails(userID: String) async throws
+        -> (followers: Int?, follows: Int?, mediaCount: Int?) {
+        let object = try await getJSON(userID, query: ["fields": "followers_count,follows_count,media_count"])
+        return (object["followers_count"] as? Int, object["follows_count"] as? Int,
+                object["media_count"] as? Int)
+    }
+
+    /// Every post (any type) newer than `since`, following the cursor until
+    /// a page's oldest post is older than the cutoff.
+    func fetchAllMedia(userID: String, since: Date,
+                       log: @escaping @Sendable (String) -> Void) async throws -> [IGGraphMediaNode] {
+        var nodes: [IGGraphMediaNode] = []
+        var object = try await getJSON("\(userID)/media", query: [
+            "fields": "id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,"
+                + "like_count,comments_count",
+            "limit": "50",
+        ])
+        var pages = 0
+        while true {
+            pages += 1
+            var reachedCutoff = false
+            for node in object["data"] as? [[String: Any]] ?? [] {
+                guard let id = node["id"] as? String else { continue }
+                let timestamp = Self.parseTimestamp(node["timestamp"])
+                if let timestamp, timestamp < since {
+                    reachedCutoff = true
+                    continue
+                }
+                nodes.append(IGGraphMediaNode(
+                    id: id, caption: node["caption"] as? String ?? "",
+                    mediaType: node["media_type"] as? String,
+                    productType: node["media_product_type"] as? String,
+                    mediaURL: node["media_url"] as? String,
+                    thumbnailURL: node["thumbnail_url"] as? String,
+                    permalink: node["permalink"] as? String,
+                    timestamp: timestamp,
+                    likeCount: node["like_count"] as? Int,
+                    commentsCount: node["comments_count"] as? Int))
+            }
+            guard !reachedCutoff, pages < 20,
+                  let next = (object["paging"] as? [String: Any])?["next"] as? String,
+                  let url = URL(string: next) else { break }
+            try Task.checkCancellation()
+            object = try await getJSON(url: url, label: "\(userID)/media (page \(pages + 1))")
+        }
+        log("Found \(nodes.count) posts since \(since.formatted(date: .abbreviated, time: .omitted))")
+        return nodes
+    }
+
+    /// Per-media insight values (current totals). Missing metrics are
+    /// simply absent — older posts lack some.
+    func fetchMediaInsights(mediaID: String, metrics: [String]) async throws -> [String: Double] {
+        let object = try await getJSON("\(mediaID)/insights", query: ["metric": metrics.joined(separator: ",")])
+        var values: [String: Double] = [:]
+        for metric in object["data"] as? [[String: Any]] ?? [] {
+            guard let name = metric["name"] as? String else { continue }
+            if let value = (metric["values"] as? [[String: Any]])?.first?["value"] as? NSNumber {
+                values[name] = value.doubleValue
+            } else if let total = (metric["total_value"] as? [String: Any])?["value"] as? NSNumber {
+                values[name] = total.doubleValue
+            }
+        }
+        return values
+    }
+
+    /// Account-level totals for [since, until) — `metric_type=total_value`,
+    /// with the optional breakdown expanded into one value per slice.
+    func fetchAccountInsights(userID: String, metrics: [String], period: String = "day",
+                              since: Date, until: Date, breakdown: String? = nil) async throws
+        -> [IGGraphInsightValue] {
+        var query: [String: String] = [
+            "metric": metrics.joined(separator: ","),
+            "period": period,
+            "metric_type": "total_value",
+            "since": String(Int(since.timeIntervalSince1970)),
+            "until": String(Int(until.timeIntervalSince1970)),
+        ]
+        if let breakdown { query["breakdown"] = breakdown }
+        let object = try await getJSON("\(userID)/insights", query: query)
+        var values: [IGGraphInsightValue] = []
+        for metric in object["data"] as? [[String: Any]] ?? [] {
+            guard let name = metric["name"] as? String,
+                  let total = metric["total_value"] as? [String: Any] else { continue }
+            if let breakdown, let breakdowns = total["breakdowns"] as? [[String: Any]] {
+                for slice in breakdowns {
+                    for result in slice["results"] as? [[String: Any]] ?? [] {
+                        let label = (result["dimension_values"] as? [String])?.first ?? ""
+                        let value = (result["value"] as? NSNumber)?.doubleValue ?? 0
+                        values.append(IGGraphInsightValue(metric: name, dimension: breakdown,
+                                                          breakdown: label, value: value))
+                    }
+                }
+            } else if let value = total["value"] as? NSNumber {
+                values.append(IGGraphInsightValue(metric: name, value: value.doubleValue))
+            }
+        }
+        return values
+    }
+
+    /// Daily `follower_count` values (date → value), up to 30 days back.
+    func fetchFollowerCountSeries(userID: String, since: Date) async throws -> [(date: String, value: Double)] {
+        let object = try await getJSON("\(userID)/insights", query: [
+            "metric": "follower_count",
+            "period": "day",
+            "since": String(Int(since.timeIntervalSince1970)),
+            "until": String(Int(Date().timeIntervalSince1970)),
+        ])
+        var series: [(date: String, value: Double)] = []
+        for metric in object["data"] as? [[String: Any]] ?? [] {
+            for entry in metric["values"] as? [[String: Any]] ?? [] {
+                guard let end = entry["end_time"] as? String,
+                      let value = entry["value"] as? NSNumber else { continue }
+                series.append((String(end.prefix(10)), value.doubleValue))
+            }
+        }
+        return series
+    }
+
+    /// `follower_demographics` / `engaged_audience_demographics` for one
+    /// breakdown dimension and timeframe.
+    func fetchDemographics(userID: String, metric: String, breakdown: String,
+                           timeframe: String) async throws -> [(value: String, count: Int)] {
+        let object = try await getJSON("\(userID)/insights", query: [
+            "metric": metric,
+            "period": "lifetime",
+            "metric_type": "total_value",
+            "breakdown": breakdown,
+            "timeframe": timeframe,
+        ])
+        var rows: [(value: String, count: Int)] = []
+        for entry in object["data"] as? [[String: Any]] ?? [] {
+            guard let total = entry["total_value"] as? [String: Any] else { continue }
+            for slice in total["breakdowns"] as? [[String: Any]] ?? [] {
+                for result in slice["results"] as? [[String: Any]] ?? [] {
+                    let label = (result["dimension_values"] as? [String])?.first ?? ""
+                    rows.append((label, (result["value"] as? NSNumber)?.intValue ?? 0))
+                }
+            }
+        }
+        return rows
+    }
+
+    /// Comments and their replies for one post — replies come inline via
+    /// the `replies{…}` field expansion, one request per page of comments.
+    func fetchComments(mediaID: String) async throws -> [IGGraphComment] {
+        let fields = "id,text,timestamp,username,from,like_count,hidden"
+        var object = try await getJSON("\(mediaID)/comments", query: [
+            "fields": "\(fields),replies{\(fields)}",
+            "limit": "50",
+        ])
+        var comments: [IGGraphComment] = []
+        var pages = 0
+        while true {
+            pages += 1
+            for node in object["data"] as? [[String: Any]] ?? [] {
+                guard let comment = Self.comment(from: node, parentID: nil) else { continue }
+                comments.append(comment)
+                for reply in ((node["replies"] as? [String: Any])?["data"] as? [[String: Any]]) ?? [] {
+                    if let record = Self.comment(from: reply, parentID: comment.id) { comments.append(record) }
+                }
+            }
+            guard pages < 10,
+                  let next = (object["paging"] as? [String: Any])?["next"] as? String,
+                  let url = URL(string: next) else { break }
+            try Task.checkCancellation()
+            object = try await getJSON(url: url, label: "\(mediaID)/comments (page \(pages + 1))")
+        }
+        return comments
+    }
+
+    private static func comment(from node: [String: Any], parentID: String?) -> IGGraphComment? {
+        guard let id = node["id"] as? String else { return nil }
+        let from = node["from"] as? [String: Any]
+        return IGGraphComment(id: id, text: node["text"] as? String ?? "",
+                              timestamp: parseTimestamp(node["timestamp"]),
+                              username: node["username"] as? String ?? from?["username"] as? String,
+                              fromID: from?["id"] as? String,
+                              likeCount: node["like_count"] as? Int ?? 0,
+                              hidden: node["hidden"] as? Bool ?? false,
+                              parentID: parentID)
     }
 }

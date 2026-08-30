@@ -71,6 +71,7 @@ actor InstagramService {
                                                            igUserID: profile.igUserID,
                                                            followers: profile.followers)
 
+        log("IGPROGRESS:0.02:Fetching reels for @\(username)")
         let items = try await provider.fetchReels(username: username,
                                                   limit: max(1, min(limit, 24)), log: log)
         for item in items {
@@ -104,7 +105,67 @@ actor InstagramService {
         }
         try await database.markIGAccountFetched(id: accountID)
         log("Fetched \(items.count) reels for @\(username)")
+
+        // Report data rides on the same Refresh. Failures here must not
+        // escape: the caller retries the whole refresh through the web
+        // provider on any Graph error, which would be wrong for reports.
+        if let graph = provider as? GraphAPIProvider, let igUserID = profile.igUserID, !igUserID.isEmpty {
+            do {
+                let reportProvider = await reportProvider(for: graph, igUserID: igUserID, log: log)
+                try await InstagramReportSync(provider: reportProvider, username: username)
+                    .run(accountID: accountID, igUserID: igUserID, database: database, log: log)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                log("Report sync failed: \(error) — reels are up to date, report data unchanged")
+                try? await database.setIGSyncState(accountID: accountID, key: "last_report_error",
+                                                   value: "\(error)")
+            }
+        } else if provider.sourceName != "graph" {
+            log("Report data needs the connected Graph account — skipped for @\(username)")
+        }
         return accountID
+    }
+
+    /// Account-level insights and comments want the Page token; fall back
+    /// to the user token when the pages aren't reachable.
+    private func reportProvider(for graph: GraphAPIProvider, igUserID: String,
+                                log: @escaping @Sendable (String) -> Void) async -> GraphAPIProvider {
+        do {
+            if let pageToken = try await graph.pageAccessToken(igUserID: igUserID) {
+                return graph.withToken(pageToken)
+            }
+        } catch {
+            log("Page token unavailable (\(error)) — using the user token for report data")
+        }
+        return graph
+    }
+
+    // MARK: - Reports
+
+    /// Build the report for one account and period from the stored rows.
+    func buildReport(account: IGAccountRecord, period: ReportPeriod,
+                     database: Database) async throws -> InstagramReport {
+        let inputs = try await database.fetchIGReportInputs(account: account)
+        return InstagramReportBuilder.build(inputs, period: period)
+    }
+
+    /// What performs on the account: the measured numbers that steer the
+    /// wizard, the critic, captions, and the publish sheet. Nil until there
+    /// are at least five reels with insights.
+    func buildBenchmarks(account: IGAccountRecord, database: Database) async throws -> AccountBenchmarks? {
+        let inputs = try await database.fetchIGReportInputs(account: account)
+        let grid = try await database.fetchIGMedia(accountID: account.id)
+        let templates = try await database.fetchIGTemplateLinks()
+        return AccountBenchmarks.build(inputs: inputs, gridMedia: grid, templates: templates)
+    }
+
+    /// Backfill history from a peace-grappler checkout.
+    func importPeaceGrapplerHistory(repoPath: String, account: IGAccountRecord, database: Database,
+                                    log: @escaping @Sendable (String) -> Void) async throws
+        -> PeaceGrapplerImporter.Summary {
+        try await PeaceGrapplerImporter.run(repoPath: repoPath, accountID: account.id,
+                                            username: account.username, database: database, log: log)
     }
 
     /// Publish a rendered video to the connected account as a Reel. Graph

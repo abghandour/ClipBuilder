@@ -60,7 +60,6 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case scenes
     case curated
     case people
-    case instagram
     case music
     case fonts
     case images
@@ -70,28 +69,33 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case wizard
     case builder
     case library
+    case instagram          // Instagram → Posts (raw value kept for handoffs)
+    case instagramReports
 
     var id: String { rawValue }
 
-    /// Source > Videos: footage in, scene detection, reference reels.
-    static let videoSections: [SidebarSection] = [.analyze, .scenes, .curated, .people, .instagram]
+    /// Source > Videos: footage in, scene detection.
+    static let videoSections: [SidebarSection] = [.analyze, .scenes, .curated, .people]
+    /// Instagram: the reels browser and the analytics reports.
+    static let instagramSections: [SidebarSection] = [.instagram, .instagramReports]
     /// Source asset libraries: media browsers plus overlay templates.
     static let assetSections: [SidebarSection] = [.music, .fonts, .images, .overlays, .effects, .screenCrops]
     static let createSections: [SidebarSection] = [.wizard, .builder]
     static let outputSections: [SidebarSection] = [.library]
 
-    /// ⌘1–⌘8 matching the sidebar's visible top-to-bottom workflow order
-    /// (Footage, then Create, then Output). Asset browsers have no number.
+    /// ⌘1–⌘9 matching the sidebar's visible top-to-bottom workflow order
+    /// (Footage, Create, Output, Instagram). Asset browsers have no number.
     private var shortcutDigit: Character? {
         switch self {
         case .analyze: return "1"
         case .scenes: return "2"
         case .curated: return "3"
         case .people: return "4"
-        case .instagram: return "5"
-        case .wizard: return "6"
-        case .builder: return "7"
-        case .library: return "8"
+        case .wizard: return "5"
+        case .builder: return "6"
+        case .library: return "7"
+        case .instagram: return "8"
+        case .instagramReports: return "9"
         case .music, .fonts, .images, .overlays, .effects, .screenCrops: return nil
         }
     }
@@ -114,7 +118,8 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .builder: return "Builder"
         case .analyze: return "Raw Videos"
         case .wizard: return "AI Wizard"
-        case .instagram: return "Instagram"
+        case .instagram: return "Posts"
+        case .instagramReports: return "Reports"
         case .music: return AssetKind.music.title
         case .fonts: return AssetKind.fonts.title
         case .images: return AssetKind.images.title
@@ -134,6 +139,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .analyze: return "sparkles.rectangle.stack"
         case .wizard: return "wand.and.stars"
         case .instagram: return "play.rectangle.on.rectangle"
+        case .instagramReports: return "chart.bar.xaxis"
         case .music: return AssetKind.music.systemImage
         case .fonts: return AssetKind.fonts.systemImage
         case .images: return AssetKind.images.systemImage
@@ -151,6 +157,7 @@ struct MainWindowView: View {
     // Each sidebar group's disclosure state survives relaunches.
     @AppStorage("sidebar.expanded.assets") private var assetsExpanded = true
     @AppStorage("sidebar.expanded.footage") private var footageExpanded = true
+    @AppStorage("sidebar.expanded.instagram") private var instagramExpanded = true
     @AppStorage("sidebar.expanded.create") private var createExpanded = true
     @AppStorage("sidebar.expanded.output") private var outputExpanded = true
 
@@ -170,6 +177,9 @@ struct MainWindowView: View {
                 Section("Output", isExpanded: $outputExpanded) {
                     sidebarItems(SidebarSection.outputSections, tint: Theme.outputTint)
                 }
+                Section("Instagram", isExpanded: $instagramExpanded) {
+                    sidebarItems(SidebarSection.instagramSections, tint: Theme.instagramTint)
+                }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
         } detail: {
@@ -181,7 +191,8 @@ struct MainWindowView: View {
             case .builder: BuilderView()
             case .analyze: AnalyzeView()
             case .wizard: WizardView()
-            case .instagram: InstagramView()
+            case .instagram: InstagramView(tab: .posts)
+            case .instagramReports: InstagramView(tab: .reports)
             case .music: AssetBrowserView(kind: .music)
             case .fonts: AssetBrowserView(kind: .fonts)
             case .images: AssetBrowserView(kind: .images)
@@ -208,6 +219,18 @@ struct MainWindowView: View {
         }
         .sheet(isPresented: $store.showPipelineLog) {
             PipelineLogSheet()
+        }
+        // Instagram refresh / history import: the same bottom-strip pattern.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if store.igStatus != nil {
+                VStack(spacing: 0) {
+                    Divider()
+                    InstagramStatusBar()
+                }
+            }
+        }
+        .sheet(isPresented: $store.showIGLog) {
+            InstagramLogSheet()
         }
         .navigationTitle("Clip Builder")
         .toolbar {

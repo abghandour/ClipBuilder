@@ -85,6 +85,9 @@ nonisolated struct InstagramSettings: Codable, Sendable {
     var fetchLimit: Int = 12
     var connectedUsername: String = ""    // Graph API account, set on Connect
     var connectedIGUserID: String = ""    // its IG user id — skips discovery
+    /// Checkout of the peace-grappler repo whose committed reports backfill
+    /// the Reports tab's history (empty = ~/repos/peace-grappler if present).
+    var peaceGrapplerRepoPath: String = ""
 
     var isGraphConnected: Bool { !connectedUsername.isEmpty }
 
@@ -96,6 +99,7 @@ nonisolated struct InstagramSettings: Codable, Sendable {
         case fetchLimit = "fetch_limit"
         case connectedUsername = "connected_username"
         case connectedIGUserID = "connected_ig_user_id"
+        case peaceGrapplerRepoPath = "peace_grappler_repo_path"
     }
 
     init() {}
@@ -109,6 +113,7 @@ nonisolated struct InstagramSettings: Codable, Sendable {
         fetchLimit = try container.decodeIfPresent(Int.self, forKey: .fetchLimit) ?? 12
         connectedUsername = try container.decodeIfPresent(String.self, forKey: .connectedUsername) ?? ""
         connectedIGUserID = try container.decodeIfPresent(String.self, forKey: .connectedIGUserID) ?? ""
+        peaceGrapplerRepoPath = try container.decodeIfPresent(String.self, forKey: .peaceGrapplerRepoPath) ?? ""
     }
 }
 

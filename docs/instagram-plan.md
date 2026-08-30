@@ -122,3 +122,81 @@ Shipped simpler than planned: the user supplies a long-lived Meta token directly
 - **ToS**: web/cookie fetching is ToS-gray — stated in Settings copy; Graph API is the
   compliant path once connected.
 - **Disk growth**: lazy video downloads only; cache under the visible cache dir.
+
+### P5 — Reports tab ✅ (2026-08-30)
+
+A **Posts | Reports** segmented switch at the top of the Instagram screen.
+Reports rebuilds the peace-grappler HTML reports natively (SwiftUI + Swift
+Charts): Overview (KPIs, follower growth + trend, content published,
+engagement analytics, account insights by content type / follower split,
+content mix, reach per post), Posts (reels/feed summaries with deltas, daily
+trends, sortable performance table, top-10 lists, hashtag stats, algorithm
+status), Commenters (top active commenters, per-post breakdown, community
+rankings with the 5/7/1/2-pt scoring and 30-minute early bonus, weekly
+activity heatmap, ignore list), Audience (age, gender, countries, cities;
+followers vs engaged).
+
+- Data: new tables `ig_account_snapshots`, `ig_report_media` (all post types,
+  90 days — `ig_media` stays reels-only), `ig_media_insight_snapshots`
+  (append-only), `ig_account_insights`, `ig_audience_demographics`,
+  `ig_comments`, `ig_commenter_*_import`, `ig_comment_heatmap_import`,
+  `ig_ignored_accounts`, `ig_report_sync_state`. Every row carries
+  `source` = graph | import; live rows win over imported ones.
+- Sync: `InstagramReportSync` runs inside the existing Refresh for the
+  Graph-connected account (page token when available): account snapshot,
+  paginated media, typed media insights, comments with `replies{}`
+  expansion, batched daily account insights (4 calls/day, 30-day floor),
+  `follower_count` series, rolling 28-day totals, daily demographics.
+  Checkpointed per step so Stop/rate limits resume on the next Refresh.
+- History: `PeaceGrapplerImporter` (Settings → Instagram → Report History)
+  reads the committed report artifacts in a peace-grappler checkout — every
+  daily git version of `engagement-report.html` and
+  `peacegrappler-insights.html`, the monthly reports, and the
+  `video-analysis-*.json` sidecars. Idempotent. The engagement report's
+  "Account Insights" cards are skipped on purpose (that generator sums daily
+  and 28-day rows together).
+- Builder: `InstagramReportBuilder` (pure, off-main) → `InstagramReport`
+  for a `ReportPeriod` (7d / 30d / this month / past months / all time).
+- Verified 2026-08-30 with a headless harness against the real checkout:
+  8 s import, 127 snapshots (2026-04-09 → 08-21), 354 posts, rankings per
+  month, numbers match the HTML (followers 3,296 / +1 / −9 / +112; age,
+  gender, country buckets; all-time #1 commenter after ignoring the own
+  handle). Live Graph sync and the UI still need an in-app pass.
+
+### P6 — Engagement loop ✅ (2026-08-30)
+
+The Reports data now steers generation instead of only being displayed.
+
+- `Services/Instagram/AccountBenchmarks.swift` — deterministic "what
+  performs here" from the connected account's last 90 days of reels
+  (falls back to all time under 5 reels): reach/views medians and top
+  quartile, saves/shares/comments per 1k reach, avg watch, quality
+  (`ReelPerformance`) median/p75, the top reels' duration sweet spot and
+  cut cadence (from probed durations + reel templates), top- vs
+  bottom-quartile traits, best posting slots/weekdays (local time), hashtag
+  reach lift, caption-length note, comment-magnet subjects (capitalized
+  names in captions weighted by comments and first-hour comment velocity),
+  and a per-reel quality percentile (`reelScores`). Rebuilt by
+  `AppStore.reloadIGBenchmarks()` after every Refresh/import.
+- Planner: `WizardOptions.accountBenchmarks` → a "THIS ACCOUNT'S
+  BENCHMARKS" block in `planPrompt`; the sweet spot and cadence replace the
+  playbook's generic duration/cuts-per-minute unless a template or an
+  explicit duration is set.
+- Critic: `ReelCritic` gets the account's outcome rubric and returns
+  `engagement_forecast` (0–100 vs the account's own reels) with
+  `forecast_reasons`; reasons ride into the re-plan notes, and a forecast
+  under 55 triggers another version even when the craft score is fine.
+- Calibration: published reels get `audience_score` / `audience_percentile`
+  (`generated_videos`, migrated) once insights land; Reports → Posts shows
+  "Critic vs Audience" (forecast vs actual percentile, average error) and
+  the Library card shows the audience line.
+- Lessons: `PerformanceLessons` receives the benchmarks block; distilling
+  works as soon as benchmarks exist.
+- Captions: `captionPrompt` receives lifting hashtags + hot subjects;
+  the gap report's inventory includes the benchmarks summary.
+- Publish sheet: best posting slots and an "Add Top Hashtags" button.
+- Verified with the headless harness on the real checkout: 103 reels,
+  median 660 reach, sweet spot 16–37s, Saturday evenings best, comment
+  magnets Bonfim / McGregor / Holloway. Forecast calibration accumulates
+  as reels are published; the critic's forecast itself is model-judged and
+  untested against live data.

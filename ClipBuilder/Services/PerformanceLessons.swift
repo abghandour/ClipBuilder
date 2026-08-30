@@ -12,8 +12,12 @@ nonisolated enum PerformanceLessons {
     static let evidencePrefix = "Instagram performance"
     static let maxLessons = 5
 
-    static func prompt(published: [GeneratedVideoRecord], ownMedia: [IGMediaRecord]) -> String {
+    static func prompt(published: [GeneratedVideoRecord], ownMedia: [IGMediaRecord],
+                       benchmarks: AccountBenchmarks? = nil) -> String {
         var sections: [String] = []
+        if let benchmarks {
+            sections.append(benchmarks.lessonsBlock())
+        }
 
         if !published.isEmpty {
             let lines = published.map { video in
@@ -63,7 +67,7 @@ nonisolated enum PerformanceLessons {
         }
 
         return """
-        You are studying what performs on ONE specific Instagram account so a reel-planning AI can build more of it. Correlate the performance numbers below with the reels' traits — length, content type, hook, people, caption style — and distill what actually drives saves, shares, and watch time HERE.
+        You are studying what performs on ONE specific Instagram account so a reel-planning AI can build more of it. Correlate the performance numbers below with the reels' traits — length, hook type, cut cadence, content type, people, caption style, hashtags, posting time — and distill what actually drives saves, shares, and watch time HERE. Where the measured benchmarks and the individual reels disagree, trust the benchmarks (they cover more reels).
 
         \(sections.joined(separator: "\n\n"))
 

@@ -190,6 +190,15 @@ struct LibraryView: View {
                     .help(([critique.summary]
                            + critique.issues.map { "• \($0)" }).joined(separator: "\n"))
             }
+            if let percentile = video.audiencePercentile {
+                Label("Audience: beat \(percentile)% of the account's reels"
+                      + (video.audienceScore.map { String(format: " · quality %.1f", $0) } ?? ""),
+                      systemImage: "person.3")
+                    .font(.caption2)
+                    .foregroundStyle(percentile >= 75 ? .green : percentile >= 40 ? .secondary : .orange)
+                    .lineLimit(1)
+                    .help("How this published reel performed among the account's reels (saves/shares/comments/likes normalized by reach) — compare with the critic's forecast")
+            }
             if let stats = video.instagramStats {
                 Text(ReelPerformance.label(stats, duration: video.duration))
                     .font(.caption2)

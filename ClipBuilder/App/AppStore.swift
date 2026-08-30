@@ -121,6 +121,30 @@ final class AppStore {
     var igTemplatedMediaIDs: Set<Int64> = []
     var igAnalyzingMediaIDs: Set<Int64> = []
     var igDownloadingMediaIDs: Set<Int64> = []
+    /// The Reports tab's assembled report for the selected account.
+    var igReport: InstagramReport?
+    var igReportPeriod: ReportPeriod = ReportPeriod.from(
+        id: UserDefaults.standard.string(forKey: "instagram.reportPeriod") ?? "last30")
+    var isLoadingIGReport = false
+    var isImportingPeaceGrappler = false
+    /// Result line of the last peace-grappler history import, for Settings.
+    var igImportStatus: String?
+    /// What performs on the connected account — feeds the wizard, the
+    /// critic, captions, and the publish sheet. Rebuilt after every
+    /// refresh and import.
+    var igBenchmarks: AccountBenchmarks?
+    /// Bottom status strip for an Instagram refresh or history import —
+    /// the Wizard Pipeline pattern: stage + progress, click for the log,
+    /// stays as "done"/"stopped"/"failed" until dismissed.
+    struct IGSyncStatus: Equatable {
+        var title: String            // "Instagram Refresh" | "Report History Import"
+        var stage: String
+        var fraction: Double
+        var running = true
+    }
+    var igStatus: IGSyncStatus?
+    var showIGLog = false
+    private var igImportTask: Task<Void, Never>?
     var isConnectingInstagram = false
     var isPublishingToInstagram = false
     /// A taste-exemplar study is running (one at a time).
@@ -237,6 +261,7 @@ final class AppStore {
         igSelectedAccountID = nil
         igMedia = []
         igTemplatedMediaIDs = []
+        igReport = nil
         pendingWizardTemplate = nil
         pendingWizardPrompt = nil
         wizardResults = nil
@@ -875,6 +900,7 @@ final class AppStore {
                     if Task.isCancelled { break }
                     pipelineStage = "generating — \(current.filename)"
                     var wizard = Self.wizardOptionsFromForm()
+                    wizard.accountBenchmarks = igBenchmarks
                     wizard.selectedRunIDs = runID.map { [$0] }
                         ?? Set(analysisRuns.filter { $0.videoID == current.id }.map(\.id))
                     // Curated scope only when this video's batch actually has
@@ -1846,6 +1872,10 @@ final class AppStore {
             }
             inventory.append("## INSTAGRAM ACCOUNT\n" + line)
         }
+        if let benchmarks = igBenchmarks {
+            inventory.append("## INSTAGRAM BENCHMARKS (measured from the account's reels)\n"
+                             + benchmarks.summaryLines.map { "- \($0)" }.joined(separator: "\n"))
+        }
         inventory.append("## TRAINING\n\(lessons.count) learned lesson(s), taste rubric \(activeProfile.tasteRubric.isEmpty ? "EMPTY" : "written"), house style \(activeProfile.houseStyle.isEmpty ? "EMPTY" : "written")")
 
         let response = try await ai.call(prompt: GapReporter.prompt(inventory: inventory.joined(separator: "\n\n"),
@@ -1877,12 +1907,13 @@ final class AppStore {
                 for account in igAccounts where account.isOwn {
                     ownMedia += (try? await database.fetchIGMedia(accountID: account.id)) ?? []
                 }
-                guard published.count >= 3 || ownMedia.count >= 5 else {
+                guard published.count >= 3 || ownMedia.count >= 5 || igBenchmarks != nil else {
                     throw AIError.notConfigured("Not enough performance data yet — publish reels or refresh an owned Instagram account first.")
                 }
                 igLog.append("Distilling lessons from \(published.count) published reel(s) and \(ownMedia.count) account reel(s)…")
                 let response = try await ai.call(
-                    prompt: PerformanceLessons.prompt(published: published, ownMedia: ownMedia),
+                    prompt: PerformanceLessons.prompt(published: published, ownMedia: ownMedia,
+                                                      benchmarks: igBenchmarks),
                     task: "distill", timeout: 240,
                     log: { message in Task { @MainActor in self.igLog.append(message) } })
                 let distilled = PerformanceLessons.parse(response.text)
@@ -2675,6 +2706,8 @@ final class AppStore {
 
     func runWizard(options: WizardOptions) {
         guard let database, !isWizardRunning else { return }
+        var options = options
+        options.accountBenchmarks = igBenchmarks
         isWizardRunning = true
         wizardLog = []
         lastWizardOptions = options
@@ -2937,6 +2970,8 @@ final class AppStore {
                     igSelectedAccountID = accounts.first?.id
                 }
                 try await reloadIGMedia()
+                await reloadIGReport()
+                await reloadIGBenchmarks()
             } catch {
                 presentError("Could not load Instagram cache", error)
             }
@@ -2953,14 +2988,194 @@ final class AppStore {
         igTemplatedMediaIDs = try await database.fetchIGTemplateMediaIDs(accountID: accountID)
     }
 
+    /// Rebuild the Reports tab from the stored rows (after a refresh, an
+    /// import, an account switch, or a period change).
+    func reloadIGReport() async {
+        guard let database, let account = igAccounts.first(where: { $0.id == igSelectedAccountID }) else {
+            igReport = nil
+            return
+        }
+        isLoadingIGReport = true
+        defer { isLoadingIGReport = false }
+        do {
+            let report = try await instagram.buildReport(account: account, period: igReportPeriod,
+                                                         database: database)
+            // The account may have changed while the report was building.
+            if igSelectedAccountID == account.id { igReport = report }
+        } catch {
+            presentError("Could not build the Instagram report", error)
+        }
+    }
+
+    /// The connected (else first own) account's benchmarks, plus the
+    /// audience scores of published reels for critic calibration.
+    func reloadIGBenchmarks() async {
+        guard let database else { igBenchmarks = nil; return }
+        let connected = settings.instagram.connectedUsername
+        guard let account = igAccounts.first(where: { $0.username.caseInsensitiveCompare(connected) == .orderedSame })
+            ?? igAccounts.first(where: \.isOwn) else {
+            igBenchmarks = nil
+            return
+        }
+        igBenchmarks = try? await instagram.buildBenchmarks(account: account, database: database)
+        await recordAudienceScores()
+    }
+
+    /// Published reels get their real audience outcome (quality + percentile
+    /// among the account's reels) so the critic's forecast can be judged.
+    private func recordAudienceScores() async {
+        guard let database, let scores = igBenchmarks?.reelScores, !scores.isEmpty else { return }
+        for index in generatedVideos.indices {
+            guard let mediaID = generatedVideos[index].instagramMediaID, let score = scores[mediaID] else { continue }
+            if generatedVideos[index].audienceScore != score.quality
+                || generatedVideos[index].audiencePercentile != score.percentile {
+                try? await database.updateGeneratedAudience(id: generatedVideos[index].id, score: score.quality,
+                                                            percentile: score.percentile)
+            }
+            generatedVideos[index].audienceScore = score.quality
+            generatedVideos[index].audiencePercentile = score.percentile
+            if generatedVideos[index].instagramStats == nil { generatedVideos[index].instagramStats = score.stats }
+        }
+    }
+
+    /// Sync/import log stream: "IGPROGRESS:<0-1>:<stage>" lines drive the
+    /// bottom status bar; everything else lands in the visible log.
+    private func handleIGLog(_ message: String) {
+        guard message.hasPrefix("IGPROGRESS:") else {
+            igLog.append(message)
+            return
+        }
+        let parts = message.dropFirst("IGPROGRESS:".count).split(separator: ":", maxSplits: 1)
+        guard let fraction = parts.first.flatMap({ Double($0) }), var status = igStatus else { return }
+        status.stage = parts.count > 1 ? String(parts[1]) : ""
+        status.fraction = min(1, max(status.fraction, fraction))   // monotonic within a run
+        igStatus = status
+    }
+
+    private func finishIGStatus(_ stage: String) {
+        guard var status = igStatus else { return }
+        status.stage = stage
+        status.running = false
+        if stage == "done" { status.fraction = 1 }
+        igStatus = status
+    }
+
+    func dismissIGStatusBar() {
+        igStatus = nil
+    }
+
+    /// A peace-grappler checkout is configured (or sits at the default
+    /// location) — the Reports banner offers the history import.
+    var canImportPeaceGrapplerHistory: Bool {
+        !settings.instagram.peaceGrapplerRepoPath.trimmingCharacters(in: .whitespaces).isEmpty
+            || PeaceGrapplerImporter.defaultRepoPath() != nil
+    }
+
+    /// Stop whichever Instagram job is running (refresh or import).
+    func cancelInstagramWork() {
+        if isImportingPeaceGrappler {
+            cancelPeaceGrapplerImport()
+        } else {
+            cancelInstagramFetch()
+        }
+    }
+
+    func setIGReportPeriod(_ period: ReportPeriod) {
+        guard period != igReportPeriod else { return }
+        igReportPeriod = period
+        UserDefaults.standard.set(period.id, forKey: "instagram.reportPeriod")
+        Task { await reloadIGReport() }
+    }
+
+    /// Whether the account fetches through the Graph API — the only path
+    /// that yields report data.
+    func isGraphAccount(_ account: IGAccountRecord) -> Bool {
+        settings.instagram.isGraphConnected
+            && settings.instagram.connectedUsername.caseInsensitiveCompare(account.username) == .orderedSame
+    }
+
+    /// Backfill report history from the peace-grappler checkout (Settings →
+    /// Instagram → Report History). Targets the connected account, else the
+    /// selected own account.
+    func importPeaceGrapplerReports() {
+        guard let database, !isImportingPeaceGrappler else { return }
+        let configured = settings.instagram.peaceGrapplerRepoPath.trimmingCharacters(in: .whitespaces)
+        guard let repoPath = configured.isEmpty ? PeaceGrapplerImporter.defaultRepoPath() : configured else {
+            igImportStatus = "Choose the peace-grappler checkout folder first"
+            return
+        }
+        let connected = settings.instagram.connectedUsername
+        guard let account = igAccounts.first(where: { $0.username.caseInsensitiveCompare(connected) == .orderedSame })
+            ?? igAccounts.first(where: { $0.id == igSelectedAccountID && $0.isOwn })
+            ?? igAccounts.first(where: \.isOwn) else {
+            igImportStatus = "Add your own Instagram account on the Instagram screen first"
+            return
+        }
+        isImportingPeaceGrappler = true
+        igImportStatus = "Importing…"
+        igLog = []
+        igStatus = IGSyncStatus(title: "Report History Import", stage: "Starting", fraction: 0)
+        let instagram = instagram
+        igImportTask = Task {
+            do {
+                let summary = try await instagram.importPeaceGrapplerHistory(
+                    repoPath: repoPath, account: account, database: database) { message in
+                    Task { @MainActor in self.handleIGLog(message) }
+                }
+                igImportStatus = summary.description
+                finishIGStatus("done")
+                await reloadIGReport()
+                await reloadIGBenchmarks()
+            } catch is CancellationError {
+                igImportStatus = "Import stopped"
+                igLog.append("Import stopped.")
+                finishIGStatus("stopped")
+                await reloadIGReport()
+            } catch {
+                igImportStatus = "Import failed: \(error)"
+                finishIGStatus("failed")
+                presentError("Report history import failed", error)
+            }
+            isImportingPeaceGrappler = false
+        }
+    }
+
+    func cancelPeaceGrapplerImport() {
+        igImportTask?.cancel()
+    }
+
+    func addIGIgnoredAccount(_ username: String) {
+        let handle = username.trimmingCharacters(in: CharacterSet(charactersIn: "@ \n\t"))
+        guard let database, let accountID = igSelectedAccountID, !handle.isEmpty else { return }
+        Task {
+            try? await database.addIGIgnoredAccount(accountID: accountID, username: handle, reason: nil)
+            await reloadIGReport()
+        }
+    }
+
+    func removeIGIgnoredAccount(_ username: String) {
+        guard let database, let accountID = igSelectedAccountID else { return }
+        Task {
+            try? await database.removeIGIgnoredAccount(accountID: accountID, username: username)
+            await reloadIGReport()
+        }
+    }
+
+    func igIgnoredAccounts() async -> [String] {
+        guard let database, let accountID = igSelectedAccountID else { return [] }
+        return (try? await database.fetchIGIgnoredAccounts(accountID: accountID)) ?? []
+    }
+
     func selectInstagramAccount(_ id: Int64?) {
         igSelectedAccountID = id
+        igReport = nil
         guard let account = igAccounts.first(where: { $0.id == id }) else {
             igMedia = []
             return
         }
         Task {
             try? await reloadIGMedia()
+            await reloadIGReport()
             // Auto-refresh only when stale — the grid shows cache instantly.
             let stale = account.lastFetchedAt.map {
                 Date().timeIntervalSince($0) > InstagramService.autoRefreshInterval
@@ -3001,7 +3216,9 @@ final class AppStore {
             igAccounts = (try? await database.fetchIGAccounts()) ?? []
             if igSelectedAccountID == account.id {
                 igSelectedAccountID = igAccounts.first?.id
+                igReport = nil
                 try? await reloadIGMedia()
+                await reloadIGReport()
             }
         }
     }
@@ -3010,6 +3227,7 @@ final class AppStore {
         guard let database, !isFetchingInstagram else { return }
         isFetchingInstagram = true
         igLog = []
+        igStatus = IGSyncStatus(title: "Instagram Refresh", stage: "Starting — @\(username)", fraction: 0)
         let settings = settings.instagram
         let account = igAccounts.first { $0.username.caseInsensitiveCompare(username) == .orderedSame }
         let kind = account?.kind ?? "public"
@@ -3019,13 +3237,20 @@ final class AppStore {
                 try await instagram.refreshAccount(username: username, kind: kind,
                                                    database: database, settings: settings,
                                                    limit: settings.fetchLimit) { message in
-                    Task { @MainActor in self.igLog.append(message) }
+                    Task { @MainActor in self.handleIGLog(message) }
                 }
                 igAccounts = try await database.fetchIGAccounts()
                 try await reloadIGMedia()
+                await reloadIGReport()
+                await reloadIGBenchmarks()
+                finishIGStatus("done")
             } catch is CancellationError {
                 igLog.append("Fetch stopped.")
+                finishIGStatus("stopped")
+                await reloadIGReport()   // keep whatever the stopped sync stored
+                await reloadIGBenchmarks()
             } catch {
+                finishIGStatus("failed")
                 presentError("Instagram fetch failed", error)
             }
             isFetchingInstagram = false
@@ -3610,6 +3835,8 @@ final class AppStore {
     /// there (isPlanningIntoBuilder) shows progress while the plan runs.
     func planIntoBuilder(options: WizardOptions) {
         guard let database, !isWizardRunning else { return }
+        var options = options
+        options.accountBenchmarks = igBenchmarks
         isWizardRunning = true
         isPlanningIntoBuilder = true
         wizardLog = []

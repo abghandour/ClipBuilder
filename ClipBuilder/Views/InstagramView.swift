@@ -16,6 +16,13 @@ struct InstagramView: View {
         var id: String { rawValue }
     }
 
+    /// Which sidebar row this instance renders: Instagram → Posts (the
+    /// reels grid) or Instagram → Reports (analytics).
+    enum Tab: String {
+        case posts, reports
+    }
+
+    let tab: Tab
     @State private var sortOrder: SortOrder = .recent
     @State private var addingAccount = false
     @State private var removingAccount: IGAccountRecord?
@@ -49,12 +56,14 @@ struct InstagramView: View {
         Group {
             if store.igAccounts.isEmpty {
                 onboarding
-            } else {
+            } else if tab == .posts {
                 grid
+            } else {
+                InstagramReportsView()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Instagram")
+        .navigationTitle(tab == .posts ? "Instagram — Posts" : "Instagram — Reports")
         .navigationSubtitle(subtitle)
         .toolbar { toolbarContent }
         .sheet(isPresented: $addingAccount) { addAccountSheet }
@@ -129,48 +138,52 @@ struct InstagramView: View {
             }
             .help("Switch, add, or remove accounts")
         }
-        ToolbarItem {
-            Menu {
-                Picker("Sort", selection: $sortOrder) {
-                    ForEach(SortOrder.allCases) { order in
-                        Text(order.rawValue).tag(order)
+        if tab == .posts {
+            ToolbarItem {
+                Menu {
+                    Picker("Sort", selection: $sortOrder) {
+                        ForEach(SortOrder.allCases) { order in
+                            Text(order.rawValue).tag(order)
+                        }
                     }
+                    .pickerStyle(.inline)
+                } label: {
+                    Text("Sort: \(sortOrder.rawValue)")
                 }
-                .pickerStyle(.inline)
-            } label: {
-                Text("Sort: \(sortOrder.rawValue)")
+                .help("Order reels by recency or performance")
             }
-            .help("Order reels by recency or performance")
         }
-        ToolbarItem {
-            Menu {
-                Button("Learn from Selected (\(learnSelection.count))") { learnSelected() }
-                    .disabled(learnSelection.isEmpty || store.isStudyingTaste)
-                Button("Learn from Top 5 Quality Reels") { learnTopPerformers() }
-                    .disabled(store.isStudyingTaste || sortedMedia.isEmpty)
-                Divider()
-                Button(store.isDistillingPerformanceLessons
-                       ? "Distilling Performance Lessons…"
-                       : "Distill Performance Lessons") {
-                    store.distillPerformanceLessons()
-                }
-                .disabled(store.isDistillingPerformanceLessons)
-                .help("Correlates published reels' insights and this account's own reels with their traits, and distills what performs into the wizard's Learned Lessons")
-                if !learnSelection.isEmpty {
+        if tab == .posts {
+            ToolbarItem {
+                Menu {
+                    Button("Learn from Selected (\(learnSelection.count))") { learnSelected() }
+                        .disabled(learnSelection.isEmpty || store.isStudyingTaste)
+                    Button("Learn from Top 5 Quality Reels") { learnTopPerformers() }
+                        .disabled(store.isStudyingTaste || sortedMedia.isEmpty)
                     Divider()
-                    Button("Clear Selection") { learnSelection = [] }
-                }
-            } label: {
-                if store.isStudyingTaste {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.small)
-                        Text("Learning…")
+                    Button(store.isDistillingPerformanceLessons
+                           ? "Distilling Performance Lessons…"
+                           : "Distill Performance Lessons") {
+                        store.distillPerformanceLessons()
                     }
-                } else {
-                    Label("Learn", systemImage: "graduationcap")
+                    .disabled(store.isDistillingPerformanceLessons)
+                    .help("Correlates published reels' insights and this account's own reels with their traits, and distills what performs into the wizard's Learned Lessons")
+                    if !learnSelection.isEmpty {
+                        Divider()
+                        Button("Clear Selection") { learnSelection = [] }
+                    }
+                } label: {
+                    if store.isStudyingTaste {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("Learning…")
+                        }
+                    } else {
+                        Label("Learn", systemImage: "graduationcap")
+                    }
                 }
+                .help("Teach the taste profile from reels: tick reels with the circle on each card, or learn from the five strongest normalized save/share/comment performers. Each reel is classified into a video type (fight highlights, interviews, …) whose rubric it refines.")
             }
-            .help("Teach the taste profile from reels: tick reels with the circle on each card, or learn from the five strongest normalized save/share/comment performers. Each reel is classified into a video type (fight highlights, interviews, …) whose rubric it refines.")
         }
         ToolbarItem(placement: .primaryAction) {
             if store.isFetchingInstagram {
@@ -192,7 +205,7 @@ struct InstagramView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .disabled(selectedAccount == nil)
-                .help("Fetch the latest reels and stats")
+                .help("Fetch the latest reels, stats and report data")
             }
         }
     }

@@ -509,6 +509,12 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     var instagramMediaID: String?
     /// Joined from the matching Instagram media row when insights arrive.
     var instagramStats: IGStats?
+    /// How the published reel actually did among the account's reels — the
+    /// ReelPerformance quality and the share of reels it beat — recorded
+    /// once insights land. The ground truth the critic's forecast is
+    /// calibrated against.
+    var audienceScore: Double? = nil
+    var audiencePercentile: Int? = nil
     /// Cover-frame time (AI-proposed or user-picked) for the Library card's
     /// thumbnail; nil falls back to a near-start frame.
     var coverTime: Double? = nil

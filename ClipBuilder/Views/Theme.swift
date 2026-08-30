@@ -22,6 +22,7 @@ enum Theme {
     /// Sidebar group tints — the app's wayfinding hues (Mail-style).
     static let assetsTint = Color.teal
     static let footageTint = Color.orange
+    static let instagramTint = Color.pink
     static let createTint = Color.purple
     static let outputTint = Color.green
 }

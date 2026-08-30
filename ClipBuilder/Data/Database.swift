@@ -325,6 +325,154 @@ actor Database {
         model TEXT,
         analyzed_at TEXT DEFAULT (datetime('now'))
     );
+
+    -- Instagram reports: history and account-level data behind the Reports
+    -- tab. Every table carries `source` ('graph' = live refresh, 'import' =
+    -- backfilled from the peace-grappler report artifacts); live rows always
+    -- win over imported rows on the same natural key.
+    CREATE TABLE IF NOT EXISTS ig_account_snapshots (
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        snapshot_date TEXT NOT NULL,
+        followers_count INTEGER,
+        follows_count INTEGER,
+        media_count INTEGER,
+        source TEXT NOT NULL DEFAULT 'graph',
+        PRIMARY KEY (account_id, snapshot_date)
+    );
+
+    CREATE TABLE IF NOT EXISTS ig_report_media (
+        id INTEGER PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        media_id TEXT,
+        shortcode TEXT NOT NULL,
+        media_type TEXT,
+        media_product_type TEXT,
+        caption TEXT DEFAULT '',
+        caption_truncated INTEGER NOT NULL DEFAULT 0,
+        permalink TEXT,
+        posted_at TEXT,
+        like_count INTEGER,
+        comments_count INTEGER,
+        thumbnail_url TEXT,
+        thumbnail_path TEXT,
+        source TEXT NOT NULL DEFAULT 'graph',
+        fetched_at TEXT,
+        UNIQUE(account_id, shortcode)
+    );
+    CREATE INDEX IF NOT EXISTS idx_ig_report_media_posted ON ig_report_media(account_id, posted_at);
+
+    CREATE TABLE IF NOT EXISTS ig_media_insight_snapshots (
+        id INTEGER PRIMARY KEY,
+        report_media_id INTEGER NOT NULL REFERENCES ig_report_media(id) ON DELETE CASCADE,
+        metric TEXT NOT NULL,
+        value REAL NOT NULL,
+        fetched_at TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'graph',
+        UNIQUE(report_media_id, metric, fetched_at)
+    );
+
+    CREATE TABLE IF NOT EXISTS ig_account_insights (
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        metric TEXT NOT NULL,
+        period TEXT NOT NULL,
+        breakdown_dimension TEXT NOT NULL DEFAULT '',
+        breakdown_value TEXT NOT NULL DEFAULT '',
+        value REAL NOT NULL,
+        end_time TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'graph',
+        PRIMARY KEY (account_id, metric, period, breakdown_dimension, breakdown_value, end_time)
+    );
+
+    CREATE TABLE IF NOT EXISTS ig_audience_demographics (
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        metric TEXT NOT NULL,
+        dimension TEXT NOT NULL,
+        dimension_value TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        value INTEGER NOT NULL,
+        fetched_date TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'graph',
+        PRIMARY KEY (account_id, metric, dimension, dimension_value, timeframe, fetched_date)
+    );
+
+    CREATE TABLE IF NOT EXISTS ig_comments (
+        id TEXT PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        report_media_id INTEGER NOT NULL REFERENCES ig_report_media(id) ON DELETE CASCADE,
+        parent_comment_id TEXT,
+        username TEXT,
+        from_id TEXT,
+        text TEXT,
+        like_count INTEGER DEFAULT 0,
+        hidden INTEGER DEFAULT 0,
+        timestamp TEXT NOT NULL,
+        ref_timestamp TEXT,
+        fetched_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_ig_comments_account_ts ON ig_comments(account_id, timestamp);
+
+    CREATE TABLE IF NOT EXISTS ig_commenter_rankings_import (
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        period_key TEXT NOT NULL,
+        as_of TEXT NOT NULL,
+        username TEXT NOT NULL COLLATE NOCASE,
+        rank INTEGER,
+        score INTEGER,
+        early INTEGER,
+        text_comments INTEGER,
+        emoji_comments INTEGER,
+        text_replies INTEGER,
+        emoji_replies INTEGER,
+        total INTEGER,
+        PRIMARY KEY (account_id, period_key, username)
+    );
+
+    CREATE TABLE IF NOT EXISTS ig_commenter_activity_import (
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        period_key TEXT NOT NULL,
+        as_of TEXT NOT NULL,
+        username TEXT NOT NULL COLLATE NOCASE,
+        comments INTEGER,
+        replies INTEGER,
+        total INTEGER,
+        top_posts_json TEXT,
+        PRIMARY KEY (account_id, period_key, username)
+    );
+
+    CREATE TABLE IF NOT EXISTS ig_comment_heatmap_import (
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        window_end TEXT NOT NULL,
+        dow INTEGER NOT NULL,
+        hour INTEGER NOT NULL,
+        count INTEGER NOT NULL,
+        PRIMARY KEY (account_id, window_end, dow, hour)
+    );
+
+    CREATE TABLE IF NOT EXISTS ig_reel_analysis_import (
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        report_media_id INTEGER NOT NULL REFERENCES ig_report_media(id) ON DELETE CASCADE,
+        analysis_date TEXT NOT NULL,
+        score INTEGER,
+        tier TEXT,
+        good_json TEXT,
+        bad_json TEXT,
+        top_tip TEXT,
+        PRIMARY KEY (account_id, report_media_id, analysis_date)
+    );
+
+    CREATE TABLE IF NOT EXISTS ig_ignored_accounts (
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        username TEXT NOT NULL COLLATE NOCASE,
+        reason TEXT,
+        PRIMARY KEY (account_id, username)
+    );
+
+    CREATE TABLE IF NOT EXISTS ig_report_sync_state (
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        PRIMARY KEY (account_id, key)
+    );
     """
 
     init(path: URL) throws {
@@ -453,6 +601,12 @@ actor Database {
         // thumbnail time; NULL falls back to the old near-start frame.
         if !generatedColumns.contains("cover_time") {
             try connection.execute("ALTER TABLE generated_videos ADD COLUMN cover_time REAL")
+        }
+        // Audience outcome of a published reel (critic calibration).
+        if !generatedColumns.contains("audience_score") {
+            try connection.execute("ALTER TABLE generated_videos ADD COLUMN audience_score REAL")
+            try connection.execute("ALTER TABLE generated_videos ADD COLUMN audience_percentile INTEGER")
+            try connection.execute("ALTER TABLE generated_videos ADD COLUMN audience_measured_at TEXT")
         }
         try migrateScenesToAnalysisRuns(connection)
         // Databases migrated before batches learned about transcription:
@@ -1411,6 +1565,8 @@ actor Database {
                              instagramStats: row["instagram_stats_json"]?.stringValue
                                 .flatMap { $0.data(using: .utf8) }
                                 .flatMap { try? JSONDecoder().decode(IGStats.self, from: $0) },
+                             audienceScore: row["audience_score"]?.doubleValue,
+                             audiencePercentile: row["audience_percentile"]?.intValue.map(Int.init),
                              coverTime: row["cover_time"]?.doubleValue,
                              coverProvider: row["cover_provider"]?.stringValue,
                              coverModel: row["cover_model"]?.stringValue)
@@ -1432,6 +1588,28 @@ actor Database {
     func updateGeneratedCritique(id: Int64, critiqueJSON: String) throws {
         try connection.execute("UPDATE generated_videos SET critique_json = ? WHERE id = ?",
                                [.text(critiqueJSON), .integer(id)])
+    }
+
+    /// Record how a published reel did among the account's reels.
+    func updateGeneratedAudience(id: Int64, score: Double, percentile: Int) throws {
+        try connection.execute("""
+            UPDATE generated_videos SET audience_score = ?, audience_percentile = ?,
+                audience_measured_at = datetime('now') WHERE id = ?
+            """, [.real(score), .integer(Int64(percentile)), .integer(id)])
+    }
+
+    /// Reel templates joined to the Graph media they analyzed, for the
+    /// account benchmarks (which structural traits meet which numbers).
+    func fetchIGTemplateLinks() throws -> [IGTemplateLink] {
+        try connection.query("""
+            SELECT t.template_json, m.media_id, m.stats_json, m.duration
+            FROM ig_templates t JOIN ig_media m ON m.id = t.media_id
+            """).map { row in
+                IGTemplateLink(mediaID: row["media_id"]?.stringValue ?? "",
+                               templateJSON: row["template_json"]?.stringValue ?? "{}",
+                               statsJSON: row["stats_json"]?.stringValue,
+                               duration: row["duration"]?.doubleValue ?? 0)
+            }
     }
 
     func updateGeneratedCaption(id: Int64, caption: String, provider: String?, model: String?) throws {
@@ -1958,6 +2136,493 @@ actor Database {
                   title.map(SQLValue.text) ?? .null,
                   pageURL.map(SQLValue.text) ?? .null,
                   localPath.map(SQLValue.text) ?? .null])
+    }
+
+    // MARK: - Instagram reports
+
+    /// Live rows replace imported ones; imports never overwrite live data.
+    private static func sourceWins(_ table: String) -> String {
+        "(excluded.source = 'graph' OR \(table).source = 'import')"
+    }
+
+    private static func iso(_ date: Date) -> String {
+        isoFormatter.string(from: date)
+    }
+
+    private nonisolated(unsafe) static let isoFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
+    }()
+
+    nonisolated static func parseISODate(_ string: String?) -> Date? {
+        guard let string else { return nil }
+        if let date = isoFormatter.date(from: string) { return date }
+        if let date = graphDateFormatter.date(from: string) { return date }
+        return parseSQLiteDate(string)
+    }
+
+    /// Graph timestamps use "+0000" without a colon.
+    private nonisolated static let graphDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZ"
+        return formatter
+    }()
+
+    func upsertIGAccountSnapshots(accountID: Int64, _ snapshots: [IGAccountSnapshot]) throws {
+        try connection.transaction {
+            for snapshot in snapshots {
+                try connection.execute("""
+                    INSERT INTO ig_account_snapshots
+                        (account_id, snapshot_date, followers_count, follows_count, media_count, source)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(account_id, snapshot_date) DO UPDATE SET
+                        followers_count=COALESCE(excluded.followers_count, ig_account_snapshots.followers_count),
+                        follows_count=COALESCE(excluded.follows_count, ig_account_snapshots.follows_count),
+                        media_count=COALESCE(excluded.media_count, ig_account_snapshots.media_count),
+                        source=excluded.source
+                    WHERE \(Self.sourceWins("ig_account_snapshots"))
+                    """, [.integer(accountID), .text(snapshot.date),
+                          snapshot.followers.map { .integer(Int64($0)) } ?? .null,
+                          snapshot.follows.map { .integer(Int64($0)) } ?? .null,
+                          snapshot.mediaCount.map { .integer(Int64($0)) } ?? .null,
+                          .text(snapshot.source)])
+            }
+        }
+    }
+
+    @discardableResult
+    func upsertIGReportMedia(_ item: IGReportMediaUpsert) throws -> Int64 {
+        let rows = try connection.query("""
+            INSERT INTO ig_report_media
+                (account_id, shortcode, media_id, media_type, media_product_type, caption, caption_truncated,
+                 permalink, posted_at, like_count, comments_count, thumbnail_url, source, fetched_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(account_id, shortcode) DO UPDATE SET
+                media_id=COALESCE(excluded.media_id, ig_report_media.media_id),
+                media_type=COALESCE(excluded.media_type, ig_report_media.media_type),
+                media_product_type=COALESCE(excluded.media_product_type, ig_report_media.media_product_type),
+                caption=CASE WHEN excluded.caption_truncated = 0 OR ig_report_media.caption = ''
+                             THEN excluded.caption ELSE ig_report_media.caption END,
+                caption_truncated=CASE WHEN excluded.caption_truncated = 0 THEN 0
+                                       ELSE ig_report_media.caption_truncated END,
+                permalink=COALESCE(excluded.permalink, ig_report_media.permalink),
+                posted_at=COALESCE(excluded.posted_at, ig_report_media.posted_at),
+                like_count=COALESCE(excluded.like_count, ig_report_media.like_count),
+                comments_count=COALESCE(excluded.comments_count, ig_report_media.comments_count),
+                thumbnail_url=COALESCE(excluded.thumbnail_url, ig_report_media.thumbnail_url),
+                source=CASE WHEN excluded.source = 'graph' THEN 'graph' ELSE ig_report_media.source END,
+                fetched_at=datetime('now')
+            RETURNING id
+            """, [.integer(item.accountID), .text(item.shortcode),
+                  item.mediaID.map(SQLValue.text) ?? .null,
+                  item.mediaType.map(SQLValue.text) ?? .null,
+                  item.productType.map(SQLValue.text) ?? .null,
+                  .text(item.caption), .integer(item.captionTruncated ? 1 : 0),
+                  item.permalink.map(SQLValue.text) ?? .null,
+                  item.postedAt.map { .text(Self.sqliteDateString($0)) } ?? .null,
+                  item.likeCount.map { .integer(Int64($0)) } ?? .null,
+                  item.commentsCount.map { .integer(Int64($0)) } ?? .null,
+                  item.thumbnailURL.map(SQLValue.text) ?? .null,
+                  .text(item.source)])
+        return rows.first?["id"]?.intValue ?? connection.lastInsertRowID
+    }
+
+    func setIGReportMediaThumbnailPath(id: Int64, path: String) throws {
+        try connection.execute("UPDATE ig_report_media SET thumbnail_path = ? WHERE id = ?",
+                               [.text(path), .integer(id)])
+    }
+
+    /// shortcode → row id for the account (imports link by shortcode).
+    func fetchIGReportMediaIDs(accountID: Int64) throws -> [String: Int64] {
+        var map: [String: Int64] = [:]
+        for row in try connection.query("SELECT id, shortcode FROM ig_report_media WHERE account_id = ?",
+                                        [.integer(accountID)]) {
+            if let shortcode = row["shortcode"]?.stringValue, let id = row["id"]?.intValue {
+                map[shortcode] = id
+            }
+        }
+        return map
+    }
+
+    /// Graph media id → row id (for the video-analysis sidecars).
+    func fetchIGReportMediaGraphIDs(accountID: Int64) throws -> [String: Int64] {
+        var map: [String: Int64] = [:]
+        for row in try connection.query(
+            "SELECT id, media_id FROM ig_report_media WHERE account_id = ? AND media_id IS NOT NULL",
+            [.integer(accountID)]) {
+            if let mediaID = row["media_id"]?.stringValue, let id = row["id"]?.intValue {
+                map[mediaID] = id
+            }
+        }
+        return map
+    }
+
+    /// Append insight snapshots. A value identical to the newest stored one
+    /// for the same metric is skipped, so history stays compact.
+    func insertIGMediaInsightSnapshots(_ snapshots: [IGMediaInsightSnapshot]) throws {
+        try connection.transaction {
+            for snapshot in snapshots {
+                let latest = try connection.query("""
+                    SELECT value, fetched_at FROM ig_media_insight_snapshots
+                    WHERE report_media_id = ? AND metric = ? ORDER BY fetched_at DESC LIMIT 1
+                    """, [.integer(snapshot.reportMediaID), .text(snapshot.metric)]).first
+                if let latest, latest["value"]?.doubleValue == snapshot.value,
+                   (latest["fetched_at"]?.stringValue ?? "") <= snapshot.fetchedAt {
+                    continue
+                }
+                try connection.execute("""
+                    INSERT INTO ig_media_insight_snapshots (report_media_id, metric, value, fetched_at, source)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(report_media_id, metric, fetched_at) DO UPDATE SET
+                        value=excluded.value, source=excluded.source
+                    WHERE \(Self.sourceWins("ig_media_insight_snapshots"))
+                    """, [.integer(snapshot.reportMediaID), .text(snapshot.metric), .real(snapshot.value),
+                          .text(snapshot.fetchedAt), .text(snapshot.source)])
+            }
+        }
+    }
+
+    func upsertIGAccountInsights(accountID: Int64, _ rows: [IGAccountInsightRow]) throws {
+        try connection.transaction {
+            for row in rows {
+                try connection.execute("""
+                    INSERT INTO ig_account_insights
+                        (account_id, metric, period, breakdown_dimension, breakdown_value, value, end_time, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(account_id, metric, period, breakdown_dimension, breakdown_value, end_time)
+                    DO UPDATE SET value=excluded.value, source=excluded.source
+                    WHERE \(Self.sourceWins("ig_account_insights"))
+                    """, [.integer(accountID), .text(row.metric), .text(row.period), .text(row.dimension),
+                          .text(row.breakdown), .real(row.value), .text(row.endTime), .text(row.source)])
+            }
+        }
+    }
+
+    func upsertIGDemographics(accountID: Int64, _ rows: [IGDemographicRow]) throws {
+        try connection.transaction {
+            for row in rows {
+                try connection.execute("""
+                    INSERT INTO ig_audience_demographics
+                        (account_id, metric, dimension, dimension_value, timeframe, value, fetched_date, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(account_id, metric, dimension, dimension_value, timeframe, fetched_date)
+                    DO UPDATE SET value=excluded.value, source=excluded.source
+                    WHERE \(Self.sourceWins("ig_audience_demographics"))
+                    """, [.integer(accountID), .text(row.metric), .text(row.dimension), .text(row.value),
+                          .text(row.timeframe), .integer(Int64(row.count)), .text(row.fetchedDate),
+                          .text(row.source)])
+            }
+        }
+    }
+
+    func upsertIGComments(accountID: Int64, _ comments: [IGCommentRecord]) throws {
+        try connection.transaction {
+            for comment in comments {
+                try connection.execute("""
+                    INSERT INTO ig_comments
+                        (id, account_id, report_media_id, parent_comment_id, username, text, like_count, hidden,
+                         timestamp, ref_timestamp, fetched_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    ON CONFLICT(id) DO UPDATE SET
+                        username=COALESCE(excluded.username, ig_comments.username),
+                        text=excluded.text, like_count=excluded.like_count, hidden=excluded.hidden,
+                        ref_timestamp=COALESCE(excluded.ref_timestamp, ig_comments.ref_timestamp),
+                        fetched_at=datetime('now')
+                    """, [.text(comment.id), .integer(accountID), .integer(comment.reportMediaID),
+                          comment.parentCommentID.map(SQLValue.text) ?? .null,
+                          comment.username.map(SQLValue.text) ?? .null,
+                          .text(comment.text), .integer(Int64(comment.likeCount)),
+                          .integer(comment.hidden ? 1 : 0), .text(Self.iso(comment.timestamp)),
+                          comment.refTimestamp.map { .text(Self.iso($0)) } ?? .null])
+            }
+        }
+    }
+
+    func upsertIGCommenterRankingsImport(accountID: Int64, _ ranking: IGImportedRanking) throws {
+        try connection.transaction {
+            try connection.execute(
+                "DELETE FROM ig_commenter_rankings_import WHERE account_id = ? AND period_key = ? AND as_of < ?",
+                [.integer(accountID), .text(ranking.periodKey), .text(ranking.asOf)])
+            for (index, row) in ranking.rows.enumerated() {
+                try connection.execute("""
+                    INSERT INTO ig_commenter_rankings_import
+                        (account_id, period_key, as_of, username, rank, score, early, text_comments, emoji_comments,
+                         text_replies, emoji_replies, total)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(account_id, period_key, username) DO UPDATE SET
+                        as_of=excluded.as_of, rank=excluded.rank, score=excluded.score, early=excluded.early,
+                        text_comments=excluded.text_comments, emoji_comments=excluded.emoji_comments,
+                        text_replies=excluded.text_replies, emoji_replies=excluded.emoji_replies,
+                        total=excluded.total
+                    WHERE excluded.as_of >= ig_commenter_rankings_import.as_of
+                    """, [.integer(accountID), .text(ranking.periodKey), .text(ranking.asOf),
+                          .text(row.username), .integer(Int64(index + 1)), .integer(Int64(row.score)),
+                          .integer(Int64(row.early)), .integer(Int64(row.textComments)),
+                          .integer(Int64(row.emojiComments)), .integer(Int64(row.textReplies)),
+                          .integer(Int64(row.emojiReplies)), .integer(Int64(row.total))])
+            }
+        }
+    }
+
+    func upsertIGCommenterActivityImport(accountID: Int64, _ activity: IGImportedActivity) throws {
+        try connection.transaction {
+            try connection.execute(
+                "DELETE FROM ig_commenter_activity_import WHERE account_id = ? AND period_key = ? AND as_of < ?",
+                [.integer(accountID), .text(activity.periodKey), .text(activity.asOf)])
+            for row in activity.rows {
+                let posts = (try? JSONSerialization.data(withJSONObject: row.topPosts))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+                try connection.execute("""
+                    INSERT INTO ig_commenter_activity_import
+                        (account_id, period_key, as_of, username, comments, replies, total, top_posts_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(account_id, period_key, username) DO UPDATE SET
+                        as_of=excluded.as_of, comments=excluded.comments, replies=excluded.replies,
+                        total=excluded.total, top_posts_json=excluded.top_posts_json
+                    WHERE excluded.as_of >= ig_commenter_activity_import.as_of
+                    """, [.integer(accountID), .text(activity.periodKey), .text(activity.asOf),
+                          .text(row.username), .integer(Int64(row.comments)), .integer(Int64(row.replies)),
+                          .integer(Int64(row.total)), .text(posts)])
+            }
+        }
+    }
+
+    func upsertIGHeatmapImport(accountID: Int64, windowEnd: String, counts: [Int]) throws {
+        guard counts.count == 168 else { return }
+        try connection.transaction {
+            for (index, count) in counts.enumerated() {
+                try connection.execute("""
+                    INSERT OR REPLACE INTO ig_comment_heatmap_import (account_id, window_end, dow, hour, count)
+                    VALUES (?, ?, ?, ?, ?)
+                    """, [.integer(accountID), .text(windowEnd), .integer(Int64(index / 24)),
+                          .integer(Int64(index % 24)), .integer(Int64(count))])
+            }
+        }
+    }
+
+    func upsertIGReelAnalyses(accountID: Int64, _ rows: [IGReelAnalysisRow]) throws {
+        func json(_ strings: [String]) -> String {
+            (try? JSONSerialization.data(withJSONObject: strings))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        }
+        try connection.transaction {
+            for row in rows {
+                try connection.execute("""
+                    INSERT OR REPLACE INTO ig_reel_analysis_import
+                        (account_id, report_media_id, analysis_date, score, tier, good_json, bad_json, top_tip)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, [.integer(accountID), .integer(row.reportMediaID), .text(row.date),
+                          .integer(Int64(row.score)), .text(row.tier), .text(json(row.good)),
+                          .text(json(row.bad)), row.topTip.map(SQLValue.text) ?? .null])
+            }
+        }
+    }
+
+    func fetchIGIgnoredAccounts(accountID: Int64) throws -> [String] {
+        try connection.query(
+            "SELECT username FROM ig_ignored_accounts WHERE account_id = ? ORDER BY username COLLATE NOCASE",
+            [.integer(accountID)]).compactMap { $0["username"]?.stringValue }
+    }
+
+    func addIGIgnoredAccount(accountID: Int64, username: String, reason: String?) throws {
+        try connection.execute("""
+            INSERT OR IGNORE INTO ig_ignored_accounts (account_id, username, reason) VALUES (?, ?, ?)
+            """, [.integer(accountID), .text(username), reason.map(SQLValue.text) ?? .null])
+    }
+
+    func removeIGIgnoredAccount(accountID: Int64, username: String) throws {
+        try connection.execute("DELETE FROM ig_ignored_accounts WHERE account_id = ? AND username = ?",
+                               [.integer(accountID), .text(username)])
+    }
+
+    func igSyncState(accountID: Int64) throws -> [String: String] {
+        var state: [String: String] = [:]
+        for row in try connection.query("SELECT key, value FROM ig_report_sync_state WHERE account_id = ?",
+                                        [.integer(accountID)]) {
+            if let key = row["key"]?.stringValue, let value = row["value"]?.stringValue { state[key] = value }
+        }
+        return state
+    }
+
+    func setIGSyncState(accountID: Int64, key: String, value: String) throws {
+        try connection.execute("""
+            INSERT OR REPLACE INTO ig_report_sync_state (account_id, key, value) VALUES (?, ?, ?)
+            """, [.integer(accountID), .text(key), .text(value)])
+    }
+
+    /// Media rows with insight snapshots, for the sync's "which posts still
+    /// need insights" decision: id → newest fetched_at.
+    func fetchIGReportMediaInsightDates(accountID: Int64) throws -> [Int64: String] {
+        var map: [Int64: String] = [:]
+        for row in try connection.query("""
+            SELECT s.report_media_id AS id, MAX(s.fetched_at) AS latest
+            FROM ig_media_insight_snapshots s JOIN ig_report_media m ON m.id = s.report_media_id
+            WHERE m.account_id = ? AND s.source = 'graph' GROUP BY s.report_media_id
+            """, [.integer(accountID)]) {
+            if let id = row["id"]?.intValue, let latest = row["latest"]?.stringValue { map[id] = latest }
+        }
+        return map
+    }
+
+    /// Everything the report builder needs, in one round trip to the actor.
+    func fetchIGReportInputs(account: IGAccountRecord) throws -> IGReportInputs {
+        let accountID = account.id
+        var inputs = IGReportInputs(account: account)
+
+        inputs.snapshots = try connection.query(
+            "SELECT * FROM ig_account_snapshots WHERE account_id = ? ORDER BY snapshot_date",
+            [.integer(accountID)]).map {
+            IGAccountSnapshot(date: $0["snapshot_date"]?.stringValue ?? "",
+                              followers: $0["followers_count"]?.intValue.map(Int.init),
+                              follows: $0["follows_count"]?.intValue.map(Int.init),
+                              mediaCount: $0["media_count"]?.intValue.map(Int.init),
+                              source: $0["source"]?.stringValue ?? "graph")
+        }
+
+        var metrics: [Int64: [String: Double]] = [:]
+        for row in try connection.query("""
+            SELECT s.report_media_id AS id, s.metric, s.value
+            FROM ig_media_insight_snapshots s
+            JOIN (SELECT report_media_id, metric, MAX(fetched_at) AS latest
+                  FROM ig_media_insight_snapshots GROUP BY report_media_id, metric) l
+              ON l.report_media_id = s.report_media_id AND l.metric = s.metric AND l.latest = s.fetched_at
+            JOIN ig_report_media m ON m.id = s.report_media_id
+            WHERE m.account_id = ?
+            """, [.integer(accountID)]) {
+            guard let id = row["id"]?.intValue, let metric = row["metric"]?.stringValue,
+                  let value = row["value"]?.doubleValue else { continue }
+            metrics[id, default: [:]][metric] = value
+        }
+        inputs.media = try connection.query(
+            "SELECT * FROM ig_report_media WHERE account_id = ? ORDER BY posted_at DESC, id DESC",
+            [.integer(accountID)]).map {
+            let id = $0["id"]?.intValue ?? 0
+            return IGReportMediaRow(id: id, accountID: accountID,
+                                    mediaID: $0["media_id"]?.stringValue,
+                                    shortcode: $0["shortcode"]?.stringValue ?? "",
+                                    mediaType: $0["media_type"]?.stringValue,
+                                    productType: $0["media_product_type"]?.stringValue,
+                                    caption: $0["caption"]?.stringValue ?? "",
+                                    captionTruncated: $0["caption_truncated"]?.boolValue ?? false,
+                                    permalink: $0["permalink"]?.stringValue,
+                                    postedAt: Self.parseSQLiteDate($0["posted_at"]?.stringValue),
+                                    likeCount: $0["like_count"]?.intValue.map(Int.init),
+                                    commentsCount: $0["comments_count"]?.intValue.map(Int.init),
+                                    thumbnailURL: $0["thumbnail_url"]?.stringValue,
+                                    thumbnailPath: $0["thumbnail_path"]?.stringValue,
+                                    source: $0["source"]?.stringValue ?? "graph",
+                                    metrics: metrics[id] ?? [:])
+        }
+
+        inputs.accountInsights = try connection.query(
+            "SELECT * FROM ig_account_insights WHERE account_id = ? ORDER BY end_time",
+            [.integer(accountID)]).map {
+            IGAccountInsightRow(metric: $0["metric"]?.stringValue ?? "",
+                                period: $0["period"]?.stringValue ?? "day",
+                                dimension: $0["breakdown_dimension"]?.stringValue ?? "",
+                                breakdown: $0["breakdown_value"]?.stringValue ?? "",
+                                value: $0["value"]?.doubleValue ?? 0,
+                                endTime: $0["end_time"]?.stringValue ?? "",
+                                source: $0["source"]?.stringValue ?? "graph")
+        }
+
+        inputs.demographics = try connection.query("""
+            SELECT d.* FROM ig_audience_demographics d
+            JOIN (SELECT metric, dimension, timeframe, MAX(fetched_date) AS latest
+                  FROM ig_audience_demographics WHERE account_id = ?1 GROUP BY metric, dimension, timeframe) l
+              ON l.metric = d.metric AND l.dimension = d.dimension AND l.timeframe = d.timeframe
+                 AND l.latest = d.fetched_date
+            WHERE d.account_id = ?1 ORDER BY d.value DESC
+            """, [.integer(accountID)]).map {
+            IGDemographicRow(metric: $0["metric"]?.stringValue ?? "",
+                             dimension: $0["dimension"]?.stringValue ?? "",
+                             value: $0["dimension_value"]?.stringValue ?? "",
+                             count: Int($0["value"]?.intValue ?? 0),
+                             timeframe: $0["timeframe"]?.stringValue ?? "",
+                             fetchedDate: $0["fetched_date"]?.stringValue ?? "",
+                             source: $0["source"]?.stringValue ?? "graph")
+        }
+
+        inputs.comments = try connection.query(
+            "SELECT * FROM ig_comments WHERE account_id = ? AND hidden = 0 ORDER BY timestamp",
+            [.integer(accountID)]).compactMap {
+            guard let timestamp = Self.parseISODate($0["timestamp"]?.stringValue) else { return nil }
+            return IGCommentRecord(id: $0["id"]?.stringValue ?? "",
+                                   reportMediaID: $0["report_media_id"]?.intValue ?? 0,
+                                   parentCommentID: $0["parent_comment_id"]?.stringValue,
+                                   username: $0["username"]?.stringValue,
+                                   text: $0["text"]?.stringValue ?? "",
+                                   likeCount: Int($0["like_count"]?.intValue ?? 0),
+                                   hidden: $0["hidden"]?.boolValue ?? false,
+                                   timestamp: timestamp,
+                                   refTimestamp: Self.parseISODate($0["ref_timestamp"]?.stringValue))
+        }
+
+        var rankings: [String: IGImportedRanking] = [:]
+        for row in try connection.query(
+            "SELECT * FROM ig_commenter_rankings_import WHERE account_id = ? ORDER BY period_key, rank",
+            [.integer(accountID)]) {
+            let key = row["period_key"]?.stringValue ?? ""
+            let entry = IGCommenterRankingRow(username: row["username"]?.stringValue ?? "",
+                                              score: Int(row["score"]?.intValue ?? 0),
+                                              early: Int(row["early"]?.intValue ?? 0),
+                                              textComments: Int(row["text_comments"]?.intValue ?? 0),
+                                              emojiComments: Int(row["emoji_comments"]?.intValue ?? 0),
+                                              textReplies: Int(row["text_replies"]?.intValue ?? 0),
+                                              emojiReplies: Int(row["emoji_replies"]?.intValue ?? 0))
+            rankings[key, default: IGImportedRanking(periodKey: key, asOf: row["as_of"]?.stringValue ?? "",
+                                                     rows: [])].rows.append(entry)
+        }
+        inputs.importedRankings = Array(rankings.values)
+
+        var activity: [String: IGImportedActivity] = [:]
+        for row in try connection.query(
+            "SELECT * FROM ig_commenter_activity_import WHERE account_id = ? ORDER BY period_key, total DESC",
+            [.integer(accountID)]) {
+            let key = row["period_key"]?.stringValue ?? ""
+            let posts = row["top_posts_json"]?.stringValue.flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String] } ?? []
+            let entry = IGCommenterActivityRow(username: row["username"]?.stringValue ?? "",
+                                               comments: Int(row["comments"]?.intValue ?? 0),
+                                               replies: Int(row["replies"]?.intValue ?? 0),
+                                               topPosts: posts)
+            activity[key, default: IGImportedActivity(periodKey: key, asOf: row["as_of"]?.stringValue ?? "",
+                                                      rows: [])].rows.append(entry)
+        }
+        inputs.importedActivity = Array(activity.values)
+
+        for row in try connection.query(
+            "SELECT window_end, dow, hour, count FROM ig_comment_heatmap_import WHERE account_id = ?",
+            [.integer(accountID)]) {
+            guard let end = row["window_end"]?.stringValue, let dow = row["dow"]?.intValue,
+                  let hour = row["hour"]?.intValue, let count = row["count"]?.intValue else { continue }
+            var grid = inputs.importedHeatmaps[end] ?? Array(repeating: 0, count: 168)
+            let index = Int(dow) * 24 + Int(hour)
+            if grid.indices.contains(index) { grid[index] = Int(count) }
+            inputs.importedHeatmaps[end] = grid
+        }
+
+        inputs.reelAnalyses = try connection.query(
+            "SELECT * FROM ig_reel_analysis_import WHERE account_id = ? ORDER BY analysis_date",
+            [.integer(accountID)]).map {
+            func strings(_ column: String) -> [String] {
+                $0[column]?.stringValue.flatMap { $0.data(using: .utf8) }
+                    .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String] } ?? []
+            }
+            return IGReelAnalysisRow(reportMediaID: $0["report_media_id"]?.intValue ?? 0,
+                                     date: $0["analysis_date"]?.stringValue ?? "",
+                                     score: Int($0["score"]?.intValue ?? 0),
+                                     tier: $0["tier"]?.stringValue ?? "",
+                                     good: strings("good_json"), bad: strings("bad_json"),
+                                     topTip: $0["top_tip"]?.stringValue)
+        }
+
+        inputs.ignoredUsernames = Set(try fetchIGIgnoredAccounts(accountID: accountID).map { $0.lowercased() })
+        inputs.syncState = try igSyncState(accountID: accountID)
+        return inputs
     }
 
     // MARK: - Helpers
