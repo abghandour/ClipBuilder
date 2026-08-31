@@ -3039,15 +3039,22 @@ final class AppStore {
     }
 
     /// Sync/import log stream: "IGPROGRESS:<0-1>:<stage>" lines drive the
-    /// bottom status bar; everything else lands in the visible log.
-    private func handleIGLog(_ message: String) {
+    /// bottom status bar; everything else lands in the visible log. When the
+    /// history import runs as the first phase of a refresh, its markers are
+    /// rescaled into the front of the refresh bar (`importScale`).
+    private func handleIGLog(_ message: String, importScale: Double? = nil) {
         guard message.hasPrefix("IGPROGRESS:") else {
             igLog.append(message)
             return
         }
         let parts = message.dropFirst("IGPROGRESS:".count).split(separator: ":", maxSplits: 1)
-        guard let fraction = parts.first.flatMap({ Double($0) }), var status = igStatus else { return }
-        status.stage = parts.count > 1 ? String(parts[1]) : ""
+        guard var fraction = parts.first.flatMap({ Double($0) }), var status = igStatus else { return }
+        var stage = parts.count > 1 ? String(parts[1]) : ""
+        if let importScale {
+            fraction *= importScale
+            stage = "Importing history — \(stage)"
+        }
+        status.stage = stage
         status.fraction = min(1, max(status.fraction, fraction))   // monotonic within a run
         igStatus = status
     }
@@ -3223,6 +3230,36 @@ final class AppStore {
         }
     }
 
+    /// The first refresh of the connected (or own) account backfills the
+    /// peace-grappler report history automatically, then remembers it
+    /// (`import_as_of` in ig_report_sync_state) and never auto-runs again.
+    /// Only cancellation escapes — an import failure logs and the live
+    /// refresh proceeds (it retries on the next refresh).
+    private func autoImportPeaceGrapplerIfNeeded(username: String, database: Database) async throws {
+        guard !isImportingPeaceGrappler,
+              let account = igAccounts.first(where: { $0.username.caseInsensitiveCompare(username) == .orderedSame }),
+              account.isOwn || settings.instagram.connectedUsername
+                  .caseInsensitiveCompare(username) == .orderedSame else { return }
+        let configured = settings.instagram.peaceGrapplerRepoPath.trimmingCharacters(in: .whitespaces)
+        guard let repoPath = configured.isEmpty ? PeaceGrapplerImporter.defaultRepoPath() : configured else { return }
+        let state = (try? await database.igSyncState(accountID: account.id)) ?? [:]
+        guard state["import_as_of"] == nil else { return }   // imported once already — never again
+
+        igLog.append("First refresh — importing report history from \(repoPath)…")
+        do {
+            let summary = try await instagram.importPeaceGrapplerHistory(
+                repoPath: repoPath, account: account, database: database) { message in
+                Task { @MainActor in self.handleIGLog(message, importScale: 0.3) }
+            }
+            igImportStatus = summary.description
+            igLog.append(summary.description)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            igLog.append("History import failed (\(error)) — continuing with the live refresh; it retries next time")
+        }
+    }
+
     func refreshInstagram(username: String) {
         guard let database, !isFetchingInstagram else { return }
         isFetchingInstagram = true
@@ -3234,6 +3271,7 @@ final class AppStore {
         let instagram = instagram
         igFetchTask = Task {
             do {
+                try await autoImportPeaceGrapplerIfNeeded(username: username, database: database)
                 try await instagram.refreshAccount(username: username, kind: kind,
                                                    database: database, settings: settings,
                                                    limit: settings.fetchLimit) { message in

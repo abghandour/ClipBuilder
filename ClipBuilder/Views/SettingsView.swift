@@ -93,43 +93,6 @@ private struct InstagramSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Report History") {
-                HStack {
-                    TextField("peace-grappler checkout", text: $store.settings.instagram.peaceGrapplerRepoPath,
-                              prompt: Text(PeaceGrapplerImporter.defaultRepoPath() ?? "~/repos/peace-grappler"))
-                    Button("Choose…") {
-                        let panel = NSOpenPanel()
-                        panel.canChooseDirectories = true
-                        panel.canChooseFiles = false
-                        if panel.runModal() == .OK, let url = panel.url {
-                            store.settings.instagram.peaceGrapplerRepoPath = url.path
-                            store.saveSettings()
-                        }
-                    }
-                }
-                HStack {
-                    if store.isImportingPeaceGrappler {
-                        Button("Stop Import") { store.cancelPeaceGrapplerImport() }
-                    } else {
-                        Button("Import Report History") {
-                            store.saveSettings()
-                            store.importPeaceGrapplerReports()
-                        }
-                        .disabled(store.settings.instagram.peaceGrapplerRepoPath.trimmingCharacters(in: .whitespaces).isEmpty
-                                  && PeaceGrapplerImporter.defaultRepoPath() == nil)
-                    }
-                    if store.isImportingPeaceGrappler, let last = store.igLog.last {
-                        ProgressView().controlSize(.small)
-                        Text(last).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    } else if let status = store.igImportStatus {
-                        Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    }
-                }
-                Text("Backfills the Instagram → Reports tab from the reports committed in the peace-grappler repo: follower history, per-post metrics, monthly account insights, commenter rankings, audience demographics and activity heatmaps. Safe to run again — it only adds what's new. Live data from Refresh always takes precedence.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Test") {
                 HStack {
                     Button(testing ? "Testing…" : "Test Fetch") {
