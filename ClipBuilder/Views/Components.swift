@@ -14,8 +14,8 @@ struct ActivityLogView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(log.enumerated()), id: \.offset) { index, line in
-                        Text(line)
+                    ForEach(log.indices, id: \.self) { index in
+                        Text(log[index])
                             .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
@@ -82,9 +82,13 @@ struct VideoThumbnail: View {
     @State private var image: NSImage?
     @State private var loadedKey: String?
 
+    private var key: String { "\(url.path)|\(time)|frame" }
+
     var body: some View {
         ZStack {
-            if let image {
+            // A memory-cache hit paints immediately — a card scrolled back
+            // into view doesn't flash its placeholder or re-read the JPEG.
+            if let image = image ?? ImageCache.cached(key: key) {
                 // Color.clear adopts exactly the proposed size; the overlay
                 // draws the aspect-fill image within it without inflating the
                 // view's own layout size the way a bare .fill image does.
@@ -102,14 +106,20 @@ struct VideoThumbnail: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-        .task(id: "\(url.path)|\(time)") {
+        .task(id: key) {
             // Track which key is loaded rather than guarding on image ==
             // nil, which froze the thumbnail on its first frame when the
             // same view was later given a different time (preview scrub).
-            let key = "\(url.path)|\(time)"
+            let key = key
             guard loadedKey != key else { return }
+            image = nil
+            if let hit = ImageCache.cached(key: key) {
+                image = hit
+                loadedKey = key
+                return
+            }
             if let data = await store.thumbnails.thumbnail(for: url, at: time),
-               let loaded = NSImage(data: data) {
+               let loaded = await ImageCache.image(data: data, key: key, maxPixel: 480) {
                 image = loaded
                 loadedKey = key
             }
@@ -215,6 +225,7 @@ struct PersonFaceAvatar: View {
     /// Every detected face, largest first, as normalized bounding boxes
     /// (bottom-left origin, Vision convention). The avatar picker offers
     /// each one as a candidate crop.
+    @concurrent
     nonisolated static func detectFaces(in data: Data) async -> [CGRect] {
         let request = VNDetectFaceRectanglesRequest()
         try? VNImageRequestHandler(data: data).perform([request])
@@ -783,5 +794,46 @@ struct DurationBadge: View {
             .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
             .foregroundStyle(.white)
             .padding(6)
+    }
+}
+
+/// A text field for a comma-separated list. Edits a local draft so the
+/// separator the user just typed survives; the parsed list is written to
+/// `items` as it changes. (Binding the list's joined form directly to a
+/// TextField snapped "en," back to "en" on every keystroke.)
+struct CommaListField: View {
+    let title: String
+    @Binding var items: [String]
+    var lowercased = false
+    var prompt: Text? = nil
+
+    @State private var draft = ""
+
+    init(_ title: String, items: Binding<[String]>, lowercased: Bool = false, prompt: Text? = nil) {
+        self.title = title
+        self._items = items
+        self.lowercased = lowercased
+        self.prompt = prompt
+    }
+
+    private func parse(_ text: String) -> [String] {
+        text.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { lowercased ? $0.lowercased() : $0 }
+            .filter { !$0.isEmpty }
+    }
+
+    var body: some View {
+        TextField(title, text: $draft, prompt: prompt)
+            .onAppear { draft = items.joined(separator: ", ") }
+            .onChange(of: draft) { _, value in
+                let parsed = parse(value)
+                if parsed != items { items = parsed }
+            }
+            .onChange(of: items) { _, value in
+                // External change (profile switch, reset): resync the draft
+                // unless it already parses to the same list.
+                if parse(draft) != value { draft = value.joined(separator: ", ") }
+            }
     }
 }

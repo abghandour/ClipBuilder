@@ -210,24 +210,14 @@ struct MainWindowView: View {
         // The Analyze Wizard's fire-and-forget progress: a window-wide strip
         // that follows the user across screens; click for the full log.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if store.isPipelineRunning || !store.pipelineStage.isEmpty {
-                VStack(spacing: 0) {
-                    Divider()
-                    PipelineStatusBar()
-                }
-            }
+            PipelineStatusInset()
         }
         .sheet(isPresented: $store.showPipelineLog) {
             PipelineLogSheet()
         }
         // Instagram refresh / history import: the same bottom-strip pattern.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if store.igStatus != nil {
-                VStack(spacing: 0) {
-                    Divider()
-                    InstagramStatusBar()
-                }
-            }
+            InstagramStatusInset()
         }
         .sheet(isPresented: $store.showIGLog) {
             InstagramLogSheet()
@@ -312,8 +302,12 @@ struct MainWindowView: View {
         .task {
             store.checkForUpdatesAtLaunch()
             store.ensureToolsAtLaunch()
-            AssetStore.ensureRoots()
-            AssetStore.registerFonts()
+            // Directory creation plus a recursive font-library walk and
+            // CoreText registration: off the main thread at launch.
+            await Task.detached(priority: .utility) {
+                AssetStore.ensureRoots()
+                AssetStore.registerFonts()
+            }.value
         }
     }
 
@@ -354,4 +348,33 @@ struct MainWindowView: View {
 #Preview {
     MainWindowView()
         .environment(AppStore())
+}
+
+/// The pipeline strip's presence check, in its own view so stage/progress
+/// writes re-evaluate this leaf instead of the whole main window.
+private struct PipelineStatusInset: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        if store.isPipelineRunning || !store.pipelineStage.isEmpty {
+            VStack(spacing: 0) {
+                Divider()
+                PipelineStatusBar()
+            }
+        }
+    }
+}
+
+/// Same for the Instagram refresh/import strip, which updates per progress line.
+private struct InstagramStatusInset: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        if store.igStatus != nil {
+            VStack(spacing: 0) {
+                Divider()
+                InstagramStatusBar()
+            }
+        }
+    }
 }

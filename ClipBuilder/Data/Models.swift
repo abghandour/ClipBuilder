@@ -746,3 +746,16 @@ nonisolated struct TranscriptWord: Codable, Sendable {
     var start: Double
     var end: Double
 }
+
+/// One-hop snapshot of the library tables the main window keeps in memory.
+nonisolated struct LibrarySnapshot: Sendable {
+    var videos: [VideoRecord]
+    var scenes: [SceneRecord]
+    var analysisRuns: [AnalysisRun]
+    var people: [PersonRecord]
+    var generatedVideos: [GeneratedVideoRecord]
+    var feedback: [FeedbackRecord]
+    var lessons: [WizardLesson]
+    var fightResearch: [FightResearchRecord]
+    var fightEvents: [FightEventRecord]
+}

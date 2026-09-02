@@ -216,7 +216,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         sourceStart = try container.decodeIfPresent(Double.self, forKey: .sourceStart)
         sourceEnd = try container.decodeIfPresent(Double.self, forKey: .sourceEnd)
         startTime = try container.decodeIfPresent(Double.self, forKey: .startTime) ?? 0
-        track = try container.decodeIfPresent(Int.self, forKey: .track) ?? 0
+        track = max(0, try container.decodeIfPresent(Int.self, forKey: .track) ?? 0)
         wide = try container.decodeIfPresent(Bool.self, forKey: .wide) ?? false
         stackOrder = try container.decodeIfPresent(Int.self, forKey: .stackOrder) ?? 0
         volume = try container.decodeIfPresent(Int.self, forKey: .volume) ?? 5
@@ -236,7 +236,10 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         if let explicit = try container.decodeIfPresent(Double.self, forKey: .duration) {
             duration = explicit
         } else if let start = sourceStart, let end = sourceEnd {
-            duration = max(0, end - start)
+            // source_end is in SOURCE seconds; screen time is the span
+            // divided by the playback speed (a 0.5× clip shows 4 s of
+            // screen for 2 s of source).
+            duration = max(0, end - start) / max(0.01, speed ?? 1)
         }
     }
 
@@ -284,6 +287,9 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             try container.encode(videoFile, forKey: .videoFile)
             try container.encode(sourceStart, forKey: .sourceStart)
             try container.encode(sourceStart + sourceSpan, forKey: .sourceEnd)
+            // Screen duration explicitly, so a speed-changed clip survives
+            // the save/load round trip exactly.
+            try container.encode(duration, forKey: .duration)
         } else if let sceneID {
             try container.encode(sceneID, forKey: .sceneID)
         }

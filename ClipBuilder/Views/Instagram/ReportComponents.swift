@@ -225,10 +225,11 @@ struct HorizontalBars: View {
     var color = ReportColors.accent
     var percent = false
 
-    private var total: Double { items.reduce(0) { $0 + $1.value } }
-    private var maximum: Double { items.map(\.value).max() ?? 1 }
-
     var body: some View {
+        // Once per render, not once per bar (the maximum used to be
+        // re-derived inside every row's GeometryReader).
+        let total = items.reduce(0) { $0 + $1.value }
+        let maximum = items.map(\.value).max() ?? 1
         VStack(spacing: 6) {
             ForEach(items) { item in
                 HStack(spacing: Theme.spaceS) {
@@ -310,8 +311,8 @@ struct PostThumbnail: View {
 
     var body: some View {
         Group {
-            if let local = media.localThumbnailURL, let image = NSImage(contentsOf: local) {
-                Image(nsImage: image).resizable().scaledToFill()
+            if let local = media.localThumbnailURL {
+                CachedImage(url: local, maxPixel: 160) { placeholder }
             } else if let remote = media.thumbnailURL.flatMap(URL.init(string:)) {
                 AsyncImage(url: remote) { phase in
                     if let image = phase.image {

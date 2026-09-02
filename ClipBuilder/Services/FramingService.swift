@@ -10,7 +10,7 @@ import Vision
 /// (`framed:<personKey>`), so scenes can later be filtered by the people
 /// actually in frame, not just in the scene. Scenes the pass can't frame
 /// (nobody detected, no hint) keep no path and render letterboxed.
-enum FramingService {
+nonisolated enum FramingService {
     /// Camera choice meaning "one fixed rect per scene" (the default);
     /// any other value is a CenterStageService tuning preset name.
     static let staticCamera = "static"
@@ -39,6 +39,7 @@ enum FramingService {
 
     /// Run the pass over every non-excluded scene of `video`. Local only —
     /// Vision + the Center Stage tracker, no AI cost.
+    @concurrent
     static func detectFraming(video: VideoRecord,
                               database: Database,
                               camera: String,
@@ -121,6 +122,7 @@ enum FramingService {
 
     /// Recompute one scene's static framing — hint edits refresh the stored
     /// rect through this without a full pass.
+    @concurrent
     static func staticScenePath(video: VideoRecord, scene: SceneRecord,
                                 hints: [CameraHint]) async -> SceneCameraPath? {
         let samples = await sampleFrames(url: video.url, scene: scene)
@@ -132,6 +134,7 @@ enum FramingService {
 
     /// Refresh one scene's framed: tags after its path changed (hint edits,
     /// recomputes) — the framing moved, so who is inside it may have too.
+    @concurrent
     static func retagFramedPeople(video: VideoRecord, scene: SceneRecord,
                                   path: SceneCameraPath, database: Database,
                                   people: [PersonSignature]) async {
@@ -147,6 +150,7 @@ enum FramingService {
     /// Appearance references per roster person, from their named (and not
     /// ignored) marker portraits. Several markers per person = several
     /// references; a detection matches on its best one.
+    @concurrent
     static func personSignatures(video: VideoRecord,
                                  database: Database) async -> [PersonSignature] {
         let markers = (try? await database.personMarkers(videoID: video.id)) ?? []

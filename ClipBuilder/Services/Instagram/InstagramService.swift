@@ -145,16 +145,35 @@ actor InstagramService {
 
     /// Build the report for one account and period from the stored rows.
     func buildReport(account: IGAccountRecord, period: ReportPeriod,
-                     database: Database) async throws -> InstagramReport {
-        let inputs = try await database.fetchIGReportInputs(account: account)
+                     database: Database, reuseInputs: Bool = false) async throws -> InstagramReport {
+        let inputs = try await reportInputs(account: account, database: database, reuse: reuseInputs)
         return InstagramReportBuilder.build(inputs, period: period)
+    }
+
+    /// The account's full report history, fetched once per data change. A
+    /// period switch rebuilds from memory instead of re-reading every
+    /// snapshot, insight, and comment; refresh/import paths pass
+    /// `reuse: false` to pick up their writes.
+    private var reportInputsCache: [Int64: IGReportInputs] = [:]
+
+    private func reportInputs(account: IGAccountRecord, database: Database,
+                              reuse: Bool) async throws -> IGReportInputs {
+        if reuse, let cached = reportInputsCache[account.id] { return cached }
+        let inputs = try await database.fetchIGReportInputs(account: account)
+        reportInputsCache[account.id] = inputs
+        return inputs
+    }
+
+    func invalidateReportInputs() {
+        reportInputsCache = [:]
     }
 
     /// What performs on the account: the measured numbers that steer the
     /// wizard, the critic, captions, and the publish sheet. Nil until there
     /// are at least five reels with insights.
-    func buildBenchmarks(account: IGAccountRecord, database: Database) async throws -> AccountBenchmarks? {
-        let inputs = try await database.fetchIGReportInputs(account: account)
+    func buildBenchmarks(account: IGAccountRecord, database: Database,
+                         reuseInputs: Bool = false) async throws -> AccountBenchmarks? {
+        let inputs = try await reportInputs(account: account, database: database, reuse: reuseInputs)
         let grid = try await database.fetchIGMedia(accountID: account.id)
         let templates = try await database.fetchIGTemplateLinks()
         return AccountBenchmarks.build(inputs: inputs, gridMedia: grid, templates: templates)

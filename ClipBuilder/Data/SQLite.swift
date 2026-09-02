@@ -36,7 +36,7 @@ nonisolated enum SQLValue: Sendable {
     var intValue: Int64? {
         switch self {
         case .integer(let v): return v
-        case .real(let v): return Int64(v)
+        case .real(let v): return v.isFinite ? Int64(exactly: v.rounded()) : nil
         case .text(let s): return Int64(s)
         default: return nil
         }

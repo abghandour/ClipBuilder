@@ -93,12 +93,13 @@ struct PipelineLogSheet: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 3) {
-                        ForEach(Array(store.pipelineLog.enumerated()), id: \.offset) { entry in
-                            Text(entry.element)
+                        let log = store.pipelineLog
+                        ForEach(log.indices, id: \.self) { index in
+                            Text(log[index])
                                 .font(.caption.monospaced())
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .textSelection(.enabled)
-                                .id(entry.offset)
+                                .id(index)
                         }
                     }
                     .padding(8)

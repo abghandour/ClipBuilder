@@ -109,9 +109,6 @@ struct AnalyzeView: View {
             DispatchPlanSheet(operation: pending.operation, videos: pending.videos,
                               onStart: pending.run)
         }
-        // The folder watcher keeps the table current while the app runs;
-        // this catches anything from before this view existed.
-        .task { store.scanSourceFolder() }
         // A "re-run this batch" hand-off from the Scenes screen: select the
         // video and open the plan sheet with the batch's options loaded.
         .task {
@@ -158,17 +155,13 @@ struct AnalyzeView: View {
 
     private var table: some View {
         // One pass over scenes/batches instead of an O(n) filter per table row.
-        let sceneCounts = store.scenes.reduce(into: [Int64: Int]()) { $0[$1.videoID, default: 0] += 1 }
+        let sceneCounts = store.sceneIndex.countsByVideo
         let batchCounts = store.analysisRuns.reduce(into: [Int64: Int]()) { $0[$1.videoID, default: 0] += 1 }
         let transcriptCounts = store.analysisRuns.reduce(into: [Int64: Int]()) {
             if $1.hasTranscript { $0[$1.videoID, default: 0] += 1 }
         }
         // Distinct people recognized per video, via person: tags on scenes.
-        let peopleCounts = store.scenes.reduce(into: [Int64: Set<String>]()) { acc, scene in
-            for tag in scene.tags where tag.hasPrefix("person:") {
-                acc[scene.videoID, default: []].insert(tag)
-            }
-        }
+        let peopleCounts = store.sceneIndex.personTagsByVideo
         return Table(store.videos, selection: $selection) {
             TableColumn("File") { video in
                 HStack {
@@ -387,6 +380,9 @@ private struct VideoPreviewPane: View {
 
     @State private var player: AVPlayer?
     @State private var roster: [VideoPersonRecord] = []
+    /// Whether any transcript rows exist for this video — shows the editor.
+    @State private var hasTranscript = false
+    @State private var showTranscript = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -450,6 +446,18 @@ private struct VideoPreviewPane: View {
                     }
                     .controlSize(.small)
                     .help("Stop transcribing this video")
+                }
+            } else if hasTranscript {
+                // The whole transcript, editable segment by segment.
+                HStack {
+                    Text("Transcript")
+                        .font(.caption.weight(.medium))
+                    Spacer()
+                    Button("Edit Transcript…", systemImage: "text.quote") {
+                        showTranscript = true
+                    }
+                    .controlSize(.small)
+                    .help("Open the full transcript of this file and edit any segment's text")
                 }
             }
 
@@ -601,6 +609,14 @@ private struct VideoPreviewPane: View {
             player?.pause()
             player = AVPlayer(url: video.url)
             roster = await store.videoPeople(for: video.id)
+        }
+        // Re-check when a transcription for this video finishes.
+        .task(id: "\(video.id)|\(store.transcribingVideoIDs.contains(video.id))") {
+            guard let database = store.database else { return }
+            hasTranscript = ((try? await database.fetchTranscripts(videoID: video.id)) ?? []).isEmpty == false
+        }
+        .sheet(isPresented: $showTranscript) {
+            TranscriptSheet(video: video)
         }
         .onDisappear {
             player?.pause()

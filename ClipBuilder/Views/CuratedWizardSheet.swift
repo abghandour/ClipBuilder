@@ -405,7 +405,7 @@ struct CuratedWizardSheet: View {
             if let range = model.currentRange {
                 ZStack {
                     if let player {
-                        VideoPlayer(player: player)
+                        PlayerView(player: player)
                     } else {
                         Rectangle().fill(.black)
                         ProgressView()

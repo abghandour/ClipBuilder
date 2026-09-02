@@ -49,9 +49,31 @@ struct PeopleView: View {
         selectedPeople.first ?? visiblePeople.first ?? store.people.first
     }
 
+    private struct PersonKey: Equatable {
+        var scenesVersion: Int
+        var personTag: String
+        var tagFilter: String
+        var searchText: String
+        var stackLevel: String
+    }
+
+    /// Usable scenes grouped by person tag, one pass per library version —
+    /// every list row asks for its person's scenes.
+    @State private var scenesByTagMemo = MemoBox<Int, [String: [SceneRecord]]>()
+    @State private var contentsMemo = MemoBox<PersonKey, (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]])>()
+
     /// All usable scenes featuring this person, newest analysis first.
     private func scenes(for person: PersonRecord) -> [SceneRecord] {
-        store.scenes.filter { !$0.ignored && $0.tags.contains(person.tag) }
+        let byTag = scenesByTagMemo(store.scenesVersion) {
+            var grouped: [String: [SceneRecord]] = [:]
+            for scene in store.scenes where !scene.ignored {
+                for tag in scene.tags where tag.hasPrefix("person:") {
+                    grouped[tag, default: []].append(scene)
+                }
+            }
+            return grouped
+        }
+        return byTag[person.tag] ?? []
     }
 
     /// The person's scenes under the current activity/tag filters — what the
@@ -59,6 +81,13 @@ struct PeopleView: View {
     /// moment collapse behind their best one (`stacks` maps each fronting
     /// card's id to the whole stack).
     private func displayedContents(for person: PersonRecord)
+        -> (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]]) {
+        let key = PersonKey(scenesVersion: store.scenesVersion, personTag: person.tag,
+                            tagFilter: tagFilter, searchText: searchText, stackLevel: stackLevelRaw)
+        return contentsMemo(key) { computeDisplayedContents(for: person) }
+    }
+
+    private func computeDisplayedContents(for person: PersonRecord)
         -> (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]]) {
         let filtered = scenes(for: person).filter { scene in
             let visible = displayTags(scene)

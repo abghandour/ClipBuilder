@@ -131,11 +131,14 @@ final class BuilderTimelineModel {
         saveTask?.cancel()
         resetUndoHistory()
         self.profileName = profileName
+        // Scene ids are per-profile; the previous profile's rows must not
+        // hydrate this profile's clips. The library refresh refills them.
+        scenes = []
+        scenesByID = [:]
         suppressAutosave = true
         document = BuilderStateStore.load(profileName: profileName) ?? TimelineDocument()
         selection = nil
         playhead = 0
-        hydrateClips()
         suppressAutosave = false
     }
 
@@ -150,6 +153,9 @@ final class BuilderTimelineModel {
 
     func clear() {
         registerUndo("Clear Timeline")
+        // A debounced autosave holding the pre-clear snapshot would write
+        // the timeline straight back after the file is deleted.
+        saveTask?.cancel()
         document = TimelineDocument()
         selection = nil
         playhead = 0
@@ -162,6 +168,20 @@ final class BuilderTimelineModel {
         self.scenes = scenes
         scenesByID = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
         hydrateClips()
+    }
+
+    /// One scene changed: refresh its cache entry and only re-hydrate when
+    /// a clip on the timeline actually references it.
+    func updateScene(_ scene: SceneRecord) {
+        if let index = scenes.firstIndex(where: { $0.id == scene.id }) {
+            scenes[index] = scene
+        } else {
+            scenes.append(scene)
+        }
+        scenesByID[scene.id] = scene
+        if document.videoTrack.contains(where: { $0.sceneID == scene.id }) {
+            hydrateClips()
+        }
     }
 
     private func hydrateClips() {
@@ -308,7 +328,7 @@ final class BuilderTimelineModel {
 
     /// Source-file time to preview for a clip at a given timeline time.
     func sourceTime(for clip: TimelineClip, atTimeline time: Double) -> Double {
-        (clip.sourceStart ?? 0) + max(0, min(clip.duration, time - clip.startTime))
+        (clip.sourceStart ?? 0) + max(0, min(clip.duration, time - clip.startTime)) * clip.effectiveSpeed
     }
 
     // MARK: - Clip mutations
@@ -356,11 +376,13 @@ final class BuilderTimelineModel {
         guard let index = clipIndex(uid) else { return }
         registerUndo("Trim Clip")
         var clip = document.videoTrack[index]
+        // The ceiling is measured in source seconds; the clip's duration is
+        // screen time, so scale by the playback speed before clamping.
         var maxDuration = Double.greatestFiniteMagnitude
         if let scene = scene(for: clip) {
-            maxDuration = max(0.5, scene.videoDuration - (clip.sourceStart ?? scene.startTime))
+            maxDuration = max(0.5, (scene.videoDuration - (clip.sourceStart ?? scene.startTime)) / clip.effectiveSpeed)
         } else if let start = clip.sourceStart, let end = clip.sourceEnd {
-            maxDuration = max(0.5, end - start)
+            maxDuration = max(0.5, (end - start) / clip.effectiveSpeed)
         }
         clip.duration = min(maxDuration, max(0.5, Self.snap(duration)))
         document.videoTrack[index] = clip

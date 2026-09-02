@@ -274,7 +274,8 @@ struct VideoTrackLane: View {
                                   onPlay: onPlayClip)
             }
         }
-        .frame(width: contentWidth, height: model.laneHeight(forTrack: track))
+        .frame(width: contentWidth,
+               height: CGFloat(layout.rowCount) * BuilderTimelineModel.rowHeight)
         .dropDestination(for: String.self) { items, location in
             guard let payload = items.first, payload.hasPrefix("scene:"),
                   let sceneID = Int64(payload.dropFirst(6)),
@@ -293,6 +294,17 @@ struct TimelineClipBlock: View {
     let clip: TimelineClip
     let row: Int
 
+    private struct PaceKey: Equatable {
+        var videoID: Int64?
+        var events: [FightEventRecord]
+        var start: Double?
+        var span: Double
+    }
+
+    /// Bucketed once per (clip range, events); clip blocks re-render on
+    /// every drag frame and must not re-bucket the video's events each time.
+    @State private var paceMemo = MemoBox<PaceKey, [Double]?>()
+
     /// Scored fight-action pace mapped through this clip's source range;
     /// nil when the clip's video has no scored events.
     private func clipPace(model: BuilderTimelineModel) -> [Double]? {
@@ -300,10 +312,13 @@ struct TimelineClipBlock: View {
             ?? store.videos.first { $0.path == clip.videoFile }?.id
         guard let videoID, let events = store.fightEvents[videoID],
               let start = clip.sourceStart else { return nil }
-        let pace = FightGraphView.paceCurve(events: events, start: start,
-                                            end: start + clip.sourceSpan,
-                                            buckets: max(2, Int(clip.sourceSpan.rounded())))
-        return pace.isEmpty ? nil : pace
+        let key = PaceKey(videoID: videoID, events: events, start: start, span: clip.sourceSpan)
+        return paceMemo(key) {
+            let pace = FightGraphView.paceCurve(events: events, start: start,
+                                                end: start + clip.sourceSpan,
+                                                buckets: max(2, Int(clip.sourceSpan.rounded())))
+            return pace.isEmpty ? nil : pace
+        }
     }
     let onPlay: (TimelineClip) -> Void
 
@@ -570,7 +585,7 @@ struct OverlayLane: View {
                 }
             }
         }
-        .frame(width: contentWidth, height: model.overlayLaneHeight)
+        .frame(width: contentWidth, height: CGFloat(layout.rowCount) * rowHeight)
     }
 }
 

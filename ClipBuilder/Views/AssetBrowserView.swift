@@ -451,19 +451,7 @@ struct ImageThumbnail: View {
     }
 
     private static func thumbnail(for url: URL) async -> NSImage? {
-        let path = url
-        return await Task.detached(priority: .utility) {
-            guard let source = CGImageSourceCreateWithURL(path as CFURL, nil) else { return nil }
-            let options: [CFString: Any] = [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 400,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-            ]
-            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-                return nil
-            }
-            return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-        }.value
+        await ImageCache.image(for: url, maxPixel: 400)
     }
 }
 

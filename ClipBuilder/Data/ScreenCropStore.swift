@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import Synchronization
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
@@ -163,12 +165,35 @@ nonisolated enum ScreenCropStore {
         directory.appendingPathComponent(ProfileStore.sanitize(name) + ".json")
     }
 
+    /// Decoded layouts keyed by the directory's (path, mtime) fingerprint:
+    /// callers hit `all()` from view bodies and render loops, so a listing
+    /// costs one directory stat pass unless a file actually changed.
+    private struct ListingCache {
+        var fingerprint: [String] = []
+        var layouts: [ScreenCropLayout] = []
+    }
+    private static let listingCache = Mutex(ListingCache())
+
     static func list() -> [ScreenCropLayout] {
-        let files = (try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles])) ?? []
-        return files
+        let files = ((try? FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles])) ?? [])
             .filter { $0.pathExtension.lowercased() == "json" }
+        let fingerprint = files.map { url in
+            let stamp = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)?
+                .timeIntervalSinceReferenceDate ?? 0
+            return "\(url.lastPathComponent)|\(stamp)"
+        }.sorted()
+        if let cached = listingCache.withLock({ $0.fingerprint == fingerprint ? $0.layouts : nil }) {
+            return cached
+        }
+        let layouts = decodeLayouts(files)
+        listingCache.withLock { $0 = ListingCache(fingerprint: fingerprint, layouts: layouts) }
+        return layouts
+    }
+
+    private static func decodeLayouts(_ files: [URL]) -> [ScreenCropLayout] {
+        files
             .compactMap { url -> ScreenCropLayout? in
                 guard let data = try? Data(contentsOf: url),
                       var layout = try? JSONDecoder().decode(ScreenCropLayout.self, from: data)
@@ -183,14 +208,26 @@ nonisolated enum ScreenCropStore {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(layout).write(to: layoutURL(name: layout.name))
+        try encoder.encode(layout).write(to: layoutURL(name: layout.name), options: .atomic)
     }
 
     /// Returns the final (sanitized) name.
     static func rename(_ name: String, to newName: String) throws -> String {
         let sanitized = ProfileStore.sanitize(newName)
-        guard sanitized != ProfileStore.sanitize(name) else { return name }
-        try FileManager.default.moveItem(at: layoutURL(name: name), to: layoutURL(name: sanitized))
+        let current = ProfileStore.sanitize(name)
+        guard sanitized != current else { return name }
+        let source = layoutURL(name: name)
+        let destination = layoutURL(name: sanitized)
+        if sanitized.caseInsensitiveCompare(current) == .orderedSame {
+            // Case-only rename: a direct move fails on case-insensitive
+            // volumes because the destination "already exists".
+            let staging = destination.deletingLastPathComponent()
+                .appendingPathComponent(".\(UUID().uuidString).tmp")
+            try FileManager.default.moveItem(at: source, to: staging)
+            try FileManager.default.moveItem(at: staging, to: destination)
+        } else {
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
         return sanitized
     }
 
@@ -281,8 +318,13 @@ nonisolated enum ScreenCropStore {
     /// when the reference no longer resolves — the clip then renders unmasked.
     static func maskFile(reference: String?, in directory: URL) -> URL? {
         guard let reference, let area = area(reference: reference) else { return nil }
+        // The polygon is part of the name: the renderer caches masks next
+        // to its output, and an edited layout must not reuse the old shape.
+        let shape = area.points.map { String(format: "%.4f,%.4f", $0.x, $0.y) }.joined(separator: ";")
+        let digest = SHA256.hash(data: Data(shape.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
         let file = directory.appendingPathComponent(
-            "mask_" + ProfileStore.sanitize(reference.replacingOccurrences(of: "/", with: "_")) + ".png")
+            "mask_" + ProfileStore.sanitize(reference.replacingOccurrences(of: "/", with: "_"))
+                + "_" + digest + ".png")
         if FileManager.default.fileExists(atPath: file.path) { return file }
         return try? writeMask(for: area, to: file)
     }

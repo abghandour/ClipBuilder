@@ -77,7 +77,7 @@ struct WizardView: View {
     }
 
     private var analyzedSceneCount: Int {
-        store.scenes.filter { !$0.excluded && !$0.ignored }.count
+        store.sceneIndex.usableCount
     }
 
     /// Captions can only burn transcripts that already exist — the wizard
@@ -98,24 +98,16 @@ struct WizardView: View {
     /// picked, only those appearing in the selected batches' scenes.
     private var eligibleSourcePeople: [PersonRecord] {
         guard limitToSelection, !selectedRunIDs.isEmpty else { return store.people }
-        let runIDs = selectedRunIDs
         var tags = Set<String>()
-        for scene in store.scenes where scene.runID.map(runIDs.contains) ?? false {
-            for tag in scene.tags where tag.hasPrefix("person:") {
-                tags.insert(tag)
-            }
+        for runID in selectedRunIDs {
+            tags.formUnion(store.sceneIndex.personTagsByRun[runID] ?? [])
         }
         return store.people.filter { tags.contains($0.tag) }
     }
 
     /// Distinct people recognized per analyze batch, via person: scene tags.
     private var batchPeopleCounts: [Int64: Int] {
-        store.scenes.reduce(into: [Int64: Set<String>]()) { acc, scene in
-            guard let runID = scene.runID else { return }
-            for tag in scene.tags where tag.hasPrefix("person:") {
-                acc[runID, default: []].insert(tag)
-            }
-        }.mapValues(\.count)
+        store.sceneIndex.personTagsByRun.mapValues(\.count)
     }
 
     var body: some View {
@@ -206,10 +198,8 @@ struct WizardView: View {
                     HStack(spacing: 12) {
                         // Snapshot of the source reel, so it's obvious which
                         // video the wizard is replicating.
-                        if let url = handoff.thumbnailURL, let image = NSImage(contentsOf: url) {
-                            Image(nsImage: image)
-                                .resizable()
-                                .aspectRatio(contentMode: .fill)
+                        if let url = handoff.thumbnailURL {
+                            CachedImage(url: url, maxPixel: 240)
                                 .frame(width: 44, height: 78)
                                 .clipShape(RoundedRectangle(cornerRadius: 6))
                         } else {
@@ -1012,8 +1002,9 @@ private struct WizardLogPanel: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 2) {
-                            ForEach(Array(store.wizardLog.enumerated()), id: \.offset) { index, line in
-                                logLine(line)
+                            let log = store.wizardLog
+                            ForEach(log.indices, id: \.self) { index in
+                                logLine(log[index])
                                     .id(index)
                             }
                         }

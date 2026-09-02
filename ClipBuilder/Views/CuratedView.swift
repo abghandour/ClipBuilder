@@ -21,7 +21,20 @@ struct CuratedView: View {
     @State private var previewScene: SceneRecord?
 
     private var curatedScenes: [SceneRecord] {
-        store.scenes.filter { $0.curated && !$0.ignored }
+        store.sceneIndex.curated
+    }
+
+    private struct ListKey: Equatable {
+        var scenesVersion: Int
+        var batchFilter: Int64?
+        var stackLevel: String
+    }
+
+    @State private var listMemo = MemoBox<ListKey, (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]])>()
+    @State private var candidatesMemo = MemoBox<ListKey, [SceneRecord]>()
+
+    private var memoKey: ListKey {
+        ListKey(scenesVersion: store.scenesVersion, batchFilter: batchFilter, stackLevel: stackLevelRaw)
     }
 
     /// The curated scenes the list shows, narrowed to the selected analyze
@@ -34,13 +47,15 @@ struct CuratedView: View {
     /// The list's rows plus, for every row fronting a stack of takes of the
     /// same moment, the whole stack behind it (best take first).
     private var listContents: (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]]) {
-        var scenes: [SceneRecord] = []
-        var stacks: [Int64: [SceneRecord]] = [:]
-        for stack in SceneStacks.group(filteredScenes, level: .from(stackLevelRaw)) {
-            scenes.append(stack[0])
-            if stack.count > 1 { stacks[stack[0].id] = stack }
+        listMemo(memoKey) {
+            var scenes: [SceneRecord] = []
+            var stacks: [Int64: [SceneRecord]] = [:]
+            for stack in SceneStacks.group(filteredScenes, level: .from(stackLevelRaw)) {
+                scenes.append(stack[0])
+                if stack.count > 1 { stacks[stack[0].id] = stack }
+            }
+            return (scenes, stacks)
         }
-        return (scenes, stacks)
     }
 
     /// Analyze batches that hold curated scenes, with curated-scene counts,
@@ -59,12 +74,14 @@ struct CuratedView: View {
     /// Uncurated stack-top scenes the AI Curator can propose from — scoped
     /// to the selected batch when one is chosen.
     private var curateCandidates: [SceneRecord] {
-        let pool = store.scenes.filter { scene in
-            guard !scene.curated, !scene.excluded, !scene.ignored else { return false }
-            if let batchFilter { return scene.runID == batchFilter }
-            return true
+        candidatesMemo(memoKey) {
+            let pool = store.scenes.filter { scene in
+                guard !scene.curated, !scene.excluded, !scene.ignored else { return false }
+                if let batchFilter { return scene.runID == batchFilter }
+                return true
+            }
+            return SceneStacks.tops(pool, level: .from(stackLevelRaw))
         }
-        return SceneStacks.tops(pool, level: .from(stackLevelRaw))
     }
 
     var body: some View {
@@ -272,7 +289,7 @@ struct CuratedSceneEditor: View {
 
     @State private var player: AVPlayer?
     @State private var timeObserver: Any?
-    @State private var currentTime = 0.0
+    @State private var clock = PlaybackClock()
     @State private var rangeEndObserver: Any?
     @State private var isPlayingRange = false
     @State private var editStart = 0.0
@@ -359,19 +376,23 @@ struct CuratedSceneEditor: View {
         // drafts so "Apply" correctly disables again.
         .onChange(of: scene.startTime) { editStart = scene.startTime }
         .onChange(of: scene.endTime) { editEnd = scene.endTime }
-        .task(id: suggestionKey) {
-            suggestionDraft = nil
-            guard let video, video.wide, (player?.rate ?? 0) == 0 else {
-                suggestionCrop = nil
-                return
+        // Keyed on the playback clock inside a leaf view, so the 10 Hz
+        // ticks don't re-evaluate this whole editor.
+        .background {
+            ClockKeyedTask(clock: clock, extra: suggestionKey) { time in
+                suggestionDraft = nil
+                guard let video, video.wide, (player?.rate ?? 0) == 0 else {
+                    suggestionCrop = nil
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                suggestionCrop = await CenterStageService.stillFrameCrop(
+                    source: video.url, at: time,
+                    focusPortraits: focusPortraits,
+                    avoidPortraits: avoidPortraits,
+                    tuning: .named(cameraPreset))
             }
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            suggestionCrop = await CenterStageService.stillFrameCrop(
-                source: video.url, at: currentTime,
-                focusPortraits: focusPortraits,
-                avoidPortraits: avoidPortraits,
-                tuning: .named(cameraPreset))
         }
         .onDisappear {
             tearDownPlayer()
@@ -460,6 +481,7 @@ struct CuratedSceneEditor: View {
                         // Paused: the framing box — a nearby hint (editable)
                         // or the computed suggestion; drag either to pin.
                         if !isPlayingRange, video.wide, video.height > 0 {
+                          ClockReader(clock: clock) { currentTime in
                             let widthPerHeight = (9.0 / 16.0)
                                 * Double(video.height) / Double(max(1, video.width))
                             if let hint = hints.first(where: { abs($0.atTime - currentTime) < 0.5 }) {
@@ -497,6 +519,7 @@ struct CuratedSceneEditor: View {
                                     }
                                 }
                             }
+                          }
                         }
                     }
                 }
@@ -557,11 +580,12 @@ struct CuratedSceneEditor: View {
         let newPlayer = AVPlayer(url: video.url)
         newPlayer.seek(to: CMTime(seconds: scene.startTime, preferredTimescale: 600))
         player = newPlayer
-        currentTime = scene.startTime
+        clock.time = scene.startTime
+        let clock = clock
         timeObserver = newPlayer.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
             queue: .main) { time in
-            Task { @MainActor in currentTime = time.seconds }
+            Task { @MainActor in clock.update(time.seconds) }
         }
     }
 
@@ -612,8 +636,10 @@ struct CuratedSceneEditor: View {
 
     // MARK: - Framing references
 
+    /// Suggestion recompute key minus the clock, which `ClockKeyedTask` adds.
     private var suggestionKey: String {
-        "\(scene.id)|\((currentTime * 2).rounded())|\(hints.count)|\(cameraPreset)|\(isPlayingRange)"
+        let hintShape = hints.map { "\($0.atTime)@\($0.x),\($0.y),\($0.width),\($0.height)" }.joined(separator: ";")
+        return "\(scene.id)|\(hintShape)|\(cameraPreset)|\(isPlayingRange)|\(focusPortraits.count)|\(avoidPortraits.count)"
     }
 
     private func reloadPortraits() async {

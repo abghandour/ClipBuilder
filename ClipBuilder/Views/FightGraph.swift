@@ -18,6 +18,15 @@ struct FightGraphView: View {
     /// Tap-to-seek (source seconds); nil = inert graph.
     var onSeek: ((Double) -> Void)?
 
+    private struct ActivityKey: Equatable {
+        var events: [FightEventRecord]
+        var range: ClosedRange<Double>
+    }
+
+    /// The bucketed curves are rebuilt only when the events or window
+    /// change, not on every re-render of the pane around the graph.
+    @State private var activityMemo = MemoBox<ActivityKey, Activity?>()
+
     /// A landed action fades out linearly over this many seconds — with no
     /// follow-up action the score is back at zero when the window elapses.
     private static let activityWindow: Double = 3.0
@@ -103,7 +112,7 @@ struct FightGraphView: View {
     // MARK: - View
 
     var body: some View {
-        let model = activity()
+        let model = activityMemo(ActivityKey(events: events, range: range)) { activity() }
         return VStack(alignment: .leading, spacing: 3) {
             if showsLegend, let model {
                 HStack(spacing: 10) {

@@ -74,7 +74,33 @@ struct ScenesView: View {
         var stacks: [Int64: [SceneRecord]] = [:]
     }
 
+    /// Everything `gridContents` depends on; the memo recomputes only when
+    /// one of these changes (a click that only moves selection doesn't).
+    private struct GridKey: Equatable {
+        var scenesVersion: Int
+        var searchText: String
+        var runFilter: Set<Int64>?
+        var showHidden: Bool
+        var tagFilter: String?
+        var minScore: Double
+        var aiMatchIDs: [Int64]?
+        var showSequenceParts: Bool
+        var stackLevel: SceneStackLevel
+        var sortByScore: Bool
+    }
+
+    @State private var gridMemo = MemoBox<GridKey, GridContents>()
+
     private var gridContents: GridContents {
+        let key = GridKey(scenesVersion: store.scenesVersion, searchText: searchText,
+                          runFilter: runFilter, showHidden: showHidden, tagFilter: tagFilter,
+                          minScore: minScore, aiMatchIDs: aiMatches?.ids,
+                          showSequenceParts: showSequenceParts, stackLevel: stackLevel,
+                          sortByScore: sortByScore)
+        return gridMemo(key) { computeGridContents() }
+    }
+
+    private func computeGridContents() -> GridContents {
         let needle = searchText.lowercased()
         let runFilter = runFilter
         var result = store.scenes.filter { scene in
@@ -139,7 +165,7 @@ struct ScenesView: View {
     }
 
     private var allTags: [String] {
-        Array(Set(store.scenes.flatMap(\.tags))).sorted()
+        store.sceneIndex.allTags
     }
 
     /// Any non-default grid filter — fills the toolbar Filter icon.
@@ -1002,125 +1028,3 @@ struct SceneCard: View {
     }
 }
 
-/// Transcript viewer/editor for one source video.
-struct TranscriptSheet: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let video: VideoRecord
-
-    @State private var rows: [TranscriptRow] = []
-    @State private var editingRow: TranscriptRow?
-    @State private var editText = ""
-    @State private var isLoading = true
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading) {
-                    Text("Transcript — \(video.filename)")
-                        .font(.headline)
-                    if let provenance = rows.first?.provenance {
-                        HStack(spacing: 4) {
-                            Text("Transcribed by")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            ProvenanceBadge(provenance: provenance, style: .full,
-                                            role: "Transcribed by", size: 12)
-                        }
-                    }
-                }
-                Spacer()
-                Button("Re-transcribe") {
-                    store.transcribe(video: video, force: true)
-                    dismiss()
-                }
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding()
-
-            Divider()
-
-            if isLoading {
-                ProgressView()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if rows.isEmpty {
-                ContentUnavailableView(
-                    "No Transcript",
-                    systemImage: "text.quote",
-                    description: Text("Transcribe this video from the Raw Videos screen."))
-                    // Fill the sheet's remaining height so the header stays
-                    // pinned to the top instead of centering with it.
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(rows) { row in
-                    HStack(alignment: .top) {
-                        Text("\(row.startTime.timecode)–\(row.endTime.timecode)")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 90, alignment: .leading)
-                        Text(row.text)
-                            .textSelection(.enabled)
-                        Spacer()
-                        if row.originalText != nil {
-                            Button("Revert") {
-                                revert(row)
-                            }
-                            .controlSize(.mini)
-                        }
-                        Button("Edit") {
-                            editText = row.text
-                            editingRow = row
-                        }
-                        .controlSize(.mini)
-                    }
-                }
-            }
-        }
-        .frame(width: 620, height: 480)
-        .modalCloseButton { dismiss() }
-        .task { await load() }
-        .sheet(item: $editingRow) { row in
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Edit Segment")
-                    .font(.headline)
-                TextEditor(text: $editText)
-                    .frame(minHeight: 80)
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
-                HStack {
-                    Spacer()
-                    Button("Save") {
-                        save(row, text: editText)
-                        editingRow = nil
-                    }
-                    .keyboardShortcut(.defaultAction)
-                }
-            }
-            .padding()
-            .frame(width: 420)
-            .modalCloseButton { editingRow = nil }
-        }
-    }
-
-    private func load() async {
-        guard let database = store.database else { return }
-        rows = (try? await database.fetchTranscripts(videoID: video.id)) ?? []
-        isLoading = false
-    }
-
-    private func save(_ row: TranscriptRow, text: String) {
-        guard let database = store.database else { return }
-        Task {
-            try? await database.updateTranscriptText(id: row.id, text: text)
-            await load()
-        }
-    }
-
-    private func revert(_ row: TranscriptRow) {
-        guard let database = store.database else { return }
-        Task {
-            try? await database.revertTranscriptText(id: row.id)
-            await load()
-        }
-    }
-}

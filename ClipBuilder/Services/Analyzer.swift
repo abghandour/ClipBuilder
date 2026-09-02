@@ -1717,6 +1717,7 @@ actor Analyzer {
     /// Per-second RMS loudness (dB) of the source audio — crowd and
     /// commentator spikes mark the exciting moments. Pure ffmpeg; empty on
     /// failure or silence.
+    @concurrent
     nonisolated static func loudnessCurve(url: URL) async -> [Double] {
         guard let output = try? await FFmpeg.run([
             "-i", url.path, "-map", "a:0", "-vn",
@@ -1795,6 +1796,7 @@ nonisolated extension Double {
 extension Analyzer {
     /// Portrait crops for a video's person markers — ground-truth images of
     /// the people to focus on, for identity-aware Center Stage tracking.
+    @concurrent
     nonisolated static func markerPortraits(url: URL, markers: [PersonMarker],
                                             duration: Double) async -> [Data] {
         ((try? await BoundedConcurrency.map(markers, limit: FFmpeg.jobLimit) { _, marker in

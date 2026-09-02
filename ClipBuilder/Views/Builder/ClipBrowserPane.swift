@@ -53,6 +53,25 @@ struct ClipBrowserPane: View {
         return true
     }
 
+    private struct FilterKey: Equatable {
+        var scenesVersion: Int
+        var tagFilter: String?
+        var favoritesOnly: Bool
+        var orientation: OrientationFilter
+        var batchFilter: Int64?
+        var durationFilter: DurationFilter
+        var stackLevel: String
+    }
+
+    @State private var gridMemo = MemoBox<FilterKey, (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]])>()
+    @State private var tagsMemo = MemoBox<FilterKey, [(tag: String, count: Int)]>()
+
+    private var filterKey: FilterKey {
+        FilterKey(scenesVersion: store.scenesVersion, tagFilter: tagFilter, favoritesOnly: favoritesOnly,
+                  orientation: orientation, batchFilter: batchFilter, durationFilter: durationFilter,
+                  stackLevel: stackLevelRaw)
+    }
+
     private var filteredScenes: [SceneRecord] {
         store.scenes.filter { scene in
             passesNonTagFilters(scene)
@@ -63,25 +82,29 @@ struct ClipBrowserPane: View {
     /// The grid's cards plus, for every card fronting a stack of takes of
     /// the same moment, the whole stack behind it (best take first).
     private var gridContents: (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]]) {
-        var scenes: [SceneRecord] = []
-        var stacks: [Int64: [SceneRecord]] = [:]
-        for stack in SceneStacks.group(filteredScenes, level: .from(stackLevelRaw)) {
-            scenes.append(stack[0])
-            if stack.count > 1 { stacks[stack[0].id] = stack }
+        gridMemo(filterKey) {
+            var scenes: [SceneRecord] = []
+            var stacks: [Int64: [SceneRecord]] = [:]
+            for stack in SceneStacks.group(filteredScenes, level: .from(stackLevelRaw)) {
+                scenes.append(stack[0])
+                if stack.count > 1 { stacks[stack[0].id] = stack }
+            }
+            return (scenes, stacks)
         }
-        return (scenes, stacks)
     }
 
     /// Tags with at least one matching scene, with their scene counts. The
     /// active tag stays listed even when its count drops to zero, so the
     /// picker's selection never dangles.
     private var tagCounts: [(tag: String, count: Int)] {
-        var counts: [String: Int] = [:]
-        for scene in store.scenes where passesNonTagFilters(scene) {
-            for tag in Set(scene.tags) { counts[tag, default: 0] += 1 }
+        tagsMemo(filterKey) {
+            var counts: [String: Int] = [:]
+            for scene in store.scenes where passesNonTagFilters(scene) {
+                for tag in Set(scene.tags) { counts[tag, default: 0] += 1 }
+            }
+            if let tagFilter, counts[tagFilter] == nil { counts[tagFilter] = 0 }
+            return counts.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
         }
-        if let tagFilter, counts[tagFilter] == nil { counts[tagFilter] = 0 }
-        return counts.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
     }
 
     /// Analyze batches that actually hold scenes, newest first.

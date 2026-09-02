@@ -15,7 +15,12 @@ actor ThumbnailService {
     }
 
     private func cacheKey(_ url: URL, time: Double, maxDimension: CGFloat) -> String {
-        let digest = SHA256.hash(data: Data("\(url.path)|\(time)|\(Int(maxDimension))".utf8))
+        // Size + mtime ride along so a file re-encoded in place gets a
+        // fresh frame instead of the old cached one.
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? -1
+        let mtime = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+        let digest = SHA256.hash(data: Data("\(url.path)|\(size)|\(mtime)|\(time)|\(Int(maxDimension))".utf8))
         return digest.prefix(16).map { String(format: "%02x", $0) }.joined() + ".jpg"
     }
 
@@ -34,6 +39,7 @@ actor ThumbnailService {
 
     /// One JPEG frame, uncached — used by the analyzer's frame sampler.
     /// Quality ~0.85 approximates ffmpeg's `-q:v 4`.
+    @concurrent
     static func jpegFrame(url: URL, at time: Double,
                           maxDimension: CGFloat = 0, quality: CGFloat = 0.85) async -> Data? {
         let asset = AVURLAsset(url: url)
@@ -56,6 +62,7 @@ actor ThumbnailService {
 
     /// Grayscale pixels for a frame, downscaled to `width` pixels across —
     /// feeds the auto-crop detail/motion scoring.
+    @concurrent
     static func grayscaleFrame(url: URL, at time: Double, width: Int) async -> (pixels: [UInt8], width: Int, height: Int)? {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)

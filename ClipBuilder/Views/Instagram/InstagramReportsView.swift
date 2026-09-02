@@ -56,6 +56,8 @@ struct InstagramReportsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // The report is built here, on demand, rather than at launch.
+        .task(id: store.igSelectedAccountID) { store.ensureIGReportLoaded() }
     }
 
     // MARK: - Empty states
@@ -102,7 +104,7 @@ struct InstagramReportsView: View {
 
     private func content(_ report: InstagramReport, account: IGAccountRecord) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Theme.spaceL) {
+            LazyVStack(alignment: .leading, spacing: Theme.spaceL) {
                 header(report)
                 if report.importedThrough == nil, store.canImportPeaceGrapplerHistory,
                    !store.isImportingPeaceGrappler {
@@ -504,8 +506,17 @@ struct InstagramReportsView: View {
         }
     }
 
+    private struct SortKey: Equatable {
+        var rows: [InstagramReport.PostRow]
+        var order: [KeyPathComparator<InstagramReport.PostRow>]
+    }
+
+    /// Sorted once per (rows, order) instead of on every body pass.
+    @State private var sortedRowsMemo = MemoBox<SortKey, [InstagramReport.PostRow]>()
+
     private func postsTable(_ rows: [InstagramReport.PostRow]) -> some View {
-        Table(rows.sorted(using: sortOrder), sortOrder: $sortOrder) {
+        let sorted = sortedRowsMemo(SortKey(rows: rows, order: sortOrder)) { rows.sorted(using: sortOrder) }
+        return Table(sorted, sortOrder: $sortOrder) {
             TableColumn("Date", value: \.date) { row in
                 Text(row.date.formatted(date: .abbreviated, time: .omitted)).monospacedDigit()
             }

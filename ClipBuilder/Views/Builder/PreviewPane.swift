@@ -18,6 +18,7 @@ struct PreviewPane: View {
         // Snap the preview time to the 0.5s grid so scrubbing reuses cached
         // thumbnails instead of extracting a frame per pixel.
         let time = BuilderTimelineModel.snap(model.playhead)
+        let cropReferences = Set(model.document.videoTrack.compactMap(\.screenCrop))
         let active = model.document.videoTrack
             .filter { $0.startTime <= time + 0.001 && time < $0.startTime + $0.duration }
             .sorted { ($0.track, $0.stackOrder) < ($1.track, $1.stackOrder) }
@@ -56,9 +57,9 @@ struct PreviewPane: View {
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .aspectRatio(9 / 16, contentMode: .fit)
-        .task(id: Set(model.document.videoTrack.compactMap(\.screenCrop))) {
+        .task(id: cropReferences) {
             var resolved: [String: ScreenCropArea] = [:]
-            for reference in Set(model.document.videoTrack.compactMap(\.screenCrop)) {
+            for reference in cropReferences {
                 if let area = ScreenCropStore.area(reference: reference) { resolved[reference] = area }
             }
             cropAreas = resolved
@@ -158,10 +159,15 @@ private struct CropEditorLayer: View {
         .frame(width: frame.width, height: frame.height)
         .task(id: "\(clip.uid)|\(time)") {
             let model = store.builder
-            if let url = model.sourceURL(for: clip),
-               let data = await store.thumbnails.thumbnail(
-                   for: url, at: model.sourceTime(for: clip, atTimeline: time)),
-               let loaded = NSImage(data: data) {
+            guard let url = model.sourceURL(for: clip) else { return }
+            let sourceTime = model.sourceTime(for: clip, atTimeline: time)
+            let key = "\(url.path)|\(sourceTime)|frame"
+            if let hit = ImageCache.cached(key: key) {
+                image = hit
+                return
+            }
+            if let data = await store.thumbnails.thumbnail(for: url, at: sourceTime),
+               let loaded = await ImageCache.image(data: data, key: key, maxPixel: 480) {
                 image = loaded
             }
         }

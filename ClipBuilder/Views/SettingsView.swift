@@ -216,14 +216,9 @@ private struct ProfileSettingsTab: View {
                           prompt: Text("#E31B23 — used by headlines and cards"))
                 TextField("Tagline", text: $store.activeProfile.tagline,
                           prompt: Text("shown under the logo on the outro card"))
-                TextField("Caption languages", text: Binding(
-                    get: { store.activeProfile.captionLanguages.joined(separator: ", ") },
-                    set: { value in
-                        store.activeProfile.captionLanguages = value
-                            .split(separator: ",")
-                            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-                            .filter { !$0.isEmpty }
-                    }), prompt: Text("en, pt — one caption block per language"))
+                CommaListField("Caption languages", items: $store.activeProfile.captionLanguages,
+                               lowercased: true,
+                               prompt: Text("en, pt — one caption block per language"))
                 Text("The brand kit drives the wizard's watermark, result headline, and outro card — the pieces that make every reel look like the channel.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -242,13 +237,9 @@ private struct ProfileSettingsTab: View {
                     HStack {
                         Text(category)
                             .frame(width: 80, alignment: .leading)
-                        TextField("tags", text: Binding(
-                            get: { store.activeProfile.tagSchema[category]?.joined(separator: ", ") ?? "" },
-                            set: { store.activeProfile.tagSchema[category] = $0
-                                .split(separator: ",")
-                                .map { $0.trimmingCharacters(in: .whitespaces) }
-                                .filter { !$0.isEmpty } }
-                        ))
+                        CommaListField("tags", items: Binding(
+                            get: { store.activeProfile.tagSchema[category] ?? [] },
+                            set: { store.activeProfile.tagSchema[category] = $0 }))
                         Button("Remove Category", systemImage: "minus.circle") {
                             store.activeProfile.tagSchema.removeValue(forKey: category)
                         }
@@ -332,10 +323,7 @@ private struct TasteSettingsTab: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(store.activeProfile.tasteExemplarFrames, id: \.self) { path in
-                                if let image = NSImage(contentsOfFile: path) {
-                                    Image(nsImage: image)
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
+                                    CachedImage(url: URL(fileURLWithPath: path), maxPixel: 160)
                                         .frame(width: 72, height: 72)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                         .overlay(alignment: .topTrailing) {
@@ -352,7 +340,6 @@ private struct TasteSettingsTab: View {
                                             .padding(2)
                                             .help("Remove this example frame")
                                         }
-                                }
                             }
                         }
                     }

@@ -97,14 +97,26 @@ nonisolated enum OverlayTemplateStore {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(template.composition).write(to: templateURL(name: template.name))
+        try encoder.encode(template.composition).write(to: templateURL(name: template.name), options: .atomic)
     }
 
     /// Returns the final (sanitized) name.
     static func rename(_ name: String, to newName: String) throws -> String {
         let sanitized = ProfileStore.sanitize(newName)
-        guard sanitized != ProfileStore.sanitize(name) else { return name }
-        try FileManager.default.moveItem(at: templateURL(name: name), to: templateURL(name: sanitized))
+        let current = ProfileStore.sanitize(name)
+        guard sanitized != current else { return name }
+        let source = templateURL(name: name)
+        let destination = templateURL(name: sanitized)
+        if sanitized.caseInsensitiveCompare(current) == .orderedSame {
+            // Case-only rename: a direct move fails on case-insensitive
+            // volumes because the destination "already exists".
+            let staging = destination.deletingLastPathComponent()
+                .appendingPathComponent(".\(UUID().uuidString).tmp")
+            try FileManager.default.moveItem(at: source, to: staging)
+            try FileManager.default.moveItem(at: staging, to: destination)
+        } else {
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
         return sanitized
     }
 

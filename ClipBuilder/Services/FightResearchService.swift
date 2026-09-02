@@ -260,11 +260,13 @@ actor FightResearchService {
             let wait = 6 - Date().timeIntervalSince(lastRedditHit)
             if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
         }
+        if Task.isCancelled { return nil }
         lastRedditHit = Date()
         var (status, body) = await Self.fetch(url)
         if status == 429 {
             emit("Reddit rate limit hit — waiting 30s and retrying once…")
             try? await Task.sleep(for: .seconds(30))
+            if Task.isCancelled { return nil }
             lastRedditHit = Date()
             (status, body) = await Self.fetch(url)
         }

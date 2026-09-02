@@ -195,7 +195,7 @@ struct InstagramView: View {
                         Text("Stop")
                     }
                 }
-                .help(store.igLog.last ?? "Fetching…")
+                .help("Stop the running fetch")
             } else {
                 Button {
                     if let account = selectedAccount {
@@ -270,14 +270,9 @@ struct InstagramView: View {
                 }
                 .padding()
             }
-            if store.isFetchingInstagram, let last = store.igLog.last {
-                HStack(spacing: 8) {
-                    Text(last)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                    LogActions(lines: store.igLog) { store.igLog = [] }
-                }
-                .padding(.bottom, 12)
+            if store.isFetchingInstagram {
+                InstagramFetchFooter()
+                    .padding(.bottom, 12)
             }
         }
     }
@@ -362,13 +357,7 @@ private struct ReelCard: View {
 
     @ViewBuilder
     private var thumbnail: some View {
-        if let url = media.thumbnailURL, let image = NSImage(contentsOf: url) {
-            Color.clear.overlay {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            }
-        } else {
+        CachedImage(url: media.thumbnailURL, maxPixel: 480) {
             ZStack {
                 Rectangle().fill(.quaternary)
                 Image(systemName: "play.rectangle")
@@ -455,11 +444,9 @@ private struct InstagramDetailSheet: View {
                 Group {
                     if let player {
                         PlayerView(player: player)
-                    } else if let url = media.thumbnailURL, let image = NSImage(contentsOf: url) {
+                    } else if let url = media.thumbnailURL {
                         // The still is the link: click-through to Instagram.
-                        Image(nsImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
+                        CachedImage(url: url, maxPixel: 1200, contentMode: .fit)
                             .overlay(alignment: .bottomTrailing) {
                                 Image(systemName: "arrow.up.right.square")
                                     .font(.title3)
@@ -585,10 +572,7 @@ private struct InstagramDetailSheet: View {
                 HStack(spacing: 6) {
                     ProgressView()
                         .controlSize(.small)
-                    Text(store.igLog.last ?? "Analyzing…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    InstagramLastLogLine(fallback: "Analyzing…")
                     Spacer()
                     Button("Stop Analysis") { store.cancelInstagramAnalysis(mediaID: media.id) }
                         .controlSize(.small)
@@ -676,10 +660,7 @@ private struct InstagramDetailSheet: View {
                 .help("Reveal the downloaded reel file")
             } else if isDownloading {
                 ProgressView().controlSize(.small)
-                Text(store.igLog.last ?? "Downloading…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                InstagramLastLogLine(fallback: "Downloading…")
             } else {
                 Button("Download Reel", systemImage: "arrow.down.circle") {
                     Task {
@@ -740,6 +721,37 @@ private struct InstagramDetailSheet: View {
             GridRow {
                 Text(label).foregroundStyle(.secondary)
                 Text(value.formatted()).monospacedDigit()
+            }
+        }
+    }
+}
+
+/// Latest Instagram log line, isolated so per-line appends re-render only
+/// this leaf and not the grid or sheet around it.
+struct InstagramLastLogLine: View {
+    @Environment(AppStore.self) private var store
+    let fallback: String
+
+    var body: some View {
+        Text(store.igLog.last ?? fallback)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+    }
+}
+
+/// Footer under the reels grid while a fetch runs: last log line plus the
+/// copy/clear actions. Reads the log here so the grid above stays put.
+struct InstagramFetchFooter: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        if let last = store.igLog.last {
+            HStack(spacing: 8) {
+                Text(last)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                LogActions(lines: store.igLog) { store.igLog = [] }
             }
         }
     }

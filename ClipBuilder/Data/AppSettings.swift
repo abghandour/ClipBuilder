@@ -413,7 +413,7 @@ nonisolated enum SettingsStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(settings) {
-            try? data.write(to: settingsURL)
+            try? data.write(to: settingsURL, options: .atomic)
         }
     }
 
@@ -428,7 +428,7 @@ nonisolated enum SettingsStore {
     static func saveActiveProfileName(_ name: String) {
         try? FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
         if let data = try? JSONSerialization.data(withJSONObject: ["name": name]) {
-            try? data.write(to: activeProfileURL)
+            try? data.write(to: activeProfileURL, options: .atomic)
         }
     }
 }

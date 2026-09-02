@@ -56,21 +56,27 @@ nonisolated struct InstagramReportSync {
         var rowsByID: [Int64: IGGraphMediaNode] = [:]
         let thumbsDirectory = SettingsStore.instagramCacheDirectory(username: username)
             .appendingPathComponent("thumbs")
-        for node in nodes {
-            guard let shortcode = node.shortcode else { continue }
-            let rowID = try await database.upsertIGReportMedia(IGReportMediaUpsert(
-                accountID: accountID, shortcode: shortcode, mediaID: node.id,
+        let posted = nodes.filter { $0.shortcode != nil }
+        let rowIDs = try await database.upsertIGReportMediaBatch(posted.map { node in
+            IGReportMediaUpsert(
+                accountID: accountID, shortcode: node.shortcode ?? "", mediaID: node.id,
                 mediaType: node.mediaType, productType: node.productType,
                 caption: node.caption, captionTruncated: false, permalink: node.permalink,
                 postedAt: node.timestamp, likeCount: node.likeCount, commentsCount: node.commentsCount,
                 thumbnailURL: node.thumbnailURL ?? (node.mediaType == "IMAGE" ? node.mediaURL : nil),
-                source: "graph"))
+                source: "graph")
+        })
+        var thumbnailPaths: [(id: Int64, path: String)] = []
+        for (rowID, node) in zip(rowIDs, posted) {
             rowsByID[rowID] = node
             // Reuse the grid's cached thumbnail when the reel is already there.
             let cached = thumbsDirectory.appendingPathComponent("\(node.id).jpg")
             if FileManager.default.fileExists(atPath: cached.path) {
-                try await database.setIGReportMediaThumbnailPath(id: rowID, path: cached.path)
+                thumbnailPaths.append((rowID, cached.path))
             }
+        }
+        if !thumbnailPaths.isEmpty {
+            try await database.setIGReportMediaThumbnailPaths(thumbnailPaths)
         }
         try Task.checkCancellation()
 

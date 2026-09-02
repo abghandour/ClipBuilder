@@ -246,6 +246,10 @@ actor Database {
     );
 
     CREATE INDEX IF NOT EXISTS idx_grades_scene ON grades(scene_id);
+    CREATE INDEX IF NOT EXISTS idx_scenes_run ON scenes(run_id);
+    CREATE INDEX IF NOT EXISTS idx_scene_tags_tag ON scene_tags(tag);
+    CREATE INDEX IF NOT EXISTS idx_fight_events_video ON fight_events(video_id);
+    CREATE INDEX IF NOT EXISTS idx_person_markers_person ON person_markers(person_id);
     CREATE INDEX IF NOT EXISTS idx_moments_video ON moments(video_id);
     CREATE INDEX IF NOT EXISTS idx_wizard_feedback_video ON wizard_feedback(generated_video_id);
     CREATE INDEX IF NOT EXISTS idx_wizard_research_topic ON wizard_research(topic, researched_at);
@@ -488,10 +492,25 @@ actor Database {
             // The rollback journal is slower but works everywhere.
             try connection.execute("PRAGMA journal_mode=DELETE")
         }
+        // WAL is durable across crashes at NORMAL; FULL adds an fsync per
+        // autocommit, which the per-row sync writes paid dearly for.
+        try? connection.execute("PRAGMA synchronous=NORMAL")
         try connection.execute("PRAGMA foreign_keys=ON")
         try connection.executeScript(Self.schema)
-        try Self.migrate(connection)
+        // The lazy column migrations probe every table (a `PRAGMA
+        // table_info` each) and can rebuild `scenes` wholesale, all
+        // synchronously before the first frame. A database stamped with the
+        // current version has already been through them.
+        let stamped = try connection.query("PRAGMA user_version").first?.values.first?.intValue ?? 0
+        if stamped != Self.schemaVersion {
+            try Self.migrate(connection)
+            try connection.execute("PRAGMA user_version = \(Self.schemaVersion)")
+        }
     }
+
+    /// Bump whenever `migrate` gains a step, so existing databases run it
+    /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
+    private static let schemaVersion: Int64 = 1
 
     /// Lazy column migrations mirroring db.py, so old and new columns end up
     /// identical across both apps. One `PRAGMA table_info` per table replaces
@@ -1018,7 +1037,27 @@ actor Database {
     // MARK: - Scenes
 
     /// All scenes joined with their video, tags, and grade summary.
-    func fetchScenes(videoID: Int64? = nil, includeExcluded: Bool = true) throws -> [SceneRecord] {
+    /// One scene by id, with the same tags/grades hydration as the list.
+    func fetchScene(id: Int64) throws -> SceneRecord? {
+        try fetchScenes(sceneID: id).first
+    }
+
+    /// Everything the main window's library state is built from, in one
+    /// actor hop, so a refresh is a single round trip instead of nine.
+    func fetchLibrarySnapshot() throws -> LibrarySnapshot {
+        LibrarySnapshot(videos: try fetchVideos(),
+                        scenes: try fetchScenes(),
+                        analysisRuns: try fetchAnalysisRuns(),
+                        people: try fetchPeople(),
+                        generatedVideos: try fetchGeneratedVideos(),
+                        feedback: try fetchAllFeedback(),
+                        lessons: try fetchLessons(),
+                        fightResearch: (try? fetchFightResearch()) ?? [],
+                        fightEvents: (try? fetchFightEvents()) ?? [])
+    }
+
+    func fetchScenes(videoID: Int64? = nil, sceneID: Int64? = nil,
+                     includeExcluded: Bool = true) throws -> [SceneRecord] {
         var sql = """
             SELECT s.*, v.path AS video_path, v.filename AS video_filename,
                    v.duration AS video_duration, v.wide AS video_wide
@@ -1029,6 +1068,10 @@ actor Database {
         if let videoID {
             conditions.append("s.video_id = ?")
             params.append(.integer(videoID))
+        }
+        if let sceneID {
+            conditions.append("s.id = ?")
+            params.append(.integer(sceneID))
         }
         if !includeExcluded {
             conditions.append("s.excluded = 0")
@@ -1041,8 +1084,18 @@ actor Database {
 
         // Scope the tag/grade lookups to the filter — otherwise a
         // single-video fetch pays for the whole library's tags and grades.
-        let sceneScope = videoID != nil ? " WHERE scene_id IN (SELECT id FROM scenes WHERE video_id = ?)" : ""
-        let scopeParams: [SQLValue] = videoID.map { [.integer($0)] } ?? []
+        let sceneScope: String
+        let scopeParams: [SQLValue]
+        if let sceneID {
+            sceneScope = " WHERE scene_id = ?"
+            scopeParams = [.integer(sceneID)]
+        } else if let videoID {
+            sceneScope = " WHERE scene_id IN (SELECT id FROM scenes WHERE video_id = ?)"
+            scopeParams = [.integer(videoID)]
+        } else {
+            sceneScope = ""
+            scopeParams = []
+        }
 
         let tagRows = try connection.query("SELECT scene_id, tag FROM scene_tags" + sceneScope, scopeParams)
         var tagsByScene: [Int64: [String]] = [:]
@@ -1504,6 +1557,16 @@ actor Database {
             SET original_text = COALESCE(original_text, text), text = ?
             WHERE id = ?
             """, [.text(text), .integer(id)])
+    }
+
+    /// Apply several edited segment texts in one transaction (the
+    /// whole-transcript editor's Save).
+    func updateTranscriptTexts(_ changes: [(id: Int64, text: String)]) throws {
+        try connection.transaction {
+            for change in changes {
+                try updateTranscriptText(id: change.id, text: change.text)
+            }
+        }
     }
 
     func revertTranscriptText(id: Int64) throws {
@@ -2228,6 +2291,24 @@ actor Database {
                   item.thumbnailURL.map(SQLValue.text) ?? .null,
                   .text(item.source)])
         return rows.first?["id"]?.intValue ?? connection.lastInsertRowID
+    }
+
+    /// Upsert many post rows in one transaction, returning their ids in
+    /// order — the sync's first pass writes 90 days of posts, and one
+    /// commit per row meant one fsync per row.
+    func upsertIGReportMediaBatch(_ items: [IGReportMediaUpsert]) throws -> [Int64] {
+        try connection.transaction {
+            try items.map { try upsertIGReportMedia($0) }
+        }
+    }
+
+    func setIGReportMediaThumbnailPaths(_ paths: [(id: Int64, path: String)]) throws {
+        try connection.transaction {
+            for entry in paths {
+                try connection.execute("UPDATE ig_report_media SET thumbnail_path = ? WHERE id = ?",
+                                       [.text(entry.path), .integer(entry.id)])
+            }
+        }
     }
 
     func setIGReportMediaThumbnailPath(id: Int64, path: String) throws {

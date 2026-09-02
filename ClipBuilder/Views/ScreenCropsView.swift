@@ -27,6 +27,8 @@ struct ScreenCropsView: View {
     @State private var layout = ScreenCropLayout(name: "")
     @State private var watcher: FolderWatcher?
     @State private var saveTask: Task<Void, Never>?
+    /// Layout the debounced save will write, for a flush on selection change.
+    @State private var pendingSave: ScreenCropLayout?
 
     @State private var renamePrompt = false
     @State private var renameText = ""
@@ -98,6 +100,9 @@ struct ScreenCropsView: View {
             saveTask?.cancel()
         }
         .onChange(of: selectedName) { _, name in
+            // A pending debounced save of the outgoing layout must land
+            // before its state is replaced, or the last edit is lost.
+            flushPendingSave()
             if let name, let match = (layouts + builtInLayouts).first(where: { $0.name == name }) {
                 layout = match
             }
@@ -176,11 +181,28 @@ struct ScreenCropsView: View {
         }
     }
 
+    /// Write the layout a pending `scheduleSave` was about to write.
+    private func flushPendingSave() {
+        guard let pending = pendingSave else { return }
+        saveTask?.cancel()
+        pendingSave = nil
+        do {
+            try ScreenCropStore.save(pending)
+            if let index = layouts.firstIndex(where: { $0.name == pending.name }) {
+                layouts[index] = pending
+            }
+        } catch {
+            operationError = error.userMessage
+        }
+    }
+
     private func scheduleSave(_ updated: ScreenCropLayout) {
         saveTask?.cancel()
+        pendingSave = updated
         saveTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
+            pendingSave = nil
             do {
                 try ScreenCropStore.save(updated)
                 if let index = layouts.firstIndex(where: { $0.name == updated.name }) {

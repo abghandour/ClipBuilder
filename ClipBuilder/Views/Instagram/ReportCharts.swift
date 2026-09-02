@@ -77,8 +77,20 @@ struct DailyTrendChart: View {
         var id: String { "\(label)-\(date.timeIntervalSince1970)" }
     }
 
+    private struct SampleKey: Equatable {
+        var points: [InstagramReport.DailyPoint]
+        var labels: [String]
+    }
+
+    /// `points × series` samples, built once per input rather than per render.
+    @State private var samplesMemo = MemoBox<SampleKey, [Sample]>()
+
     private var samples: [Sample] {
-        points.flatMap { point in series.map { Sample(date: point.date, label: $0.label, value: point[keyPath: $0.keyPath]) } }
+        samplesMemo(SampleKey(points: points, labels: series.map(\.label))) {
+            points.flatMap { point in
+                series.map { Sample(date: point.date, label: $0.label, value: point[keyPath: $0.keyPath]) }
+            }
+        }
     }
 
     var body: some View {
@@ -145,13 +157,13 @@ struct ReachPerPostBars: View {
         if bars.isEmpty {
             EmptyNote(text: "No reach data for this period.")
         } else {
+            let types = Array(Set(bars.map(\.type))).sorted()
             Chart(Array(bars.enumerated()), id: \.element.id) { index, bar in
                 BarMark(x: .value("Post", index), y: .value("Reach", bar.reach))
                     .foregroundStyle(by: .value("Type", bar.type))
                     .cornerRadius(2)
             }
-            .chartForegroundStyleScale(domain: Array(Set(bars.map(\.type))).sorted(),
-                                       range: Array(Set(bars.map(\.type))).sorted().map(ReportColors.forType))
+            .chartForegroundStyleScale(domain: types, range: types.map(ReportColors.forType))
             .chartXAxis(.hidden)
             .chartYAxis { AxisMarks { value in
                 AxisGridLine(); AxisValueLabel {

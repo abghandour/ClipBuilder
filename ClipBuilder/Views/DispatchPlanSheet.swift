@@ -886,7 +886,7 @@ private struct VideoNotesPanel: View {
     @State private var isSuggestingTrim = false
     @State private var trimSuggestionNote: String?
     @State private var trimSuggestionProvenance: AIProvenance?
-    @State private var currentTime = 0.0
+    @State private var clock = PlaybackClock()
     @State private var timeObserver: Any?
     @State private var sectionEndObserver: Any?
     @State private var isPlayingSection = false
@@ -916,7 +916,7 @@ private struct VideoNotesPanel: View {
 
     /// Markers anchored near the current playback moment — the ones drawn
     /// over the video and editable right now.
-    private var visibleMarkers: [PersonMarker] {
+    private func visibleMarkers(at currentTime: Double) -> [PersonMarker] {
         markers.filter { abs($0.atTime - currentTime) < 0.5 }
     }
 
@@ -938,7 +938,10 @@ private struct VideoNotesPanel: View {
 
     /// Suggestion recompute key: paused moment (rounded), hint edits, video.
     private var suggestionKey: String {
-        "\(video.id)|\((currentTime * 2).rounded())|\(framingHints.count)|\(mode == .framing)"
+        // Portraits and hint geometry are inputs too — a suggestion computed
+        // before the portraits loaded must rerun once they arrive.
+        let hintShape = framingHints.map { "\($0.atTime)@\($0.x),\($0.y),\($0.width),\($0.height)" }.joined(separator: ";")
+        return "\(video.id)|\(hintShape)|\(mode == .framing)|\(focusPortraits.count)|\(avoidPortraits.count)"
     }
 
     // MARK: - People roster (people-only pass)
@@ -1086,10 +1089,11 @@ private struct VideoNotesPanel: View {
                     // video's letterboxed display rect and editable in place.
                     if mode == .people {
                         GeometryReader { geo in
+                          ClockReader(clock: clock) { currentTime in
                             let videoRect = AVMakeRect(
                                 aspectRatio: CGSize(width: max(1, video.width), height: max(1, video.height)),
                                 insideRect: CGRect(origin: .zero, size: geo.size))
-                            ForEach(visibleMarkers) { marker in
+                            ForEach(visibleMarkers(at: currentTime)) { marker in
                                 PersonMarkerBox(marker: marker,
                                                 color: markerColor(marker),
                                                 name: markerPersonName(marker),
@@ -1101,6 +1105,7 @@ private struct VideoNotesPanel: View {
                                     Task { markers = await store.updatePersonMarker(updated) }
                                 }
                             }
+                          }
                         }
                     }
                     // The framing rectangle at the paused moment: a nearby
@@ -1108,6 +1113,7 @@ private struct VideoNotesPanel: View {
                     // either to pin the framing as a hard hint.
                     if mode == .framing {
                         GeometryReader { geo in
+                          ClockReader(clock: clock) { currentTime in
                             let videoRect = AVMakeRect(
                                 aspectRatio: CGSize(width: max(1, video.width), height: max(1, video.height)),
                                 insideRect: CGRect(origin: .zero, size: geo.size))
@@ -1146,6 +1152,7 @@ private struct VideoNotesPanel: View {
                                     }
                                 }
                             }
+                          }
                         }
                     }
                 }
@@ -1206,19 +1213,28 @@ private struct VideoNotesPanel: View {
                     }
                 }
                 .task(id: "\(video.id)|loudness") {
-                    guard loudness.isEmpty else { return }
+                    // Always recompute for the video shown; guarding on
+                    // "already loaded" kept the previous video's curve.
+                    loudness = []
                     loudness = await Analyzer.loudnessCurve(url: video.url)
+                }
+                // A trim range belongs to the video it was set on.
+                .onChange(of: video.id) {
+                    trimStart = 0
+                    trimEnd = video.duration
                 }
             }
 
             peopleRoster
 
             if mode == .people {
-                Text(visibleMarkers.isEmpty && !markers.isEmpty
-                     ? "\(markers.count) marker(s) on this video — use the list on the left to jump to one."
-                     : "Drag a box around one person; resize from the corner dot. Add and manage markers on the left.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                ClockReader(clock: clock) { currentTime in
+                    Text(visibleMarkers(at: currentTime).isEmpty && !markers.isEmpty
+                         ? "\(markers.count) marker(s) on this video — use the list on the left to jump to one."
+                         : "Drag a box around one person; resize from the corner dot. Add and manage markers on the left.")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
 
             if mode == .tags {
@@ -1328,34 +1344,36 @@ private struct VideoNotesPanel: View {
             player?.pause()
             let newPlayer = AVPlayer(url: video.url)
             player = newPlayer
-            currentTime = 0
+            clock.time = 0
+            let clock = clock
             timeObserver = newPlayer.addPeriodicTimeObserver(
                 forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
                 queue: .main) { time in
-                Task { @MainActor in currentTime = time.seconds }
+                Task { @MainActor in clock.update(time.seconds) }
             }
             notes = await store.videoNotes(for: video.id)
             markers = await store.personMarkers(for: video.id)
             videoPeople = await store.videoPeople(for: video.id)
             selectedPeopleKeys = []
-            loudness = []
             framingHints = await store.centerStageHints(for: video.id)
             await reloadFramingPortraits()
         }
         // Live framing suggestion for the paused frame — same tracker the
         // pass uses, so what's shown is what a run would pick.
-        .task(id: suggestionKey) {
-            suggestionDraft = nil
-            guard mode == .framing, (player?.rate ?? 0) == 0 else {
-                suggestionCrop = nil
-                return
+        .background {
+            ClockKeyedTask(clock: clock, extra: suggestionKey) { time in
+                suggestionDraft = nil
+                guard mode == .framing, (player?.rate ?? 0) == 0 else {
+                    suggestionCrop = nil
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                suggestionCrop = await CenterStageService.stillFrameCrop(
+                    source: video.url, at: time,
+                    focusPortraits: focusPortraits,
+                    avoidPortraits: avoidPortraits)
             }
-            try? await Task.sleep(for: .milliseconds(250))
-            guard !Task.isCancelled else { return }
-            suggestionCrop = await CenterStageService.stillFrameCrop(
-                source: video.url, at: currentTime,
-                focusPortraits: focusPortraits,
-                avoidPortraits: avoidPortraits)
         }
         // The People tab's detect run rebuilt the roster — pick it up when
         // switching to the Tags tab.

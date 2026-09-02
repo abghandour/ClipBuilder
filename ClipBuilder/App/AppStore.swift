@@ -32,7 +32,28 @@ final class AppStore {
     private(set) var database: Database?
 
     var videos: [VideoRecord] = []
-    var scenes: [SceneRecord] = []
+    var scenes: [SceneRecord] = [] {
+        didSet {
+            sceneIndex = SceneIndex(scenes)
+            scenesVersion &+= 1
+        }
+    }
+    /// One-pass lookups over `scenes` (counts, person tags, curated list),
+    /// rebuilt on every scene change so views don't re-scan the library.
+    private(set) var sceneIndex = SceneIndex()
+    /// Bumps with every `scenes` write — a cheap memo key for derived grids.
+    private(set) var scenesVersion = 0
+    /// Bumps on every profile switch. Long-running work captures it before
+    /// its awaits and drops results that belong to a profile that is no
+    /// longer active — ids collide across profiles, so stale rows would
+    /// otherwise resolve against the wrong library.
+    private(set) var profileGeneration = 0
+    /// Per-log relays that batch background log lines into one append per
+    /// turn (see `LogRelay`). Keyed by the log they feed.
+    @ObservationIgnored private var logRelays: [ReferenceWritableKeyPath<AppStore, [String]>: LogRelay] = [:]
+    /// Logs are capped at this many lines; a multi-hour run otherwise grows
+    /// an observed array without bound.
+    static let logLineCap = 4000
     var analysisRuns: [AnalysisRun] = []
     var people: [PersonRecord] = []
     /// Saved fight research by video id — the Analyze page's column and the
@@ -249,14 +270,22 @@ final class AppStore {
         guard let profile = profiles.first(where: { $0.profileName == name }) else { return }
         activeProfile = profile
         SettingsStore.saveActiveProfileName(name)
+        profileGeneration &+= 1
         videos = []
         scenes = []
+        analysisRuns = []
         people = []
         generatedVideos = []
         feedback = []
         lessons = []
+        fightResearch = [:]
+        fightEvents = [:]
+        igBenchmarks = nil
         pendingComparison = nil
         comparisonQueue = []
+        pendingPeopleReview = nil
+        pendingRenameReview = nil
+        pendingAnalyzeSetup = nil
         igAccounts = []
         igSelectedAccountID = nil
         igMedia = []
@@ -322,38 +351,122 @@ final class AppStore {
         saveSettings()
     }
 
+    // MARK: - Logging
+
+    /// A `@Sendable` log sink for `keyPath` that coalesces bursts of lines
+    /// into one main-actor append — hand it to services' `log:` parameters.
+    func logSink(_ keyPath: ReferenceWritableKeyPath<AppStore, [String]>) -> @Sendable (String) -> Void {
+        if let relay = logRelays[keyPath] { return relay.sink }
+        let relay = LogRelay { [weak self] lines in
+            self?.appendLog(keyPath, lines)
+        }
+        logRelays[keyPath] = relay
+        return relay.sink
+    }
+
+    /// Instagram sync/import lines go through `handleIGLog` (progress
+    /// markers drive the status bar), batched and ordered like other logs.
+    @ObservationIgnored private var igLogRelays: [String: LogRelay] = [:]
+
+    func igLogSink(importScale: Double? = nil) -> @Sendable (String) -> Void {
+        let key = importScale.map { "\($0)" } ?? "plain"
+        if let relay = igLogRelays[key] { return relay.sink }
+        let relay = LogRelay { [weak self] lines in
+            guard let self else { return }
+            var plain: [String] = []
+            for line in lines {
+                if line.hasPrefix("IGPROGRESS:") {
+                    if !plain.isEmpty { self.appendLog(\.igLog, plain); plain = [] }
+                    self.handleIGLog(line, importScale: importScale)
+                } else {
+                    plain.append(line)
+                }
+            }
+            if !plain.isEmpty { self.appendLog(\.igLog, plain) }
+        }
+        igLogRelays[key] = relay
+        return relay.sink
+    }
+
+    /// Append lines to a log in one write, trimming to the cap.
+    func appendLog(_ keyPath: ReferenceWritableKeyPath<AppStore, [String]>, _ lines: [String]) {
+        var log = self[keyPath: keyPath]
+        log.append(contentsOf: lines)
+        if log.count > Self.logLineCap {
+            log.removeFirst(log.count - Self.logLineCap)
+        }
+        self[keyPath: keyPath] = log
+    }
+
     // MARK: - Data refresh
 
+    /// Coalesced: a refresh already in flight absorbs later requests and
+    /// runs once more at the end, so a burst of calls costs two snapshots
+    /// at most instead of one per call.
+    @ObservationIgnored private var refreshInFlight = false
+    @ObservationIgnored private var refreshQueued = false
+
     func refreshAll() {
-        Task { await refreshAllNow() }
+        if refreshInFlight {
+            refreshQueued = true
+            return
+        }
+        refreshInFlight = true
+        Task {
+            repeat {
+                refreshQueued = false
+                await refreshAllNow()
+            } while refreshQueued
+            refreshInFlight = false
+        }
     }
 
     /// Awaitable refresh for callers that need the fresh lists (e.g. the
     /// wizard's post-run variation-batch detection).
     func refreshAllNow() async {
         guard let database else { return }
+        let generation = profileGeneration
         do {
-            let videos = try await database.fetchVideos()
-            let scenes = try await database.fetchScenes()
-            let analysisRuns = try await database.fetchAnalysisRuns()
-            let people = try await database.fetchPeople()
-            let generated = try await database.fetchGeneratedVideos()
-            let feedback = try await database.fetchAllFeedback()
-            let lessons = try await database.fetchLessons()
-            let research = (try? await database.fetchFightResearch()) ?? []
-            self.fightResearch = Dictionary(uniqueKeysWithValues: research.map { ($0.videoID, $0) })
-            let events = (try? await database.fetchFightEvents()) ?? []
-            self.fightEvents = Dictionary(grouping: events, by: \.videoID)
-            self.videos = videos
-            self.scenes = scenes
-            self.analysisRuns = analysisRuns
-            self.people = people
-            self.generatedVideos = generated
-            self.feedback = feedback
-            self.lessons = lessons
-            self.builder.updateScenes(scenes)
+            let snapshot = try await database.fetchLibrarySnapshot()
+            guard generation == profileGeneration else { return }
+            // Observation doesn't compare values: assigning an identical
+            // array still invalidates every view reading it, so only the
+            // lists that actually changed are written back.
+            let research = Dictionary(uniqueKeysWithValues: snapshot.fightResearch.map { ($0.videoID, $0) })
+            let events = Dictionary(grouping: snapshot.fightEvents, by: \.videoID)
+            if fightResearch != research { fightResearch = research }
+            if fightEvents != events { fightEvents = events }
+            if videos != snapshot.videos { videos = snapshot.videos }
+            if scenes != snapshot.scenes {
+                scenes = snapshot.scenes
+                builder.updateScenes(snapshot.scenes)
+            }
+            if analysisRuns != snapshot.analysisRuns { analysisRuns = snapshot.analysisRuns }
+            if people != snapshot.people { people = snapshot.people }
+            if generatedVideos != snapshot.generatedVideos { generatedVideos = snapshot.generatedVideos }
+            if feedback != snapshot.feedback { feedback = snapshot.feedback }
+            if lessons != snapshot.lessons { lessons = snapshot.lessons }
         } catch {
             presentError("Could not load the library", error)
+        }
+    }
+
+    /// Re-read one scene row and swap it into the in-memory list — the
+    /// single-row counterpart to `refreshAll` for edits that only touch one
+    /// scene (curation, trims, camera paths).
+    func replaceScene(id: Int64) async {
+        guard let database else { return }
+        guard let fresh = try? await database.fetchScene(id: id) else {
+            refreshAll()
+            return
+        }
+        guard let index = scenes.firstIndex(where: { $0.id == id }) else {
+            refreshAll()
+            return
+        }
+        if scenes[index] != fresh {
+            scenes[index] = fresh
+            builder.updateScene(fresh)
         }
     }
 
@@ -482,6 +595,7 @@ final class AppStore {
         let transcription = transcription
         let language = settings.transcribeLanguage
         if !instructions.isEmpty { analysisLog.append("Using analysis instructions: \(instructions)") }
+        let generation = profileGeneration
         analysisTask = Task {
             defer {
                 isAnalyzing = false
@@ -539,9 +653,7 @@ final class AppStore {
                         trimRange: trimRange,
                         sampleInterval: sampleInterval,
                         force: true,
-                        log: { message in
-                            Task { @MainActor in self.analysisLog.append(message) }
-                        },
+                        log: logSink(\.analysisLog),
                         progress: { fraction, stage in
                             Task { @MainActor in
                                 self.analysisProgress = base + span * fraction
@@ -565,9 +677,7 @@ final class AppStore {
                                 _ = try await transcription.transcribe(
                                     video: video, database: database,
                                     languageCode: language,
-                                    log: { message in
-                                        Task { @MainActor in self.analysisLog.append(message) }
-                                    })
+                                    log: logSink(\.analysisLog))
                                 analysisLog.append("\(video.filename): transcript saved")
                             } else {
                                 analysisLog.append("\(video.filename): already has a transcript — keeping it")
@@ -591,9 +701,7 @@ final class AppStore {
                                 video: video, scenes: allScenes.filter { $0.videoID == video.id },
                                 profile: profile, database: database,
                                 provider: provider, model: model,
-                                log: { message in
-                                    Task { @MainActor in self.analysisLog.append(message) }
-                                })
+                                log: logSink(\.analysisLog))
                         } catch is CancellationError {
                             break
                         } catch {
@@ -620,6 +728,8 @@ final class AppStore {
                 analysisProgress = 1
                 analysisStage = "done"
             }
+            // The run's video ids belong to the profile it started in.
+            guard generation == profileGeneration else { return }
             if !newPeople.isEmpty {
                 pendingPeopleReview = PeopleReviewRequest(people: newPeople)
             }
@@ -730,9 +840,7 @@ final class AppStore {
             func completed(_ key: String) -> Bool { pipelineDone.contains(key) }
             func log(_ message: String) { pipelineLog.append(message) }
             // Sendable relay for service `log:` closures.
-            let relay: @Sendable (String) -> Void = { message in
-                Task { @MainActor in self.pipelineLog.append(message) }
-            }
+            let relay: @Sendable (String) -> Void = logSink(\.pipelineLog)
             // The run never prompts: rename proposals from inner passes are
             // superseded by the pipeline's own rename step, and new-people
             // reviews queue for the end.
@@ -750,10 +858,11 @@ final class AppStore {
                     if Task.isCancelled { break }
                     pipelineStage = "people — \(video.filename)"
                     log("Detecting people in \(video.filename)…")
-                    _ = await detectPeopleInVideo(video)
+                    _ = await detectPeopleInVideo(video, refreshLibrary: false)
                     swallowPrompts()
                     finish("people:\(video.id)")
                 }
+                await refreshAllNow()
             }
 
             // 2. Transcription (skips videos that already have one).
@@ -892,7 +1001,9 @@ final class AppStore {
                     let tagPeople = defaults.object(forKey: "analysis.framingTagPeople") == nil
                         ? true : defaults.bool(forKey: "analysis.framingTagPeople")
                     log("Framing \(current.filename)…")
-                    await detectFraming(video: current, camera: camera, tagFramedPeople: tagPeople)
+                    await detectFraming(video: current, camera: camera, tagFramedPeople: tagPeople,
+                                        refreshLibrary: false)
+                    await refreshAllNow()
                     finish("framing:\(video.id)")
                 }
 
@@ -1168,11 +1279,14 @@ final class AppStore {
                 // Crop the mark out of the reference image into the library.
                 let pixelWidth = Double(cgImage.width)
                 let pixelHeight = Double(cgImage.height)
-                let rect = CGRect(x: max(0, (x - w / 2)) * pixelWidth,
-                                  y: max(0, (y - h / 2)) * pixelHeight,
-                                  width: min(w, 1) * pixelWidth,
-                                  height: min(h, 1) * pixelHeight).integral
-                guard let crop = cgImage.cropping(to: rect) else { continue }
+                // Clamp the box to the image so a mark at the edge keeps
+                // its true size instead of a silently narrower crop.
+                let bounds = CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)
+                let rect = CGRect(x: (x - w / 2) * pixelWidth,
+                                  y: (y - h / 2) * pixelHeight,
+                                  width: w * pixelWidth,
+                                  height: h * pixelHeight).intersection(bounds).integral
+                guard !rect.isEmpty, let crop = cgImage.cropping(to: rect) else { continue }
                 let name = raw["description"] as? String ?? "overlay mark"
                 let sanitized = name.map { $0.isLetter || $0.isNumber ? $0 : "-" }
                     .reduce(into: "") { if $1 != "-" || $0.last != "-" { $0.append($1) } }
@@ -1780,9 +1894,7 @@ final class AppStore {
     /// fills the plan sheet's trim slider.
     func suggestTrim(for video: VideoRecord) async throws
         -> (start: Double, end: Double, reason: String, provenance: AIProvenance) {
-        try await analyzer.suggestTrim(video: video) { message in
-            Task { @MainActor in self.analysisLog.append(message) }
-        }
+        try await analyzer.suggestTrim(video: video, log: logSink(\.analysisLog))
     }
 
     // MARK: - Duplicate detection
@@ -1915,7 +2027,7 @@ final class AppStore {
                     prompt: PerformanceLessons.prompt(published: published, ownMedia: ownMedia,
                                                       benchmarks: igBenchmarks),
                     task: "distill", timeout: 240,
-                    log: { message in Task { @MainActor in self.igLog.append(message) } })
+                    log: logSink(\.igLog))
                 let distilled = PerformanceLessons.parse(response.text)
                 guard !distilled.isEmpty else {
                     throw AIError.unusableResponse("No lessons came back from the model.")
@@ -2014,9 +2126,7 @@ final class AppStore {
             do {
                 _ = try await transcription.transcribe(video: video, database: database,
                                                        languageCode: language, force: force,
-                                                       log: { message in
-                    Task { @MainActor in self.analysisLog.append(message) }
-                })
+                                                       log: logSink(\.analysisLog))
                 analysisLog.append("\(video.filename): transcription saved")
             } catch is CancellationError {
                 analysisLog.append("\(video.filename): transcription stopped")
@@ -2038,7 +2148,7 @@ final class AppStore {
     private func updateScene(_ id: Int64, _ mutate: (inout SceneRecord) -> Void) {
         guard let index = scenes.firstIndex(where: { $0.id == id }) else { return }
         mutate(&scenes[index])
-        builder.updateScenes(scenes)
+        builder.updateScene(scenes[index])
     }
 
     func toggleFavorite(_ scene: SceneRecord) {
@@ -2181,9 +2291,7 @@ final class AppStore {
         let wizard = wizard
         Task {
             do {
-                let count = try await wizard.distillLessons(database: database) { message in
-                    Task { @MainActor in self.wizardLog.append(message) }
-                }
+                let count = try await wizard.distillLessons(database: database, emit: logSink(\.wizardLog))
                 lessons = try await database.fetchLessons()
                 wizardLog.append("Distilled \(count) lesson(s) from your reviews")
             } catch {
@@ -2204,9 +2312,7 @@ final class AppStore {
         Task {
             do {
                 let style = try await wizard.distillHouseStyle(database: database,
-                                                               existing: existing) { message in
-                    Task { @MainActor in self.wizardLog.append(message) }
-                }
+                                                               existing: existing, emit: logSink(\.wizardLog))
                 activeProfile.houseStyle = style.value
                 activeProfile.houseStyleProvenance = style.provenance
                 saveActiveProfile()
@@ -2389,9 +2495,7 @@ final class AppStore {
                 let camera = UserDefaults.standard.string(forKey: "wizard.centerStageCamera") ?? "balanced"
                 let result = try await renderer.render(document: document, scenes: scenes,
                                                        profile: profile, database: database,
-                                                       centerStageCamera: camera) { message in
-                    Task { @MainActor in self.builderLog.append(message) }
-                }
+                                                       centerStageCamera: camera, emit: logSink(\.builderLog))
                 builderLog.append("Done: \(result.url.lastPathComponent) (\(result.duration.timecode))")
             } catch is CancellationError {
                 builderLog.append("Render stopped.")
@@ -2432,9 +2536,7 @@ final class AppStore {
                 let camera = UserDefaults.standard.string(forKey: "wizard.centerStageCamera") ?? "balanced"
                 let result = try await renderer.render(document: document, scenes: scenes,
                                                        profile: profile, database: database,
-                                                       centerStageCamera: camera) { message in
-                    Task { @MainActor in self.wizardLog.append(message) }
-                }
+                                                       centerStageCamera: camera, emit: logSink(\.wizardLog))
                 wizardLog.append("VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))")
             } catch is CancellationError {
                 wizardLog.append("Curated render stopped.")
@@ -2495,9 +2597,7 @@ final class AppStore {
             let result = try await renderer.render(document: document, scenes: scenes,
                                                    profile: profile, database: database,
                                                    centerStageCamera: camera,
-                                                   preview: true) { message in
-                Task { @MainActor in self.wizardLog.append(message) }
-            }
+                                                   preview: true, emit: logSink(\.wizardLog))
             return result.url
         } catch is CancellationError {
             wizardLog.append("Exact preview stopped.")
@@ -2551,8 +2651,9 @@ final class AppStore {
                                                      date: existing.fightDate)
         Task {
             do {
+                let sink = logSink(\.analysisLog)
                 _ = try await runFightResearch(video: video, identity: identity) { message in
-                    Task { @MainActor in self.analysisLog.append("Fight research: \(message)") }
+                    sink("Fight research: \(message)")
                 }
             } catch {
                 presentError("Fight research failed for \(video.filename)", error)
@@ -2595,9 +2696,7 @@ final class AppStore {
                     .filter { $0.videoID == video.id }
                 _ = try await analyzer.scoreFightAction(
                     video: video, scenes: scenes, profile: profile, database: database,
-                    log: { message in
-                        Task { @MainActor in self.analysisLog.append(message) }
-                    })
+                    log: logSink(\.analysisLog))
                 let events = (try? await database.fetchFightEvents()) ?? []
                 fightEvents = Dictionary(grouping: events, by: \.videoID)
             } catch {
@@ -2689,9 +2788,7 @@ final class AppStore {
         let profile = activeProfile
         let wizard = wizard
         do {
-            let parsed = try await wizard.parseRequest(description: trimmed, profile: profile) { message in
-                Task { @MainActor in self.wizardLog.append(message) }
-            }
+            let parsed = try await wizard.parseRequest(description: trimmed, profile: profile, emit: logSink(\.wizardLog))
             // The user may have dismissed or replaced the request meanwhile.
             guard pendingWizardPrompt?.description == trimmed else { return }
             pendingWizardPrompt?.parsed = parsed
@@ -2716,6 +2813,7 @@ final class AppStore {
         let profile = activeProfile
         let wizard = wizard
         let previousIDs = Set(generatedVideos.map(\.id))
+        let generation = profileGeneration
         wizardTask = Task {
             await wizard.run(options: options, profile: profile, database: database) { message in
                 Task { @MainActor in
@@ -2726,6 +2824,9 @@ final class AppStore {
             isWizardRunning = false
             wizardStatus = nil
             await refreshAllNow()
+            // A profile switch mid-run: the "fresh" ids would be the other
+            // profile's reels, not this run's output.
+            guard generation == profileGeneration else { return }
             // Results sheet first (watch/rate/retry); any A/B comparison
             // queued below appears after it is dismissed.
             let fresh = generatedVideos
@@ -2772,6 +2873,9 @@ final class AppStore {
     /// Map engine log lines onto stage + overall progress: planning ~0-0.3,
     /// assembly 0.3-0.9, caption 0.9-1. Unknown lines leave the status
     /// untouched.
+    /// "clip 3/12" progress marker in engine log lines, compiled once.
+    private static let clipProgressPattern = /clip (\d+)\/(\d+)/
+
     private func updateWizardStatus(from rawMessage: String) {
         // Phase lines arrive with leading newlines for log readability.
         let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2800,9 +2904,8 @@ final class AppStore {
             set("Assembling the video",
                 detail: "Cutting clips and burning in overlays.",
                 fraction: 0.32)
-        } else if let range = message.range(of: #"clip (\d+)/(\d+)"#, options: .regularExpression) {
-            let parts = message[range].dropFirst(5).split(separator: "/")
-            if parts.count == 2, let index = Double(parts[0]), let total = Double(parts[1]), total > 0 {
+        } else if let match = message.firstMatch(of: Self.clipProgressPattern) {
+            if let index = Double(match.1), let total = Double(match.2), total > 0 {
                 set("Cutting clip \(Int(index)) of \(Int(total))",
                     detail: "Extracting and styling each planned clip.",
                     fraction: 0.32 + 0.5 * (index / total))
@@ -2925,9 +3028,7 @@ final class AppStore {
             }
             analysisLog.append("\(missing.joined(separator: ", ")) not installed — installing now...")
             do {
-                try await ToolInstaller.installMissing { message in
-                    Task { @MainActor in self.analysisLog.append(message) }
-                }
+                try await ToolInstaller.installMissing(log: logSink(\.analysisLog))
                 analysisLog.append("All required tools are ready.")
                 scanSourceFolder()
             } catch {
@@ -2946,9 +3047,7 @@ final class AppStore {
         analysisLog.append("Installing \(label)...")
         Task {
             do {
-                try await ProviderCLIInstaller.install(key) { message in
-                    Task { @MainActor in self.analysisLog.append(message) }
-                }
+                try await ProviderCLIInstaller.install(key, log: logSink(\.analysisLog))
             } catch {
                 presentError("Could not install \(label)", error)
             }
@@ -2962,7 +3061,11 @@ final class AppStore {
     /// from openActiveProfile alongside the other list loads.
     func loadInstagramCache() {
         guard let database else { return }
+        igReport = nil
         Task {
+            // Account ids collide across profiles and the service is shared,
+            // so the cached inputs go before anything is read.
+            await instagram.invalidateReportInputs()
             do {
                 let accounts = try await database.fetchIGAccounts()
                 igAccounts = accounts
@@ -2970,12 +3073,23 @@ final class AppStore {
                     igSelectedAccountID = accounts.first?.id
                 }
                 try await reloadIGMedia()
-                await reloadIGReport()
-                await reloadIGBenchmarks()
             } catch {
                 presentError("Could not load Instagram cache", error)
             }
+            // The report waits for the Reports tab (`ensureIGReportLoaded`);
+            // the benchmarks feed the wizard and critic so they build at
+            // launch — after a beat, so the library and first frame win.
+            try? await Task.sleep(for: .seconds(2))
+            await reloadIGBenchmarks()
         }
+    }
+
+    /// Build the report the first time the Reports tab shows (or after it
+    /// was reset), instead of at launch for every user. The inputs the
+    /// launch-time benchmarks fetched are reused when they match.
+    func ensureIGReportLoaded() {
+        guard igReport == nil, !isLoadingIGReport else { return }
+        Task { await reloadIGReport(reuseInputs: true) }
     }
 
     private func reloadIGMedia() async throws {
@@ -2990,7 +3104,7 @@ final class AppStore {
 
     /// Rebuild the Reports tab from the stored rows (after a refresh, an
     /// import, an account switch, or a period change).
-    func reloadIGReport() async {
+    func reloadIGReport(reuseInputs: Bool = false) async {
         guard let database, let account = igAccounts.first(where: { $0.id == igSelectedAccountID }) else {
             igReport = nil
             return
@@ -2999,7 +3113,7 @@ final class AppStore {
         defer { isLoadingIGReport = false }
         do {
             let report = try await instagram.buildReport(account: account, period: igReportPeriod,
-                                                         database: database)
+                                                         database: database, reuseInputs: reuseInputs)
             // The account may have changed while the report was building.
             if igSelectedAccountID == account.id { igReport = report }
         } catch {
@@ -3009,7 +3123,7 @@ final class AppStore {
 
     /// The connected (else first own) account's benchmarks, plus the
     /// audience scores of published reels for critic calibration.
-    func reloadIGBenchmarks() async {
+    func reloadIGBenchmarks(reuseInputs: Bool = false) async {
         guard let database else { igBenchmarks = nil; return }
         let connected = settings.instagram.connectedUsername
         guard let account = igAccounts.first(where: { $0.username.caseInsensitiveCompare(connected) == .orderedSame })
@@ -3017,7 +3131,8 @@ final class AppStore {
             igBenchmarks = nil
             return
         }
-        igBenchmarks = try? await instagram.buildBenchmarks(account: account, database: database)
+        igBenchmarks = try? await instagram.buildBenchmarks(account: account, database: database,
+                                                            reuseInputs: reuseInputs)
         await recordAudienceScores()
     }
 
@@ -3025,17 +3140,37 @@ final class AppStore {
     /// among the account's reels) so the critic's forecast can be judged.
     private func recordAudienceScores() async {
         guard let database, let scores = igBenchmarks?.reelScores, !scores.isEmpty else { return }
-        for index in generatedVideos.indices {
-            guard let mediaID = generatedVideos[index].instagramMediaID, let score = scores[mediaID] else { continue }
-            if generatedVideos[index].audienceScore != score.quality
-                || generatedVideos[index].audiencePercentile != score.percentile {
-                try? await database.updateGeneratedAudience(id: generatedVideos[index].id, score: score.quality,
+        // Mutate a local copy and publish once — per-row writes to the
+        // observed array between awaits meant one re-render per reel.
+        // Collect per-reel patches, then merge them by id into whatever
+        // `generatedVideos` holds after the awaits — a wizard render or a
+        // delete during the writes must not be clobbered by a stale copy.
+        struct Patch { var score: Double; var percentile: Int; var stats: IGStats? }
+        var patches: [Int64: Patch] = [:]
+        for video in generatedVideos {
+            guard let mediaID = video.instagramMediaID, let score = scores[mediaID] else { continue }
+            if video.audienceScore != score.quality || video.audiencePercentile != score.percentile {
+                try? await database.updateGeneratedAudience(id: video.id, score: score.quality,
                                                             percentile: score.percentile)
             }
-            generatedVideos[index].audienceScore = score.quality
-            generatedVideos[index].audiencePercentile = score.percentile
-            if generatedVideos[index].instagramStats == nil { generatedVideos[index].instagramStats = score.stats }
+            patches[video.id] = Patch(score: score.quality, percentile: score.percentile, stats: score.stats)
         }
+        guard !patches.isEmpty else { return }
+        var merged = generatedVideos
+        var changed = false
+        for index in merged.indices {
+            guard let patch = patches[merged[index].id] else { continue }
+            if merged[index].audienceScore != patch.score || merged[index].audiencePercentile != patch.percentile {
+                merged[index].audienceScore = patch.score
+                merged[index].audiencePercentile = patch.percentile
+                changed = true
+            }
+            if merged[index].instagramStats == nil, let stats = patch.stats {
+                merged[index].instagramStats = stats
+                changed = true
+            }
+        }
+        if changed { generatedVideos = merged }
     }
 
     /// Sync/import log stream: "IGPROGRESS:<0-1>:<stage>" lines drive the
@@ -3056,7 +3191,7 @@ final class AppStore {
         }
         status.stage = stage
         status.fraction = min(1, max(status.fraction, fraction))   // monotonic within a run
-        igStatus = status
+        if igStatus != status { igStatus = status }
     }
 
     private func finishIGStatus(_ stage: String) {
@@ -3091,7 +3226,8 @@ final class AppStore {
         guard period != igReportPeriod else { return }
         igReportPeriod = period
         UserDefaults.standard.set(period.id, forKey: "instagram.reportPeriod")
-        Task { await reloadIGReport() }
+        // Same rows, different window: rebuild from the cached inputs.
+        Task { await reloadIGReport(reuseInputs: true) }
     }
 
     /// Whether the account fetches through the Graph API — the only path
@@ -3126,9 +3262,7 @@ final class AppStore {
         igImportTask = Task {
             do {
                 let summary = try await instagram.importPeaceGrapplerHistory(
-                    repoPath: repoPath, account: account, database: database) { message in
-                    Task { @MainActor in self.handleIGLog(message) }
-                }
+                    repoPath: repoPath, account: account, database: database, log: igLogSink())
                 igImportStatus = summary.description
                 finishIGStatus("done")
                 await reloadIGReport()
@@ -3248,9 +3382,7 @@ final class AppStore {
         igLog.append("First refresh — importing report history from \(repoPath)…")
         do {
             let summary = try await instagram.importPeaceGrapplerHistory(
-                repoPath: repoPath, account: account, database: database) { message in
-                Task { @MainActor in self.handleIGLog(message, importScale: 0.3) }
-            }
+                repoPath: repoPath, account: account, database: database, log: igLogSink(importScale: 0.3))
             igImportStatus = summary.description
             igLog.append(summary.description)
         } catch is CancellationError {
@@ -3274,9 +3406,7 @@ final class AppStore {
                 try await autoImportPeaceGrapplerIfNeeded(username: username, database: database)
                 try await instagram.refreshAccount(username: username, kind: kind,
                                                    database: database, settings: settings,
-                                                   limit: settings.fetchLimit) { message in
-                    Task { @MainActor in self.handleIGLog(message) }
-                }
+                                                   limit: settings.fetchLimit, log: igLogSink())
                 igAccounts = try await database.fetchIGAccounts()
                 try await reloadIGMedia()
                 await reloadIGReport()
@@ -3289,6 +3419,9 @@ final class AppStore {
                 await reloadIGBenchmarks()
             } catch {
                 finishIGStatus("failed")
+                // The history import phase may have written rows before the
+                // live sync failed; a period change must not serve old inputs.
+                await instagram.invalidateReportInputs()
                 presentError("Instagram fetch failed", error)
             }
             isFetchingInstagram = false
@@ -3313,9 +3446,7 @@ final class AppStore {
                 try await instagram.analyzeTemplate(media: media, account: account,
                                                     database: database, settings: settings,
                                                     force: force,
-                                                    provider: provider, model: model) { message in
-                    Task { @MainActor in self.igLog.append(message) }
-                }
+                                                    provider: provider, model: model, log: logSink(\.igLog))
                 igTemplatedMediaIDs.insert(media.id)
                 // Pick up the local_video_path the download wrote.
                 try? await reloadIGMedia()
@@ -3341,9 +3472,7 @@ final class AppStore {
         do {
             let url = try await instagram.ensureDownloaded(
                 media: media, account: account, database: database,
-                settings: settings.instagram) { message in
-                Task { @MainActor in self.igLog.append(message) }
-            }
+                settings: settings.instagram, log: logSink(\.igLog))
             try? await reloadIGMedia()
             return url
         } catch {
@@ -3364,8 +3493,13 @@ final class AppStore {
     func curateScene(_ scene: SceneRecord, curated: Bool) {
         guard let database else { return }
         Task {
-            try? await database.setSceneCurated(scene.id, curated: curated)
-            refreshAll()
+            do {
+                try await database.setSceneCurated(scene.id, curated: curated)
+                // The write also resets curated_provider/model: re-read the row.
+                await replaceScene(id: scene.id)
+            } catch {
+                presentError("Could not save the curation change", error)
+            }
         }
     }
 
@@ -3377,16 +3511,26 @@ final class AppStore {
         let clearing = abs(start - scene.originalStart) < 0.05
             && abs(end - scene.originalEnd) < 0.05
         Task {
-            try? await database.setSceneEditRange(scene.id,
-                                                  start: clearing ? nil : start,
-                                                  end: clearing ? nil : end)
+            do {
+                try await database.setSceneEditRange(scene.id,
+                                                     start: clearing ? nil : start,
+                                                     end: clearing ? nil : end)
+            } catch {
+                presentError("Could not save the trim", error)
+                return
+            }
+            updateScene(scene.id) {
+                $0.startTime = clearing ? scene.originalStart : start
+                $0.endTime = clearing ? scene.originalEnd : end
+            }
             if scene.centerStagePathJSON != nil, let stored = scene.centerStagePath {
+                // Ends by re-reading this one row, so the new path lands
+                // without a whole-library reload.
                 await computeCameraPath(sceneID: scene.id, videoID: scene.videoID,
                                         start: clearing ? scene.originalStart : start,
                                         end: clearing ? scene.originalEnd : end,
                                         camera: stored.camera)
             }
-            refreshAll()
         }
     }
 
@@ -3422,7 +3566,7 @@ final class AppStore {
            let json = String(data: data, encoding: .utf8) {
             try? await database.setSceneCenterStagePath(sceneID, json: json)
         }
-        refreshAll()
+        await replaceScene(id: sceneID)
     }
 
     // MARK: - People-only pass
@@ -3440,16 +3584,15 @@ final class AppStore {
     /// analyze sheet passes its picker's live choice).
     func detectPeopleInVideo(_ video: VideoRecord,
                              provider: String? = nil,
-                             model: String? = nil) async -> [VideoPersonRecord] {
+                             model: String? = nil,
+                             refreshLibrary: Bool = true) async -> [VideoPersonRecord] {
         guard let database, !isDetectingPeople else { return [] }
         isDetectingPeople = true
         defer { isDetectingPeople = false }
         do {
             let (roster, suggestedFilename) = try await analyzer.detectPeopleOnly(
                 video: video, profile: activeProfile, database: database,
-                provider: provider, model: model) { message in
-                Task { @MainActor in self.analysisLog.append(message) }
-            }
+                provider: provider, model: model, log: logSink(\.analysisLog))
             // A filename fix the pass noticed (auto-generated or misspelled
             // name) goes through the same review sheet as end-of-analysis
             // proposals — it presents once no other sheet is in the way.
@@ -3460,7 +3603,7 @@ final class AppStore {
                                      suggestedName: suggestedFilename),
                 ])
             }
-            refreshAll()
+            if refreshLibrary { refreshAll() }
             return roster
         } catch {
             presentError("People detection failed", error)
@@ -3476,7 +3619,8 @@ final class AppStore {
 
     /// Run (or re-run) the local framing pass for one video: a 9:16 rect
     /// (static) or camera path per scene, plus optional framed: people tags.
-    func detectFraming(video: VideoRecord, camera: String, tagFramedPeople: Bool) async {
+    func detectFraming(video: VideoRecord, camera: String, tagFramedPeople: Bool,
+                       refreshLibrary: Bool = true) async {
         guard let database, !isDetectingFraming else { return }
         isDetectingFraming = true
         framingProgress = 0
@@ -3485,13 +3629,11 @@ final class AppStore {
             _ = try await FramingService.detectFraming(
                 video: video, database: database, camera: camera,
                 tagFramedPeople: tagFramedPeople,
-                log: { message in
-                    Task { @MainActor in self.analysisLog.append(message) }
-                },
+                log: logSink(\.analysisLog),
                 progress: { fraction in
                     Task { @MainActor in self.framingProgress = fraction }
                 })
-            refreshAll()
+            if refreshLibrary { refreshAll() }
         } catch {
             presentError("Framing detection failed", error)
         }
@@ -3638,16 +3780,12 @@ final class AppStore {
                 do {
                     let video = try await instagram.ensureDownloaded(
                         media: item, account: account,
-                        database: database, settings: settings) { message in
-                        Task { @MainActor in self.igLog.append(message) }
-                    }
+                        database: database, settings: settings, log: logSink(\.igLog))
                     let label = try await runTasteStudy(
                         video: video, label: "@\(account.username) reel",
                         performance: Self.performanceLine(item),
                         mediaID: item.id,
-                        provider: provider, model: model) { message in
-                        Task { @MainActor in self.igLog.append(message) }
-                    }
+                        provider: provider, model: model, log: logSink(\.igLog))
                     igLog.append("Learned into “\(label)”")
                 } catch {
                     igLog.append("Skipped a reel — \(error.userMessage)")
@@ -3666,9 +3804,7 @@ final class AppStore {
             defer { isStudyingTaste = false }
             do {
                 _ = try await runTasteStudy(video: url, label: url.lastPathComponent,
-                                            performance: "", mediaID: nil) { message in
-                    Task { @MainActor in self.analysisLog.append(message) }
-                }
+                                            performance: "", mediaID: nil, log: logSink(\.analysisLog))
             } catch {
                 presentError("Could not study the sample video", error)
             }
@@ -3884,9 +4020,7 @@ final class AppStore {
         wizardTask = Task {
             do {
                 let (plan, sceneMap) = try await wizard.plan(options: options, profile: profile,
-                                                             database: database) { message in
-                    Task { @MainActor in self.wizardLog.append(message) }
-                }
+                                                             database: database, emit: logSink(\.wizardLog))
                 let document = WizardEngine.timelineDocument(from: plan, sceneMap: sceneMap)
                 if document.videoTrack.isEmpty {
                     presentError("The plan produced no usable clips")

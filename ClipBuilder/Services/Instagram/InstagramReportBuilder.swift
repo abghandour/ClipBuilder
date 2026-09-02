@@ -336,7 +336,7 @@ nonisolated enum InstagramReportBuilder {
         }
         posts.topByEngagement = ranked(inPeriod.sorted { $0.engagement > $1.engagement })
         posts.topLiked = ranked(inPeriod.sorted { ($0.likes ?? 0) > ($1.likes ?? 0) })
-        posts.topDiscussed = ranked(media.sorted { ($0.comments ?? 0) > ($1.comments ?? 0) })
+        posts.topDiscussed = ranked(inPeriod.sorted { ($0.comments ?? 0) > ($1.comments ?? 0) })
         posts.topShared = ranked(inPeriod.filter { ($0.shares ?? 0) > 0 }.sorted { ($0.shares ?? 0) > ($1.shares ?? 0) })
 
         // Hashtags: counted once per post.

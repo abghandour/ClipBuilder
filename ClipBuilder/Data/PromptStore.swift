@@ -28,7 +28,7 @@ nonisolated enum PromptStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         if let data = try? encoder.encode(prompts) {
-            try? data.write(to: url)
+            try? data.write(to: url, options: .atomic)
         }
     }
 

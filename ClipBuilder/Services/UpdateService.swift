@@ -33,7 +33,7 @@ struct AppUpdate {
 /// Checks the GitHub releases feed for a newer version and downloads the
 /// installer pkg. The app ships as a notarized pkg on GitHub releases, so
 /// "installing" an update means handing the downloaded pkg to Installer.app.
-enum UpdateService {
+nonisolated enum UpdateService {
     static let repo = "abghandour/ClipBuilder"
     static let releasesPage = URL(string: "https://github.com/abghandour/ClipBuilder/releases")!
 

@@ -103,24 +103,37 @@ nonisolated enum PeaceGrapplerImporter {
                 ])
             }
 
-            // Post rows + that day's metric values.
+            // Post rows + that day's metric values. New posts are inserted
+            // in one transaction (one commit per report version, not per
+            // post); the head version also refreshes known rows in one go.
             var snapshots: [IGMediaInsightSnapshot] = []
-            for post in report.posts {
-                let rowID: Int64
-                if let existing = shortcodeIDs[post.shortcode] {
-                    rowID = existing
-                    if isHead {
-                        _ = try await database.upsertIGReportMedia(post.upsert(accountID: accountID))
-                    }
-                } else {
-                    rowID = try await database.upsertIGReportMedia(post.upsert(accountID: accountID))
-                    shortcodeIDs[post.shortcode] = rowID
-                    summary.posts += 1
-                }
+            var newPosts: [EngagementReportParser.Post] = []
+            var headRefresh: [IGReportMediaUpsert] = []
+            func recordMetrics(_ post: EngagementReportParser.Post, rowID: Int64) {
                 for (metric, value) in post.metrics {
                     snapshots.append(IGMediaInsightSnapshot(reportMediaID: rowID, metric: metric, value: Double(value),
                                                             fetchedAt: "\(asOf)T00:00:00Z", source: "import"))
                 }
+            }
+            var queuedShortcodes = Set<String>()
+            for post in report.posts {
+                if let existing = shortcodeIDs[post.shortcode] {
+                    if isHead { headRefresh.append(post.upsert(accountID: accountID)) }
+                    recordMetrics(post, rowID: existing)
+                } else if queuedShortcodes.insert(post.shortcode).inserted {
+                    newPosts.append(post)
+                }
+            }
+            if !newPosts.isEmpty {
+                let ids = try await database.upsertIGReportMediaBatch(newPosts.map { $0.upsert(accountID: accountID) })
+                for (post, rowID) in zip(newPosts, ids) {
+                    shortcodeIDs[post.shortcode] = rowID
+                    summary.posts += 1
+                    recordMetrics(post, rowID: rowID)
+                }
+            }
+            if !headRefresh.isEmpty {
+                _ = try await database.upsertIGReportMediaBatch(headRefresh)
             }
             try await database.insertIGMediaInsightSnapshots(snapshots)
             summary.insightRows += snapshots.count
@@ -231,7 +244,9 @@ nonisolated enum PeaceGrapplerImporter {
                         accountID: accountID, shortcode: shortcode, mediaID: mediaID, mediaType: "VIDEO",
                         productType: "REELS", caption: reel["caption"] as? String ?? "", captionTruncated: true,
                         permalink: permalink,
-                        postedAt: (reel["timestamp"] as? String).flatMap { ReportDates.date(fromDayKey: $0) },
+                        postedAt: (reel["timestamp"] as? String).flatMap {
+                            Database.parseISODate($0) ?? ReportDates.date(fromDayKey: String($0.prefix(10)))
+                        },
                         source: "import"))
                     shortcodeIDs[shortcode] = rowID
                     summary.posts += 1

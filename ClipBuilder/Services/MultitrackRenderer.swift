@@ -609,7 +609,11 @@ actor MultitrackRenderer {
         // Screen crops: the mask's gray level becomes the clip's alpha, so
         // the overlay chain composites only the named area.
         for (index, inputIndex) in maskInputs {
-            filters.append("[\(inputIndex):v]format=gray,scale=\(Self.width):\(Self.height)[mk\(index)]")
+            // alphamerge needs identical sizes: a wide clip that isn't
+            // cropped sits in the 1080×640 slot, not the full frame.
+            let placement = ordered[index]
+            let maskHeight = placement.isWide && placement.cropXFrac == nil ? Self.slotHeight : Self.height
+            filters.append("[\(inputIndex):v]format=gray,scale=\(Self.width):\(maskHeight)[mk\(index)]")
             filters.append("[v\(index)][mk\(index)]alphamerge[vm\(index)]")
         }
 
@@ -803,16 +807,21 @@ actor MultitrackRenderer {
             let end = overlay.endTime
             let duration = end - start
             let anim = min(animDuration, duration / 3)
-            arguments += ["-loop", "1", "-t", String(format: "%.2f", duration + 1), "-i", pngURL.path]
+            // The looped PNG's own clock starts at 0 like the main video's,
+            // so it must run through `end` (not just the overlay's length)
+            // and its fades are stamped in absolute time — otherwise a
+            // faded overlay that starts after t=0 has already faded to
+            // transparent by the time `enable` lets it through.
+            arguments += ["-loop", "1", "-t", String(format: "%.2f", end + 1), "-i", pngURL.path]
 
             var current = "[\(inputIndex):v]"
             let fadeIn = overlay.transIn == "fade" || overlay.transIn == "pop"
             let fadeOut = overlay.transOut == "fade" || overlay.transOut == "pop"
             if fadeIn || fadeOut {
                 var fadeParts = ["format=rgba"]
-                if fadeIn { fadeParts.append(String(format: "fade=t=in:st=0:d=%.3f:alpha=1", anim)) }
+                if fadeIn { fadeParts.append(String(format: "fade=t=in:st=%.3f:d=%.3f:alpha=1", start, anim)) }
                 if fadeOut { fadeParts.append(String(format: "fade=t=out:st=%.3f:d=%.3f:alpha=1",
-                                                     duration - anim, anim)) }
+                                                     end - anim, anim)) }
                 let label = "[tf\(index)]"
                 filters.append("\(current)\(fadeParts.joined(separator: ","))\(label)")
                 current = label

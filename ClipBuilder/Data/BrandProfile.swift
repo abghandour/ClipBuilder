@@ -308,7 +308,7 @@ nonisolated enum ProfileStore {
         try FileManager.default.createDirectory(at: profilesDirectory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(profile).write(to: profileURL(name: profile.profileName))
+        try encoder.encode(profile).write(to: profileURL(name: profile.profileName), options: .atomic)
     }
 
     static func delete(name: String) throws {
