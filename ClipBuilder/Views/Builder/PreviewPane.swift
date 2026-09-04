@@ -403,7 +403,7 @@ private struct ImageOverlayLayer: View {
         .accessibilityAction(named: "Move up") { nudge(x: 0, y: -0.02) }
         .accessibilityAction(named: "Move down") { nudge(x: 0, y: 0.02) }
         .task(id: overlay.path) {
-            image = NSImage(contentsOf: overlay.url)
+            image = await ImageCache.image(for: overlay.url, maxPixel: 960)
         }
     }
 

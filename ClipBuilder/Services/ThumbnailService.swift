@@ -44,19 +44,72 @@ actor ThumbnailService {
                           maxDimension: CGFloat = 0, quality: CGFloat = 0.85) async -> Data? {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
+        configure(generator, maxDimension: maxDimension)
+        let cmTime = CMTime(seconds: time, preferredTimescale: 600)
+        if let cgImage = try? await generator.image(at: cmTime).image {
+            return jpegData(from: cgImage, quality: quality)
+        }
+        // AVFoundation cannot read some containers (MKV/WebM) — fall back to ffmpeg.
+        return await FFmpeg.jpegFrame(of: url, at: time, maxDimension: maxDimension)
+    }
+
+    /// JPEG frames for many timestamps, preserving the input order. One asset and
+    /// image generator service the whole request; individual AVFoundation misses
+    /// fall back to ffmpeg without making successful frames wait for a new asset.
+    ///
+    /// Unlike `thumbnail(for:at:)`, this deliberately does not use the disk cache:
+    /// analysis callers want a one-shot, consistently configured frame batch.
+    @concurrent
+    static func jpegFrames(url: URL, at timestamps: [Double],
+                           maxDimension: CGFloat = 0, quality: CGFloat = 0.85) async -> [Data?] {
+        guard !timestamps.isEmpty else { return [] }
+
+        let requestedTimes = timestamps.map { CMTime(seconds: $0, preferredTimescale: 600) }
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        configure(generator, maxDimension: maxDimension)
+
+        var frames = [Data?](repeating: nil, count: timestamps.count)
+        var fulfilled = Set<Int>()
+        for await result in generator.images(for: requestedTimes) {
+            // The async API reports failures per result, so keep collecting the
+            // other requested frames when a seek/decode error occurs.
+            guard let index = requestedTimes.indices.first(where: {
+                !fulfilled.contains($0) && CMTimeCompare(requestedTimes[$0], result.requestedTime) == 0
+            }) else {
+                continue
+            }
+            fulfilled.insert(index)
+            guard let image = try? result.image else { continue }
+            frames[index] = jpegData(from: image, quality: quality)
+        }
+
+        // AVFoundation does not support every source container. Only retry the
+        // missing timestamps, preserving successful AVFoundation results.
+        let missedIndices = frames.indices.filter { frames[$0] == nil }
+        if !missedIndices.isEmpty {
+            let fallbacks = (try? await BoundedConcurrency.map(missedIndices, limit: FFmpeg.jobLimit) { _, index in
+                (index, await FFmpeg.jpegFrame(of: url, at: timestamps[index], maxDimension: maxDimension))
+            }) ?? []
+            for (index, frame) in fallbacks {
+                frames[index] = frame
+            }
+        }
+        return frames
+    }
+
+    private static func configure(_ generator: AVAssetImageGenerator, maxDimension: CGFloat) {
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = CMTime(seconds: 0.3, preferredTimescale: 600)
         generator.requestedTimeToleranceAfter = CMTime(seconds: 0.3, preferredTimescale: 600)
         if maxDimension > 0 {
             generator.maximumSize = CGSize(width: maxDimension, height: maxDimension)
         }
-        let cmTime = CMTime(seconds: time, preferredTimescale: 600)
-        if let cgImage = try? await generator.image(at: cmTime).image {
-            let rep = NSBitmapImageRep(cgImage: cgImage)
-            return rep.representation(using: .jpeg, properties: [.compressionFactor: quality])
-        }
-        // AVFoundation cannot read some containers (MKV/WebM) — fall back to ffmpeg.
-        return await FFmpeg.jpegFrame(of: url, at: time, maxDimension: maxDimension)
+    }
+
+    private static func jpegData(from image: CGImage, quality: CGFloat) -> Data? {
+        let rep = NSBitmapImageRep(cgImage: image)
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: quality])
     }
 
 

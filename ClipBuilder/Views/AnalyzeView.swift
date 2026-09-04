@@ -12,20 +12,89 @@ struct AnalyzeView: View {
     @State private var showGenerateSheet = false
     @State private var showNameWizard = false
     @State private var pendingDispatch: PendingDispatch?
-    @State private var renamingID: Int64?
-    @State private var renameText = ""
     @State private var fightResearchTarget: VideoRecord?
     @State private var soundbiteVideo: VideoRecord?
     @State private var showDuplicateScan = false
     @State private var showAnalyzeWizard = false
     @State private var showingImporter = false
     @AppStorage("analyze.activity.expanded") private var activityExpanded = false
-    @FocusState private var renameFocused: Bool
+
+    /// The video the preview pane shows — follows `selection` one run-loop
+    /// turn behind it (see `syncPreview`).
+    @State private var previewVideoID: Int64?
+    /// Last single click on a file name, for the double-click-to-rename
+    /// check in `nameTapped`. A reference holder rather than plain state:
+    /// recording the first click must not re-render the table (that
+    /// re-render, landing between the two clicks, put the rename field in
+    /// the wrong row on macOS 27).
+    @State private var nameTaps = NameTapTracker()
 
     /// Exactly one selected video → the preview pane shows it.
     private var previewVideo: VideoRecord? {
-        guard selection.count == 1 else { return nil }
-        return store.videos.first { selection.contains($0.id) }
+        guard let previewVideoID else { return nil }
+        return store.videos.first { $0.id == previewVideoID }
+    }
+
+    /// Rebuilding the pane (split view + player view + hosted sections)
+    /// is real AppKit layout work. Done in the same transaction as the
+    /// selection change, it lands before the table's new highlight can
+    /// paint. Deferring one turn lets the highlight show first; the pane
+    /// then swaps to its loading state and builds behind it.
+    private func syncPreview(to selection: Set<Int64>) {
+        let target: Int64? = selection.count == 1 ? selection.first : nil
+        guard target != previewVideoID else { return }
+        DispatchQueue.main.async {
+            // Selection may have moved again in the meantime.
+            previewVideoID = self.selection.count == 1 ? self.selection.first : nil
+        }
+    }
+
+    /// Double-click on a file name starts a rename. A `TapGesture(count: 2)`
+    /// can't be used here: SwiftUI holds every single click on the name for
+    /// the double-click interval (~350 ms) to see whether a second one
+    /// follows, and the row's selection waited with it — the grid felt
+    /// stuck on every click. A plain tap fires immediately; the second
+    /// click is recognized by timing instead.
+    private func nameTapped(_ video: VideoRecord) {
+        let now = Date()
+        if let last = nameTaps.last, last.id == video.id,
+           now.timeIntervalSince(last.at) <= NSEvent.doubleClickInterval {
+            nameTaps.last = nil
+            beginRename(video)
+        } else {
+            nameTaps.last = (video.id, now)
+        }
+    }
+
+    /// Rename runs in an AppKit alert sheet rather than an inline field or
+    /// a SwiftUI alert: swapping a row's Text for a TextField put the field
+    /// in a different row on macOS 27 (Table row reuse), and SwiftUI's
+    /// alert can't put focus in its text field or select its contents.
+    /// Here the field is the initial first responder, so it opens focused
+    /// with the whole name selected; Return renames, Escape cancels.
+    private func beginRename(_ video: VideoRecord) {
+        guard let window = NSApp.keyWindow else { return }
+        let alert = NSAlert()
+        alert.messageText = "Rename Video"
+        alert.informativeText = "Renames \(video.filename) on disk; scenes and batches follow the file."
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(string: video.filename)
+        field.frame = NSRect(x: 0, y: 0, width: 340, height: 24)
+        field.placeholderString = "File name"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            commitRename(video, to: field.stringValue)
+        }
+    }
+
+    /// An emptied or unchanged name cancels instead of saving.
+    private func commitRename(_ video: VideoRecord, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != video.filename else { return }
+        store.renameVideo(video, to: trimmed)
     }
 
     private var selectedVideos: [VideoRecord] {
@@ -134,6 +203,9 @@ struct AnalyzeView: View {
         .onChange(of: store.pendingAnalyzeSetup) { _, video in
             if let video { presentPrefilledPlan(for: video) }
         }
+        .onChange(of: selection, initial: true) { _, new in
+            syncPreview(to: new)
+        }
     }
 
     /// The point is editing the options, so the sheet opens even when the
@@ -185,31 +257,11 @@ struct AnalyzeView: View {
         return Table(store.videos, selection: $selection) {
             TableColumn("File") { video in
                 HStack {
-                    if renamingID == video.id {
-                        TextField("Name", text: $renameText)
-                            .textFieldStyle(.roundedBorder)
-                            .focused($renameFocused)
-                            .onSubmit {
-                                // An emptied field cancels instead of saving
-                                // a nameless file.
-                                let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                                if !trimmed.isEmpty {
-                                    store.renameVideo(video, to: trimmed)
-                                }
-                                renamingID = nil
-                            }
-                            .onExitCommand { renamingID = nil }
-                    } else {
-                        Text(video.filename)
-                            .onTapGesture(count: 2) {
-                                renameText = video.filename
-                                renamingID = video.id
-                                renameFocused = true
-                            }
-                            .help("Double-click to rename")
-                        if let provenance = video.namingProvenance {
-                            ProvenanceBadge(provenance: provenance, role: "Named by", size: 11)
-                        }
+                    Text(video.filename)
+                        .onTapGesture { nameTapped(video) }
+                        .help("Double-click to rename")
+                    if let provenance = video.namingProvenance {
+                        ProvenanceBadge(provenance: provenance, role: "Named by", size: 11)
                     }
                 }
             }
@@ -302,9 +354,7 @@ struct AnalyzeView: View {
             }
             if ids.count == 1, let video = videos.first {
                 Button("Rename…") {
-                    renameText = video.filename
-                    renamingID = video.id
-                    renameFocused = true
+                    beginRename(video)
                 }
             }
             if !videos.isEmpty {
@@ -354,6 +404,11 @@ struct AnalyzeView: View {
         }
     }
 
+}
+
+/// Mutable box for the last file-name click (see `AnalyzeView.nameTapped`).
+private final class NameTapTracker {
+    var last: (id: Int64, at: Date)?
 }
 
 /// A compact activity summary leaves the footage table useful until a person
@@ -652,6 +707,8 @@ private struct VideoPreviewPane: View {
             player?.pause()
             player = nil
             roster = []
+            // Let the pane's loading state paint before the file is touched.
+            await Task.yield()
             let asset = AVURLAsset(url: video.url)
             _ = try? await asset.load(.isPlayable, .duration, .preferredTransform)
             guard !Task.isCancelled else { return }

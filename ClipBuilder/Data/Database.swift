@@ -1163,9 +1163,29 @@ actor Database {
                                [.integer(favorite ? 1 : 0), .integer(sceneID)])
     }
 
+    /// Persist one bulk favorite action atomically. Keeping the individual
+    /// updates inside one transaction avoids a commit for every selected card.
+    func setScenesFavorite(_ sceneIDs: [Int64], favorite: Bool) throws {
+        guard !sceneIDs.isEmpty else { return }
+        try connection.transaction {
+            for sceneID in Set(sceneIDs) {
+                try setSceneFavorite(sceneID, favorite: favorite)
+            }
+        }
+    }
+
     func setSceneExcluded(_ sceneID: Int64, excluded: Bool) throws {
         try connection.execute("UPDATE scenes SET excluded = ? WHERE id = ?",
                                [.integer(excluded ? 1 : 0), .integer(sceneID)])
+    }
+
+    func setScenesExcluded(_ sceneIDs: [Int64], excluded: Bool) throws {
+        guard !sceneIDs.isEmpty else { return }
+        try connection.transaction {
+            for sceneID in Set(sceneIDs) {
+                try setSceneExcluded(sceneID, excluded: excluded)
+            }
+        }
     }
 
     /// Suggested 9:16 crop-window position (0 = left … 1 = right) recorded
@@ -1215,6 +1235,16 @@ actor Database {
                   .integer(sceneID)])
     }
 
+    func setScenesCurated(_ sceneIDs: [Int64], curated: Bool,
+                          provenance: AIProvenance? = nil) throws {
+        guard !sceneIDs.isEmpty else { return }
+        try connection.transaction {
+            for sceneID in Set(sceneIDs) {
+                try setSceneCurated(sceneID, curated: curated, provenance: provenance)
+            }
+        }
+    }
+
     /// Curation trim/extend override (nil clears back to the analyzed range).
     func setSceneEditRange(_ sceneID: Int64, start: Double?, end: Double?) throws {
         try connection.execute("UPDATE scenes SET edit_start = ?, edit_end = ? WHERE id = ?",
@@ -1232,6 +1262,15 @@ actor Database {
     func addGrade(sceneID: Int64, score: Int) throws {
         try connection.execute("INSERT INTO grades (scene_id, score) VALUES (?, ?)",
                                [.integer(sceneID), .integer(Int64(score))])
+    }
+
+    func addGrades(sceneIDs: [Int64], score: Int) throws {
+        guard !sceneIDs.isEmpty else { return }
+        try connection.transaction {
+            for sceneID in Set(sceneIDs) {
+                try addGrade(sceneID: sceneID, score: score)
+            }
+        }
     }
 
     // MARK: - Analysis results
@@ -2344,14 +2383,45 @@ actor Database {
     /// Append insight snapshots. A value identical to the newest stored one
     /// for the same metric is skipped, so history stays compact.
     func insertIGMediaInsightSnapshots(_ snapshots: [IGMediaInsightSnapshot]) throws {
+        guard !snapshots.isEmpty else { return }
         try connection.transaction {
+            typealias SnapshotKey = String
+            func key(reportMediaID: Int64, metric: String) -> SnapshotKey {
+                "\(reportMediaID)\u{1F}\(metric)"
+            }
+
+            // Prefetch the latest values for the affected media in chunks so
+            // a refresh does not issue one SELECT per metric snapshot.
+            let reportMediaIDs = Array(Set(snapshots.map(\.reportMediaID)))
+            var latestByKey: [SnapshotKey: (value: Double, fetchedAt: String)] = [:]
+            for start in stride(from: 0, to: reportMediaIDs.count, by: 900) {
+                let end = min(start + 900, reportMediaIDs.count)
+                let ids = Array(reportMediaIDs[start..<end])
+                let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+                let rows = try connection.query("""
+                    SELECT s.report_media_id, s.metric, s.value, s.fetched_at
+                    FROM ig_media_insight_snapshots s
+                    JOIN (
+                        SELECT report_media_id, metric, MAX(fetched_at) AS latest
+                        FROM ig_media_insight_snapshots
+                        WHERE report_media_id IN (\(placeholders))
+                        GROUP BY report_media_id, metric
+                    ) latest ON latest.report_media_id = s.report_media_id
+                        AND latest.metric = s.metric AND latest.latest = s.fetched_at
+                    """, ids.map(SQLValue.integer))
+                for row in rows {
+                    guard let reportMediaID = row["report_media_id"]?.intValue,
+                          let metric = row["metric"]?.stringValue,
+                          let value = row["value"]?.doubleValue,
+                          let fetchedAt = row["fetched_at"]?.stringValue else { continue }
+                    latestByKey[key(reportMediaID: reportMediaID, metric: metric)] = (value, fetchedAt)
+                }
+            }
+
             for snapshot in snapshots {
-                let latest = try connection.query("""
-                    SELECT value, fetched_at FROM ig_media_insight_snapshots
-                    WHERE report_media_id = ? AND metric = ? ORDER BY fetched_at DESC LIMIT 1
-                    """, [.integer(snapshot.reportMediaID), .text(snapshot.metric)]).first
-                if let latest, latest["value"]?.doubleValue == snapshot.value,
-                   (latest["fetched_at"]?.stringValue ?? "") <= snapshot.fetchedAt {
+                let snapshotKey = key(reportMediaID: snapshot.reportMediaID, metric: snapshot.metric)
+                if let latest = latestByKey[snapshotKey], latest.value == snapshot.value,
+                   latest.fetchedAt <= snapshot.fetchedAt {
                     continue
                 }
                 try connection.execute("""
@@ -2362,6 +2432,9 @@ actor Database {
                     WHERE \(Self.sourceWins("ig_media_insight_snapshots"))
                     """, [.integer(snapshot.reportMediaID), .text(snapshot.metric), .real(snapshot.value),
                           .text(snapshot.fetchedAt), .text(snapshot.source)])
+                if latestByKey[snapshotKey].map({ snapshot.fetchedAt > $0.fetchedAt }) ?? true {
+                    latestByKey[snapshotKey] = (snapshot.value, snapshot.fetchedAt)
+                }
             }
         }
     }
@@ -2567,11 +2640,16 @@ actor Database {
         for row in try connection.query("""
             SELECT s.report_media_id AS id, s.metric, s.value
             FROM ig_media_insight_snapshots s
-            JOIN (SELECT report_media_id, metric, MAX(fetched_at) AS latest
-                  FROM ig_media_insight_snapshots GROUP BY report_media_id, metric) l
+            JOIN (SELECT snapshots.report_media_id AS report_media_id,
+                         snapshots.metric AS metric,
+                         MAX(snapshots.fetched_at) AS latest
+                  FROM ig_media_insight_snapshots snapshots
+                  JOIN ig_report_media report_media ON report_media.id = snapshots.report_media_id
+                  WHERE report_media.account_id = ?1
+                  GROUP BY snapshots.report_media_id, snapshots.metric) l
               ON l.report_media_id = s.report_media_id AND l.metric = s.metric AND l.latest = s.fetched_at
             JOIN ig_report_media m ON m.id = s.report_media_id
-            WHERE m.account_id = ?
+            WHERE m.account_id = ?1
             """, [.integer(accountID)]) {
             guard let id = row["id"]?.intValue, let metric = row["metric"]?.stringValue,
                   let value = row["value"]?.doubleValue else { continue }

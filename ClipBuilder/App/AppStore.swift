@@ -33,14 +33,17 @@ final class AppStore {
     private(set) var database: Database?
 
     var videos: [VideoRecord] = []
+    @ObservationIgnored private var rebuildSceneIndexAfterWrite = true
     var scenes: [SceneRecord] = [] {
         didSet {
-            sceneIndex = SceneIndex(scenes)
+            if rebuildSceneIndexAfterWrite { sceneIndex = SceneIndex(scenes) }
+            rebuildSceneIndexAfterWrite = true
             scenesVersion &+= 1
         }
     }
     /// One-pass lookups over `scenes` (counts, person tags, curated list),
-    /// rebuilt on every scene change so views don't re-scan the library.
+    /// rebuilt whenever an index-affecting scene field changes so views do
+    /// not re-scan the library for counts and tag sets.
     private(set) var sceneIndex = SceneIndex()
     /// Bumps with every `scenes` write — a cheap memo key for derived grids.
     private(set) var scenesVersion = 0
@@ -140,6 +143,13 @@ final class AppStore {
     /// reload profiles so the switcher and the active profile reflect the
     /// files on disk.
     func resourcesDidChange(_ summary: ResourceImportSummary) {
+        if summary.imported + summary.replaced + summary.renamed > 0 {
+            AssetStore.invalidateCatalog()
+            OverlayTemplateStore.invalidateCache()
+            // "Replace existing" rewrites files at their old paths; the
+            // decoded-image cache is keyed by path, so drop it.
+            ImageCache.removeAll()
+        }
         if summary.fontsChanged { AssetStore.registerFonts() }
         if summary.screenCropsChanged { ScreenCropStore.invalidateListing() }
         if summary.profilesChanged {
@@ -1349,6 +1359,7 @@ final class AppStore {
                 let rep = NSBitmapImageRep(cgImage: crop)
                 guard let png = rep.representation(using: .png, properties: [:]) else { continue }
                 try? png.write(to: fileURL)
+                AssetStore.invalidateCatalog(.images)
                 var item = ImageOverlayItem(path: fileURL.path, startTime: 0, endTime: 3)
                 item.xFrac = x
                 item.yFrac = y
@@ -2192,10 +2203,36 @@ final class AppStore {
     /// Apply a single-scene change in place after its DB write — refetching
     /// the whole library for a one-row mutation made every rating click
     /// O(library size).
-    private func updateScene(_ id: Int64, _ mutate: (inout SceneRecord) -> Void) {
+    private func updateScene(_ id: Int64, rebuildSceneIndex: Bool = true,
+                             rehydrateBuilder: Bool = true,
+                             _ mutate: (inout SceneRecord) -> Void) {
         guard let index = scenes.firstIndex(where: { $0.id == id }) else { return }
+        rebuildSceneIndexAfterWrite = rebuildSceneIndex
         mutate(&scenes[index])
-        builder.updateScene(scenes[index])
+        // The index keeps record copies for the Curated screen; when the
+        // rebuild is skipped those copies still have to follow the change.
+        if !rebuildSceneIndex { sceneIndex.replaceCopy(of: scenes[index]) }
+        builder.updateScene(scenes[index], rehydrateClips: rehydrateBuilder)
+    }
+
+    /// Apply a bulk mutation to one array copy, so the `scenes` observer
+    /// rebuilds its index once instead of once per selected card.
+    private func updateScenes(_ sceneIDs: Set<Int64>, rebuildSceneIndex: Bool = true,
+                              _ mutate: (inout SceneRecord) -> Void) {
+        guard !sceneIDs.isEmpty else { return }
+        var updatedScenes = scenes
+        var affectedScenes: [SceneRecord] = []
+        for index in updatedScenes.indices where sceneIDs.contains(updatedScenes[index].id) {
+            mutate(&updatedScenes[index])
+            affectedScenes.append(updatedScenes[index])
+        }
+        guard !affectedScenes.isEmpty else { return }
+        rebuildSceneIndexAfterWrite = rebuildSceneIndex
+        scenes = updatedScenes
+        if !rebuildSceneIndex {
+            for scene in affectedScenes { sceneIndex.replaceCopy(of: scene) }
+        }
+        builder.updateChangedScenes(affectedScenes, rehydrateClips: false)
     }
 
     func toggleFavorite(_ scene: SceneRecord) {
@@ -2204,7 +2241,22 @@ final class AppStore {
         Task {
             do {
                 try await database.setSceneFavorite(scene.id, favorite: favorite)
-                updateScene(scene.id) { $0.favorite = favorite }
+                updateScene(scene.id, rebuildSceneIndex: false, rehydrateBuilder: false) {
+                    $0.favorite = favorite
+                }
+            } catch {
+                presentError("Could not save the favorite", error)
+            }
+        }
+    }
+
+    func setScenesFavorite(_ selectedScenes: [SceneRecord], favorite: Bool) {
+        guard let database, !selectedScenes.isEmpty else { return }
+        let sceneIDs = Set(selectedScenes.map(\.id))
+        Task {
+            do {
+                try await database.setScenesFavorite(Array(sceneIDs), favorite: favorite)
+                updateScenes(sceneIDs, rebuildSceneIndex: false) { $0.favorite = favorite }
             } catch {
                 presentError("Could not save the favorite", error)
             }
@@ -2221,10 +2273,14 @@ final class AppStore {
             do {
                 for member in members where member.stackChoice && member.id != scene.id {
                     try await database.setSceneStackChoice(member.id, chosen: false)
-                    updateScene(member.id) { $0.stackChoice = false }
+                    updateScene(member.id, rebuildSceneIndex: false, rehydrateBuilder: false) {
+                        $0.stackChoice = false
+                    }
                 }
                 try await database.setSceneStackChoice(scene.id, chosen: true)
-                updateScene(scene.id) { $0.stackChoice = true }
+                updateScene(scene.id, rebuildSceneIndex: false, rehydrateBuilder: false) {
+                    $0.stackChoice = true
+                }
             } catch {
                 presentError("Could not save the pick", error)
             }
@@ -2236,7 +2292,20 @@ final class AppStore {
         Task {
             do {
                 try await database.setSceneExcluded(scene.id, excluded: excluded)
-                updateScene(scene.id) { $0.excluded = excluded }
+                updateScene(scene.id, rehydrateBuilder: false) { $0.excluded = excluded }
+            } catch {
+                presentError("Could not update the scene", error)
+            }
+        }
+    }
+
+    func setScenesExcluded(_ selectedScenes: [SceneRecord], excluded: Bool) {
+        guard let database, !selectedScenes.isEmpty else { return }
+        let sceneIDs = Set(selectedScenes.map(\.id))
+        Task {
+            do {
+                try await database.setScenesExcluded(Array(sceneIDs), excluded: excluded)
+                updateScenes(sceneIDs) { $0.excluded = excluded }
             } catch {
                 presentError("Could not update the scene", error)
             }
@@ -2248,7 +2317,25 @@ final class AppStore {
         Task {
             do {
                 try await database.addGrade(sceneID: scene.id, score: score)
-                updateScene(scene.id) {
+                updateScene(scene.id, rebuildSceneIndex: false, rehydrateBuilder: false) {
+                    let total = ($0.gradeAverage ?? 0) * Double($0.gradeCount) + Double(score)
+                    $0.gradeCount += 1
+                    $0.gradeAverage = total / Double($0.gradeCount)
+                    $0.lastGrade = score
+                }
+            } catch {
+                presentError("Could not save the rating", error)
+            }
+        }
+    }
+
+    func gradeScenes(_ selectedScenes: [SceneRecord], score: Int) {
+        guard let database, !selectedScenes.isEmpty else { return }
+        let sceneIDs = Set(selectedScenes.map(\.id))
+        Task {
+            do {
+                try await database.addGrades(sceneIDs: Array(sceneIDs), score: score)
+                updateScenes(sceneIDs, rebuildSceneIndex: false) {
                     let total = ($0.gradeAverage ?? 0) * Double($0.gradeCount) + Double(score)
                     $0.gradeCount += 1
                     $0.gradeAverage = total / Double($0.gradeCount)
@@ -3587,6 +3674,23 @@ final class AppStore {
                 try await database.setSceneCurated(scene.id, curated: curated)
                 // The write also resets curated_provider/model: re-read the row.
                 await replaceScene(id: scene.id)
+            } catch {
+                presentError("Could not save the curation change", error)
+            }
+        }
+    }
+
+    func setScenesCurated(_ selectedScenes: [SceneRecord], curated: Bool) {
+        guard let database, !selectedScenes.isEmpty else { return }
+        let sceneIDs = Set(selectedScenes.map(\.id))
+        Task {
+            do {
+                try await database.setScenesCurated(Array(sceneIDs), curated: curated)
+                updateScenes(sceneIDs) {
+                    $0.curated = curated
+                    $0.curatedProvider = nil
+                    $0.curatedModel = nil
+                }
             } catch {
                 presentError("Could not save the curation change", error)
             }

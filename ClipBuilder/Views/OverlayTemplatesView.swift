@@ -161,6 +161,7 @@ struct OverlayTemplatesView: View {
     // MARK: - Actions
 
     private func refresh() {
+        OverlayTemplateStore.invalidateCache()
         templates = OverlayTemplateStore.list()
         if let selectedName, !templates.contains(where: { $0.name == selectedName }) {
             self.selectedName = nil
@@ -808,7 +809,7 @@ private struct PreviewImageLayer: View {
         .gesture(dragGesture, isEnabled: editable)
         .onTapGesture(perform: onSelect)
         .task(id: item.path) {
-            image = NSImage(contentsOf: item.url)
+            image = await ImageCache.image(for: item.url, maxPixel: 960)
         }
     }
 

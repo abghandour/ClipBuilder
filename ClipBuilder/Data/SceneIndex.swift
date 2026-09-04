@@ -37,4 +37,14 @@ nonisolated struct SceneIndex: Sendable {
         }
         allTags = tags.sorted()
     }
+
+    /// Refresh the stored copy of one scene without a full rebuild. Only
+    /// valid for changes that leave the index's shape alone (favorite,
+    /// grade, stack pick); membership changes (curated, excluded, ignored,
+    /// tags, video) need a rebuild.
+    mutating func replaceCopy(of scene: SceneRecord) {
+        if let index = curated.firstIndex(where: { $0.id == scene.id }) {
+            curated[index] = scene
+        }
+    }
 }

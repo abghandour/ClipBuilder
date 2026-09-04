@@ -63,6 +63,7 @@ final class BuilderTimelineModel {
     private var scenesByID: [Int64: SceneRecord] = [:]
     private var saveTask: Task<Void, Never>?
     private var suppressAutosave = false
+    @ObservationIgnored private var cachedTimelineLayout: TimelineLayoutSnapshot?
 
     /// Window undo manager, injected by BuilderView. Registering with the
     /// window (instead of replacing the Undo menu command) keeps text-field
@@ -144,6 +145,7 @@ final class BuilderTimelineModel {
         document = BuilderStateStore.load(profileName: profileName) ?? TimelineDocument()
         document.migrateLegacyScreenCrops()
         document.normalizeCropBlocks()
+        cachedTimelineLayout = nil
         selection = nil
         focusedTrack = nil
         playhead = 0
@@ -168,6 +170,7 @@ final class BuilderTimelineModel {
         saveTask?.cancel()
         document = TimelineDocument()
         document.normalizeCropBlocks()
+        cachedTimelineLayout = nil
         selection = nil
         focusedTrack = nil
         playhead = 0
@@ -182,16 +185,38 @@ final class BuilderTimelineModel {
         hydrateClips()
     }
 
+    /// Merge a set of changed library rows and hydrate the timeline once.
+    /// Bulk scene actions use this instead of rescanning the scene cache and
+    /// video track for every selected card.
+    func updateChangedScenes(_ changedScenes: [SceneRecord], rehydrateClips: Bool = true) {
+        guard !changedScenes.isEmpty else { return }
+        let changedByID = Dictionary(uniqueKeysWithValues: changedScenes.map { ($0.id, $0) })
+        var foundIDs = Set<Int64>()
+        scenes = scenes.map { scene in
+            guard let changed = changedByID[scene.id] else { return scene }
+            foundIDs.insert(scene.id)
+            return changed
+        }
+        scenes.append(contentsOf: changedScenes.filter { !foundIDs.contains($0.id) })
+        for scene in changedScenes { scenesByID[scene.id] = scene }
+
+        let changedIDs = Set(changedByID.keys)
+        if rehydrateClips,
+           document.videoTrack.contains(where: { $0.sceneID.map(changedIDs.contains) == true }) {
+            hydrateClips()
+        }
+    }
+
     /// One scene changed: refresh its cache entry and only re-hydrate when
     /// a clip on the timeline actually references it.
-    func updateScene(_ scene: SceneRecord) {
+    func updateScene(_ scene: SceneRecord, rehydrateClips: Bool = true) {
         if let index = scenes.firstIndex(where: { $0.id == scene.id }) {
             scenes[index] = scene
         } else {
             scenes.append(scene)
         }
         scenesByID[scene.id] = scene
-        if document.videoTrack.contains(where: { $0.sceneID == scene.id }) {
+        if rehydrateClips, document.videoTrack.contains(where: { $0.sceneID == scene.id }) {
             hydrateClips()
         }
     }
@@ -208,11 +233,13 @@ final class BuilderTimelineModel {
             clip.wide = scene.wide
             document.videoTrack[index] = clip
         }
+        cachedTimelineLayout = nil
     }
 
     private func documentDidChange() {
         // The cropping row always tiles the content; the track count follows it.
         document.normalizeCropBlocks()
+        cachedTimelineLayout = nil
         guard !suppressAutosave else { return }
         let snapshot = document
         let name = profileName
@@ -248,62 +275,16 @@ final class BuilderTimelineModel {
 
     static let overlayRowHeight: CGFloat = 40
 
-    var overlayLaneEntries: [OverlayLaneEntry] {
-        document.textOverlays.map(OverlayLaneEntry.text)
-            + document.imageOverlays.map(OverlayLaneEntry.image)
-            + document.overlayBlocks.map(OverlayLaneEntry.block)
-    }
-
-    /// Greedy interval packing: each entry takes the lowest row that is free
-    /// at its start time, so overlapping items stack instead of colliding.
-    func overlayRowLayout() -> (rows: [UUID: Int], rowCount: Int) {
-        let entries = overlayLaneEntries.sorted {
-            $0.start == $1.start ? $0.end < $1.end : $0.start < $1.start
-        }
-        var rowEnds: [Double] = []
-        var rows: [UUID: Int] = [:]
-        for entry in entries {
-            if let row = rowEnds.firstIndex(where: { $0 <= entry.start + 0.001 }) {
-                rows[entry.uid] = row
-                rowEnds[row] = entry.end
-            } else {
-                rows[entry.uid] = rowEnds.count
-                rowEnds.append(entry.end)
-            }
-        }
-        return (rows, max(1, rowEnds.count))
-    }
-
-    var overlayLaneHeight: CGFloat {
-        CGFloat(overlayRowLayout().rowCount) * Self.overlayRowHeight
+    /// Shared by the timeline header and lanes until the document changes.
+    func timelineLayout() -> TimelineLayoutSnapshot {
+        if let cachedTimelineLayout { return cachedTimelineLayout }
+        let layout = TimelineLayoutSnapshot(document: document)
+        cachedTimelineLayout = layout
+        return layout
     }
 
     func clips(inTrack track: Int) -> [TimelineClip] {
         document.videoTrack.filter { $0.track == track }
-    }
-
-    /// Greedy interval packing for overlap display in free-form mode: each
-    /// clip gets the lowest row whose previous clip ended before it starts.
-    func rowLayout(forTrack track: Int) -> (rows: [UUID: Int], rowCount: Int) {
-        let clips = clips(inTrack: track).sorted {
-            $0.startTime < $1.startTime
-        }
-        var rowEnds: [Double] = []
-        var rows: [UUID: Int] = [:]
-        for clip in clips {
-            if let row = rowEnds.firstIndex(where: { $0 <= clip.startTime + 0.001 }) {
-                rows[clip.uid] = row
-                rowEnds[row] = clip.startTime + clip.duration
-            } else {
-                rows[clip.uid] = rowEnds.count
-                rowEnds.append(clip.startTime + clip.duration)
-            }
-        }
-        return (rows, max(1, rowEnds.count))
-    }
-
-    func laneHeight(forTrack track: Int) -> CGFloat {
-        CGFloat(rowLayout(forTrack: track).rowCount) * Self.rowHeight
     }
 
     /// The track whose area the cropping row highlights: the selected clip's
@@ -340,10 +321,11 @@ final class BuilderTimelineModel {
     /// Map a vertical drag offset from one video lane to a target track index.
     func trackIndex(fromTrack track: Int, verticalDelta: CGFloat) -> Int {
         guard document.trackCount > 1 else { return 0 }
+        let layout = timelineLayout()
         var centers: [CGFloat] = []
         var y: CGFloat = 0
         for index in 0..<document.trackCount {
-            let height = laneHeight(forTrack: index)
+            let height = CGFloat(layout.videoTracks[index].rowCount) * Self.rowHeight
             centers.append(y + height / 2)
             y += height + Self.laneSpacing
         }

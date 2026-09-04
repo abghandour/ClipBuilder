@@ -105,6 +105,14 @@ nonisolated enum BrandRenderer {
         }
     }
 
+    /// Generate the full-resolution preview asset away from the main actor.
+    @concurrent
+    static func outroPreviewCard(profile: BrandProfile, in directory: URL) async -> URL? {
+        guard !Task.isCancelled else { return nil }
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return outroCard(profile: profile, to: directory)
+    }
+
     /// A still card → a silent video clip concatenate() can splice in.
     static func cardClip(png: URL, duration: Double, output: URL) async throws {
         try await FFmpeg.run([

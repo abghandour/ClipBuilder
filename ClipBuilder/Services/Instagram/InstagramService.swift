@@ -296,11 +296,10 @@ actor InstagramService {
 
         log("Extracting frames...")
         let timestamps = Analyzer.frameTimestamps(duration: duration)
-        let frames = ((try? await BoundedConcurrency.map(timestamps, limit: FFmpeg.jobLimit) { _, time in
-            await ThumbnailService.jpegFrame(url: video, at: time).map {
-                AIFrame(jpeg: $0, label: String(format: "%.1fs", time))
-            }
-        }) ?? []).compactMap { $0 }
+        let jpegFrames = await ThumbnailService.jpegFrames(url: video, at: timestamps)
+        let frames = zip(timestamps, jpegFrames).compactMap { time, jpeg in
+            jpeg.map { AIFrame(jpeg: $0, label: String(format: "%.1fs", time)) }
+        }
         guard !frames.isEmpty else {
             throw InstagramError.parseFailed("no frames could be extracted from the reel")
         }

@@ -118,7 +118,7 @@ struct AssetBrowserView: View {
         .onAppear {
             AssetStore.ensureRoots()
             refresh()
-            let watcher = FolderWatcher { refresh() }
+            let watcher = FolderWatcher { handleExternalChange() }
             watcher.watch(currentFolder)
             self.watcher = watcher
         }
@@ -289,6 +289,13 @@ struct AssetBrowserView: View {
         if let playingID, !items.contains(where: { $0.id == playingID }) {
             stopPlayback()
         }
+    }
+
+    private func handleExternalChange() {
+        AssetStore.invalidateCatalog(kind)
+        ImageCache.removeAll()
+        if kind == .fonts { AssetStore.registerFonts() }
+        refresh()
     }
 
     private func createFolder() {

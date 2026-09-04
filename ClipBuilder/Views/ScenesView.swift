@@ -663,8 +663,12 @@ struct ScenesView: View {
     }
 
     private func bulkGrade(_ score: Int, in filtered: [SceneRecord]) {
-        for scene in orderedSelection(in: filtered) {
+        let selection = orderedSelection(in: filtered)
+        guard !selection.isEmpty else { return }
+        if selection.count == 1, let scene = selection.first {
             store.grade(scene, score: score)
+        } else {
+            store.gradeScenes(selection, score: score)
         }
     }
 
@@ -672,8 +676,11 @@ struct ScenesView: View {
         // "Make it so" semantics: any non-favorite → favorite all.
         let selection = orderedSelection(in: filtered)
         let makeFavorite = selection.contains { !$0.favorite }
-        for scene in selection where scene.favorite != makeFavorite {
+        let changed = selection.filter { $0.favorite != makeFavorite }
+        if changed.count == 1, let scene = changed.first {
             store.toggleFavorite(scene)
+        } else {
+            store.setScenesFavorite(changed, favorite: makeFavorite)
         }
     }
 
@@ -687,16 +694,22 @@ struct ScenesView: View {
             return
         }
         let makeCurated = selection.contains { !$0.curated }
-        for scene in selection where scene.curated != makeCurated {
+        let changed = selection.filter { $0.curated != makeCurated }
+        if changed.count == 1, let scene = changed.first {
             store.curateScene(scene, curated: makeCurated)
+        } else {
+            store.setScenesCurated(changed, curated: makeCurated)
         }
     }
 
     private func bulkSetHidden(in filtered: [SceneRecord]) {
         let selection = orderedSelection(in: filtered)
         let hide = selection.contains { !$0.excluded }
-        for scene in selection where scene.excluded != hide {
+        let changed = selection.filter { $0.excluded != hide }
+        if changed.count == 1, let scene = changed.first {
             store.setExcluded(scene, excluded: hide)
+        } else {
+            store.setScenesExcluded(changed, excluded: hide)
         }
     }
 

@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Clip Builder vs. Peace Grappler System Overview — Gap Analysis</title>
+<style>
+    @page { size: letter; margin: 20mm 18mm; }
+    body {
+        font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+        color: #1d1d1f;
+        font-size: 11pt;
+        line-height: 1.5;
+        max-width: 760px;
+        margin: 0 auto;
+    }
+    h1 { font-size: 24pt; margin-bottom: 2px; letter-spacing: -0.5px; }
+    .subtitle { color: #6e6e73; font-size: 12pt; margin-top: 0; margin-bottom: 6px; }
+    .meta { color: #86868b; font-size: 9.5pt; margin-bottom: 26px; }
+    h2 {
+        font-size: 16pt;
+        margin-top: 32px;
+        padding-bottom: 6px;
+        border-bottom: 2px solid #e5e5ea;
+        letter-spacing: -0.3px;
+        page-break-after: avoid;
+    }
+    h3 { font-size: 12pt; margin-top: 20px; margin-bottom: 6px; page-break-after: avoid; }
+    p { margin: 6px 0 10px; }
+    ul li { margin-bottom: 5px; }
+    code {
+        font-family: "SF Mono", Menlo, Consolas, monospace;
+        font-size: 9.5pt;
+        background: #f5f5f7;
+        border-radius: 4px;
+        padding: 1px 5px;
+    }
+    table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 10px 0 16px;
+        font-size: 10pt;
+        page-break-inside: auto;
+    }
+    thead { display: table-header-group; }
+    tr { page-break-inside: avoid; }
+    .keep { }
+    thead { break-after: avoid; page-break-after: avoid; }
+    th, td {
+        border: 1px solid #d2d2d7;
+        padding: 6px 9px;
+        text-align: left;
+        vertical-align: top;
+    }
+    th { background: #f5f5f7; font-weight: 600; }
+    td.item { width: 32%; font-weight: 500; }
+    .pill {
+        display: inline-block;
+        font-size: 8.5pt;
+        font-weight: 600;
+        letter-spacing: 0.3px;
+        padding: 1px 8px;
+        border-radius: 999px;
+        white-space: nowrap;
+        vertical-align: middle;
+    }
+    .yes     { background: #e3f6e8; color: #1c7a3a; }
+    .partial { background: #fff3d6; color: #8a5a00; }
+    .no      { background: #fde7e7; color: #b3261e; }
+    .extra   { background: #e8e9ff; color: #3c3fa8; }
+    .summary {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+        margin: 16px 0 6px;
+    }
+    .card {
+        border: 1px solid #e5e5ea;
+        border-radius: 10px;
+        padding: 12px 14px;
+        background: #fafafa;
+    }
+    .card .n { font-size: 22pt; font-weight: 700; letter-spacing: -0.5px; line-height: 1.1; }
+    .card .l { font-size: 9.5pt; color: #6e6e73; margin-top: 2px; }
+    .callout {
+        border-left: 4px solid #0a84ff;
+        background: #f0f6ff;
+        padding: 10px 14px;
+        border-radius: 0 8px 8px 0;
+        margin: 14px 0;
+    }
+    .section-ref { color: #86868b; font-weight: 400; font-size: 10.5pt; }
+    .footer { color: #86868b; font-size: 9pt; margin-top: 40px; border-top: 1px solid #e5e5ea; padding-top: 10px; }
+    .pagebreak { page-break-before: always; }
+</style>
+</head>
+<body>
+
+<h1>Clip Builder vs. Peace Grappler System Overview</h1>
+<p class="subtitle">Gap analysis — what the app already supports, what the document asks for that is missing, and what the app does beyond the document</p>
+<p class="meta">Reviewed against <em>Peace Grappler — Full-Service Automation Software, System Overview Draft v1</em> (September 4, 2026) · Clip Builder 1.43 · Every claim below was verified in the app's source code.</p>
+
+<div class="summary">
+    <div class="card"><div class="n">26</div><div class="l">document items fully supported</div></div>
+    <div class="card"><div class="n">6</div><div class="l">partially supported</div></div>
+    <div class="card"><div class="n">22</div><div class="l">missing</div></div>
+    <div class="card"><div class="n">20</div><div class="l">extras beyond the document</div></div>
+</div>
+
+<div class="callout">
+<strong>In one paragraph.</strong> The fight-action editor, the branding setup, the person-centered screen layouts, the data bank, the Instagram Reel path, and the Instagram half of the intelligence layer are built and in daily use. The document's largest asks that do not exist yet are the long-form podcast editor (multi-camera, Zoom feed, chaptering, dead-air cuts), everything TikTok and YouTube (output, metrics, publishing), selectable output sizes (the app renders 1080×1920 only), translated captions, and the retention-based hook and cut analysis. Auto-posting, spreadsheet output, and the Windsor / HypeAuditor / OpusClip connections are also absent.
+</div>
+
+<h2>1. Already supported</h2>
+
+<div class="keep">
+<h3>Fight action editing <span class="section-ref">— document §2</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>What Clip Builder does</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">Automatic fight and action edits following parameters we define up front</td><td>A fight-scoring pass logs strikes, significant strikes, ground strikes, knockdowns, hurt moments, takedowns, submission attempts, dominant positions, and reversals per fighter with MMA-judging weights, drawn as per-fighter action and "who's winning" graphs. The Wizard plans from those scored scenes.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">The same rules produce the same style of edit every time</td><td>Rules live in the profile: a taste rubric with exemplar frames, per-type rubrics, format presets (finish, submission, exchange, technique, recap, compilation, interview), duration presets, people filters, allowed transitions, approved layouts, framing camera, branding toggles, audio and text modes. All persist per profile.</td><td><span class="pill yes">Supported</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="keep">
+<h3>Standard setup for every video <span class="section-ref">— document §3</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>What Clip Builder does</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">Overlays and branding elements</td><td>Overlay template system: compositions of text and image items with position, timing, and animation; an Overlay Wizard that extracts a design from a reference frame.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Logo</td><td>Profile logo burned in as a watermark on every render; intro and outro cards or clips stitched on.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Titles</td><td>Per-clip text overlays planned by the Wizard and editable in the Builder timeline.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Fonts</td><td>Font library with automatic registration; captions and overlays resolve fonts from it.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Captions</td><td>On-device transcription with word timestamps; captions burned in with a per-profile style (font, color, background, position).</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Split screen (top and bottom), diagonal, full screen</td><td>Shipped layouts: 50/50 top-bottom, thirds, 50/50 diagonal, full screen, plus any polygon layout drawn by hand. Layouts are a timeline row in the Builder and the Wizard may use approved ones.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Keep the target person centered</td><td>A framing pass per scene (static rect or moving camera path), a tracking camera with outfit-based identity, per-area tracking inside split layouts, and user framing hints as hard picks.</td><td><span class="pill yes">Supported</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="keep">
+<h3>Data bank <span class="section-ref">— document §4</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>What Clip Builder does</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">A permanent database so AI does not forget</td><td>Per-profile SQLite database holding videos, scenes, transcripts, people, fight events, research, renders, lessons, Instagram data. Learned Lessons, benchmarks, and the taste rubric persist across every run.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Recognizes and names fighters</td><td>Stable person identities across videos, user-drawn markers as ground truth, ignore markers for refs and staff, a People screen with merge, reassign, avatar picking, and review.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Names videos by subject</td><td>File Name Wizard builds descriptive filenames from people, type, fight outcome, research, scene stories, and transcript, reviewed before renaming.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Names fights and events</td><td>Fight research identifies the fight, event, and date, then crawls Reddit and Google News for fan reaction, distilled into a story with hook and overlay lines.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Flags what we should show now; brings up old material we forgot</td><td>"Ask the Library" natural-language scene search, a Content Gaps report of analyzed-but-never-used footage, lessons and benchmarks that surface hot subjects.</td><td><span class="pill yes">Supported</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="keep">
+<h3>Podcast, short form <span class="section-ref">— document §5</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>What Clip Builder does</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">Instagram video reel</td><td>Publishes a Library video as a Reel through the Graph API with resumable upload, an AI-prefilled editable caption, feed visibility toggle, and permalink.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Any length in seconds</td><td>Duration presets plus a custom seconds field (3 to 180), and durations parsed from free-text instructions.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Build a clip around a subject or fighter</td><td>Source people filter restricts scenes to tagged people; framing tags narrow to who is actually in frame.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Suggest the most viral moments and which athletes are in them</td><td>Soundbite finder ranks the most quotable transcript moments with suggested overlay lines; the AI Curator picks keepers against the taste rubric; every scene carries its people.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Suggest when to post</td><td>Best posting slots by weekday and hour computed from the connected account's own reach, shown in the publish sheet and fed into planning.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Unify content by suggesting past material on the same fighter</td><td>Gap report, library search, and lessons reference owned footage by person and subject.</td><td><span class="pill yes">Supported</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="keep">
+<h3>Intelligence layer, Instagram side <span class="section-ref">— document §7</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>What Clip Builder does</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">Pull metrics from Instagram</td><td>Views, reach, likes, comments, shares, saves, average watch time per media; account snapshots, daily account insights, demographics, comments, commenter rankings. A Reports tab with Overview, Posts, Commenters, and Audience.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Success of each individual clip</td><td>Per-reel score and tier against 90-day benchmarks with "what worked" and "what to fix"; published reels receive an audience score and percentile.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Time viewed</td><td>Average watch time is collected and used by the benchmarks and quality gate.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Feed every lesson back into the edits</td><td>Performance Lessons correlate insights with length, hook type, cut cadence, people, caption style, hashtags, and posting time, then enter the planner's context. Benchmarks steer duration, cadence, and hashtags. The Reel Critic forecasts engagement and is calibrated by real results.</td><td><span class="pill yes">Supported</span></td></tr>
+<tr><td class="item">Answer when to post and what time and day</td><td>Best slots per weekday and hour, local time.</td><td><span class="pill yes">Supported</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="keep">
+<h3>System connections <span class="section-ref">— document §8</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>What Clip Builder does</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">API connections to outside tools</td><td>Instagram Graph API for insights and publishing, public-web fallback with yt-dlp downloads, folder watching of the input folder, tokens in the Keychain.</td><td><span class="pill yes">Supported</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 class="pagebreak">2. Partially supported</h2>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>What exists and what is missing</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">Scene change timing: every 2 s, 3 s, or a mix</td><td>Cut cadence is planned as cuts per minute and taken from a reference reel or the account's benchmarks, and cuts can snap to music beats. There is no direct "every N seconds" control and no pace curve.</td><td><span class="pill partial">Partial</span></td></tr>
+<tr><td class="item">Cuts and suggested cuts we can accept</td><td>Accept-or-reject review exists for curator picks, renames, person merges, overlay extraction, and trim suggestions. There is no timeline-level list of proposed cuts with per-cut accept and reject.</td><td><span class="pill partial">Partial</span></td></tr>
+<tr><td class="item">Lower thirds</td><td>Achievable as a hand-placed overlay template item. Not a named, automatic feature.</td><td><span class="pill partial">Partial</span></td></tr>
+<tr><td class="item">Analysis of hooks</td><td>Hook type, text, and length are captured from analyzed reels, the house style records typical hook types, and the critic scores a hook dimension. Missing: retention past the first seconds, hook length versus drop-off, cross-platform comparison, and an explicit "use this hook" suggestion.</td><td><span class="pill partial">Partial</span></td></tr>
+<tr><td class="item">Post automatically after we say OK</td><td>Manual publish with a review step exists. No queue, no scheduling, no automatic posting.</td><td><span class="pill partial">Partial</span></td></tr>
+<tr><td class="item">Tell us when, how, what, and where to post</td><td>When: yes. What: partly, via the gap report, lessons, and hot subjects. Where: no, Instagram is the only destination.</td><td><span class="pill partial">Partial</span></td></tr>
+</tbody>
+</table>
+
+<h2>3. Missing</h2>
+
+<div class="keep">
+<h3>Standard setup <span class="section-ref">— document §3</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>Current state</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">Output quality: 4K, 1080, and other sizes</td><td>Rendering is hardcoded to 1080×1920 at 30 fps, vertical 9:16 only. No 16:9, 1:1, 4K, or quality selector. Layouts, overlays, framing, and captions all assume that canvas.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Translation language</td><td>The database has a translation flag but nothing produces a translated caption track. The profile's "caption languages" setting is for multi-language Instagram post text, not subtitles.</td><td><span class="pill no">Missing</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="keep">
+<h3>Data bank <span class="section-ref">— document §4</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>Current state</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">References B-roll and uses it to suggest edits; "use a photo here, and here are the photos you already have"</td><td>Images exist as an asset library. Nothing marks footage as B-roll or suggests a specific photo at a specific point in an edit.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Names photos by subject</td><td>Only videos are named by subject.</td><td><span class="pill no">Missing</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="keep">
+<h3>Podcast, short form <span class="section-ref">— document §5</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>Current state</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">Instagram carousel, feed post, story</td><td>Only reels are created and published. Carousel, feed, and story appear solely as read-only categories in the reports.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">TikTok in its own correct format</td><td>No TikTok output, publishing, or metrics.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Separates the topics</td><td>No topic segmentation of a podcast.</td><td><span class="pill no">Missing</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="keep">
+<h3>Podcast, long form <span class="section-ref">— document §6</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>Current state</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">Three camera feeds for the host plus the Zoom feed</td><td>No multi-camera ingest and no multicam sync. The closest tool is the Builder's six-track manual timeline.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Titles for the topics of each part</td><td>No chaptering.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Suggests cuts for dead air and garbage parts, with accept, reject, or edit</td><td>No silence or dead-air detection.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Long YouTube video</td><td>No YouTube output or publishing.</td><td><span class="pill no">Missing</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="keep">
+<h3>Intelligence layer <span class="section-ref">— document §7</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>Current state</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">Metrics from TikTok and YouTube</td><td>Instagram only.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Which screen type performs best: full, split, diagonal</td><td>Reports break results down by feed, reel, and carousel, not by edit layout. Layout is not recorded on published reels.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Which athletes give the best return by followers, views, watch time, shares</td><td>Comment-magnet subjects are computed from caption names. No per-athlete return metric.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Where in the clip people stop watching; which change caused the drop</td><td>No per-second retention data is fetched, so no drop-off analysis.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Image-change frequency versus retention; 2 s vs 3 s vs mix; what we cut to</td><td>Scene-cut detection exists only to ground reference-reel templates. Nothing correlates cut timing or cut targets with results.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Feed the winning timing and screen type back into the standard setup</td><td>Lessons feed back length, hook type, cadence, and people. Screen type is not part of the loop.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">Updates a spreadsheet with the results</td><td>No CSV, XLSX, or Google Sheets output. Only a JSON "Wizard Brain" export and resource zips.</td><td><span class="pill no">Missing</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="keep">
+<h3>System connections <span class="section-ref">— document §8</span></h3>
+<table>
+<thead><tr><th style="width:32%">Document asks for</th><th>Current state</th><th style="width:11%">Status</th></tr></thead>
+<tbody>
+<tr><td class="item">Windsor</td><td>No integration.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">HypeAuditor</td><td>No integration.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">OpusClip</td><td>No integration.</td><td><span class="pill no">Missing</span></td></tr>
+<tr><td class="item">"Here is the best clip for TikTok"; "post the YouTube video at this time"</td><td>Recommendations exist only for Instagram.</td><td><span class="pill no">Missing</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 class="pagebreak">4. Beyond the document</h2>
+<p>Capabilities Clip Builder has that the System Overview does not mention.</p>
+<table class="long">
+<thead><tr><th style="width:32%">Capability</th><th>What it does</th><th style="width:11%"></th></tr></thead>
+<tbody>
+<tr><td class="item">Reel Critic with a critique loop</td><td>Judges the rendered pixels against the profile's taste, forecasts engagement against the account's own reels, and re-plans and re-renders up to three versions when it recommends a retry.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Deterministic quality gate</td><td>Factual, framing, and source checks that do not rely on a model judging its own work.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">A/B comparison sheet</td><td>Side-by-side pick between run variations, stored as preference pairs that train future generations.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Structured review sheet</td><td>Overall verdict, per-dimension thumbs (hook, pacing, music, scenes), per-clip verdicts and reason chips, all read back as training signal.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Reference-reel templating</td><td>Analyze any public reel (download, probe, cut detection, frame sampling) into a template, then run the Wizard from it or pre-fill a Builder timeline.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Full pipeline button</td><td>People detection, transcription, analysis, fight scoring, research, curation, framing, generation, critique, cover frames, and renames run in the background with a status bar, Stop, and Resume.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Cover frame picker</td><td>Multimodal ranking of thumbnail candidates, run automatically over each Wizard batch.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Duplicate footage scan</td><td>Groups the same footage imported twice at different resolutions, crops, or lengths, with a keep recommendation.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Transition catalog and Effects browser</td><td>Around 30 crossfades plus recipe transitions (knife slash, zoom punch, whip) and flash cuts; a browser renders a live sample of each through the real pipeline and restricts which ones the AI may use.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Music library with beat snapping</td><td>Beat detection on the chosen track; cuts snap to onsets; original, mix, or music-only audio modes.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Soundbites as notes</td><td>Quotable moments saved as timestamped notes on the video for later use.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Person markers and ignore markers</td><td>Hand-drawn ground truth for identities and for people to exclude (referees, staff).</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Scene stacks</td><td>Group related scenes for the Builder and Wizard.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">AI provider routing</td><td>Five provider CLIs, eighteen named tasks each routed to a provider and model, a pre-flight dispatch plan, and automatic failover.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Provenance badges</td><td>Every AI-produced artifact records which provider and model made it and shows a badge in the UI.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Multiple brand profiles</td><td>Each profile has its own database, assets, folders, and rules.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Resource bundles and Wizard Brain export</td><td>Asset libraries, profiles, preferences, lessons, rubric, and house style exported and imported as portable files.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Profile starter</td><td>A brand interview generates a founding taste rubric, house style, and starter video types.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">Historic report import</td><td>Backfills months of Instagram history from the existing report archive so benchmarks work from day one.</td><td><span class="pill extra">Extra</span></td></tr>
+<tr><td class="item">In-app updater and guided installer</td><td>Signed, notarized package; installer sets up ffmpeg, yt-dlp, and AI CLIs; the app checks GitHub releases and updates itself.</td><td><span class="pill extra">Extra</span></td></tr>
+</tbody>
+</table>
+
+<h2>5. Where the effort is</h2>
+<p>Ranked by size of the gap, largest first.</p>
+<ul>
+    <li><strong>Long-form podcast editor.</strong> Multi-camera ingest and sync, Zoom feed, chaptering, dead-air detection, and a horizontal YouTube render. Nothing exists today; this is a new product surface.</li>
+    <li><strong>Multi-platform output and metrics.</strong> TikTok and YouTube publishing and insights, plus carousel, feed, and story creation for Instagram. The Instagram provider architecture is a template for the others.</li>
+    <li><strong>Output sizes.</strong> Parameterizing the 1080×1920 canvas through layouts, overlays, framing, captions, and both renderers. Mechanical but touches many files.</li>
+    <li><strong>Retention-based analysis.</strong> Hook retention, drop-off points, cut timing versus retention, screen-type performance, and athlete return. Depends on per-second retention data the platforms expose only partially.</li>
+    <li><strong>Automation and integrations.</strong> Scheduling and auto-post with approval, spreadsheet output, and the Windsor, HypeAuditor, and OpusClip connections.</li>
+    <li><strong>Small items.</strong> Translated captions, an explicit "every N seconds" cadence control, lower thirds as a template, B-roll tagging with photo suggestions, topic separation.</li>
+</ul>
+
+<p class="footer">Clip Builder 1.43 · Gap analysis against Peace Grappler System Overview Draft v1 · September 4, 2026</p>
+
+</body>
+</html>

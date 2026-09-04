@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// An overlay design: any number of text and image items, each with its own
 /// look, position, and timing window relative to the composition's start.
@@ -51,6 +52,18 @@ nonisolated struct OverlayTemplate: Identifiable, Equatable, Sendable {
 /// at the playhead; the AI Wizard offers them to the model alongside the
 /// built-in WizardTextStyle palette.
 nonisolated enum OverlayTemplateStore {
+    private struct ListingCache {
+        var fingerprint: [String] = []
+        var templates: [OverlayTemplate] = []
+        var checkedAt: TimeInterval = 0
+    }
+
+    private static let listingCache = Mutex(ListingCache())
+    private static let recheckInterval: TimeInterval = 2
+
+    static func invalidateCache() {
+        listingCache.withLock { $0.checkedAt = 0 }
+    }
     static var directory: URL {
         ProfileStore.profilesDirectory.appendingPathComponent("assets/overlays", isDirectory: true)
     }
@@ -60,17 +73,34 @@ nonisolated enum OverlayTemplateStore {
     }
 
     static func list() -> [OverlayTemplate] {
+        let now = Date.timeIntervalSinceReferenceDate
+        if let cached = listingCache.withLock({ cache -> [OverlayTemplate]? in
+            now - cache.checkedAt < recheckInterval ? cache.templates : nil
+        }) { return cached }
         let files = (try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles])) ?? []
-        return files
-            .filter { $0.pathExtension.lowercased() == "json" }
+            at: directory, includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]))?.filter { $0.pathExtension.lowercased() == "json" } ?? []
+        let fingerprint = files.map { url in
+            let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)?
+                .timeIntervalSinceReferenceDate ?? 0
+            return "\(url.lastPathComponent)|\(modified)"
+        }.sorted()
+        if let cached = listingCache.withLock({ cache -> [OverlayTemplate]? in
+            guard cache.fingerprint == fingerprint else { return nil }
+            cache.checkedAt = now
+            return cache.templates
+        }) { return cached }
+        let result: [OverlayTemplate] = files
             .compactMap { url in
                 guard let composition = loadComposition(at: url) else { return nil }
                 return OverlayTemplate(name: url.deletingPathExtension().lastPathComponent,
                                        composition: composition)
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        listingCache.withLock {
+            $0 = ListingCache(fingerprint: fingerprint, templates: result, checkedAt: now)
+        }
+        return result
     }
 
     /// Current format is {"texts": [...], "images": [...]}; files from before
@@ -98,6 +128,7 @@ nonisolated enum OverlayTemplateStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(template.composition).write(to: templateURL(name: template.name), options: .atomic)
+        invalidateCache()
     }
 
     /// Returns the final (sanitized) name.
@@ -117,11 +148,13 @@ nonisolated enum OverlayTemplateStore {
         } else {
             try FileManager.default.moveItem(at: source, to: destination)
         }
+        invalidateCache()
         return sanitized
     }
 
     static func delete(name: String) throws {
         try FileManager.default.trashItem(at: templateURL(name: name), resultingItemURL: nil)
+        invalidateCache()
     }
 
     /// "Name", "Name 2", "Name 3", … whichever is free.

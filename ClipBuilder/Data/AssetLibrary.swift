@@ -1,5 +1,6 @@
 import Foundation
 import CoreText
+import Synchronization
 import UniformTypeIdentifiers
 
 /// The shared asset libraries under `~/Documents/ClipBuilder/assets` —
@@ -72,6 +73,74 @@ nonisolated struct AssetItem: Identifiable, Hashable, Sendable {
 /// File operations for the asset libraries. All throwing calls surface
 /// FileManager errors to the caller for alert display.
 nonisolated enum AssetStore {
+    private struct FileListing {
+        var files: [(name: String, url: URL)]
+        var fingerprint: [String]
+        var checkedAt: TimeInterval
+    }
+
+    private struct FontFamilies {
+        var fingerprint: [String]
+        var names: [String]
+    }
+
+    private struct CatalogCache {
+        var files: [AssetKind: FileListing] = [:]
+        var fontFamilies: FontFamilies?
+        var revision = 0
+    }
+
+    private static let catalogCache = Mutex(CatalogCache())
+    private static let recheckInterval: TimeInterval = 2
+
+    /// In-memory catalog used by frequently rebuilt menus and pickers. File
+    /// operations below invalidate it; external changes can call this method
+    /// from a folder watcher.
+    static func invalidateCatalog(_ kind: AssetKind? = nil) {
+        catalogCache.withLock { cache in
+            cache.revision &+= 1
+            if let kind {
+                cache.files.removeValue(forKey: kind)
+                if kind == .fonts { cache.fontFamilies = nil }
+            } else {
+                cache.files.removeAll()
+                cache.fontFamilies = nil
+            }
+        }
+    }
+
+    static func libraryFontFamilies() -> [String] {
+        let urls = allFiles(of: .fonts).map(\.url)
+        let fingerprint = catalogCache.withLock { $0.files[.fonts]?.fingerprint ?? [] }
+        if let cached = catalogCache.withLock({ cache in
+            cache.fontFamilies.flatMap { $0.fingerprint == fingerprint ? $0.names : nil }
+        }) { return cached }
+
+        var families = Set<String>()
+        for url in urls {
+            guard let descriptors = CTFontManagerCreateFontDescriptorsFromURL(url as CFURL)
+                    as? [CTFontDescriptor] else { continue }
+            for descriptor in descriptors {
+                if let name = CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute) as? String {
+                    families.insert(name)
+                }
+            }
+        }
+        let result = families.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        catalogCache.withLock { cache in
+            guard cache.files[.fonts]?.fingerprint == fingerprint else { return }
+            cache.fontFamilies = FontFamilies(fingerprint: fingerprint, names: result)
+        }
+        return result
+    }
+
+    /// Keep the first CoreText descriptor scan off the main actor while
+    /// retaining the synchronous cached accessor for non-UI callers.
+    @concurrent
+    static func libraryFontFamiliesAsync() async -> [String] {
+        libraryFontFamilies()
+    }
+
     static func ensureRoots() {
         for kind in AssetKind.allCases {
             try? FileManager.default.createDirectory(at: kind.rootURL, withIntermediateDirectories: true)
@@ -101,11 +170,18 @@ nonisolated enum AssetStore {
     /// names (extension dropped), name-sorted — the shape the Builder's
     /// Music/Image menus want.
     static func allFiles(of kind: AssetKind) -> [(name: String, url: URL)] {
+        let now = Date.timeIntervalSinceReferenceDate
+        if let cached = catalogCache.withLock({ cache -> [(name: String, url: URL)]? in
+            guard let listing = cache.files[kind],
+                  now - listing.checkedAt < recheckInterval else { return nil }
+            return listing.files
+        }) { return cached }
+        let revision = catalogCache.withLock { $0.revision }
         let root = kind.rootURL
         guard let enumerator = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: [.isRegularFileKey],
+            at: root, includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]) else { return [] }
-        return enumerator.compactMap { $0 as? URL }
+        let result: [(name: String, url: URL)] = enumerator.compactMap { $0 as? URL }
             .filter { kind.allowedExtensions.contains($0.pathExtension.lowercased()) }
             .map { url in
                 var name = url.deletingPathExtension().path
@@ -115,11 +191,25 @@ nonisolated enum AssetStore {
                 return (name, url)
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let fingerprint = result.map { item in
+            let modified = (try? item.url.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate)?.timeIntervalSinceReferenceDate ?? 0
+            return "\(item.url.path)|\(modified)"
+        }
+        catalogCache.withLock { cache in
+            guard cache.revision == revision else { return }
+            if kind == .fonts, cache.files[kind]?.fingerprint != fingerprint {
+                cache.fontFamilies = nil
+            }
+            cache.files[kind] = FileListing(files: result, fingerprint: fingerprint, checkedAt: now)
+        }
+        return result
     }
 
     static func createFolder(named name: String, in folder: URL) throws {
         let target = folder.appendingPathComponent(ProfileStore.sanitize(name), isDirectory: true)
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)
+        invalidateCatalog()
     }
 
     /// Copy external files into `folder`, skipping non-matching types.
@@ -135,7 +225,10 @@ nonisolated enum AssetStore {
             try FileManager.default.copyItem(at: url, to: uniqueDestination(for: url.lastPathComponent, in: folder))
             imported += 1
         }
-        if kind == .fonts, imported > 0 { registerFonts() }
+        if imported > 0 {
+            invalidateCatalog(kind)
+            if kind == .fonts { registerFonts() }
+        }
         return imported
     }
 
@@ -151,10 +244,12 @@ nonisolated enum AssetStore {
         let target = item.url.deletingLastPathComponent().appendingPathComponent(name)
         guard target != item.url else { return }
         try FileManager.default.moveItem(at: item.url, to: target)
+        invalidateCatalog()
     }
 
     static func trash(_ item: AssetItem) throws {
         try FileManager.default.trashItem(at: item.url, resultingItemURL: nil)
+        invalidateCatalog()
     }
 
     private static func uniqueDestination(for filename: String, in folder: URL) -> URL {
@@ -175,11 +270,7 @@ nonisolated enum AssetStore {
     /// registered fonts is a harmless no-op error that CTFontManager reports
     /// per-font; errors are ignored.
     static func registerFonts() {
-        guard let enumerator = FileManager.default.enumerator(
-            at: AssetKind.fonts.rootURL, includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]) else { return }
-        let fontURLs = enumerator.compactMap { $0 as? URL }
-            .filter { AssetKind.fonts.allowedExtensions.contains($0.pathExtension.lowercased()) }
+        let fontURLs = allFiles(of: .fonts).map(\.url)
         guard !fontURLs.isEmpty else { return }
         CTFontManagerRegisterFontURLs(fontURLs as CFArray, .process, true, nil)
     }

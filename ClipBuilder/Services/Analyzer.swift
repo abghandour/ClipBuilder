@@ -144,12 +144,10 @@ actor Analyzer {
     }
 
     private func extractFrames(url: URL, timestamps: [Double]) async -> [AIFrame] {
-        let frames = (try? await BoundedConcurrency.map(timestamps, limit: FFmpeg.jobLimit) { _, timestamp in
-            await ThumbnailService.jpegFrame(url: url, at: timestamp).map {
-                AIFrame(jpeg: $0, label: String(format: "%.1fs", timestamp))
-            }
-        }) ?? []
-        return frames.compactMap { $0 }
+        let jpegFrames = await ThumbnailService.jpegFrames(url: url, at: timestamps)
+        return zip(timestamps, jpegFrames).compactMap { timestamp, jpeg in
+            jpeg.map { AIFrame(jpeg: $0, label: String(format: "%.1fs", timestamp)) }
+        }
     }
 
     // MARK: - Prompts (verbatim from analyzer.py)
@@ -717,14 +715,13 @@ actor Analyzer {
     /// Portrait AIFrames for a list of markers, labeled by index.
     private func withPortraits(url: URL, duration: Double, markers: [PersonMarker],
                                label: (Int) -> String) async -> [AIFrame] {
-        var frames: [AIFrame] = []
-        for (index, marker) in markers.enumerated() {
-            let at = min(max(0, marker.atTime), max(0, duration - 0.1))
-            guard let data = await ThumbnailService.jpegFrame(url: url, at: at),
-                  let portrait = Self.markerPortrait(from: data, marker: marker) else { continue }
-            frames.append(AIFrame(jpeg: portrait, label: label(index)))
+        let timestamps = markers.map { min(max(0, $0.atTime), max(0, duration - 0.1)) }
+        let jpegFrames = await ThumbnailService.jpegFrames(url: url, at: timestamps)
+        return zip(markers.indices, zip(markers, jpegFrames)).compactMap { index, pair in
+            guard let data = pair.1,
+                  let portrait = Self.markerPortrait(from: data, marker: pair.0) else { return nil }
+            return AIFrame(jpeg: portrait, label: label(index))
         }
-        return frames
     }
 
     // MARK: - Fight scoring pass
@@ -899,16 +896,17 @@ actor Analyzer {
     /// action by kit/build rather than a text description alone.
     private func fighterReferenceFrames(url: URL,
                                         roster: [VideoPersonRecord]) async -> [AIFrame] {
-        var frames: [AIFrame] = []
-        for person in roster {
-            guard let box = person.portraitBox else { continue }
-            let at = max(0, person.portraitAt)
-            guard let data = await ThumbnailService.jpegFrame(url: url, at: at),
-                  let crop = Self.boxPortrait(from: data, box: box) else { continue }
-            frames.append(AIFrame(jpeg: crop,
-                                  label: "FIGHTER REFERENCE — \(person.displayName) (key \"\(person.key)\")"))
+        let references = roster.compactMap { person in
+            person.portraitBox.map { (person: person, box: $0) }
         }
-        return frames
+        let jpegFrames = await ThumbnailService.jpegFrames(
+            url: url, at: references.map { max(0, $0.person.portraitAt) })
+        return zip(references, jpegFrames).compactMap { reference, jpeg in
+            guard let jpeg,
+                  let crop = Self.boxPortrait(from: jpeg, box: reference.box) else { return nil }
+            return AIFrame(jpeg: crop,
+                           label: "FIGHTER REFERENCE — \(reference.person.displayName) (key \"\(reference.person.key)\")")
+        }
     }
 
     // MARK: - Taste rubric distillation
@@ -1126,12 +1124,11 @@ actor Analyzer {
         // notes ("this guy") are unresolvable without it.
         var referenceFrames: [AIFrame] = []
         if !notes.isEmpty {
-            referenceFrames = ((try? await BoundedConcurrency.map(notes, limit: FFmpeg.jobLimit) { _, note in
-                let at = min(max(0, note.atTime), max(0, duration - 0.1))
-                return await ThumbnailService.jpegFrame(url: video.url, at: at).map {
-                    AIFrame(jpeg: $0, label: String(format: "REFERENCE for note at %.1fs", note.atTime))
-                }
-            }) ?? []).compactMap { $0 }
+            let timestamps = notes.map { min(max(0, $0.atTime), max(0, duration - 0.1)) }
+            let jpegFrames = await ThumbnailService.jpegFrames(url: video.url, at: timestamps)
+            referenceFrames = zip(notes, jpegFrames).compactMap { note, jpeg in
+                jpeg.map { AIFrame(jpeg: $0, label: String(format: "REFERENCE for note at %.1fs", note.atTime)) }
+            }
             if !referenceFrames.isEmpty {
                 log("Attached \(referenceFrames.count) reference frame(s) for the video notes")
             }
@@ -1153,15 +1150,14 @@ actor Analyzer {
         // same crops feed Center Stage as negative references.
         var ignoreFrames: [AIFrame] = []
         if !ignoreMarkers.isEmpty {
-            ignoreFrames = ((try? await BoundedConcurrency.map(ignoreMarkers, limit: FFmpeg.jobLimit) { _, marker in
-                let at = min(max(0, marker.atTime), max(0, duration - 0.1))
-                guard let data = await ThumbnailService.jpegFrame(url: video.url, at: at),
-                      let portrait = Self.markerPortrait(from: data, marker: marker) else {
-                    return nil as AIFrame?
-                }
+            let timestamps = ignoreMarkers.map { min(max(0, $0.atTime), max(0, duration - 0.1)) }
+            let jpegFrames = await ThumbnailService.jpegFrames(url: video.url, at: timestamps)
+            ignoreFrames = zip(ignoreMarkers, jpegFrames).compactMap { marker, jpeg in
+                guard let jpeg,
+                      let portrait = Self.markerPortrait(from: jpeg, marker: marker) else { return nil }
                 return AIFrame(jpeg: portrait,
                                label: String(format: "IGNORE MARKER at %.1fs", marker.atTime))
-            }) ?? []).compactMap { $0 }
+            }
             if !ignoreFrames.isEmpty {
                 log("Attached \(ignoreFrames.count) ignore marker(s) — these people are excluded")
             }
@@ -1195,16 +1191,15 @@ actor Analyzer {
 
         var markerFrames: [AIFrame] = []
         if !namedMarkers.isEmpty {
-            markerFrames = ((try? await BoundedConcurrency.map(namedMarkers, limit: FFmpeg.jobLimit) { _, entry in
-                let at = min(max(0, entry.marker.atTime), max(0, duration - 0.1))
-                guard let data = await ThumbnailService.jpegFrame(url: video.url, at: at),
-                      let portrait = Self.markerPortrait(from: data, marker: entry.marker) else {
-                    return nil as AIFrame?
-                }
+            let timestamps = namedMarkers.map { min(max(0, $0.marker.atTime), max(0, duration - 0.1)) }
+            let jpegFrames = await ThumbnailService.jpegFrames(url: video.url, at: timestamps)
+            markerFrames = zip(namedMarkers, jpegFrames).compactMap { entry, jpeg in
+                guard let jpeg,
+                      let portrait = Self.markerPortrait(from: jpeg, marker: entry.marker) else { return nil }
                 return AIFrame(jpeg: portrait,
                                label: String(format: "PERSON MARKER: %@ at %.1fs",
                                              entry.person.displayName, entry.marker.atTime))
-            }) ?? []).compactMap { $0 }
+            }
             if !markerFrames.isEmpty {
                 log("Attached \(markerFrames.count) person marker portrait(s): "
                     + namedMarkers.map(\.person.displayName).joined(separator: ", "))
@@ -1755,9 +1750,11 @@ actor Analyzer {
         let duration = end - start
         var good = 0, judged = 0, sampled = 0
         var centers: [Double] = []
-        for fraction in [0.25, 0.5, 0.75] {
-            guard let data = await ThumbnailService.jpegFrame(url: url, at: start + duration * fraction,
-                                                              maxDimension: 720) else { continue }
+        let fractions = [0.25, 0.5, 0.75]
+        let frames = await ThumbnailService.jpegFrames(
+            url: url, at: fractions.map { start + duration * $0 }, maxDimension: 720)
+        for data in frames {
+            guard let data else { continue }
             sampled += 1
             let request = VNDetectHumanRectanglesRequest()
             request.upperBodyOnly = false
@@ -1799,13 +1796,11 @@ extension Analyzer {
     @concurrent
     nonisolated static func markerPortraits(url: URL, markers: [PersonMarker],
                                             duration: Double) async -> [Data] {
-        ((try? await BoundedConcurrency.map(markers, limit: FFmpeg.jobLimit) { _, marker in
-            let at = min(max(0, marker.atTime), max(0, duration - 0.1))
-            guard let data = await ThumbnailService.jpegFrame(url: url, at: at) else {
-                return nil as Data?
-            }
-            return Self.markerPortrait(from: data, marker: marker)
-        }) ?? []).compactMap { $0 }
+        let timestamps = markers.map { min(max(0, $0.atTime), max(0, duration - 0.1)) }
+        let jpegFrames = await ThumbnailService.jpegFrames(url: url, at: timestamps)
+        return zip(markers, jpegFrames).compactMap { marker, jpeg in
+            jpeg.flatMap { Self.markerPortrait(from: $0, marker: marker) }
+        }
     }
 
     /// Crop a frame to a marker's box (with breathing room) — the portrait

@@ -48,6 +48,13 @@ nonisolated enum ImageCache {
         return decoded
     }
 
+    /// Forget every decoded image — after files may have been rewritten at
+    /// paths that are already cached (resource import with replace, external
+    /// edits in an asset folder).
+    static func removeAll() {
+        cache.removeAllObjects()
+    }
+
     /// A cached image stored under an arbitrary key, without touching disk.
     static func cached(key: String) -> NSImage? {
         cache.object(forKey: key as NSString)

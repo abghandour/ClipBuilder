@@ -132,26 +132,88 @@ extension BuilderTimelineModel {
     /// order (highest track, then stack order).
     func previewPlan() -> (segments: [PreviewSegment], music: [PreviewMusicBlock]) {
         let clips = document.videoTrack
+        typealias Candidate = (clip: TimelineClip, index: Int, end: Double)
+
+        // Max-heap by the same draw priority the old per-interval scan used.
+        // Expired entries are removed lazily when they reach the root, so
+        // every clip enters and leaves the heap at most once.
+        func outranks(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
+            if lhs.clip.track != rhs.clip.track { return lhs.clip.track > rhs.clip.track }
+            if lhs.clip.startTime != rhs.clip.startTime { return lhs.clip.startTime > rhs.clip.startTime }
+            return lhs.index < rhs.index
+        }
+
+        var heap: [Candidate] = []
+        heap.reserveCapacity(clips.count)
+        func insert(_ candidate: Candidate) {
+            heap.append(candidate)
+            var child = heap.count - 1
+            while child > 0 {
+                let parent = (child - 1) / 2
+                guard outranks(heap[child], heap[parent]) else { break }
+                heap.swapAt(child, parent)
+                child = parent
+            }
+        }
+        @discardableResult
+        func removeHighest() -> Candidate? {
+            guard !heap.isEmpty else { return nil }
+            if heap.count == 1 { return heap.removeLast() }
+            let highest = heap[0]
+            heap[0] = heap.removeLast()
+            var parent = 0
+            while true {
+                let left = parent * 2 + 1
+                guard left < heap.count else { break }
+                let right = left + 1
+                let child = right < heap.count && outranks(heap[right], heap[left]) ? right : left
+                guard outranks(heap[child], heap[parent]) else { break }
+                heap.swapAt(parent, child)
+                parent = child
+            }
+            return highest
+        }
+
         var boundaries = Set<Double>()
         for clip in clips {
             boundaries.insert(clip.startTime)
             boundaries.insert(clip.startTime + clip.duration)
         }
         let sorted = boundaries.sorted()
+        let starts = clips.enumerated().sorted {
+            $0.element.startTime == $1.element.startTime
+                ? $0.offset < $1.offset
+                : $0.element.startTime < $1.element.startTime
+        }
+        var nextStart = 0
 
         var segments: [PreviewSegment] = []
         for (start, end) in zip(sorted, sorted.dropFirst()) where end - start > 0.01 {
-            let midpoint = (start + end) / 2
-            let active = clips.filter { $0.startTime <= midpoint && midpoint < $0.startTime + $0.duration }
-            guard let top = active.max(by: { ($0.track, $0.startTime) < ($1.track, $1.startTime) }),
-                  let url = sourceURL(for: top) else { continue }
+            while nextStart < starts.count, starts[nextStart].element.startTime <= start + 0.001 {
+                let item = starts[nextStart]
+                insert((item.element, item.offset, item.element.startTime + item.element.duration))
+                nextStart += 1
+            }
+            while let highest = heap.first, highest.end <= start + 0.001 {
+                removeHighest()
+            }
+            guard let top = heap.first?.clip, let url = sourceURL(for: top) else { continue }
             let trackMuted = document.trackSettings[safe: top.track]?.muted ?? false
             let gain = (top.muted || trackMuted) ? 0.0 : Double(top.volume) / 5.0
-            segments.append(PreviewSegment(url: url,
-                                           sourceStart: (top.sourceStart ?? 0) + (start - top.startTime),
-                                           timelineStart: start,
-                                           duration: end - start,
-                                           volume: gain))
+            let sourceStart = (top.sourceStart ?? 0) + (start - top.startTime)
+            if let lastIndex = segments.indices.last,
+               segments[lastIndex].url == url,
+               abs(segments[lastIndex].timelineStart + segments[lastIndex].duration - start) < 0.001,
+               abs(segments[lastIndex].sourceStart + segments[lastIndex].duration - sourceStart) < 0.001,
+               segments[lastIndex].volume == gain {
+                segments[lastIndex].duration += end - start
+            } else {
+                segments.append(PreviewSegment(url: url,
+                                               sourceStart: sourceStart,
+                                               timelineStart: start,
+                                               duration: end - start,
+                                               volume: gain))
+            }
         }
 
         let musicLookup = Dictionary(uniqueKeysWithValues:

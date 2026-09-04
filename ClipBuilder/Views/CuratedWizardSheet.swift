@@ -1584,10 +1584,12 @@ private struct OutroCardPreview: View {
         .task(id: profile.profileName) {
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("CuratedOutroPreview", isDirectory: true)
-            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            if let url = BrandRenderer.outroCard(profile: profile, to: directory) {
-                image = NSImage(contentsOf: url)
-            }
+            guard let url = await BrandRenderer.outroPreviewCard(profile: profile, in: directory) else { return }
+            defer { try? FileManager.default.removeItem(at: url) }
+            guard !Task.isCancelled else { return }
+            let preview = await ImageCache.image(for: url, maxPixel: 720)
+            guard !Task.isCancelled else { return }
+            image = preview
         }
     }
 }

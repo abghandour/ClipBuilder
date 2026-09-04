@@ -1,5 +1,4 @@
 import SwiftUI
-import CoreText
 
 /// The text-overlay style editor shared by the Builder inspector and the
 /// Overlays template section. Position is edited by dragging in the preview
@@ -50,19 +49,11 @@ struct ImageOverlayControls: View {
     @Binding var item: ImageOverlayItem
     let name: String
 
-    @State private var thumbnail: NSImage?
-
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Group {
-                    if let thumbnail {
-                        Image(nsImage: thumbnail)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                    } else {
-                        RoundedRectangle(cornerRadius: 4).fill(.quaternary)
-                    }
+                    CachedImage(url: item.url, maxPixel: 128, contentMode: .fit)
                 }
                 .frame(width: 48, height: 48)
                 Text(name)
@@ -78,9 +69,6 @@ struct ImageOverlayControls: View {
                     .font(.caption)
                 Slider(value: $item.opacity, in: 0.05...1)
             }
-        }
-        .task(id: item.path) {
-            thumbnail = NSImage(contentsOf: item.url)
         }
     }
 }
@@ -124,6 +112,8 @@ struct FontFamilyPicker: View {
 
     @State private var showingList = false
     @State private var search = ""
+    @State private var libraryFamilies: [String] = []
+    @State private var systemFamilies: [String] = []
 
     var body: some View {
         LabeledContent("Font") {
@@ -156,7 +146,7 @@ struct FontFamilyPicker: View {
                     if search.isEmpty {
                         row(name: nil, label: "Default")
                     }
-                    let library = matching(Self.libraryFamilies())
+                    let library = matching(libraryFamilies)
                     if !library.isEmpty {
                         sectionHeader("Fonts Library")
                         ForEach(library, id: \.self) { name in
@@ -164,7 +154,7 @@ struct FontFamilyPicker: View {
                         }
                     }
                     sectionHeader("System")
-                    ForEach(matching(Self.systemFamilies()), id: \.self) { name in
+                    ForEach(matching(systemFamilies), id: \.self) { name in
                         row(name: name, label: name)
                     }
                 }
@@ -172,6 +162,12 @@ struct FontFamilyPicker: View {
             }
         }
         .frame(width: 280, height: 360)
+        .task {
+            let library = await AssetStore.libraryFontFamiliesAsync()
+            let system = Self.systemFamilies()
+            libraryFamilies = library
+            systemFamilies = system
+        }
     }
 
     private func matching(_ names: [String]) -> [String] {
@@ -217,21 +213,11 @@ struct FontFamilyPicker: View {
     /// Family names of the fonts in the Fonts library (registered for this
     /// process at launch, so Font.custom resolves them).
     static func libraryFamilies() -> [String] {
-        let files = AssetStore.allFiles(of: .fonts)
-        var families: [String] = []
-        var seen = Set<String>()
-        for file in files {
-            guard let descriptors = CTFontManagerCreateFontDescriptorsFromURL(file.url as CFURL)
-                as? [CTFontDescriptor] else { continue }
-            for descriptor in descriptors {
-                guard let name = CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute)
-                    as? String, seen.insert(name).inserted else { continue }
-                families.append(name)
-            }
-        }
-        return families.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        AssetStore.libraryFontFamilies()
     }
 
+    /// Read per popover open (the `.task` above), so fonts installed
+    /// system-wide mid-session show up without a relaunch.
     static func systemFamilies() -> [String] {
         NSFontManager.shared.availableFontFamilies
             .filter { !$0.hasPrefix(".") }

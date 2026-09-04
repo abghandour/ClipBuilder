@@ -18,10 +18,11 @@ struct TimelineView: View {
     var body: some View {
         let model = store.builder
         let contentWidth = max(800, CGFloat(model.totalDuration + 15) * model.pointsPerSecond)
+        let layout = model.timelineLayout()
 
         ScrollView(.vertical) {
             HStack(alignment: .top, spacing: 0) {
-                headerColumn(model: model)
+                headerColumn(model: model, layout: layout)
                     .frame(width: Self.headerWidth)
                 ScrollView(.horizontal) {
                     VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
@@ -29,11 +30,12 @@ struct TimelineView: View {
                             .frame(width: contentWidth, height: Self.rulerHeight)
                         CropLane(contentWidth: contentWidth, height: Self.cropLaneHeight)
                         ForEach(0..<model.document.trackCount, id: \.self) { track in
-                            VideoTrackLane(track: track, contentWidth: contentWidth,
+                            VideoTrackLane(track: track, layout: layout.videoTracks[track],
+                                           contentWidth: contentWidth,
                                            onPlayClip: onPlayClip)
                         }
                         SoundLane(contentWidth: contentWidth, height: Self.soundLaneHeight)
-                        OverlayLane(contentWidth: contentWidth)
+                        OverlayLane(layout: layout, contentWidth: contentWidth)
                     }
                     .overlay(alignment: .topLeading) {
                         PlayheadLine()
@@ -46,7 +48,7 @@ struct TimelineView: View {
     }
 
     @ViewBuilder
-    private func headerColumn(model: BuilderTimelineModel) -> some View {
+    private func headerColumn(model: BuilderTimelineModel, layout: TimelineLayoutSnapshot) -> some View {
         VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
             PlayheadTimecode()
                 .frame(height: Self.rulerHeight)
@@ -55,12 +57,14 @@ struct TimelineView: View {
                 .frame(height: Self.cropLaneHeight)
             ForEach(0..<model.document.trackCount, id: \.self) { track in
                 TrackHeader(track: track)
-                    .frame(height: model.laneHeight(forTrack: track))
+                    .frame(height: CGFloat(layout.videoTracks[track].rowCount)
+                           * BuilderTimelineModel.rowHeight)
             }
             laneHeader(title: "Sound", systemImage: "music.note")
                 .frame(height: Self.soundLaneHeight)
             laneHeader(title: "Overlays", systemImage: "square.2.layers.3d")
-                .frame(height: model.overlayLaneHeight)
+                .frame(height: CGFloat(layout.overlayRowCount)
+                       * BuilderTimelineModel.overlayRowHeight)
         }
     }
 
@@ -311,6 +315,7 @@ struct PlayheadTimecode: View {
 struct VideoTrackLane: View {
     @Environment(AppStore.self) private var store
     let track: Int
+    let layout: TimelineLayoutSnapshot.VideoTrack
     let contentWidth: CGFloat
     let onPlayClip: (TimelineClip) -> Void
 
@@ -318,11 +323,10 @@ struct VideoTrackLane: View {
 
     var body: some View {
         let model = store.builder
-        let layout = model.rowLayout(forTrack: track)
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 6)
                 .fill(.quaternary.opacity(isDropTarget ? 0.55 : 0.25))
-            ForEach(model.clips(inTrack: track)) { clip in
+            ForEach(layout.clips) { clip in
                 TimelineClipBlock(clip: clip,
                                   row: layout.rows[clip.uid] ?? 0,
                                   onPlay: onPlayClip)
@@ -884,18 +888,16 @@ struct SoundBlock: View {
 /// into extra rows (the lane grows vertically) instead of painting over
 /// each other.
 struct OverlayLane: View {
-    @Environment(AppStore.self) private var store
+    let layout: TimelineLayoutSnapshot
     let contentWidth: CGFloat
 
     var body: some View {
-        let model = store.builder
-        let layout = model.overlayRowLayout()
         let rowHeight = BuilderTimelineModel.overlayRowHeight
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 6)
                 .fill(.quaternary.opacity(0.25))
-            ForEach(model.overlayLaneEntries) { entry in
-                let row = layout.rows[entry.uid] ?? 0
+            ForEach(layout.overlayEntries) { entry in
+                let row = layout.overlayRows[entry.uid] ?? 0
                 switch entry {
                 case .text(let item):
                     TextBlock(item: item, row: row, height: rowHeight)
@@ -906,7 +908,7 @@ struct OverlayLane: View {
                 }
             }
         }
-        .frame(width: contentWidth, height: CGFloat(layout.rowCount) * rowHeight)
+        .frame(width: contentWidth, height: CGFloat(layout.overlayRowCount) * rowHeight)
     }
 }
 
