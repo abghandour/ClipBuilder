@@ -15,6 +15,7 @@ struct WizardView: View {
     @AppStorage(WizardDefaults.textModeKey) private var textModeRaw = WizardTextMode.automatic.rawValue
     @AppStorage("wizard.critiqueLoop") private var critiqueLoop = true
     @AppStorage(WizardDefaults.layoutModeKey) private var layoutModeRaw = WizardLayoutMode.automatic.rawValue
+    @AppStorage(WizardDefaults.selectedLayoutsKey) private var selectedLayoutsRaw = ""
     @AppStorage(WizardDefaults.brandingOverrideKey) private var brandingOverrideRaw = WizardBrandingOverride.savedDefault.rawValue
     @AppStorage("wizard.limitToSelection") private var limitToSelection = false
     @AppStorage("wizard.curatedOnly") private var curatedOnly = false
@@ -75,6 +76,47 @@ struct WizardView: View {
 
     private var layoutMode: WizardLayoutMode {
         WizardLayoutMode(rawValue: layoutModeRaw) ?? .automatic
+    }
+
+    /// Multi-select of Screen Crop layouts for the "Choose layouts…" mode.
+    private var selectedLayouts: Set<String> {
+        Set(selectedLayoutsRaw.split(separator: ",").map(String.init))
+    }
+
+    private var layoutChecklist: some View {
+        let layouts = ScreenCropStore.all().filter { !$0.areas.isEmpty }
+        return VStack(alignment: .leading, spacing: 4) {
+            if layouts.isEmpty {
+                Text("No layouts yet — create some under Resources → Screen Crop.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(layouts) { layout in
+                    Toggle(isOn: Binding(
+                        get: { selectedLayouts.contains(layout.name) },
+                        set: { on in
+                            var chosen = selectedLayouts
+                            if on { chosen.insert(layout.name) } else { chosen.remove(layout.name) }
+                            selectedLayoutsRaw = chosen.sorted().joined(separator: ",")
+                        })) {
+                        HStack(spacing: 6) {
+                            Text(layout.name)
+                            Text(layout.areas.map(\.name).joined(separator: " · "))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        .font(.callout)
+                    }
+                    .toggleStyle(.checkbox)
+                }
+                if selectedLayouts.isDisjoint(with: layouts.map(\.name)) {
+                    Text("Pick at least one layout, or the run stays single scene.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.leading, 4)
     }
 
     private var layoutModeBinding: Binding<WizardLayoutMode> {
@@ -368,13 +410,14 @@ struct WizardView: View {
                         Text(mode.title).tag(mode)
                     }
                 }
-                HStack {
-                    Text("Manage reusable layouts in Assets → Screen Crop.")
+                if layoutMode == .selected {
+                    layoutChecklist
+                } else {
+                    Text(layoutMode == .singleScene
+                         ? "Every clip fills the frame on its own."
+                         : "Layouts approved under Resources → Screen Crop may be used.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Open") { store.requestedSection = .screenCrops }
-                        .controlSize(.small)
                 }
 
                 Picker("Branding", selection: brandingOverrideBinding) {
@@ -758,8 +801,7 @@ struct WizardView: View {
         options.addCaptions = text.captions
         options.enableTextOverlays = text.headlines
         options.framingCamera = WizardDefaults.fallbackFramingCamera
-        options.screenCropLayouts = layoutMode == .automatic
-            ? WizardOptions.screenCropLayoutsFromDefaults() : []
+        options.screenCropLayouts = WizardDefaults.screenCropLayouts(for: layoutMode)
         options.allowedTransitions = WizardOptions.allowedTransitionsFromDefaults()
         options.useFightResearch = true
         options.aiInstructions = aiInstructions

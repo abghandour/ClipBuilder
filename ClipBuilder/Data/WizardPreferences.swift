@@ -112,13 +112,15 @@ nonisolated enum WizardDurationMode: String, CaseIterable, Sendable {
 }
 
 nonisolated enum WizardLayoutMode: String, CaseIterable, Sendable {
-    case automatic
     case singleScene
+    case automatic
+    case selected
 
     var title: String {
         switch self {
-        case .automatic: "Use approved layouts"
-        case .singleScene: "Single-scene only"
+        case .singleScene: "Single scene"
+        case .automatic: "Approved layouts"
+        case .selected: "Choose layouts…"
         }
     }
 }
@@ -209,6 +211,8 @@ nonisolated enum WizardDefaults {
 
     static let useScreenCropsKey = "wizard.useScreenCrops"
     static let screenCropLayoutsKey = "wizard.screenCropLayouts"
+    /// Comma-joined layout names for the Wizard's "Choose layouts…" mode.
+    static let selectedLayoutsKey = "wizard.selectedLayouts"
     static let limitTransitionsKey = "wizard.limitTransitions"
     static let allowedTransitionsKey = "wizard.allowedTransitions"
 
@@ -267,6 +271,20 @@ nonisolated enum WizardDefaults {
         migrateLegacy(defaults: defaults)
         return WizardBrandingOverride(rawValue: defaults.string(forKey: brandingOverrideKey) ?? "")
             ?? .savedDefault
+    }
+
+    /// Layouts a run may use under the given mode: none for single scene,
+    /// the approved set from Resources, or the run's own pick (only names
+    /// that still exist).
+    static func screenCropLayouts(for mode: WizardLayoutMode, defaults: UserDefaults = .standard) -> [String] {
+        switch mode {
+        case .singleScene: return []
+        case .automatic: return approvedScreenCropLayouts(defaults: defaults)
+        case .selected:
+            let chosen = Set((defaults.string(forKey: selectedLayoutsKey) ?? "")
+                .split(separator: ",").map(String.init))
+            return ScreenCropStore.all().filter { !$0.areas.isEmpty && chosen.contains($0.name) }.map(\.name)
+        }
     }
 
     static func approvedScreenCropLayouts(defaults: UserDefaults = .standard) -> [String] {

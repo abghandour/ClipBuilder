@@ -1182,8 +1182,7 @@ final class AppStore {
         options.framingCamera = WizardDefaults.fallbackFramingCamera
         let layoutMode = WizardLayoutMode(rawValue: defaults.string(forKey: WizardDefaults.layoutModeKey) ?? "")
             ?? .automatic
-        options.screenCropLayouts = layoutMode == .automatic
-            ? WizardOptions.screenCropLayoutsFromDefaults() : []
+        options.screenCropLayouts = WizardDefaults.screenCropLayouts(for: layoutMode, defaults: defaults)
         options.allowedTransitions = WizardOptions.allowedTransitionsFromDefaults()
         // Saved research is useful context when it exists; a run should not
         // ask the user to decide whether a missing record is useful.
