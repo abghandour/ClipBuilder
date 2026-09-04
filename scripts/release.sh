@@ -35,6 +35,9 @@ for tool in gh xcrun; do
     command -v "$tool" >/dev/null 2>&1 || { echo "error: $tool not found" >&2; exit 1; }
 done
 
+step "Running unit tests"
+"$REPO_ROOT/scripts/test.sh"
+
 # ------------------------------------------------------------- version bump
 CURRENT=$(sed -n 's/.*MARKETING_VERSION = \([0-9.]*\);.*/\1/p' "$PBXPROJ" | head -1)
 BUILD=$(sed -n 's/.*CURRENT_PROJECT_VERSION = \([0-9]*\);.*/\1/p' "$PBXPROJ" | head -1)

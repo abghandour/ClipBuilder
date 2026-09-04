@@ -510,7 +510,12 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    private static let schemaVersion: Int64 = 1
+    static let schemaVersion: Int64 = 1
+
+    /// "wal" normally; "delete" after the fallback in `init`.
+    func journalMode() throws -> String {
+        try connection.query("PRAGMA journal_mode").first?.values.first?.stringValue ?? ""
+    }
 
     /// Lazy column migrations mirroring db.py, so old and new columns end up
     /// identical across both apps. One `PRAGMA table_info` per table replaces

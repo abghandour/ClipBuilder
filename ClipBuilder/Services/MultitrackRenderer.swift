@@ -851,6 +851,7 @@ actor MultitrackRenderer {
     /// inside its enable window.
     private func addOverlays(video: URL, overlays: [TimedOverlayPNG],
                              output: URL) async throws {
+        let videoDuration = await FFmpeg.duration(of: video)
         var arguments = ["-y", "-i", video.path]
         var filters: [String] = []
         var previous = "[0:v]"
@@ -911,11 +912,18 @@ actor MultitrackRenderer {
             try FileManager.default.copyItemReplacing(at: video, to: output)
             return
         }
+        // Overlay inputs can outlast the video; cap the output to the
+        // measured length. A failed probe reports 0 — leave the length
+        // alone rather than emit an empty file.
+        let lengthCap: [String] = videoDuration > 0
+            ? ["-t", String(format: "%.3f", videoDuration)] : []
         try await FFmpeg.run(arguments + [
             "-filter_complex", filters.joined(separator: ";"),
             "-map", previous, "-map", "0:a?",
         ] + FFmpeg.videoEncodeArgs + [
-            "-c:a", "copy", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output.path,
+            "-c:a", "copy", "-pix_fmt", "yuv420p",
+        ] + lengthCap + [
+            "-movflags", "+faststart", output.path,
         ], timeout: 900)
     }
 

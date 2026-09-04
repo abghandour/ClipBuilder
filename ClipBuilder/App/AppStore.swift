@@ -253,32 +253,44 @@ final class AppStore {
     private let instagram: InstagramService
     private let fightResearchService: FightResearchService
     private var watcher: FolderWatcher?
+    @ObservationIgnored private let opensProfiles: Bool
 
-    init() {
+    convenience init() {
         let settings = SettingsStore.loadSettings()
+        let defaultProfile = ProfileStore.ensureDefaultProfile()
+        var loaded = ProfileStore.listProfiles()
+        if loaded.isEmpty { loaded = [defaultProfile] }
+        let activeName = SettingsStore.loadActiveProfileName()
+        let active = loaded.first { $0.profileName == activeName } ?? loaded[0]
+        self.init(settings: settings, profiles: loaded, active: active,
+                  ai: AIService(config: settings.ai), startWatcher: true, openProfile: true)
+    }
+
+    /// Dependency-injected construction for state tests and isolated tools.
+    /// Production construction keeps using `init()` above.
+    init(settings: AppSettings, profiles: [BrandProfile], active: BrandProfile,
+         ai: AIService, startWatcher: Bool = false, openProfile: Bool = false) {
         self.settings = settings
-        ai = AIService(config: settings.ai)
+        self.profiles = profiles
+        activeProfile = active
+        self.ai = ai
         analyzer = Analyzer(ai: ai)
         wizard = WizardEngine(ai: ai, render: renderEngine)
         multitrackRenderer = MultitrackRenderer(render: renderEngine)
         instagram = InstagramService(ai: ai)
         fightResearchService = FightResearchService(ai: ai)
-
-        let defaultProfile = ProfileStore.ensureDefaultProfile()
-        var loaded = ProfileStore.listProfiles()
-        if loaded.isEmpty { loaded = [defaultProfile] }
-        profiles = loaded
-        let activeName = SettingsStore.loadActiveProfileName()
-        activeProfile = loaded.first { $0.profileName == activeName } ?? loaded[0]
+        opensProfiles = openProfile
 
         // Settings reads the migrated wizard keys directly, so migrate before
         // any view (not only the Wizard tab) can show them.
         WizardDefaults.migrateLegacy()
 
-        watcher = FolderWatcher { [weak self] in
-            self?.scanSourceFolder()
+        if startWatcher {
+            watcher = FolderWatcher { [weak self] in
+                self?.scanSourceFolder()
+            }
         }
-        openActiveProfile()
+        if openProfile { openActiveProfile() }
     }
 
     // MARK: - Errors
@@ -343,7 +355,11 @@ final class AppStore {
         pendingWizardTemplate = nil
         pendingWizardPrompt = nil
         wizardResults = nil
-        openActiveProfile()
+        if opensProfiles {
+            openActiveProfile()
+        } else {
+            builder.load(profileName: activeProfile.profileName)
+        }
     }
 
     func saveActiveProfile() {
@@ -477,27 +493,34 @@ final class AppStore {
         let generation = profileGeneration
         do {
             let snapshot = try await database.fetchLibrarySnapshot()
-            guard generation == profileGeneration else { return }
-            // Observation doesn't compare values: assigning an identical
-            // array still invalidates every view reading it, so only the
-            // lists that actually changed are written back.
-            let research = Dictionary(uniqueKeysWithValues: snapshot.fightResearch.map { ($0.videoID, $0) })
-            let events = Dictionary(grouping: snapshot.fightEvents, by: \.videoID)
-            if fightResearch != research { fightResearch = research }
-            if fightEvents != events { fightEvents = events }
-            if videos != snapshot.videos { videos = snapshot.videos }
-            if scenes != snapshot.scenes {
-                scenes = snapshot.scenes
-                builder.updateScenes(snapshot.scenes)
-            }
-            if analysisRuns != snapshot.analysisRuns { analysisRuns = snapshot.analysisRuns }
-            if people != snapshot.people { people = snapshot.people }
-            if generatedVideos != snapshot.generatedVideos { generatedVideos = snapshot.generatedVideos }
-            if feedback != snapshot.feedback { feedback = snapshot.feedback }
-            if lessons != snapshot.lessons { lessons = snapshot.lessons }
+            applyLibrarySnapshot(snapshot, generation: generation)
         } catch {
             presentError("Could not load the library", error)
         }
+    }
+
+    /// Write a fetched snapshot into the published lists — unless the
+    /// profile changed while the fetch was in flight, in which case the
+    /// rows belong to the old profile and are dropped.
+    func applyLibrarySnapshot(_ snapshot: LibrarySnapshot, generation: Int) {
+        guard generation == profileGeneration else { return }
+        // Observation doesn't compare values: assigning an identical
+        // array still invalidates every view reading it, so only the
+        // lists that actually changed are written back.
+        let research = Dictionary(uniqueKeysWithValues: snapshot.fightResearch.map { ($0.videoID, $0) })
+        let events = Dictionary(grouping: snapshot.fightEvents, by: \.videoID)
+        if fightResearch != research { fightResearch = research }
+        if fightEvents != events { fightEvents = events }
+        if videos != snapshot.videos { videos = snapshot.videos }
+        if scenes != snapshot.scenes {
+            scenes = snapshot.scenes
+            builder.updateScenes(snapshot.scenes)
+        }
+        if analysisRuns != snapshot.analysisRuns { analysisRuns = snapshot.analysisRuns }
+        if people != snapshot.people { people = snapshot.people }
+        if generatedVideos != snapshot.generatedVideos { generatedVideos = snapshot.generatedVideos }
+        if feedback != snapshot.feedback { feedback = snapshot.feedback }
+        if lessons != snapshot.lessons { lessons = snapshot.lessons }
     }
 
     /// Re-read one scene row and swap it into the in-memory list — the
@@ -3093,7 +3116,7 @@ final class AppStore {
 
     /// New multi-variation batches from the finished run become A/B picks;
     /// each choice is preference data for future generations.
-    private func queueComparisons(previousIDs: Set<Int64>) {
+    func queueComparisons(previousIDs: Set<Int64>) {
         let fresh = generatedVideos.filter { !previousIDs.contains($0.id) && $0.batchID != nil }
         let batches = Dictionary(grouping: fresh) { $0.batchID! }
             .filter { $0.value.count > 1 }

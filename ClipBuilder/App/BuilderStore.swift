@@ -127,6 +127,8 @@ final class BuilderTimelineModel {
     }
 
     private func resetUndoHistory() {
+        // Only this model's steps: the window's manager also carries the
+        // inspector text fields' own undo stack.
         undoManager?.removeAllActions(withTarget: self)
         lastUndoKey = nil
     }
@@ -190,6 +192,7 @@ final class BuilderTimelineModel {
     /// video track for every selected card.
     func updateChangedScenes(_ changedScenes: [SceneRecord], rehydrateClips: Bool = true) {
         guard !changedScenes.isEmpty else { return }
+        let previousScenesByID = scenesByID
         let changedByID = Dictionary(uniqueKeysWithValues: changedScenes.map { ($0.id, $0) })
         var foundIDs = Set<Int64>()
         scenes = scenes.map { scene in
@@ -203,6 +206,23 @@ final class BuilderTimelineModel {
         let changedIDs = Set(changedByID.keys)
         if rehydrateClips,
            document.videoTrack.contains(where: { $0.sceneID.map(changedIDs.contains) == true }) {
+            // Keep user trims, but move clips that represented the complete
+            // old scene to the complete new scene range.
+            for index in document.videoTrack.indices {
+                var clip = document.videoTrack[index]
+                guard let sceneID = clip.sceneID, let changed = changedByID[sceneID] else { continue }
+                if let previous = previousScenesByID[sceneID] {
+                    let representedWholeScene = abs((clip.sourceStart ?? previous.startTime) - previous.startTime) < 0.05
+                        && abs(clip.sourceSpan - previous.duration) < 0.05
+                    if representedWholeScene {
+                        clip.sourceStart = changed.startTime
+                        clip.sourceEnd = changed.endTime
+                        clip.duration = changed.duration / clip.effectiveSpeed
+                    }
+                }
+                clip.videoFile = changed.videoPath
+                document.videoTrack[index] = clip
+            }
             hydrateClips()
         }
     }
@@ -329,7 +349,8 @@ final class BuilderTimelineModel {
             centers.append(y + height / 2)
             y += height + Self.laneSpacing
         }
-        let target = centers[min(track, centers.count - 1)] + verticalDelta
+        let sourceIndex = min(max(0, track), centers.count - 1)
+        let target = centers[sourceIndex] + verticalDelta
         let nearest = centers.enumerated().min { abs($0.element - target) < abs($1.element - target) }
         return nearest?.offset ?? track
     }

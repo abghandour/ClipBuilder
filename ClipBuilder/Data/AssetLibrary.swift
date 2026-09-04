@@ -181,12 +181,16 @@ nonisolated enum AssetStore {
         guard let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
             options: [.skipsHiddenFiles]) else { return [] }
+        // The enumerator reports resolved paths (/private/var/…) even when
+        // the root was given through a symlink (/var/…); compare resolved
+        // forms so the library-relative name always strips the root.
+        let rootPath = root.resolvingSymlinksInPath().path
         let result: [(name: String, url: URL)] = enumerator.compactMap { $0 as? URL }
             .filter { kind.allowedExtensions.contains($0.pathExtension.lowercased()) }
             .map { url in
-                var name = url.deletingPathExtension().path
-                if name.hasPrefix(root.path + "/") {
-                    name = String(name.dropFirst(root.path.count + 1))
+                var name = url.resolvingSymlinksInPath().deletingPathExtension().path
+                if name.hasPrefix(rootPath + "/") {
+                    name = String(name.dropFirst(rootPath.count + 1))
                 }
                 return (name, url)
             }

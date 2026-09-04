@@ -1150,10 +1150,10 @@ actor WizardEngine {
     /// Parse + validate the AI's plan per wizard.py rules: clamp clips to
     /// scene bounds, drop sub-0.5s clips, drop or trim clips that re-cover
     /// footage an earlier clip already uses, sanitize music and transitions.
-    private func validatePlan(_ raw: [String: Any],
-                              scenes: [Int64: SceneRecord],
-                              musicNames: Set<String>,
-                              options: WizardOptions) -> WizardPlan? {
+    func validatePlan(_ raw: [String: Any],
+                      scenes: [Int64: SceneRecord],
+                      musicNames: Set<String>,
+                      options: WizardOptions) -> WizardPlan? {
         var musicName: String?
         var musicVolume = 3
         if let music = raw["music"] as? [String: Any] {

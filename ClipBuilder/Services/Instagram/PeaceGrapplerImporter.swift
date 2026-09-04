@@ -115,12 +115,14 @@ nonisolated enum PeaceGrapplerImporter {
                                                             fetchedAt: "\(asOf)T00:00:00Z", source: "import"))
                 }
             }
-            var queuedShortcodes = Set<String>()
+            var newPostShortcodes = Set(Self.uniqueNewPosts(report.posts,
+                                                            knownShortcodes: Set(shortcodeIDs.keys))
+                .map(\.shortcode))
             for post in report.posts {
                 if let existing = shortcodeIDs[post.shortcode] {
                     if isHead { headRefresh.append(post.upsert(accountID: accountID)) }
                     recordMetrics(post, rowID: existing)
-                } else if queuedShortcodes.insert(post.shortcode).inserted {
+                } else if newPostShortcodes.remove(post.shortcode) != nil {
                     newPosts.append(post)
                 }
             }
@@ -298,6 +300,15 @@ nonisolated enum PeaceGrapplerImporter {
         }
         log(summary.description)
         return summary
+    }
+
+    /// First row per shortcode that is not already stored. Report pages can
+    /// contain duplicate cards; keeping this pure makes the import invariant
+    /// independently testable.
+    static func uniqueNewPosts(_ posts: [EngagementReportParser.Post],
+                               knownShortcodes: Set<String>) -> [EngagementReportParser.Post] {
+        var seen = knownShortcodes
+        return posts.filter { seen.insert($0.shortcode).inserted }
     }
 
     // MARK: - Git

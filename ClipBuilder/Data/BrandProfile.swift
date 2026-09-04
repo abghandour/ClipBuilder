@@ -153,8 +153,16 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         profileName = name
         brandName = name
         contentDomain = ""
-        sourceFolder = "~/Documents/ClipBuilder/\(name)/Input"
-        outputFolder = "~/Documents/ClipBuilder/\(name)/Output"
+        if let custom = UserDefaults.standard.string(forKey: SettingsStore.dataFolderDefaultsKey),
+           !custom.isEmpty {
+            let root = URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
+                .deletingLastPathComponent().appendingPathComponent(name, isDirectory: true)
+            sourceFolder = root.appendingPathComponent("Input", isDirectory: true).path
+            outputFolder = root.appendingPathComponent("Output", isDirectory: true).path
+        } else {
+            sourceFolder = "~/Documents/ClipBuilder/\(name)/Input"
+            outputFolder = "~/Documents/ClipBuilder/\(name)/Output"
+        }
         tagSchema = [:]
         socials = ["instagram": SocialSlot(), "tiktok": SocialSlot(), "youtube": SocialSlot()]
         captions = CaptionStyle()
@@ -271,7 +279,15 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
 /// Loads, saves, and enumerates profiles at ~/Documents/ClipBuilder/*.json.
 nonisolated enum ProfileStore {
     static var profilesDirectory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        // A custom data folder represents the shared app-data directory. Its
+        // parent contains profile JSON, matching the normal ClipBuilder/data
+        // and ClipBuilder/*.json layout.
+        if let custom = UserDefaults.standard.string(forKey: SettingsStore.dataFolderDefaultsKey),
+           !custom.isEmpty {
+            return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
+                .deletingLastPathComponent()
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Documents/ClipBuilder", isDirectory: true)
     }
 

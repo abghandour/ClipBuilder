@@ -5,9 +5,31 @@
             <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000100000000" BuildableName="Clip Builder.app" BlueprintName="Clip Builder" ReferencedContainer="container:Clip Builder.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000100000001" BuildableName="ClipBuilderTests.xctest" BlueprintName="ClipBuilderTests" ReferencedContainer="container:Clip Builder.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000100000002" BuildableName="ClipBuilderUITests.xctest" BlueprintName="ClipBuilderUITests" ReferencedContainer="container:Clip Builder.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES" shouldAutocreateTestPlan="YES">
+      <Testables>
+         <TestableReference skipped="NO" parallelizable="YES">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000100000001" BuildableName="ClipBuilderTests.xctest" BlueprintName="ClipBuilderTests" ReferencedContainer="container:Clip Builder.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference skipped="NO" parallelizable="NO">
+            <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000100000002" BuildableName="ClipBuilderUITests.xctest" BlueprintName="ClipBuilderUITests" ReferencedContainer="container:Clip Builder.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
+      </Testables>
+      <MacroExpansion>
+         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="000000000000000100000000" BuildableName="Clip Builder.app" BlueprintName="Clip Builder" ReferencedContainer="container:Clip Builder.xcodeproj">
+         </BuildableReference>
+      </MacroExpansion>
    </TestAction>
    <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.PosixSpawn" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="YES" queueDebuggingEnabled="No">
       <BuildableProductRunnable runnableDebuggingMode="0">
