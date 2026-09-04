@@ -3063,17 +3063,26 @@ final class AppStore {
     }
 
     /// Download the update's pkg and hand it to Installer.app, then quit so
-    /// the installer can replace the app cleanly.
+    /// the installer can replace the app cleanly. The quit waits for
+    /// Installer to be running; if it never launches, the app stays open,
+    /// reveals the pkg in Finder, and explains what went wrong.
     func installUpdate(_ update: AppUpdate) {
         guard !isDownloadingUpdate else { return }
         isDownloadingUpdate = true
         Task {
+            var pkg: URL?
             do {
-                let pkg = try await UpdateService.downloadInstaller(update)
-                UpdateService.launchInstaller(at: pkg)
+                let downloaded = try await UpdateService.downloadInstaller(update)
+                pkg = downloaded
+                try await UpdateService.launchInstaller(at: downloaded)
                 NSApp.terminate(nil)
             } catch {
-                presentError("Could not download the update", error)
+                if let pkg {
+                    NSWorkspace.shared.activateFileViewerSelecting([pkg])
+                    presentError("Could not open the installer — double-click \(pkg.lastPathComponent) in Finder to update", error)
+                } else {
+                    presentError("Could not download the update", error)
+                }
             }
             isDownloadingUpdate = false
         }

@@ -81,10 +81,21 @@ nonisolated enum UpdateService {
         return destination
     }
 
-    /// Open the downloaded pkg in Installer.app. The installer replaces the
-    /// app in place; the user relaunches when it finishes.
-    static func launchInstaller(at url: URL) {
-        NSWorkspace.shared.open(url)
+    /// Open the downloaded pkg in Installer.app and return once Installer is
+    /// actually running. Launch Services completes the open asynchronously,
+    /// so quitting right after a fire-and-forget `open` could cut the launch
+    /// short and leave the user with nothing on screen. The installer
+    /// replaces the app in place; the user relaunches when it finishes.
+    static func launchInstaller(at url: URL) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
     }
 
     // MARK: - GitHub API payloads
