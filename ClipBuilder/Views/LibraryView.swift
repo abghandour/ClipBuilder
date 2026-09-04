@@ -33,7 +33,7 @@ struct LibraryView: View {
                 ContentUnavailableView(
                     "No Generated Videos",
                     systemImage: "film.stack",
-                    description: Text("Videos created by the AI Wizard will appear here."))
+                    description: Text("Finished videos from the AI Wizard and Builder will appear here."))
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16, alignment: .top)], spacing: 16) {
@@ -155,53 +155,15 @@ struct LibraryView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            // Every model that touched this reel: planner, caption writer,
-            // critic, cover picker — one badge per distinct model.
-            ProvenanceRow(entries: [("Planned by", video.planProvenance),
-                                    ("Caption by", video.captionProvenance),
-                                    ("Critiqued by", video.critiqueProvenance),
-                                    ("Cover picked by", video.coverProvenance)])
-
             if let quality = video.qualityReport {
-                // "Review required" is an instruction — clicking it opens the
-                // review instead of leaving the details buried in a tooltip.
-                Button {
-                    reviewTarget = video
-                } label: {
-                    Label(quality.summary, systemImage: quality.verdict == .publishable
-                          ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(quality.verdict == .publishable ? .green : .orange)
-                }
-                .buttonStyle(.plain)
-                .help("Quality gate: "
-                      + ((quality.failures + quality.warnings).joined(separator: "\n").isEmpty
-                          ? quality.summary
-                          : (quality.failures + quality.warnings).joined(separator: "\n"))
-                      + "\nClick to review the reel.")
-            }
-            if let critique = video.critique {
-                Label("\(critique.shortLabel)\(critique.summary.isEmpty ? "" : " · \(critique.summary)")",
-                      systemImage: "checkmark.seal.text")
-                    .font(.caption2)
-                    .foregroundStyle(critique.score >= 85 ? .green
-                                     : critique.score >= 70 ? .secondary : .orange)
+                Label(quality.summary, systemImage: quality.verdict == .publishable
+                      ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(quality.verdict == .publishable ? .green : .orange)
                     .lineLimit(1)
-                    .help(([critique.summary]
-                           + critique.issues.map { "• \($0)" }).joined(separator: "\n"))
-            }
-            if let percentile = video.audiencePercentile {
-                Label("Audience: beat \(percentile)% of the account's reels"
-                      + (video.audienceScore.map { String(format: " · quality %.1f", $0) } ?? ""),
-                      systemImage: "person.3")
-                    .font(.caption2)
-                    .foregroundStyle(percentile >= 75 ? .green : percentile >= 40 ? .secondary : .orange)
-                    .lineLimit(1)
-                    .help("How this published reel performed among the account's reels (saves/shares/comments/likes normalized by reach) — compare with the critic's forecast")
-            }
-            if let stats = video.instagramStats {
+            } else if let stats = video.instagramStats {
                 Text(ReelPerformance.label(stats, duration: video.duration))
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -213,42 +175,48 @@ struct LibraryView: View {
                     .lineLimit(3)
             }
 
-            HStack {
-                if !video.caption.isEmpty {
-                    Button("Copy Caption", systemImage: "doc.on.doc") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(video.caption, forType: .string)
+            HStack(spacing: Theme.spaceS) {
+                if let quality = video.qualityReport, quality.verdict != .publishable {
+                    Button("Review", systemImage: "hand.thumbsup") {
+                        reviewTarget = video
                     }
-                    .labelStyle(.iconOnly)
-                    .help("Copy the Instagram caption")
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Publish", systemImage: "paperplane") {
+                        publishTarget = video
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                Button("Review", systemImage: "hand.thumbsup") {
-                    reviewTarget = video
+                Menu("More", systemImage: "ellipsis") {
+                    Button("Open in Builder", systemImage: "timeline.selection") {
+                        openInBuilder(video)
+                    }
+                    Button("Pick Cover Frame…", systemImage: "rectangle.on.rectangle") {
+                        coverTarget = video
+                    }
+                    Button("Review", systemImage: "hand.thumbsup") {
+                        reviewTarget = video
+                    }
+                    Button("Publish to Instagram…", systemImage: "paperplane") {
+                        publishTarget = video
+                    }
+                    if !video.caption.isEmpty {
+                        Button("Copy Caption", systemImage: "doc.on.doc") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(video.caption, forType: .string)
+                        }
+                    }
+                    Button("Show in Finder", systemImage: "folder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([video.url])
+                    }
+                    Divider()
+                    Button("Delete", systemImage: "trash", role: .destructive) {
+                        deleting = video
+                    }
                 }
-                .labelStyle(.iconOnly)
-                .help("Rate this reel and its clips — the wizard trains on your review")
-
-                Button("Publish to Instagram", systemImage: "paperplane") {
-                    publishTarget = video
-                }
-                .labelStyle(.iconOnly)
-                .help("Publish this video to the connected Instagram account as a Reel")
-
-                Button("Show in Finder", systemImage: "folder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([video.url])
-                }
-                .labelStyle(.iconOnly)
-                .help("Show the video file in Finder")
-
+                .controlSize(.small)
                 Spacer()
-
-                Button("Delete", systemImage: "trash", role: .destructive) {
-                    deleting = video
-                }
-                .labelStyle(.iconOnly)
             }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
         }
         .padding(Theme.cardPadding)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: Theme.cardRadius))

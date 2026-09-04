@@ -140,10 +140,14 @@ struct RankBadge: View {
         }
     }
 
+    private var foreground: Color {
+        rank == 1 ? .black : .white
+    }
+
     var body: some View {
         Text("\(rank)")
             .font(.badge)
-            .foregroundStyle(.white)
+            .foregroundStyle(foreground)
             .frame(minWidth: 22, minHeight: 22)
             .background(color, in: Circle())
     }
@@ -285,6 +289,9 @@ struct CommentHeatmap: View {
                                   : ReportColors.accent.opacity(0.15 + 0.85 * Double(value) / Double(maximum)))
                             .frame(maxWidth: .infinity)
                             .frame(height: 16)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("\(days[day]) at \(hour):00 UTC")
+                            .accessibilityValue("\(value) comment\(value == 1 ? "" : "s")")
                             .help("\(days[day]) \(hour):00 UTC — \(value) comment\(value == 1 ? "" : "s")")
                     }
                 }

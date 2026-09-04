@@ -7,6 +7,7 @@ enum TimelineSelection: Equatable {
     case text(UUID)
     case image(UUID)
     case overlay(UUID)
+    case crop(UUID)
 }
 
 /// One item in the unified overlay lane — texts, images, and overlay blocks
@@ -53,6 +54,9 @@ final class BuilderTimelineModel {
     var selection: TimelineSelection?
     var pointsPerSecond: CGFloat = 60          // timeline zoom
     var playhead: Double = 0
+    /// The video track the user last clicked (its header or one of its
+    /// clips). The cropping row paints that track's area green.
+    var focusedTrack: Int?
 
     private(set) var profileName = ""
     private(set) var scenes: [SceneRecord] = []
@@ -117,6 +121,7 @@ final class BuilderTimelineModel {
         case .text(let uid): return document.textOverlays.contains { $0.uid == uid }
         case .image(let uid): return document.imageOverlays.contains { $0.uid == uid }
         case .overlay(let uid): return document.overlayBlocks.contains { $0.uid == uid }
+        case .crop(let uid): return document.cropBlocks.contains { $0.uid == uid }
         }
     }
 
@@ -137,7 +142,10 @@ final class BuilderTimelineModel {
         scenesByID = [:]
         suppressAutosave = true
         document = BuilderStateStore.load(profileName: profileName) ?? TimelineDocument()
+        document.migrateLegacyScreenCrops()
+        document.normalizeCropBlocks()
         selection = nil
+        focusedTrack = nil
         playhead = 0
         suppressAutosave = false
     }
@@ -146,7 +154,9 @@ final class BuilderTimelineModel {
     func loadDocument(_ newDocument: TimelineDocument) {
         registerUndo("Replace Timeline")
         document = newDocument
+        document.migrateLegacyScreenCrops()
         selection = nil
+        focusedTrack = nil
         hydrateClips()
         documentDidChange()
     }
@@ -157,7 +167,9 @@ final class BuilderTimelineModel {
         // the timeline straight back after the file is deleted.
         saveTask?.cancel()
         document = TimelineDocument()
+        document.normalizeCropBlocks()
         selection = nil
+        focusedTrack = nil
         playhead = 0
         BuilderStateStore.clear(profileName: profileName)
     }
@@ -199,6 +211,8 @@ final class BuilderTimelineModel {
     }
 
     private func documentDidChange() {
+        // The cropping row always tiles the content; the track count follows it.
+        document.normalizeCropBlocks()
         guard !suppressAutosave else { return }
         let snapshot = document
         let name = profileName
@@ -272,7 +286,7 @@ final class BuilderTimelineModel {
     /// clip gets the lowest row whose previous clip ended before it starts.
     func rowLayout(forTrack track: Int) -> (rows: [UUID: Int], rowCount: Int) {
         let clips = clips(inTrack: track).sorted {
-            $0.startTime == $1.startTime ? $0.stackOrder < $1.stackOrder : $0.startTime < $1.startTime
+            $0.startTime < $1.startTime
         }
         var rowEnds: [Double] = []
         var rows: [UUID: Int] = [:]
@@ -290,6 +304,37 @@ final class BuilderTimelineModel {
 
     func laneHeight(forTrack track: Int) -> CGFloat {
         CGFloat(rowLayout(forTrack: track).rowCount) * Self.rowHeight
+    }
+
+    /// The track whose area the cropping row highlights: the selected clip's
+    /// track, else the last clicked header.
+    var highlightedTrack: Int? {
+        if case .clip(let uid) = selection, let clip = clip(uid) { return clip.track }
+        return focusedTrack
+    }
+
+    func focusTrack(_ track: Int) {
+        focusedTrack = track
+        if case .clip(let uid) = selection, clip(uid)?.track != track { selection = nil }
+    }
+
+    /// The crop block a style change applies to: the selected block, else
+    /// the one under the playhead.
+    var targetCropBlock: CropBlockItem? {
+        if case .crop(let uid) = selection, let block = cropBlock(uid) { return block }
+        return document.cropBlock(at: playhead)
+    }
+
+    /// The area `track` shows at `time` (nil under Full Screen or when the
+    /// track has none there).
+    func area(forTrack track: Int, at time: Double) -> ScreenCropArea? {
+        document.cropBlock(at: time)?.layout.area(forTrack: track)
+    }
+
+    /// Whether a clip may be placed on `track` at `time` — the cropping row
+    /// must give that track an area there.
+    func canPlace(track: Int, at time: Double) -> Bool {
+        document.hasArea(track: track, at: time)
     }
 
     /// Map a vertical drag offset from one video lane to a target track index.
@@ -334,7 +379,6 @@ final class BuilderTimelineModel {
     // MARK: - Clip mutations
 
     func addScene(_ scene: SceneRecord, at time: Double? = nil, track: Int = 0) {
-        registerUndo("Add Clip")
         var clip = TimelineClip()
         clip.sceneID = scene.id
         clip.videoFile = scene.videoPath
@@ -352,6 +396,8 @@ final class BuilderTimelineModel {
         clip.track = targetTrack
         let trackEnd = clips(inTrack: targetTrack).map { $0.startTime + $0.duration }.max() ?? 0
         clip.startTime = Self.snap(time ?? trackEnd)
+        guard canPlace(track: targetTrack, at: clip.startTime) else { return }
+        registerUndo("Add Clip")
         document.videoTrack.append(clip)
         resolveLayout(track: targetTrack)
         selection = .clip(clip.uid)
@@ -360,9 +406,11 @@ final class BuilderTimelineModel {
 
     func placeClip(_ uid: UUID, startTime: Double, track: Int) {
         guard let index = clipIndex(uid) else { return }
-        registerUndo("Move Clip")
         let oldTrack = document.videoTrack[index].track
         let newTrack = min(max(0, track), document.trackCount - 1)
+        // A track without an area there cannot take the clip: keep it put.
+        guard canPlace(track: newTrack, at: Self.snap(startTime)) else { return }
+        registerUndo("Move Clip")
         document.videoTrack[index].startTime = Self.snap(startTime)
         document.videoTrack[index].track = newTrack
         resolveLayout(track: newTrack)
@@ -385,6 +433,27 @@ final class BuilderTimelineModel {
             maxDuration = max(0.5, (end - start) / clip.effectiveSpeed)
         }
         clip.duration = min(maxDuration, max(0.5, Self.snap(duration)))
+        document.videoTrack[index] = clip
+        resolveLayout(track: clip.track)
+        documentDidChange()
+    }
+
+    /// Set the clip's source range in absolute source seconds. The screen
+    /// duration follows through the playback speed; the timeline start
+    /// stays put (sequential tracks repack after it).
+    func setClipSourceRange(_ uid: UUID, start: Double, end: Double) {
+        guard let index = clipIndex(uid) else { return }
+        var clip = document.videoTrack[index]
+        var ceiling = Double.greatestFiniteMagnitude
+        if let scene = scene(for: clip) { ceiling = scene.videoDuration }
+        let newStart = max(0, min(start, ceiling - 0.5))
+        let newEnd = max(newStart + 0.5, min(end, ceiling))
+        let duration = ((newEnd - newStart) / clip.effectiveSpeed * 10).rounded() / 10
+        guard abs((clip.sourceStart ?? -1) - newStart) > 0.001 || abs(clip.duration - duration) > 0.001 else { return }
+        registerUndo("Trim Clip", coalescing: "trim-\(uid)")
+        clip.sourceStart = newStart
+        clip.sourceEnd = newEnd
+        clip.duration = max(0.5, duration)
         document.videoTrack[index] = clip
         resolveLayout(track: clip.track)
         documentDidChange()
@@ -441,42 +510,96 @@ final class BuilderTimelineModel {
         documentDidChange()
     }
 
-    /// Lay a screen-crop layout over the timeline: the anchor clip plus
-    /// the clips that follow it on its track (one per area, in time order)
-    /// move onto tracks 0…n at the anchor's start time, each masked to its
-    /// area (the first keeps its audio, the rest are muted). Tracks grow to
-    /// fit and switch to free-form so the clips can overlap in time.
-    func applyLayout(_ layout: ScreenCropLayout, from uid: UUID) {
-        guard let anchor = clip(uid), !layout.areas.isEmpty else { return }
-        registerUndo("Apply Layout")
-        let followers = clips(inTrack: anchor.track)
-            .filter { $0.uid != anchor.uid && $0.startTime >= anchor.startTime }
-            .sorted { $0.startTime < $1.startTime }
-        let members = Array(([anchor] + followers).prefix(layout.areas.count))
-        let needed = min(TimelineDocument.maxTracks, members.count)
-        if document.trackCount < needed { document.trackCount = needed }
-        for (slot, member) in members.prefix(needed).enumerated() {
-            guard let index = clipIndex(member.uid) else { continue }
-            document.videoTrack[index].track = slot
-            document.videoTrack[index].startTime = anchor.startTime
-            document.videoTrack[index].screenCrop =
-                ScreenCropStore.reference(layout: layout.name, area: layout.areas[slot].name)
-            if slot > 0 { document.videoTrack[index].muted = true }
-            document.trackSequential[slot] = false
+    // MARK: - Cropping row
+
+    func cropBlockIndex(_ uid: UUID) -> Int? {
+        document.cropBlocks.firstIndex { $0.uid == uid }
+    }
+
+    func cropBlock(_ uid: UUID) -> CropBlockItem? {
+        cropBlockIndex(uid).map { document.cropBlocks[$0] }
+    }
+
+    /// Layouts a block can use: Full Screen, then every Screen Crop resource.
+    static func availableCropLayouts() -> [CropLayoutRef] {
+        [.fullScreen] + ScreenCropStore.all().filter { !$0.areas.isEmpty }.map { CropLayoutRef(name: $0.name) }
+    }
+
+    /// Put a layout on the row at `time` (the playhead by default). The new
+    /// block wins over whatever it overlaps.
+    @discardableResult
+    func addCropBlock(_ layout: CropLayoutRef, at time: Double? = nil,
+                      duration: Double = CropBlockItem.defaultDuration) -> UUID {
+        registerUndo("Add Crop")
+        let start = Self.snap(time ?? playhead)
+        let block = CropBlockItem(layout: layout, startTime: start, duration: max(0.5, Self.snap(duration)))
+        document.cropBlocks.append(block)
+        document.normalizeCropBlocks(winner: block.uid)
+        selection = .crop(block.uid)
+        documentDidChange()
+        return block.uid
+    }
+
+    /// Select a block and bring the playhead inside it, so the preview
+    /// shows a still of that layout with the clips under it.
+    func selectCropBlock(_ uid: UUID) {
+        guard let block = cropBlock(uid) else { return }
+        selection = .crop(uid)
+        if playhead < block.startTime - 0.001 || playhead >= block.endTime - 0.001 {
+            playhead = Self.snap(block.startTime)
         }
+    }
+
+    /// Clips on `track` that overlap the block's time range, in time order.
+    func clips(inTrack track: Int, within block: CropBlockItem) -> [TimelineClip] {
+        clips(inTrack: track)
+            .filter { $0.startTime < block.endTime - 0.001 && block.startTime < $0.startTime + $0.duration - 0.001 }
+            .sorted { $0.startTime < $1.startTime }
+    }
+
+    /// Change which layout a block shows. Fewer areas can strand clips on
+    /// the higher tracks — they stay, flagged, until moved.
+    func setCropLayout(_ layout: CropLayoutRef, for uid: UUID) {
+        guard let index = cropBlockIndex(uid) else { return }
+        registerUndo("Change Crop")
+        document.cropBlocks[index].layout = layout
         documentDidChange()
     }
 
-    func setTrackCount(_ count: Int) {
-        let clamped = min(TimelineDocument.maxTracks, max(1, count))
-        guard clamped != document.trackCount else { return }
-        registerUndo("Change Track Count")
-        document.trackCount = clamped
-        // Pull clips from hidden tracks back onto the last visible one.
-        for index in document.videoTrack.indices where document.videoTrack[index].track >= clamped {
-            document.videoTrack[index].track = clamped - 1
-        }
-        resolveLayout(track: clamped - 1)
+    /// Move a block's end. Growing eats into the following blocks; shrinking
+    /// leaves Full Screen behind.
+    func resizeCropBlock(_ uid: UUID, duration: Double) {
+        guard let index = cropBlockIndex(uid) else { return }
+        registerUndo("Resize Crop")
+        document.cropBlocks[index].duration = max(0.5, Self.snap(duration))
+        document.normalizeCropBlocks(winner: uid)
+        documentDidChange()
+    }
+
+    /// Split the block under `time` into two so the second half can take a
+    /// different layout.
+    func splitCropBlock(at time: Double? = nil) {
+        let at = Self.snap(time ?? playhead)
+        guard let block = document.cropBlock(at: at),
+              at > block.startTime + 0.499, at < block.endTime - 0.499,
+              let index = cropBlockIndex(block.uid) else { return }
+        registerUndo("Split Crop")
+        var tail = block
+        tail.uid = UUID()
+        tail.startTime = at
+        tail.duration = block.endTime - at
+        document.cropBlocks[index].duration = at - block.startTime
+        document.cropBlocks.append(tail)
+        selection = .crop(tail.uid)
+        documentDidChange()
+    }
+
+    /// Remove a block; Full Screen takes its place.
+    func removeCropBlock(_ uid: UUID) {
+        guard let index = cropBlockIndex(uid) else { return }
+        registerUndo("Delete Crop")
+        document.cropBlocks.remove(at: index)
+        if selection == .crop(uid) { selection = nil }
         documentDidChange()
     }
 

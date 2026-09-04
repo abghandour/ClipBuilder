@@ -4,11 +4,6 @@ import Foundation
 nonisolated struct WizardOptions: Sendable {
     var muteSource = false
     var addCaptions = false
-    var autoCropWide = true
-    /// Let the plan stack a wide scene's halves top/bottom. Off by default —
-    /// the split reads as a weird montage on action footage; auto-crop keeps
-    /// the frame filled with the real composition instead.
-    var allowWideSplit = false
     var enableTextOverlays = false
     var useMusic = true
     var aiInstructions = ""
@@ -35,16 +30,10 @@ nonisolated struct WizardOptions: Sendable {
     /// Hard duration the user asked for (e.g. "a 15s video") — overrides the
     /// research/template numbers instead of merely suggesting them.
     var targetDurationSeconds: Int?
-    /// Reframe wide scenes with the tracking camera (Center Stage) instead
-    /// of the static auto-crop.
-    var centerStageWide = false
-    /// Camera preset for the tracking camera: "smooth", "balanced", "fast"
-    /// (fast action — reacts hard and zooms out so quick movers stay framed).
-    var centerStageCamera = "balanced"
-    /// Person keys to focus on: when set, only wide clips whose scene
-    /// features one of them get the tracking camera (others auto-crop);
-    /// empty = every wide clip, tracking all people on screen.
-    var centerStagePeople: [String] = []
+    /// Screen-crop layouts may need a live camera because their aspect ratio
+    /// differs from the scene's saved 9:16 framing. Ordinary clips always
+    /// replay their saved scene path when one exists.
+    var framingCamera = "balanced"
     /// Screen-crop layouts (by name) the planner may use to show several
     /// scenes at once, each area framed by its own tracking camera. Empty =
     /// the feature is off and "screen_crop"/"layout" in a plan are ignored.
@@ -60,31 +49,21 @@ nonisolated struct WizardOptions: Sendable {
 
     // The AI Wizard form persists these in UserDefaults; the pipeline and
     // the form read them through the same helpers.
-    static let useScreenCropsKey = "wizard.useScreenCrops"
-    static let screenCropLayoutsKey = "wizard.screenCropLayouts"
-    static let limitTransitionsKey = "wizard.limitTransitions"
-    static let allowedTransitionsKey = "wizard.allowedTransitions"
+    static let useScreenCropsKey = WizardDefaults.useScreenCropsKey
+    static let screenCropLayoutsKey = WizardDefaults.screenCropLayoutsKey
+    static let limitTransitionsKey = WizardDefaults.limitTransitionsKey
+    static let allowedTransitionsKey = WizardDefaults.allowedTransitionsKey
 
     /// Layouts the form allows: none when the toggle is off; every layout
     /// when it's on but nothing is picked.
     static func screenCropLayoutsFromDefaults() -> [String] {
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: useScreenCropsKey) else { return [] }
-        let picked = (defaults.string(forKey: screenCropLayoutsKey) ?? "")
-            .split(separator: ",").map(String.init)
-        let existing = ScreenCropStore.all().filter { !$0.areas.isEmpty }.map(\.name)
-        let chosen = existing.filter { picked.contains($0) }
-        return picked.isEmpty ? existing : chosen
+        WizardDefaults.approvedScreenCropLayouts()
     }
 
     /// nil = any transition; otherwise the checked names (possibly empty =
     /// hard cuts only).
     static func allowedTransitionsFromDefaults() -> [String]? {
-        let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: limitTransitionsKey) else { return nil }
-        let valid = Set(RenderEngine.allTransitions)
-        return (defaults.string(forKey: allowedTransitionsKey) ?? "")
-            .split(separator: ",").map(String.init).filter(valid.contains)
+        WizardDefaults.allowedTransitions()
     }
     /// Overlay choices the user named explicitly. The template is forced onto
     /// every planned overlay; the text is guaranteed to appear on one clip.
@@ -147,7 +126,6 @@ nonisolated struct WizardPlanClip: Sendable {
     var sceneID: Int64
     var start: Double
     var end: Double
-    var wideSplit: Bool
     var textOverlay: String?
     var overlayStyle: String?
     var overlayAnimation: String?
@@ -1114,7 +1092,6 @@ actor WizardEngine {
               "scene_id": <id>,
               "start": <start seconds>,
               "end": <end seconds>,
-              "wide_split": <true if this WIDE scene should use split-screen>,
               "speed": <playback speed: 1.0 normal; 0.5-0.75 = slow motion for a big payoff moment; 1.25-2.0 = speed-up for a slow build-up, walkout, or grappling stretch worth keeping but not at full length. Use sparingly — at most 1-2 slowed and 1-2 sped-up clips, everything else 1.0>,
               "replay": <true to instantly replay this moment in slow motion right after it plays — reserve for the single best payoff (knockdown/finish); at most one replay per reel>,
               "screen_crop": <"Layout/Area" from Available Screen Crops when listed and it deliberately fits the clip, else null — most clips are null>,
@@ -1137,9 +1114,7 @@ actor WizardEngine {
         - only use music names from the list above (or null)
         - only use transition names from the list above
         - "screen_crop" and "layout" must be null unless Available Screen Crops lists them; area names must belong to the chosen layout, and area scenes follow the same no-overlap rule as clips
-        \(options.allowWideSplit
-            ? "- For WIDE scenes: set \"wide_split\": true to display as split-screen (top + bottom halves, filling the full 9:16 frame with no black bars)"
-            : "- Set \"wide_split\" to false for every clip. WIDE scenes are automatically zoomed to a full-height 9:16 window positioned on the action, so they fill the frame — never plan around letterboxing.")
+        - WIDE scenes use their saved 9:16 framing when available; otherwise they are automatically cropped to fill the frame. Never plan around letterboxing.
         - Scenes with "score:X/10" were rated for ENTERTAINMENT (escalation → payoff, boosted by real crowd noise). STRONGLY prefer high-scoring scenes, put the highest-scoring payoff early as the hook, and use the "story:" lines to build a reel with an arc — setup, escalation, payoff — instead of disconnected action.
         - "grade:X/5" is the USER'S OWN vote on that scene: treat ≥4/5 as must-consider footage, and avoid ≤2.5/5 scenes unless nothing else covers a needed story beat.
         - "♥FAVORITE" scenes were hand-marked by the user — they love these moments. Strongly prefer them, especially for the hook and the payoff. "CURATED" scenes were hand-trimmed as keepers — prefer them over untouched footage of the same moment.
@@ -1309,7 +1284,6 @@ actor WizardEngine {
             clips.append(WizardPlanClip(sceneID: sceneID,
                                         start: start,
                                         end: end,
-                                        wideSplit: (clipObject["wide_split"] as? Bool ?? false) && scene.wide,
                                         textOverlay: overlayText?.isEmpty == false ? overlayText : nil,
                                         overlayStyle: overlayStyle,
                                         overlayAnimation: overlayAnimation,
@@ -2103,7 +2077,7 @@ actor WizardEngine {
 
         - Music: \(yesNo(options.useMusic)), mute source: \(yesNo(options.muteSource))
         - Captions: \(yesNo(options.addCaptions)), text overlays: \(yesNo(options.enableTextOverlays))
-        - Auto-crop wide: \(yesNo(options.autoCropWide)), Center Stage wide: \(yesNo(options.centerStageWide))\(options.centerStageWide ? " (camera: \(options.centerStageCamera))" : "")\(options.centerStagePeople.isEmpty ? "" : " (people: \(options.centerStagePeople.joined(separator: ", ")))")
+        - Wide footage: saved scene framing when available; automatic portrait crop otherwise
         - Target duration: \(options.targetDurationSeconds.map { "\($0)s" } ?? "model's choice")
         - Pinned overlay: \(options.pinnedOverlayTemplate ?? "none")\(options.pinnedOverlayText.map { ", text \"\($0)\"" } ?? "")
         - Analyze-batch filter: \(options.selectedRunIDs.isEmpty ? "all batches" : options.selectedRunIDs.sorted().map(String.init).joined(separator: ", "))
@@ -2273,7 +2247,7 @@ actor WizardEngine {
     /// Map a validated plan onto a Builder timeline document: sequential clips
     /// on track 0 with planner transitions as transIn, music spanning the
     /// whole timeline, per-clip text overlays. No rendering — the user edits
-    /// from here. (wideSplit hints are dropped; auto-crop covers wide scenes.)
+    /// from here. (Auto-crop covers wide scenes.)
     nonisolated static func timelineDocument(from plan: WizardPlan,
                                              sceneMap: [Int64: SceneRecord]) -> TimelineDocument {
         var document = TimelineDocument()
@@ -2617,9 +2591,8 @@ actor WizardEngine {
         let contentBox = await render.detectContentBox(source: scene.videoURL,
                                                        start: clip.start, duration: sourceDuration)
         let contentIsWide = contentBox?.isWide ?? scene.wide
-        let useSplit = options.allowWideSplit && clip.wideSplit && scene.wide
-        var mode = useSplit ? "split-screen"
-            : (options.autoCropWide && contentIsWide ? "auto-crop" : "")
+        let usesSavedFraming = contentIsWide && scene.centerStagePath != nil
+        var mode = usesSavedFraming ? "saved framing" : (contentIsWide ? "auto-crop" : "")
         if contentBox != nil { mode = mode.isEmpty ? "bars removed" : mode + ", bars removed" }
         emit("Extracting clip \(index + 1)/\(total) " +
              String(format: "[%.1fs +%.1fs]", clip.start, duration) +
@@ -2713,7 +2686,7 @@ actor WizardEngine {
         // them all into one composite clip.
         if let area = ScreenCropStore.area(reference: clip.screenCrop) {
             let portraits = await markerPortraits(scene: scene, database: database)
-            let tuning = CenterStageService.Tuning.named(options.centerStageCamera)
+            let tuning = CenterStageService.Tuning.named(options.framingCamera)
             let framed = try await AreaFramer.frame(source: scene.videoURL, start: clip.start,
                                                     duration: sourceDuration, area: area,
                                                     focusPortraits: portraits.focus,
@@ -2755,72 +2728,21 @@ actor WizardEngine {
                                          speed: clip.speed, mask: mask, output: output)
             return output
         }
-        // Center Stage: reframe the wide sub-range with the tracking camera,
-        // then burn overlays/captions/mute into the portrait intermediate
-        // through the normal (non-wide) path. With chosen people, only
-        // scenes featuring one of them get the camera; others auto-crop.
-        if options.centerStageWide && contentIsWide && !useSplit {
-            let focused = options.centerStagePeople.isEmpty
-                || options.centerStagePeople.contains { scene.tags.contains("person:\($0)") }
-            if focused {
+        // Framing belongs to the scene, not to this run. Replay the saved
+        // camera path exactly as it was reviewed in Analyze or Curated; never
+        // silently replace it with a new live tracking pass here.
+        if contentIsWide, let stored = scene.centerStagePath {
+            let sliced = CenterStageService.slice(
+                stored.keyframes,
+                from: max(0, clip.start - scene.startTime),
+                duration: sourceDuration)
+            if sliced.count >= 2 {
                 do {
-                    // A path recorded at analyze time with the same camera
-                    // preset skips the tracking pass — the render is just
-                    // the export. A static framing from the framing pass is
-                    // the user's explicit choice, so it always wins; other
-                    // preset mismatches (or slicing failure) fall through to
-                    // live tracking.
-                    var portrait: URL?
-                    if let stored = scene.centerStagePath,
-                       stored.camera == options.centerStageCamera
-                        || stored.camera == FramingService.staticCamera {
-                        let sliced = CenterStageService.slice(
-                            stored.keyframes,
-                            from: max(0, clip.start - scene.startTime),
-                            duration: sourceDuration)
-                        if sliced.count >= 2,
-                           let reframed = try? await centerStage.reframeClip(
-                               source: scene.videoURL, start: clip.start,
-                               duration: sourceDuration, path: sliced, log: emit) {
-                            emit("Clip \(index + 1) reframed with the camera path recorded at analysis")
-                            portrait = reframed
-                        }
-                    }
-                    let reframed: URL
-                    if let portrait {
-                        reframed = portrait
-                    } else {
-                        // Person markers on the source video make the live
-                        // tracker identity-aware — only the marked people
-                        // are framed, never referees or staff.
-                        let allMarkers = (try? await database.personMarkers(videoID: scene.videoID)) ?? []
-                        let named = allMarkers.filter { $0.personID != nil && !$0.ignored }
-                        let ignored = allMarkers.filter(\.ignored)
-                        let focusPortraits = named.isEmpty ? [] :
-                            await Analyzer.markerPortraits(url: scene.videoURL, markers: named,
-                                                           duration: scene.videoDuration)
-                        let avoidPortraits = ignored.isEmpty ? [] :
-                            await Analyzer.markerPortraits(url: scene.videoURL, markers: ignored,
-                                                           duration: scene.videoDuration)
-                        // User-framed hints pin the camera at their moments.
-                        let hints = ((try? await database.centerStageHints(videoID: scene.videoID)) ?? [])
-                            .filter { $0.atTime >= clip.start - 0.25 && $0.atTime <= clip.end + 0.25 }
-                            .map { hint in
-                                (time: min(max(0, hint.atTime - clip.start), sourceDuration),
-                                 crop: CGRect(x: hint.x, y: hint.y,
-                                              width: hint.width, height: hint.height))
-                            }
-                        reframed = try await centerStage.reframeClip(
-                            source: scene.videoURL, start: clip.start, duration: sourceDuration,
-                            focusPortraits: focusPortraits,
-                            avoidPortraits: avoidPortraits,
-                            hints: hints,
-                            tuning: .named(options.centerStageCamera),
-                            log: emit)
-                        emit("Clip \(index + 1) reframed with Center Stage"
-                             + (focusPortraits.isEmpty ? "" : " (focused on the marked people)"))
-                    }
+                    let reframed = try await centerStage.reframeClip(
+                        source: scene.videoURL, start: clip.start,
+                        duration: sourceDuration, path: sliced, log: emit)
                     defer { try? FileManager.default.removeItem(at: reframed) }
+                    emit("Clip \(index + 1) reframed with its saved scene framing")
                     try await render.extractClip(source: reframed, start: 0,
                                                  duration: duration,
                                                  overlays: overlays, mute: options.muteSource,
@@ -2829,19 +2751,11 @@ actor WizardEngine {
                                                  output: output)
                     return output
                 } catch {
-                    emit("Center Stage failed for clip \(index + 1) (\(error)) — falling back to auto-crop")
+                    emit("Saved framing failed for clip \(index + 1) (\(error)) — falling back to auto-crop")
                 }
             }
         }
-        if useSplit {
-            try await render.extractClip(source: scene.videoURL, start: clip.start,
-                                         duration: duration, wide: .split,
-                                         contentBox: contentBox,
-                                         overlays: overlays, mute: options.muteSource,
-                                         speed: clip.speed,
-                                         mask: mask,
-                                         output: output)
-        } else if options.autoCropWide && contentIsWide {
+        if contentIsWide {
             let xFraction = await render.autoCropXFraction(source: scene.videoURL,
                                                            start: clip.start, duration: sourceDuration,
                                                            contentBox: contentBox)

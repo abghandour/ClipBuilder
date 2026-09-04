@@ -93,6 +93,8 @@ struct DispatchPlanSheet: View {
     @State private var showSavePrompt = false
     @State private var showManagePrompts = false
     @State private var savePromptName = ""
+    @State private var showAdvancedAnalysisOptions = false
+    @State private var showFramingOptions = false
     // Per-run trim (single video only) — deliberately NOT persisted: a
     // leftover range must never silently apply to another video.
     @State private var trimStart = 0.0
@@ -168,17 +170,24 @@ struct DispatchPlanSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             if operation == .analyze {
-                Picker("Mode", selection: $analyzeTab) {
-                    Text("People Detection").tag(AnalyzeTab.people)
-                    Text("Tag Detection").tag(AnalyzeTab.tags)
+                Picker("Analysis step", selection: $analyzeTab) {
+                    Text("1. Identify people").tag(AnalyzeTab.people)
+                    Text("2. Tag scenes").tag(AnalyzeTab.tags)
                     if framingApplies {
-                        Text("Framing Detection").tag(AnalyzeTab.framing)
+                        Text("3. Frame scenes").tag(AnalyzeTab.framing)
                     }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .accessibilityLabel("Analysis step")
                 .frame(maxWidth: framingApplies ? 520 : 380)
                 .padding(.top, 12)
+                Text(analysisStepSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
             }
             HStack(alignment: .top, spacing: 0) {
                 if operation == .analyze && analyzeTab == .people {
@@ -265,6 +274,17 @@ struct DispatchPlanSheet: View {
             }
         } message: {
             Text("The person is added to the People section and this marker teaches the analyzer their face.")
+        }
+    }
+
+    private var analysisStepSummary: String {
+        switch analyzeTab {
+        case .people:
+            return "Identify people first. Scene tagging unlocks when every selected video is ready."
+        case .tags:
+            return "Describe the scenes in the selected footage. Framing is optional afterward."
+        case .framing:
+            return "Create saved Center Stage framing for wide footage."
         }
     }
 
@@ -450,25 +470,13 @@ struct DispatchPlanSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Framing detection")
                     .font(.headline)
-                Text("Give each detected scene its 9:16 framing — the window, the zoom, and who is inside it. Pause the video on the right and adjust the rectangle to pin the framing at that moment; pins are hard hints the pass obeys exactly. Scenes without framing show with black bars.")
+                Text("Create saved Center Stage framing for detected scenes. Add a pin on the right only when you need to override the automatic framing.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .padding()
 
             Form {
-                Picker("Camera", selection: $framingCamera) {
-                    Text("Static (one rect per scene)").tag(FramingService.staticCamera)
-                    Text("Smooth").tag("smooth")
-                    Text("Balanced").tag("balanced")
-                    Text("Fast action").tag("fast")
-                }
-                .help("Static picks one fixed 9:16 rectangle per scene. The other presets track the people and move the camera through the scene.")
-                Toggle("Tag people inside the framing", isOn: $framingTagPeople)
-                    .help("Adds framed:<person> tags per person: each is identity-matched against their marker portraits and must sit mostly inside the framing — filter the Scenes screen by who is actually in frame, not just in the scene. Local check, no AI cost.")
-                Toggle("Auto-zoom scenes without framing", isOn: $autoZoomUnframed)
-                    .help("Applies to tag-detection runs: scenes get a centered people crop even before framing runs. Off (default), unframed scenes stay letterboxed with black bars.")
-
                 LabeledContent("Scenes") {
                     if framingScenes.isEmpty {
                         Text("none yet — run tag detection first")
@@ -476,8 +484,19 @@ struct DispatchPlanSheet: View {
                     } else {
                         let framed = framingScenes.count(where: { $0.centerStagePathJSON != nil })
                         Text("\(framed) of \(framingScenes.count) framed")
-                            .foregroundStyle(.secondary)
+                        .foregroundStyle(.secondary)
                     }
+                }
+                DisclosureGroup("Framing options", isExpanded: $showFramingOptions) {
+                    Picker("Camera movement", selection: $framingCamera) {
+                        Text("Static (one rect per scene)").tag(FramingService.staticCamera)
+                        Text("Smooth").tag("smooth")
+                        Text("Balanced").tag("balanced")
+                        Text("Fast action").tag("fast")
+                    }
+                    .help("Static picks one fixed 9:16 rectangle per scene. The other presets track the people and move the camera through the scene.")
+                    Toggle("Tag people inside the framing", isOn: $framingTagPeople)
+                    Toggle("Auto-zoom scenes without framing", isOn: $autoZoomUnframed)
                 }
                 if store.isDetectingFraming {
                     HStack(spacing: 6) {
@@ -495,7 +514,7 @@ struct DispatchPlanSheet: View {
             HStack {
                 Spacer()
                 Button(framingScenes.contains(where: { $0.centerStagePathJSON != nil })
-                       ? "Detect Framing Again" : "Detect Framing") {
+                       ? "Refresh Center Stage" : "Create Center Stage") {
                     guard let video = videos.first else { return }
                     let camera = framingCamera
                     let tagPeople = framingTagPeople
@@ -516,36 +535,46 @@ struct DispatchPlanSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(operation.title)
                     .font(.headline)
-                Text("The dispatcher picked the best available model for each step. Adjust if you like — if a model fails mid-run, the next best available takes over automatically.")
+                Text("Ready to tag scenes with the recommended model and automatic sampling. Change the plan only when you need a different result.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             .padding()
 
             Form {
-                ForEach(operation.aiTasks, id: \.self) { task in
-                    ModelPicker(title: AICatalog.taskLabels[task] ?? task,
-                                task: task, selection: binding(for: task),
-                                availableProviders: availableProviders)
-                }
                 if operation == .analyze {
-                    if analysisChoice.provider == "gemini" {
-                        Text("Gemini watches the video natively (motion + audio) when the file is under 300 MB and no section is trimmed; otherwise sampled frames are sent.")
-                            .font(.caption)
+                    LabeledContent("Plan") {
+                        Text("Recommended model · automatic sampling")
                             .foregroundStyle(.secondary)
                     }
-                    Picker("Frame sampling", selection: $sampleInterval) {
-                        ForEach(Self.samplingChoices, id: \.value) { choice in
-                            Text(choice.label).tag(choice.value)
+                    DisclosureGroup("Advanced analysis options", isExpanded: $showAdvancedAnalysisOptions) {
+                        ForEach(operation.aiTasks, id: \.self) { task in
+                            ModelPicker(title: AICatalog.taskLabels[task] ?? task,
+                                        task: task, selection: binding(for: task),
+                                        availableProviders: availableProviders)
                         }
+                        if analysisChoice.provider == "gemini" {
+                            Text("Gemini watches the video natively when the file is under 300 MB and no section is trimmed; otherwise sampled frames are sent.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Picker("Frame sampling", selection: $sampleInterval) {
+                            ForEach(Self.samplingChoices, id: \.value) { choice in
+                                Text(choice.label).tag(choice.value)
+                            }
+                        }
+                        Toggle("Break down tagged scenes into sub-scenes", isOn: $autoBreakdown)
+                        if autoBreakdown {
+                            breakdownTagRows
+                        }
+                        transcriptionRows
                     }
-                    .help("How often a frame is sent to the model. Denser sampling catches short moments but costs more (capped at 60 frames).")
-                    Toggle("Break down tagged scenes into sub-scenes", isOn: $autoBreakdown)
-                        .help("Scenes carrying one of the tags picked below get a second, frame-dense AI pass that splits them into their individual actions — each combo or exchange becomes its own scene. Costs one extra AI call per broken-down scene.")
-                    if autoBreakdown {
-                        breakdownTagRows
+                } else {
+                    ForEach(operation.aiTasks, id: \.self) { task in
+                        ModelPicker(title: AICatalog.taskLabels[task] ?? task,
+                                    task: task, selection: binding(for: task),
+                                    availableProviders: availableProviders)
                     }
-                    transcriptionRows
                 }
                 ForEach(operation.localStages, id: \.label) { stage in
                     LabeledContent(stage.label) {
@@ -555,12 +584,12 @@ struct DispatchPlanSheet: View {
                 }
             }
             .formStyle(.grouped)
-            .frame(minHeight: CGFloat(operation.aiTasks.count + operation.localStages.count) * 44 + 60
-                   + (operation == .analyze
+            .frame(minHeight: CGFloat(operation.localStages.count + 2) * 44 + 60
+                   + (operation == .analyze && showAdvancedAnalysisOptions
                       ? (includeTranscript ? 176 : 88) + (autoBreakdown ? 160 : 0)
                       : 0))
 
-            if operation == .analyze {
+            if operation == .analyze && showAdvancedAnalysisOptions {
                 instructionsSection
                     .padding(.horizontal)
             }
@@ -582,7 +611,7 @@ struct DispatchPlanSheet: View {
                 }
                 HStack {
                     Spacer()
-                    Button(operation == .analyze ? "Analyze Tags" : "Generate Video") { start() }
+                    Button(operation == .analyze ? "Analyze Scenes" : "Generate Video") { start() }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
                         .disabled(operation == .analyze && !peopleGateSatisfied)
@@ -1712,6 +1741,10 @@ struct VideoTrimSlider: View {
     /// full-clip one so the magnified view reads as the bigger surface.
     var stripHeight: CGFloat = 44
     var onScrub: ((Double) -> Void)?
+    /// Called once when a handle or middle drag is released (and after a
+    /// keyboard adjustment) — for callers that defer expensive work until
+    /// the selection settles.
+    var onDragEnded: (() -> Void)?
 
     /// Selection start + span captured when a middle drag begins.
     @State private var moveAnchor: (start: Double, span: Double)?
@@ -1765,6 +1798,7 @@ struct VideoTrimSlider: View {
                         .frame(width: max(0, endX - startX - Self.handleWidth * 2),
                                height: stripHeight)
                         .offset(x: startX + Self.handleWidth)
+                        .help("Drag to move the selection without changing its length")
                         .gesture(DragGesture(coordinateSpace: .named(Self.stripSpace))
                             .onChanged { value in
                                 let anchor = moveAnchor ?? (start, end - start)
@@ -1777,7 +1811,10 @@ struct VideoTrimSlider: View {
                                 end = newStart + anchor.span
                                 onScrub?(newStart)
                             }
-                            .onEnded { _ in moveAnchor = nil })
+                            .onEnded { _ in
+                                moveAnchor = nil
+                                onDragEnded?()
+                            })
                     handle(icon: "chevron.compact.left")
                         .offset(x: startX)
                         .gesture(DragGesture(minimumDistance: 0,
@@ -1786,7 +1823,8 @@ struct VideoTrimSlider: View {
                                 let t = time(forX: value.location.x, width: width)
                                 start = min(max(timeOffset, t), end - minimumSpan)
                                 onScrub?(start)
-                            })
+                            }
+                            .onEnded { _ in onDragEnded?() })
                         // Drag-only handles are unreachable for assistive
                         // tech — expose each as an adjustable element.
                         .accessibilityElement()
@@ -1799,6 +1837,7 @@ struct VideoTrimSlider: View {
                             @unknown default: break
                             }
                             onScrub?(start)
+                            onDragEnded?()
                         }
                     handle(icon: "chevron.compact.right")
                         .offset(x: endX - Self.handleWidth)
@@ -1808,7 +1847,8 @@ struct VideoTrimSlider: View {
                                 let t = time(forX: value.location.x, width: width)
                                 end = max(min(timeOffset + duration, t), start + minimumSpan)
                                 onScrub?(end)
-                            })
+                            }
+                            .onEnded { _ in onDragEnded?() })
                         .accessibilityElement()
                         .accessibilityLabel("Trim end")
                         .accessibilityValue(end.timecode)
@@ -1819,6 +1859,7 @@ struct VideoTrimSlider: View {
                             @unknown default: break
                             }
                             onScrub?(end)
+                            onDragEnded?()
                         }
                 }
                 .coordinateSpace(name: Self.stripSpace)

@@ -4,8 +4,8 @@ import AVFoundation
 /// Instant timeline playback without rendering: the video track is assembled
 /// into an AVMutableComposition (clip audio + music via an AVAudioMix) and
 /// played directly. Layout-affecting features the FFmpeg pipeline burns in —
-/// crops, slot bands, captions, text overlays, transitions —
-/// are not applied here; the render remains the source of truth.
+/// crops, slot bands, captions, text overlays, transitions — are not applied
+/// here. The sheet below offers an exact render when those details matter.
 
 /// One non-overlapping stretch of timeline mapped to a source file range.
 nonisolated struct PreviewSegment: Sendable {
@@ -143,7 +143,7 @@ extension BuilderTimelineModel {
         for (start, end) in zip(sorted, sorted.dropFirst()) where end - start > 0.01 {
             let midpoint = (start + end) / 2
             let active = clips.filter { $0.startTime <= midpoint && midpoint < $0.startTime + $0.duration }
-            guard let top = active.max(by: { ($0.track, $0.stackOrder) < ($1.track, $1.stackOrder) }),
+            guard let top = active.max(by: { ($0.track, $0.startTime) < ($1.track, $1.startTime) }),
                   let url = sourceURL(for: top) else { continue }
             let trackMuted = document.trackSettings[safe: top.track]?.muted ?? false
             let gain = (top.muted || trackMuted) ? 0.0 : Double(top.volume) / 5.0
@@ -178,7 +178,7 @@ struct PreviewPlayButton: View {
 
     var body: some View {
         Button(action: action) {
-            Label("Play Timeline Preview", systemImage: "play.circle.fill")
+            Label("Play Fast Preview", systemImage: "play.circle.fill")
                 .font(.system(size: 52))
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(.white, .black.opacity(hovering ? 0.75 : 0.55))
@@ -189,35 +189,35 @@ struct PreviewPlayButton: View {
         .labelStyle(.iconOnly)
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help("Play the timeline instantly without rendering")
+        .help("Play a fast, approximate timeline preview")
     }
 }
 
-/// Modal live preview of the current timeline. Starts from the playhead.
+/// Modal preview of the current timeline. Fast Preview starts immediately;
+/// Render Preview uses the final multitrack pipeline and never files a video
+/// in the Library.
 struct TimelinePreviewSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
-    @State private var player: AVPlayer?
+    private enum Mode: Hashable {
+        case fast
+        case exact
+    }
+
+    @State private var fastPlayer: AVPlayer?
+    @State private var exactPlayer: AVPlayer?
+    @State private var exactPreviewURL: URL?
+    @State private var exactPreviewTask: Task<Void, Never>?
+    @State private var mode: Mode = .fast
     @State private var failure: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Timeline Preview")
-                    .font(.headline)
-                Text("Approximate — crops, captions, text and transitions appear only in the final render")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding()
+            header
 
             Group {
-                if let player {
+                if let player = activePlayer {
                     PlayerView(player: player)
                 } else if let failure {
                     ContentUnavailableView("Preview Unavailable",
@@ -231,28 +231,124 @@ struct TimelinePreviewSheet: View {
         }
         .modalCloseButton { dismiss() }
         .task {
-            let model = store.builder
-            let plan = model.previewPlan()
-            guard !plan.segments.isEmpty else {
-                failure = "Add clips to the timeline first."
-                return
-            }
-            do {
-                let item = try await TimelinePreviewComposer.makePlayerItem(segments: plan.segments,
-                                                                            music: plan.music)
-                let player = AVPlayer(playerItem: item)
-                let playhead = model.playhead
-                if playhead > 0.1 && playhead < model.totalDuration - 0.1 {
-                    await player.seek(to: CMTime(seconds: playhead, preferredTimescale: 600))
-                }
-                player.play()
-                self.player = player
-            } catch {
-                failure = "Could not build the preview: \(error.localizedDescription)"
+            await prepareFastPreview()
+        }
+        .onChange(of: mode) { _, newMode in
+            // Both players outlive the view swap; only the visible one plays.
+            switch newMode {
+            case .fast:
+                exactPlayer?.pause()
+                fastPlayer?.play()
+            case .exact:
+                fastPlayer?.pause()
+                exactPlayer?.play()
             }
         }
         .onDisappear {
-            player?.pause()
+            fastPlayer?.pause()
+            exactPlayer?.pause()
+            exactPreviewTask?.cancel()
+            if let exactPreviewURL { try? FileManager.default.removeItem(at: exactPreviewURL) }
+        }
+    }
+
+    private var activePlayer: AVPlayer? {
+        switch mode {
+        case .fast: fastPlayer
+        case .exact: exactPlayer
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Timeline Preview")
+                    .font(.headline)
+                Label(mode == .exact
+                      ? "Render Preview — final fidelity"
+                      : "Fast Preview — approximate",
+                      systemImage: mode == .exact ? "checkmark.seal.fill" : "bolt.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(mode == .exact ? .green : .secondary)
+                Text(mode == .exact
+                     ? "This file matches the final render, including framing, captions, transitions, music, and overlays."
+                     : "Fast Preview skips framing, captions, text, transitions, and overlay templates.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 12)
+            VStack(alignment: .trailing, spacing: 8) {
+                if exactPreviewURL != nil {
+                    Picker("Preview fidelity", selection: $mode) {
+                        Text("Fast").tag(Mode.fast)
+                        Text("Final").tag(Mode.exact)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 132)
+                }
+                Button {
+                    renderExactPreview()
+                } label: {
+                    if store.isBuilderPreviewRendering {
+                        Label("Rendering…", systemImage: "hourglass")
+                    } else {
+                        Label(exactPreviewURL == nil ? "Render Preview" : "Render Again",
+                              systemImage: "checkmark.seal")
+                    }
+                }
+                .controlSize(.small)
+                .disabled(store.isBuilderPreviewRendering || store.isBuilderRendering)
+                .help(store.isBuilderRendering
+                      ? "Wait for the Library render to finish."
+                      : "Render an exact temporary preview. Nothing is added to the Library.")
+                Button("Done") { dismiss() }
+                    .controlSize(.small)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding()
+    }
+
+    private func prepareFastPreview() async {
+        let model = store.builder
+        let plan = model.previewPlan()
+        guard !plan.segments.isEmpty else {
+            failure = "Add clips to the timeline first."
+            return
+        }
+        do {
+            let item = try await TimelinePreviewComposer.makePlayerItem(segments: plan.segments,
+                                                                        music: plan.music)
+            let player = AVPlayer(playerItem: item)
+            let playhead = model.playhead
+            if playhead > 0.1 && playhead < model.totalDuration - 0.1 {
+                await player.seek(to: CMTime(seconds: playhead, preferredTimescale: 600))
+            }
+            player.play()
+            fastPlayer = player
+        } catch {
+            failure = "Could not build the preview: \(error.localizedDescription)"
+        }
+    }
+
+    private func renderExactPreview() {
+        exactPreviewTask?.cancel()
+        exactPreviewTask = Task {
+            guard let url = await store.renderBuilderExactPreview() else { return }
+            guard !Task.isCancelled else {
+                try? FileManager.default.removeItem(at: url)
+                return
+            }
+            if let exactPreviewURL { try? FileManager.default.removeItem(at: exactPreviewURL) }
+            exactPreviewURL = url
+            exactPlayer?.pause()
+            fastPlayer?.pause()
+            let player = AVPlayer(url: url)
+            exactPlayer = player
+            mode = .exact
+            player.play()
         }
     }
 }

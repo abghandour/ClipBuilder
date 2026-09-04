@@ -17,9 +17,18 @@ struct SettingsView: View {
             InstagramSettingsTab()
                 .tabItem { Label("Instagram", systemImage: "play.rectangle.on.rectangle") }
         }
-        .frame(width: 560, height: 520)
-        // Fields edit the live store; closing the window persists them, so
-        // the Save buttons are a convenience rather than a requirement.
+        .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Label("Changes save automatically", systemImage: "checkmark")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
+                .background(.bar)
+        }
+        // Fields edit the live store; closing the window persists the current
+        // state, so there is one clear autosave contract across every tab.
         .onDisappear {
             store.saveSettings()
             store.saveActiveProfile()
@@ -34,6 +43,7 @@ private struct InstagramSettingsTab: View {
     @State private var testResult: String?
     @State private var testing = false
     @State private var graphToken = ""
+    @State private var showAdvancedFetching = false
 
     var body: some View {
         @Bindable var store = store
@@ -74,47 +84,39 @@ private struct InstagramSettingsTab: View {
                 }
             }
 
-            Section("Fetching") {
-                Picker("Browser cookies", selection: $store.settings.instagram.cookieSource) {
-                    Text("None (anonymous)").tag("none")
-                    Text("Safari").tag("safari")
-                    Text("Chrome").tag("chrome")
-                    Text("Firefox").tag("firefox")
-                    Text("cookies.txt file").tag("file")
-                }
-                if store.settings.instagram.cookieSource == "file" {
-                    TextField("Cookies file path", text: $store.settings.instagram.cookieFilePath,
-                              prompt: Text("~/Downloads/instagram-cookies.txt"))
-                }
-                Stepper("Reels per fetch: \(store.settings.instagram.fetchLimit)",
-                        value: $store.settings.instagram.fetchLimit, in: 4...24, step: 4)
-                Text("Listing uses Instagram's public web API — anonymous works for public accounts; a cookies.txt makes it reliable. Browser-cookie options apply to video downloads (via yt-dlp) only. Note this accesses Instagram outside its official API — fetches are kept small on purpose.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Test") {
-                HStack {
-                    Button(testing ? "Testing…" : "Test Fetch") {
-                        runTestFetch()
-                    }
-                    .disabled(testing)
-                    if let testResult {
-                        Text(testResult)
-                            .font(.caption)
-                            .foregroundStyle(testResult.hasPrefix("OK") ? .green : .red)
-                            .lineLimit(2)
-                    }
-                }
-            }
-
             Section {
-                Button("Save") {
-                    store.saveSettings()
-                    store.saveActiveProfile()   // the handle lives on the profile
+                DisclosureGroup("Advanced fetching and diagnostics", isExpanded: $showAdvancedFetching) {
+                    Picker("Browser cookies", selection: $store.settings.instagram.cookieSource) {
+                        Text("None (anonymous)").tag("none")
+                        Text("Safari").tag("safari")
+                        Text("Chrome").tag("chrome")
+                        Text("Firefox").tag("firefox")
+                        Text("cookies.txt file").tag("file")
+                    }
+                    if store.settings.instagram.cookieSource == "file" {
+                        TextField("Cookies file path", text: $store.settings.instagram.cookieFilePath,
+                                  prompt: Text("~/Downloads/instagram-cookies.txt"))
+                    }
+                    Stepper("Reels per fetch: \(store.settings.instagram.fetchLimit)",
+                            value: $store.settings.instagram.fetchLimit, in: 4...24, step: 4)
+                    Text("Use these only when ordinary Refresh needs troubleshooting. Browser cookies apply to public-web fetching and video downloads; the connected account uses the official API.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button(testing ? "Testing…" : "Test Fetch") {
+                            runTestFetch()
+                        }
+                        .disabled(testing)
+                        if let testResult {
+                            Text(testResult)
+                                .font(.caption)
+                                .foregroundStyle(testResult.hasPrefix("OK") ? .green : .red)
+                                .lineLimit(2)
+                        }
+                    }
                 }
-                .buttonStyle(.borderedProminent)
             }
+
         }
         .formStyle(.grouped)
     }
@@ -224,6 +226,8 @@ private struct ProfileSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
 
+            WizardBrandingDefaultsSection()
+
             Section("Folders") {
                 folderRow(title: "Input folder", path: $store.activeProfile.sourceFolder)
                 folderRow(title: "Output folder", path: $store.activeProfile.outputFolder)
@@ -255,12 +259,6 @@ private struct ProfileSettingsTab: View {
                 }
             }
 
-            Section {
-                Button("Save Profile") {
-                    store.saveActiveProfile()
-                }
-                .buttonStyle(.borderedProminent)
-            }
         }
         .formStyle(.grouped)
         .confirmationDialog("Delete profile \"\(store.activeProfile.profileName)\"?",
@@ -410,11 +408,11 @@ private struct TasteSettingsTab: View {
 
             Section("Learned Video Types") {
                 if store.activeProfile.tasteCategories.isEmpty {
-                    Text("Nothing learned yet. Select reels on the Instagram screen and use the Learn menu — each reel is classified into a video type (fight highlights, interviews, …) whose rubric it refines. The AI Wizard's Video type picker lists them.")
+                    Text("Nothing learned yet. Select reels on the Instagram screen and use the Learn menu — each reel is classified into a video type (fight highlights, interviews, …) whose rubric it refines. Learned types are available as optional style references in the AI Wizard.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    Text("Each learned reel refines one of these rubrics. The AI Wizard's Video type picker lists them.")
+                    Text("Each learned reel refines one of these rubrics. The AI Wizard offers them as optional style references under More options.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     ForEach($store.activeProfile.tasteCategories) { $category in
@@ -470,12 +468,6 @@ private struct TasteSettingsTab: View {
                 }
             }
 
-            Section {
-                Button("Save Profile") {
-                    store.saveActiveProfile()
-                }
-                .buttonStyle(.borderedProminent)
-            }
         }
         .formStyle(.grouped)
         .confirmationDialog("Delete the \"\(deletingCategory?.label ?? "")\" video type?",
@@ -508,11 +500,11 @@ private struct GeneralSettingsTab: View {
         @Bindable var store = store
         Form {
             Section("Analysis") {
-                Picker("Analysis mode", selection: $store.settings.analysisMode) {
-                    Text("Visual (frame sampling)").tag("visual")
-                    Text("Speech-first (transcript scenes)").tag("speech")
+                LabeledContent("Analysis mode") {
+                    Text("Visual (frame sampling)")
+                        .foregroundStyle(.secondary)
                 }
-                Text("Visual suits action footage; speech-first suits interviews and tutorials. Speech-first scene detection is not ported yet — transcription itself is available from the Raw Videos screen.")
+                Text("Visual analysis is available now. Speech-first scene detection is coming soon; transcription remains available from Raw Videos.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -600,14 +592,16 @@ private struct GeneralSettingsTab: View {
                 }
             }
 
-            Section {
-                Button("Save") {
-                    store.saveSettings()
-                }
-                .buttonStyle(.borderedProminent)
-            }
         }
         .formStyle(.grouped)
+        .onAppear {
+            // A previous build exposed an unfinished mode. Keep saved
+            // preferences on the supported path instead of offering a
+            // selection that cannot complete its job.
+            if store.settings.analysisMode == "speech" {
+                store.settings.analysisMode = "visual"
+            }
+        }
         .task {
             missingTools = await Task.detached { ToolInstaller.missingTools }.value
         }
@@ -664,6 +658,8 @@ private struct AISettingsTab: View {
                     .foregroundStyle(.secondary)
             }
 
+            WizardLearningSettingsSection()
+
             ForEach(AICatalog.providers, id: \.key) { provider in
                 Section(provider.label) {
                     AvailabilityRow(providerKey: provider.key)
@@ -683,12 +679,6 @@ private struct AISettingsTab: View {
                 }
             }
 
-            Section {
-                Button("Save") {
-                    store.saveSettings()
-                }
-                .buttonStyle(.borderedProminent)
-            }
         }
         .formStyle(.grouped)
         .task {

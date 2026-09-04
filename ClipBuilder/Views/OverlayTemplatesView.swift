@@ -12,6 +12,8 @@ struct OverlayTemplatesView: View {
     @State private var composition = OverlayComposition()
     @State private var watcher: FolderWatcher?
     @State private var saveTask: Task<Void, Never>?
+    @State private var pendingSave: OverlayTemplate?
+    @State private var isSaving = false
 
     @State private var renamePrompt = false
     @State private var renameText = ""
@@ -22,14 +24,10 @@ struct OverlayTemplatesView: View {
     var body: some View {
         Group {
             if templates.isEmpty {
-                ContentUnavailableView {
-                    Label("No Overlay Templates", systemImage: "character.textbox")
-                } description: {
-                    Text("Design an overlay once — texts and images with their own timing and effects — and reuse it everywhere: templates can be inserted in the Builder and picked by the AI Wizard.")
-                } actions: {
-                    Button("New Template", action: createTemplate)
-                    Button("Overlay Wizard…") { showOverlayWizard = true }
-                }
+                ContentUnavailableView(
+                    "No Overlay Templates",
+                    systemImage: "character.textbox",
+                    description: Text("Create a starter template, then add text and images only when you need them. Use the toolbar to create a template or extract one from an image."))
             } else {
                 HSplitView {
                     templateList
@@ -49,20 +47,7 @@ struct OverlayTemplatesView: View {
         }
         .navigationTitle("Overlays")
         .navigationSubtitle("\(templates.count) template\(templates.count == 1 ? "" : "s")")
-        .toolbar {
-            ToolbarItemGroup {
-                Button("New Template", systemImage: "plus", action: createTemplate)
-                    .help("Create an overlay template")
-                Button("Overlay Wizard", systemImage: "wand.and.stars") {
-                    showOverlayWizard = true
-                }
-                .help("Extract an overlay design from a reference image with AI")
-                Button("Show in Finder", systemImage: "folder") {
-                    NSWorkspace.shared.open(OverlayTemplateStore.directory)
-                }
-                .help("Open the overlay templates folder in Finder")
-            }
-        }
+        .toolbar { overlayToolbarContent }
         .sheet(isPresented: $showOverlayWizard) {
             OverlayWizardSheet { name in
                 refresh()
@@ -98,14 +83,14 @@ struct OverlayTemplatesView: View {
             self.watcher = watcher
         }
         .onDisappear {
+            flushPendingSave()
             watcher?.stop()
             watcher = nil
             saveTask?.cancel()
         }
         .onChange(of: selectedName) { _, name in
-            if let template = templates.first(where: { $0.name == name }) {
-                composition = template.composition
-            }
+            flushPendingSave()
+            loadComposition(named: name)
         }
         .onChange(of: composition) {
             scheduleSave()
@@ -142,6 +127,30 @@ struct OverlayTemplatesView: View {
         .listStyle(.inset)
     }
 
+    @ToolbarContentBuilder
+    private var overlayToolbarContent: some ToolbarContent {
+        ToolbarItemGroup {
+            Button("New Template", systemImage: "plus", action: createTemplate)
+                .help("Create an overlay template")
+            if selectedName != nil {
+                    Label(isSaving ? "Saving…" : "Saved",
+                          systemImage: isSaving ? "arrow.triangle.2.circlepath" : "checkmark")
+                        .font(.caption)
+                    .foregroundStyle(isSaving ? Color.secondary : Color.green)
+            }
+            Menu("More", systemImage: "ellipsis.circle") {
+                Button("Create from Image…", systemImage: "wand.and.stars") {
+                    showOverlayWizard = true
+                }
+                Divider()
+                Button("Show in Finder", systemImage: "folder") {
+                    NSWorkspace.shared.open(OverlayTemplateStore.directory)
+                }
+            }
+            .help("Open less-frequent overlay actions")
+        }
+    }
+
     private func summary(of composition: OverlayComposition) -> String {
         var parts: [String] = []
         if !composition.texts.isEmpty { parts.append("\(composition.texts.count) text\(composition.texts.count == 1 ? "" : "s")") }
@@ -155,6 +164,14 @@ struct OverlayTemplatesView: View {
         templates = OverlayTemplateStore.list()
         if let selectedName, !templates.contains(where: { $0.name == selectedName }) {
             self.selectedName = nil
+        }
+    }
+
+    private func loadComposition(named name: String?) {
+        guard let name else { return }
+        for template in templates where template.name == name {
+            composition = template.composition
+            return
         }
     }
 
@@ -199,9 +216,12 @@ struct OverlayTemplatesView: View {
               current.composition != composition else { return }
         let snapshot = OverlayTemplate(name: selectedName, composition: composition)
         saveTask?.cancel()
+        pendingSave = snapshot
+        isSaving = true
         saveTask = Task {
             try? await Task.sleep(for: .milliseconds(350))
             guard !Task.isCancelled else { return }
+            pendingSave = nil
             do {
                 try OverlayTemplateStore.save(snapshot)
                 if let index = templates.firstIndex(where: { $0.name == snapshot.name }) {
@@ -210,6 +230,24 @@ struct OverlayTemplatesView: View {
             } catch {
                 operationError = error.localizedDescription
             }
+            isSaving = false
+        }
+    }
+
+    /// Navigation can happen before the debounce fires. Persist the latest
+    /// snapshot instead of silently dropping the user's final adjustment.
+    private func flushPendingSave() {
+        guard let snapshot = pendingSave else { return }
+        saveTask?.cancel()
+        pendingSave = nil
+        isSaving = false
+        do {
+            try OverlayTemplateStore.save(snapshot)
+            if let index = templates.firstIndex(where: { $0.name == snapshot.name }) {
+                templates[index].composition = snapshot.composition
+            }
+        } catch {
+            operationError = error.localizedDescription
         }
     }
 

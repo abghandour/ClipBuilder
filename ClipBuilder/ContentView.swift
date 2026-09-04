@@ -25,6 +25,14 @@ struct ClipBuilderApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             }
+            CommandGroup(after: .importExport) {
+                Button("Import Resources…") {
+                    store.chooseResourceBundleToImport()
+                }
+                Button("Export Resources…") {
+                    store.showResourceExport = true
+                }
+            }
             // ⌘1–⌘8 section switching, routed through requestedSection —
             // the same channel views use — so the sidebar stays in sync.
             // Only the workflow sections carry numbers; asset browsers don't.
@@ -84,7 +92,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     static let outputSections: [SidebarSection] = [.library]
 
     /// ⌘1–⌘9 matching the sidebar's visible top-to-bottom workflow order
-    /// (Footage, Create, Output, Instagram). Asset browsers have no number.
+    /// (Footage, Create, Output, Instagram). Resource browsers have no number.
     private var shortcutDigit: Character? {
         switch self {
         case .analyze: return "1"
@@ -155,7 +163,7 @@ struct MainWindowView: View {
     @State private var selection: SidebarSection? = .analyze
 
     // Each sidebar group's disclosure state survives relaunches.
-    @AppStorage("sidebar.expanded.assets") private var assetsExpanded = true
+    @AppStorage("sidebar.expanded.resources") private var resourcesExpanded = false
     @AppStorage("sidebar.expanded.footage") private var footageExpanded = true
     @AppStorage("sidebar.expanded.instagram") private var instagramExpanded = true
     @AppStorage("sidebar.expanded.create") private var createExpanded = true
@@ -165,9 +173,6 @@ struct MainWindowView: View {
         @Bindable var store = store
         NavigationSplitView {
             List(selection: $selection) {
-                Section("Assets", isExpanded: $assetsExpanded) {
-                    sidebarItems(SidebarSection.assetSections, tint: Theme.assetsTint)
-                }
                 Section("Footage", isExpanded: $footageExpanded) {
                     sidebarItems(SidebarSection.videoSections, tint: Theme.footageTint)
                 }
@@ -179,6 +184,9 @@ struct MainWindowView: View {
                 }
                 Section("Instagram", isExpanded: $instagramExpanded) {
                     sidebarItems(SidebarSection.instagramSections, tint: Theme.instagramTint)
+                }
+                Section("Resources", isExpanded: $resourcesExpanded) {
+                    sidebarItems(SidebarSection.assetSections, tint: Theme.assetsTint)
                 }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 200)
@@ -266,6 +274,16 @@ struct MainWindowView: View {
         }
         .sheet(isPresented: $store.showTrainingGuide) {
             HelpSheet()
+        }
+        .sheet(isPresented: $store.showResourceExport) {
+            ResourceExportSheet()
+        }
+        .sheet(isPresented: Binding(
+            get: { store.resourceImportURL != nil },
+            set: { if !$0 { store.resourceImportURL = nil } })) {
+            if let url = store.resourceImportURL {
+                ResourceImportSheet(zipURL: url)
+            }
         }
         .alert(updateAlertTitle, isPresented: Binding(
             get: { store.updateCheckResult != nil },

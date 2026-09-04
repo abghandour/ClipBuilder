@@ -165,16 +165,31 @@ nonisolated enum ScreenCropStore {
         directory.appendingPathComponent(ProfileStore.sanitize(name) + ".json")
     }
 
-    /// Decoded layouts keyed by the directory's (path, mtime) fingerprint:
-    /// callers hit `all()` from view bodies and render loops, so a listing
-    /// costs one directory stat pass unless a file actually changed.
+    /// Decoded layouts keyed by the directory's (path, mtime) fingerprint.
+    /// Callers hit `all()` from view bodies, layout resolution, and render
+    /// loops — the Builder's cropping row resolves layouts hundreds of times
+    /// per frame — so the directory is re-checked at most once per
+    /// `recheckInterval`, and writes through this store invalidate it
+    /// immediately.
     private struct ListingCache {
         var fingerprint: [String] = []
         var layouts: [ScreenCropLayout] = []
+        var checkedAt: TimeInterval = 0
     }
     private static let listingCache = Mutex(ListingCache())
+    private static let recheckInterval: TimeInterval = 2
+
+    static func invalidateListing() {
+        listingCache.withLock { $0.checkedAt = 0 }
+    }
 
     static func list() -> [ScreenCropLayout] {
+        let now = Date.timeIntervalSinceReferenceDate
+        if let fresh = listingCache.withLock({
+            now - $0.checkedAt < recheckInterval ? $0.layouts : nil
+        }) {
+            return fresh
+        }
         let files = ((try? FileManager.default.contentsOfDirectory(
             at: directory, includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles])) ?? [])
@@ -184,11 +199,15 @@ nonisolated enum ScreenCropStore {
                 .timeIntervalSinceReferenceDate ?? 0
             return "\(url.lastPathComponent)|\(stamp)"
         }.sorted()
-        if let cached = listingCache.withLock({ $0.fingerprint == fingerprint ? $0.layouts : nil }) {
+        if let cached = listingCache.withLock({ cache -> [ScreenCropLayout]? in
+            guard cache.fingerprint == fingerprint else { return nil }
+            cache.checkedAt = now
+            return cache.layouts
+        }) {
             return cached
         }
         let layouts = decodeLayouts(files)
-        listingCache.withLock { $0 = ListingCache(fingerprint: fingerprint, layouts: layouts) }
+        listingCache.withLock { $0 = ListingCache(fingerprint: fingerprint, layouts: layouts, checkedAt: now) }
         return layouts
     }
 
@@ -209,6 +228,7 @@ nonisolated enum ScreenCropStore {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(layout).write(to: layoutURL(name: layout.name), options: .atomic)
+        invalidateListing()
     }
 
     /// Returns the final (sanitized) name.
@@ -228,11 +248,13 @@ nonisolated enum ScreenCropStore {
         } else {
             try FileManager.default.moveItem(at: source, to: destination)
         }
+        invalidateListing()
         return sanitized
     }
 
     static func delete(name: String) throws {
         try FileManager.default.trashItem(at: layoutURL(name: name), resultingItemURL: nil)
+        invalidateListing()
     }
 
     /// "Name", "Name 2", "Name 3", … whichever is free.

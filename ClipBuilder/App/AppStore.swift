@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import UniformTypeIdentifiers
 
 /// Coarse progress of a wizard run: which stage it's in, how far along the
 /// whole run is, and when the stage started (so the UI can show elapsed time
@@ -119,6 +120,37 @@ final class AppStore {
     var wizardFailureMessage: String?
     /// Presents the Training Guide sheet from the main window (Help menu).
     var showTrainingGuide = false
+    /// File ▸ Export Resources… / Import Resources… sheets.
+    var showResourceExport = false
+    var resourceImportURL: URL?
+
+    /// File ▸ Import Resources…: pick a bundle, then preview it in a sheet.
+    func chooseResourceBundleToImport() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.zip]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.title = "Import Resources"
+        panel.message = "Choose a Clip Builder resource bundle (.zip)."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        resourceImportURL = url
+    }
+
+    /// After an import: re-register fonts, drop cached layout listings, and
+    /// reload profiles so the switcher and the active profile reflect the
+    /// files on disk.
+    func resourcesDidChange(_ summary: ResourceImportSummary) {
+        if summary.fontsChanged { AssetStore.registerFonts() }
+        if summary.screenCropsChanged { ScreenCropStore.invalidateListing() }
+        if summary.profilesChanged {
+            profiles = ProfileStore.listProfiles()
+            if profiles.isEmpty { profiles = [ProfileStore.ensureDefaultProfile()] }
+            if let refreshed = profiles.first(where: { $0.profileName == activeProfile.profileName }) {
+                activeProfile = refreshed
+            }
+        }
+        if summary.preferencesApplied > 0 { WizardDefaults.migrateLegacy() }
+    }
     var isDistillingLessons = false
     var isDistillingHouseStyle = false
     /// Result line of the last Wizard Brain export/import, for Settings.
@@ -128,6 +160,9 @@ final class AppStore {
     // Clip Builder
     let builder = BuilderTimelineModel()
     var isBuilderRendering = false
+    /// True while Builder is rendering an exact, temporary preview. Unlike a
+    /// normal render, this never creates a Library item.
+    var isBuilderPreviewRendering = false
     var builderLog: [String] = []
     private var builderRenderTask: Task<Void, Never>?
 
@@ -225,6 +260,10 @@ final class AppStore {
         profiles = loaded
         let activeName = SettingsStore.loadActiveProfileName()
         activeProfile = loaded.first { $0.profileName == activeName } ?? loaded[0]
+
+        // Settings reads the migrated wizard keys directly, so migrate before
+        // any view (not only the Wizard tab) can show them.
+        WizardDefaults.migrateLegacy()
 
         watcher = FolderWatcher { [weak self] in
             self?.scanSourceFolder()
@@ -1010,10 +1049,14 @@ final class AppStore {
                 if options.generate, !completed("generate:\(video.id)") {
                     if Task.isCancelled { break }
                     pipelineStage = "generating — \(current.filename)"
-                    var wizard = Self.wizardOptionsFromForm()
-                    wizard.accountBenchmarks = igBenchmarks
-                    wizard.selectedRunIDs = runID.map { [$0] }
+                    let runIDs = runID.map { [$0] }
                         ?? Set(analysisRuns.filter { $0.videoID == current.id }.map(\.id))
+                    let transcriptsAvailable = analysisRuns.contains {
+                        runIDs.contains($0.id) && $0.hasTranscript
+                    }
+                    var wizard = Self.wizardOptionsFromForm(transcriptsAvailable: transcriptsAvailable)
+                    wizard.accountBenchmarks = igBenchmarks
+                    wizard.selectedRunIDs = runIDs
                     // Curated scope only when this video's batch actually has
                     // curated scenes (holds across Resume, unlike a counter).
                     wizard.curatedOnly = options.curate && scenes.contains { scene in
@@ -1124,34 +1167,39 @@ final class AppStore {
     /// critique flag stay the pipeline's to decide; the source-people filter
     /// deliberately doesn't apply (a per-video run could end up with zero
     /// eligible scenes).
-    private static func wizardOptionsFromForm() -> WizardOptions {
+    private static func wizardOptionsFromForm(transcriptsAvailable: Bool) -> WizardOptions {
         let defaults = UserDefaults.standard
-        func bool(_ key: String, default fallback: Bool) -> Bool {
-            defaults.object(forKey: key) == nil ? fallback : defaults.bool(forKey: key)
-        }
+        WizardDefaults.migrateLegacy(defaults: defaults)
         var options = WizardOptions()
-        options.muteSource = bool("wizard.muteSource", default: false)
-        options.useMusic = bool("wizard.useMusic", default: true)
-            && !WizardEngine.availableMusic().isEmpty
-        options.addCaptions = bool("wizard.addCaptions", default: false)
-        options.autoCropWide = bool("wizard.autoCropWide", default: true)
-        options.centerStageWide = bool("wizard.centerStageWide", default: false)
-        options.centerStageCamera = defaults.string(forKey: "wizard.centerStageCamera") ?? "balanced"
-        options.screenCropLayouts = WizardOptions.screenCropLayoutsFromDefaults()
-        options.allowedTransitions = WizardOptions.allowedTransitionsFromDefaults()
-        options.allowWideSplit = bool("wizard.allowWideSplit", default: false)
-        options.enableTextOverlays = bool("wizard.enableTextOverlays", default: false)
-        options.useFightResearch = bool("wizard.useFightResearch", default: true)
-        options.aiInstructions = defaults.string(forKey: "wizard.aiInstructions") ?? ""
-        let duration = defaults.object(forKey: "wizard.targetDuration") == nil
-            ? 10 : defaults.integer(forKey: "wizard.targetDuration")
-        options.targetDurationSeconds = min(180, max(3, duration))
+        let audio = WizardDefaults.audioMode(defaults: defaults)
+        options.useMusic = audio.useMusic && !WizardEngine.availableMusic().isEmpty
+        options.muteSource = audio.muteSource && options.useMusic
         options.formatPreset = defaults.string(forKey: "wizard.formatPreset") ?? "custom"
+        let text = WizardDefaults.textMode(defaults: defaults)
+            .output(transcriptsAvailable: transcriptsAvailable, recipe: options.formatPreset)
+        options.addCaptions = text.captions
+        options.enableTextOverlays = text.headlines
+        options.framingCamera = WizardDefaults.fallbackFramingCamera
+        let layoutMode = WizardLayoutMode(rawValue: defaults.string(forKey: WizardDefaults.layoutModeKey) ?? "")
+            ?? .automatic
+        options.screenCropLayouts = layoutMode == .automatic
+            ? WizardOptions.screenCropLayoutsFromDefaults() : []
+        options.allowedTransitions = WizardOptions.allowedTransitionsFromDefaults()
+        // Saved research is useful context when it exists; a run should not
+        // ask the user to decide whether a missing record is useful.
+        options.useFightResearch = true
+        options.aiInstructions = defaults.string(forKey: "wizard.aiInstructions") ?? ""
+        let durationMode = WizardDefaults.durationMode(defaults: defaults)
+        let customDuration = defaults.object(forKey: WizardDefaults.customDurationKey) == nil
+            ? 20 : defaults.integer(forKey: WizardDefaults.customDurationKey)
+        options.targetDurationSeconds = durationMode.duration
+            ?? (durationMode == .custom ? min(180, max(3, customDuration)) : nil)
         let taste = defaults.string(forKey: "wizard.tastePreset") ?? ""
         options.tastePreset = taste.isEmpty ? nil : taste
-        options.includeWatermark = bool("wizard.includeWatermark", default: true)
-        options.includeHeadline = bool("wizard.includeHeadline", default: true)
-        options.includeOutro = bool("wizard.includeOutro", default: true)
+        let branding = WizardDefaults.brandingMode(defaults: defaults)
+        options.includeWatermark = branding.includeWatermark
+        options.includeHeadline = branding.includeHeadline
+        options.includeOutro = branding.includeOutro
         return options
     }
 
@@ -2045,7 +2093,7 @@ final class AppStore {
                         provenance: response.provenance)
                 }
                 lessons = (try? await database.fetchLessons()) ?? lessons
-                igLog.append("Added \(min(PerformanceLessons.maxLessons, distilled.count)) performance lesson(s) — see AI Wizard → Learned Lessons.")
+                igLog.append("Added \(min(PerformanceLessons.maxLessons, distilled.count)) performance lesson(s) — manage them in Settings → AI → Learned Rules.")
             } catch {
                 presentError("Could not distill performance lessons", error)
             }
@@ -2478,7 +2526,7 @@ final class AppStore {
     /// Render the builder timeline through the multitrack pipeline and file
     /// the result into the Library. Mirrors the runWizard job pattern.
     func renderBuilderTimeline() {
-        guard let database, !isBuilderRendering else { return }
+        guard let database, !isBuilderRendering, !isBuilderPreviewRendering else { return }
         guard !builder.document.videoTrack.isEmpty else {
             presentError("Add clips to the timeline first.")
             return
@@ -2491,11 +2539,10 @@ final class AppStore {
         let renderer = multitrackRenderer
         builderRenderTask = Task {
             do {
-                // The Builder honors the wizard's Center Stage camera preset.
-                let camera = UserDefaults.standard.string(forKey: "wizard.centerStageCamera") ?? "balanced"
                 let result = try await renderer.render(document: document, scenes: scenes,
                                                        profile: profile, database: database,
-                                                       centerStageCamera: camera, emit: logSink(\.builderLog))
+                                                       centerStageCamera: WizardDefaults.fallbackFramingCamera,
+                                                       emit: logSink(\.builderLog))
                 builderLog.append("Done: \(result.url.lastPathComponent) (\(result.duration.timecode))")
             } catch is CancellationError {
                 builderLog.append("Render stopped.")
@@ -2510,6 +2557,42 @@ final class AppStore {
 
     func cancelBuilderRender() {
         builderRenderTask?.cancel()
+    }
+
+    /// Render Builder through the same multitrack pipeline used for the
+    /// final output, but keep the resulting file temporary. This is the
+    /// honest alternative to the instant AVFoundation preview, which cannot
+    /// reproduce crops, captions, transitions, or overlays.
+    func renderBuilderExactPreview() async -> URL? {
+        guard let database, !isBuilderRendering, !isBuilderPreviewRendering else { return nil }
+        guard !builder.document.videoTrack.isEmpty else {
+            presentError("Add clips to the timeline first.")
+            return nil
+        }
+
+        isBuilderPreviewRendering = true
+        defer { isBuilderPreviewRendering = false }
+        builderLog.append("— Exact preview: rendering \(builder.document.videoTrack.count) clip(s) —")
+
+        let document = builder.document
+        let scenes = builder.scenes
+        let profile = activeProfile
+        let renderer = multitrackRenderer
+        do {
+            let result = try await renderer.render(document: document, scenes: scenes,
+                                                   profile: profile, database: database,
+                                                   centerStageCamera: WizardDefaults.fallbackFramingCamera,
+                                                   preview: true, emit: logSink(\.builderLog))
+            builderLog.append("Exact preview ready: \(result.duration.timecode)")
+            return result.url
+        } catch is CancellationError {
+            builderLog.append("Exact preview stopped.")
+            return nil
+        } catch {
+            builderLog.append("Exact preview failed: \(error.userMessage)")
+            presentError("Exact preview failed", error)
+            return nil
+        }
     }
 
     // MARK: - Curated wizard
@@ -2533,10 +2616,10 @@ final class AppStore {
             do {
                 let document = try await curatedDocument(document, includeOutro: includeOutro,
                                                          profile: profile)
-                let camera = UserDefaults.standard.string(forKey: "wizard.centerStageCamera") ?? "balanced"
                 let result = try await renderer.render(document: document, scenes: scenes,
                                                        profile: profile, database: database,
-                                                       centerStageCamera: camera, emit: logSink(\.wizardLog))
+                                                       centerStageCamera: WizardDefaults.fallbackFramingCamera,
+                                                       emit: logSink(\.wizardLog))
                 wizardLog.append("VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))")
             } catch is CancellationError {
                 wizardLog.append("Curated render stopped.")
@@ -2593,10 +2676,9 @@ final class AppStore {
         do {
             let document = try await curatedDocument(document, includeOutro: includeOutro,
                                                      profile: profile)
-            let camera = UserDefaults.standard.string(forKey: "wizard.centerStageCamera") ?? "balanced"
             let result = try await renderer.render(document: document, scenes: scenes,
                                                    profile: profile, database: database,
-                                                   centerStageCamera: camera,
+                                                   centerStageCamera: WizardDefaults.fallbackFramingCamera,
                                                    preview: true, emit: logSink(\.wizardLog))
             return result.url
         } catch is CancellationError {

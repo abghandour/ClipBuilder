@@ -79,34 +79,37 @@ struct ImagePickerSheet: View {
     @ViewBuilder
     private func cell(for file: (name: String, url: URL)) -> some View {
         let isSelected = selectedPaths.contains(file.url.path)
-        VStack(spacing: 4) {
-            ImageThumbnail(url: file.url)
-                .frame(height: 110)
-                .overlay {
-                    if isSelected {
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.accentColor, lineWidth: 3)
-                    }
-                }
-                .overlay(alignment: .topTrailing) {
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.white, Color.accentColor)
-                            .padding(5)
-                    }
-                }
-            Text(file.name)
-                .font(.caption2)
-                .lineLimit(1)
-                .foregroundStyle(isSelected ? .primary : .secondary)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
+        Button {
             if isSelected {
                 selectedPaths.remove(file.url.path)
             } else {
                 selectedPaths.insert(file.url.path)
             }
+        } label: {
+            VStack(spacing: 4) {
+                ImageThumbnail(url: file.url)
+                    .frame(height: 110)
+                    .overlay {
+                        if isSelected {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.accentColor, lineWidth: 3)
+                        }
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        if isSelected {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.white, Color.accentColor)
+                                .padding(5)
+                        }
+                    }
+                Text(file.name)
+                    .font(.caption2)
+                    .lineLimit(1)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+            }
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(isSelected ? "Deselect" : "Select") image \(file.name)")
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 }

@@ -1,5 +1,6 @@
 import AVKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Analyze tab: source-video inventory with analysis/transcription status,
 /// batch AI tagging, and a live progress log.
@@ -17,6 +18,8 @@ struct AnalyzeView: View {
     @State private var soundbiteVideo: VideoRecord?
     @State private var showDuplicateScan = false
     @State private var showAnalyzeWizard = false
+    @State private var showingImporter = false
+    @AppStorage("analyze.activity.expanded") private var activityExpanded = false
     @FocusState private var renameFocused: Bool
 
     /// Exactly one selected video → the preview pane shows it.
@@ -30,7 +33,7 @@ struct AnalyzeView: View {
     }
 
     var body: some View {
-        VSplitView {
+        VStack(spacing: 0) {
             HSplitView {
                 table
                     .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
@@ -47,44 +50,58 @@ struct AnalyzeView: View {
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity)
-            AnalysisLogPanel()
-                .rememberedPaneHeight("pane.analyze.log", min: 120, initial: 160)
-                .frame(maxWidth: .infinity)
+            Divider()
+            AnalysisActivityBar(isExpanded: $activityExpanded)
+            if activityExpanded {
+                AnalysisLogPanel()
+                    .frame(minHeight: 140, maxHeight: 260)
+                Divider()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("Raw Videos")
         .navigationSubtitle("\(store.videos.count) source videos")
         .toolbar {
             ToolbarItemGroup {
-                // Explicit text + icon content: the toolbar renders plain
-                // Label buttons icon-only regardless of labelStyle.
-                Button {
-                    showAnalyzeWizard = true
-                } label: {
-                    ToolbarBubbleLabel(text: "Wizard Pipeline", systemImage: "wand.and.rays")
+                Button("Add Videos", systemImage: "plus") {
+                    showingImporter = true
                 }
-                .disabled(selection.isEmpty || store.isPipelineRunning)
-                .help("Fire and forget: runs every automated step for the selected videos — people, transcription, analysis, research, naming, curation, framing, generation, critique, covers — in the background while you keep using the app")
+                .help("Add source videos to this profile")
 
                 Button {
                     let videos = selectedVideos
                     if !videos.isEmpty { startAnalysis(of: videos) }
                 } label: {
-                    ToolbarBubbleLabel(text: selection.count > 1 ? "Analyze \(selection.count)" : "Analyze",
-                                       systemImage: "sparkles")
+                    Label(selection.count > 1 ? "Analyze \(selection.count)" : "Analyze",
+                          systemImage: "sparkles")
                 }
                 .disabled(selection.isEmpty || store.isAnalyzing)
                 .help(selection.count > 1
                       ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
                       : "Runs a fresh analysis of the selected video. Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
 
-                Button {
-                    showGenerateSheet = true
-                } label: {
-                    ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
+                Menu("More", systemImage: "ellipsis.circle") {
+                    Button("Run Full Pipeline", systemImage: "wand.and.rays") {
+                        showAnalyzeWizard = true
+                    }
+                    .disabled(selection.isEmpty || store.isPipelineRunning)
+                    Divider()
+                    Button("Generate Video…", systemImage: "wand.and.stars") {
+                        showGenerateSheet = true
+                    }
+                    .disabled(selection.isEmpty || store.isAnalyzing)
+                    Button("Scan for Duplicates…", systemImage: "rectangle.on.rectangle") {
+                        showDuplicateScan = true
+                    }
                 }
-                .disabled(selection.isEmpty || store.isAnalyzing)
-                .help("Describe a video to create from the selected footage — the AI Wizard is set up from your description")
+                .help("Open less-frequent video actions")
+            }
+        }
+        .fileImporter(isPresented: $showingImporter,
+                      allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie],
+                      allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result {
+                store.importVideos(urls)
             }
         }
         .sheet(item: $fightResearchTarget) { video in
@@ -160,8 +177,11 @@ struct AnalyzeView: View {
         let transcriptCounts = store.analysisRuns.reduce(into: [Int64: Int]()) {
             if $1.hasTranscript { $0[$1.videoID, default: 0] += 1 }
         }
-        // Distinct people recognized per video, via person: tags on scenes.
-        let peopleCounts = store.sceneIndex.personTagsByVideo
+        // Distinct people tagged across a video's batches.
+        let personTagsByRun = store.sceneIndex.personTagsByRun
+        let peopleCounts = store.analysisRuns.reduce(into: [Int64: Set<String>]()) { result, run in
+            if let tags = personTagsByRun[run.id] { result[run.videoID, default: []].formUnion(tags) }
+        }.mapValues(\.count)
         return Table(store.videos, selection: $selection) {
             TableColumn("File") { video in
                 HStack {
@@ -201,100 +221,73 @@ struct AnalyzeView: View {
             }
             .width(70)
 
-            TableColumn("Format") { video in
-                Text("\(video.width)×\(video.height) · \(Self.aspectRatioLabel(width: video.width, height: video.height))")
-                    .foregroundStyle(.secondary)
-            }
-            .width(130)
-
             TableColumn("Type") { video in
-                // Display-only — the editable picker lives in the preview
-                // pane so the grid stays a plain overview.
-                if let type = video.type {
-                    Text(type.label)
-                } else {
-                    Text("—").foregroundStyle(.secondary)
-                }
+                Text(video.type?.label ?? "—")
+                    .foregroundStyle(video.type == nil ? .tertiary : .secondary)
+                    .help(video.type == nil ? "Not classified yet — analysis infers the footage type"
+                                            : "Footage type; change it in the detail pane")
             }
-            .width(80)
+            .width(min: 70, ideal: 90)
 
-            TableColumn("Analysis") { video in
+            TableColumn("Status") { video in
                 if store.isAnalyzing && selection.contains(video.id) {
-                    ProgressView()
-                        .controlSize(.small)
-                } else {
-                    HStack(spacing: 4) {
-                        countText(batchCounts[video.id] ?? 0)
-                            .help("Analyze batches for this video — manage them on the Scenes screen")
-                        if (batchCounts[video.id] ?? 0) > 0, let provenance = video.visualAnalysisProvenance {
-                            ProvenanceBadge(provenance: provenance, role: "Analyzed by", size: 11)
-                        }
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Analyzing")
                     }
-                }
-            }
-            .width(70)
-
-            TableColumn("Transcripts") { video in
-                if store.transcribingVideoIDs.contains(video.id) {
-                    ProgressView()
-                        .controlSize(.small)
-                        .help("Transcribing — stop it from the preview pane")
-                } else {
-                    HStack(spacing: 4) {
-                        countText(transcriptCounts[video.id] ?? 0)
-                            .help("Analyze batches that include a transcript")
-                        if (transcriptCounts[video.id] ?? 0) > 0 {
-                            ProvenanceBadge(provenance: .appleSpeech(), role: "Transcribed by", size: 11)
-                        }
-                    }
-                }
-            }
-            .width(80)
-
-            TableColumn("People") { video in
-                HStack(spacing: 4) {
-                    countText(peopleCounts[video.id]?.count ?? 0)
-                        .help("Distinct people recognized in this video — see the People section")
-                    if (peopleCounts[video.id]?.count ?? 0) > 0, let provenance = video.peopleProvenance {
-                        ProvenanceBadge(provenance: provenance, role: "Detected by", size: 11)
-                    }
-                }
-            }
-            .width(70)
-
-            TableColumn("Scenes") { video in
-                Text("\(sceneCounts[video.id] ?? 0)")
                     .foregroundStyle(.secondary)
-            }
-            .width(60)
-
-            TableColumn("Fight Research") { video in
-                // Status only — run/view/refresh live in the preview pane.
-                HStack(spacing: 4) {
-                    if video.type?.supportsFightFeatures != true {
-                        Text("—")
-                            .foregroundStyle(.secondary)
-                            .help("Fight research applies to fight videos — set the type (in the preview pane) to Fight to enable it")
-                    } else if store.fightResearchInFlight.contains(video.id) {
-                        ProgressView().controlSize(.small)
-                        Text("Researching…")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if let research = store.fightResearch[video.id] {
-                        Label("Researched", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .help("Fan-reaction research is saved — view or refresh it from the preview pane")
-                        if let provenance = research.provenance {
-                            ProvenanceBadge(provenance: provenance, role: "Researched by", size: 11)
+                } else {
+                    let batches = batchCounts[video.id] ?? 0
+                    let scenes = sceneCounts[video.id] ?? 0
+                    let people = peopleCounts[video.id] ?? 0
+                    let hasTranscript = (transcriptCounts[video.id] ?? 0) > 0
+                    // One line of glyphs: analyzed check + scene count, then
+                    // a transcript mark and a people count, each only when
+                    // the video actually has them.
+                    // Fixed slots so the marks line up as columns down
+                    // the table; empty slots keep their width.
+                    HStack(spacing: 6) {
+                        if batches > 0 {
+                            Label("\(scenes)", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .monospacedDigit()
+                                .frame(width: 58, alignment: .leading)
+                                .help("Analyzed — \(scenes) scene\(scenes == 1 ? "" : "s") ready")
+                                .accessibilityLabel("Analyzed, \(scenes) scenes")
+                        } else {
+                            Label("Needs analysis", systemImage: "circle.dashed")
+                                .foregroundStyle(.secondary)
                         }
-                    } else {
-                        Text("Not researched")
-                            .foregroundStyle(.tertiary)
-                            .help("Run fight research from the preview pane")
+                        if batches > 0 {
+                            Group {
+                                if hasTranscript {
+                                    Image(systemName: "text.quote")
+                                        .foregroundStyle(.secondary)
+                                        .help("Transcript ready")
+                                        .accessibilityLabel("Transcript ready")
+                                } else {
+                                    Color.clear
+                                }
+                            }
+                            .frame(width: 18, alignment: .center)
+                            Group {
+                                if people > 0 {
+                                    Label("\(people)", systemImage: "person.2.fill")
+                                        .foregroundStyle(.secondary)
+                                        .monospacedDigit()
+                                        .help("\(people) \(people == 1 ? "person" : "people") found")
+                                        .accessibilityLabel("\(people) people found")
+                                } else {
+                                    Color.clear
+                                }
+                            }
+                            .frame(width: 44, alignment: .leading)
+                        }
                     }
                 }
             }
-            .width(110)
+            .width(min: 130, ideal: 160)
         }
         // The empty-row stripes render as detached gray bars on this macOS,
         // reading as debris under a short table — rows separate fine without
@@ -349,21 +342,62 @@ struct AnalyzeView: View {
                     .strokeBorder(Color.accentColor, lineWidth: 3)
                     .allowsHitTesting(false)
             } else if store.videos.isEmpty {
-                ContentUnavailableView("No source videos", systemImage: "film",
-                                       description: Text("Drop video files here — they're copied into the profile's Input folder."))
-                    .allowsHitTesting(false)
+                ContentUnavailableView {
+                    Label("Add your first source video", systemImage: "film")
+                } description: {
+                    Text("Drop video files here, or add them from Finder. They are copied into this profile’s Input folder.")
+                } actions: {
+                    Button("Add Videos…") { showingImporter = true }
+                        .buttonStyle(.borderedProminent)
+                }
             }
         }
     }
 
-    /// Batch-count cell: a dash reads quieter than a zero in a mostly-empty
-    /// column.
-    private func countText(_ count: Int) -> Text {
-        count == 0
-            ? Text("—").foregroundStyle(.secondary)
-            : Text("\(count)")
-    }
+}
 
+/// A compact activity summary leaves the footage table useful until a person
+/// actively needs the detailed log.
+private struct AnalysisActivityBar: View {
+    @Environment(AppStore.self) private var store
+    @Binding var isExpanded: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                Label(isExpanded ? "Hide Activity" : "Show Activity",
+                      systemImage: isExpanded ? "chevron.down" : "chevron.right")
+            }
+            .buttonStyle(.plain)
+
+            if store.isAnalyzing {
+                ProgressView(value: store.analysisProgress)
+                    .frame(width: 110)
+                Text(store.analysisStage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Button("Stop", systemImage: "stop.circle") {
+                    store.cancelAnalysis()
+                }
+                .controlSize(.small)
+            } else if let last = store.analysisLog.last, !last.isEmpty {
+                Text(last)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text("Select videos, then choose Analyze.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
 }
 
 /// Inline player for the single selected source video — watch the footage
@@ -392,6 +426,12 @@ private struct VideoPreviewPane: View {
                 // area and pushes the sections under the fold.
                 .frame(maxWidth: .infinity, minHeight: 140, idealHeight: 230, maxHeight: 260)
                 .background(.black, in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    if player == nil {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
             VStack(spacing: 2) {
                 HStack(spacing: 4) {
                     Text(video.filename)
@@ -606,8 +646,16 @@ private struct VideoPreviewPane: View {
         }
         .padding(10)
         .task(id: video.id) {
+            // Drop the old player right away so the pane follows the selection
+            // instantly, then open the file off the main thread: creating the
+            // player synchronously probes the file and stalled the click.
             player?.pause()
-            player = AVPlayer(url: video.url)
+            player = nil
+            roster = []
+            let asset = AVURLAsset(url: video.url)
+            _ = try? await asset.load(.isPlayable, .duration, .preferredTransform)
+            guard !Task.isCancelled else { return }
+            player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             roster = await store.videoPeople(for: video.id)
         }
         // Re-check when a transcription for this video finishes.

@@ -87,10 +87,14 @@ struct CuratedView: View {
     var body: some View {
         Group {
             if curatedScenes.isEmpty {
-                ContentUnavailableView(
-                    "No curated scenes yet",
-                    systemImage: "checkmark.seal",
-                    description: Text("Promote keepers from Raw Scenes — the seal button on a scene card, or right-click → Add to Curated. Here they can be trimmed, extended, and framed; the AI Wizard can then be told to use curated scenes only."))
+                ContentUnavailableView {
+                    Label("No curated scenes yet", systemImage: "checkmark.seal")
+                } description: {
+                    Text("Promote keepers from Raw Scenes. Here they can be trimmed, extended, and framed before you create a video.")
+                } actions: {
+                    Button("Open Raw Scenes") { store.requestedSection = .scenes }
+                        .buttonStyle(.borderedProminent)
+                }
             } else {
                 HSplitView {
                     VStack(spacing: 0) {
@@ -539,36 +543,47 @@ struct CuratedSceneEditor: View {
             Spacer()
 
             if video?.wide == true {
-                Picker("Camera", selection: $cameraPreset) {
-                    Text("Smooth").tag("smooth")
-                    Text("Balanced").tag("balanced")
-                    Text("Fast").tag("fast")
-                }
-                .pickerStyle(.segmented)
-                .fixedSize()
-                .labelsHidden()
                 if isComputingPath {
                     ProgressView()
                         .controlSize(.small)
-                }
-                Button(scene.centerStagePathJSON == nil
-                       ? "Compute Framing Path" : "Recompute Framing Path") {
-                    let sceneID = scene.id
-                    let videoID = scene.videoID
-                    let start = scene.startTime
-                    let end = scene.endTime
-                    let camera = cameraPreset
-                    isComputingPath = true
-                    Task {
-                        await store.computeCameraPath(sceneID: sceneID, videoID: videoID,
-                                                      start: start, end: end, camera: camera)
-                        isComputingPath = false
+                } else if scene.centerStagePathJSON != nil {
+                    Label("Center Stage ready", systemImage: "checkmark.seal.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                    Menu("Adjust Framing", systemImage: "slider.horizontal.3") {
+                        Picker("Camera movement", selection: $cameraPreset) {
+                            Text("Smooth").tag("smooth")
+                            Text("Balanced").tag("balanced")
+                            Text("Fast").tag("fast")
+                        }
+                        Divider()
+                        Button("Recompute Center Stage") {
+                            computeFraming()
+                        }
                     }
+                    .help("Change the camera movement or recompute Center Stage framing")
+                } else {
+                    Button("Create Center Stage Framing", systemImage: "viewfinder") {
+                        computeFraming()
+                    }
+                    .controlSize(.small)
+                    .help("Create the scene’s saved 9:16 Center Stage framing path")
                 }
-                .controlSize(.small)
-                .disabled(isComputingPath)
-                .help("Track the people across this scene's range and store the camera's pan/zoom path — honoring markers, ignored people, and your pinned hints")
             }
+        }
+    }
+
+    private func computeFraming() {
+        let sceneID = scene.id
+        let videoID = scene.videoID
+        let start = scene.startTime
+        let end = scene.endTime
+        let camera = cameraPreset
+        isComputingPath = true
+        Task {
+            await store.computeCameraPath(sceneID: sceneID, videoID: videoID,
+                                          start: start, end: end, camera: camera)
+            isComputingPath = false
         }
     }
 

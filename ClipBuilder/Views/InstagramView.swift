@@ -64,7 +64,7 @@ struct InstagramView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(tab == .posts ? "Instagram — Posts" : "Instagram — Reports")
-        .navigationSubtitle(subtitle)
+        .navigationSubtitle(tab == .posts ? subtitle : "Performance insights")
         .toolbar { toolbarContent }
         .sheet(isPresented: $addingAccount) { addAccountSheet }
         .sheet(item: $detailMedia) { media in
@@ -224,8 +224,18 @@ struct InstagramView: View {
     private var grid: some View {
         ScrollView {
             if sortedMedia.isEmpty && !store.isFetchingInstagram {
-                ContentUnavailableView("No Reels Yet", systemImage: "play.rectangle.on.rectangle",
-                                       description: Text("Press Refresh to fetch reels for this account."))
+                ContentUnavailableView {
+                    Label("No Reels Yet", systemImage: "play.rectangle.on.rectangle")
+                } description: {
+                    Text("Refresh this account to fetch its recent reels.")
+                } actions: {
+                    Button("Refresh") {
+                        if let account = selectedAccount {
+                            store.refreshInstagram(username: account.username)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
                     .padding(.top, 80)
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16, alignment: .top)],
@@ -235,6 +245,11 @@ struct InstagramView: View {
                         ReelCard(media: media,
                                  analyzed: store.igTemplatedMediaIDs.contains(media.id))
                             .onTapGesture { detailMedia = media }
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel("Open Instagram post from \(media.postedAt?.formatted(date: .abbreviated, time: .omitted) ?? "unknown date")")
+                            .accessibilityAction(named: "Open Post") {
+                                detailMedia = media
+                            }
                             .overlay(alignment: .topLeading) {
                                 Button {
                                     if selected {

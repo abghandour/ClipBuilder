@@ -82,7 +82,9 @@ struct InstagramReportsView: View {
             HStack {
                 Button("Refresh") { store.refreshInstagram(username: account.username) }
                     .buttonStyle(.borderedProminent)
-                Button("Import Report History") { store.importPeaceGrapplerReports() }
+                Menu("More", systemImage: "ellipsis.circle") {
+                    Button("Import Report History") { store.importPeaceGrapplerReports() }
+                }
             }
         }
     }
@@ -205,6 +207,7 @@ struct InstagramReportsView: View {
     private func overview(_ report: InstagramReport) -> some View {
         let overview = report.overview
         return VStack(alignment: .leading, spacing: Theme.spaceL) {
+            decisionSummary(report)
             LazyVGrid(columns: statColumns, spacing: Theme.spaceS) {
                 ForEach(overview.kpis) { StatCard(stat: $0, accent: true) }
             }
@@ -312,6 +315,47 @@ struct InstagramReportsView: View {
                     }
                     .frame(maxWidth: 380)
                 }
+            }
+        }
+    }
+
+    /// The overview starts with the three decisions a creator actually needs
+    /// to make; the KPI and chart detail remains directly below for follow-up.
+    private func decisionSummary(_ report: InstagramReport) -> some View {
+        let changed = report.overview.kpis.first { $0.delta != nil }
+        let topPost = report.posts.topByEngagement.first
+        let nextExperiment = store.igBenchmarks?.topTraits.first
+        return SectionCard(title: "What to do next", subtitle: "A short read before the detailed metrics") {
+            VStack(alignment: .leading, spacing: Theme.spaceM) {
+                LabeledContent("What changed") {
+                    if let changed {
+                        HStack(spacing: 6) {
+                            Text("\(changed.label): \(changed.value)")
+                            if let delta = changed.delta { DeltaText(delta: delta) }
+                        }
+                    } else {
+                        Text("Refresh to compare this period with the previous one.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("Why") {
+                    if let topPost {
+                        Text("A \(topPost.type.lowercased()) led with \(topPost.engagement.formatted()) engagements.")
+                    } else {
+                        Text("There is not enough post data to identify a driver yet.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("What to post next") {
+                    if let nextExperiment {
+                        Text("Test a reel built around \(nextExperiment).")
+                    } else {
+                        Text("Compare the strongest posts to choose one repeatable idea.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Button("See Post Performance") { page = .posts }
+                    .controlSize(.small)
             }
         }
     }

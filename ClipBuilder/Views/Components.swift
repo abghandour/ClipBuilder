@@ -106,6 +106,8 @@ struct VideoThumbnail: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        // Fill scaling overflows the frame; keep hit testing inside it too.
+        .contentShape(Rectangle())
         .task(id: key) {
             // Track which key is loaded rather than guarding on image ==
             // nil, which froze the thumbnail on its first frame when the

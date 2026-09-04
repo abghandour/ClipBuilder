@@ -24,7 +24,6 @@ actor MultitrackRenderer {
         var track: Int
         var wide: Bool
         var centerStage: Bool = false
-        var stackOrder: Int
         var muted: Bool
         var transIn: String?
         var transOut: String?
@@ -33,6 +32,8 @@ actor MultitrackRenderer {
         var freeCrops: [FreeCrop]?
         /// Screen Crop reference ("Layout/Area") masking this clip.
         var screenCrop: String?
+        /// Hand-placed source window for the area (nil = tracking camera).
+        var areaWindow: FreeCropRect?
         var captionsPosition: String?     // nil = captions off for this clip
         /// Playback speed (1 = normal): `duration` is screen time; source
         /// consumption maps through this factor.
@@ -60,7 +61,9 @@ actor MultitrackRenderer {
         var layer: Int
         var position: String
         var muted: Bool
-        var stackOrder: Int
+        /// Timeline start of the clip this placement came from. Clips that
+        /// overlap on one track stack by start time — the later one on top.
+        var startTime: Double
         var cropXFrac: Double?
         var freeCrops: [FreeCrop]?
         var screenCrop: String?
@@ -144,12 +147,21 @@ actor MultitrackRenderer {
                   let area = ScreenCropStore.area(reference: clips[index].screenCrop) else { continue }
             let sourceSpan = clips[index].duration * clips[index].speed
             do {
-                emit("Clip \(index + 1): framing into \"\(clips[index].screenCrop ?? "")\"…")
-                let framed = try await AreaFramer.frame(
-                    source: URL(fileURLWithPath: clips[index].sourcePath),
-                    start: clips[index].sourceStart, duration: sourceSpan, area: area,
-                    tuning: .named(centerStageCamera), centerStage: centerStageService,
-                    scratch: framingScratch, log: emit)
+                let framed: URL
+                if let window = clips[index].areaWindow {
+                    emit("Clip \(index + 1): framing into \"\(clips[index].screenCrop ?? "")\" (hand-placed window)…")
+                    framed = try await AreaFramer.frame(
+                        source: URL(fileURLWithPath: clips[index].sourcePath),
+                        start: clips[index].sourceStart, duration: sourceSpan, area: area,
+                        window: window, scratch: framingScratch)
+                } else {
+                    emit("Clip \(index + 1): framing into \"\(clips[index].screenCrop ?? "")\"…")
+                    framed = try await AreaFramer.frame(
+                        source: URL(fileURLWithPath: clips[index].sourcePath),
+                        start: clips[index].sourceStart, duration: sourceSpan, area: area,
+                        tuning: .named(centerStageCamera), centerStage: centerStageService,
+                        scratch: framingScratch, log: emit)
+                }
                 clips[index].sourcePath = framed.path
                 clips[index].sourceStart = 0
                 clips[index].wide = false
@@ -377,7 +389,6 @@ actor MultitrackRenderer {
                                          track: track,
                                          wide: clip.wide,
                                          centerStage: clip.centerStage && clip.wide,
-                                         stackOrder: clip.stackOrder,
                                          muted: muted,
                                          transIn: clip.transIn,
                                          transOut: clip.transOut,
@@ -385,13 +396,59 @@ actor MultitrackRenderer {
                                          effectiveCropXFrac: clip.wide ? effectiveCrop : nil,
                                          freeCrops: clip.freeCrops,
                                          screenCrop: clip.screenCrop,
+                                         areaWindow: clip.areaWindow,
                                          captionsPosition: captionsResolved == "none" ? nil : captionsResolved,
                                          speed: clip.effectiveSpeed,
                                          cameraPath: cameraPath))
         }
-        return resolved.sorted {
-            ($0.track, $0.startTime, $0.stackOrder) < ($1.track, $1.startTime, $1.stackOrder)
+        return Self.applyCropBlocks(resolved, document: document).sorted {
+            ($0.track, $0.startTime) < ($1.track, $1.startTime)
         }
+    }
+
+    /// The cropping row decides each clip's area: a clip is cut at every
+    /// crop-block boundary it crosses, each piece masked to its track's area
+    /// under that block (none under Full Screen), and pieces on a track the
+    /// block gives no area to are dropped. Documents without a row keep the
+    /// per-clip `screenCrop` they carry.
+    nonisolated static func applyCropBlocks(_ clips: [ResolvedClip],
+                                            document: TimelineDocument) -> [ResolvedClip] {
+        let blocks = document.cropBlocks.sorted { $0.startTime < $1.startTime }
+        guard !blocks.isEmpty else { return clips }
+        var pieces: [ResolvedClip] = []
+        for clip in clips {
+            let clipEnd = clip.startTime + clip.duration
+            var cursor = clip.startTime
+            var covering = blocks.filter { $0.startTime < clipEnd - 0.001 && cursor < $0.endTime - 0.001 }
+            // The row always tiles to the content end; anything past the
+            // last block behaves like that block.
+            if covering.isEmpty, let last = blocks.last { covering = [last] }
+            for (index, block) in covering.enumerated() {
+                let pieceStart = max(cursor, block.startTime)
+                let isLast = index == covering.count - 1
+                let pieceEnd = isLast ? clipEnd : min(clipEnd, block.endTime)
+                guard pieceEnd - pieceStart >= 0.05 else { continue }
+                cursor = pieceEnd
+                let layout = block.layout
+                // Track without an area under this block: not rendered.
+                guard clip.track < layout.areaCount else { continue }
+                var piece = clip
+                let offset = pieceStart - clip.startTime
+                piece.startTime = pieceStart
+                piece.duration = pieceEnd - pieceStart
+                piece.sourceStart = clip.sourceStart + offset * clip.speed
+                piece.screenCrop = layout.reference(forTrack: clip.track)
+                piece.transIn = pieceStart > clip.startTime + 0.001 ? nil : clip.transIn
+                piece.transOut = pieceEnd < clipEnd - 0.001 ? nil : clip.transOut
+                if let path = clip.cameraPath, offset > 0.001 {
+                    let sliced = CenterStageService.slice(path, from: offset * clip.speed,
+                                                          duration: piece.duration * clip.speed)
+                    piece.cameraPath = sliced.count >= 2 ? sliced : nil
+                }
+                pieces.append(piece)
+            }
+        }
+        return pieces
     }
 
     /// Port of _build_layered_segments: slice at every clip boundary so each
@@ -458,7 +515,7 @@ actor MultitrackRenderer {
                                         layer: clip.track,
                                         position: clip.effectivePosition,
                                         muted: clip.muted,
-                                        stackOrder: clip.stackOrder,
+                                        startTime: clip.startTime,
                                         cropXFrac: clip.effectiveCropXFrac,
                                         freeCrops: clip.freeCrops,
                                         screenCrop: clip.screenCrop,
@@ -528,8 +585,8 @@ actor MultitrackRenderer {
         }
 
         let ordered = placements.enumerated()
-            .sorted { ($0.element.layer, $0.element.stackOrder, $0.offset)
-                    < ($1.element.layer, $1.element.stackOrder, $1.offset) }
+            .sorted { ($0.element.layer, $0.element.startTime, $0.offset)
+                    < ($1.element.layer, $1.element.startTime, $1.offset) }
             .map(\.element)
 
         var arguments = ["-y",

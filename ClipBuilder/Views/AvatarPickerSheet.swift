@@ -71,6 +71,7 @@ struct AvatarPickerSheet: View {
                                     .overlay { Circle().strokeBorder(.quaternary) }
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("Use face at \(candidate.time.timecode) as \(person.displayName)’s avatar")
                             .help("Use this face as the avatar")
                         }
                     }

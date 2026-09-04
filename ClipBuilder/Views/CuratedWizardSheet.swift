@@ -41,12 +41,11 @@ struct CuratedWizardSheet: View {
 
 
     init(scenes: [SceneRecord], targetDuration: Int, includeOutro: Bool,
-         centerStageDefault: Bool = false, batchNames: [Int64: String] = [:],
+         batchNames: [Int64: String] = [:],
          selectedBatchIDs: [Int64] = []) {
         _model = State(initialValue: CuratedWizardModel(queue: scenes,
                                                         targetDuration: Double(targetDuration),
                                                         includeOutro: includeOutro,
-                                                        centerStageDefault: centerStageDefault,
                                                         batchNames: batchNames,
                                                         selectedBatchIDs: selectedBatchIDs))
     }
@@ -877,7 +876,7 @@ struct CuratedWizardSheet: View {
               freshScene(scene).centerStagePath == nil,
               computingPathSceneID != scene.id else { return }
         computingPathSceneID = scene.id
-        let camera = UserDefaults.standard.string(forKey: "wizard.centerStageCamera") ?? "balanced"
+        let camera = WizardDefaults.fallbackFramingCamera
         let sceneID = scene.id
         Task {
             await store.computeCameraPath(sceneID: sceneID, videoID: scene.videoID,
@@ -1673,9 +1672,6 @@ final class CuratedWizardModel {
     var step: Step = .scenes
     /// The picker's live value — stamped onto each pick as it's approved.
     var transitionStyle = "cut"       // cut | fade | action
-    /// Wide proposals start with Center Stage on when the wizard form has it
-    /// enabled for wide footage.
-    let centerStageDefault: Bool
 
     private(set) var queue: [SceneRecord]
     private var position = 0
@@ -1699,12 +1695,11 @@ final class CuratedWizardModel {
     var editSpeed: Double = 1
 
     init(queue: [SceneRecord], targetDuration: Double, includeOutro: Bool,
-         centerStageDefault: Bool = false, batchNames: [Int64: String] = [:],
+         batchNames: [Int64: String] = [:],
          selectedBatchIDs: [Int64] = []) {
         self.queue = queue
         self.targetDuration = max(3, targetDuration)
         self.includeOutro = includeOutro
-        self.centerStageDefault = centerStageDefault
         self.batchNames = batchNames
         // Every batch the user SELECTED stays listed — even ones the filters
         // emptied out, so they can see why nothing is proposed from them.
@@ -1919,7 +1914,9 @@ final class CuratedWizardModel {
         } else {
             editStart = scene.startTime
             editEnd = scene.endTime
-            editCenterStage = scene.wide && centerStageDefault
+            // A scene's reviewed framing is its default. Users can still turn
+            // it on here to compute a path for an unframed wide scene.
+            editCenterStage = scene.wide && scene.centerStagePath != nil
             editSpeed = 1
         }
     }

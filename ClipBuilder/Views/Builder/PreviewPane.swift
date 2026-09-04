@@ -9,26 +9,26 @@ import SwiftUI
 struct PreviewPane: View {
     @Environment(AppStore.self) private var store
 
-    /// Screen-crop areas referenced by the document, resolved once per
-    /// change so the preview can mask clips the way the render will.
-    @State private var cropAreas: [String: ScreenCropArea] = [:]
-
     var body: some View {
         let model = store.builder
         // Snap the preview time to the 0.5s grid so scrubbing reuses cached
         // thumbnails instead of extracting a frame per pixel.
         let time = BuilderTimelineModel.snap(model.playhead)
-        let cropReferences = Set(model.document.videoTrack.compactMap(\.screenCrop))
+        // The cropping row decides each track's area at this instant; a
+        // track without one shows nothing, exactly like the render.
+        let layout = model.document.cropBlock(at: time)?.layout
         let active = model.document.videoTrack
             .filter { $0.startTime <= time + 0.001 && time < $0.startTime + $0.duration }
-            .sorted { ($0.track, $0.stackOrder) < ($1.track, $1.stackOrder) }
+            .filter { layout == nil || $0.track < (layout?.areaCount ?? 1) }
+            .sorted { ($0.track, $0.startTime) < ($1.track, $1.startTime) }
 
         GeometryReader { geo in
             let frame = fittedFrame(in: geo.size)
             ZStack(alignment: .topLeading) {
                 Rectangle().fill(.black)
                 ForEach(active) { clip in
-                    clipLayer(clip: clip, time: time, frame: frame, model: model)
+                    clipLayer(clip: clip, time: time, frame: frame, model: model,
+                              area: layout?.area(forTrack: clip.track))
                 }
                 ForEach(model.document.imageOverlays.filter {
                     $0.startTime <= time && time < $0.endTime
@@ -45,6 +45,21 @@ struct PreviewPane: View {
                    selected.freeCrops?.isEmpty == false {
                     CropEditorLayer(clip: selected, time: time, frame: frame)
                 }
+                // A selected crop block outlines its areas over the still —
+                // the focused track's area in green — so the layout reads
+                // even where a track has no clip yet.
+                if case .crop(let uid) = model.selection,
+                   let block = model.cropBlock(uid),
+                   block.startTime <= time + 0.001, time < block.endTime + 0.001,
+                   let layout {
+                    ForEach(Array(layout.orderedAreas.enumerated()), id: \.offset) { index, area in
+                        ScreenCropPolygon(points: area.points)
+                            .stroke(index == model.highlightedTrack ? Color.green : Color.white.opacity(0.7),
+                                    lineWidth: index == model.highlightedTrack ? 2 : 1)
+                            .frame(width: frame.width, height: frame.height)
+                            .allowsHitTesting(false)
+                    }
+                }
                 if active.isEmpty {
                     Image(systemName: "film")
                         .font(.largeTitle)
@@ -57,13 +72,6 @@ struct PreviewPane: View {
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .aspectRatio(9 / 16, contentMode: .fit)
-        .task(id: cropReferences) {
-            var resolved: [String: ScreenCropArea] = [:]
-            for reference in cropReferences {
-                if let area = ScreenCropStore.area(reference: reference) { resolved[reference] = area }
-            }
-            cropAreas = resolved
-        }
     }
 
     private func fittedFrame(in size: CGSize) -> CGSize {
@@ -73,24 +81,36 @@ struct PreviewPane: View {
 
     @ViewBuilder
     private func clipLayer(clip: TimelineClip, time: Double, frame: CGSize,
-                           model: BuilderTimelineModel) -> some View {
+                           model: BuilderTimelineModel, area: ScreenCropArea?) -> some View {
         if let url = model.sourceURL(for: clip) {
             let sourceTime = model.sourceTime(for: clip, atTimeline: time)
             let settings = model.document.trackSettings[safe: clip.track] ?? TrackSettings()
             let cropped = clip.wide && (clip.cropXFrac ?? settings.defaultCropXFrac) != nil
-            let area = clip.screenCrop.flatMap { cropAreas[$0] }
             Group {
                 if let area {
-                    // Screen crop: the render frames the footage INTO the
-                    // area's bounding box (tracking camera) — approximate
-                    // with a center-filled thumbnail there.
                     let box = AreaFramer.pixelBounds(of: area)
                     let scale = frame.width / CGFloat(RenderEngine.outputWidth)
-                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: box.width * scale, height: box.height * scale)
-                        .clipped()
-                        .offset(x: box.minX * scale, y: box.minY * scale)
+                    let boxSize = CGSize(width: box.width * scale, height: box.height * scale)
+                    if let window = clip.areaWindow {
+                        // Hand-placed window: show exactly that part of the
+                        // source, scaled so the window fills the area's box.
+                        let fullWidth = boxSize.width / max(0.01, window.wFrac)
+                        let fullHeight = boxSize.height / max(0.01, window.hFrac)
+                        VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                            .frame(width: fullWidth, height: fullHeight)
+                            .offset(x: -window.xFrac * fullWidth, y: -window.yFrac * fullHeight)
+                            .frame(width: boxSize.width, height: boxSize.height, alignment: .topLeading)
+                            .clipped()
+                            .offset(x: box.minX * scale, y: box.minY * scale)
+                    } else {
+                        // Tracking camera: approximate with a center-filled
+                        // thumbnail in the area's bounding box.
+                        VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                            .aspectRatio(contentMode: .fill)
+                            .frame(width: boxSize.width, height: boxSize.height)
+                            .clipped()
+                            .offset(x: box.minX * scale, y: box.minY * scale)
+                    }
                 } else if clip.wide && !cropped {
                     // Slot band: 1080x640 at top/center/bottom.
                     let position = clip.position ?? settings.defaultPosition
@@ -131,6 +151,7 @@ private struct CropEditorLayer: View {
 
     @State private var image: NSImage?
     @State private var drag: (crop: Int, corner: Corner?, start: FreeCropRect)?
+    @State private var selectedCropIndex: Int?
 
     private enum Corner: CaseIterable {
         case topLeft, topRight, bottomLeft, bottomRight
@@ -191,9 +212,10 @@ private struct CropEditorLayer: View {
                           y: fitted.minY + src.yFrac * fitted.height,
                           width: src.wFrac * fitted.width,
                           height: src.hFrac * fitted.height)
+        let isSelected = selectedCropIndex == index
         ZStack(alignment: .topLeading) {
             Rectangle().fill(Color.accentColor.opacity(0.15))
-            Rectangle().strokeBorder(Color.accentColor, lineWidth: 1.5)
+            Rectangle().strokeBorder(Color.accentColor, lineWidth: isSelected ? 3 : 1.5)
             Text("\(index + 1)")
                 .font(.caption2.bold())
                 .foregroundStyle(.white)
@@ -204,7 +226,24 @@ private struct CropEditorLayer: View {
         }
         .frame(width: rect.width, height: rect.height)
         .offset(x: rect.minX, y: rect.minY)
+        .onTapGesture { selectedCropIndex = index }
         .gesture(dragGesture(index: index, corner: nil, fitted: fitted))
+        .focusable()
+        .onMoveCommand { direction in
+            switch direction {
+            case .left: nudgeCrop(index: index, dx: -0.02, dy: 0)
+            case .right: nudgeCrop(index: index, dx: 0.02, dy: 0)
+            case .up: nudgeCrop(index: index, dx: 0, dy: -0.02)
+            case .down: nudgeCrop(index: index, dx: 0, dy: 0.02)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Crop \(index + 1)")
+        .accessibilityHint("Drag to move or resize. Arrow keys nudge the focused crop.")
+        .accessibilityAction(named: "Move left") { nudgeCrop(index: index, dx: -0.02, dy: 0) }
+        .accessibilityAction(named: "Move right") { nudgeCrop(index: index, dx: 0.02, dy: 0) }
+        .accessibilityAction(named: "Move up") { nudgeCrop(index: index, dx: 0, dy: -0.02) }
+        .accessibilityAction(named: "Move down") { nudgeCrop(index: index, dx: 0, dy: 0.02) }
         ForEach(Corner.allCases, id: \.self) { corner in
             Circle()
                 .fill(Color.accentColor)
@@ -233,6 +272,7 @@ private struct CropEditorLayer: View {
                           crops.indices.contains(index) else { return }
                     drag = (index, corner, crops[index].src)
                 }
+                selectedCropIndex = index
                 guard let drag else { return }
                 let newRect = Self.transformed(drag.start, corner: corner,
                                                dx: value.translation.width / fitted.width,
@@ -249,6 +289,19 @@ private struct CropEditorLayer: View {
                 }
             }
             .onEnded { _ in drag = nil }
+    }
+
+    private func nudgeCrop(index: Int, dx: Double, dy: Double) {
+        let model = store.builder
+        selectedCropIndex = index
+        model.updateClip(clip.uid) {
+            guard var crops = $0.freeCrops, crops.indices.contains(index) else { return }
+            let updated = Self.transformed(crops[index].src, corner: nil, dx: dx, dy: dy)
+            let coupled = crops[index].dst == crops[index].src
+            crops[index].src = updated
+            if coupled { crops[index].dst = updated }
+            $0.freeCrops = crops
+        }
     }
 
     /// Move (corner == nil) or corner-resize the start rect by a fractional
@@ -296,10 +349,12 @@ private struct ImageOverlayLayer: View {
 
     @State private var image: NSImage?
     @State private var dragStart: CGPoint?
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         let width = frame.width * overlay.wFrac
         let height = image.map { width * $0.size.height / max(1, $0.size.width) } ?? width
+        let accessibilityName = "Image overlay " + overlay.displayName
         Group {
             if let image {
                 Image(nsImage: image)
@@ -330,8 +385,33 @@ private struct ImageOverlayLayer: View {
                 }
                 .onEnded { _ in dragStart = nil }
         )
+        .focusable()
+        .focused($isFocused)
+        .onMoveCommand { direction in
+            switch direction {
+            case .left: nudge(x: -0.02, y: 0)
+            case .right: nudge(x: 0.02, y: 0)
+            case .up: nudge(x: 0, y: -0.02)
+            case .down: nudge(x: 0, y: 0.02)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityName)
+        .accessibilityHint("Drag to reposition. Arrow keys nudge the focused overlay.")
+        .accessibilityAction(named: "Move left") { nudge(x: -0.02, y: 0) }
+        .accessibilityAction(named: "Move right") { nudge(x: 0.02, y: 0) }
+        .accessibilityAction(named: "Move up") { nudge(x: 0, y: -0.02) }
+        .accessibilityAction(named: "Move down") { nudge(x: 0, y: 0.02) }
         .task(id: overlay.path) {
             image = NSImage(contentsOf: overlay.url)
+        }
+    }
+
+    private func nudge(x: CGFloat, y: CGFloat) {
+        store.builder.selection = .image(overlay.uid)
+        store.builder.updateImage(overlay.uid) {
+            $0.xFrac = min(max($0.xFrac + x, 0), 1)
+            $0.yFrac = min(max($0.yFrac + y, 0), 1)
         }
     }
 }
@@ -345,6 +425,7 @@ private struct TextOverlayLayer: View {
 
     /// Fractional position at the moment the drag started; nil when idle.
     @State private var dragStart: CGPoint?
+    @FocusState private var isFocused: Bool
 
     var body: some View {
         let (r, g, b) = TextOverlayRenderer.parseColor(overlay.fontcolor)
@@ -385,10 +466,35 @@ private struct TextOverlayLayer: View {
                     }
                     .onEnded { _ in dragStart = nil }
             )
+            .focusable()
+            .focused($isFocused)
+            .onMoveCommand { direction in
+                switch direction {
+                case .left: nudge(x: -0.02, y: 0)
+                case .right: nudge(x: 0.02, y: 0)
+                case .up: nudge(x: 0, y: -0.02)
+                case .down: nudge(x: 0, y: 0.02)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Text overlay \(overlay.text.isEmpty ? "Text" : overlay.text)")
+            .accessibilityHint("Drag to reposition. Arrow keys nudge the focused overlay.")
+            .accessibilityAction(named: "Move left") { nudge(x: -0.02, y: 0) }
+            .accessibilityAction(named: "Move right") { nudge(x: 0.02, y: 0) }
+            .accessibilityAction(named: "Move up") { nudge(x: 0, y: -0.02) }
+            .accessibilityAction(named: "Move down") { nudge(x: 0, y: 0.02) }
     }
 
     private var backgroundColor: Color {
         let (r, g, b) = TextOverlayRenderer.parseColor(overlay.bgcolor, fallback: (0, 0, 0))
         return Color(red: r, green: g, blue: b)
+    }
+
+    private func nudge(x: CGFloat, y: CGFloat) {
+        store.builder.selection = .text(overlay.uid)
+        store.builder.updateText(overlay.uid) {
+            $0.xFrac = min(max(($0.xFrac ?? 0.5) + x, 0), 1)
+            $0.yFrac = min(max(($0.yFrac ?? 0.5) + y, 0), 1)
+        }
     }
 }

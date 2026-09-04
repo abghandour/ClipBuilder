@@ -48,27 +48,22 @@ struct AssetBrowserView: View {
         .navigationSubtitle(subtitle)
         .toolbar {
             ToolbarItemGroup {
-                Button {
-                    newFolderName = ""
-                    showingNewFolder = true
-                } label: {
-                    Label("New Folder", systemImage: "folder.badge.plus")
-                }
-                .help("Create a folder inside the current folder")
-
-                Button {
+                Button("Add Files", systemImage: "plus") {
                     showingImporter = true
-                } label: {
-                    Label("Add Files", systemImage: "plus")
                 }
                 .help("Copy files into the current folder")
 
-                Button {
-                    NSWorkspace.shared.open(currentFolder)
-                } label: {
-                    Label("Show in Finder", systemImage: "folder")
+                Menu("More", systemImage: "ellipsis.circle") {
+                    Button("New Folder", systemImage: "folder.badge.plus") {
+                        newFolderName = ""
+                        showingNewFolder = true
+                    }
+                    Divider()
+                    Button("Show in Finder", systemImage: "folder") {
+                        NSWorkspace.shared.open(currentFolder)
+                    }
                 }
-                .help("Open the current folder in Finder")
+                .help("Create folders or reveal this library in Finder")
             }
         }
         .fileImporter(isPresented: $showingImporter,
@@ -233,32 +228,34 @@ struct AssetBrowserView: View {
 
     @ViewBuilder
     private func imageTile(for item: AssetItem) -> some View {
-        VStack(spacing: 6) {
-            if item.isFolder {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 42))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 100)
-                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
-            } else {
-                ImageThumbnail(url: item.url)
-                    .frame(height: 100)
-            }
-            Text(item.name)
-                .font(.caption)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
+        Button {
             if item.isFolder {
                 open(item)
             } else {
                 previewImage = item
             }
+        } label: {
+            VStack(spacing: 6) {
+                if item.isFolder {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 42))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 100)
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    ImageThumbnail(url: item.url)
+                        .frame(height: 100)
+                }
+                Text(item.name)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
         }
-        .help(item.isFolder ? "Double-click to open" : "Double-click to preview")
+        .buttonStyle(.plain)
+        .accessibilityLabel(item.isFolder ? "Open folder \(item.name)" : "Preview image \(item.name)")
+        .help(item.isFolder ? "Open folder" : "Preview image")
     }
 
     // MARK: - Shared actions
@@ -354,10 +351,12 @@ private struct MusicRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Button(action: togglePlay) {
-                Image(systemName: isPlaying ? "stop.circle.fill" : "play.circle")
+                Label(isPlaying ? "Stop preview" : "Play preview",
+                      systemImage: isPlaying ? "stop.circle.fill" : "play.circle")
                     .font(.title2)
                     .foregroundStyle(isPlaying ? Color.accentColor : Color.secondary)
             }
+            .labelStyle(.iconOnly)
             .buttonStyle(.plain)
             .help(isPlaying ? "Stop" : "Play")
 
@@ -491,8 +490,8 @@ private struct ImagePreviewSheet: View {
             }
         }
         .modalCloseButton { dismiss() }
-        .task {
-            image = NSImage(contentsOf: url)
+        .task(id: url.path) {
+            image = await ImageCache.image(for: url, maxPixel: 1800)
             loadFailed = image == nil
         }
     }

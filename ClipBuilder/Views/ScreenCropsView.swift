@@ -22,6 +22,8 @@ struct ScreenCropPolygon: Shape {
 /// the Builder and the AI Wizard apply an area to a clip by its
 /// "Layout/Area" name, and only that part of the clip stays visible.
 struct ScreenCropsView: View {
+    @AppStorage(WizardDefaults.useScreenCropsKey) private var aiLayoutsEnabled = false
+    @AppStorage(WizardDefaults.screenCropLayoutsKey) private var aiLayoutsRaw = ""
     @State private var layouts: [ScreenCropLayout] = []
     @State private var selectedName: String?
     @State private var layout = ScreenCropLayout(name: "")
@@ -29,6 +31,7 @@ struct ScreenCropsView: View {
     @State private var saveTask: Task<Void, Never>?
     /// Layout the debounced save will write, for a flush on selection change.
     @State private var pendingSave: ScreenCropLayout?
+    @State private var isSaving = false
 
     @State private var renamePrompt = false
     @State private var renameText = ""
@@ -40,32 +43,17 @@ struct ScreenCropsView: View {
             layoutList
                 .rememberedPaneWidth("pane.screencrops.list", min: 200, initial: 230, max: 300)
                 .frame(maxHeight: .infinity)
-            if let selectedName,
-               layouts.contains(where: { $0.name == selectedName }) || isBuiltInSelected {
+            if showsEditor {
                 ScreenCropEditor(layout: $layout, readOnly: isBuiltInSelected)
                     .frame(minWidth: 620, maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ContentUnavailableView("Select a Screen Crop", systemImage: "crop",
-                                       description: Text("Pick a built-in layout to see it, or create a custom one and draw named areas — \"top\", \"left fighter\", \"ring\". Clips framed into an area keep the people in focus; the rest of the frame shows the other areas' clips."))
-                    .frame(minWidth: 620, maxWidth: .infinity, maxHeight: .infinity)
+                screenCropEmptyState
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("Screen Crop")
-        .navigationSubtitle("\(layouts.count) layout\(layouts.count == 1 ? "" : "s") · "
-                            + "\(layouts.reduce(0) { $0 + $1.areas.count }) areas")
-        .toolbar {
-            ToolbarItemGroup {
-                Button("New Screen Crop", systemImage: "plus", action: createLayout)
-                    .help("Create a screen-crop layout")
-                Button("Show in Finder", systemImage: "folder") {
-                    try? FileManager.default.createDirectory(at: ScreenCropStore.directory,
-                                                             withIntermediateDirectories: true)
-                    NSWorkspace.shared.open(ScreenCropStore.directory)
-                }
-                .help("Open the screen crops folder in Finder")
-            }
-        }
+        .navigationSubtitle(navigationSubtitle)
+        .toolbar { screenCropToolbarContent }
         .alert("Rename Screen Crop", isPresented: $renamePrompt) {
             TextField("Name", text: $renameText)
             Button("Rename", action: renameSelected)
@@ -95,6 +83,9 @@ struct ScreenCropsView: View {
             self.watcher = watcher
         }
         .onDisappear {
+            // Navigation may happen before the debounce fires. Write the
+            // current snapshot instead of silently dropping the final edit.
+            flushPendingSave()
             watcher?.stop()
             watcher = nil
             saveTask?.cancel()
@@ -103,9 +94,7 @@ struct ScreenCropsView: View {
             // A pending debounced save of the outgoing layout must land
             // before its state is replaced, or the last edit is lost.
             flushPendingSave()
-            if let name, let match = (layouts + builtInLayouts).first(where: { $0.name == name }) {
-                layout = match
-            }
+            loadLayout(named: name)
         }
         .onChange(of: layout) { _, updated in
             guard updated.name == selectedName, !updated.name.isEmpty, !isBuiltInSelected else { return }
@@ -122,6 +111,105 @@ struct ScreenCropsView: View {
 
     private var isBuiltInSelected: Bool {
         selectedName.map { name in builtInLayouts.contains { $0.name == name } } ?? false
+    }
+
+    private var showsEditor: Bool {
+        guard let selectedName else { return false }
+        if isBuiltInSelected { return true }
+        for item in layouts where item.name == selectedName { return true }
+        return false
+    }
+
+    private var screenCropEmptyState: some View {
+        ContentUnavailableView(
+            "Select a Screen Crop",
+            systemImage: "crop",
+            description: Text("Pick a built-in layout to see it, or create a custom one and draw named areas."))
+            .frame(minWidth: 620, maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ToolbarContentBuilder
+    private var screenCropToolbarContent: some ToolbarContent {
+        ToolbarItemGroup {
+            Button("New Screen Crop", systemImage: "plus", action: createLayout)
+                .help("Create a screen-crop layout")
+            if selectedName != nil, !isBuiltInSelected {
+                Label(isSaving ? "Saving…" : "Saved",
+                      systemImage: isSaving ? "arrow.triangle.2.circlepath" : "checkmark")
+                    .font(.caption)
+                    .foregroundStyle(isSaving ? Color.secondary : Color.green)
+            }
+            Menu("More", systemImage: "ellipsis.circle") {
+                Menu("AI availability", systemImage: "wand.and.stars") {
+                    aiAvailabilityMenuItems
+                }
+                Divider()
+                Button("Show in Finder", systemImage: "folder") {
+                    try? FileManager.default.createDirectory(at: ScreenCropStore.directory,
+                                                             withIntermediateDirectories: true)
+                    NSWorkspace.shared.open(ScreenCropStore.directory)
+                }
+            }
+            .help("Open AI availability and file-location options")
+        }
+    }
+
+    @ViewBuilder
+    private var aiAvailabilityMenuItems: some View {
+        Toggle("Allow multi-panel layouts", isOn: $aiLayoutsEnabled)
+        if aiLayoutsEnabled {
+            if usableLayouts.isEmpty {
+                Text("Create a layout with at least one area first.")
+            } else {
+                Section("Available to AI") {
+                    ForEach(usableLayouts) { item in
+                        Toggle(item.name, isOn: aiLayoutBinding(for: item.name))
+                    }
+                }
+                Divider()
+                Button("Allow All Layouts") {
+                    setAILayoutAvailability(Set(usableLayouts.map(\.name)))
+                }
+                Button("Allow No Layouts") {
+                    setAILayoutAvailability([])
+                }
+            }
+        }
+    }
+
+    private var navigationSubtitle: String {
+        let areaCount = layouts.reduce(0) { partial, layout in
+            partial + layout.areas.count
+        }
+        return "\(layouts.count) layout\(layouts.count == 1 ? "" : "s") · \(areaCount) areas"
+    }
+
+    private var usableLayouts: [ScreenCropLayout] {
+        (builtInLayouts + layouts).filter { !$0.areas.isEmpty }
+    }
+
+    private var aiLayoutAvailability: Set<String> {
+        guard aiLayoutsEnabled else { return [] }
+        let names = Set(usableLayouts.map(\.name))
+        let saved = Set(aiLayoutsRaw.split(separator: ",").map(String.init))
+        return saved.isEmpty ? names : names.intersection(saved)
+    }
+
+    private func aiLayoutBinding(for name: String) -> Binding<Bool> {
+        Binding(
+            get: { aiLayoutAvailability.contains(name) },
+            set: { enabled in
+                var selected = aiLayoutAvailability
+                if enabled { selected.insert(name) } else { selected.remove(name) }
+                setAILayoutAvailability(selected)
+            }
+        )
+    }
+
+    private func setAILayoutAvailability(_ selected: Set<String>) {
+        WizardDefaults.setScreenCropAvailability(selected, all: usableLayouts.map(\.name))
+        aiLayoutsEnabled = UserDefaults.standard.bool(forKey: WizardDefaults.useScreenCropsKey)
+        aiLayoutsRaw = UserDefaults.standard.string(forKey: WizardDefaults.screenCropLayoutsKey) ?? ""
     }
 
     private var layoutList: some View {
@@ -181,11 +269,20 @@ struct ScreenCropsView: View {
         }
     }
 
+    private func loadLayout(named name: String?) {
+        guard let name else { return }
+        for candidate in layouts + builtInLayouts where candidate.name == name {
+            layout = candidate
+            return
+        }
+    }
+
     /// Write the layout a pending `scheduleSave` was about to write.
     private func flushPendingSave() {
         guard let pending = pendingSave else { return }
         saveTask?.cancel()
         pendingSave = nil
+        isSaving = false
         do {
             try ScreenCropStore.save(pending)
             if let index = layouts.firstIndex(where: { $0.name == pending.name }) {
@@ -199,6 +296,7 @@ struct ScreenCropsView: View {
     private func scheduleSave(_ updated: ScreenCropLayout) {
         saveTask?.cancel()
         pendingSave = updated
+        isSaving = true
         saveTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
@@ -211,6 +309,7 @@ struct ScreenCropsView: View {
             } catch {
                 operationError = error.userMessage
             }
+            isSaving = false
         }
     }
 
@@ -286,23 +385,86 @@ struct ScreenCropEditor: View {
     private static let snapDistance: CGFloat = 12
 
     var body: some View {
-        HStack(spacing: 0) {
-            GeometryReader { geo in
-                let frame = fittedFrame(in: geo.size)
-                let origin = CGPoint(x: (geo.size.width - frame.width) / 2,
-                                     y: (geo.size.height - frame.height) / 2)
-                canvas(size: frame)
-                    .frame(width: frame.width, height: frame.height)
-                    .offset(x: origin.x, y: origin.y)
-            }
-            .padding(Theme.spaceL)
-            .background(Color(nsColor: .underPageBackgroundColor))
-
+        VStack(spacing: 0) {
+            modeBar
             Divider()
+            HStack(spacing: 0) {
+                GeometryReader { geo in
+                    let frame = fittedFrame(in: geo.size)
+                    let origin = CGPoint(x: (geo.size.width - frame.width) / 2,
+                                         y: (geo.size.height - frame.height) / 2)
+                    canvas(size: frame)
+                        .frame(width: frame.width, height: frame.height)
+                        .offset(x: origin.x, y: origin.y)
+                }
+                .padding(Theme.spaceL)
+                .background(Color(nsColor: .underPageBackgroundColor))
 
-            sidePanel
-                .frame(width: 250)
+                Divider()
+
+                sidePanel
+                    .frame(width: 250)
+            }
         }
+    }
+
+    private var modeBar: some View {
+        HStack(spacing: 8) {
+            if drawing.isEmpty {
+                Label(drawMode ? "Draw mode" : "Select mode",
+                      systemImage: drawMode ? "pencil.tip" : "cursorarrow")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Label("\(drawing.count) point\(drawing.count == 1 ? "" : "s") placed",
+                      systemImage: "point.3.connected.trianglepath.dotted")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if !readOnly {
+                Menu("Add Preset", systemImage: "rectangle.split.3x1") {
+                    Button("Full Frame") {
+                        addPresetArea(baseName: "Full Frame", x: 0, y: 0, width: 1, height: 1)
+                    }
+                    Button("Top Half") {
+                        addPresetArea(baseName: "Top", x: 0, y: 0, width: 1, height: 0.5)
+                    }
+                    Button("Bottom Half") {
+                        addPresetArea(baseName: "Bottom", x: 0, y: 0.5, width: 1, height: 0.5)
+                    }
+                    Button("Left Half") {
+                        addPresetArea(baseName: "Left", x: 0, y: 0, width: 0.5, height: 1)
+                    }
+                    Button("Right Half") {
+                        addPresetArea(baseName: "Right", x: 0.5, y: 0, width: 0.5, height: 1)
+                    }
+                }
+                .controlSize(.small)
+                .help("Add a basic rectangular area without drawing on the canvas")
+                Toggle("Draw area", isOn: $drawMode)
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                    .help("Every click adds a point instead of selecting an existing area")
+                if !drawing.isEmpty {
+                    Button("Undo Point", systemImage: "arrow.uturn.backward") {
+                        drawing.removeLast()
+                    }
+                    .controlSize(.small)
+                    Button("Finish", systemImage: "checkmark") {
+                        closeDrawing()
+                    }
+                    .controlSize(.small)
+                    .disabled(drawing.count < 3)
+                    Button("Cancel", systemImage: "xmark") {
+                        drawing = []
+                    }
+                    .controlSize(.small)
+                }
+            }
+        }
+        .padding(.horizontal, Theme.spaceM)
+        .padding(.vertical, Theme.spaceS)
     }
 
     // MARK: - Canvas
@@ -452,10 +614,6 @@ struct ScreenCropEditor: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-
-            Toggle("Always draw", isOn: $drawMode)
-                .disabled(readOnly)
-                .help("On: every click adds a point, even inside an existing area. Off: clicking inside an area selects it.")
 
             Divider()
 
@@ -657,6 +815,27 @@ struct ScreenCropEditor: View {
         }
         layout.areas.append(ScreenCropArea(name: name, points: points))
         drawing = []
+        selectedArea = name
+    }
+
+    private func addPresetArea(baseName: String, x: Double, y: Double, width: Double, height: Double) {
+        var index = 1
+        var name = baseName
+        while layout.areas.contains(where: { $0.name == name }) {
+            index += 1
+            name = "\(baseName) \(index)"
+        }
+        layout.areas.append(ScreenCropArea(
+            name: name,
+            points: [
+                ScreenCropPoint(x: x, y: y),
+                ScreenCropPoint(x: x + width, y: y),
+                ScreenCropPoint(x: x + width, y: y + height),
+                ScreenCropPoint(x: x, y: y + height),
+            ]
+        ))
+        drawing = []
+        drawMode = false
         selectedArea = name
     }
 

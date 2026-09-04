@@ -10,6 +10,9 @@ import UniformTypeIdentifiers
 /// assets/effects. The bottom bar plays/pauses everything, sets playback
 /// speed, and swaps the test cards for stills from videos of your choice.
 struct EffectsView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(WizardDefaults.limitTransitionsKey) private var aiTransitionsLimited = false
+    @AppStorage(WizardDefaults.allowedTransitionsKey) private var aiTransitionsRaw = ""
     @State private var previews: [String: URL] = [:]
     @State private var rendering: Set<String> = []
     @State private var failures: [String: String] = [:]
@@ -18,7 +21,7 @@ struct EffectsView: View {
 
     /// Everything plays unless paused here; a card click flips just that
     /// card, Play All / Pause All reset every override.
-    @State private var playingAll = true
+    @State private var playingAll = false
     @State private var playOverrides: [String: Bool] = [:]
     @AppStorage("effects.playbackSpeed") private var playbackSpeed = 1.0
     @State private var samples = EffectSampleSet.saved
@@ -31,37 +34,78 @@ struct EffectsView: View {
 
     private var effects: [TransitionEffect] { TransitionCatalog.all }
 
+    private var aiTransitionAvailability: Set<String> {
+        // Read through the AppStorage values so the view re-renders on change.
+        _ = (aiTransitionsLimited, aiTransitionsRaw)
+        return WizardDefaults.transitionAvailability(all: effects.map(\.name))
+    }
+
+    private func aiTransitionBinding(for name: String) -> Binding<Bool> {
+        Binding(
+            get: { aiTransitionAvailability.contains(name) },
+            set: { enabled in
+                var selected = aiTransitionAvailability
+                if enabled { selected.insert(name) } else { selected.remove(name) }
+                setAITransitionAvailability(selected)
+            }
+        )
+    }
+
+    private func setAITransitionAvailability(_ selected: Set<String>) {
+        WizardDefaults.setTransitionAvailability(selected, all: effects.map(\.name))
+        aiTransitionsLimited = UserDefaults.standard.bool(forKey: WizardDefaults.limitTransitionsKey)
+        aiTransitionsRaw = UserDefaults.standard.string(forKey: WizardDefaults.allowedTransitionsKey) ?? ""
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Theme.spaceXL) {
+                if !previews.isEmpty {
+                    DisclosureGroup("Preview controls") {
+                        playbackBar
+                            .padding(.top, Theme.spaceS)
+                    }
+                }
                 ForEach(TransitionEffect.Category.allCases, id: \.self) { category in
                     categorySection(category)
                 }
             }
             .padding()
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                Divider()
-                playbackBar
-            }
-            .background(.bar)
-        }
-        .navigationTitle("Effects")
+        .navigationTitle("Transitions")
         .navigationSubtitle("\(effects.count) transitions")
         .toolbar {
             ToolbarItemGroup {
-                Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
-                    renderAll()
+                Menu("More", systemImage: "ellipsis.circle") {
+                    Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
+                        renderAll()
+                    }
+                    .disabled(renderAllTask != nil)
+                    Menu("AI Palette", systemImage: "wand.and.stars") {
+                        Button("Let AI Choose Any Effect") {
+                            setAITransitionAvailability(Set(effects.map(\.name)))
+                        }
+                        Button("Hard Cuts Only") {
+                            setAITransitionAvailability([])
+                        }
+                        Divider()
+                        ForEach(TransitionEffect.Category.allCases.filter { $0 != .cut }, id: \.self) { category in
+                            let members = effects.filter { $0.category == category }
+                            Menu(category.title) {
+                                ForEach(members) { effect in
+                                    Toggle(effect.title, isOn: aiTransitionBinding(for: effect.name))
+                                }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Show in Finder", systemImage: "folder") {
+                        try? FileManager.default.createDirectory(at: EffectPreviewRenderer.directory,
+                                                                 withIntermediateDirectories: true)
+                        NSWorkspace.shared.open(EffectPreviewRenderer.directory)
+                    }
                 }
-                .disabled(renderAllTask != nil)
-                .help("Render a sample clip for every effect that doesn't have one yet")
-                Button("Show in Finder", systemImage: "folder") {
-                    try? FileManager.default.createDirectory(at: EffectPreviewRenderer.directory,
-                                                             withIntermediateDirectories: true)
-                    NSWorkspace.shared.open(EffectPreviewRenderer.directory)
-                }
-                .help("Open the rendered previews folder in Finder")
+                .help("Render previews, manage AI availability, or reveal cached files")
             }
         }
         .fileImporter(isPresented: Binding(get: { pickingSample != nil },
@@ -108,24 +152,30 @@ struct EffectsView: View {
 
     private func card(_ effect: TransitionEffect) -> some View {
         let playing = isPlaying(effect)
+        let animating = playing && !reduceMotion
         return VStack(alignment: .leading, spacing: 6) {
             ZStack {
                 Rectangle().fill(.black)
                 if let url = previews[effect.name] {
-                    LoopingVideoView(url: url, isPlaying: playing, rate: Float(playbackSpeed))
-                        .overlay {
-                            if !playing {
-                                Image(systemName: "play.fill")
-                                    .font(.title2)
-                                    .foregroundStyle(.white.opacity(0.85))
-                                    .shadow(radius: 3)
+                    Button {
+                        playOverrides[effect.name] = !playing
+                    } label: {
+                        LoopingVideoView(url: url, isPlaying: animating, rate: Float(playbackSpeed))
+                            .overlay {
+                                if !animating {
+                                    Image(systemName: "play.fill")
+                                        .font(.title2)
+                                        .foregroundStyle(.white.opacity(0.85))
+                                        .shadow(radius: 3)
+                                }
                             }
-                        }
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            playOverrides[effect.name] = !playing
-                        }
-                        .help(playing ? "Click to pause" : "Click to play")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(reduceMotion)
+                    .accessibilityLabel(animating ? "Pause \(effect.title) preview" : "Play \(effect.title) preview")
+                    .help(reduceMotion
+                          ? "Preview animation is disabled because Reduce Motion is on"
+                          : (animating ? "Pause preview" : "Play preview"))
                 } else if rendering.contains(effect.name) {
                     ProgressView()
                         .controlSize(.small)
@@ -154,7 +204,6 @@ struct EffectsView: View {
             }
             .aspectRatio(9 / 16, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
-            .onAppear { if previews[effect.name] == nil { render(effect) } }
 
             HStack(alignment: .firstTextBaseline) {
                 Text(effect.title)
@@ -188,6 +237,7 @@ struct EffectsView: View {
                 playingAll = true
                 playOverrides = [:]
             }
+            .disabled(reduceMotion)
             .help("Play every preview")
             Button("Pause All", systemImage: "pause.fill") {
                 playingAll = false

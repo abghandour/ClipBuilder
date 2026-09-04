@@ -10,6 +10,7 @@ struct BuilderView: View {
     @State private var playingClip: TimelineClip?
     @State private var showLog = false
     @State private var showPreview = false
+    @State private var showScenePicker = false
     @State private var showImagePicker = false
     @State private var confirmClear = false
 
@@ -20,20 +21,14 @@ struct BuilderView: View {
                 .rememberedPaneWidth("pane.builder.browser", min: 250, initial: 300, max: 420)
                 .frame(maxHeight: .infinity, alignment: .top)
             VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    PreviewPane()
-                        .padding(10)
-                        .frame(maxWidth: .infinity)
-                        .overlay {
-                            // Hidden while the crop editor is up so it never
-                            // covers the crop rectangles.
-                            if !model.document.videoTrack.isEmpty && !isCropEditing {
-                                PreviewPlayButton { showPreview = true }
-                            }
-                        }
-                    Divider()
+                HSplitView {
+                    BuilderWorkspacePreview(onOpenPreview: { showPreview = true },
+                                            onAddClip: { showScenePicker = true })
+                        .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                        .layoutPriority(1)
                     BuilderInspector()
-                        .frame(width: 270)
+                        .rememberedPaneWidth("pane.builder.inspector", min: 240, initial: 310, max: 460)
+                        .frame(maxHeight: .infinity)
                 }
                 .frame(maxHeight: .infinity)
 
@@ -44,7 +39,7 @@ struct BuilderView: View {
                 TimelineView(onPlayClip: { playingClip = $0 })
                     .frame(minHeight: 200, idealHeight: 260, maxHeight: 340)
 
-                if showLog || store.isBuilderRendering {
+                if showLog || store.isBuilderRendering || store.isBuilderPreviewRendering {
                     Divider()
                     logDrawer
                 }
@@ -93,10 +88,12 @@ struct BuilderView: View {
                         showLog = true
                         store.renderBuilderTimeline()
                     } label: {
-                        ToolbarBubbleLabel(text: "Generate Video", systemImage: "play.rectangle.fill")
+                        ToolbarBubbleLabel(text: "Render to Library", systemImage: "play.rectangle.fill")
                     }
-                    .disabled(model.document.videoTrack.isEmpty)
-                    .help("Render the timeline to a video in the Library")
+                    .disabled(model.document.videoTrack.isEmpty || store.isBuilderPreviewRendering)
+                    .help(store.isBuilderPreviewRendering
+                          ? "Wait for the temporary Render Preview to finish"
+                          : "Render the timeline to a video in the Library")
                 }
             }
         }
@@ -120,110 +117,54 @@ struct BuilderView: View {
         .sheet(isPresented: $showPreview) {
             TimelinePreviewSheet()
         }
+        .sheet(isPresented: $showScenePicker) {
+            BuilderScenePickerSheet()
+        }
+        .sheet(isPresented: $showImagePicker) {
+            ImagePickerSheet { urls in
+                for url in urls { model.addImage(path: url.path) }
+            }
+        }
         .onDeleteCommand {
             deleteSelection()
         }
-    }
-
-    /// Mirrors PreviewPane's crop-editor condition.
-    private var isCropEditing: Bool {
-        let model = store.builder
-        if case .clip(let uid) = model.selection,
-           let clip = model.clip(uid), clip.freeCrops?.isEmpty == false {
-            return true
-        }
-        return false
     }
 
     // MARK: - Controls bar
 
     private var controlsBar: some View {
         let model = store.builder
-        return HStack(spacing: 14) {
-            Stepper("Tracks: \(model.document.trackCount)",
-                    value: Binding(
-                        get: { model.document.trackCount },
-                        set: { model.setTrackCount($0) }),
-                    in: 1...TimelineDocument.maxTracks)
-                // Without a fixed size the bar's width pressure crushes the
-                // label into a one-character-per-line vertical stack.
-                .fixedSize()
-                .lineLimit(1)
-                .help("How many video tracks the timeline shows (1–\(TimelineDocument.maxTracks))")
+        return HStack(spacing: Theme.spaceM) {
+            Text("Timeline")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            BuilderAddMenu(showScenePicker: $showScenePicker,
+                           showImagePicker: $showImagePicker)
 
             Divider().frame(height: 16)
 
-            Menu {
-                let music = WizardEngine.availableMusic()
-                if music.isEmpty {
-                    Text("Drop audio files into \(WizardEngine.musicDirectory.path)")
-                } else {
-                    ForEach(music, id: \.name) { track in
-                        Button(track.name) {
-                            model.addSound(name: track.name)
-                        }
-                    }
-                }
-            } label: {
-                Label("Music", systemImage: "music.note.list")
-            }
-            .fixedSize()
-            .help("Add a music block at the playhead")
-
-            Button {
-                _ = model.addText()
-            } label: {
-                Label("Text", systemImage: "textformat")
-            }
-            .fixedSize()
-            .help("Add a text overlay at the playhead")
-
-            Button {
-                showImagePicker = true
-            } label: {
-                Label("Image", systemImage: "photo")
-            }
-            .fixedSize()
-            .help("Add image overlays at the playhead from the Images library")
-            .sheet(isPresented: $showImagePicker) {
-                ImagePickerSheet { urls in
-                    for url in urls { model.addImage(path: url.path) }
-                }
-            }
-
-            Menu {
-                let templates = OverlayTemplateStore.list()
-                if templates.isEmpty {
-                    Text("Design templates in the Overlays section first")
-                } else {
-                    ForEach(templates) { template in
-                        Button(template.name) {
-                            model.addOverlayBlock(name: template.name,
-                                                  composition: template.composition)
-                        }
-                    }
-                }
-            } label: {
-                Label("Overlay", systemImage: "square.2.layers.3d")
-            }
-            .fixedSize()
-            .help("Add an Overlays template at the playhead as a single block")
+            CropStyleMenu()
 
             Spacer()
 
             Image(systemName: "minus.magnifyingglass")
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
             Slider(value: Binding(
                 get: { model.pointsPerSecond },
                 set: { model.pointsPerSecond = $0 }),
                 in: 20...200)
                 .frame(width: 140)
+                .accessibilityLabel("Timeline zoom")
+                .accessibilityValue("\(Int(model.pointsPerSecond)) points per second")
             Image(systemName: "plus.magnifyingglass")
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
         }
         .controlSize(.small)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.horizontal, Theme.spaceM)
+        .padding(.vertical, Theme.spaceS)
     }
 
     // MARK: - Log drawer
@@ -255,8 +196,39 @@ struct BuilderView: View {
         case .text(let uid): model.removeText(uid)
         case .image(let uid): model.removeImage(uid)
         case .overlay(let uid): model.removeOverlayBlock(uid)
+        case .crop(let uid): model.removeCropBlock(uid)
         case nil: break
         }
+    }
+}
+
+/// Crop style for the selected block, or the one under the playhead. Its
+/// own view because it reads the playhead: inline in the controls bar it
+/// would re-evaluate the whole Builder (browser, preview, every lane) on
+/// each scrub pixel.
+private struct CropStyleMenu: View {
+    @Environment(AppStore.self) private var store
+
+    var body: some View {
+        let model = store.builder
+        let target = model.targetCropBlock
+        Menu {
+            ForEach(BuilderTimelineModel.availableCropLayouts(), id: \.self) { layout in
+                Button {
+                    if let target { model.setCropLayout(layout, for: target.uid) }
+                } label: {
+                    if let target, target.layout == layout {
+                        Label(layout.displayName, systemImage: "checkmark")
+                    } else {
+                        Text(layout.displayName)
+                    }
+                }
+            }
+        } label: {
+            Label("Crop: \(target?.layout.displayName ?? "—")", systemImage: "crop")
+        }
+        .disabled(target == nil)
+        .help("Change the Screen Crop layout of the selected crop block (or the one at the playhead). Layouts come from Resources > Screen Crop.")
     }
 }
 

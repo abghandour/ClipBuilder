@@ -29,8 +29,21 @@ struct FightResearchSheet: View {
     @State private var progress: [String] = []
     @State private var errorMessage: String?
     @State private var loadedRecord = false
+    @State private var didLoadInitialValues = false
+    @State private var savedFingerprint = ""
+    @State private var confirmDiscard = false
 
     private var hasResearch: Bool { loadedRecord }
+
+    private var draftFingerprint: String {
+        [fighters, event, fightDate, sentiment, angle, arc, hookLine,
+         overlayLinesText, controversy, talkingPointsText]
+            .joined(separator: "\u{1F}")
+    }
+
+    private var hasUnsavedChanges: Bool {
+        hasResearch && didLoadInitialValues && draftFingerprint != savedFingerprint
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -126,14 +139,7 @@ struct FightResearchSheet: View {
             HStack {
                 Spacer()
                 if hasResearch {
-                    Button("Save Edits") {
-                        store.saveFightResearchEdits(videoID: video.id,
-                                                     fightLabel: fighters,
-                                                     event: event,
-                                                     fightDate: fightDate,
-                                                     summaryJSON: rebuiltSummaryJSON())
-                        dismiss()
-                    }
+                    Button("Save Changes", action: saveEdits)
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(running)
@@ -142,8 +148,15 @@ struct FightResearchSheet: View {
             .padding(16)
         }
         .frame(width: 640, height: 640)
-        .modalCloseButton { dismiss() }
+        .modalCloseButton { requestDismissal() }
         .task { await load() }
+        .confirmationDialog("Discard unsaved fight research edits?", isPresented: $confirmDiscard) {
+            Button("Discard", role: .destructive) { dismiss() }
+            Button("Save and Close") { saveEdits() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your edits affect future generated videos, but have not been saved yet.")
+        }
     }
 
     private func editor(_ title: String, text: Binding<String>, height: CGFloat) -> some View {
@@ -166,6 +179,8 @@ struct FightResearchSheet: View {
             event = identity.event
             fightDate = identity.date
         }
+        savedFingerprint = draftFingerprint
+        didLoadInitialValues = true
     }
 
     private func apply(_ record: FightResearchRecord) {
@@ -191,6 +206,26 @@ struct FightResearchSheet: View {
                 return why.isEmpty ? moment : "\(moment) | \(why)"
             }
             .joined(separator: "\n")
+        savedFingerprint = draftFingerprint
+        didLoadInitialValues = true
+    }
+
+    private func requestDismissal() {
+        if hasUnsavedChanges {
+            confirmDiscard = true
+        } else {
+            dismiss()
+        }
+    }
+
+    private func saveEdits() {
+        store.saveFightResearchEdits(videoID: video.id,
+                                     fightLabel: fighters,
+                                     event: event,
+                                     fightDate: fightDate,
+                                     summaryJSON: rebuiltSummaryJSON())
+        savedFingerprint = draftFingerprint
+        dismiss()
     }
 
     /// The edited fields back into the summary JSON shape the wizards read.

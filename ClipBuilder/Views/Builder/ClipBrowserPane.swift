@@ -1,10 +1,11 @@
 import SwiftUI
 
-/// Scene browser for the Builder: filter the analyzed scenes and drag them
-/// onto the timeline (or click + to append to Track I).
+/// Scene browser for the Builder: find an analyzed scene, then drag it onto
+/// the timeline or add it at the playhead.
 struct ClipBrowserPane: View {
     @Environment(AppStore.self) private var store
 
+    @State private var searchText = ""
     @State private var tagFilter: String?
     @State private var favoritesOnly = false
     @State private var orientation = OrientationFilter.all
@@ -40,8 +41,8 @@ struct ClipBrowserPane: View {
         }
     }
 
-    /// Every filter except the tag itself — the tag dropdown's counts are
-    /// computed over exactly these scenes, so they stay truthful as the
+    /// Every filter except the tag itself — the tag menu's counts are computed
+    /// over exactly these scenes, so they stay truthful as search and the
     /// batch/duration/orientation/favorites filters change.
     private func passesNonTagFilters(_ scene: SceneRecord) -> Bool {
         if scene.excluded { return false }
@@ -55,6 +56,7 @@ struct ClipBrowserPane: View {
 
     private struct FilterKey: Equatable {
         var scenesVersion: Int
+        var searchText: String
         var tagFilter: String?
         var favoritesOnly: Bool
         var orientation: OrientationFilter
@@ -67,14 +69,24 @@ struct ClipBrowserPane: View {
     @State private var tagsMemo = MemoBox<FilterKey, [(tag: String, count: Int)]>()
 
     private var filterKey: FilterKey {
-        FilterKey(scenesVersion: store.scenesVersion, tagFilter: tagFilter, favoritesOnly: favoritesOnly,
+        FilterKey(scenesVersion: store.scenesVersion, searchText: searchText, tagFilter: tagFilter,
+                  favoritesOnly: favoritesOnly,
                   orientation: orientation, batchFilter: batchFilter, durationFilter: durationFilter,
                   stackLevel: stackLevelRaw)
+    }
+
+    private func matchesSearch(_ scene: SceneRecord) -> Bool {
+        let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return true }
+        return scene.videoFilename.localizedCaseInsensitiveContains(needle)
+            || scene.tags.contains { $0.localizedCaseInsensitiveContains(needle) }
+            || (scene.narrative?.localizedCaseInsensitiveContains(needle) ?? false)
     }
 
     private var filteredScenes: [SceneRecord] {
         store.scenes.filter { scene in
             passesNonTagFilters(scene)
+                && matchesSearch(scene)
                 && (tagFilter.map { scene.tags.contains($0) } ?? true)
         }
     }
@@ -99,7 +111,7 @@ struct ClipBrowserPane: View {
     private var tagCounts: [(tag: String, count: Int)] {
         tagsMemo(filterKey) {
             var counts: [String: Int] = [:]
-            for scene in store.scenes where passesNonTagFilters(scene) {
+            for scene in store.scenes where passesNonTagFilters(scene) && matchesSearch(scene) {
                 for tag in Set(scene.tags) { counts[tag, default: 0] += 1 }
             }
             if let tagFilter, counts[tagFilter] == nil { counts[tagFilter] = 0 }
@@ -115,42 +127,92 @@ struct ClipBrowserPane: View {
             .map { .init(id: $0.id, name: $0.name, count: $0.sceneCount) }
     }
 
+    private var activeFilterCount: Int {
+        [tagFilter != nil,
+         favoritesOnly,
+         orientation != .all,
+         batchFilter != nil,
+         durationFilter != .any,
+         SceneStackLevel.from(stackLevelRaw) != .standard].filter { $0 }.count
+    }
+
+    private var hasActiveFilters: Bool {
+        activeFilterCount > 0
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 8) {
-                AnalyzeBatchFilterList(batches: batches, selection: $batchFilter)
-                HStack {
-                    Picker("Tag", selection: $tagFilter) {
-                        Text("All Tags").tag(String?.none)
-                        ForEach(tagCounts, id: \.tag) { entry in
-                            Text("\(entry.tag) (\(entry.count))").tag(String?.some(entry.tag))
+            VStack(spacing: Theme.spaceS) {
+                HStack(spacing: Theme.spaceS) {
+                    TextField("Search scenes", text: $searchText)
+                        .textFieldStyle(.roundedBorder)
+                    Menu {
+                        Section("Analyze batch") {
+                            Button("All Analyze Batches") { batchFilter = nil }
+                            ForEach(batches) { batch in
+                                Button("\(batch.name) (\(batch.count))") { batchFilter = batch.id }
+                            }
                         }
-                    }
-                    .labelsHidden()
-                    Picker("Orientation", selection: $orientation) {
-                        ForEach(OrientationFilter.allCases, id: \.self) { choice in
-                            Text(choice.rawValue).tag(choice)
+
+                        Section("Tag") {
+                            Button("All Tags") { tagFilter = nil }
+                            ForEach(tagCounts, id: \.tag) { entry in
+                                Button("\(entry.tag) (\(entry.count))") { tagFilter = entry.tag }
+                            }
                         }
-                    }
-                    .labelsHidden()
-                    Picker("Duration", selection: $durationFilter) {
-                        ForEach(DurationFilter.allCases, id: \.self) { choice in
-                            Text(choice.rawValue).tag(choice)
+
+                        Picker("Orientation", selection: $orientation) {
+                            ForEach(OrientationFilter.allCases, id: \.self) { choice in
+                                Text(choice.rawValue).tag(choice)
+                            }
                         }
+                        Picker("Length", selection: $durationFilter) {
+                            ForEach(DurationFilter.allCases, id: \.self) { choice in
+                                Text(choice.rawValue).tag(choice)
+                            }
+                        }
+                        Toggle("Favorites only", isOn: $favoritesOnly)
+                        Picker("Group similar scenes", selection: $stackLevelRaw) {
+                            ForEach(SceneStackLevel.allCases) { level in
+                                Text(level.label).tag(level.rawValue)
+                            }
+                        }
+
+                        if hasActiveFilters {
+                            Divider()
+                            Button("Clear Filters") { clearFilters() }
+                        }
+                    } label: {
+                        Label(activeFilterCount > 0 ? "Filters (\(activeFilterCount))" : "Filters",
+                              systemImage: "line.3.horizontal.decrease.circle")
                     }
-                    .labelsHidden()
-                    .fixedSize()
-                    .help("Only show scenes shorter than this")
-                    Toggle(isOn: $favoritesOnly) {
-                        Image(systemName: "heart.fill")
-                    }
-                    .toggleStyle(.button)
-                    .help("Favorites only")
-                    SceneStackLevelPicker(compact: true)
+                    .help("Filter scenes by batch, tag, format, length, favorite status, or similar takes")
                 }
-                .controlSize(.small)
+
+                if hasActiveFilters {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: Theme.spaceXS) {
+                            if let tagFilter { filterChip(tagFilter) { self.tagFilter = nil } }
+                            if favoritesOnly { filterChip("Favorites") { favoritesOnly = false } }
+                            if orientation != .all { filterChip(orientation.rawValue) { orientation = .all } }
+                            if durationFilter != .any { filterChip(durationFilter.rawValue) { durationFilter = .any } }
+                            if let batchFilter,
+                               let batch = batches.first(where: { $0.id == batchFilter }) {
+                                filterChip(batch.name) { self.batchFilter = nil }
+                            }
+                            if SceneStackLevel.from(stackLevelRaw) != .standard {
+                                filterChip("Grouping: \(SceneStackLevel.from(stackLevelRaw).label)") {
+                                    stackLevelRaw = SceneStackLevel.standard.rawValue
+                                }
+                            }
+                            Button("Clear", action: clearFilters)
+                                .controlSize(.mini)
+                        }
+                        .padding(.vertical, 1)
+                    }
+                }
             }
-            .padding(10)
+            .padding(Theme.spaceM)
 
             Divider()
 
@@ -166,7 +228,7 @@ struct ClipBrowserPane: View {
                         ForEach(contents.scenes) { scene in
                             let stack = contents.stacks[scene.id]
                             BrowserSceneCard(scene: scene,
-                                             onAdd: { store.builder.addScene(scene) },
+                                             onAdd: { store.builder.addScene(scene, at: store.builder.playhead) },
                                              onPlay: { playingScene = scene },
                                              stackMembers: stack,
                                              onPickFromStack: stack != nil
@@ -186,7 +248,7 @@ struct ClipBrowserPane: View {
                                 }
                         }
                     }
-                    .padding(10)
+                    .padding(Theme.spaceM)
                 }
             }
         }
@@ -196,6 +258,24 @@ struct ClipBrowserPane: View {
                         startTime: scene.startTime,
                         endTime: scene.endTime)
         }
+    }
+
+    private func clearFilters() {
+        tagFilter = nil
+        favoritesOnly = false
+        orientation = .all
+        batchFilter = nil
+        durationFilter = .any
+        stackLevelRaw = SceneStackLevel.standard.rawValue
+    }
+
+    private func filterChip(_ title: String, clear: @escaping () -> Void) -> some View {
+        Button(action: clear) {
+            Label(title, systemImage: "xmark")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.mini)
+        .help("Remove \(title) filter")
     }
 }
 
@@ -213,7 +293,7 @@ struct BrowserSceneCard: View {
     var onPickFromStack: (() -> Void)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Theme.spaceXS) {
             VideoThumbnail(url: scene.videoURL, time: (scene.startTime + scene.endTime) / 2)
                 .aspectRatio(9 / 16, contentMode: .fit)
                 // The drag handle covers the middle of the thumbnail but
@@ -235,47 +315,32 @@ struct BrowserSceneCard: View {
                 .overlay(alignment: .topLeading) {
                     if let score = scene.score {
                         ScoreBadge(score: score, compact: true)
-                            .padding(4)
+                            .padding(Theme.spaceXS)
                             .help(scene.narrative ?? "Entertainment score")
                     }
                 }
                 .overlay(alignment: .topTrailing) {
-                    VStack(alignment: .trailing, spacing: 3) {
-                        if scene.wide {
-                            WideBadge(compact: true)
-                        }
-                        if scene.favorite {
-                            Image(systemName: "heart.fill")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.red)
-                        }
-                        if let stackMembers, stackMembers.count > 1 {
-                            SceneStackBadge(count: stackMembers.count,
-                                            userPicked: scene.stackChoice,
-                                            compact: true,
-                                            action: onPickFromStack)
-                        }
+                    if let stackMembers, stackMembers.count > 1 {
+                        SceneStackBadge(count: stackMembers.count,
+                                        userPicked: scene.stackChoice,
+                                        compact: true,
+                                        action: onPickFromStack)
+                            .padding(Theme.spaceXS)
                     }
-                    .padding(4)
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    // Tap gesture, not a Button — the card's drag
-                    // interaction eats Button click tracking.
-                    Image(systemName: "plus.circle.fill")
+                    Button("Add to timeline", systemImage: "plus.circle.fill", action: onAdd)
                         .font(.system(size: 16))
                         .foregroundStyle(.white, Color.accentColor)
-                        .contentShape(Circle())
-                        .onTapGesture(perform: onAdd)
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.plain)
                         .help("Add to timeline")
-                        .padding(4)
+                        .padding(Theme.spaceXS)
                 }
             Text(scene.videoFilename)
-                .font(.system(size: 9))
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-            if !scene.tags.isEmpty {
-                SceneTagLine(tags: scene.tags)
-            }
         }
         .contextMenu {
             Button("Add to Timeline") { onAdd() }

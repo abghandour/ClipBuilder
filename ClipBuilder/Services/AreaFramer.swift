@@ -73,4 +73,49 @@ nonisolated enum AreaFramer {
         try await FFmpeg.run(arguments, timeout: 600)
         return output
     }
+
+    /// Like `frame`, but the window is fixed: `window` (fractions of the
+    /// source frame, at the area's aspect) is cropped out, scaled into the
+    /// area's bounding box, and placed on the black canvas. No tracking.
+    static func frame(source: URL, start: Double, duration: Double,
+                      area: ScreenCropArea, window: FreeCropRect,
+                      scratch: URL) async throws -> URL {
+        let box = pixelBounds(of: area)
+        let output = scratch.appendingPathComponent("area_\(UUID().uuidString).mp4")
+        let w = RenderEngine.outputWidth
+        let h = RenderEngine.outputHeight
+        func clamp(_ value: Double) -> Double { min(1, max(0, value)) }
+        let x = clamp(window.xFrac), y = clamp(window.yFrac)
+        let cw = max(0.01, min(window.wFrac, 1 - x))
+        let ch = max(0.01, min(window.hFrac, 1 - y))
+        // Even crop sizes keep yuv420p happy before the scale.
+        let filter = String(format: "[0:v]crop='2*floor(iw*%.5f/2)':'2*floor(ih*%.5f/2)':'iw*%.5f':'ih*%.5f',",
+                            cw, ch, x, y)
+            + "scale=\(Int(box.width)):\(Int(box.height)),"
+            + "pad=\(w):\(h):\(Int(box.minX)):\(Int(box.minY)):color=black,setsar=1,fps=30,format=yuv420p[vout]"
+        var arguments: [String] = ["-y",
+                                   "-ss", String(format: "%.3f", max(0, start)),
+                                   "-t", String(format: "%.3f", duration), "-i", source.path,
+                                   "-filter_complex", filter, "-map", "[vout]", "-map", "0:a?",
+                                   "-t", String(format: "%.3f", duration)]
+        arguments += FFmpeg.encodeArgs
+        arguments.append(output.path)
+        try await FFmpeg.run(arguments, timeout: 600)
+        return output
+    }
+
+    /// The largest window of the area's aspect that fits a source of
+    /// `sourceSize`, centered — the starting point for a hand-placed window.
+    static func defaultWindow(for area: ScreenCropArea, sourceSize: CGSize) -> FreeCropRect {
+        let box = pixelBounds(of: area)
+        let areaAspect = box.width / max(1, box.height)
+        let sourceAspect = sourceSize.width / max(1, sourceSize.height)
+        if sourceAspect > areaAspect {
+            let w = areaAspect / sourceAspect
+            return FreeCropRect(xFrac: (1 - w) / 2, yFrac: 0, wFrac: w, hFrac: 1)
+        } else {
+            let h = sourceAspect / areaAspect
+            return FreeCropRect(xFrac: 0, yFrac: (1 - h) / 2, wFrac: 1, hFrac: h)
+        }
+    }
 }

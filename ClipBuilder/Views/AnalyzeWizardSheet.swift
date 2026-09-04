@@ -9,7 +9,7 @@ nonisolated struct PipelineOptions: Sendable {
     var analyze = true
     var fightScoring = true
     var fightResearch = true
-    var proposeNames = true
+    var proposeNames = false
     var curate = true
     var framing = true
     var generate = true
@@ -37,7 +37,7 @@ struct AnalyzeWizardSheet: View {
     @AppStorage("pipeline.analyze") private var analyze = true
     @AppStorage("pipeline.fightScoring") private var fightScoring = true
     @AppStorage("pipeline.fightResearch") private var fightResearch = true
-    @AppStorage("pipeline.proposeNames") private var proposeNames = true
+    @AppStorage("pipeline.proposeNames") private var proposeNames = false
     @AppStorage("pipeline.curate") private var curate = true
     @AppStorage("pipeline.framing") private var framing = true
     @AppStorage("pipeline.generate") private var generate = true

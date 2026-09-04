@@ -457,10 +457,14 @@ struct ScenesView: View {
         let filtered = contents.scenes
         return Group {
             if filtered.isEmpty {
-                ContentUnavailableView(
-                    "No Scenes",
-                    systemImage: "square.grid.3x3",
-                    description: Text("Run analysis on your source videos to detect scenes."))
+                ContentUnavailableView {
+                    Label("No Scenes", systemImage: "square.grid.3x3")
+                } description: {
+                    Text("Run analysis on your source videos to detect scenes.")
+                } actions: {
+                    Button("Open Raw Videos") { store.requestedSection = .analyze }
+                        .buttonStyle(.borderedProminent)
+                }
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -544,7 +548,16 @@ struct ScenesView: View {
                                      onPreview: { previewScene = $0 })
                 }
             }
+            .accessibilityAddTraits(.isButton)
             .accessibilityAddTraits(selectedSceneIDs.contains(scene.id) ? .isSelected : [])
+            .accessibilityLabel("Select scene from \(scene.videoFilename), \(scene.startTime.timecode) to \(scene.endTime.timecode)")
+            .accessibilityValue(selectedSceneIDs.contains(scene.id) ? "Selected" : "Not selected")
+            .accessibilityAction(named: "Select Scene") {
+                handleCardClick(scene, in: filtered)
+            }
+            .accessibilityAction(named: "Choose Similar Scene") {
+                if stack != nil { stackPickerID = scene.id }
+            }
     }
 
     // MARK: - Grid selection & keyboard triage
@@ -929,62 +942,30 @@ struct SceneCard: View {
                 .help(scene.curated
                       ? "In the Curated set — click to remove"
                       : "Curate this scene: preview and apply Center Stage, trim, then save it as good to go")
-                if let curation = scene.curationProvenance {
-                    ProvenanceBadge(provenance: curation, role: "Curated by", size: 11)
-                }
-
-                Button {
-                    store.toggleFavorite(scene)
-                } label: {
-                    Label(scene.favorite ? "Unfavorite" : "Favorite",
-                          systemImage: scene.favorite ? "heart.fill" : "heart")
-                        .foregroundStyle(scene.favorite ? .red : .secondary)
-                }
-                .help(scene.favorite ? "Remove from favorites" : "Favorite")
-
-                // The last grade stays stamped on the card, so graded scenes
-                // are tellable from ungraded while triaging the grid.
-                Button {
-                    store.grade(scene, score: 5)
-                } label: {
-                    Label("Good Scene",
-                          systemImage: (scene.lastGrade ?? 0) >= 3 ? "hand.thumbsup.fill" : "hand.thumbsup")
-                        .foregroundStyle((scene.lastGrade ?? 0) >= 3 ? .green : .secondary)
-                }
-                .help("Good scene (grade 5)")
-
-                Button {
-                    store.grade(scene, score: 1)
-                } label: {
-                    Label("Bad Scene",
-                          systemImage: scene.lastGrade.map { $0 < 3 } == true ? "hand.thumbsdown.fill" : "hand.thumbsdown")
-                        .foregroundStyle(scene.lastGrade.map { $0 < 3 } == true ? .red : .secondary)
-                }
-                .help("Bad scene (grade 1)")
-
-                if let average = scene.gradeAverage, scene.gradeCount > 0 {
-                    Text(String(format: "%.1f", average))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .help("Average of \(scene.gradeCount) grade\(scene.gradeCount == 1 ? "" : "s")")
-                }
-
                 Spacer()
 
-                Button {
-                    onTranscript()
-                } label: {
-                    Label("Transcript", systemImage: "text.quote")
+                Menu("More", systemImage: "ellipsis") {
+                    Button(scene.favorite ? "Unfavorite" : "Favorite",
+                           systemImage: scene.favorite ? "heart.fill" : "heart") {
+                        store.toggleFavorite(scene)
+                    }
+                    Divider()
+                    Button("Good Scene", systemImage: "hand.thumbsup") {
+                        store.grade(scene, score: 5)
+                    }
+                    Button("Bad Scene", systemImage: "hand.thumbsdown") {
+                        store.grade(scene, score: 1)
+                    }
+                    Divider()
+                    Button("Transcript", systemImage: "text.quote") {
+                        onTranscript()
+                    }
+                    Button(scene.excluded ? "Unhide Scene" : "Hide Scene",
+                           systemImage: scene.excluded ? "eye" : "eye.slash") {
+                        store.setExcluded(scene, excluded: !scene.excluded)
+                    }
                 }
-                .help("Transcript")
-
-                Button {
-                    store.setExcluded(scene, excluded: !scene.excluded)
-                } label: {
-                    Label(scene.excluded ? "Unhide Scene" : "Hide Scene",
-                          systemImage: scene.excluded ? "eye" : "eye.slash")
-                }
-                .help(scene.excluded ? "Unhide scene" : "Hide scene")
+                .help("Rate, favorite, transcribe, or hide this scene")
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
@@ -1027,4 +1008,3 @@ struct SceneCard: View {
         }
     }
 }
-

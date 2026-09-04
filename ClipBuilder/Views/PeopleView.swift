@@ -44,9 +44,10 @@ struct PeopleView: View {
         store.people.filter(\.hidden)
     }
 
-    /// Detail shows a single person; with a multi-selection the first one.
+    /// Detail only follows an explicit list selection. Falling back to the
+    /// first record made the active person ambiguous in a dense library.
     private var selectedPerson: PersonRecord? {
-        selectedPeople.first ?? visiblePeople.first ?? store.people.first
+        selectedPeople.first
     }
 
     private struct PersonKey: Equatable {
@@ -114,10 +115,14 @@ struct PeopleView: View {
     var body: some View {
         Group {
             if store.people.isEmpty {
-                ContentUnavailableView(
-                    "No people yet",
-                    systemImage: "person.2",
-                    description: Text("Analyze videos and distinct people are detected automatically. Re-analyze older videos to break down who appears in them."))
+                ContentUnavailableView {
+                    Label("No people yet", systemImage: "person.2")
+                } description: {
+                    Text("Analyze videos and distinct people are detected automatically. Re-analyze older videos to break down who appears in them.")
+                } actions: {
+                    Button("Open Raw Videos") { store.requestedSection = .analyze }
+                        .buttonStyle(.borderedProminent)
+                }
             } else {
                 HSplitView {
                     peopleList
@@ -272,10 +277,14 @@ struct PeopleView: View {
             let filtered = contents.scenes
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    PersonFaceAvatar(person: person, size: 40)
-                        .contentShape(Circle())
-                        .onTapGesture { avatarPickerPerson = person }
-                        .help("Click to choose which face is this person's avatar")
+                    Button {
+                        avatarPickerPerson = person
+                    } label: {
+                        PersonFaceAvatar(person: person, size: 40)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Choose avatar for \(person.displayName)")
+                    .help("Choose which face is this person's avatar")
                     VStack(alignment: .leading, spacing: 2) {
                         Text(person.displayName)
                             .font(.headline)
@@ -442,7 +451,7 @@ private struct MergePeopleSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Merge \(people.count) People")
                 .font(.headline)
-            Text("These records become one person. Click the avatar to use as the main record — its picture and identity carry forward; every other record's scenes fold into it.")
+            Text("These records become one person. Choose the main record — its picture and identity carry forward; every other record's scenes fold into it.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -451,28 +460,31 @@ private struct MergePeopleSheet: View {
                 HStack(alignment: .top, spacing: 14) {
                     ForEach(people) { person in
                         let isMain = person.id == mainID
-                        VStack(spacing: 5) {
-                            PersonFaceAvatar(person: person, size: 64)
-                                .overlay {
-                                    Circle().strokeBorder(
-                                        isMain ? Color.accentColor : .clear, lineWidth: 3)
-                                }
-                            Text(person.displayName)
-                                .font(.caption)
-                                .lineLimit(1)
-                            Text("Main")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(Color.accentColor)
-                                .opacity(isMain ? 1 : 0)
-                        }
-                        .frame(width: 86)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
+                        Button {
                             mainID = person.id
                             // Adopt the new main's name unless the user
                             // already typed something of their own.
                             if name.isEmpty { name = person.name }
+                        } label: {
+                            VStack(spacing: 5) {
+                                PersonFaceAvatar(person: person, size: 64)
+                                    .overlay {
+                                        Circle().strokeBorder(
+                                            isMain ? Color.accentColor : .clear, lineWidth: 3)
+                                    }
+                                Text(person.displayName)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                Text("Main")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(Color.accentColor)
+                                    .opacity(isMain ? 1 : 0)
+                            }
+                            .frame(width: 86)
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Use \(person.displayName) as the main record")
+                        .accessibilityValue(isMain ? "Selected" : "Not selected")
                         .help(person.descriptor)
                     }
                 }

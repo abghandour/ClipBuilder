@@ -70,11 +70,12 @@ nonisolated enum ReelQualityGate {
             checks.append("No selected source range is marked low-quality")
         }
         let riskyWide = selected.filter { $0.wide && $0.tags.contains("portrait-fit:poor") }
-        if !riskyWide.isEmpty && !options.centerStageWide && !options.allowWideSplit {
-            score -= min(20, riskyWide.count * 8)
-            warnings.append("\(riskyWide.count) wide clip(s) may crop fighters out in 9:16; use Center Stage or replace them.")
+        let unframedRiskyWide = riskyWide.filter { $0.centerStagePath == nil }
+        if !unframedRiskyWide.isEmpty {
+            score -= min(20, unframedRiskyWide.count * 8)
+            warnings.append("\(unframedRiskyWide.count) wide clip(s) have no saved 9:16 framing and may crop fighters out; reframe or replace them.")
         } else if !riskyWide.isEmpty {
-            checks.append("Risky wide framing is mitigated by Center Stage or split-screen")
+            checks.append("Risky wide framing is covered by saved scene framing")
         }
 
         if options.enableTextOverlays && plan.clips.contains(where: { $0.textOverlay != nil }) {

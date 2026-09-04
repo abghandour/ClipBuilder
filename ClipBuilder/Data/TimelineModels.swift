@@ -11,7 +11,15 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     var textOverlays: [TextOverlayItem] = []
     var imageOverlays: [ImageOverlayItem] = []
     var overlayBlocks: [OverlayBlockItem] = []
+    /// The cropping row: which Screen Crop layout is on screen when. Blocks
+    /// tile the timeline gap-free (see `normalizingCropBlocks`); an empty
+    /// list means a document that predates the row and renders the legacy
+    /// per-clip `screenCrop` way.
+    var cropBlocks: [CropBlockItem] = []
     var trackSettings: [TrackSettings] = TimelineDocument.defaultTrackSettings
+    /// Visible video tracks. Derived from the cropping row (one track per
+    /// area of the largest layout) whenever the row exists; kept in the
+    /// JSON for older readers.
     var trackCount: Int = 1                       // 1...maxTracks visible video tracks
     var trackSequential: [Bool] = Array(repeating: true, count: TimelineDocument.maxTracks)
 
@@ -39,6 +47,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         case textOverlays = "text_overlays"
         case imageOverlays = "image_overlays"
         case overlayBlocks = "overlay_blocks"
+        case cropBlocks = "crop_blocks"
         case trackSettings = "track_settings"
         case trackCount = "track_count"
         case trackSequential = "track_sequential"
@@ -53,6 +62,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         textOverlays = try container.decodeIfPresent([TextOverlayItem].self, forKey: .textOverlays) ?? []
         imageOverlays = try container.decodeIfPresent([ImageOverlayItem].self, forKey: .imageOverlays) ?? []
         overlayBlocks = try container.decodeIfPresent([OverlayBlockItem].self, forKey: .overlayBlocks) ?? []
+        cropBlocks = try container.decodeIfPresent([CropBlockItem].self, forKey: .cropBlocks) ?? []
         var settings = try container.decodeIfPresent([TrackSettings].self, forKey: .trackSettings) ?? []
         // Always keep exactly maxTracks entries with the UI's positional defaults.
         let defaults = Self.defaultTrackSettings
@@ -102,6 +112,309 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         }
         document.overlayBlocks = []
         return document
+    }
+
+    // MARK: - Cropping row
+
+    /// Where the video content ends — the cropping row always covers at
+    /// least this far.
+    var contentEnd: Double {
+        let clipEnd = videoTrack.map { $0.startTime + $0.duration }.max() ?? 0
+        let soundEnd = soundTrack.map { $0.startTime + $0.duration }.max() ?? 0
+        let textEnd = textOverlays.map(\.endTime).max() ?? 0
+        let imageEnd = imageOverlays.map(\.endTime).max() ?? 0
+        let blockEnd = overlayBlocks.map(\.endTime).max() ?? 0
+        return max(clipEnd, soundEnd, textEnd, imageEnd, blockEnd)
+    }
+
+    /// The cropping row's block at a time (nil only for legacy documents
+    /// without a row).
+    func cropBlock(at time: Double) -> CropBlockItem? {
+        cropBlocks.first { $0.startTime <= time + 0.001 && time < $0.endTime - 0.001 }
+            ?? cropBlocks.last.flatMap { time >= $0.endTime - 0.001 ? $0 : nil }
+    }
+
+    /// One track per area of the largest layout on the row — plus any
+    /// higher track that still holds clips, so stranded clips stay visible
+    /// (flagged) instead of vanishing until they are moved or deleted.
+    var derivedTrackCount: Int {
+        let widest = cropBlocks.map { $0.layout.areaCount }.max() ?? 1
+        let occupied = (videoTrack.map(\.track).max() ?? -1) + 1
+        return min(Self.maxTracks, max(1, widest, occupied))
+    }
+
+    /// Whether `track` has an area to show at `time`. Track 0 always has
+    /// one (a single-area layout is the full frame).
+    func hasArea(track: Int, at time: Double) -> Bool {
+        guard let block = cropBlock(at: time) else { return true }
+        return track < block.layout.areaCount
+    }
+
+    /// Whether some part of the clip falls where its track has no area —
+    /// that stretch is not rendered.
+    func isOrphaned(_ clip: TimelineClip) -> Bool {
+        guard !cropBlocks.isEmpty, clip.track > 0 else { return false }
+        return cropBlocks.contains { block in
+            block.startTime < clip.startTime + clip.duration - 0.001
+                && clip.startTime < block.endTime - 0.001
+                && clip.track >= block.layout.areaCount
+        }
+    }
+
+    /// Re-tile the cropping row: blocks sorted, overlaps resolved in favor
+    /// of `winner` (else the later-starting block), gaps filled with Full
+    /// Screen, adjacent Full Screen blocks merged, and the tail stretched
+    /// (or a Full Screen filler appended) so the row always reaches the end
+    /// of the content. Also refreshes the derived track count.
+    mutating func normalizeCropBlocks(winner: UUID? = nil, minimumEnd: Double = 0) {
+        let minimumBlock = 0.5
+        var ordered = cropBlocks
+            .filter { $0.duration >= minimumBlock - 0.001 }
+            .map { block -> CropBlockItem in
+                var block = block
+                block.startTime = max(0, block.startTime)
+                return block
+            }
+            .sorted { $0.startTime < $1.startTime }
+        // Resolve overlaps: the winner keeps its full extent, everything it
+        // covers is cut back (or dropped); otherwise later blocks win over
+        // earlier ones, which matches "the block you just placed is on top".
+        if let winner, let winning = ordered.first(where: { $0.uid == winner }) {
+            var resolved: [CropBlockItem] = []
+            for block in ordered where block.uid != winner {
+                var piece = block
+                if piece.endTime <= winning.startTime + 0.001 || piece.startTime >= winning.endTime - 0.001 {
+                    resolved.append(piece)
+                    continue
+                }
+                // Left remainder.
+                if piece.startTime < winning.startTime - 0.001 {
+                    var left = piece
+                    left.duration = winning.startTime - piece.startTime
+                    resolved.append(left)
+                }
+                // Right remainder.
+                if piece.endTime > winning.endTime + 0.001 {
+                    piece.uid = piece.startTime < winning.startTime - 0.001 ? UUID() : piece.uid
+                    piece.duration = piece.endTime - winning.endTime
+                    piece.startTime = winning.endTime
+                    resolved.append(piece)
+                }
+            }
+            resolved.append(winning)
+            ordered = resolved.sorted { $0.startTime < $1.startTime }
+        }
+        var tiled: [CropBlockItem] = []
+        var cursor = 0.0
+        for var block in ordered {
+            if block.startTime < cursor - 0.001 {
+                // Later block wins: cut the earlier one back to this start.
+                if var previous = tiled.popLast() {
+                    previous.duration = block.startTime - previous.startTime
+                    if previous.duration >= minimumBlock - 0.001 { tiled.append(previous) }
+                }
+            } else if block.startTime > cursor + 0.001 {
+                tiled.append(CropBlockItem(layout: .fullScreen, startTime: cursor,
+                                           duration: block.startTime - cursor))
+            }
+            block.duration = max(minimumBlock, block.duration)
+            tiled.append(block)
+            cursor = block.endTime
+        }
+        let end = max(minimumEnd, contentEnd, CropBlockItem.defaultDuration)
+        if let last = tiled.last {
+            if last.endTime < end - 0.001 {
+                if last.layout == .fullScreen {
+                    tiled[tiled.count - 1].duration = end - last.startTime
+                } else {
+                    tiled.append(CropBlockItem(layout: .fullScreen, startTime: last.endTime,
+                                               duration: end - last.endTime))
+                }
+            }
+        } else {
+            tiled = [CropBlockItem(layout: .fullScreen, startTime: 0, duration: end)]
+        }
+        // Merge runs of Full Screen so the row reads as one stretch.
+        var merged: [CropBlockItem] = []
+        for block in tiled {
+            if let previous = merged.last, previous.layout == .fullScreen, block.layout == .fullScreen {
+                merged[merged.count - 1].duration = block.endTime - previous.startTime
+            } else {
+                merged.append(block)
+            }
+        }
+        for index in merged.indices {
+            merged[index].startTime = (merged[index].startTime * 1000).rounded() / 1000
+            merged[index].duration = (merged[index].duration * 1000).rounded() / 1000
+        }
+        cropBlocks = merged
+        trackCount = derivedTrackCount
+    }
+
+    /// Give a document that predates the cropping row one: clips carrying a
+    /// "Layout/Area" reference (the AI Wizard's layout blocks, the old
+    /// Apply Layout command) become crop blocks spanning their time, and
+    /// each such clip moves to the track its area occupies. Full Screen
+    /// fills the rest. Documents that already have a row are untouched.
+    mutating func migrateLegacyScreenCrops() {
+        guard cropBlocks.isEmpty else { return }
+        var blocks: [CropBlockItem] = []
+        for index in videoTrack.indices {
+            guard let reference = videoTrack[index].screenCrop,
+                  let match = CropLayoutRef.resolve(reference: reference) else { continue }
+            let (layout, areaIndex) = match
+            let clip = videoTrack[index]
+            videoTrack[index].track = min(Self.maxTracks - 1, areaIndex)
+            videoTrack[index].screenCrop = nil
+            if let existing = blocks.firstIndex(where: {
+                $0.layout == layout && $0.startTime < clip.startTime + clip.duration + 0.001
+                    && clip.startTime < $0.endTime + 0.001
+            }) {
+                let start = min(blocks[existing].startTime, clip.startTime)
+                let end = max(blocks[existing].endTime, clip.startTime + clip.duration)
+                blocks[existing].startTime = start
+                blocks[existing].duration = end - start
+            } else {
+                blocks.append(CropBlockItem(layout: layout, startTime: clip.startTime, duration: clip.duration))
+            }
+        }
+        cropBlocks = blocks
+        normalizeCropBlocks()
+    }
+}
+
+/// One stretch of the cropping row: the Screen Crop layout on screen for
+/// that time. Areas map to video tracks in reading order (left-to-right,
+/// then top-to-bottom), so Track I shows the first area, Track II the
+/// second, and so on.
+nonisolated struct CropBlockItem: Codable, Sendable, Equatable, Identifiable {
+    /// SwiftUI identity only — never encoded.
+    var uid = UUID()
+
+    var layout: CropLayoutRef = .fullScreen
+    var startTime: Double = 0
+    var duration: Double = CropBlockItem.defaultDuration
+
+    static let defaultDuration = 5.0
+
+    var endTime: Double { startTime + duration }
+    var id: UUID { uid }
+
+    enum CodingKeys: String, CodingKey {
+        case layout, duration
+        case startTime = "start_time"
+    }
+
+    init(layout: CropLayoutRef, startTime: Double, duration: Double) {
+        self.layout = layout
+        self.startTime = startTime
+        self.duration = duration
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        layout = CropLayoutRef(name: try container.decodeIfPresent(String.self, forKey: .layout) ?? "")
+        startTime = max(0, try container.decodeIfPresent(Double.self, forKey: .startTime) ?? 0)
+        duration = max(0.5, try container.decodeIfPresent(Double.self, forKey: .duration) ?? Self.defaultDuration)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(layout.name, forKey: .layout)
+        try container.encode(startTime, forKey: .startTime)
+        try container.encode(duration, forKey: .duration)
+    }
+
+    static func == (lhs: CropBlockItem, rhs: CropBlockItem) -> Bool {
+        lhs.uid == rhs.uid && lhs.layout == rhs.layout
+            && lhs.startTime == rhs.startTime && lhs.duration == rhs.duration
+    }
+}
+
+/// A Screen Crop layout by name, resolved against the resources on demand
+/// so a document never snapshots geometry. Full Screen is the one layout
+/// that is not a resource: a single area covering the whole frame, which
+/// renders the legacy unmasked way.
+nonisolated struct CropLayoutRef: Sendable, Hashable {
+    var name: String
+
+    static let fullScreenName = "Full Screen"
+    static let fullScreen = CropLayoutRef(name: fullScreenName)
+
+    var isFullScreen: Bool {
+        name.isEmpty || name.caseInsensitiveCompare(Self.fullScreenName) == .orderedSame
+    }
+
+    static func == (lhs: CropLayoutRef, rhs: CropLayoutRef) -> Bool {
+        if lhs.isFullScreen || rhs.isFullScreen { return lhs.isFullScreen == rhs.isFullScreen }
+        return lhs.name.caseInsensitiveCompare(rhs.name) == .orderedSame
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(isFullScreen ? Self.fullScreenName.lowercased() : name.lowercased())
+    }
+
+    /// The resource layout, or nil when it was deleted (a missing layout
+    /// behaves like Full Screen so the timeline still renders).
+    var resolved: ScreenCropLayout? {
+        isFullScreen ? nil : ScreenCropStore.layout(named: name)
+    }
+
+    /// Areas in track order: left-to-right, then top-to-bottom.
+    var orderedAreas: [ScreenCropArea] {
+        resolved?.areasInTrackOrder ?? []
+    }
+
+    var areaCount: Int {
+        isFullScreen ? 1 : max(1, orderedAreas.count)
+    }
+
+    var displayName: String {
+        isFullScreen ? Self.fullScreenName : name
+    }
+
+    var isMissing: Bool { !isFullScreen && resolved == nil }
+
+    /// The area a track shows under this layout; nil for a track without
+    /// one, and nil for Full Screen (which is "no mask").
+    func area(forTrack track: Int) -> ScreenCropArea? {
+        orderedAreas[safe: track]
+    }
+
+    /// "Layout/Area" for a track, the reference the renderer masks with.
+    func reference(forTrack track: Int) -> String? {
+        guard let layout = resolved, let area = area(forTrack: track) else { return nil }
+        return ScreenCropStore.reference(layout: layout.name, area: area.name)
+    }
+
+    /// Resolve a legacy "Layout/Area" clip reference to (layout, track index).
+    static func resolve(reference: String) -> (CropLayoutRef, Int)? {
+        let parts = reference.split(separator: "/", maxSplits: 1).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        guard let layoutName = parts.first, let layout = ScreenCropStore.layout(named: layoutName) else {
+            return nil
+        }
+        let ordered = layout.areasInTrackOrder
+        if parts.count == 2,
+           let index = ordered.firstIndex(where: { $0.name.caseInsensitiveCompare(parts[1]) == .orderedSame }) {
+            return (CropLayoutRef(name: layout.name), index)
+        }
+        return ordered.count == 1 ? (CropLayoutRef(name: layout.name), 0) : nil
+    }
+}
+
+extension ScreenCropLayout {
+    /// Areas in reading order — rows by their top edge (a 6% tolerance so
+    /// slightly uneven hand-drawn splits still share a row), then left to
+    /// right within a row. This is the order tracks map to areas.
+    var areasInTrackOrder: [ScreenCropArea] {
+        areas.sorted { lhs, rhs in
+            let a = lhs.bounds, b = rhs.bounds
+            if abs(a.y - b.y) > 0.06 { return a.y < b.y }
+            if abs(a.x - b.x) > 0.001 { return a.x < b.x }
+            return a.y < b.y
+        }
     }
 }
 
@@ -153,6 +466,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     var duration: Double = 0      // trimmed length shown on the timeline
     var track: Int = 0
     var wide: Bool = false
+    /// Kept for the JSON format; the Builder no longer edits it. Overlapping
+    /// clips on one track stack by start time instead.
     var stackOrder: Int = 0
     var volume: Int = 5           // 1-5
     var muted: Bool = false
@@ -165,6 +480,10 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// frame stays visible for this clip (the rest is transparent, so lower
     /// layers show through). Nil = unmasked.
     var screenCrop: String?
+    /// The exact part of the source (fractions of the frame) that fills
+    /// this clip's crop area, chosen by hand in the inspector. Nil lets the
+    /// tracking camera frame the area. Always the area's aspect ratio.
+    var areaWindow: FreeCropRect?
     var captions: String = "inherit"   // inherit | none | top | middle | bottom
     /// Wide clips only: reframe with the Center Stage tracking camera
     /// instead of a static crop.
@@ -203,6 +522,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case cropXFrac = "crop_x_frac"
         case freeCrops = "free_crops"
         case screenCrop = "screen_crop"
+        case areaWindow = "area_window"
         case centerStage = "center_stage"
         case speed
     }
@@ -227,6 +547,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         cropXFrac = try container.decodeIfPresent(Double.self, forKey: .cropXFrac)
         freeCrops = try container.decodeIfPresent([FreeCrop].self, forKey: .freeCrops)
         screenCrop = try container.decodeIfPresent(String.self, forKey: .screenCrop)
+        areaWindow = try container.decodeIfPresent(FreeCropRect.self, forKey: .areaWindow)
         centerStage = try container.decodeIfPresent(Bool.self, forKey: .centerStage) ?? false
         speed = try container.decodeIfPresent(Double.self, forKey: .speed)
         captions = Self.decodeCaptions(container, key: .captions, fallback: "inherit",
@@ -275,6 +596,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             try container.encodeNil(forKey: .freeCrops)
         }
         try encodeOrNull(screenCrop, in: &container, forKey: .screenCrop)
+        if let areaWindow { try container.encode(areaWindow, forKey: .areaWindow) }
         try container.encode(captions, forKey: .captions)
         try container.encode(centerStage, forKey: .centerStage)
         try encodeOrNull(speed, in: &container, forKey: .speed)
@@ -303,7 +625,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.position == rhs.position && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
             && lhs.centerStage == rhs.centerStage && lhs.speed == rhs.speed
             && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
-            && lhs.screenCrop == rhs.screenCrop
+            && lhs.screenCrop == rhs.screenCrop && lhs.areaWindow == rhs.areaWindow
     }
 
     var id: UUID { uid }
