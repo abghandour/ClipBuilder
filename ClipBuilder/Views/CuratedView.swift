@@ -123,8 +123,7 @@ struct CuratedView: View {
                 }
             }
         }
-        .navigationTitle("Curated Scenes")
-        .navigationSubtitle("\(curatedScenes.count) scenes")
+        .screenTitle("Scenes", subtitle: "\(curatedScenes.count) scenes")
         .toolbar {
             ToolbarItem {
                 Button {
@@ -224,8 +223,7 @@ struct CuratedView: View {
                     }
                     .help("Takes the scene out of the curated set. Its trims and framing are kept — curate it again to bring it back unchanged.")
                     Button("Add to Builder") {
-                        store.builder.addScene(scene)
-                        store.requestedSection = .builder
+                        store.addScenesToBuilder([scene])
                     }
                 }
                 .popover(isPresented: Binding(

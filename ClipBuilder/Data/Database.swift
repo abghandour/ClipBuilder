@@ -176,6 +176,38 @@ actor Database {
         generated_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS projects (
+        id INTEGER PRIMARY KEY,
+        profile_name TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        last_opened_at TEXT DEFAULT (datetime('now')),
+        archived INTEGER DEFAULT 0,
+        is_home INTEGER NOT NULL DEFAULT 0,
+        thumbnail_video_id INTEGER REFERENCES videos(id) ON DELETE SET NULL,
+        ui_state_json TEXT
+    );
+    CREATE TABLE IF NOT EXISTS project_videos (
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        PRIMARY KEY (project_id, video_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_videos_video ON project_videos(video_id);
+
+    CREATE TABLE IF NOT EXISTS timelines (
+        id INTEGER PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'builder',
+        document_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT DEFAULT (datetime('now')),
+        edited_at TEXT DEFAULT (datetime('now')),
+        source_run_id TEXT,
+        thumbnail_video_id INTEGER REFERENCES videos(id) ON DELETE SET NULL,
+        view_state_json TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_timelines_project ON timelines(project_id, edited_at DESC);
+
     CREATE TABLE IF NOT EXISTS wizard_research (
         id INTEGER PRIMARY KEY,
         topic TEXT NOT NULL,
@@ -233,6 +265,66 @@ actor Database {
         ON transcripts(video_id, start_time, end_time);
     CREATE INDEX IF NOT EXISTS idx_transcripts_text
         ON transcripts(video_id, language);
+
+    CREATE TABLE IF NOT EXISTS transcript_features (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        start_time REAL NOT NULL,
+        end_time REAL NOT NULL,
+        text TEXT NOT NULL DEFAULT '',
+        speaker_key TEXT,
+        energy REAL NOT NULL DEFAULT 0,
+        kind TEXT NOT NULL DEFAULT 'speech'
+    );
+    CREATE INDEX IF NOT EXISTS idx_transcript_features_video_time
+        ON transcript_features(video_id, start_time, end_time);
+
+    CREATE TABLE IF NOT EXISTS topic_ranges (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        start_time REAL NOT NULL,
+        end_time REAL NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        speaker_keys_json TEXT NOT NULL DEFAULT '[]'
+    );
+    CREATE INDEX IF NOT EXISTS idx_topic_ranges_video ON topic_ranges(video_id, start_time);
+
+    CREATE TABLE IF NOT EXISTS edit_proposals (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER REFERENCES videos(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        start_time REAL NOT NULL,
+        end_time REAL NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        decision TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_edit_proposals_video ON edit_proposals(video_id, start_time);
+
+    CREATE TABLE IF NOT EXISTS library_asset_metadata (
+        path TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        is_broll INTEGER NOT NULL DEFAULT 0,
+        subjects_json TEXT NOT NULL DEFAULT '[]',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        provider TEXT,
+        model TEXT,
+        analyzed_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS generated_video_traits (
+        generated_video_id INTEGER PRIMARY KEY REFERENCES generated_videos(id) ON DELETE CASCADE,
+        output_width INTEGER NOT NULL,
+        output_height INTEGER NOT NULL,
+        cut_cadence REAL NOT NULL,
+        pace_curve TEXT NOT NULL,
+        hook_type TEXT NOT NULL,
+        hook_length REAL NOT NULL,
+        people_json TEXT NOT NULL,
+        screen_seconds_json TEXT NOT NULL,
+        cut_targets_json TEXT NOT NULL
+    );
 
     CREATE TABLE IF NOT EXISTS imported_externals (
         platform     TEXT NOT NULL,
@@ -510,7 +602,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 1
+    static let schemaVersion: Int64 = 3
 
     /// "wal" normally; "delete" after the fallback in `init`.
     func journalMode() throws -> String {
@@ -608,7 +700,34 @@ actor Database {
         if try !connection.columnNames(of: "fight_outcomes").contains("round") {
             try connection.execute("ALTER TABLE fight_outcomes ADD COLUMN round INTEGER")
         }
+        if try !connection.columnNames(of: "timelines").contains("view_state_json") {
+            try connection.execute("ALTER TABLE timelines ADD COLUMN view_state_json TEXT")
+        }
+        let projectColumns = try connection.columnNames(of: "projects")
+        if !projectColumns.contains("is_home") {
+            try connection.execute("ALTER TABLE projects ADD COLUMN is_home INTEGER NOT NULL DEFAULT 0")
+            try connection.transaction {
+                try connection.execute("""
+                    UPDATE projects
+                    SET is_home = 1, name = 'Home', archived = 0
+                    WHERE id IN (
+                        SELECT MIN(id) FROM projects GROUP BY profile_name
+                    )
+                    """)
+                try connection.execute("""
+                    DELETE FROM project_videos
+                    WHERE project_id IN (SELECT id FROM projects WHERE is_home = 1)
+                    """)
+            }
+        }
+        try connection.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_one_home
+            ON projects(profile_name) WHERE is_home = 1
+            """)
         let generatedColumns = try connection.columnNames(of: "generated_videos")
+        if !generatedColumns.contains("project_id") {
+            try connection.execute("ALTER TABLE generated_videos ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
+        }
         if !generatedColumns.contains("deleted") {
             try connection.execute("ALTER TABLE generated_videos ADD COLUMN deleted INTEGER DEFAULT 0")
         }
@@ -651,6 +770,361 @@ actor Database {
         if try !connection.columnNames(of: "analysis_runs").contains("notes_json") {
             try connection.execute("ALTER TABLE analysis_runs ADD COLUMN notes_json TEXT")
         }
+    }
+
+    // MARK: - Projects
+
+    /// Ensures every profile has one permanent Home project. Home has no
+    /// membership rows: project-aware fetches treat it as the complete
+    /// profile library, so newly discovered media appears there immediately.
+    func ensureDefaultProject(profileName: String, legacyTimelineJSON: String?) throws {
+        if try homeProjectID(profileName: profileName) != nil { return }
+        try connection.transaction {
+            if let existingID = try connection.query(
+                "SELECT id FROM projects WHERE profile_name = ? ORDER BY id LIMIT 1",
+                [.text(profileName)]
+            ).first?["id"]?.intValue {
+                try connection.execute(
+                    "UPDATE projects SET name = 'Home', archived = 0, is_home = 1 WHERE id = ?",
+                    [.integer(existingID)]
+                )
+                try connection.execute(
+                    "DELETE FROM project_videos WHERE project_id = ?",
+                    [.integer(existingID)]
+                )
+                return
+            }
+            try connection.execute(
+                "INSERT INTO projects (profile_name, name, is_home) VALUES (?, 'Home', 1)",
+                [.text(profileName)]
+            )
+            let projectID = connection.lastInsertRowID
+            if let legacyTimelineJSON, !legacyTimelineJSON.isEmpty, legacyTimelineJSON != "{}" {
+                try connection.execute("""
+                    INSERT INTO timelines (project_id, name, kind, document_json)
+                    VALUES (?, 'Timeline 1', 'builder', ?)
+                    """, [.integer(projectID), .text(legacyTimelineJSON)])
+            }
+        }
+    }
+
+    func fetchProjects() throws -> [ProjectRecord] {
+        let rows = try connection.query("""
+            SELECT p.*,
+                   CASE WHEN p.is_home = 1
+                        THEN (SELECT COUNT(*) FROM videos)
+                        ELSE (SELECT COUNT(*) FROM project_videos pv WHERE pv.project_id = p.id)
+                   END AS source_count,
+                   (SELECT COUNT(*) FROM timelines t WHERE t.project_id = p.id) AS timeline_count,
+                   CASE WHEN p.is_home = 1
+                        THEN (SELECT COUNT(*) FROM generated_videos g WHERE COALESCE(g.deleted, 0) = 0)
+                        ELSE (SELECT COUNT(*) FROM generated_videos g
+                              WHERE g.project_id = p.id AND COALESCE(g.deleted, 0) = 0)
+                   END AS output_count
+            FROM projects p
+            ORDER BY p.is_home DESC, p.archived, p.last_opened_at DESC, p.name COLLATE NOCASE
+            """)
+        return try rows.map { row in
+            let id = row["id"]?.intValue ?? 0
+            let isHome = row["is_home"]?.boolValue ?? false
+            let paths = try connection.query(
+                isHome
+                    ? """
+                        SELECT v.path FROM videos v
+                        ORDER BY CASE WHEN v.id = ? THEN 0 ELSE 1 END, v.id
+                        LIMIT 3
+                        """
+                    : """
+                        SELECT v.path FROM project_videos pv
+                        JOIN videos v ON v.id = pv.video_id
+                        WHERE pv.project_id = ?
+                        ORDER BY CASE WHEN v.id = ? THEN 0 ELSE 1 END, v.id
+                        LIMIT 3
+                        """,
+                isHome
+                    ? [row["thumbnail_video_id"] ?? .null]
+                    : [.integer(id), row["thumbnail_video_id"] ?? .null]
+            )
+                .compactMap { $0["path"]?.stringValue }
+            return ProjectRecord(
+                id: id,
+                profileName: row["profile_name"]?.stringValue ?? "",
+                name: row["name"]?.stringValue ?? "Untitled Project",
+                createdAt: row["created_at"]?.stringValue,
+                lastOpenedAt: row["last_opened_at"]?.stringValue,
+                archived: row["archived"]?.boolValue ?? false,
+                isHome: isHome,
+                thumbnailVideoID: row["thumbnail_video_id"]?.intValue,
+                uiStateJSON: row["ui_state_json"]?.stringValue,
+                sourceCount: Int(row["source_count"]?.intValue ?? 0),
+                timelineCount: Int(row["timeline_count"]?.intValue ?? 0),
+                outputCount: Int(row["output_count"]?.intValue ?? 0),
+                thumbnailPaths: paths
+            )
+        }
+    }
+
+    @discardableResult
+    func createProject(profileName: String, name: String, videoIDs: [Int64] = []) throws -> Int64 {
+        try connection.transaction {
+            try connection.execute(
+                "INSERT INTO projects (profile_name, name) VALUES (?, ?)",
+                [.text(profileName), .text(name)]
+            )
+            let id = connection.lastInsertRowID
+            for videoID in videoIDs {
+                try connection.execute(
+                    "INSERT OR IGNORE INTO project_videos (project_id, video_id) VALUES (?, ?)",
+                    [.integer(id), .integer(videoID)]
+                )
+            }
+            return id
+        }
+    }
+
+    func renameProject(id: Int64, name: String) throws {
+        try requireMutableProject(id)
+        try connection.execute("UPDATE projects SET name = ? WHERE id = ?", [.text(name), .integer(id)])
+    }
+
+    func setProjectArchived(id: Int64, archived: Bool) throws {
+        try requireMutableProject(id)
+        try connection.execute(
+            "UPDATE projects SET archived = ?, last_opened_at = datetime('now') WHERE id = ?",
+            [.integer(archived ? 1 : 0), .integer(id)]
+        )
+    }
+
+    func touchProject(id: Int64) throws {
+        try connection.execute("UPDATE projects SET last_opened_at = datetime('now') WHERE id = ?", [.integer(id)])
+    }
+
+    func saveProjectUIState(id: Int64, json: String) throws {
+        try connection.execute("UPDATE projects SET ui_state_json = ? WHERE id = ?", [.text(json), .integer(id)])
+    }
+
+    func deleteProject(id: Int64) throws {
+        try requireMutableProject(id)
+        try connection.execute("DELETE FROM projects WHERE id = ?", [.integer(id)])
+    }
+
+    @discardableResult
+    func duplicateProject(id: Int64, profileName: String, name: String) throws -> Int64 {
+        try requireMutableProject(id)
+        return try connection.transaction {
+            try connection.execute(
+                "INSERT INTO projects (profile_name, name) VALUES (?, ?)",
+                [.text(profileName), .text(name)]
+            )
+            let copyID = connection.lastInsertRowID
+            try connection.execute("""
+                INSERT INTO project_videos (project_id, video_id)
+                SELECT ?, video_id FROM project_videos WHERE project_id = ?
+                """, [.integer(copyID), .integer(id)])
+            try connection.execute("""
+                INSERT INTO timelines
+                    (project_id, name, kind, document_json, created_at, edited_at,
+                     source_run_id, thumbnail_video_id)
+                SELECT ?, name, kind, document_json, datetime('now'), datetime('now'),
+                       NULL, thumbnail_video_id
+                FROM timelines WHERE project_id = ?
+                """, [.integer(copyID), .integer(id)])
+            return copyID
+        }
+    }
+
+    func assignVideos(_ videoIDs: [Int64], to projectID: Int64) throws {
+        guard try !isHomeProject(projectID) else { return }
+        try connection.transaction {
+            for videoID in videoIDs {
+                try connection.execute(
+                    "INSERT OR IGNORE INTO project_videos (project_id, video_id) VALUES (?, ?)",
+                    [.integer(projectID), .integer(videoID)]
+                )
+            }
+        }
+    }
+
+    func removeVideos(_ videoIDs: [Int64], from projectID: Int64) throws {
+        try requireMutableProject(projectID)
+        try connection.transaction {
+            for videoID in videoIDs {
+                try connection.execute(
+                    "DELETE FROM project_videos WHERE project_id = ? AND video_id = ?",
+                    [.integer(projectID), .integer(videoID)]
+                )
+            }
+        }
+    }
+
+    /// Every profile video not already assigned to this project. This also
+    /// includes files that have never belonged to any ordinary project.
+    func fetchVideosNotInProject(_ projectID: Int64) throws -> [VideoRecord] {
+        guard try !isHomeProject(projectID) else { return [] }
+        return try connection.query("""
+            SELECT v.* FROM videos v
+            WHERE NOT EXISTS (
+                  SELECT 1 FROM project_videos current
+                  WHERE current.project_id = ? AND current.video_id = v.id
+            )
+            ORDER BY v.filename COLLATE NOCASE
+            """, [.integer(projectID)]).map(Self.videoRecord)
+    }
+
+    func projectIDs(forVideo videoID: Int64) throws -> [Int64] {
+        try connection.query(
+            "SELECT project_id FROM project_videos WHERE video_id = ? ORDER BY project_id",
+            [.integer(videoID)]
+        ).compactMap { $0["project_id"]?.intValue }
+    }
+
+    func homeProjectID(profileName: String? = nil) throws -> Int64? {
+        var sql = "SELECT id FROM projects WHERE is_home = 1"
+        var parameters: [SQLValue] = []
+        if let profileName {
+            sql += " AND profile_name = ?"
+            parameters.append(.text(profileName))
+        }
+        sql += " ORDER BY id LIMIT 1"
+        return try connection.query(sql, parameters).first?["id"]?.intValue
+    }
+
+    func lastOpenedProjectID() throws -> Int64? {
+        try connection.query("""
+            SELECT id FROM projects
+            WHERE archived = 0
+            ORDER BY datetime(last_opened_at) DESC, id DESC
+            LIMIT 1
+            """).first?["id"]?.intValue
+    }
+
+    func moveTimelines(from sourceProjectID: Int64, to destinationProjectID: Int64) throws {
+        try requireMutableProject(sourceProjectID)
+        guard try isHomeProject(destinationProjectID) else {
+            throw ProjectMutationError.destinationMustBeHome
+        }
+        try connection.execute(
+            "UPDATE timelines SET project_id = ?, edited_at = datetime('now') WHERE project_id = ?",
+            [.integer(destinationProjectID), .integer(sourceProjectID)]
+        )
+    }
+
+    private func isHomeProject(_ id: Int64) throws -> Bool {
+        try connection.query(
+            "SELECT is_home FROM projects WHERE id = ? LIMIT 1",
+            [.integer(id)]
+        ).first?["is_home"]?.boolValue ?? false
+    }
+
+    private func requireMutableProject(_ id: Int64) throws {
+        if try isHomeProject(id) {
+            throw ProjectMutationError.homeIsPermanent
+        }
+    }
+
+    // MARK: - Project timelines
+
+    func fetchTimelines(projectID: Int64) throws -> [TimelineRecord] {
+        try connection.query("""
+            SELECT t.*, v.path AS thumbnail_path FROM timelines t
+            LEFT JOIN videos v ON v.id = t.thumbnail_video_id
+            WHERE t.project_id = ?
+            ORDER BY t.edited_at DESC, t.id DESC
+            """, [.integer(projectID)]).map(Self.timelineRecord)
+    }
+
+    @discardableResult
+    func createTimeline(projectID: Int64, name: String, kind: String = "builder",
+                        documentJSON: String = "{}", sourceRunID: String? = nil,
+                        thumbnailVideoID: Int64? = nil) throws -> Int64 {
+        try connection.execute("""
+            INSERT INTO timelines
+                (project_id, name, kind, document_json, source_run_id, thumbnail_video_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """, [.integer(projectID), .text(name), .text(kind), .text(documentJSON),
+                  sourceRunID.map(SQLValue.text) ?? .null,
+                  thumbnailVideoID.map(SQLValue.integer) ?? .null])
+        return connection.lastInsertRowID
+    }
+
+    /// The editor viewport for one timeline; independent of the document so
+    /// scrubbing or zooming never counts as an edit.
+    func saveTimelineViewState(id: Int64, json: String) throws {
+        try connection.execute("UPDATE timelines SET view_state_json = ? WHERE id = ?",
+                               [.text(json), .integer(id)])
+    }
+
+    func saveTimeline(id: Int64, name: String? = nil, documentJSON: String,
+                      thumbnailVideoID: Int64? = nil) throws {
+        if let name {
+            try connection.execute("""
+                UPDATE timelines SET name = ?, document_json = ?, thumbnail_video_id = ?,
+                                     edited_at = datetime('now') WHERE id = ?
+                """, [.text(name), .text(documentJSON),
+                      thumbnailVideoID.map(SQLValue.integer) ?? .null, .integer(id)])
+        } else {
+            try connection.execute("""
+                UPDATE timelines SET document_json = ?, thumbnail_video_id = ?,
+                                     edited_at = datetime('now') WHERE id = ?
+                """, [.text(documentJSON), thumbnailVideoID.map(SQLValue.integer) ?? .null,
+                      .integer(id)])
+        }
+    }
+
+    func renameTimeline(id: Int64, name: String) throws {
+        try connection.execute(
+            "UPDATE timelines SET name = ?, edited_at = datetime('now') WHERE id = ?",
+            [.text(name), .integer(id)]
+        )
+    }
+
+    @discardableResult
+    func duplicateTimeline(id: Int64, name: String) throws -> Int64? {
+        guard let row = try connection.query(
+            "SELECT * FROM timelines WHERE id = ?", [.integer(id)]
+        ).first else { return nil }
+        return try createTimeline(
+            projectID: row["project_id"]?.intValue ?? 0,
+            name: name,
+            kind: "builder",
+            documentJSON: row["document_json"]?.stringValue ?? "{}",
+            thumbnailVideoID: row["thumbnail_video_id"]?.intValue
+        )
+    }
+
+    func deleteTimeline(id: Int64) throws {
+        try connection.execute("DELETE FROM timelines WHERE id = ?", [.integer(id)])
+    }
+
+    func ensureWizardTimeline(projectID: Int64, name: String, documentJSON: String,
+                              sourceRunID: String, thumbnailVideoID: Int64?) throws {
+        if let id = try connection.query(
+            "SELECT id FROM timelines WHERE project_id = ? AND kind = 'wizard' AND source_run_id = ? LIMIT 1",
+            [.integer(projectID), .text(sourceRunID)]
+        ).first?["id"]?.intValue {
+            try saveTimeline(id: id, name: name, documentJSON: documentJSON,
+                             thumbnailVideoID: thumbnailVideoID)
+        } else {
+            try createTimeline(projectID: projectID, name: name, kind: "wizard",
+                               documentJSON: documentJSON, sourceRunID: sourceRunID,
+                               thumbnailVideoID: thumbnailVideoID)
+        }
+    }
+
+    private static func timelineRecord(_ row: SQLRow) -> TimelineRecord {
+        TimelineRecord(
+            id: row["id"]?.intValue ?? 0,
+            projectID: row["project_id"]?.intValue ?? 0,
+            name: row["name"]?.stringValue ?? "Untitled Timeline",
+            kind: row["kind"]?.stringValue ?? "builder",
+            documentJSON: row["document_json"]?.stringValue ?? "{}",
+            createdAt: row["created_at"]?.stringValue,
+            editedAt: row["edited_at"]?.stringValue,
+            sourceRunID: row["source_run_id"]?.stringValue,
+            thumbnailVideoID: row["thumbnail_video_id"]?.intValue,
+            thumbnailPath: row["thumbnail_path"]?.stringValue,
+            viewStateJSON: row["view_state_json"]?.stringValue
+        )
     }
 
     /// Pre-batch databases keep scenes directly on videos with a
@@ -1000,8 +1474,18 @@ actor Database {
                   .integer(id)])
     }
 
-    func fetchVideos() throws -> [VideoRecord] {
-        try connection.query("SELECT * FROM videos ORDER BY filename COLLATE NOCASE").map(Self.videoRecord)
+    func fetchVideos(projectID: Int64? = nil) throws -> [VideoRecord] {
+        let projectID = try scopedProjectID(projectID)
+        if let projectID {
+            return try connection.query("""
+                SELECT v.* FROM videos v
+                JOIN project_videos pv ON pv.video_id = v.id
+                WHERE pv.project_id = ?
+                ORDER BY v.filename COLLATE NOCASE
+                """, [.integer(projectID)]).map(Self.videoRecord)
+        }
+        return try connection.query("SELECT * FROM videos ORDER BY filename COLLATE NOCASE")
+            .map(Self.videoRecord)
     }
 
     func video(id: Int64) throws -> VideoRecord? {
@@ -1049,20 +1533,27 @@ actor Database {
 
     /// Everything the main window's library state is built from, in one
     /// actor hop, so a refresh is a single round trip instead of nine.
-    func fetchLibrarySnapshot() throws -> LibrarySnapshot {
-        LibrarySnapshot(videos: try fetchVideos(),
-                        scenes: try fetchScenes(),
-                        analysisRuns: try fetchAnalysisRuns(),
+    func fetchLibrarySnapshot(projectID: Int64? = nil) throws -> LibrarySnapshot {
+        let projectID = try scopedProjectID(projectID)
+        let videos = try fetchVideos(projectID: projectID)
+        let videoIDs = Set(videos.map(\.id))
+        let generatedVideos = try fetchGeneratedVideos(projectID: projectID)
+        let generatedIDs = Set(generatedVideos.map(\.id))
+        return LibrarySnapshot(videos: videos,
+                        scenes: try fetchScenes(projectID: projectID),
+                        analysisRuns: try fetchAnalysisRuns().filter { videoIDs.contains($0.videoID) },
                         people: try fetchPeople(),
-                        generatedVideos: try fetchGeneratedVideos(),
-                        feedback: try fetchAllFeedback(),
+                        generatedVideos: generatedVideos,
+                        feedback: try fetchAllFeedback().filter { generatedIDs.contains($0.generatedVideoID) },
                         lessons: try fetchLessons(),
-                        fightResearch: (try? fetchFightResearch()) ?? [],
-                        fightEvents: (try? fetchFightEvents()) ?? [])
+                        fightResearch: ((try? fetchFightResearch()) ?? []).filter { videoIDs.contains($0.videoID) },
+                        fightEvents: ((try? fetchFightEvents()) ?? []).filter { videoIDs.contains($0.videoID) })
     }
 
     func fetchScenes(videoID: Int64? = nil, sceneID: Int64? = nil,
+                     projectID: Int64? = nil,
                      includeExcluded: Bool = true) throws -> [SceneRecord] {
+        let projectID = try scopedProjectID(projectID)
         var sql = """
             SELECT s.*, v.path AS video_path, v.filename AS video_filename,
                    v.duration AS video_duration, v.wide AS video_wide
@@ -1070,6 +1561,11 @@ actor Database {
             """
         var params: [SQLValue] = []
         var conditions: [String] = []
+        if let projectID {
+            sql += " JOIN project_videos pv ON pv.video_id = s.video_id"
+            conditions.append("pv.project_id = ?")
+            params.append(.integer(projectID))
+        }
         if let videoID {
             conditions.append("s.video_id = ?")
             params.append(.integer(videoID))
@@ -1581,12 +2077,27 @@ actor Database {
 
     /// Transcript segments overlapping [start, end] for one video — used for
     /// caption burn-in of a clip.
-    func transcriptSegments(videoID: Int64, start: Double, end: Double) throws -> [TranscriptSegment] {
-        try connection.query("""
-            SELECT start_time, end_time, text FROM transcripts
-            WHERE video_id = ? AND is_translation = 0 AND end_time > ? AND start_time < ?
-            ORDER BY start_time
-            """, [.integer(videoID), .real(start), .real(end)]).map {
+    func transcriptSegments(videoID: Int64, start: Double, end: Double,
+                            language: String? = nil) throws -> [TranscriptSegment] {
+        let rows: [SQLRow]
+        if let language, !language.isEmpty {
+            rows = try connection.query("""
+                SELECT start_time, end_time, text FROM transcripts
+                WHERE video_id = ? AND is_translation = 1 AND language = ?
+                    AND end_time > ? AND start_time < ?
+                ORDER BY start_time
+                """, [.integer(videoID), .text(language), .real(start), .real(end)])
+            if rows.isEmpty {
+                return try transcriptSegments(videoID: videoID, start: start, end: end, language: nil)
+            }
+        } else {
+            rows = try connection.query("""
+                SELECT start_time, end_time, text FROM transcripts
+                WHERE video_id = ? AND is_translation = 0 AND end_time > ? AND start_time < ?
+                ORDER BY start_time
+                """, [.integer(videoID), .real(start), .real(end)])
+        }
+        return rows.map {
             TranscriptSegment(start: $0["start_time"]?.doubleValue ?? 0,
                               end: $0["end_time"]?.doubleValue ?? 0,
                               text: $0["text"]?.stringValue ?? "",
@@ -1620,36 +2131,251 @@ actor Database {
             """, [.integer(id)])
     }
 
+    /// Rewrite a video's transcript features and cleanup proposals. A
+    /// proposal the user already accepted or rejected keeps its decision
+    /// when the fresh analysis proposes the same range again (within 0.25 s
+    /// at either end); only still-pending rows are replaced outright.
+    func replaceTranscriptFeatures(videoID: Int64, features: [TranscriptFeatureSegment],
+                                   proposals: [EditProposal]) throws {
+        try connection.transaction {
+            let decided = try connection.query("""
+                SELECT kind, start_time, end_time, decision FROM edit_proposals
+                WHERE video_id = ? AND decision != 'pending'
+                  AND kind IN ('silence', 'filler', 'falseStart', 'noise')
+                """, [.integer(videoID)]).compactMap { row -> (kind: String, start: Double, end: Double, decision: String)? in
+                guard let kind = row["kind"]?.stringValue, let start = row["start_time"]?.doubleValue,
+                      let end = row["end_time"]?.doubleValue, let decision = row["decision"]?.stringValue
+                else { return nil }
+                return (kind, start, end, decision)
+            }
+            try connection.execute("DELETE FROM transcript_features WHERE video_id = ?", [.integer(videoID)])
+            try connection.execute("DELETE FROM edit_proposals WHERE video_id = ? AND kind IN ('silence', 'filler', 'falseStart', 'noise')",
+                                   [.integer(videoID)])
+            for feature in features {
+                try connection.execute("""
+                    INSERT INTO transcript_features
+                        (video_id, start_time, end_time, text, speaker_key, energy, kind)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, [.integer(videoID), .real(feature.startTime), .real(feature.endTime),
+                          .text(feature.text), feature.speakerKey.map(SQLValue.text) ?? .null,
+                          .real(feature.energy), .text(feature.kind.rawValue)])
+            }
+            for proposal in proposals {
+                let kept = decided.first {
+                    $0.kind == proposal.kind.rawValue
+                        && abs($0.start - proposal.startTime) <= 0.25
+                        && abs($0.end - proposal.endTime) <= 0.25
+                }
+                try connection.execute("""
+                    INSERT INTO edit_proposals
+                        (video_id, kind, start_time, end_time, reason, decision)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, [.integer(videoID), .text(proposal.kind.rawValue),
+                          .real(proposal.startTime), .real(proposal.endTime),
+                          .text(proposal.reason), .text(kept?.decision ?? proposal.decision.rawValue)])
+            }
+        }
+    }
+
+    func fetchTranscriptFeatures(videoID: Int64) throws -> [TranscriptFeatureSegment] {
+        try connection.query("SELECT * FROM transcript_features WHERE video_id = ? ORDER BY start_time", [.integer(videoID)]).compactMap { row in
+            guard let kind = TranscriptFeatureSegment.Kind(rawValue: row["kind"]?.stringValue ?? "") else { return nil }
+            return TranscriptFeatureSegment(id: row["id"]?.intValue ?? 0, videoID: videoID,
+                                            startTime: row["start_time"]?.doubleValue ?? 0,
+                                            endTime: row["end_time"]?.doubleValue ?? 0,
+                                            text: row["text"]?.stringValue ?? "",
+                                            speakerKey: row["speaker_key"]?.stringValue,
+                                            energy: row["energy"]?.doubleValue ?? 0, kind: kind)
+        }
+    }
+
+    func fetchEditProposals(videoID: Int64) throws -> [EditProposal] {
+        try connection.query("SELECT * FROM edit_proposals WHERE video_id = ? ORDER BY start_time", [.integer(videoID)]).compactMap { row in
+            guard let kind = EditProposal.Kind(rawValue: row["kind"]?.stringValue ?? ""),
+                  let decision = EditProposal.Decision(rawValue: row["decision"]?.stringValue ?? "") else { return nil }
+            return EditProposal(id: row["id"]?.intValue ?? 0, videoID: videoID, kind: kind,
+                                startTime: row["start_time"]?.doubleValue ?? 0,
+                                endTime: row["end_time"]?.doubleValue ?? 0,
+                                reason: row["reason"]?.stringValue ?? "", decision: decision)
+        }
+    }
+
+    func updateEditProposal(_ proposal: EditProposal) throws {
+        try connection.execute("UPDATE edit_proposals SET start_time = ?, end_time = ?, decision = ? WHERE id = ?",
+                               [.real(proposal.startTime), .real(proposal.endTime),
+                                .text(proposal.decision.rawValue), .integer(proposal.id)])
+    }
+
+    func replaceTopicRanges(videoID: Int64, topics: [TopicRange]) throws {
+        try connection.transaction {
+            try connection.execute("DELETE FROM topic_ranges WHERE video_id = ?", [.integer(videoID)])
+            for topic in topics {
+                let speakersData = try JSONEncoder().encode(topic.speakerKeys)
+                let speakers = String(data: speakersData, encoding: .utf8) ?? "[]"
+                try connection.execute("""
+                    INSERT INTO topic_ranges
+                        (video_id, title, start_time, end_time, summary, speaker_keys_json)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, [.integer(videoID), .text(topic.title), .real(topic.startTime),
+                          .real(topic.endTime), .text(topic.summary), .text(speakers)])
+            }
+        }
+    }
+
+    func fetchTopicRanges(videoID: Int64) throws -> [TopicRange] {
+        try connection.query("SELECT * FROM topic_ranges WHERE video_id = ? ORDER BY start_time", [.integer(videoID)]).map { row in
+            let speakers = row["speaker_keys_json"]?.stringValue
+                .flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+            return TopicRange(id: row["id"]?.intValue ?? 0, videoID: videoID,
+                              title: row["title"]?.stringValue ?? "Topic",
+                              startTime: row["start_time"]?.doubleValue ?? 0,
+                              endTime: row["end_time"]?.doubleValue ?? 0,
+                              summary: row["summary"]?.stringValue ?? "", speakerKeys: speakers)
+        }
+    }
+
+    func upsertAssetMetadata(_ metadata: LibraryAssetMetadata) throws {
+        let subjectsData = try JSONEncoder().encode(metadata.subjects)
+        let tagsData = try JSONEncoder().encode(metadata.tags)
+        try connection.execute("""
+            INSERT INTO library_asset_metadata
+                (path, kind, is_broll, subjects_json, tags_json, provider, model, analyzed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(path) DO UPDATE SET kind=excluded.kind, is_broll=excluded.is_broll,
+                subjects_json=excluded.subjects_json, tags_json=excluded.tags_json,
+                provider=excluded.provider, model=excluded.model, analyzed_at=datetime('now')
+            """, [.text(metadata.path), .text(metadata.kind), .integer(metadata.isBRoll ? 1 : 0),
+                  .text(String(data: subjectsData, encoding: .utf8) ?? "[]"),
+                  .text(String(data: tagsData, encoding: .utf8) ?? "[]"),
+                  metadata.provider.map(SQLValue.text) ?? .null,
+                  metadata.model.map(SQLValue.text) ?? .null])
+    }
+
+    func fetchAssetMetadata(kind: String? = nil) throws -> [LibraryAssetMetadata] {
+        let rows = if let kind {
+            try connection.query("SELECT * FROM library_asset_metadata WHERE kind = ? ORDER BY path", [.text(kind)])
+        } else {
+            try connection.query("SELECT * FROM library_asset_metadata ORDER BY path")
+        }
+        return rows.map { row in
+            func strings(_ column: String) -> [String] {
+                row[column]?.stringValue.flatMap { $0.data(using: .utf8) }
+                    .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
+            }
+            return LibraryAssetMetadata(path: row["path"]?.stringValue ?? "",
+                                        kind: row["kind"]?.stringValue ?? "",
+                                        isBRoll: row["is_broll"]?.boolValue ?? false,
+                                        subjects: strings("subjects_json"), tags: strings("tags_json"),
+                                        provider: row["provider"]?.stringValue,
+                                        model: row["model"]?.stringValue)
+        }
+    }
+
     // MARK: - Generated videos
 
     @discardableResult
     func insertGeneratedVideo(path: String, duration: Double, timelineJSON: String,
                               wizardProvider: String?, wizardModel: String?,
+                              projectID: Int64? = nil,
                               rationale: String? = nil, batchID: String? = nil,
                               qualityJSON: String? = nil,
                               planClipsJSON: String? = nil) throws -> Int64 {
+        // The project may have been deleted while this render ran; the file
+        // exists, so record it without an owner (Home shows it) rather than
+        // fail the foreign key and lose it.
+        var projectID = projectID
+        if let id = projectID,
+           try connection.query("SELECT 1 FROM projects WHERE id = ?", [.integer(id)]).isEmpty {
+            projectID = nil
+        }
         try connection.execute("""
             INSERT INTO generated_videos (path, duration, timeline_json, wizard_provider, wizard_model,
-                                          rationale, batch_id, quality_json, plan_clips_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          project_id, rationale, batch_id, quality_json, plan_clips_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [.text(path), .real(duration), .text(timelineJSON),
                   wizardProvider.map(SQLValue.text) ?? .null,
                   wizardModel.map(SQLValue.text) ?? .null,
+                  projectID.map(SQLValue.integer) ?? .null,
                   rationale.map(SQLValue.text) ?? .null,
                   batchID.map(SQLValue.text) ?? .null,
                   qualityJSON.map(SQLValue.text) ?? .null,
                   planClipsJSON.map(SQLValue.text) ?? .null])
-        return connection.lastInsertRowID
+        let recordID = connection.lastInsertRowID
+        if wizardProvider != nil, let projectID {
+            try ensureWizardTimeline(
+                projectID: projectID,
+                name: "Wizard · Run",
+                documentJSON: timelineJSON,
+                sourceRunID: batchID ?? "video-\(recordID)",
+                thumbnailVideoID: nil
+            )
+        }
+        return recordID
     }
 
-    func fetchGeneratedVideos() throws -> [GeneratedVideoRecord] {
-        try connection.query("""
+    func saveGeneratedTraits(videoID: Int64, traits: PublishedEditTraits) throws {
+        let encoder = JSONEncoder()
+        func json<T: Encodable>(_ value: T) -> String {
+            (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        }
+        try connection.execute("""
+            INSERT OR REPLACE INTO generated_video_traits
+                (generated_video_id, output_width, output_height, cut_cadence, pace_curve,
+                 hook_type, hook_length, people_json, screen_seconds_json, cut_targets_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [.integer(videoID), .integer(Int64(traits.outputWidth)),
+                  .integer(Int64(traits.outputHeight)), .real(traits.cutCadence),
+                  .text(traits.paceCurve), .text(traits.hookType), .real(traits.hookLength),
+                  .text(json(traits.peopleKeys)), .text(json(traits.screenSeconds)),
+                  .text(json(traits.cutTargets))])
+    }
+
+    func fetchGeneratedTraits() throws -> [Int64: PublishedEditTraits] {
+        var output: [Int64: PublishedEditTraits] = [:]
+        for row in try connection.query("SELECT * FROM generated_video_traits") {
+            func decode<T: Decodable>(_ column: String, as: T.Type) -> T? {
+                row[column]?.stringValue.flatMap { $0.data(using: .utf8) }
+                    .flatMap { try? JSONDecoder().decode(T.self, from: $0) }
+            }
+            guard let id = row["generated_video_id"]?.intValue else { continue }
+            output[id] = PublishedEditTraits(
+                outputWidth: Int(row["output_width"]?.intValue ?? 1080),
+                outputHeight: Int(row["output_height"]?.intValue ?? 1920),
+                cutCadence: row["cut_cadence"]?.doubleValue ?? 0,
+                paceCurve: row["pace_curve"]?.stringValue ?? "steady",
+                hookType: row["hook_type"]?.stringValue ?? "unknown",
+                hookLength: row["hook_length"]?.doubleValue ?? 0,
+                peopleKeys: decode("people_json", as: [String].self) ?? [],
+                screenSeconds: decode("screen_seconds_json", as: [String: Double].self) ?? [:],
+                cutTargets: decode("cut_targets_json", as: [String: Int].self) ?? [:])
+        }
+        return output
+    }
+
+    func fetchGeneratedVideos(projectID: Int64? = nil) throws -> [GeneratedVideoRecord] {
+        let projectID = try scopedProjectID(projectID)
+        var sql = """
             SELECT g.*, m.stats_json AS instagram_stats_json
             FROM generated_videos g
             LEFT JOIN ig_media m ON m.media_id = g.instagram_media_id
             WHERE COALESCE(g.deleted, 0) = 0
-            ORDER BY g.generated_at DESC, g.id DESC
-            """).map(Self.generatedVideoRecord)
+            """
+        var parameters: [SQLValue] = []
+        if let projectID {
+            sql += " AND g.project_id = ?"
+            parameters.append(.integer(projectID))
+        }
+        sql += " ORDER BY g.generated_at DESC, g.id DESC"
+        return try connection.query(sql, parameters).map(Self.generatedVideoRecord)
+    }
+
+    /// Home is an explicit navigation and timeline container but an implicit
+    /// library scope. Passing its id to a scoped fetch is equivalent to no
+    /// project filter, while ordinary projects continue through membership.
+    private func scopedProjectID(_ projectID: Int64?) throws -> Int64? {
+        guard let projectID else { return nil }
+        return try isHomeProject(projectID) ? nil : projectID
     }
 
     private static func generatedVideoRecord(_ row: SQLRow) -> GeneratedVideoRecord {
@@ -1676,7 +2402,8 @@ actor Database {
                              audiencePercentile: row["audience_percentile"]?.intValue.map(Int.init),
                              coverTime: row["cover_time"]?.doubleValue,
                              coverProvider: row["cover_provider"]?.stringValue,
-                             coverModel: row["cover_model"]?.stringValue)
+                             coverModel: row["cover_model"]?.stringValue,
+                             projectID: row["project_id"]?.intValue)
     }
 
     /// Remember the picked cover frame — the Library card renders its

@@ -1,0 +1,55 @@
+{
+  "artboards": [
+    {
+      "file": "Home.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "All Projects (home)"
+    },
+    {
+      "file": "Main.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "title": "Sources + project switcher"
+    },
+    {
+      "file": "Timelines.dc.html",
+      "x": 0,
+      "y": 1060,
+      "w": 1440,
+      "h": 900,
+      "title": "Timelines"
+    },
+    {
+      "file": "Builder.dc.html",
+      "x": 1560,
+      "y": 1060,
+      "w": 1440,
+      "h": 900,
+      "title": "Builder as a timeline detail"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "note-flow",
+      "x": 0,
+      "y": -150,
+      "w": 700,
+      "text": "Flow: Home \u2192 pick a project \u2192 Sources / Scenes / Timelines / Outputs are filtered to it.\nOpen a timeline \u2192 Builder shows it with a back button. Switch projects any time from the sidebar switcher (\u2318\u21e7P); each project reopens exactly as left."
+    },
+    {
+      "id": "note-sidebar",
+      "x": 1560,
+      "y": -110,
+      "w": 560,
+      "text": "Sidebar: PROJECT group (filtered) above STUDIO group (profile-wide). AI Wizard becomes a button in Timelines and Sources. Resources screens collapse into one with tabs."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}

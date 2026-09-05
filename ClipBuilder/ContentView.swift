@@ -1,13 +1,38 @@
 import SwiftUI
 
+// THESIS: Project scope is the app's primary orientation; the old twelve-screen global sidebar is retired.
+// OWN-WORLD: Native macOS split navigation, compact graphite surfaces, semantic color, and media-led rows.
+// STORY: Pick a profile, enter one project, then move from sources through scenes and timelines to outputs.
+// FIRST VIEWPORT: Profile and project switchers anchor the sidebar; the active project's working surface fills detail.
+// FORM: User-pinned project workspace from docs/ui-projects/README.md; no generated seed applies.
+// FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+
+/// Cmd-Q: hold termination until the open timeline and project state are
+/// in the database. The debounced autosave and the fire-and-forget state
+/// writes would otherwise be lost with the process.
+final class TerminationDelegate: NSObject, NSApplicationDelegate {
+    weak var store: AppStore?
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let store else { return .terminateNow }
+        Task { @MainActor in
+            await store.flushForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
 @main
 struct ClipBuilderApp: App {
     @State private var store = AppStore()
+    @NSApplicationDelegateAdaptor(TerminationDelegate.self) private var terminationDelegate
 
     var body: some Scene {
         WindowGroup {
             MainWindowView()
                 .environment(store)
+                .onAppear { terminationDelegate.store = store }
         }
         .defaultSize(width: 1200, height: 780)
         .commands {
@@ -33,17 +58,30 @@ struct ClipBuilderApp: App {
                     store.showResourceExport = true
                 }
             }
-            // ⌘1–⌘8 section switching, routed through requestedSection —
-            // the same channel views use — so the sidebar stays in sync.
-            // Only the workflow sections carry numbers; asset browsers don't.
+            // Project-centered navigation: scoped production screens followed by
+            // three profile-wide Studio screens.
             CommandGroup(after: .sidebar) {
                 Divider()
-                ForEach(SidebarSection.allCases.filter { $0.shortcut != nil }) { section in
+                ForEach(SidebarSection.visibleSections) { section in
                     Button(section.title) {
                         store.requestedSection = section
                     }
                     .keyboardShortcut(section.shortcut ?? "0", modifiers: .command)
                 }
+                Divider()
+                Button("Switch Project…") { store.showProjectsHome() }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
+                Button("Previous Project") { store.cycleProject(offset: -1) }
+                    .keyboardShortcut("[", modifiers: [.command, .shift])
+                Button("Next Project") { store.cycleProject(offset: 1) }
+                    .keyboardShortcut("]", modifiers: [.command, .shift])
+                Divider()
+                Button("Previous Timeline") { store.cycleTimeline(offset: -1) }
+                    .keyboardShortcut("[", modifiers: [.command, .option])
+                    .disabled(store.openTimelineID == nil)
+                Button("Next Timeline") { store.cycleTimeline(offset: 1) }
+                    .keyboardShortcut("]", modifiers: [.command, .option])
+                    .disabled(store.openTimelineID == nil)
             }
             CommandGroup(before: .help) {
                 Button("Training Guide") {
@@ -59,11 +97,15 @@ struct ClipBuilderApp: App {
     }
 }
 
-/// Case order follows the workflow (footage in → finished reel out). The
-/// ⌘1–⌘8 shortcuts number the workflow rows in the order the sidebar
-/// displays them (Footage → Create → Output, Assets unnumbered), and each
-/// row shows its shortcut so the mapping is learnable from the screen.
+/// The visible project and Studio destinations use a compact ⌘1–⌘8 order.
+/// Legacy cases remain as internal routing aliases so existing
+/// handoffs can open their new consolidated destination.
 enum SidebarSection: String, CaseIterable, Identifiable {
+    case projects
+    case sources
+    case timelines
+    case outputs
+    case resources
     case analyze
     case scenes
     case curated
@@ -82,29 +124,28 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Source > Videos: footage in, scene detection.
-    static let videoSections: [SidebarSection] = [.analyze, .scenes, .curated, .people]
-    /// Instagram: the reels browser and the analytics reports.
-    static let instagramSections: [SidebarSection] = [.instagram, .instagramReports]
-    /// Source asset libraries: media browsers plus overlay templates.
-    static let assetSections: [SidebarSection] = [.music, .fonts, .images, .overlays, .effects, .screenCrops]
-    static let createSections: [SidebarSection] = [.wizard, .builder]
-    static let outputSections: [SidebarSection] = [.library]
+    /// People sit with the project: a project's People screen shows only
+    /// people with footage in it (identities stay profile-wide).
+    static let projectSections: [SidebarSection] = [.sources, .scenes, .wizard, .timelines, .outputs, .people]
+    static let studioSections: [SidebarSection] = [.instagram, .instagramReports]
+    /// Every resource library is its own row: one click, one screen, as the
+    /// app always had it — a tab strip inside one screen hid them.
+    static let resourceSections: [SidebarSection] = [.music, .fonts, .images, .overlays, .effects, .screenCrops]
+    static let visibleSections = projectSections + studioSections + resourceSections
 
-    /// ⌘1–⌘9 matching the sidebar's visible top-to-bottom workflow order
-    /// (Footage, Create, Output, Instagram). Resource browsers have no number.
+    /// ⌘1–⌘8 matching the visible sidebar's top-to-bottom order.
     private var shortcutDigit: Character? {
         switch self {
-        case .analyze: return "1"
+        case .sources: return "1"
         case .scenes: return "2"
-        case .curated: return "3"
-        case .people: return "4"
-        case .wizard: return "5"
-        case .builder: return "6"
-        case .library: return "7"
-        case .instagram: return "8"
-        case .instagramReports: return "9"
-        case .music, .fonts, .images, .overlays, .effects, .screenCrops: return nil
+        case .wizard: return "3"
+        case .timelines: return "4"
+        case .outputs: return "5"
+        case .people: return "6"
+        case .instagram: return "7"
+        case .instagramReports: return "8"
+        case .projects, .analyze, .curated, .builder, .library, .resources,
+             .music, .fonts, .images, .overlays, .effects, .screenCrops: return nil
         }
     }
 
@@ -119,15 +160,17 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .library: return "Library"
-        case .scenes: return "Raw Scenes"
+        case .projects: return "All Projects"
+        case .sources, .analyze: return "Sources"
+        case .scenes: return "Scenes"
         case .curated: return "Curated Scenes"
         case .people: return "People"
-        case .builder: return "Builder"
-        case .analyze: return "Raw Videos"
+        case .timelines, .builder: return "Timelines"
+        case .outputs, .library: return "Outputs"
         case .wizard: return "AI Wizard"
         case .instagram: return "Posts"
         case .instagramReports: return "Reports"
+        case .resources: return "Resources"
         case .music: return AssetKind.music.title
         case .fonts: return AssetKind.fonts.title
         case .images: return AssetKind.images.title
@@ -139,15 +182,17 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .library: return "film.stack"
+        case .projects: return "square.grid.2x2"
+        case .sources, .analyze: return "film"
         case .scenes: return "square.grid.3x3"
         case .curated: return "checkmark.seal"
         case .people: return "person.2"
-        case .builder: return "timeline.selection"
-        case .analyze: return "sparkles.rectangle.stack"
+        case .timelines, .builder: return "timeline.selection"
+        case .outputs, .library: return "play.rectangle"
         case .wizard: return "wand.and.stars"
-        case .instagram: return "play.rectangle.on.rectangle"
+        case .instagram: return "camera"
         case .instagramReports: return "chart.bar.xaxis"
+        case .resources: return "line.3.horizontal"
         case .music: return AssetKind.music.systemImage
         case .fonts: return AssetKind.fonts.systemImage
         case .images: return AssetKind.images.systemImage
@@ -156,64 +201,41 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .screenCrops: return "crop"
         }
     }
+
+    var projectDestination: SidebarSection {
+        switch self {
+        case .projects: .projects
+        case .sources, .analyze: .sources
+        case .scenes, .curated: .scenes
+        case .timelines, .builder: .timelines
+        case .wizard: .wizard
+        case .outputs, .library: .outputs
+        case .people: .people
+        case .instagram: .instagram
+        case .instagramReports: .instagramReports
+        case .resources, .music: .music
+        case .fonts: .fonts
+        case .images: .images
+        case .overlays: .overlays
+        case .effects: .effects
+        case .screenCrops: .screenCrops
+        }
+    }
 }
 
 struct MainWindowView: View {
     @Environment(AppStore.self) private var store
-    @State private var selection: SidebarSection? = .analyze
-
-    // Each sidebar group's disclosure state survives relaunches.
-    @AppStorage("sidebar.expanded.resources") private var resourcesExpanded = false
-    @AppStorage("sidebar.expanded.footage") private var footageExpanded = true
-    @AppStorage("sidebar.expanded.instagram") private var instagramExpanded = true
-    @AppStorage("sidebar.expanded.create") private var createExpanded = true
-    @AppStorage("sidebar.expanded.output") private var outputExpanded = true
 
     var body: some View {
         @Bindable var store = store
         NavigationSplitView {
-            List(selection: $selection) {
-                Section("Footage", isExpanded: $footageExpanded) {
-                    sidebarItems(SidebarSection.videoSections, tint: Theme.footageTint)
-                }
-                Section("Create", isExpanded: $createExpanded) {
-                    sidebarItems(SidebarSection.createSections, tint: Theme.createTint)
-                }
-                Section("Output", isExpanded: $outputExpanded) {
-                    sidebarItems(SidebarSection.outputSections, tint: Theme.outputTint)
-                }
-                Section("Instagram", isExpanded: $instagramExpanded) {
-                    sidebarItems(SidebarSection.instagramSections, tint: Theme.instagramTint)
-                }
-                Section("Resources", isExpanded: $resourcesExpanded) {
-                    sidebarItems(SidebarSection.assetSections, tint: Theme.assetsTint)
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
+            ProjectSidebarView()
+                .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 290)
         } detail: {
-            switch selection ?? .analyze {
-            case .library: LibraryView()
-            case .scenes: ScenesView()
-            case .curated: CuratedView()
-            case .people: PeopleView()
-            case .builder: BuilderView()
-            case .analyze: AnalyzeView()
-            case .wizard: WizardView()
-            case .instagram: InstagramView(tab: .posts)
-            case .instagramReports: InstagramView(tab: .reports)
-            case .music: AssetBrowserView(kind: .music)
-            case .fonts: AssetBrowserView(kind: .fonts)
-            case .images: AssetBrowserView(kind: .images)
-            case .overlays: OverlayTemplatesView()
-            case .effects: EffectsView()
-            case .screenCrops: ScreenCropsView()
-            }
+            ProjectWorkspaceDetail()
         }
         .onChange(of: store.requestedSection) { _, requested in
-            if let requested {
-                selection = requested
-                store.requestedSection = nil
-            }
+            handleRequestedSection(requested)
         }
         // The Analyze Wizard's fire-and-forget progress: a window-wide strip
         // that follows the user across screens; click for the full log.
@@ -230,24 +252,12 @@ struct MainWindowView: View {
         .sheet(isPresented: $store.showIGLog) {
             InstagramLogSheet()
         }
-        .navigationTitle("Clip Builder")
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Picker("Profile", selection: Binding(
-                    get: { store.activeProfile.profileName },
-                    set: { store.switchProfile(named: $0) }
-                )) {
-                    ForEach(store.profiles) { profile in
-                        Text(profile.profileName).tag(profile.profileName)
-                    }
-                }
-                .pickerStyle(.menu)
-                .help("Active brand profile")
-            }
-        }
         // Results first; a queued A/B comparison presents after it closes.
         .sheet(item: $store.wizardResults) { results in
             WizardResultsSheet(results: results)
+        }
+        .sheet(item: $store.pendingCutReview) { request in
+            ProposedCutsSheet(request: request)
         }
         .sheet(item: $store.pendingComparison) { batch in
             ComparisonSheet(batch: batch)
@@ -327,20 +337,21 @@ struct MainWindowView: View {
                 AssetStore.registerFonts()
             }.value
         }
+        .onDisappear {
+            store.builder.flushPendingAutosave()
+            store.flushActiveProjectState()
+        }
     }
 
-    /// Rows for one sidebar group: tinted icon (one hue per group, Mail
-    /// style), the visible ⌘-shortcut so the mapping is learnable on sight.
-    private func sidebarItems(_ sections: [SidebarSection], tint: Color) -> some View {
-        ForEach(sections) { section in
-            Label {
-                Text(section.title)
-            } icon: {
-                Image(systemName: section.systemImage)
-                    .foregroundStyle(tint)
-            }
-            .badge(section.shortcutLabel.map { Text($0).monospaced() })
-            .tag(section)
+    private func handleRequestedSection(_ requested: SidebarSection?) {
+        guard let requested else { return }
+        store.requestedSection = nil
+        if requested == .projects {
+            store.showProjectsHome()
+        } else {
+            if requested == .curated { store.sceneMode = "curated" }
+            if requested == .scenes { store.sceneMode = "all" }
+            store.selectSection(requested)
         }
     }
 

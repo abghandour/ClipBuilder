@@ -44,12 +44,20 @@ nonisolated enum FFmpeg {
         return String(data: data, encoding: .utf8)?.contains("h264_videotoolbox") ?? false
     }()
 
-    /// Video encode arguments: hardware VideoToolbox when available
-    /// (`-allow_sw 1` lets VT fall back to its software path), else libx264.
+    /// Video encode arguments for the current render settings. The three
+    /// quality presets use hardware VideoToolbox when the build has it, at a
+    /// bitrate scaled to the canvas so 4K is not starved (`-allow_sw 1` lets
+    /// VT fall back to its software path). A custom CRF has no VideoToolbox
+    /// equivalent, so it encodes with libx264; the same applies when the
+    /// encoder is missing.
     static var videoEncodeArgs: [String] {
-        hasVideoToolbox
-            ? ["-c:v", "h264_videotoolbox", "-b:v", "8M", "-allow_sw", "1"]
-            : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+        let settings = RenderContext.settings
+        if hasVideoToolbox, let perMegapixel = settings.quality.videoToolboxMegabitsPerMegapixel {
+            let megapixels = Double(settings.width * settings.height) / 1_000_000
+            let megabits = max(2, (perMegapixel * megapixels).rounded())
+            return ["-c:v", "h264_videotoolbox", "-b:v", "\(Int(megabits))M", "-allow_sw", "1"]
+        }
+        return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "\(settings.crf)"]
     }
 
     static let audioEncodeArgs = ["-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "128k"]

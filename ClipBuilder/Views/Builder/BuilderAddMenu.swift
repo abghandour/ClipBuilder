@@ -51,6 +51,28 @@ struct BuilderAddMenu: View {
             }
 
             Menu("Overlay", systemImage: "square.2.layers.3d") {
+                Menu("Lower Third", systemImage: "rectangle.bottomthird.inset.filled") {
+                    Button("Blank Lower Third") {
+                        store.builder.addOverlayBlock(
+                            name: "Lower Third",
+                            composition: LowerThirdOverlay.composition(
+                                name: "NAME", role: "ROLE / TITLE",
+                                logoPath: store.activeProfile.logoPath))
+                    }
+                    if !store.people.filter({ !$0.name.isEmpty && !$0.hidden }).isEmpty {
+                        Divider()
+                        ForEach(store.people.filter { !$0.name.isEmpty && !$0.hidden }) { person in
+                            Button(person.displayName) {
+                                store.builder.addOverlayBlock(
+                                    name: "Lower Third — \(person.displayName)",
+                                    composition: LowerThirdOverlay.composition(
+                                        name: person.displayName,
+                                        role: person.descriptor.isEmpty ? "Guest" : person.descriptor,
+                                        logoPath: store.activeProfile.logoPath))
+                            }
+                        }
+                    }
+                }
                 let templates = OverlayTemplateStore.list()
                 if templates.isEmpty {
                     Text("Create an overlay template first")

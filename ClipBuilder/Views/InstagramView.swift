@@ -63,8 +63,7 @@ struct InstagramView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle(tab == .posts ? "Instagram — Posts" : "Instagram — Reports")
-        .navigationSubtitle(tab == .posts ? subtitle : "Performance insights")
+        .screenTitle(tab == .posts ? "Instagram — Posts" : "Instagram — Reports", subtitle: tab == .posts ? subtitle : "Performance insights")
         .toolbar { toolbarContent }
         .sheet(isPresented: $addingAccount) { addAccountSheet }
         .sheet(item: $detailMedia) { media in

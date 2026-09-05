@@ -6,20 +6,36 @@ import Foundation
 /// and the branded outro card. Everything is deterministic CoreGraphics —
 /// the AI decides the words, the brand kit decides the look.
 nonisolated enum BrandRenderer {
-    static let width = 1080
-    static let height = 1920
+    static var width: Int { RenderEngine.outputWidth }
+    static var height: Int { RenderEngine.outputHeight }
     static let defaultAccent = "#FFD400"
+
+    /// Every element is designed on the original 1080×1920 canvas and
+    /// scaled UNIFORMLY into the output (scaling width and height by
+    /// different factors distorted the cards on 16:9 and 1:1). Corner
+    /// overlays (watermark, headline) anchor to the real frame edges; the
+    /// full-frame cards are aspect-fit and centered.
+    static let designWidth = 1080.0
+    static let designHeight = 1920.0
+    private static var scale: Double {
+        min(Double(width) / designWidth, Double(height) / designHeight)
+    }
+    /// The output frame, for corner-anchored overlays.
+    private static var canvasFrame: CGSize { CGSize(width: width, height: height) }
+    /// The scaled design frame, for aspect-fit cards.
+    private static var cardFrame: CGSize { CGSize(width: designWidth * scale, height: designHeight * scale) }
 
     // MARK: - Elements
 
     /// Full-frame transparent PNG with the logo in the top-left corner.
     static func watermark(logoURL: URL, to directory: URL) -> URL? {
         guard let logo = NSImage(contentsOf: logoURL) else { return nil }
+        let s = scale
+        let frame = canvasFrame
         return draw(named: "brand_watermark", in: directory) { context in
-            let targetWidth = 150.0
             drawImage(logo, in: context,
-                      rect: fittedRect(for: logo, width: targetWidth,
-                                       topLeft: CGPoint(x: 48, y: 52)),
+                      rect: fittedRect(for: logo, width: 150 * s,
+                                       topLeft: CGPoint(x: 48 * s, y: 52 * s), frame: frame),
                       opacity: 0.85)
         }
     }
@@ -28,79 +44,92 @@ nonisolated enum BrandRenderer {
     /// up-to-two lines of condensed caps, bottom-left, above broadcast HUDs.
     static func headline(_ text: String, brandName: String, accent: String,
                          to directory: URL) -> URL? {
-        draw(named: "brand_headline", in: directory) { context in
+        let s = scale
+        let frame = canvasFrame
+        return draw(named: "brand_headline", in: directory) { context in
             let accentColor = color(accent)
-            let margin = 52.0
-            var cursorY = 390.0    // bottom-up coordinates: block base above HUD area
+            let margin = 52.0 * s
+            var cursorY = 390.0 * s
 
             // Headline: up to 2 lines, widest condensed face available.
-            let font = titleFont(size: 54)
-            let lines = wrap(text.uppercased(), font: font, maxWidth: 760, maxLines: 2)
+            let font = titleFont(size: 54 * s)
+            let lines = wrap(text.uppercased(), font: font, maxWidth: 760 * s, maxLines: 2)
             for line in lines.reversed() {
                 drawText(line, font: font, color: .white, at: CGPoint(x: margin, y: cursorY),
-                         in: context, shadow: true)
-                cursorY += 64
+                         in: context, frame: frame, shadow: true)
+                cursorY += 64 * s
             }
             // Brand chip above the headline.
-            let chipFont = titleFont(size: 34)
+            let chipFont = titleFont(size: 34 * s)
             drawText(brandName.uppercased(), font: chipFont, color: accentColor,
-                     at: CGPoint(x: margin, y: cursorY + 10), in: context, shadow: true)
+                     at: CGPoint(x: margin, y: cursorY + 10 * s), in: context, frame: frame, shadow: true)
         }
     }
 
     /// Full-frame typographic intro card for compilations.
     static func titleCard(_ text: String, brandName: String, accent: String,
                           logoURL: URL?, to directory: URL) -> URL? {
-        draw(named: "brand_title_card", in: directory, background: .black) { context in
+        let s = scale
+        let frame = cardFrame
+        return draw(named: "brand_title_card", in: directory, background: .black, fitCard: true) { context in
             let accentColor = color(accent)
             if let logoURL, let logo = NSImage(contentsOf: logoURL) {
                 drawImage(logo, in: context,
-                          rect: fittedRect(for: logo, width: 130,
-                                           topLeft: CGPoint(x: (1080 - 130) / 2, y: 260)),
-                          opacity: 0.95)
+                          rect: fittedRect(for: logo, width: 130 * s,
+                                           topLeft: CGPoint(x: (frame.width - 130 * s) / 2, y: 260 * s),
+                                           frame: frame),
+                          opacity: 1)
             }
-            let font = titleFont(size: 96)
-            let lines = wrap(text.uppercased(), font: font, maxWidth: 900, maxLines: 3)
-            let lineHeight = 112.0
-            var y = 960 + Double(lines.count - 1) * lineHeight / 2
+            let font = titleFont(size: 96 * s)
+            let lines = wrap(text.uppercased(), font: font, maxWidth: 900 * s, maxLines: 3)
+            let lineHeight = 112.0 * s
+            let blockHeight = Double(lines.count) * lineHeight
+            var y = (frame.height - blockHeight) / 2 + blockHeight - lineHeight
             for line in lines {
                 drawText(line, font: font, color: .white, at: nil, centeredY: y,
-                         in: context, shadow: false)
+                         in: context, frame: frame, shadow: false)
                 y -= lineHeight
             }
-            // Accent rule under the title block.
             context.setFillColor(accentColor.cgColor)
-            context.fill(CGRect(x: (1080 - 220) / 2, y: y + lineHeight - 72, width: 220, height: 10))
-            drawText(brandName.uppercased(), font: titleFont(size: 34), color: accentColor,
-                     at: nil, centeredY: y + lineHeight - 140, in: context, shadow: false)
+            context.fill(CGRect(x: (frame.width - 220 * s) / 2,
+                                y: y + lineHeight - 72 * s,
+                                width: 220 * s, height: 10 * s))
+            drawText(brandName.uppercased(), font: titleFont(size: 34 * s), color: accentColor,
+                     at: nil, centeredY: y + lineHeight - 140 * s, in: context, frame: frame, shadow: false)
         }
     }
 
     /// Branded outro: logo, brand name, tagline, follow CTA + handle.
     static func outroCard(profile: BrandProfile, to directory: URL) -> URL? {
-        draw(named: "brand_outro", in: directory, background: .black) { context in
+        let s = scale
+        let frame = cardFrame
+        return draw(named: "brand_outro", in: directory, background: .black, fitCard: true) { context in
             let accentColor = color(profile.accentColor.isEmpty ? "#FFFFFF" : profile.accentColor)
             if let logoURL = profile.logoURL, let logo = NSImage(contentsOf: logoURL) {
                 drawImage(logo, in: context,
-                          rect: fittedRect(for: logo, width: 380,
-                                           topLeft: CGPoint(x: (1080 - 380) / 2, y: 560)),
+                          rect: fittedRect(for: logo, width: 380 * s,
+                                           topLeft: CGPoint(x: (frame.width - 380 * s) / 2, y: 560 * s),
+                                           frame: frame),
                           opacity: 1)
             }
-            drawText(profile.brandName.uppercased(), font: titleFont(size: 64), color: .white,
-                     at: nil, centeredY: 1010, in: context, shadow: false, tracking: 8)
+            drawText(profile.brandName.uppercased(), font: titleFont(size: 64 * s), color: .white,
+                     at: nil, centeredY: 1010 * s, in: context, frame: frame, shadow: false,
+                     tracking: 8 * s)
             if !profile.tagline.isEmpty {
-                drawText(profile.tagline.uppercased(), font: titleFont(size: 26),
+                drawText(profile.tagline.uppercased(), font: titleFont(size: 26 * s),
                          color: NSColor.white.withAlphaComponent(0.7),
-                         at: nil, centeredY: 940, in: context, shadow: false, tracking: 6)
+                         at: nil, centeredY: 940 * s, in: context, frame: frame, shadow: false,
+                         tracking: 6 * s)
             }
-            drawText("FOLLOW", font: titleFont(size: 36),
-                     color: accentColor, at: nil, centeredY: 560, in: context,
-                     shadow: false, tracking: 10)
+            drawText("FOLLOW", font: titleFont(size: 36 * s),
+                     color: accentColor, at: nil, centeredY: 560 * s, in: context, frame: frame,
+                     shadow: false, tracking: 10 * s)
             let handle = profile.socials["instagram"]?.handle ?? ""
             if !handle.isEmpty {
                 let display = handle.hasPrefix("@") ? handle : "@" + handle
-                drawText(display, font: titleFont(size: 40), color: .white,
-                         at: nil, centeredY: 490, in: context, shadow: false, tracking: 2)
+                drawText(display, font: titleFont(size: 40 * s), color: .white,
+                         at: nil, centeredY: 490 * s, in: context, frame: frame, shadow: false,
+                         tracking: 2 * s)
             }
         }
     }
@@ -121,15 +150,18 @@ nonisolated enum BrandRenderer {
             "-f", "lavfi", "-t", String(format: "%.2f", duration),
             "-i", "anullsrc=r=44100:cl=stereo",
             "-vf", "format=yuv420p,scale=\(width):\(height)",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        ] + FFmpeg.videoEncodeArgs + [
             "-c:a", "aac", "-shortest", "-y", output.path,
         ], timeout: 120)
     }
 
     // MARK: - Drawing plumbing
 
+    /// `fitCard` draws the content in the scaled design frame centered on
+    /// the canvas (letterboxed on 16:9, pillarboxed on 1:1); off, content
+    /// draws straight onto the canvas.
     private static func draw(named name: String, in directory: URL,
-                             background: NSColor? = nil,
+                             background: NSColor? = nil, fitCard: Bool = false,
                              content: (CGContext) -> Void) -> URL? {
         guard let context = CGContext(data: nil, width: width, height: height,
                                       bitsPerComponent: 8, bytesPerRow: 0,
@@ -139,6 +171,11 @@ nonisolated enum BrandRenderer {
         if let background {
             context.setFillColor(background.cgColor)
             context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+        if fitCard {
+            let card = cardFrame
+            context.translateBy(x: (Double(width) - card.width) / 2,
+                                y: (Double(height) - card.height) / 2)
         }
         let graphics = NSGraphicsContext(cgContext: context, flipped: false)
         NSGraphicsContext.saveGraphicsState()
@@ -180,7 +217,7 @@ nonisolated enum BrandRenderer {
     /// x = nil centers horizontally at `centeredY` (baseline, bottom-up).
     private static func drawText(_ text: String, font: NSFont, color: NSColor,
                                  at point: CGPoint?, centeredY: Double = 0,
-                                 in context: CGContext, shadow: Bool,
+                                 in context: CGContext, frame: CGSize, shadow: Bool,
                                  tracking: Double = 0) {
         var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
         if tracking > 0 { attributes[.kern] = tracking }
@@ -193,16 +230,16 @@ nonisolated enum BrandRenderer {
         }
         let string = NSAttributedString(string: text, attributes: attributes)
         let size = string.size()
-        let origin = point ?? CGPoint(x: (Double(width) - size.width) / 2, y: centeredY)
+        let origin = point ?? CGPoint(x: (frame.width - size.width) / 2, y: centeredY)
         string.draw(at: origin)
     }
 
     private static func fittedRect(for image: NSImage, width targetWidth: Double,
-                                   topLeft: CGPoint) -> CGRect {
+                                   topLeft: CGPoint, frame: CGSize) -> CGRect {
         let aspect = image.size.height > 0 ? image.size.height / image.size.width : 1
         let targetHeight = targetWidth * aspect
         // topLeft.y is measured from the TOP of the frame for readability.
-        return CGRect(x: topLeft.x, y: Double(height) - topLeft.y - targetHeight,
+        return CGRect(x: topLeft.x, y: frame.height - topLeft.y - targetHeight,
                       width: targetWidth, height: targetHeight)
     }
 

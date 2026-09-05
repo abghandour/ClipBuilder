@@ -51,8 +51,7 @@ struct ScreenCropsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Screen Crop")
-        .navigationSubtitle(navigationSubtitle)
+        .screenTitle("Screen Crop", subtitle: navigationSubtitle)
         .toolbar { screenCropToolbarContent }
         .alert("Rename Screen Crop", isPresented: $renamePrompt) {
             TextField("Name", text: $renameText)

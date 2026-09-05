@@ -6,8 +6,8 @@ import Vision
 /// overlay → caption/text burn-in. Multi-track compositing (the manual
 /// builder) is intentionally out of scope for now.
 actor RenderEngine {
-    static let outputWidth = 1080
-    static let outputHeight = 1920
+    static var outputWidth: Int { RenderContext.settings.width }
+    static var outputHeight: Int { RenderContext.settings.height }
 
     /// xfade transition names accepted by the planner (video.py TRANSITIONS).
     static let transitions: [String] = [
@@ -58,9 +58,10 @@ actor RenderEngine {
         return dir
     }
 
-    private static let normalizeFilter =
+    private static var normalizeFilter: String {
         "scale=\(outputWidth):\(outputHeight):force_original_aspect_ratio=decrease," +
         "pad=\(outputWidth):\(outputHeight):(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30"
+    }
 
     // MARK: - Subclip extraction
 
@@ -158,9 +159,13 @@ actor RenderEngine {
         case .none:
             filters.append("\(sourceStream)\(Self.normalizeFilter)\(baseLabel)")
         case .autoCrop(let xFraction):
-            filters.append(String(format: "%@crop=ih*9/16:ih:(iw-ih*9/16)*%.4f:0," +
+            // A column at the canvas aspect (portrait on the default 9:16),
+            // never wider than the source itself.
+            let aspect = RenderContext.settings.aspectRatio
+            filters.append(String(format: "%@crop='min(iw\\,ih*%.5f)':ih:(iw-min(iw\\,ih*%.5f))*%.4f:0," +
                                   "scale=%d:%d,setsar=1,fps=30%@",
-                                  sourceStream, xFraction, Self.outputWidth, Self.outputHeight, baseLabel))
+                                  sourceStream, aspect, aspect, xFraction,
+                                  Self.outputWidth, Self.outputHeight, baseLabel))
         case .split:
             let half = Self.outputHeight / 2
             filters.append("""
@@ -196,6 +201,10 @@ actor RenderEngine {
                     yExpr = String(format: "'if(lt(t,%.3f),round(H*0.05*pow(1-t/%.3f,3)),0)'", anim, anim)
                 case "slide_up":
                     yExpr = String(format: "'if(lt(t,%.3f),H-H*t/%.3f,0)'", anim, anim)
+                case "slide_left":
+                    xExpr = String(format: "'if(lt(t,%.3f),-W+W*t/%.3f,0)'", anim, anim)
+                case "slide_right":
+                    xExpr = String(format: "'if(lt(t,%.3f),W-W*t/%.3f,0)'", anim, anim)
                 default:
                     break
                 }
@@ -423,7 +432,7 @@ actor RenderEngine {
         let x0 = contentBox.map { Int((Double(width) * $0.x).rounded()) } ?? 0
         let contentWidth = contentBox.map { Int((Double(width) * $0.w).rounded()) } ?? width
         let contentHeight = contentBox.map { Double(height) * $0.h } ?? Double(height)
-        let targetWidth = Int((contentHeight * 9.0 / 16.0).rounded())
+        let targetWidth = Int((contentHeight * RenderContext.settings.aspectRatio).rounded())
         guard targetWidth > 0, targetWidth < contentWidth, x0 + contentWidth <= width else { return 0.5 }
 
         // People anchor the search: when the main subjects are found, the

@@ -11,16 +11,16 @@ struct LibraryView: View {
         case shortest = "Shortest"
     }
 
-    @State private var sortOrder: SortOrder = .newest
     @State private var playing: GeneratedVideoRecord?
     @State private var deleting: GeneratedVideoRecord?
     @State private var reviewTarget: GeneratedVideoRecord?
     @State private var builderTarget: GeneratedVideoRecord?
     @State private var publishTarget: GeneratedVideoRecord?
     @State private var coverTarget: GeneratedVideoRecord?
+    @State private var formatExportTarget: GeneratedVideoRecord?
 
     private var sorted: [GeneratedVideoRecord] {
-        switch sortOrder {
+        switch SortOrder(rawValue: store.outputsSort) ?? .newest {
         case .newest: return store.generatedVideos
         case .longest: return store.generatedVideos.sorted { $0.duration > $1.duration }
         case .shortest: return store.generatedVideos.sorted { $0.duration < $1.duration }
@@ -39,28 +39,39 @@ struct LibraryView: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16, alignment: .top)], spacing: 16) {
                         ForEach(sorted) { video in
                             card(for: video)
+                                .id(video.id)
                         }
                     }
                     .padding()
+                    .scrollTargetLayout()
                 }
+                .scrollPosition(id: Binding(
+                    get: { store.outputsScrollID },
+                    set: { store.outputsScrollID = $0 }
+                ))
             }
         }
-        .navigationTitle("Library")
-        .navigationSubtitle("\(store.generatedVideos.count) videos")
+        .screenTitle("Outputs", subtitle: "\(store.generatedVideos.count) videos")
         .toolbar {
             ToolbarItem {
                 // A named menu instead of a bare Picker — the toolbar showed
                 // only the selected value ("Newest") with nothing saying what
                 // the control was.
                 Menu {
-                    Picker("Sort", selection: $sortOrder) {
+                    Picker("Sort", selection: Binding(
+                        get: { SortOrder(rawValue: store.outputsSort) ?? .newest },
+                        set: {
+                            store.outputsSort = $0.rawValue
+                            store.persistActiveProjectState()
+                        }
+                    )) {
                         ForEach(SortOrder.allCases, id: \.self) { order in
                             Text(order.rawValue).tag(order)
                         }
                     }
                     .pickerStyle(.inline)
                 } label: {
-                    ToolbarBubbleLabel(text: "Sort: \(sortOrder.rawValue)",
+                    ToolbarBubbleLabel(text: "Sort: \((SortOrder(rawValue: store.outputsSort) ?? .newest).rawValue)",
                                        systemImage: "arrow.up.arrow.down")
                 }
                 .help("Order the library's videos")
@@ -77,6 +88,9 @@ struct LibraryView: View {
         }
         .sheet(item: $coverTarget) { video in
             CoverFrameSheet(video: video)
+        }
+        .sheet(item: $formatExportTarget) { video in
+            SocialFormatExportSheet(video: video)
         }
         // Hook for scripts/capture_help_screenshots.sh: accessibility-tree
         // clicking is too flaky to reach the review sheet, so screenshot
@@ -200,6 +214,9 @@ struct LibraryView: View {
                     Button("Publish to Instagram…", systemImage: "paperplane") {
                         publishTarget = video
                     }
+                    Button("Export Story, Feed or Carousel…", systemImage: "rectangle.stack") {
+                        formatExportTarget = video
+                    }
                     if !video.caption.isEmpty {
                         Button("Copy Caption", systemImage: "doc.on.doc") {
                             NSPasteboard.general.clearContents()
@@ -229,6 +246,9 @@ struct LibraryView: View {
             }
             Button("Publish to Instagram…") {
                 publishTarget = video
+            }
+            Button("Export Story, Feed or Carousel…") {
+                formatExportTarget = video
             }
             Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([video.url])

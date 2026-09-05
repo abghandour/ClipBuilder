@@ -45,8 +45,7 @@ struct OverlayTemplatesView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .navigationTitle("Overlays")
-        .navigationSubtitle("\(templates.count) template\(templates.count == 1 ? "" : "s")")
+        .screenTitle("Overlays", subtitle: "\(templates.count) template\(templates.count == 1 ? "" : "s")")
         .toolbar { overlayToolbarContent }
         .sheet(isPresented: $showOverlayWizard) {
             OverlayWizardSheet { name in

@@ -70,10 +70,12 @@ actor MultitrackRenderer {
         var speed: Double = 1
     }
 
-    private static let width = RenderEngine.outputWidth
-    private static let height = RenderEngine.outputHeight
-    private static let slotHeight = 640
-    private static let slotY: [String: Int] = ["top": 0, "center": 640, "bottom": 1280]
+    private static var width: Int { RenderEngine.outputWidth }
+    private static var height: Int { RenderEngine.outputHeight }
+    private static var slotHeight: Int { max(2, height / 3) }
+    private static var slotY: [String: Int] {
+        ["top": 0, "center": slotHeight, "bottom": slotHeight * 2]
+    }
 
     private let render: RenderEngine
     private let centerStageService = CenterStageService()
@@ -91,8 +93,20 @@ actor MultitrackRenderer {
     func render(document: TimelineDocument, scenes: [SceneRecord],
                 profile: BrandProfile, database: Database,
                 centerStageCamera: String = "balanced",
+                projectID: Int64? = nil,
                 preview: Bool = false,
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
+        try await RenderContext.$settings.withValue(document.renderSettings) {
+            try await renderConfigured(document: document, scenes: scenes, profile: profile,
+                                       database: database, centerStageCamera: centerStageCamera,
+                                       projectID: projectID, preview: preview, emit: emit)
+        }
+    }
+
+    private func renderConfigured(document: TimelineDocument, scenes: [SceneRecord],
+                                  profile: BrandProfile, database: Database,
+                                  centerStageCamera: String, projectID: Int64?, preview: Bool,
+                                  emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         // Overlay blocks render as their flattened text/image items.
         let document = document.expandingOverlayBlocks()
         var clips = Self.resolveClips(document: document, scenes: scenes)
@@ -107,7 +121,8 @@ actor MultitrackRenderer {
             do {
                 let source = URL(fileURLWithPath: clips[index].sourcePath)
                 let portrait: URL
-                if let path = clips[index].cameraPath {
+                if let path = clips[index].cameraPath,
+                   CenterStageService.pathMatchesCanvas(path) {
                     // Replay the stored path — the exact camera the preview
                     // showed (including workbench edits). No re-tracking.
                     emit("Clip \(index + 1): Center Stage reframe (saved camera path)…")
@@ -118,6 +133,9 @@ actor MultitrackRenderer {
                         path: path,
                         log: emit)
                 } else {
+                    if clips[index].cameraPath != nil {
+                        emit("Clip \(index + 1): saved camera path was framed for another canvas — tracking again")
+                    }
                     emit("Clip \(index + 1): Center Stage reframe…")
                     portrait = try await centerStageService.reframeClip(
                         source: source,
@@ -220,6 +238,7 @@ actor MultitrackRenderer {
                                                             limit: FFmpeg.jobLimit) { index, segment in
             try await self.renderSegment(segment, index: index, of: segmentCount,
                                          scratch: scratch, database: database,
+                                         captionLanguage: profile.captionLanguages.first,
                                          captionRenderer: captionRenderer,
                                          captionCache: captionCache, emit: emit)
         }
@@ -328,10 +347,13 @@ actor MultitrackRenderer {
         let encoder = JSONEncoder()
         let timelineJSON = (try? encoder.encode(document))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-        try await database.insertGeneratedVideo(path: outputURL.path,
-                                                duration: (finalDuration * 10).rounded() / 10,
-                                                timelineJSON: timelineJSON,
-                                                wizardProvider: nil, wizardModel: nil)
+        let recordID = try await database.insertGeneratedVideo(path: outputURL.path,
+                                                               duration: (finalDuration * 10).rounded() / 10,
+                                                               timelineJSON: timelineJSON,
+                                                               wizardProvider: nil, wizardModel: nil,
+                                                               projectID: projectID)
+        try await database.saveGeneratedTraits(videoID: recordID,
+                                               traits: .derive(document: document, scenes: scenes))
         emit("Saved \(outputURL.lastPathComponent)")
         return RenderResult(url: outputURL, duration: finalDuration)
     }
@@ -492,6 +514,7 @@ actor MultitrackRenderer {
     /// layered composite with captions burned in the same encode pass.
     private func renderSegment(_ segment: Segment, index: Int, of total: Int,
                                scratch: URL, database: Database,
+                               captionLanguage: String?,
                                captionRenderer: CaptionRenderer,
                                captionCache: CaptionPNGCache,
                                emit: @escaping @Sendable (String) -> Void) async throws -> URL {
@@ -530,7 +553,8 @@ actor MultitrackRenderer {
             let sourceStart = clip.sourceStart + clipOffset
             let sourceEnd = sourceStart + segment.duration * clip.speed
             let rows = (try? await database.transcriptSegments(videoID: videoID,
-                                                               start: sourceStart, end: sourceEnd)) ?? []
+                                                               start: sourceStart, end: sourceEnd,
+                                                               language: captionLanguage)) ?? []
             for row in rows {
                 // Shift to segment-local SCREEN time (slow motion stretches
                 // it) and clamp to the window, like get_transcript_for_clip.
@@ -645,12 +669,13 @@ actor MultitrackRenderer {
             let wideCropped = placement.isWide && placement.cropXFrac != nil
             if wideCropped {
                 let fraction = max(0, min(1, placement.cropXFrac ?? 0.5))
+                let aspect = RenderContext.settings.aspectRatio
                 filters.append(String(format: "[%d:v]%@," +
-                                      "crop=ih*9/16:ih:(iw-ih*9/16)*%.4f:0," +
+                                      "crop='min(iw\\,ih*%.5f)':ih:(iw-min(iw\\,ih*%.5f))*%.4f:0," +
                                       "scale=%d:%d:force_original_aspect_ratio=decrease," +
                                       "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black," +
                                       "setsar=1,fps=30[v%d]",
-                                      sourceIndex, pts, fraction, Self.width, Self.height,
+                                      sourceIndex, pts, aspect, aspect, fraction, Self.width, Self.height,
                                       Self.width, Self.height, index))
             } else {
                 let targetHeight = placement.isWide ? Self.slotHeight : Self.height

@@ -4,6 +4,11 @@ import SwiftUI
 /// right with favorite/grade voting and transcripts.
 struct ScenesView: View {
     @Environment(AppStore.self) private var store
+    let curatedOnly: Bool
+
+    init(curatedOnly: Bool = false) {
+        self.curatedOnly = curatedOnly
+    }
 
     @State private var selectedRunIDs: Set<Int64> = []
     @State private var tagFilter: String?
@@ -87,6 +92,7 @@ struct ScenesView: View {
         var showSequenceParts: Bool
         var stackLevel: SceneStackLevel
         var sortByScore: Bool
+        var curatedOnly: Bool
     }
 
     @State private var gridMemo = MemoBox<GridKey, GridContents>()
@@ -96,7 +102,7 @@ struct ScenesView: View {
                           runFilter: runFilter, showHidden: showHidden, tagFilter: tagFilter,
                           minScore: minScore, aiMatchIDs: aiMatches?.ids,
                           showSequenceParts: showSequenceParts, stackLevel: stackLevel,
-                          sortByScore: sortByScore)
+                          sortByScore: sortByScore, curatedOnly: curatedOnly)
         return gridMemo(key) { computeGridContents() }
     }
 
@@ -104,6 +110,7 @@ struct ScenesView: View {
         let needle = searchText.lowercased()
         let runFilter = runFilter
         var result = store.scenes.filter { scene in
+            if curatedOnly && !scene.curated { return false }
             if let runFilter, !(scene.runID.map(runFilter.contains) ?? false) { return false }
             if !showHidden && scene.excluded { return false }
             if let tagFilter, !scene.tags.contains(tagFilter) { return false }
@@ -213,12 +220,7 @@ struct ScenesView: View {
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Raw Scenes")
-        .navigationSubtitle(selectedSceneIDs.count > 1
-                            ? "\(selectedSceneIDs.count) of \(filtered.count) scenes selected"
-                            : stackedAway > 0
-                                ? "\(filtered.count) moments — \(filtered.count + stackedAway) scenes"
-                                : "\(filtered.count) scenes")
+        .screenTitle("Scenes", subtitle: selectedSceneIDs.count > 1 ? "\(selectedSceneIDs.count) of \(filtered.count) scenes selected" : curatedOnly ? "\(filtered.count) curated scenes" : stackedAway > 0 ? "\(filtered.count) moments — \(filtered.count + stackedAway) scenes" : "\(filtered.count) scenes")
         .searchable(text: $searchText, prompt: "Filter by file or tag")
         .toolbar {
             if let run = selectedRun {
@@ -322,6 +324,9 @@ struct ScenesView: View {
                         title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
                         startTime: scene.startTime, endTime: scene.endTime)
         }
+        .onAppear { restoreProjectState() }
+        .onChange(of: store.projectStateVersion) { restoreProjectState() }
+        .onChange(of: persistedSceneState) { saveProjectState() }
     }
 
     /// Strip above the grid while an AI search filters it — says what was
@@ -475,11 +480,16 @@ struct ScenesView: View {
                             }
                         }
                         .padding()
+                        .scrollTargetLayout()
                         // Column count feeds ↑/↓ keyboard movement.
                         .onGeometryChange(for: CGFloat.self, of: { $0.size.width }) { width in
                             gridColumns = max(1, Int((width - 32 + Theme.spaceM) / (180 + Theme.spaceM)))
                         }
                     }
+                    .scrollPosition(id: Binding(
+                        get: { store.sceneScrollID },
+                        set: { store.sceneScrollID = $0 }
+                    ))
                     .focusable()
                     .focusEffectDisabled()
                     .focused($gridFocused)
@@ -499,6 +509,55 @@ struct ScenesView: View {
                 }
             }
         }
+    }
+
+    private struct PersistedSceneState: Equatable {
+        var runSelection: Set<Int64>
+        var sceneSelection: Set<Int64>
+        var tagFilter: String?
+        var searchText: String
+        var showHidden: Bool
+        var sortByScore: Bool
+        var minimumScore: Double
+        var showSequenceParts: Bool
+    }
+
+    private var persistedSceneState: PersistedSceneState {
+        PersistedSceneState(
+            runSelection: selectedRunIDs,
+            sceneSelection: selectedSceneIDs,
+            tagFilter: tagFilter,
+            searchText: searchText,
+            showHidden: showHidden,
+            sortByScore: sortByScore,
+            minimumScore: minScore,
+            showSequenceParts: showSequenceParts
+        )
+    }
+
+    private func saveProjectState() {
+        // While a project loads, the local state is the previous project's.
+        guard !store.isLoadingProject else { return }
+        store.sceneRunSelection = selectedRunIDs
+        store.sceneSelection = selectedSceneIDs
+        store.sceneTagFilter = tagFilter
+        store.sceneSearchText = searchText
+        store.sceneShowHidden = showHidden
+        store.sceneSortByScore = sortByScore
+        store.sceneMinimumScore = minScore
+        store.sceneShowSequenceParts = showSequenceParts
+    }
+
+    private func restoreProjectState() {
+        selectedRunIDs = store.sceneRunSelection.intersection(Set(store.analysisRuns.map(\.id)))
+        selectedSceneIDs = store.sceneSelection.intersection(Set(store.scenes.map(\.id)))
+        selectionAnchorID = selectedSceneIDs.first
+        tagFilter = store.sceneTagFilter
+        searchText = store.sceneSearchText
+        showHidden = store.sceneShowHidden
+        sortByScore = store.sceneSortByScore
+        minScore = store.sceneMinimumScore
+        showSequenceParts = store.sceneShowSequenceParts
     }
 
     /// One selectable grid cell: the card, its selection ring, and the
@@ -714,10 +773,7 @@ struct ScenesView: View {
     }
 
     private func bulkAddToBuilder(in filtered: [SceneRecord]) {
-        for scene in orderedSelection(in: filtered) {
-            store.builder.addScene(scene)
-        }
-        store.requestedSection = .builder
+        store.addScenesToBuilder(orderedSelection(in: filtered))
     }
 }
 
@@ -977,6 +1033,10 @@ struct SceneCard: View {
                            systemImage: scene.excluded ? "eye" : "eye.slash") {
                         store.setExcluded(scene, excluded: !scene.excluded)
                     }
+                    Button(scene.isBRoll ? "Remove B-roll Mark" : "Mark as B-roll",
+                           systemImage: scene.isBRoll ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle") {
+                        store.setSceneBRoll(scene, isBRoll: !scene.isBRoll)
+                    }
                 }
                 .help("Rate, favorite, transcribe, or hide this scene")
             }
@@ -1015,8 +1075,10 @@ struct SceneCard: View {
                 }
             }
             Button("Add to Builder") {
-                store.builder.addScene(scene)
-                store.requestedSection = .builder
+                store.addScenesToBuilder([scene])
+            }
+            Button(scene.isBRoll ? "Remove B-roll Mark" : "Mark as B-roll") {
+                store.setSceneBRoll(scene, isBRoll: !scene.isBRoll)
             }
         }
     }

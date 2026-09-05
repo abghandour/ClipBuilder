@@ -45,8 +45,14 @@ struct WizardSourcePickerSheet: View {
         )
     }
 
+    /// People with footage in this project (identities are profile-wide).
+    private var projectPeople: [PersonRecord] {
+        let tags = Set(store.sceneIndex.personTagsByVideo.values.flatMap { $0 })
+        return store.people.filter { tags.contains($0.tag) }
+    }
+
     private var eligiblePeople: [PersonRecord] {
-        guard scope == .batches, !selectedRunIDs.isEmpty else { return store.people }
+        guard scope == .batches, !selectedRunIDs.isEmpty else { return projectPeople }
         var tags = Set<String>()
         for runID in selectedRunIDs {
             tags.formUnion(store.sceneIndex.personTagsByRun[runID] ?? [])

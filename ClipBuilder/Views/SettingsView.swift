@@ -226,6 +226,16 @@ private struct ProfileSettingsTab: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Default Output") {
+                RenderSettingsControls(settings: $store.activeProfile.defaultRenderSettings)
+                EditPacingControls(pacing: $store.activeProfile.defaultPacing)
+                Toggle("Learn editing defaults from published results",
+                       isOn: $store.activeProfile.useLearnedEditingDefaults)
+                Text("The Wizard starts with this format. Builder timelines keep their own copy.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             WizardBrandingDefaultsSection()
 
             Section("Folders") {
@@ -520,6 +530,25 @@ private struct GeneralSettingsTab: View {
                           prompt: Text("Auto (current locale)"))
                 TextField("Vocabulary hint", text: $store.settings.transcribeHint,
                           prompt: Text("Domain-specific names, code-switching notes…"))
+                LabeledContent("Dead air") {
+                    Stepper(value: $store.settings.podcast.deadAirSeconds, in: 0.5...10, step: 0.25) {
+                        Text(store.settings.podcast.deadAirSeconds,
+                             format: .number.precision(.fractionLength(2)))
+                            .monospacedDigit()
+                    }
+                }
+                LabeledContent("Filler run") {
+                    Stepper(value: $store.settings.podcast.fillerRunSeconds, in: 0.5...10, step: 0.25) {
+                        Text(store.settings.podcast.fillerRunSeconds,
+                             format: .number.precision(.fractionLength(2)))
+                            .monospacedDigit()
+                    }
+                }
+                Toggle("Review podcast cuts before rendering",
+                       isOn: $store.settings.podcast.reviewCutsByDefault)
+                Text("Transcript Tools uses these thresholds for adjustable silence and filler-cut suggestions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Transitions") {

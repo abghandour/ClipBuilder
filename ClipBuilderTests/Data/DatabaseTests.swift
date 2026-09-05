@@ -219,6 +219,50 @@ struct DatabaseTests {
         #expect(try await temp.database.fetchOutcomes(runIDs: [runID + 100]).isEmpty)
     }
 
+    @Test("regression: re-analyzing a transcript keeps the user's accepted and rejected cut decisions")
+    func transcriptReanalysisKeepsDecisions() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        func proposal(_ kind: EditProposal.Kind, _ start: Double, _ end: Double) -> EditProposal {
+            EditProposal(id: 0, videoID: videoID, kind: kind, startTime: start, endTime: end,
+                         reason: "fixture", decision: .pending)
+        }
+        try await temp.database.replaceTranscriptFeatures(
+            videoID: videoID, features: [],
+            proposals: [proposal(.silence, 0, 2), proposal(.filler, 5, 7), proposal(.silence, 9, 12)])
+        var rows = try await temp.database.fetchEditProposals(videoID: videoID)
+        #expect(rows.count == 3)
+        rows[0].decision = .accepted
+        rows[1].decision = .rejected
+        try await temp.database.updateEditProposal(rows[0])
+        try await temp.database.updateEditProposal(rows[1])
+
+        // Re-transcribing proposes the same silence (shifted a frame), the
+        // same filler, and a new range instead of the third one.
+        try await temp.database.replaceTranscriptFeatures(
+            videoID: videoID, features: [],
+            proposals: [proposal(.silence, 0.1, 2.05), proposal(.filler, 5, 7), proposal(.silence, 20, 23)])
+        let after = try await temp.database.fetchEditProposals(videoID: videoID)
+        #expect(after.map(\.decision) == [.accepted, .rejected, .pending])
+        #expect(after.map(\.startTime) == [0.1, 5, 20])
+    }
+
+    @Test("regression: an output whose project was deleted mid-render is recorded without an owner")
+    func orphanedOutputStillRecorded() async throws {
+        let temp = try TempDatabase()
+        try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
+        let projectID = try await temp.database.createProject(profileName: "One", name: "Gone")
+        try await temp.database.deleteProject(id: projectID)
+        let id = try await temp.database.insertGeneratedVideo(
+            path: "/tmp/reel.mp4", duration: 12, timelineJSON: "{}",
+            wizardProvider: nil, wizardModel: nil, projectID: projectID)
+        let all = try await temp.database.fetchGeneratedVideos()
+        #expect(all.contains { $0.id == id })
+        // Home lists everything, including ownerless rows.
+        let homeID = try #require(try await temp.database.homeProjectID(profileName: "One"))
+        #expect(try await temp.database.fetchGeneratedVideos(projectID: homeID).contains { $0.id == id })
+    }
+
     @Test("regression: Instagram report snapshot query has no ambiguous fetched_at column")
     func instagramReportInputs() async throws {
         let temp = try TempDatabase()
@@ -240,6 +284,183 @@ struct DatabaseTests {
 
         let inputs = try await temp.database.fetchIGReportInputs(account: account)
         #expect(inputs.media.first?.views == 20)
+    }
+
+    @Test("project migration creates an implicit permanent Home and supports shared membership")
+    func projectMigrationAndMembership() async throws {
+        let temp = try TempDatabase()
+        let firstVideoID = try await temp.seedVideo()
+        let secondVideoID = try await temp.seedVideo()
+
+        try await temp.database.ensureDefaultProject(profileName: "Fixture",
+                                                     legacyTimelineJSON: nil)
+        var projects = try await temp.database.fetchProjects()
+        let migrated = try #require(projects.first)
+        #expect(migrated.name == "Home")
+        #expect(migrated.isHome)
+        #expect(migrated.sourceCount == 2)
+        #expect(try await temp.database.fetchVideos(projectID: migrated.id).count == 2)
+
+        let raw = try SQLiteConnection(path: temp.path.path)
+        let homeMemberships = try raw.query(
+            "SELECT COUNT(*) AS count FROM project_videos WHERE project_id = ?",
+            [.integer(migrated.id)]
+        ).first?["count"]?.intValue
+        #expect(homeMemberships == 0)
+
+        await #expect(throws: ProjectMutationError.homeIsPermanent) {
+            try await temp.database.renameProject(id: migrated.id, name: "Renamed")
+        }
+        await #expect(throws: ProjectMutationError.homeIsPermanent) {
+            try await temp.database.setProjectArchived(id: migrated.id, archived: true)
+        }
+        await #expect(throws: ProjectMutationError.homeIsPermanent) {
+            try await temp.database.deleteProject(id: migrated.id)
+        }
+        await #expect(throws: ProjectMutationError.homeIsPermanent) {
+            try await temp.database.duplicateProject(
+                id: migrated.id,
+                profileName: "Fixture",
+                name: "Home Copy"
+            )
+        }
+
+        let secondProjectID = try await temp.database.createProject(
+            profileName: "Fixture", name: "Second", videoIDs: [firstVideoID]
+        )
+        var sharedVideos = try await temp.database.fetchVideos(projectID: secondProjectID)
+        #expect(sharedVideos.map(\.id) == [firstVideoID])
+
+        #expect(try await temp.database.fetchVideosNotInProject(secondProjectID).map(\.id) == [secondVideoID])
+        try await temp.database.assignVideos([secondVideoID], to: secondProjectID)
+        sharedVideos = try await temp.database.fetchVideos(projectID: secondProjectID)
+        #expect(sharedVideos.count == 2)
+        try await temp.database.removeVideos([firstVideoID], from: secondProjectID)
+        #expect(try await temp.database.fetchVideos(projectID: secondProjectID).map(\.id) == [secondVideoID])
+        #expect(try await temp.database.fetchVideos(projectID: migrated.id).count == 2)
+        #expect(try await temp.database.fetchScenes(projectID: migrated.id).count == 2)
+        projects = try await temp.database.fetchProjects()
+        #expect(projects.first(where: { $0.id == secondProjectID })?.sourceCount == 1)
+    }
+
+    @Test("deleting a project preserves media and outputs and can move its timelines to Home")
+    func projectDeleteSemantics() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        try await temp.database.ensureDefaultProject(profileName: "Fixture", legacyTimelineJSON: nil)
+        let home = try #require(try await temp.database.fetchProjects().first(where: \.isHome))
+        let projectID = try await temp.database.createProject(
+            profileName: "Fixture", name: "Disposable", videoIDs: [videoID]
+        )
+        let documentJSON = String(data: try JSONEncoder().encode(TimelineDocument()), encoding: .utf8) ?? "{}"
+        _ = try await temp.database.createTimeline(
+            projectID: projectID,
+            name: "Keep This Cut",
+            documentJSON: documentJSON
+        )
+        let outputID = try await temp.database.insertGeneratedVideo(
+            path: "/tmp/project-output.mp4",
+            duration: 10,
+            timelineJSON: documentJSON,
+            wizardProvider: "fixture",
+            wizardModel: "test",
+            projectID: projectID
+        )
+
+        try await temp.database.moveTimelines(from: projectID, to: home.id)
+        try await temp.database.deleteProject(id: projectID)
+
+        #expect(try await temp.database.fetchVideos(projectID: home.id).map(\.id) == [videoID])
+        #expect(try await temp.database.fetchTimelines(projectID: home.id).contains { $0.name == "Keep This Cut" })
+        #expect(try await temp.database.fetchGeneratedVideos(projectID: home.id).contains { $0.id == outputID })
+        let raw = try SQLiteConnection(path: temp.path.path)
+        let owner = try raw.query(
+            "SELECT project_id FROM generated_videos WHERE id = ?",
+            [.integer(outputID)]
+        ).first?["project_id"]
+        #expect(owner?.intValue == nil)
+
+        let cascadeProjectID = try await temp.database.createProject(
+            profileName: "Fixture",
+            name: "Delete Timelines"
+        )
+        let deletedTimelineID = try await temp.database.createTimeline(
+            projectID: cascadeProjectID,
+            name: "Delete This Cut",
+            documentJSON: documentJSON
+        )
+        try await temp.database.deleteProject(id: cascadeProjectID)
+        let remainingTimelineCount = try raw.query(
+            "SELECT COUNT(*) AS count FROM timelines WHERE id = ?",
+            [.integer(deletedTimelineID)]
+        ).first?["count"]?.intValue
+        #expect(remainingTimelineCount == 0)
+    }
+
+    @Test("timelines and generated outputs remain inside their project")
+    func projectTimelinesAndOutputs() async throws {
+        let temp = try TempDatabase()
+        _ = try await temp.seedVideo()
+        try await temp.database.ensureDefaultProject(profileName: "Fixture",
+                                                     legacyTimelineJSON: nil)
+        let projects = try await temp.database.fetchProjects()
+        let firstProjectID = try #require(projects.first?.id)
+        let secondProjectID = try await temp.database.createProject(profileName: "Fixture", name: "Second")
+        let documentJSON = String(data: try JSONEncoder().encode(TimelineDocument()), encoding: .utf8) ?? "{}"
+
+        _ = try await temp.database.createTimeline(projectID: firstProjectID,
+                                                   name: "Builder Cut",
+                                                   documentJSON: documentJSON)
+        _ = try await temp.database.insertGeneratedVideo(
+            path: "/tmp/fixture.mp4", duration: 10, timelineJSON: documentJSON,
+            wizardProvider: "fixture", wizardModel: "test", projectID: firstProjectID,
+            batchID: "run-1"
+        )
+
+        let firstOutputs = try await temp.database.fetchGeneratedVideos(projectID: firstProjectID)
+        let secondOutputs = try await temp.database.fetchGeneratedVideos(projectID: secondProjectID)
+        #expect(firstOutputs.count == 1)
+        #expect(secondOutputs.isEmpty)
+        let timelines = try await temp.database.fetchTimelines(projectID: firstProjectID)
+        #expect(timelines.count == 2)
+        #expect(timelines.contains { $0.isWizard })
+        let secondTimelines = try await temp.database.fetchTimelines(projectID: secondProjectID)
+        #expect(secondTimelines.isEmpty)
+    }
+
+    @Test("project UI state restores detailed state and decodes older rows")
+    func projectUIStateCompatibility() throws {
+        let legacy = Data(#"{"section":"scenes","sceneFilter":"curated"}"#.utf8)
+        let decoded = try JSONDecoder().decode(ProjectUIState.self, from: legacy)
+        #expect(decoded.section == "scenes")
+        #expect(decoded.sceneFilter == "curated")
+        #expect(decoded.sceneSelection.isEmpty)
+        #expect(decoded.outputsSort == "newest")
+
+        let clipID = UUID()
+        let state = ProjectUIState(
+            outputsScrollID: 51,
+            sourceSelection: [11],
+            sourceScrollID: 11,
+            sceneSelection: [21],
+            sceneScrollID: 21,
+            sceneRunSelection: [31],
+            sceneTagFilter: "person:alex",
+            sceneSearchText: "knockdown",
+            sceneShowHidden: true,
+            sceneSortByScore: true,
+            sceneMinimumScore: 7,
+            sceneShowSequenceParts: true,
+            timelineSelection: .clip(clipID),
+            timelineFocusedTrack: 2,
+            timelineScrollX: 140,
+            timelineScrollY: 28
+        )
+        let roundTrip = try JSONDecoder().decode(
+            ProjectUIState.self,
+            from: JSONEncoder().encode(state)
+        )
+        #expect(roundTrip == state)
     }
 }
 

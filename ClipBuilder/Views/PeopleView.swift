@@ -36,12 +36,25 @@ struct PeopleView: View {
         store.people.filter { selectedPersonIDs.contains($0.id) }
     }
 
+    /// People with footage in the current project; Home (or no project)
+    /// lists the whole profile. Merge targets stay profile-wide.
+    private var projectPeople: [PersonRecord] {
+        guard store.activeProjectID != nil, !store.isHomeProject else { return store.people }
+        let tags = Set(store.sceneIndex.personTagsByVideo.values.flatMap { $0 })
+        return store.people.filter { tags.contains($0.tag) }
+    }
+
     private var visiblePeople: [PersonRecord] {
-        store.people.filter { !$0.hidden }
+        projectPeople.filter { !$0.hidden }.sorted { lhs, rhs in
+            let lhsInProject = store.sceneIndex.allTags.contains(lhs.tag)
+            let rhsInProject = store.sceneIndex.allTags.contains(rhs.tag)
+            if lhsInProject != rhsInProject { return lhsInProject }
+            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+        }
     }
 
     private var hiddenPeople: [PersonRecord] {
-        store.people.filter(\.hidden)
+        projectPeople.filter(\.hidden)
     }
 
     /// Detail only follows an explicit list selection. Falling back to the
@@ -114,7 +127,7 @@ struct PeopleView: View {
 
     var body: some View {
         Group {
-            if store.people.isEmpty {
+            if projectPeople.isEmpty {
                 ContentUnavailableView {
                     Label("No people yet", systemImage: "person.2")
                 } description: {
@@ -133,10 +146,7 @@ struct PeopleView: View {
                 }
             }
         }
-        .navigationTitle("People")
-        .navigationSubtitle(hiddenPeople.isEmpty
-                            ? "\(store.people.count) detected"
-                            : "\(visiblePeople.count) detected · \(hiddenPeople.count) hidden")
+        .screenTitle("People", subtitle: hiddenPeople.isEmpty ? "\(projectPeople.count) \(store.isHomeProject ? "detected" : "in this project")" : "\(visiblePeople.count) \(store.isHomeProject ? "detected" : "in this project") · \(hiddenPeople.count) hidden")
         .toolbar {
             if selectedPeople.count > 1 {
                 Button {

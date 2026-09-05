@@ -69,6 +69,41 @@ struct WizardEngineTests {
         #expect(plan.transitions.isEmpty)
     }
 
+    @Test("planning sees only the current project's scenes while Home sees every scene")
+    func projectScope() async throws {
+        let temp = try TempDatabase()
+        let firstVideoID = try await temp.seedVideo()
+        _ = try await temp.seedVideo()
+        try await temp.database.ensureDefaultProject(profileName: "Fixture", legacyTimelineJSON: nil)
+        let homeID = try #require(try await temp.database.homeProjectID(profileName: "Fixture"))
+        let projectID = try await temp.database.createProject(
+            profileName: "Fixture",
+            name: "One Source",
+            videoIDs: [firstVideoID]
+        )
+        let profile = Fixtures.brand(name: "Fixture")
+        let settings = AppSettings()
+        let engine = WizardEngine(ai: AIService(config: settings.ai), render: RenderEngine())
+
+        var options = WizardOptions()
+        options.projectID = projectID
+        let scopedSceneIDs = try await engine.planningSceneIDs(
+            options: options,
+            profile: profile,
+            database: temp.database
+        )
+        options.projectID = homeID
+        let homeSceneIDs = try await engine.planningSceneIDs(
+            options: options,
+            profile: profile,
+            database: temp.database
+        )
+
+        #expect(scopedSceneIDs.count == 1)
+        #expect(homeSceneIDs.count == 2)
+        #expect(Set(scopedSceneIDs).isSubset(of: Set(homeSceneIDs)))
+    }
+
     private func planClip(sceneID: Int64, start: Double, end: Double, speed: Double) -> WizardPlanClip {
         WizardPlanClip(
             sceneID: sceneID, start: start, end: end, textOverlay: nil,

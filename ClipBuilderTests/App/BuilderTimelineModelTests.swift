@@ -149,6 +149,27 @@ struct BuilderTimelineModelTests {
         #expect(model.document.videoTrack.isEmpty)
     }
 
+    @Test("switching timelines flushes the pending database autosave")
+    func timelineSwitchFlushesAutosave() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let model = BuilderTimelineModel()
+        model.load(profileName: "Projects")
+        var savedTimelineID: Int64?
+        var savedDocument: TimelineDocument?
+        model.onTimelineAutosave = { id, document in
+            savedTimelineID = id
+            savedDocument = document
+        }
+        model.loadTimeline(id: 41, document: TimelineDocument())
+        model.addScene(Fixtures.scene())
+
+        model.loadTimeline(id: 42, document: TimelineDocument())
+
+        #expect(savedTimelineID == 41)
+        #expect(savedDocument?.videoTrack.count == 1)
+    }
+
     @Test("switching profiles resets undo; replacing the timeline stays undoable")
     func loadResetsUndoAndReplaceIsUndoable() throws {
         let scope = try DataFolderOverride()

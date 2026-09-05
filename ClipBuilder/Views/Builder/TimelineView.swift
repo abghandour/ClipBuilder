@@ -8,6 +8,8 @@ import SwiftUI
 struct TimelineView: View {
     @Environment(AppStore.self) private var store
     let onPlayClip: (TimelineClip) -> Void
+    @State private var verticalScrollPosition = ScrollPosition()
+    @State private var horizontalScrollPosition = ScrollPosition()
 
     private static let rulerHeight: CGFloat = 26
     static let cropLaneHeight: CGFloat = 52
@@ -42,9 +44,29 @@ struct TimelineView: View {
                     }
                     .padding(.bottom, 8)
                 }
+                .scrollPosition($horizontalScrollPosition)
+                .onScrollGeometryChange(for: Double.self) { geometry in
+                    Double(geometry.contentOffset.x)
+                } action: { _, offset in
+                    store.timelineScrollX = max(0, offset)
+                }
             }
         }
+        .scrollPosition($verticalScrollPosition)
+        .onScrollGeometryChange(for: Double.self) { geometry in
+            Double(geometry.contentOffset.y)
+        } action: { _, offset in
+            store.timelineScrollY = max(0, offset)
+        }
+        .onAppear(perform: restoreScrollPosition)
+        .onChange(of: store.openTimelineID) { restoreScrollPosition() }
+        .onChange(of: store.activeProjectID) { restoreScrollPosition() }
         .background(.background)
+    }
+
+    private func restoreScrollPosition() {
+        horizontalScrollPosition.scrollTo(x: store.timelineScrollX)
+        verticalScrollPosition.scrollTo(y: store.timelineScrollY)
     }
 
     @ViewBuilder
@@ -252,6 +274,14 @@ struct TimeRuler: View {
                                     .foregroundStyle(.secondary),
                                  at: CGPoint(x: x + 2, y: 6), anchor: .leading)
                 }
+            }
+            for marker in model.document.pacing.markers(until: model.totalDuration) {
+                let x = CGFloat(marker) * pps
+                var path = Path()
+                path.move(to: CGPoint(x: x, y: size.height))
+                path.addLine(to: CGPoint(x: x, y: 0))
+                context.stroke(path, with: .color(.orange.opacity(0.75)),
+                               style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
             }
         }
         .contentShape(Rectangle())

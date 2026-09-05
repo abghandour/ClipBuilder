@@ -72,8 +72,7 @@ struct EffectsView: View {
             }
             .padding()
         }
-        .navigationTitle("Transitions")
-        .navigationSubtitle("\(effects.count) transitions")
+        .screenTitle("Transitions", subtitle: "\(effects.count) transitions")
         .toolbar {
             ToolbarItemGroup {
                 Menu("More", systemImage: "ellipsis.circle") {

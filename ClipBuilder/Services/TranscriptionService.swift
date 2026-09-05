@@ -68,6 +68,9 @@ actor TranscriptionService {
             try await database.replaceTranscripts(videoID: video.id, language: cached.detectedLanguage,
                                                   isTranslation: false, segments: cached.segments,
                                                   provider: Self.providerName, model: Self.modelName)
+            // The transcript is saved; a failed feature pass is logged, not fatal.
+            do { try await enrich(cached.segments, video: video, database: database) }
+            catch { log("Transcript feature analysis failed: \(error)") }
             return cached.segments
         }
 
@@ -101,7 +104,27 @@ actor TranscriptionService {
         try await database.replaceTranscripts(videoID: video.id, language: languageTag,
                                               isTranslation: false, segments: segments,
                                               provider: Self.providerName, model: Self.modelName)
+        do { try await enrich(segments, video: video, database: database) }
+        catch { log("Transcript feature analysis failed: \(error)") }
         return segments
+    }
+
+    private func enrich(_ segments: [TranscriptSegment], video: VideoRecord,
+                        database: Database) async throws {
+        let people = try await database.fetchVideoPeople(videoID: video.id)
+        let scenes = try await database.fetchScenes(includeExcluded: true)
+            .filter { $0.videoID == video.id }
+        let settings = SettingsStore.loadSettings().podcast
+        let analysis = TranscriptFeatureAnalyzer.analyze(
+            segments: segments, videoID: video.id,
+            speakerKeys: people.map(\.key), mediaDuration: video.duration,
+            speakerHints: TranscriptFeatureAnalyzer.speakerHints(
+                scenes: scenes, personKeys: people.map(\.key)),
+            deadAirThreshold: settings.deadAirSeconds,
+            fillerRunThreshold: settings.fillerRunSeconds)
+        try await database.replaceTranscriptFeatures(videoID: video.id,
+                                                     features: analysis.features,
+                                                     proposals: analysis.proposals)
     }
 
     private static func runSpeechTranscriber(audioURL: URL, locale: Locale) async throws -> [TranscriptSegment] {

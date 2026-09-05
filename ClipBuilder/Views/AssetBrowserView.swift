@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import ImageIO
 import UniformTypeIdentifiers
 
 /// Folder-tree browser for one asset library (Music, Fonts, or Images).
@@ -8,6 +9,7 @@ import UniformTypeIdentifiers
 /// per kind: audio rows with preview playback, font rows with rendered
 /// samples, image thumbnails in a grid.
 struct AssetBrowserView: View {
+    @Environment(AppStore.self) private var store
     let kind: AssetKind
 
     /// Path components below the library root; empty = root.
@@ -23,6 +25,11 @@ struct AssetBrowserView: View {
     @State private var deleteTarget: AssetItem?
     @State private var previewImage: AssetItem?
     @State private var operationError: String?
+    @State private var searchText = ""
+    @State private var metadata: [String: LibraryAssetMetadata] = [:]
+    @State private var analyzingPaths: Set<String> = []
+    @State private var showingAskImages = false
+    @State private var matchedImagePaths: Set<String>?
 
     // Music preview playback — one shared player, the playing row's id.
     @State private var player: AVPlayer?
@@ -44,14 +51,25 @@ struct AssetBrowserView: View {
                 listContent
             }
         }
-        .navigationTitle(kind.title)
-        .navigationSubtitle(subtitle)
+        .screenTitle(kind.title, subtitle: subtitle)
         .toolbar {
             ToolbarItemGroup {
                 Button("Add Files", systemImage: "plus") {
                     showingImporter = true
                 }
                 .help("Copy files into the current folder")
+
+                if kind == .images {
+                    Button("Ask Images", systemImage: "sparkle.magnifyingglass") {
+                        showingAskImages = true
+                    }
+                    .disabled(items.filter { !$0.isFolder }.isEmpty)
+                    if matchedImagePaths != nil {
+                        Button("Clear AI Search", systemImage: "xmark.circle") {
+                            matchedImagePaths = nil
+                        }
+                    }
+                }
 
                 Menu("More", systemImage: "ellipsis.circle") {
                     Button("New Folder", systemImage: "folder.badge.plus") {
@@ -61,6 +79,12 @@ struct AssetBrowserView: View {
                     Divider()
                     Button("Show in Finder", systemImage: "folder") {
                         NSWorkspace.shared.open(currentFolder)
+                    }
+                    if kind == .images {
+                        Button("Tag Images with AI", systemImage: "sparkles") {
+                            analyzeVisibleImages()
+                        }
+                        .disabled(analyzingPaths.isEmpty == false)
                     }
                 }
                 .help("Create folders or reveal this library in Finder")
@@ -115,6 +139,14 @@ struct AssetBrowserView: View {
         .sheet(item: $previewImage) { item in
             ImagePreviewSheet(url: item.url, title: item.name)
         }
+        .sheet(isPresented: $showingAskImages) {
+            ImageLibrarySearchSheet(
+                candidates: items.filter { !$0.isFolder }, metadata: metadata
+            ) { paths in
+                matchedImagePaths = Set(paths)
+            }
+            .environment(store)
+        }
         .onAppear {
             AssetStore.ensureRoots()
             refresh()
@@ -132,6 +164,7 @@ struct AssetBrowserView: View {
             refresh()
             watcher?.watch(currentFolder)
         }
+        .searchable(text: $searchText, prompt: "Name, fighter, event, or tag")
     }
 
     private var subtitle: String {
@@ -217,7 +250,7 @@ struct AssetBrowserView: View {
     private var imageGrid: some View {
         ScrollView {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 140), spacing: 12, alignment: .top)], spacing: 12) {
-                ForEach(items) { item in
+                ForEach(filteredItems) { item in
                     imageTile(for: item)
                         .contextMenu { contextMenu(for: item) }
                 }
@@ -246,11 +279,28 @@ struct AssetBrowserView: View {
                 } else {
                     ImageThumbnail(url: item.url)
                         .frame(height: 100)
+                        .overlay(alignment: .topTrailing) {
+                            if analyzingPaths.contains(item.url.path) {
+                                ProgressView().controlSize(.small).padding(6)
+                            } else if metadata[item.url.path]?.isBRoll == true {
+                                Label("B-roll", systemImage: "rectangle.on.rectangle")
+                                    .font(.caption)
+                                    .padding(4)
+                                    .background(.regularMaterial, in: .capsule)
+                                    .padding(5)
+                            }
+                        }
                 }
                 Text(item.name)
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                if let info = metadata[item.url.path], !info.subjects.isEmpty {
+                    Text(info.subjects.joined(separator: " · "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
         .buttonStyle(.plain)
@@ -268,6 +318,12 @@ struct AssetBrowserView: View {
             Button(playingID == item.id ? "Stop" : "Play") { togglePlayback(item) }
         } else if kind == .images {
             Button("Preview") { previewImage = item }
+            Button(metadata[item.url.path]?.isBRoll == true ? "Remove B-roll Mark" : "Mark as B-roll") {
+                toggleBRoll(item)
+            }
+            Button("Analyze Subjects and Tags", systemImage: "sparkles") {
+                analyzeImage(item)
+            }
         }
         Button("Rename…") {
             renameText = item.name
@@ -288,6 +344,118 @@ struct AssetBrowserView: View {
         items = AssetStore.items(of: kind, in: currentFolder)
         if let playingID, !items.contains(where: { $0.id == playingID }) {
             stopPlayback()
+        }
+        if kind == .images { loadMetadata() }
+    }
+
+    private var filteredItems: [AssetItem] {
+        items.filter { item in
+            let matchesAI = matchedImagePaths.map { item.isFolder || $0.contains(item.url.path) } ?? true
+            guard matchesAI else { return false }
+            guard !searchText.isEmpty else { return true }
+            return item.isFolder || item.name.localizedStandardContains(searchText)
+                || metadata[item.url.path]?.subjects.contains(where: { $0.localizedStandardContains(searchText) }) == true
+                || metadata[item.url.path]?.tags.contains(where: { $0.localizedStandardContains(searchText) }) == true
+        }
+    }
+
+    private func loadMetadata() {
+        guard let database = store.database else { return }
+        Task {
+            let rows = (try? await database.fetchAssetMetadata(kind: AssetKind.images.rawValue)) ?? []
+            metadata = Dictionary(uniqueKeysWithValues: rows.map { ($0.path, $0) })
+        }
+    }
+
+    private func toggleBRoll(_ item: AssetItem) {
+        guard let database = store.database else { return }
+        var info = metadata[item.url.path]
+            ?? LibraryAssetMetadata(path: item.url.path, kind: AssetKind.images.rawValue,
+                                    isBRoll: false, subjects: [], tags: [], provider: nil, model: nil)
+        info.isBRoll.toggle()
+        metadata[item.url.path] = info
+        Task {
+            do { try await database.upsertAssetMetadata(info) }
+            catch { store.presentError("Could not save image tags", error) }
+        }
+    }
+
+    /// How many images are tagged at once: each is an AI CLI subprocess
+    /// carrying a photo, so a library of hundreds must not fan out unbounded.
+    private static let imageTaggingConcurrency = 3
+
+    private func analyzeVisibleImages() {
+        let pending = filteredItems.filter { !$0.isFolder && !analyzingPaths.contains($0.url.path) }
+        guard !pending.isEmpty else { return }
+        for item in pending { analyzingPaths.insert(item.url.path) }
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                var iterator = pending.makeIterator()
+                for _ in 0..<Self.imageTaggingConcurrency {
+                    if let item = iterator.next() { group.addTask { await self.tagImage(item) } }
+                }
+                for await _ in group {
+                    if let item = iterator.next() { group.addTask { await self.tagImage(item) } }
+                }
+            }
+        }
+    }
+
+    private func analyzeImage(_ item: AssetItem) {
+        guard !analyzingPaths.contains(item.url.path) else { return }
+        analyzingPaths.insert(item.url.path)
+        Task { await tagImage(item) }
+    }
+
+    /// Downsampled JPEG for the tagger, decoded away from the main actor: a
+    /// 12-megapixel photo is neither needed nor affordable on the UI thread.
+    private nonisolated static func taggingPayload(for url: URL) async -> Data? {
+        await Task.detached(priority: .utility) { () -> Data? in
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                  let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                      kCGImageSourceCreateThumbnailFromImageAlways: true,
+                      kCGImageSourceThumbnailMaxPixelSize: 1600,
+                      kCGImageSourceCreateThumbnailWithTransform: true,
+                  ] as CFDictionary) else { return nil }
+            let data = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil)
+            else { return nil }
+            CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.86] as CFDictionary)
+            return CGImageDestinationFinalize(destination) ? data as Data : nil
+        }.value
+    }
+
+    /// Tag one image; the caller has already marked it in `analyzingPaths`.
+    private func tagImage(_ item: AssetItem) async {
+        defer { analyzingPaths.remove(item.url.path) }
+        guard let database = store.database else { return }
+        let knownPeople = store.people.filter { !$0.name.isEmpty }.map(\.name)
+        do {
+            guard let jpeg = await Self.taggingPayload(for: item.url) else {
+                store.presentError("Could not read \(item.name)")
+                return
+            }
+            let prompt = """
+                Tag this owned library image for editorial search. Known people: \(knownPeople.joined(separator: ", ")).
+                Return only JSON: {"subjects":["person/event/topic"],"tags":["crowd|walkout|training|establishing-shot|action|portrait|graphic|other"],"is_broll":true|false}.
+                Match a known person only when visually confident. B-roll means a cutaway, atmosphere, training, walkout, crowd, or establishing visual.
+                """
+            let response = try await store.ai.call(prompt: prompt, task: "analyze",
+                                                   frames: [AIFrame(jpeg: jpeg, label: item.name)],
+                                                   timeout: 120, log: { _ in })
+            guard let object = AIResponseParser.jsonObject(from: response.text) else {
+                throw AIError.unusableResponse("Image tagger returned invalid JSON")
+            }
+            let info = LibraryAssetMetadata(
+                path: item.url.path, kind: AssetKind.images.rawValue,
+                isBRoll: object["is_broll"] as? Bool ?? false,
+                subjects: object["subjects"] as? [String] ?? [],
+                tags: object["tags"] as? [String] ?? [],
+                provider: response.provider, model: response.model)
+            try await database.upsertAssetMetadata(info)
+            metadata[item.url.path] = info
+        } catch {
+            store.presentError("Could not tag \(item.name)", error)
         }
     }
 

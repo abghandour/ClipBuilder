@@ -32,6 +32,108 @@ final class AppStore {
     var activeProfile: BrandProfile
     private(set) var database: Database?
 
+    // Project workspace. Projects scope footage, scenes, timelines, and
+    // outputs while people, Instagram, and resources remain profile-wide.
+    var projects: [ProjectRecord] = []
+    var activeProjectID: Int64?
+    var timelines: [TimelineRecord] = []
+    var selectedSection: SidebarSection = .sources {
+        didSet { scheduleProjectStateSave() }
+    }
+    var isShowingProjectsHome = false
+    var openTimelineID: Int64?
+    var sceneMode = "all" {
+        didSet { scheduleProjectStateSave() }
+    }
+    var outputsSort = "newest" {
+        didSet { scheduleProjectStateSave() }
+    }
+    var outputsScrollID: Int64? {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sourceSelection: Set<Int64> = [] {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sourceScrollID: Int64? {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sceneSelection: Set<Int64> = [] {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sceneScrollID: Int64? {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sceneRunSelection: Set<Int64> = [] {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sceneTagFilter: String? {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sceneSearchText = "" {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sceneShowHidden = false {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sceneSortByScore = false {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sceneMinimumScore = 0.0 {
+        didSet { scheduleProjectStateSave() }
+    }
+    var sceneShowSequenceParts = false {
+        didSet { scheduleProjectStateSave() }
+    }
+    var timelineScrollX = 0.0 {
+        didSet { scheduleProjectStateSave() }
+    }
+    var timelineScrollY = 0.0 {
+        didSet { scheduleProjectStateSave() }
+    }
+
+    // Captured when work starts so Activity remains truthful after the user
+    // switches to another project.
+    var analysisProjectName: String?
+    var pipelineProjectID: Int64?
+    var pipelineProjectName: String?
+    var builderRenderProjectName: String?
+    /// Project a Builder render is writing into (nil when idle).
+    var builderRenderProjectID: Int64?
+    /// Project the running Wizard is writing into (nil when idle).
+    var wizardProjectID: Int64?
+    /// Viewports of timelines touched this session, by timeline id. The
+    /// authority while the app runs: list refetches (which follow every
+    /// autosave) can race the viewport write and hand back a stale record.
+    @ObservationIgnored private var timelineViewStates: [Int64: TimelineViewState] = [:]
+    /// Bumps once a project's rows AND its restored UI state are in place —
+    /// views re-sync their local state on this, never on the bare project id,
+    /// which changes before the state is loaded.
+    private(set) var projectStateVersion = 0
+    /// True while `loadProject` is between clearing the lists and applying
+    /// the restored state; views must not persist their state meanwhile.
+    private(set) var isLoadingProject = false
+    /// Projects with a job in flight — deleting one would strand its output.
+    var busyProjectIDs: Set<Int64> {
+        var ids = Set<Int64>()
+        if isWizardRunning, let wizardProjectID { ids.insert(wizardProjectID) }
+        if isPipelineRunning, let pipelineProjectID { ids.insert(pipelineProjectID) }
+        if isBuilderRendering, let builderRenderProjectID { ids.insert(builderRenderProjectID) }
+        return ids
+    }
+    var wizardProjectName: String?
+
+    var activeProject: ProjectRecord? {
+        guard let activeProjectID else { return nil }
+        return projects.first { $0.id == activeProjectID }
+    }
+
+    var isHomeProject: Bool { activeProject?.isHome == true }
+
+    var openTimeline: TimelineRecord? {
+        guard let openTimelineID else { return nil }
+        return timelines.first { $0.id == openTimelineID }
+    }
+
     var videos: [VideoRecord] = []
     @ObservationIgnored private var rebuildSceneIndexAfterWrite = true
     var scenes: [SceneRecord] = [] {
@@ -116,6 +218,7 @@ final class AppStore {
     var wizardStatus: WizardRunStatus?
     /// Videos produced by the finished run, presented as the results sheet.
     var wizardResults: WizardRunResults?
+    var pendingCutReview: ProposedCutReviewRequest?
     /// Options of the last run — "Retry" in the results sheet re-runs them.
     private(set) var lastWizardOptions: WizardOptions?
     /// Why the last generation produced nothing — shown as a banner in the
@@ -254,6 +357,7 @@ final class AppStore {
     private let fightResearchService: FightResearchService
     private var watcher: FolderWatcher?
     @ObservationIgnored private let opensProfiles: Bool
+    @ObservationIgnored private var projectStateSaveTask: Task<Void, Never>?
 
     convenience init() {
         let settings = SettingsStore.loadSettings()
@@ -269,10 +373,12 @@ final class AppStore {
     /// Dependency-injected construction for state tests and isolated tools.
     /// Production construction keeps using `init()` above.
     init(settings: AppSettings, profiles: [BrandProfile], active: BrandProfile,
-         ai: AIService, startWatcher: Bool = false, openProfile: Bool = false) {
+         ai: AIService, database: Database? = nil,
+         startWatcher: Bool = false, openProfile: Bool = false) {
         self.settings = settings
         self.profiles = profiles
         activeProfile = active
+        self.database = database
         self.ai = ai
         analyzer = Analyzer(ai: ai)
         wizard = WizardEngine(ai: ai, render: renderEngine)
@@ -280,6 +386,13 @@ final class AppStore {
         instagram = InstagramService(ai: ai)
         fightResearchService = FightResearchService(ai: ai)
         opensProfiles = openProfile
+
+        builder.onTimelineAutosave = { [weak self] id, document in
+            self?.saveTimeline(id: id, document: document)
+        }
+        builder.onUIStateChange = { [weak self] in
+            self?.scheduleProjectStateSave()
+        }
 
         // Settings reads the migrated wizard keys directly, so migrate before
         // any view (not only the Wizard tab) can show them.
@@ -321,14 +434,17 @@ final class AppStore {
             presentError("Could not open the profile database", error)
         }
         watcher?.watch(activeProfile.sourceFolderURL)
-        builder.load(profileName: activeProfile.profileName)
-        refreshAll()
+        builder.load(profileName: activeProfile.profileName,
+                     defaultRenderSettings: activeProfile.defaultRenderSettings)
+        Task { await initializeProjectWorkspace() }
         loadInstagramCache()
         scanSourceFolder()
     }
 
     func switchProfile(named name: String) {
         guard let profile = profiles.first(where: { $0.profileName == name }) else { return }
+        builder.flushPendingAutosave()
+        flushActiveProjectState()
         activeProfile = profile
         SettingsStore.saveActiveProfileName(name)
         profileGeneration &+= 1
@@ -339,6 +455,11 @@ final class AppStore {
         generatedVideos = []
         feedback = []
         lessons = []
+        projects = []
+        activeProjectID = nil
+        timelines = []
+        openTimelineID = nil
+        isShowingProjectsHome = false
         fightResearch = [:]
         fightEvents = [:]
         igBenchmarks = nil
@@ -354,11 +475,336 @@ final class AppStore {
         igReport = nil
         pendingWizardTemplate = nil
         pendingWizardPrompt = nil
+        pendingCutReview = nil
         wizardResults = nil
+        wizardTask?.cancel()
+        lastWizardOptions = nil
+        wizardFailureMessage = nil
+        timelineViewStates = [:]
         if opensProfiles {
             openActiveProfile()
         } else {
-            builder.load(profileName: activeProfile.profileName)
+            builder.load(profileName: activeProfile.profileName,
+                         defaultRenderSettings: activeProfile.defaultRenderSettings)
+        }
+    }
+
+    // MARK: - Projects
+
+    func initializeProjectWorkspace() async {
+        guard let database else { return }
+        do {
+            let legacyJSON = BuilderStateStore.load(profileName: activeProfile.profileName)
+                .flatMap { try? JSONEncoder().encode($0) }
+                .flatMap { String(data: $0, encoding: .utf8) }
+            try await database.ensureDefaultProject(profileName: activeProfile.profileName,
+                                                    legacyTimelineJSON: legacyJSON)
+            projects = try await database.fetchProjects()
+            let lastOpenedID = try await database.lastOpenedProjectID()
+            let homeID = try await database.homeProjectID(profileName: activeProfile.profileName)
+            guard let initialID = lastOpenedID ?? homeID else {
+                isShowingProjectsHome = true
+                return
+            }
+            await loadProject(initialID, persistCurrent: false)
+        } catch {
+            presentError("Could not load projects", error)
+        }
+    }
+
+    func showProjectsHome() {
+        flushActiveProjectState()
+        isShowingProjectsHome = true
+    }
+
+    /// Returns the load so callers that must wait for the switch (tests,
+    /// termination) can; UI callers ignore it.
+    @discardableResult
+    func selectProject(_ id: Int64) -> Task<Void, Never>? {
+        guard id != activeProjectID || isShowingProjectsHome else { return nil }
+        return Task { await loadProject(id, persistCurrent: true) }
+    }
+
+    private func loadProject(_ id: Int64, persistCurrent: Bool) async {
+        guard let database else { return }
+        if persistCurrent {
+            builder.flushPendingAutosave()
+            flushActiveProjectState()
+        }
+        // A project switch is not a profile switch: analysis and Wizard
+        // runs keep their generation and still deliver their follow-ups.
+        isLoadingProject = true
+        defer { isLoadingProject = false }
+        timelineViewStates = [:]
+        activeProjectID = id
+        isShowingProjectsHome = false
+        openTimelineID = nil
+        // A failed run's Try Again must not replay into the project we left.
+        lastWizardOptions = nil
+        wizardFailureMessage = nil
+        videos = []
+        scenes = []
+        analysisRuns = []
+        generatedVideos = []
+        fightResearch = [:]
+        fightEvents = [:]
+        do {
+            try await database.touchProject(id: id)
+            let snapshot = try await database.fetchLibrarySnapshot(projectID: id)
+            timelines = try await database.fetchTimelines(projectID: id)
+            projects = try await database.fetchProjects()
+            applyLibrarySnapshot(snapshot, generation: profileGeneration)
+            let state = projectState(for: activeProject)
+            selectedSection = SidebarSection(rawValue: state.section)?.projectDestination ?? .sources
+            sceneMode = state.sceneFilter
+            outputsSort = state.outputsSort
+            outputsScrollID = state.outputsScrollID
+            sourceSelection = state.sourceSelection.intersection(Set(videos.map(\.id)))
+            sourceScrollID = state.sourceScrollID
+            sceneSelection = state.sceneSelection.intersection(Set(scenes.map(\.id)))
+            sceneScrollID = state.sceneScrollID
+            sceneRunSelection = state.sceneRunSelection.intersection(Set(analysisRuns.map(\.id)))
+            sceneTagFilter = state.sceneTagFilter
+            sceneSearchText = state.sceneSearchText
+            sceneShowHidden = state.sceneShowHidden
+            sceneSortByScore = state.sceneSortByScore
+            sceneMinimumScore = state.sceneMinimumScore
+            sceneShowSequenceParts = state.sceneShowSequenceParts
+            timelineScrollX = state.timelineScrollX
+            timelineScrollY = state.timelineScrollY
+            let restoredSection = selectedSection
+            if let timelineID = state.openTimelineID,
+               let timeline = timelines.first(where: { $0.id == timelineID }) {
+                openTimelineRecord(timeline, state: timeline.viewState == nil ? state : nil)
+                // Opening the timeline lands on Timelines; the user may have
+                // quit on another section with the timeline still open.
+                selectedSection = restoredSection
+            } else {
+                builder.closeTimeline(defaultRenderSettings: activeProfile.defaultRenderSettings)
+            }
+        } catch {
+            presentError("Could not open the project", error)
+        }
+        projectStateVersion &+= 1
+    }
+
+    func cycleProject(offset: Int) {
+        let active = projects.filter { !$0.archived }
+        guard active.count > 1, let activeProjectID,
+              let index = active.firstIndex(where: { $0.id == activeProjectID }) else { return }
+        let next = (index + offset + active.count) % active.count
+        selectProject(active[next].id)
+    }
+
+    func createProject(named name: String, videoIDs: [Int64] = []) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let database else { return }
+        Task {
+            do {
+                let id = try await database.createProject(profileName: activeProfile.profileName,
+                                                          name: trimmed, videoIDs: videoIDs)
+                projects = try await database.fetchProjects()
+                await loadProject(id, persistCurrent: true)
+            } catch {
+                presentError("Could not create the project", error)
+            }
+        }
+    }
+
+    func renameProject(_ project: ProjectRecord, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let database else { return }
+        Task {
+            do {
+                try await database.renameProject(id: project.id, name: trimmed)
+                projects = try await database.fetchProjects()
+            } catch { presentError("Could not rename the project", error) }
+        }
+    }
+
+    func duplicateProject(_ project: ProjectRecord) {
+        guard let database else { return }
+        Task {
+            do {
+                let id = try await database.duplicateProject(
+                    id: project.id, profileName: activeProfile.profileName,
+                    name: "\(project.name) Copy"
+                )
+                projects = try await database.fetchProjects()
+                await loadProject(id, persistCurrent: true)
+            } catch { presentError("Could not duplicate the project", error) }
+        }
+    }
+
+    func setProjectArchived(_ project: ProjectRecord, archived: Bool) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.setProjectArchived(id: project.id, archived: archived)
+                projects = try await database.fetchProjects()
+                if archived, activeProjectID == project.id { showProjectsHome() }
+            } catch { presentError("Could not update the project", error) }
+        }
+    }
+
+    func deleteProject(_ project: ProjectRecord, moveTimelinesToHome: Bool) {
+        guard !project.isHome, let database else { return }
+        guard !busyProjectIDs.contains(project.id) else {
+            presentError("\(project.name) has a render or analysis running. Stop it or wait for it to finish before deleting the project.")
+            return
+        }
+        let wasActive = activeProjectID == project.id
+        if wasActive {
+            builder.flushPendingAutosave()
+            flushActiveProjectState()
+        }
+        Task {
+            do {
+                guard let homeID = try await database.homeProjectID(profileName: activeProfile.profileName) else {
+                    presentError("Could not find this profile's Home project.")
+                    return
+                }
+                if moveTimelinesToHome {
+                    try await database.moveTimelines(from: project.id, to: homeID)
+                }
+                try await database.deleteProject(id: project.id)
+                projects = try await database.fetchProjects()
+                if wasActive {
+                    await loadProject(homeID, persistCurrent: false)
+                } else if activeProjectID == homeID {
+                    timelines = try await database.fetchTimelines(projectID: homeID)
+                }
+            } catch { presentError("Could not delete the project", error) }
+        }
+    }
+
+    func addVideos(_ videoIDs: [Int64], to projectID: Int64) {
+        guard !videoIDs.isEmpty, let database else { return }
+        Task {
+            do {
+                try await database.assignVideos(videoIDs, to: projectID)
+                projects = try await database.fetchProjects()
+                if activeProjectID == projectID { refreshAll() }
+            } catch { presentError("Could not add the files to the project", error) }
+        }
+    }
+
+    func removeVideos(_ videoIDs: [Int64], from projectID: Int64) {
+        guard !videoIDs.isEmpty, let database else { return }
+        Task {
+            do {
+                try await database.removeVideos(videoIDs, from: projectID)
+                projects = try await database.fetchProjects()
+                if activeProjectID == projectID { refreshAll() }
+            } catch { presentError("Could not remove the files from the project", error) }
+        }
+    }
+
+    func availableVideosForProjectPicker() async -> [VideoRecord] {
+        guard let database, let activeProjectID else { return [] }
+        return (try? await database.fetchVideosNotInProject(activeProjectID)) ?? []
+    }
+
+    private func projectState(for project: ProjectRecord?) -> ProjectUIState {
+        guard let json = project?.uiStateJSON?.data(using: .utf8),
+              let state = try? JSONDecoder().decode(ProjectUIState.self, from: json) else {
+            return ProjectUIState()
+        }
+        return state
+    }
+
+    func persistActiveProjectState() {
+        guard let database, let activeProjectID, let json = activeProjectStateJSON() else { return }
+        Task { try? await database.saveProjectUIState(id: activeProjectID, json: json) }
+        persistOpenTimelineViewState()
+    }
+
+    /// The current per-project UI state, encoded; nil with no project open.
+    private func activeProjectStateJSON() -> String? {
+        guard activeProjectID != nil else { return nil }
+        let state = ProjectUIState(
+            section: selectedSection.projectDestination.rawValue,
+            openTimelineID: openTimelineID,
+            playhead: builder.playhead,
+            zoom: Double(builder.pointsPerSecond),
+            sceneFilter: sceneMode,
+            outputsSort: outputsSort,
+            outputsScrollID: outputsScrollID,
+            sourceSelection: sourceSelection,
+            sourceScrollID: sourceScrollID,
+            sceneSelection: sceneSelection,
+            sceneScrollID: sceneScrollID,
+            sceneRunSelection: sceneRunSelection,
+            sceneTagFilter: sceneTagFilter,
+            sceneSearchText: sceneSearchText,
+            sceneShowHidden: sceneShowHidden,
+            sceneSortByScore: sceneSortByScore,
+            sceneMinimumScore: sceneMinimumScore,
+            sceneShowSequenceParts: sceneShowSequenceParts,
+            timelineSelection: builder.selection,
+            timelineFocusedTrack: builder.focusedTrack,
+            timelineScrollX: timelineScrollX,
+            timelineScrollY: timelineScrollY
+        )
+        guard let data = try? JSONEncoder().encode(state) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    func scheduleProjectStateSave() {
+        guard activeProjectID != nil else { return }
+        projectStateSaveTask?.cancel()
+        projectStateSaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            self?.persistActiveProjectState()
+        }
+    }
+
+    func flushActiveProjectState() {
+        projectStateSaveTask?.cancel()
+        projectStateSaveTask = nil
+        persistActiveProjectState()
+    }
+
+    /// Cmd-Q path: write the open timeline and the project UI state and
+    /// wait for the database to have them, so nothing is lost to the
+    /// autosave debounce or an unawaited task when the process exits.
+    func flushForTermination() async {
+        guard let database else { return }
+        builder.cancelPendingAutosave()
+        if let timelineID = builder.timelineID {
+            let document = builder.document
+            let thumbnailVideoID = document.videoTrack.first?.sceneID
+                .flatMap { sceneID in scenes.first(where: { $0.id == sceneID })?.videoID }
+            if let data = try? JSONEncoder().encode(document),
+               let json = String(data: data, encoding: .utf8) {
+                try? await database.saveTimeline(id: timelineID, documentJSON: json,
+                                                 thumbnailVideoID: thumbnailVideoID)
+            }
+        }
+        projectStateSaveTask?.cancel()
+        projectStateSaveTask = nil
+        if let activeProjectID, let json = activeProjectStateJSON() {
+            try? await database.saveProjectUIState(id: activeProjectID, json: json)
+        }
+        if let (id, json) = openTimelineViewStateJSON() {
+            try? await database.saveTimelineViewState(id: id, json: json)
+        }
+    }
+
+    func selectSection(_ section: SidebarSection) {
+        if activeProjectID != nil { isShowingProjectsHome = false }
+        selectedSection = section.projectDestination
+        persistActiveProjectState()
+    }
+
+    func refreshProjectCatalog() {
+        guard let database else { return }
+        Task {
+            projects = (try? await database.fetchProjects()) ?? projects
+            if let activeProjectID {
+                timelines = (try? await database.fetchTimelines(projectID: activeProjectID)) ?? timelines
+            }
         }
     }
 
@@ -373,6 +819,17 @@ final class AppStore {
         } catch {
             presentError("Could not save the profile", error)
         }
+    }
+
+    func applyLearnedEditingDefaults(_ insights: EditingPerformanceInsights) {
+        guard activeProfile.useLearnedEditingDefaults else { return }
+        activeProfile.learnedHookStyle = insights.suggestedHook ?? activeProfile.learnedHookStyle
+        activeProfile.learnedLayoutPreference = insights.suggestedLayout ?? activeProfile.learnedLayoutPreference
+        if let cadence = insights.suggestedCadence {
+            activeProfile.defaultPacing.cadence = cadence >= 26 ? .twoSeconds
+                : cadence >= 18 ? .threeSeconds : .mixedTwoToFour
+        }
+        saveActiveProfile()
     }
 
     func createProfile(named name: String) {
@@ -489,11 +946,13 @@ final class AppStore {
     /// Awaitable refresh for callers that need the fresh lists (e.g. the
     /// wizard's post-run variation-batch detection).
     func refreshAllNow() async {
-        guard let database else { return }
+        guard let database, let activeProjectID else { return }
         let generation = profileGeneration
         do {
-            let snapshot = try await database.fetchLibrarySnapshot()
+            let snapshot = try await database.fetchLibrarySnapshot(projectID: activeProjectID)
             applyLibrarySnapshot(snapshot, generation: generation)
+            timelines = (try? await database.fetchTimelines(projectID: activeProjectID)) ?? timelines
+            projects = (try? await database.fetchProjects()) ?? projects
         } catch {
             presentError("Could not load the library", error)
         }
@@ -589,15 +1048,63 @@ final class AppStore {
         }
     }
 
+    /// Add dropped/imported files directly to a project. The profile folder
+    /// remains the source of truth; after discovery, membership is attached
+    /// through the join table so the same file can be reused elsewhere.
+    func importVideos(_ urls: [URL], toProjectID projectID: Int64) {
+        let inputs = urls.filter { Analyzer.videoExtensions.contains($0.pathExtension.lowercased()) }
+        guard !inputs.isEmpty, let database else { return }
+        let folder = activeProfile.sourceFolderURL.standardizedFileURL
+        let profile = activeProfile
+        let analyzer = analyzer
+        Task {
+            let copyResult = await Task.detached(priority: .utility) {
+                var paths: [String] = []
+                var failures: [String] = []
+                for url in inputs {
+                    do {
+                        let destination = try Self.copyDestination(for: url, folder: folder)
+                        paths.append(destination.path)
+                    } catch {
+                        failures.append("\(url.lastPathComponent): \(error.userMessage)")
+                    }
+                }
+                return (paths, failures)
+            }.value
+            do {
+                _ = try await analyzer.scanSourceFolder(profile: profile, database: database)
+                let normalized = Set(copyResult.0.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+                let matches = try await database.fetchVideos().filter {
+                    normalized.contains($0.url.standardizedFileURL.path)
+                }
+                try await database.assignVideos(matches.map(\.id), to: projectID)
+                refreshProjectCatalog()
+                if activeProjectID == projectID { refreshAll() }
+            } catch {
+                presentError("Could not add files to the project", error)
+            }
+            for failure in copyResult.1 { presentError("Could not add \(failure)") }
+        }
+    }
+
     /// Collision handling: an existing file with the same name and size is
     /// treated as already imported; otherwise a numbered name is picked.
     nonisolated private static func copyIntoFolder(_ url: URL, folder: URL) throws -> Bool {
+        let before = url.standardizedFileURL
+        let destination = try copyDestination(for: url, folder: folder)
+        return destination.standardizedFileURL != before
+    }
+
+    nonisolated private static func copyDestination(for url: URL, folder: URL) throws -> URL {
         let fm = FileManager.default
+        if url.deletingLastPathComponent().standardizedFileURL == folder {
+            return url.standardizedFileURL
+        }
         var destination = folder.appendingPathComponent(url.lastPathComponent)
         if fm.fileExists(atPath: destination.path) {
             let sourceSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
             let existingSize = try destination.resourceValues(forKeys: [.fileSizeKey]).fileSize
-            if sourceSize == existingSize { return false }
+            if sourceSize == existingSize { return destination.standardizedFileURL }
             let base = url.deletingPathExtension().lastPathComponent
             var counter = 2
             repeat {
@@ -606,7 +1113,7 @@ final class AppStore {
             } while fm.fileExists(atPath: destination.path)
         }
         try fm.copyItem(at: url, to: destination)
-        return true
+        return destination.standardizedFileURL
     }
 
     // MARK: - Analysis
@@ -627,9 +1134,10 @@ final class AppStore {
     /// Every run is a full pass that lands in a new analyze batch alongside
     /// any earlier ones — delete unwanted batches from the Scenes screen.
     func analyze(videos targets: [VideoRecord], provider: String? = nil, model: String? = nil,
-                 includeFightScoring: Bool = true) {
+                 includeFightScoring: Bool = true, originatingProjectName: String? = nil) {
         guard let database, !isAnalyzing else { return }
         isAnalyzing = true
+        analysisProjectName = originatingProjectName ?? activeProject?.name
         analysisLog = []
         analysisProgress = 0
         let profile = activeProfile
@@ -860,6 +1368,8 @@ final class AppStore {
             return
         }
         pipelineTargets = targets
+        pipelineProjectID = activeProjectID
+        pipelineProjectName = activeProject?.name
         pipelineOptions = options
         pipelineDone = []
         pipelineRunIDs = [:]
@@ -966,17 +1476,22 @@ final class AppStore {
             if options.analyze, !Task.isCancelled {
                 let pending = targets.filter { !completed("analysis:\($0.id)") }
                 if !pending.isEmpty {
-                    let before = Dictionary(grouping: analysisRuns, by: \.videoID)
+                    let runsBeforeAnalysis = (try? await database.fetchAnalysisRuns()) ?? []
+                    let before = Dictionary(grouping: runsBeforeAnalysis, by: \.videoID)
                         .mapValues { Set($0.map(\.id)) }
                     pipelineStage = "analyzing \(pending.count) video(s)"
                     log("Analyzing \(pending.count) video(s) — full details in the Raw Videos activity log")
-                    analyze(videos: pending, includeFightScoring: options.fightScoring)
+                    analyze(videos: pending, includeFightScoring: options.fightScoring,
+                            originatingProjectName: pipelineProjectName)
                     await analysisTask?.value
                     await refreshAllNow()
                     swallowPrompts()
+                    let storedRuns = (try? await database.fetchAnalysisRuns()) ?? []
                     for video in pending {
                         let prior = before[video.id] ?? []
-                        if let fresh = analysisRuns.first(where: { $0.videoID == video.id && !prior.contains($0.id) }) {
+                        if let fresh = storedRuns.first(where: {
+                            $0.videoID == video.id && !prior.contains($0.id)
+                        }) {
                             pipelineRunIDs[video.id] = fresh.id
                             log("\(video.filename): analyzed into “\(fresh.name)”")
                             finish("analysis:\(video.id)")
@@ -1011,8 +1526,10 @@ final class AppStore {
             for video in targets {
                 if Task.isCancelled { break }
                 // Analysis may have (re)classified the video — work from the
-                // fresh record.
-                let current = videos.first { $0.id == video.id } ?? video
+                // fresh record in the originating project, never whichever
+                // project happens to be visible now.
+                let projectVideos = (try? await database.fetchVideos(projectID: pipelineProjectID)) ?? []
+                let current = projectVideos.first { $0.id == video.id } ?? video
                 let runID = pipelineRunIDs[video.id]
 
                 if options.fightResearch, !completed("research:\(video.id)") {
@@ -1041,8 +1558,11 @@ final class AppStore {
                 if options.curate, !completed("curate:\(video.id)") {
                     if Task.isCancelled { break }
                     pipelineStage = "curating — \(current.filename)"
-                    let pool = scenes.filter { scene in
-                        scene.videoID == current.id && !scene.curated && !scene.excluded
+                    let projectScenes = (try? await database.fetchScenes(
+                        videoID: current.id, projectID: pipelineProjectID
+                    )) ?? []
+                    let pool = projectScenes.filter { scene in
+                        !scene.curated && !scene.excluded
                             && (runID == nil || scene.runID == runID)
                     }
                     if pool.isEmpty {
@@ -1082,17 +1602,22 @@ final class AppStore {
                 if options.generate, !completed("generate:\(video.id)") {
                     if Task.isCancelled { break }
                     pipelineStage = "generating — \(current.filename)"
+                    let storedRuns = (try? await database.fetchAnalysisRuns()) ?? []
                     let runIDs = runID.map { [$0] }
-                        ?? Set(analysisRuns.filter { $0.videoID == current.id }.map(\.id))
-                    let transcriptsAvailable = analysisRuns.contains {
+                        ?? Set(storedRuns.filter { $0.videoID == current.id }.map(\.id))
+                    let transcriptsAvailable = storedRuns.contains {
                         runIDs.contains($0.id) && $0.hasTranscript
                     }
+                    let storedScenes = (try? await database.fetchScenes(
+                        videoID: current.id, projectID: pipelineProjectID
+                    )) ?? []
                     var wizard = Self.wizardOptionsFromForm(transcriptsAvailable: transcriptsAvailable)
+                    wizard.projectID = pipelineProjectID
                     wizard.accountBenchmarks = igBenchmarks
                     wizard.selectedRunIDs = runIDs
                     // Curated scope only when this video's batch actually has
                     // curated scenes (holds across Resume, unlike a counter).
-                    wizard.curatedOnly = options.curate && scenes.contains { scene in
+                    wizard.curatedOnly = options.curate && storedScenes.contains { scene in
                         scene.videoID == current.id && scene.curated
                             && (runID == nil || scene.runID == runID)
                     }
@@ -1101,11 +1626,15 @@ final class AppStore {
                         log("\(current.filename): no analyze batch to generate from — skipped")
                     } else {
                         log("Generating a reel from \(current.filename)…")
-                        let before = Set(generatedVideos.map(\.id))
+                        let before = Set(((try? await database.fetchGeneratedVideos(
+                            projectID: pipelineProjectID
+                        )) ?? []).map(\.id))
                         runWizard(options: wizard)
                         await wizardTask?.value
                         await refreshAllNow()
-                        let fresh = generatedVideos.filter { !before.contains($0.id) }
+                        let fresh = ((try? await database.fetchGeneratedVideos(
+                            projectID: pipelineProjectID
+                        )) ?? []).filter { !before.contains($0.id) }
                             .sorted { $0.id < $1.id }
                         // One combined results sheet at the end beats a
                         // pop-up per video mid-run.
@@ -1126,8 +1655,11 @@ final class AppStore {
                     pipelineStage = "cover frames — \(current.filename)"
                     // Per-video reel tracking doesn't survive Resume, so this
                     // covers any of the run's reels still lacking a cover.
+                    let projectOutputs = (try? await database.fetchGeneratedVideos(
+                        projectID: pipelineProjectID
+                    )) ?? []
                     for reelID in pipelineGenerated.map(\.id) where !Task.isCancelled {
-                        guard let reel = generatedVideos.first(where: { $0.id == reelID }),
+                        guard let reel = projectOutputs.first(where: { $0.id == reelID }),
                               reel.coverTime == nil else { continue }
                         if let picks = try? await proposeCoverFrames(for: reel, provider: nil,
                                                                      model: nil, log: { _ in }),
@@ -1146,8 +1678,9 @@ final class AppStore {
             if options.proposeNames, !completed("naming"), !Task.isCancelled {
                 pipelineStage = "renaming files"
                 pendingRenameReview = nil
+                let projectVideos = (try? await database.fetchVideos(projectID: pipelineProjectID)) ?? []
                 let current = targets.map { target in
-                    videos.first { $0.id == target.id } ?? target
+                    projectVideos.first { $0.id == target.id } ?? target
                 }
                 do {
                     let suggestions = try await suggestFileNames(for: current, provider: nil,
@@ -1156,7 +1689,7 @@ final class AppStore {
                         log("No file renames needed")
                     } else {
                         for suggestion in suggestions {
-                            guard let video = videos.first(where: { $0.id == suggestion.videoID })
+                            guard let video = projectVideos.first(where: { $0.id == suggestion.videoID })
                             else { continue }
                             log("Renamed \(suggestion.currentFilename) → \(suggestion.suggestedName)")
                             renameVideo(video, to: suggestion.suggestedName,
@@ -2069,6 +2602,28 @@ final class AppStore {
             inventory.append("## INSTAGRAM BENCHMARKS (measured from the account's reels)\n"
                              + benchmarks.summaryLines.map { "- \($0)" }.joined(separator: "\n"))
         }
+        let traits = (try? await database.fetchGeneratedTraits()) ?? [:]
+        let editing = PerformanceAnalytics.build(
+            videos: generatedVideos, traits: traits, people: people,
+            followersGained: igReport?.overview.newFollowersTotal ?? 0
+        )
+        if !editing.athletes.isEmpty || !editing.patterns.isEmpty {
+            let athleteLines = editing.athletes.prefix(5).map {
+                "- \($0.name): \(Int($0.reach)) reach, \(Int($0.views)) views, \(Int($0.shares)) shares per appearance"
+            }
+            inventory.append("## EDITING AND ATHLETE RETURN\n"
+                + "Suggested hook: \(editing.suggestedHook ?? "unknown"); layout: \(editing.suggestedLayout ?? "unknown"); cadence: \(editing.suggestedCadence.map { "\(Int($0)) cuts/min" } ?? "unknown")\n"
+                + athleteLines.joined(separator: "\n"))
+        }
+        let assetMetadata = (try? await database.fetchAssetMetadata()) ?? []
+        let taggedPhotos = assetMetadata.count(where: {
+            $0.kind == AssetKind.images.rawValue && !$0.subjects.isEmpty
+        })
+        let bRollAssets = assetMetadata.count(where: \.isBRoll) + scenes.count(where: \.isBRoll)
+        let untaggedPhotos = assetMetadata.count(where: {
+            $0.kind == AssetKind.images.rawValue && $0.subjects.isEmpty
+        })
+        inventory.append("## OWNED MEDIA SUGGESTIONS\n- \(taggedPhotos) searchable subject-tagged photos\n- \(bRollAssets) B-roll assets/scenes\n- \(untaggedPhotos) photos still needing subject tags\nUse available owned media as concrete edit suggestions; call out missing B-roll or photos by subject as gaps.")
         inventory.append("## TRAINING\n\(lessons.count) learned lesson(s), taste rubric \(activeProfile.tasteRubric.isEmpty ? "EMPTY" : "written"), house style \(activeProfile.houseStyle.isEmpty ? "EMPTY" : "written")")
 
         let response = try await ai.call(prompt: GapReporter.prompt(inventory: inventory.joined(separator: "\n\n"),
@@ -2331,6 +2886,25 @@ final class AppStore {
                 updateScenes(sceneIDs) { $0.excluded = excluded }
             } catch {
                 presentError("Could not update the scene", error)
+            }
+        }
+    }
+
+    func setSceneBRoll(_ scene: SceneRecord, isBRoll: Bool) {
+        guard let database else { return }
+        Task {
+            do {
+                if isBRoll {
+                    try await database.addSceneTag(sceneID: scene.id, tag: "b-roll")
+                } else {
+                    try await database.removeSceneTags(sceneID: scene.id, withPrefix: "b-roll")
+                }
+                updateScene(scene.id) { changed in
+                    changed.tags.removeAll { $0 == "b-roll" }
+                    if isBRoll { changed.tags.append("b-roll") }
+                }
+            } catch {
+                presentError("Could not update B-roll status", error)
             }
         }
     }
@@ -2630,6 +3204,246 @@ final class AppStore {
         }
     }
 
+    // MARK: - Project timelines
+
+    func createTimeline(named name: String = "Untitled Timeline",
+                        document: TimelineDocument? = nil,
+                        projectID requestedProjectID: Int64? = nil) {
+        guard let database, let projectID = requestedProjectID ?? activeProjectID else { return }
+        let document = document ?? {
+            var value = TimelineDocument()
+            value.renderSettings = activeProfile.defaultRenderSettings
+            return value
+        }()
+        guard let data = try? JSONEncoder().encode(document),
+              let json = String(data: data, encoding: .utf8) else { return }
+        Task {
+            do {
+                let id = try await database.createTimeline(projectID: projectID,
+                                                           name: name,
+                                                           documentJSON: json)
+                projects = try await database.fetchProjects()
+                if activeProjectID == projectID {
+                    timelines = try await database.fetchTimelines(projectID: projectID)
+                    if let timeline = timelines.first(where: { $0.id == id }) {
+                        openTimelineRecord(timeline)
+                    }
+                }
+            } catch { presentError("Could not create the timeline", error) }
+        }
+    }
+
+    /// "Add to Builder" from the scene grids. With a timeline open the
+    /// scenes are appended to it; otherwise a new timeline is created for
+    /// them first — the Builder's unsaved scratch document is not shown
+    /// anywhere and would be discarded by the next open.
+    func addScenesToBuilder(_ scenesToAdd: [SceneRecord]) {
+        guard !scenesToAdd.isEmpty else { return }
+        if openTimelineID != nil {
+            scenesToAdd.forEach { builder.addScene($0) }
+            selectSection(.timelines)
+            return
+        }
+        guard let database, let projectID = activeProjectID else { return }
+        var document = TimelineDocument()
+        document.renderSettings = activeProfile.defaultRenderSettings
+        guard let data = try? JSONEncoder().encode(document),
+              let json = String(data: data, encoding: .utf8) else { return }
+        let name = scenesToAdd.count == 1
+            ? (scenesToAdd[0].videoFilename as NSString).deletingPathExtension
+            : "\(scenesToAdd.count) scenes"
+        Task {
+            do {
+                let id = try await database.createTimeline(projectID: projectID, name: name,
+                                                           documentJSON: json)
+                timelines = try await database.fetchTimelines(projectID: projectID)
+                projects = try await database.fetchProjects()
+                guard activeProjectID == projectID,
+                      let timeline = timelines.first(where: { $0.id == id }) else { return }
+                openTimelineRecord(timeline)
+                scenesToAdd.forEach { builder.addScene($0) }
+                selectSection(.timelines)
+            } catch { presentError("Could not create a timeline for the scenes", error) }
+        }
+    }
+
+    func openTimelineRecord(_ timeline: TimelineRecord, state: ProjectUIState? = nil) {
+        if timeline.isWizard {
+            duplicateTimeline(timeline, openCopy: true)
+            return
+        }
+        guard let document = timeline.document else {
+            presentError("This timeline could not be read.")
+            return
+        }
+        // Leaving another timeline: remember where it was.
+        if let current = openTimelineID, current != timeline.id {
+            persistOpenTimelineViewState()
+        }
+        openTimelineID = timeline.id
+        selectedSection = .timelines
+        // The timeline's own viewport wins; an explicit project state (a
+        // launch restore from before viewports were per timeline) is the
+        // fallback, then defaults.
+        let view: TimelineViewState
+        if let cached = timelineViewStates[timeline.id] {
+            view = cached
+        } else if let own = timeline.viewState {
+            view = own
+        } else if let state {
+            view = TimelineViewState(playhead: state.playhead, zoom: state.zoom,
+                                     selection: state.timelineSelection,
+                                     focusedTrack: state.timelineFocusedTrack,
+                                     scrollX: state.timelineScrollX, scrollY: state.timelineScrollY)
+        } else {
+            view = TimelineViewState()
+        }
+        builder.loadTimeline(id: timeline.id, document: document,
+                             playhead: view.playhead, zoom: view.zoom,
+                             selection: view.selection,
+                             focusedTrack: view.focusedTrack)
+        timelineScrollX = view.scrollX
+        timelineScrollY = view.scrollY
+        persistActiveProjectState()
+    }
+
+    /// The open timeline's viewport, encoded; nil with none open. Also
+    /// records it in the session cache.
+    private func openTimelineViewStateJSON() -> (id: Int64, json: String)? {
+        guard let openTimelineID else { return nil }
+        let view = TimelineViewState(playhead: builder.playhead,
+                                     zoom: Double(builder.pointsPerSecond),
+                                     selection: builder.selection,
+                                     focusedTrack: builder.focusedTrack,
+                                     scrollX: timelineScrollX, scrollY: timelineScrollY)
+        timelineViewStates[openTimelineID] = view
+        guard let data = try? JSONEncoder().encode(view),
+              let json = String(data: data, encoding: .utf8) else { return nil }
+        return (openTimelineID, json)
+    }
+
+    /// Write the open timeline's viewport (fire-and-forget).
+    func persistOpenTimelineViewState() {
+        guard let database, let (id, json) = openTimelineViewStateJSON() else { return }
+        Task { try? await database.saveTimelineViewState(id: id, json: json) }
+    }
+
+    /// Builder timelines of the open project, in list order (Wizard rows
+    /// open as copies, so they are not switch targets).
+    var switchableTimelines: [TimelineRecord] {
+        timelines.filter { !$0.isWizard }
+    }
+
+    /// Jump straight from one open timeline to another: the current one is
+    /// saved first (loadTimeline flushes the autosave), the target opens
+    /// fresh at its start.
+    func switchTimeline(to timeline: TimelineRecord) {
+        guard timeline.id != openTimelineID else { return }
+        openTimelineRecord(timeline)
+    }
+
+    /// ⌥⌘[ / ⌥⌘]: previous / next timeline in the project.
+    func cycleTimeline(offset: Int) {
+        let candidates = switchableTimelines
+        guard candidates.count > 1, let openTimelineID,
+              let index = candidates.firstIndex(where: { $0.id == openTimelineID }) else { return }
+        let next = (index + offset + candidates.count) % candidates.count
+        switchTimeline(to: candidates[next])
+    }
+
+    func closeTimeline() {
+        persistOpenTimelineViewState()
+        persistActiveProjectState()
+        openTimelineID = nil
+        builder.closeTimeline(defaultRenderSettings: activeProfile.defaultRenderSettings)
+        persistActiveProjectState()
+    }
+
+    func renameTimeline(_ timeline: TimelineRecord, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let database, let activeProjectID else { return }
+        Task {
+            do {
+                try await database.renameTimeline(id: timeline.id, name: trimmed)
+                timelines = try await database.fetchTimelines(projectID: activeProjectID)
+            } catch { presentError("Could not rename the timeline", error) }
+        }
+    }
+
+    func duplicateTimeline(_ timeline: TimelineRecord, openCopy: Bool = false) {
+        guard let database, let activeProjectID else { return }
+        Task {
+            do {
+                let name = timeline.name.hasSuffix(" Copy") ? "\(timeline.name) 2" : "\(timeline.name) Copy"
+                let id = try await database.duplicateTimeline(id: timeline.id, name: name)
+                timelines = try await database.fetchTimelines(projectID: activeProjectID)
+                projects = try await database.fetchProjects()
+                if openCopy, let id, let copy = timelines.first(where: { $0.id == id }) {
+                    openTimelineRecord(copy)
+                }
+            } catch { presentError("Could not duplicate the timeline", error) }
+        }
+    }
+
+    func deleteTimeline(_ timeline: TimelineRecord) {
+        guard let database, let activeProjectID else { return }
+        Task {
+            do {
+                try await database.deleteTimeline(id: timeline.id)
+                if openTimelineID == timeline.id { closeTimeline() }
+                timelines = try await database.fetchTimelines(projectID: activeProjectID)
+                projects = try await database.fetchProjects()
+            } catch { presentError("Could not delete the timeline", error) }
+        }
+    }
+
+    private func saveTimeline(id: Int64, document: TimelineDocument) {
+        guard let database else { return }
+        let thumbnailVideoID = document.videoTrack.first?.sceneID
+            .flatMap { sceneID in scenes.first(where: { $0.id == sceneID })?.videoID }
+        guard let data = try? JSONEncoder().encode(document),
+              let json = String(data: data, encoding: .utf8) else { return }
+        Task {
+            do {
+                try await database.saveTimeline(id: id, documentJSON: json,
+                                                thumbnailVideoID: thumbnailVideoID)
+                if let activeProjectID {
+                    timelines = (try? await database.fetchTimelines(projectID: activeProjectID)) ?? timelines
+                    projects = (try? await database.fetchProjects()) ?? projects
+                }
+            } catch { presentError("Could not save the timeline", error) }
+        }
+    }
+
+    private func recordWizardTimelines(_ videos: [GeneratedVideoRecord], projectID: Int64,
+                                       formatName: String = "Wizard Run") async {
+        guard let database else { return }
+        let groups = Dictionary(grouping: videos) { $0.batchID ?? "video-\($0.id)" }
+        for (runID, versions) in groups {
+            guard let first = versions.sorted(by: { $0.id < $1.id }).first else { continue }
+            let sceneID = first.timelineJSON.data(using: .utf8)
+                .flatMap { try? JSONDecoder().decode(TimelineDocument.self, from: $0) }?
+                .videoTrack.first?.sceneID
+            let thumbnailVideoID: Int64?
+            if let sceneID {
+                thumbnailVideoID = try? await database.fetchScenes(sceneID: sceneID).first?.videoID
+            } else {
+                thumbnailVideoID = nil
+            }
+            try? await database.ensureWizardTimeline(
+                projectID: projectID,
+                name: "Wizard · \(formatName)",
+                documentJSON: first.timelineJSON,
+                sourceRunID: runID,
+                thumbnailVideoID: thumbnailVideoID
+            )
+        }
+        if activeProjectID == projectID {
+            timelines = (try? await database.fetchTimelines(projectID: projectID)) ?? timelines
+        }
+        projects = (try? await database.fetchProjects()) ?? projects
+    }
+
     // MARK: - Clip Builder
 
     /// Render the builder timeline through the multitrack pipeline and file
@@ -2641,16 +3455,20 @@ final class AppStore {
             return
         }
         isBuilderRendering = true
+        builderRenderProjectID = activeProjectID
+        builderRenderProjectName = activeProject?.name
         builderLog = []
         let document = builder.document
         let scenes = builder.scenes
         let profile = activeProfile
+        let projectID = activeProjectID
         let renderer = multitrackRenderer
         builderRenderTask = Task {
             do {
                 let result = try await renderer.render(document: document, scenes: scenes,
                                                        profile: profile, database: database,
                                                        centerStageCamera: WizardDefaults.fallbackFramingCamera,
+                                                       projectID: projectID,
                                                        emit: logSink(\.builderLog))
                 builderLog.append("Done: \(result.url.lastPathComponent) (\(result.duration.timecode))")
             } catch is CancellationError {
@@ -2721,6 +3539,7 @@ final class AppStore {
         let profile = activeProfile
         let renderer = multitrackRenderer
         let scenes = self.scenes
+        let projectID = activeProjectID
         Task {
             do {
                 let document = try await curatedDocument(document, includeOutro: includeOutro,
@@ -2728,6 +3547,7 @@ final class AppStore {
                 let result = try await renderer.render(document: document, scenes: scenes,
                                                        profile: profile, database: database,
                                                        centerStageCamera: WizardDefaults.fallbackFramingCamera,
+                                                       projectID: projectID,
                                                        emit: logSink(\.wizardLog))
                 wizardLog.append("VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))")
             } catch is CancellationError {
@@ -2899,8 +3719,19 @@ final class AppStore {
 
     /// Load a curated-wizard document into the Builder for detail work.
     func openCuratedInBuilder(_ document: TimelineDocument) {
-        builder.loadDocument(document)
-        requestedSection = .builder
+        createTimeline(named: "Curated Edit", document: document)
+    }
+
+    /// Continue a reviewed Wizard plan in the Builder, where owned photo and
+    /// B-roll suggestions can be accepted before the final render.
+    func openReviewedPlanInBuilder(_ plan: WizardPlan, request: ProposedCutReviewRequest) {
+        let document = WizardEngine.timelineDocument(
+            from: plan, sceneMap: request.sceneMap,
+            renderSettings: request.options.renderSettings,
+            pacing: request.options.pacing
+        )
+        createTimeline(named: "Reviewed Plan", document: document)
+        pendingCutReview = nil
     }
 
     /// Load a generated video's saved timeline back into the builder.
@@ -2919,8 +3750,8 @@ final class AppStore {
             presentError("This video's timeline couldn't be read, so it can't be edited in the Builder.")
             return
         }
-        builder.loadDocument(document)
-        requestedSection = .builder
+        createTimeline(named: video.url.deletingPathExtension().lastPathComponent,
+                       document: document)
     }
 
     // MARK: - Wizard
@@ -2995,36 +3826,61 @@ final class AppStore {
     func runWizard(options: WizardOptions) {
         guard let database, !isWizardRunning else { return }
         var options = options
+        options.projectID = options.projectID ?? activeProjectID
+        guard let projectID = options.projectID else { return }
         options.accountBenchmarks = igBenchmarks
         isWizardRunning = true
+        wizardProjectID = projectID
+        wizardProjectName = projects.first(where: { $0.id == projectID })?.name ?? activeProject?.name
         wizardLog = []
         lastWizardOptions = options
         wizardFailureMessage = nil
         wizardStatus = WizardRunStatus(stage: "Starting…", fraction: 0)
         let profile = activeProfile
         let wizard = wizard
-        let previousIDs = Set(generatedVideos.map(\.id))
+        // Everything this run produces belongs to the profile (database) it
+        // started in; after a profile switch its results must not land here.
         let generation = profileGeneration
         wizardTask = Task {
+            defer {
+                isWizardRunning = false
+                wizardStatus = nil
+                wizardProjectID = nil
+            }
+            let previousIDs = Set(((try? await database.fetchGeneratedVideos(projectID: projectID)) ?? []).map(\.id))
+            if options.reviewProposedCuts {
+                do {
+                    let prepared = try await wizard.plan(options: options, profile: profile,
+                                                         database: database,
+                                                         emit: logSink(\.wizardLog))
+                    guard generation == profileGeneration else { return }
+                    pendingCutReview = ProposedCutReviewRequest(plan: prepared.plan,
+                                                               sceneMap: prepared.sceneMap,
+                                                               options: options)
+                } catch is CancellationError {
+                    wizardLog.append("Planning stopped.")
+                } catch {
+                    presentError("Could not prepare proposed cuts", error)
+                }
+                return
+            }
             await wizard.run(options: options, profile: profile, database: database) { message in
                 Task { @MainActor in
                     self.wizardLog.append(message)
                     self.updateWizardStatus(from: message)
                 }
             }
-            isWizardRunning = false
-            wizardStatus = nil
-            await refreshAllNow()
-            // A profile switch mid-run: the "fresh" ids would be the other
-            // profile's reels, not this run's output.
             guard generation == profileGeneration else { return }
+            await refreshAllNow()
             // Results sheet first (watch/rate/retry); any A/B comparison
             // queued below appears after it is dismissed.
-            let fresh = generatedVideos
+            let fresh = ((try? await database.fetchGeneratedVideos(projectID: projectID)) ?? [])
                 .filter { !previousIDs.contains($0.id) }
                 .sorted { $0.id < $1.id }
             if !fresh.isEmpty {
                 wizardResults = WizardRunResults(videos: fresh)
+                await recordWizardTimelines(fresh, projectID: projectID,
+                                            formatName: options.formatPreset)
             } else if !Task.isCancelled {
                 // Nothing produced and the user didn't stop it — surface the
                 // failure where the user is looking instead of leaving only a
@@ -3035,9 +3891,52 @@ final class AppStore {
         }
     }
 
+    func renderApprovedCuts(_ plan: WizardPlan, options: WizardOptions) {
+        guard let database, !isWizardRunning else { return }
+        var options = options
+        options.projectID = options.projectID ?? activeProjectID
+        guard let projectID = options.projectID else { return }
+        pendingCutReview = nil
+        isWizardRunning = true
+        wizardProjectID = projectID
+        wizardProjectName = projects.first(where: { $0.id == projectID })?.name ?? activeProject?.name
+        wizardStatus = WizardRunStatus(stage: "Rendering approved cuts", fraction: 0.3)
+        let profile = activeProfile
+        let wizard = wizard
+        let generation = profileGeneration
+        wizardTask = Task {
+            defer {
+                isWizardRunning = false
+                wizardStatus = nil
+                wizardProjectID = nil
+            }
+            let previousIDs = Set(((try? await database.fetchGeneratedVideos(projectID: projectID)) ?? []).map(\.id))
+            do {
+                try await wizard.renderApprovedPlan(plan, options: options, profile: profile,
+                                                    database: database, emit: logSink(\.wizardLog))
+            } catch is CancellationError {
+                wizardLog.append("Render stopped.")
+            } catch {
+                presentError("Could not render approved cuts", error)
+            }
+            guard generation == profileGeneration else { return }
+            await refreshAllNow()
+            let fresh = ((try? await database.fetchGeneratedVideos(projectID: projectID)) ?? [])
+                .filter { !previousIDs.contains($0.id) }
+            if !fresh.isEmpty {
+                wizardResults = WizardRunResults(videos: fresh)
+                await recordWizardTimelines(fresh, projectID: projectID,
+                                            formatName: options.formatPreset)
+            }
+        }
+    }
+
     /// Re-run the wizard with the same options as the last run.
     func retryWizard() {
-        guard let options = lastWizardOptions else { return }
+        guard var options = lastWizardOptions else { return }
+        // The saved options carry the project of the failed run; a retry
+        // always targets the project on screen.
+        options.projectID = activeProjectID
         wizardResults = nil
         runWizard(options: options)
     }
@@ -3776,7 +4675,8 @@ final class AppStore {
         guard let result = try? await centerStage.cameraPath(
                 source: video.url, start: start, duration: end - start,
                 focusPortraits: portraits, avoidPortraits: avoidPortraits,
-                hints: hints, tuning: .named(camera)),
+                hints: hints, tuning: .named(camera),
+                aspect: activeProfile.defaultRenderSettings.aspectRatio),
               result.keyframes.count >= 2 else { return }
         let path = SceneCameraPath(camera: camera, keyframes: result.keyframes)
         if let data = try? JSONEncoder().encode(path),
@@ -3901,6 +4801,7 @@ final class AppStore {
         }
         guard !affected.isEmpty,
               let video = videos.first(where: { $0.id == videoID }) else { return }
+        let canvasAspect = activeProfile.defaultRenderSettings.aspectRatio
         Task {
             let centerStage = CenterStageService()
             let markers = (try? await database.personMarkers(videoID: videoID)) ?? []
@@ -3937,7 +4838,8 @@ final class AppStore {
                             source: video.url, start: scene.startTime, duration: scene.duration,
                             focusPortraits: portraits, avoidPortraits: avoidPortraits,
                             hints: sceneHints,
-                            tuning: .named(stored.camera)),
+                            tuning: .named(stored.camera),
+                            aspect: canvasAspect),
                        result.keyframes.count >= 2 {
                         path = SceneCameraPath(camera: stored.camera, keyframes: result.keyframes)
                     } else {
@@ -4161,7 +5063,16 @@ final class AppStore {
         if let database {
             try? await database.markGeneratedVideoPublished(id: video.id,
                                                             instagramMediaID: result.mediaID)
-            generatedVideos = (try? await database.fetchGeneratedVideos()) ?? generatedVideos
+            let recordedTraits = (try? await database.fetchGeneratedTraits()) ?? [:]
+            if recordedTraits[video.id] == nil,
+               let data = video.timelineJSON.data(using: .utf8),
+               let document = try? JSONDecoder().decode(TimelineDocument.self, from: data) {
+                try? await database.saveGeneratedTraits(
+                    videoID: video.id,
+                    traits: .derive(document: document, scenes: scenes)
+                )
+            }
+            generatedVideos = (try? await database.fetchGeneratedVideos(projectID: activeProjectID)) ?? generatedVideos
         }
         let username = settings.instagram.connectedUsername
         if !username.isEmpty {
@@ -4210,11 +5121,13 @@ final class AppStore {
     /// Plan (not render) a timeline from an analyzed reel's template and open
     /// it in the Builder for manual editing.
     func useTemplateInBuilder(media: IGMediaRecord) {
+        let originatingProjectID = activeProjectID
         Task {
             guard let templateJSON = await fetchTemplateJSON(mediaID: media.id) else { return }
             var options = WizardOptions()
             options.templateJSON = templateJSON
             options.templateLabel = templateLabel(for: media)
+            options.projectID = originatingProjectID
             // Overlays land as editable timeline items here, not burned in.
             options.enableTextOverlays = true
             planIntoBuilder(options: options)
@@ -4228,22 +5141,28 @@ final class AppStore {
         guard let database, !isWizardRunning else { return }
         var options = options
         options.accountBenchmarks = igBenchmarks
+        options.projectID = options.projectID ?? activeProjectID
+        guard let projectID = options.projectID else { return }
         isWizardRunning = true
+        wizardProjectName = projects.first(where: { $0.id == projectID })?.name ?? activeProject?.name
+        wizardStatus = WizardRunStatus(stage: "Planning Builder timeline", fraction: 0.1)
         isPlanningIntoBuilder = true
         wizardLog = []
-        requestedSection = .builder
+        selectedSection = .timelines
         let profile = activeProfile
         let wizard = wizard
         wizardTask = Task {
             do {
                 let (plan, sceneMap) = try await wizard.plan(options: options, profile: profile,
                                                              database: database, emit: logSink(\.wizardLog))
-                let document = WizardEngine.timelineDocument(from: plan, sceneMap: sceneMap)
+                let document = WizardEngine.timelineDocument(from: plan, sceneMap: sceneMap,
+                                                             renderSettings: options.renderSettings,
+                                                             pacing: options.pacing)
                 if document.videoTrack.isEmpty {
                     presentError("The plan produced no usable clips")
                 } else {
                     wizardLog.append("Opening \(document.videoTrack.count) clips in the Builder...")
-                    builder.loadDocument(document)
+                    createTimeline(named: "Wizard Draft", document: document, projectID: projectID)
                 }
             } catch is CancellationError {
                 wizardLog.append("Pre-fill cancelled")
@@ -4251,6 +5170,7 @@ final class AppStore {
                 presentError("Timeline planning failed", error)
             }
             isWizardRunning = false
+            wizardStatus = nil
             isPlanningIntoBuilder = false
         }
     }

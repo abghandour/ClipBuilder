@@ -16,6 +16,7 @@ struct TranscriptSheet: View {
     @State private var isLoading = true
     @State private var isSaving = false
     @State private var confirmDiscard = false
+    @State private var showTools = false
 
     private var changedIDs: [Int64] {
         rows.compactMap { row in
@@ -55,6 +56,8 @@ struct TranscriptSheet: View {
                     }
                 }
                 Spacer()
+                Button("Topics, Cuts & Translation…") { showTools = true }
+                    .disabled(rows.isEmpty)
                 Button("Re-transcribe") {
                     store.transcribe(video: video, force: true)
                     dismiss()
@@ -111,6 +114,7 @@ struct TranscriptSheet: View {
             if hasChanges { confirmDiscard = true } else { dismiss() }
         }
         .task { await load() }
+        .sheet(isPresented: $showTools) { TranscriptToolsSheet(video: video) }
         .confirmationDialog("Discard unsaved transcript edits?", isPresented: $confirmDiscard) {
             Button("Discard", role: .destructive) { dismiss() }
             Button("Save and Close") { save() }

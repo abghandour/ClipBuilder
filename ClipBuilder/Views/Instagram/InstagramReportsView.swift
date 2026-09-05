@@ -11,6 +11,7 @@ struct InstagramReportsView: View {
         case posts = "Posts"
         case commenters = "Commenters"
         case audience = "Audience"
+        case editing = "Editing"
         var id: String { rawValue }
     }
 
@@ -117,6 +118,7 @@ struct InstagramReportsView: View {
                 case .posts: posts(report)
                 case .commenters: commenters(report)
                 case .audience: audience(report)
+                case .editing: EditingPerformanceView()
                 }
             }
             .frame(maxWidth: 1100)

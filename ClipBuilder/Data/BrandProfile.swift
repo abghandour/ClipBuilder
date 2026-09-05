@@ -59,6 +59,11 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var tagline: String
     /// Caption languages, e.g. ["en", "pt"] — one caption block per language.
     var captionLanguages: [String]
+    var defaultRenderSettings: RenderSettings
+    var defaultPacing: EditPacing
+    var useLearnedEditingDefaults: Bool
+    var learnedHookStyle: String
+    var learnedLayoutPreference: String
     /// Editable "what a keeper moment looks like" rules, distilled from
     /// exemplar reels the user picked; injected into analysis and planning.
     var tasteRubric: String
@@ -105,6 +110,11 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case accentColor = "accent_color"
         case tagline
         case captionLanguages = "caption_languages"
+        case defaultRenderSettings = "default_render_settings"
+        case defaultPacing = "default_pacing"
+        case useLearnedEditingDefaults = "use_learned_editing_defaults"
+        case learnedHookStyle = "learned_hook_style"
+        case learnedLayoutPreference = "learned_layout_preference"
         case tasteRubric = "taste_rubric"
         case tasteExemplarFrames = "taste_exemplar_frames"
         case tasteCategories = "taste_categories"
@@ -130,7 +140,14 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         logoPath = try container.decodeIfPresent(String.self, forKey: .logoPath) ?? ""
         accentColor = try container.decodeIfPresent(String.self, forKey: .accentColor) ?? ""
         tagline = try container.decodeIfPresent(String.self, forKey: .tagline) ?? ""
-        captionLanguages = try container.decodeIfPresent([String].self, forKey: .captionLanguages) ?? ["en"]
+        captionLanguages = try container.decodeIfPresent([String].self, forKey: .captionLanguages)
+            ?? ["en"]
+        defaultRenderSettings = try container.decodeIfPresent(RenderSettings.self, forKey: .defaultRenderSettings)
+            ?? RenderSettings()
+        defaultPacing = try container.decodeIfPresent(EditPacing.self, forKey: .defaultPacing) ?? EditPacing()
+        useLearnedEditingDefaults = try container.decodeIfPresent(Bool.self, forKey: .useLearnedEditingDefaults) ?? false
+        learnedHookStyle = try container.decodeIfPresent(String.self, forKey: .learnedHookStyle) ?? ""
+        learnedLayoutPreference = try container.decodeIfPresent(String.self, forKey: .learnedLayoutPreference) ?? ""
         tasteRubric = try container.decodeIfPresent(String.self, forKey: .tasteRubric) ?? ""
         tasteExemplarFrames = try container.decodeIfPresent([String].self, forKey: .tasteExemplarFrames) ?? []
         tasteCategories = try container.decodeIfPresent([TasteCategory].self, forKey: .tasteCategories) ?? []
@@ -170,6 +187,11 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         accentColor = ""
         tagline = ""
         captionLanguages = ["en"]
+        defaultRenderSettings = RenderSettings()
+        defaultPacing = EditPacing()
+        useLearnedEditingDefaults = false
+        learnedHookStyle = ""
+        learnedLayoutPreference = ""
         tasteRubric = ""
         tasteExemplarFrames = []
         tasteCategories = []
@@ -212,6 +234,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
             "promo", "graphic", "text-overlay", "logo", "intro", "outro",
             "behind-the-scenes", "travel", "eating", "lifestyle",
             "slow-motion", "replay", "highlight-reel", "talking", "posing", "photo",
+            "b-roll", "cutaway", "establishing-shot",
         ],
         "setting": [
             "octagon", "cage", "ring", "gym", "outdoor", "beach", "street", "hotel",

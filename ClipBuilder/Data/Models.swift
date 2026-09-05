@@ -417,6 +417,7 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var wide: Bool
 
     var duration: Double { endTime - startTime }
+    var isBRoll: Bool { tags.contains("b-roll") }
     var videoURL: URL { URL(fileURLWithPath: videoPath) }
 
     /// Who promoted this scene to Curated, when it was the AI Curator.
@@ -521,6 +522,9 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     /// The model that ranked the cover frame; nil = picked by hand.
     var coverProvider: String? = nil
     var coverModel: String? = nil
+    /// Project that owns this output. Nil is possible only for a project
+    /// whose database row was deleted while its file was kept.
+    var projectID: Int64? = nil
 
     var url: URL { URL(fileURLWithPath: path) }
     var filename: String { url.lastPathComponent }

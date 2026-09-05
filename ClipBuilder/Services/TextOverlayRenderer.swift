@@ -247,12 +247,14 @@ nonisolated struct TextOverlayRenderer {
         guard !words.isEmpty else { return }
         let margin = CGFloat(videoWidth) * 0.02
         let available = CGFloat(videoWidth) - margin * 2
-        var font = resolveFont(size: CGFloat(item.fontsize), family: item.fontfamily,
+        let designScale = CGFloat(videoHeight) / 1920
+        let requestedSize = CGFloat(item.fontsize) * designScale
+        var font = resolveFont(size: requestedSize, family: item.fontfamily,
                                bold: item.bold, italic: item.italic)
         let plain = Self.plainText(words)
         var width = lineWidth(plain, font: font)
         if width > available {
-            let scaled = max(6, CGFloat(item.fontsize) * available / width)
+            let scaled = max(6, requestedSize * available / width)
             font = resolveFont(size: scaled, family: item.fontfamily,
                                bold: item.bold, italic: item.italic)
             width = lineWidth(plain, font: font)

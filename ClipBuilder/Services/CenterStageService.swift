@@ -270,7 +270,9 @@ actor CenterStageService {
         return output
     }
 
-    static let defaultRenderSize = CGSize(width: RenderEngine.outputWidth, height: RenderEngine.outputHeight)
+    static var defaultRenderSize: CGSize {
+        CGSize(width: RenderEngine.outputWidth, height: RenderEngine.outputHeight)
+    }
 
     /// Reframe `[start, start+duration]` using a precomputed camera path
     /// (clip-relative, normalized keyframes) — skips the tracking pass, so
@@ -307,7 +309,8 @@ actor CenterStageService {
                     focusPortraits: [Data] = [],
                     avoidPortraits: [Data] = [],
                     hints: [(time: Double, crop: CGRect)] = [],
-                    tuning: Tuning = .balanced) async throws
+                    tuning: Tuning = .balanced,
+                    aspect: Double = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight)) async throws
         -> (keyframes: [CameraPathKeyframe], trackedShare: Double) {
         let info = try await loadSource(source)
         let targets = try await trackPeople(asset: info.asset, track: info.track,
@@ -320,7 +323,7 @@ actor CenterStageService {
         let trackedShare = targets.isEmpty ? 0
             : Double(targets.filter(\.tracked).count) / Double(targets.count)
         let keyframes = cameraPath(from: targets, size: info.size, duration: duration,
-                                   tuning: tuning, hints: hints)
+                                   tuning: tuning, hints: hints, aspect: aspect)
         let normalized = keyframes.map { keyframe in
             CameraPathKeyframe(t: keyframe.time,
                                x: keyframe.crop.minX / info.size.width,
@@ -332,6 +335,22 @@ actor CenterStageService {
     }
 
     // MARK: - Stored-path helpers
+
+    /// Whether a stored path's crop shape fits the current canvas. Keyframes
+    /// are normalized to the source frame, so the crop's pixel aspect is
+    /// only known once the source size is: compare against `sourceSize`
+    /// when given, else assume the common 16:9 source. A path framed for
+    /// another canvas must be re-tracked, not replayed — replaying it
+    /// scales the wrong-shaped crop across the frame.
+    nonisolated static func pathMatchesCanvas(_ path: [CameraPathKeyframe],
+                                              sourceSize: CGSize? = nil,
+                                              canvasAspect: Double = Double(RenderEngine.outputWidth)
+                                                  / Double(RenderEngine.outputHeight)) -> Bool {
+        guard let first = path.first, first.h > 0 else { return false }
+        let source = sourceSize ?? CGSize(width: 16, height: 9)
+        let cropAspect = (first.w * source.width) / (first.h * source.height)
+        return abs(cropAspect - canvasAspect) / canvasAspect < 0.03
+    }
 
     /// The camera's crop at `t`, linearly interpolated between the
     /// surrounding keyframes (clamped to the path's ends).

@@ -2,6 +2,12 @@ import CoreGraphics
 import Foundation
 
 nonisolated struct WizardOptions: Sendable {
+    /// Project that owns the run and every output it creates.
+    var projectID: Int64?
+    var renderSettings = RenderSettings()
+    var pacing = EditPacing()
+    var captionLanguage: String?
+    var reviewProposedCuts = false
     var muteSource = false
     var addCaptions = false
     var enableTextOverlays = false
@@ -243,6 +249,10 @@ nonisolated enum WizardTextStyle: String, CaseIterable {
 /// WizardTextStyle renders as a single full-clip text (default impact).
 nonisolated func wizardPlanOverlay(for clip: WizardPlanClip, text: String)
     -> (composition: OverlayComposition, isTemplate: Bool) {
+    if clip.overlayStyle == "lower-third" {
+        return (LowerThirdOverlay.composition(name: text,
+                                              role: clip.overlayKicker ?? "Guest"), true)
+    }
     if var composition = OverlayTemplateStore.composition(named: clip.overlayStyle) {
         for index in composition.texts.indices {
             composition.texts[index].uid = UUID()
@@ -646,6 +656,9 @@ actor WizardEngine {
                             outcomes: [FightOutcome],
                             fightResearch: [FightResearchRecord] = [],
                             videoTypes: [Int64: VideoType] = [:],
+                            topics: [TopicRange] = [],
+                            cleanupCuts: [EditProposal] = [],
+                            editingInsights: EditingPerformanceInsights? = nil,
                             options: WizardOptions) -> String {
         // Fight results the analyzer extracted — the ground truth behind
         // "headline" and recap storytelling.
@@ -727,8 +740,17 @@ actor WizardEngine {
 
             ## FORMAT: INTERVIEW CLIP (hard requirements)
             - Pick coherent SPOKEN segments (interview/talking tags); never cut mid-sentence when the moments/dialog hints show sentence boundaries.
-            - One banner overlay naming the speaker on the first clip; no other text overlays.
+            - One "lower-third" overlay naming the speaker on their first clip; put their role in "kicker". No other text overlays.
             - Keep source audio primary: quiet music at most.
+
+            """
+        case "podcast":
+            presetBlock = """
+
+            ## FORMAT: PODCAST TOPIC CLIP (hard requirements)
+            - Build one self-contained short-form clip around exactly ONE titled range from PODCAST TOPICS. Stay inside that topic's source range and do not blend unrelated subjects.
+            - Start on the strongest claim or question, preserve complete sentences, and avoid transcript-marked dead air and filler runs.
+            - Add one "lower-third" overlay for each named speaker's first appearance; keep source audio primary and music quiet or absent.
 
             """
         default:
@@ -789,6 +811,22 @@ actor WizardEngine {
             ## THIS ACCOUNT'S BENCHMARKS (measured from its Instagram insights — outranks the generic playbook)
             \(benchmarks.plannerBlock())
             """
+        }
+
+        // Explicit pacing wins over every learned, benchmark, or reference
+        // value. Automatic keeps the existing precedence chain unchanged.
+        let cadenceDirective: String
+        if let cadenceRange = options.pacing.cadence.range {
+            let average = options.pacing.cadence.averageSeconds ?? 3
+            cutsPerMinute = Int((60 / average).rounded())
+            cadenceDirective = """
+
+
+            ## EXPLICIT CUT CADENCE (HARD CONSTRAINT)
+            The user chose \(options.pacing.cadence.label.lowercased()) with a \(options.pacing.curve.label.lowercased()) pace curve. This overrides every benchmark, reference template, and learned pacing suggestion. Keep ordinary clip screen times within \(cadenceRange.lowerBound.formatted())–\(cadenceRange.upperBound.formatted()) seconds and shape them across the reel using that curve.
+            """
+        } else {
+            cadenceDirective = ""
         }
 
         // An explicit user duration beats research and template alike. It
@@ -891,6 +929,32 @@ actor WizardEngine {
             Follow this house style by default. A REFERENCE TEMPLATE (if present) outranks it; user AI instructions outrank both.
             """
         }
+        if profile.useLearnedEditingDefaults {
+            houseStyleBlock += """
+
+
+            ## LEARNED DEFAULTS (measured from this profile's published results)
+            Preferred hook: \(profile.learnedHookStyle.isEmpty ? "unspecified" : profile.learnedHookStyle)
+            Preferred screen type: \(profile.learnedLayoutPreference.isEmpty ? "unspecified" : profile.learnedLayoutPreference)
+            These are visible profile defaults learned from results. Explicit user choices still win.
+            """
+        }
+        if let editingInsights {
+            let athletes = editingInsights.athletes.prefix(3).map {
+                "- \($0.name): \(Int($0.reach)) reach and \(Int($0.views)) views per appearance"
+            }.joined(separator: "\n")
+            houseStyleBlock += """
+
+
+            ## EDITING PERFORMANCE SIGNALS (measured from linked published reels)
+            Suggested hook: \(editingInsights.suggestedHook ?? "not enough data")
+            Suggested screen type: \(editingInsights.suggestedLayout ?? "not enough data")
+            Suggested cadence: \(editingInsights.suggestedCadence.map { "\($0.formatted(.number.precision(.fractionLength(1)))) cuts/min" } ?? "not enough data")
+            Highest-return featured athletes:
+            \(athletes.isEmpty ? "- not enough linked appearances" : athletes)
+            Use these as evidence-based guidance. User instructions and explicit output/cadence choices still win.
+            """
+        }
 
         var pinnedOverlayDirective = ""
         if options.enableTextOverlays {
@@ -950,6 +1014,37 @@ actor WizardEngine {
         let sceneList = scenes.map {
             sceneLine($0, type: videoTypes[$0.videoID], note: notes[$0.id])
         }.joined(separator: "\n")
+        let topicBlock: String
+        if topics.isEmpty {
+            topicBlock = ""
+        } else {
+            let lines = topics.map { topic in
+                "- \(topic.title) | video \(topic.videoID) | "
+                    + String(format: "%.1f–%.1fs", topic.startTime, topic.endTime)
+                    + " | \(String(topic.summary.prefix(180)))"
+            }.joined(separator: "\n")
+            topicBlock = """
+
+            ## PODCAST TOPICS (on-device transcript analysis; source-grounded)
+            \(lines)
+            For a podcast recipe, choose one range and use only Available Scenes from that same video which overlap its timestamps. Clip start/end values must remain inside the selected topic range.
+            """
+        }
+        let cleanupBlock: String
+        if cleanupCuts.isEmpty {
+            cleanupBlock = ""
+        } else {
+            cleanupBlock = """
+
+            ## ACCEPTED PODCAST CLEANUP CUTS (hard exclusions)
+            \(cleanupCuts.map { cut in
+                "- video \(cut.videoID ?? 0) | "
+                    + String(format: "%.1f–%.1fs", cut.startTime, cut.endTime)
+                    + " | \(cut.reason)"
+            }.joined(separator: "\n"))
+            Do not include these ranges in a podcast plan. Split a clip around them when needed.
+            """
+        }
         let musicList = musicNames.isEmpty ? "No music available" : musicNames.joined(separator: ", ")
         let beatInfo = SettingsStore.loadSettings().transitions.beatSnap && !musicNames.isEmpty
             ? "After planning, every cut boundary is automatically snapped to the nearest strong beat "
@@ -1036,13 +1131,13 @@ actor WizardEngine {
 
         return """
         You are an expert combat-sports video editor creating an Instagram Reel for \(brand), a \(domain) channel. You know MMA and grappling: what a knockdown, a submission chain, a scramble, and a real crowd pop look like — and you edit like the best fight-highlight accounts. Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
-        \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)\(houseStyleBlock)\(benchmarksBlock)
+        \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)\(houseStyleBlock)\(benchmarksBlock)\(cadenceDirective)
 
         ## MMA Reels Playbook (curated editorial baseline)
         \(researchJSON)\(buzzBlock)
 
         ## Available Scenes
-        \(videoTypes.isEmpty ? "" : "Scenes are annotated with their source video's type (fight, training, interview, recap, other) — match the footage to the reel's intent: fight/recap footage for action reels, interview footage for talking moments, and don't pass off training footage as a real fight.\n")\(sceneList)\(subjectsBlock)
+        \(videoTypes.isEmpty ? "" : "Scenes are annotated with their source video's type (fight, training, interview, recap, other) — match the footage to the reel's intent: fight/recap footage for action reels, interview footage for talking moments, and don't pass off training footage as a real fight.\n")\(sceneList)\(subjectsBlock)\(topicBlock)\(cleanupBlock)
 
         ## Available Music
         \(musicList)
@@ -1382,7 +1477,7 @@ actor WizardEngine {
         let languageRule: String
         if languages.count > 1 {
             let spec = languages.map { code in
-                "\(Self.languageFlags[code] ?? "") \(code)"
+                "\(Self.languageFlags[String(code.lowercased().split(separator: "-").first ?? "")] ?? "") \(code)"
             }.joined(separator: ", then ")
             languageRule = "- Write the SAME caption in each of these languages, in this order: \(spec). Start each language block with its flag emoji, separate blocks with a blank line, and put the hashtags ONCE at the very end."
         } else {
@@ -1417,15 +1512,17 @@ actor WizardEngine {
              profile: BrandProfile,
              database: Database,
              emit: @escaping @Sendable (String) -> Void) async {
-        do {
-            try await runThrowing(options: options, profile: profile, database: database, emit: emit)
-            emit("DONE:ok")
-        } catch is CancellationError {
-            emit("Cancelled.")
-            emit("DONE:error")
-        } catch {
-            emit("Error: \(error.userMessage)")
-            emit("DONE:error")
+        await RenderContext.$settings.withValue(options.renderSettings) {
+            do {
+                try await runThrowing(options: options, profile: profile, database: database, emit: emit)
+                emit("DONE:ok")
+            } catch is CancellationError {
+                emit("Cancelled.")
+                emit("DONE:error")
+            } catch {
+                emit("Error: \(error.userMessage)")
+                emit("DONE:error")
+            }
         }
     }
 
@@ -1457,6 +1554,12 @@ actor WizardEngine {
         /// Source-video types, so scene lines can say what footage they
         /// come from (fight vs training vs interview…).
         var videoTypes: [Int64: VideoType] = [:]
+        /// Transcript-derived ranges available to the podcast short-form recipe.
+        var topics: [TopicRange] = []
+        /// User-accepted dead-air/filler removals for podcast planning.
+        var cleanupCuts: [EditProposal] = []
+        /// Trait/Instagram correlations used for hook, layout, cadence, and subject choices.
+        var editingInsights: EditingPerformanceInsights?
     }
 
     /// Rank the candidate pool (entertainment score, crowd excitement,
@@ -1530,7 +1633,13 @@ actor WizardEngine {
 
         emit("Loading scenes and music...")
         let people = (try? await database.fetchPeople()) ?? []
-        var scenes = try await database.fetchScenes(includeExcluded: false).filter { !$0.ignored }
+        let generated = (try? await database.fetchGeneratedVideos(projectID: options.projectID)) ?? []
+        let traits = (try? await database.fetchGeneratedTraits()) ?? [:]
+        let editingInsights = PerformanceAnalytics.build(videos: generated, traits: traits,
+                                                          people: people, followersGained: 0)
+        var scenes = try await database.fetchScenes(projectID: options.projectID,
+                                                    includeExcluded: false)
+            .filter { !$0.ignored }
         if options.curatedOnly {
             let before = scenes.count
             scenes = scenes.filter(\.curated)
@@ -1599,14 +1708,41 @@ actor WizardEngine {
                  : "Fight research loaded for \(fightResearch.count) fight(s) — the plan follows the fan narrative")
         }
         var videoTypes: [Int64: VideoType] = [:]
-        for video in (try? await database.fetchVideos()) ?? [] where videoIDs.contains(video.id) {
+        for video in (try? await database.fetchVideos(projectID: options.projectID)) ?? []
+        where videoIDs.contains(video.id) {
             if let type = video.type { videoTypes[video.id] = type }
+        }
+        var topics: [TopicRange] = []
+        var cleanupCuts: [EditProposal] = []
+        for videoID in videoIDs.sorted() {
+            topics += (try? await database.fetchTopicRanges(videoID: videoID)) ?? []
+            cleanupCuts += ((try? await database.fetchEditProposals(videoID: videoID)) ?? [])
+                .filter { $0.decision == .accepted }
+        }
+        if options.formatPreset == "podcast" {
+            emit(topics.isEmpty
+                 ? "No saved podcast topics found; open a transcript and choose Topics, Cuts & Translation first"
+                 : "Loaded \(topics.count) saved podcast topic(s)")
         }
         return PlanningInputs(research: research, scenes: scenes,
                               sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
                               music: music, signals: signals, people: people,
                               outcomes: outcomes, fightResearch: fightResearch,
-                              videoTypes: videoTypes)
+                              videoTypes: videoTypes, topics: topics,
+                              cleanupCuts: cleanupCuts, editingInsights: editingInsights)
+    }
+
+    /// Narrow test seam for verifying project boundaries without making an
+    /// AI request. The production planner uses this exact input-loading path.
+    func planningSceneIDs(options: WizardOptions, profile: BrandProfile,
+                          database: Database) async throws -> [Int64] {
+        let inputs = try await loadPlanningInputs(
+            options: options,
+            profile: profile,
+            database: database,
+            emit: { _ in }
+        )
+        return inputs.scenes.map(\.id)
     }
 
     /// Visual definitions of "a keeper moment" for the planner: exemplar
@@ -1671,7 +1807,10 @@ actor WizardEngine {
                                 musicNames: inputs.music.map(\.name), signals: inputs.signals,
                                 people: inputs.people, outcomes: inputs.outcomes,
                                 fightResearch: inputs.fightResearch,
-                                videoTypes: inputs.videoTypes, options: options)
+                                videoTypes: inputs.videoTypes, topics: inputs.topics,
+                                cleanupCuts: inputs.cleanupCuts,
+                                editingInsights: inputs.editingInsights,
+                                options: options)
         // A critic reviewed the previous rendered version — its notes become
         // binding instructions for this plan.
         if let critiqueFeedback {
@@ -1749,7 +1888,10 @@ actor WizardEngine {
         }
 
         if let validated = plan {
-            plan = await snapCutsToBeats(validated, music: inputs.music,
+            let titled = addAutomaticLowerThirds(validated, options: options,
+                                                 people: inputs.people,
+                                                 sceneMap: inputs.sceneMap)
+            plan = await snapCutsToBeats(titled, music: inputs.music,
                                          sceneMap: inputs.sceneMap, emit: emit)
         }
         return (plan, prompt, response)
@@ -1831,6 +1973,29 @@ actor WizardEngine {
         return plan
     }
 
+    private func addAutomaticLowerThirds(_ plan: WizardPlan, options: WizardOptions,
+                                         people: [PersonRecord],
+                                         sceneMap: [Int64: SceneRecord]) -> WizardPlan {
+        guard options.enableTextOverlays,
+              options.formatPreset == "interview" || options.formatPreset == "podcast" else { return plan }
+        var plan = plan
+        var introduced = Set<String>()
+        let named = people.filter { !$0.name.isEmpty && !$0.hidden }
+        for index in plan.clips.indices {
+            guard plan.clips[index].textOverlay == nil,
+                  let scene = sceneMap[plan.clips[index].sceneID],
+                  let person = named.first(where: {
+                      !introduced.contains($0.key) && scene.tags.contains($0.tag)
+                  }) else { continue }
+            plan.clips[index].textOverlay = person.displayName
+            plan.clips[index].overlayStyle = "lower-third"
+            plan.clips[index].overlayKicker = person.descriptor.isEmpty ? "Guest" : person.descriptor
+            plan.clips[index].overlayAnimation = "slide_left"
+            introduced.insert(person.key)
+        }
+        return plan
+    }
+
     /// Plan-only entry for the Builder pre-fill path — research → AI plan →
     /// validation, no assembly, no captions.
     func plan(options: WizardOptions,
@@ -1848,6 +2013,40 @@ actor WizardEngine {
         emit("Plan: \(plan.clips.count) clips, ~\(Int(plan.targetDuration))s, music: \(plan.musicName ?? "none")")
         emit("Strategy: \(plan.rationale)")
         return (plan, inputs.sceneMap)
+    }
+
+    /// Continue a user-reviewed plan without asking the planner again.
+    func renderApprovedPlan(_ plan: WizardPlan, options: WizardOptions,
+                            profile: BrandProfile, database: Database,
+                            emit: @escaping @Sendable (String) -> Void) async throws {
+        try await RenderContext.$settings.withValue(options.renderSettings) {
+            let inputs = try await loadPlanningInputs(options: options, profile: profile,
+                                                      database: database, emit: emit)
+            guard !plan.clips.isEmpty else {
+                throw AIError.unusableResponse("Accept at least one proposed cut before rendering.")
+            }
+            emit("Phase 3: Assembling the approved cuts...")
+            let result = try await assemble(plan: plan, music: inputs.music, options: options,
+                                            profile: profile, database: database,
+                                            sceneMap: inputs.sceneMap, emit: emit)
+            let tags = Array(Set(plan.clips.flatMap { inputs.sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
+            do {
+                let caption = try await ai.call(
+                    prompt: captionPrompt(profile: profile, plan: plan, duration: result.duration,
+                                          tags: tags, fightResearch: inputs.fightResearch,
+                                          captionStyleReference: nil,
+                                          benchmarks: options.accountBenchmarks),
+                    task: "captions", timeout: 60, log: emit)
+                try await database.updateGeneratedCaption(id: result.recordID,
+                                                          caption: caption.text,
+                                                          provider: caption.provider,
+                                                          model: caption.model)
+            } catch {
+                emit("Caption generation failed: \(error.userMessage)")
+            }
+            emit("VIDEO:\(result.url.lastPathComponent):\(result.duration.formatted(.number.precision(.fractionLength(1))))")
+            emit("Video complete! \(result.url.lastPathComponent)")
+        }
     }
 
     private func runThrowing(options: WizardOptions,
@@ -2249,8 +2448,12 @@ actor WizardEngine {
     /// whole timeline, per-clip text overlays. No rendering — the user edits
     /// from here. (Auto-crop covers wide scenes.)
     nonisolated static func timelineDocument(from plan: WizardPlan,
-                                             sceneMap: [Int64: SceneRecord]) -> TimelineDocument {
+                                             sceneMap: [Int64: SceneRecord],
+                                             renderSettings: RenderSettings = RenderSettings(),
+                                             pacing: EditPacing = EditPacing()) -> TimelineDocument {
         var document = TimelineDocument()
+        document.renderSettings = renderSettings
+        document.pacing = pacing
         var cursor = 0.0
         for clip in plan.clips {
             guard let scene = sceneMap[clip.sceneID] else { continue }
@@ -2516,7 +2719,9 @@ actor WizardEngine {
             // keep the document faithful to the rendered video.
             for index in editPlan.clips.indices { editPlan.clips[index].textOverlay = nil }
         }
-        let document = Self.timelineDocument(from: editPlan, sceneMap: sceneMap)
+        let document = Self.timelineDocument(from: editPlan, sceneMap: sceneMap,
+                                             renderSettings: options.renderSettings,
+                                             pacing: options.pacing)
         let timelineJSON = (try? JSONEncoder().encode(document))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 
@@ -2543,9 +2748,14 @@ actor WizardEngine {
                                                                timelineJSON: timelineJSON,
                                                                wizardProvider: attribution.provider,
                                                                wizardModel: attribution.model,
+                                                               projectID: options.projectID,
                                                                rationale: plan.rationale,
                                                                qualityJSON: qualityJSON,
                                                                planClipsJSON: planClipsJSON)
+        try await database.saveGeneratedTraits(videoID: recordID,
+                                               traits: .derive(document: document,
+                                                               scenes: Array(sceneMap.values),
+                                                               plan: plan))
         return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID)
     }
 
@@ -2608,7 +2818,8 @@ actor WizardEngine {
                                            videoHeight: RenderEngine.outputHeight,
                                            style: captionStyle)
             let sourceSegments = (try? await database.transcriptSegments(
-                videoID: scene.videoID, start: clip.start, end: clip.end)) ?? []
+                videoID: scene.videoID, start: clip.start, end: clip.end,
+                language: options.captionLanguage)) ?? []
             for segment in sourceSegments {
                 let start = max(0, segment.start - clip.start)
                 let end = min(duration, segment.end - clip.start)
@@ -2645,7 +2856,8 @@ actor WizardEngine {
                           let png = try? renderer.render(item, to: scratch) else { continue }
                     // A single full-length item can use the animated path.
                     if item.startTime == 0, end >= duration - 0.05 {
-                        let animation = ["fade", "pop", "slide_up"].contains(item.transIn)
+                        let animation = ["fade", "pop", "slide_up", "slide_left", "slide_right"]
+                            .contains(item.transIn)
                             ? item.transIn : "fade"
                         overlays.append(RenderEngine.ClipOverlay(png: png, x: 0, y: 0,
                                                                  start: nil, end: nil,
@@ -2731,7 +2943,8 @@ actor WizardEngine {
         // Framing belongs to the scene, not to this run. Replay the saved
         // camera path exactly as it was reviewed in Analyze or Curated; never
         // silently replace it with a new live tracking pass here.
-        if contentIsWide, let stored = scene.centerStagePath {
+        if contentIsWide, let stored = scene.centerStagePath,
+           CenterStageService.pathMatchesCanvas(stored.keyframes) {
             let sliced = CenterStageService.slice(
                 stored.keyframes,
                 from: max(0, clip.start - scene.startTime),

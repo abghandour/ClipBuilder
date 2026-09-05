@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-enum TimelineSelection: Equatable {
+nonisolated enum TimelineSelection: Codable, Sendable, Equatable {
     case clip(UUID)
     case sound(UUID)
     case text(UUID)
@@ -51,17 +51,29 @@ enum OverlayLaneEntry: Identifiable {
 @Observable
 final class BuilderTimelineModel {
     var document = TimelineDocument()
-    var selection: TimelineSelection?
-    var pointsPerSecond: CGFloat = 60          // timeline zoom
-    var playhead: Double = 0
+    var selection: TimelineSelection? {
+        didSet { notifyUIStateChange() }
+    }
+    var pointsPerSecond: CGFloat = 60 {          // timeline zoom
+        didSet { notifyUIStateChange() }
+    }
+    var playhead: Double = 0 {
+        didSet { notifyUIStateChange() }
+    }
     /// The video track the user last clicked (its header or one of its
     /// clips). The cropping row paints that track's area green.
-    var focusedTrack: Int?
+    var focusedTrack: Int? {
+        didSet { notifyUIStateChange() }
+    }
 
     private(set) var profileName = ""
+    private(set) var timelineID: Int64?
     private(set) var scenes: [SceneRecord] = []
     private var scenesByID: [Int64: SceneRecord] = [:]
     private var saveTask: Task<Void, Never>?
+    private var hasPendingAutosave = false
+    @ObservationIgnored var onTimelineAutosave: ((Int64, TimelineDocument) -> Void)?
+    @ObservationIgnored var onUIStateChange: (() -> Void)?
     private var suppressAutosave = false
     @ObservationIgnored private var cachedTimelineLayout: TimelineLayoutSnapshot?
 
@@ -135,17 +147,61 @@ final class BuilderTimelineModel {
 
     // MARK: - Load / persistence
 
-    func load(profileName: String) {
-        saveTask?.cancel()
+    func load(profileName: String, defaultRenderSettings: RenderSettings = RenderSettings()) {
+        flushPendingAutosave()
         resetUndoHistory()
         self.profileName = profileName
+        timelineID = nil
         // Scene ids are per-profile; the previous profile's rows must not
         // hydrate this profile's clips. The library refresh refills them.
         scenes = []
         scenesByID = [:]
         suppressAutosave = true
-        document = BuilderStateStore.load(profileName: profileName) ?? TimelineDocument()
+        if let saved = BuilderStateStore.load(profileName: profileName) {
+            document = saved
+        } else {
+            document = TimelineDocument()
+            document.renderSettings = defaultRenderSettings
+        }
         document.migrateLegacyScreenCrops()
+        document.normalizeCropBlocks()
+        cachedTimelineLayout = nil
+        selection = nil
+        focusedTrack = nil
+        playhead = 0
+        suppressAutosave = false
+    }
+
+    /// Open one database-backed project timeline without creating an undo
+    /// step or writing it back before the user changes anything.
+    func loadTimeline(id: Int64, document newDocument: TimelineDocument,
+                      playhead: Double = 0, zoom: Double = 60,
+                      selection: TimelineSelection? = nil, focusedTrack: Int? = nil) {
+        flushPendingAutosave()
+        resetUndoHistory()
+        suppressAutosave = true
+        timelineID = id
+        document = newDocument
+        document.migrateLegacyScreenCrops()
+        document.normalizeCropBlocks()
+        cachedTimelineLayout = nil
+        self.selection = selection
+        self.focusedTrack = focusedTrack
+        // Scene clips carry no duration in JSON — hydrate first, or the
+        // clamp below sees a zero-length timeline and drops the playhead.
+        hydrateClips()
+        self.playhead = min(max(0, playhead), totalDuration)
+        pointsPerSecond = max(20, min(200, zoom))
+        suppressAutosave = false
+    }
+
+    func closeTimeline(defaultRenderSettings: RenderSettings = RenderSettings()) {
+        flushPendingAutosave()
+        resetUndoHistory()
+        suppressAutosave = true
+        timelineID = nil
+        document = TimelineDocument()
+        document.renderSettings = defaultRenderSettings
         document.normalizeCropBlocks()
         cachedTimelineLayout = nil
         selection = nil
@@ -170,13 +226,32 @@ final class BuilderTimelineModel {
         // A debounced autosave holding the pre-clear snapshot would write
         // the timeline straight back after the file is deleted.
         saveTask?.cancel()
+        hasPendingAutosave = false
         document = TimelineDocument()
         document.normalizeCropBlocks()
         cachedTimelineLayout = nil
         selection = nil
         focusedTrack = nil
         playhead = 0
-        BuilderStateStore.clear(profileName: profileName)
+        if timelineID == nil {
+            BuilderStateStore.clear(profileName: profileName)
+        } else {
+            documentDidChange()
+        }
+    }
+
+    func setRenderSettings(_ settings: RenderSettings) {
+        guard document.renderSettings != settings else { return }
+        registerUndo("Change Output Format", coalescing: "output-format")
+        document.renderSettings = settings
+        documentDidChange()
+    }
+
+    func setPacing(_ pacing: EditPacing) {
+        guard document.pacing != pacing else { return }
+        registerUndo("Change Cut Cadence", coalescing: "cut-cadence")
+        document.pacing = pacing
+        documentDidChange()
     }
 
     /// Called whenever the scene cache refreshes; fills in the scene-derived
@@ -263,15 +338,55 @@ final class BuilderTimelineModel {
         guard !suppressAutosave else { return }
         let snapshot = document
         let name = profileName
+        let id = timelineID
+        let autosave = onTimelineAutosave
         saveTask?.cancel()
+        hasPendingAutosave = true
         saveTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
+            hasPendingAutosave = false
+            if let id, let autosave {
+                autosave(id, snapshot)
+                return
+            }
             // Detached: this fires continuously during editing, and a plain
             // Task would inherit main-actor isolation for the encode + write.
             await Task.detached(priority: .utility) {
                 BuilderStateStore.save(snapshot, profileName: name)
             }.value
+        }
+    }
+
+    private func notifyUIStateChange() {
+        guard !suppressAutosave else { return }
+        onUIStateChange?()
+    }
+
+    /// Drop a pending debounced autosave because the caller is about to
+    /// write the document itself (termination).
+    func cancelPendingAutosave() {
+        saveTask?.cancel()
+        saveTask = nil
+        hasPendingAutosave = false
+    }
+
+    /// Save the latest document before replacing it. This closes the debounce
+    /// window during project switches and app termination instead of silently
+    /// dropping the user's final edit.
+    func flushPendingAutosave() {
+        guard hasPendingAutosave else {
+            saveTask?.cancel()
+            saveTask = nil
+            return
+        }
+        saveTask?.cancel()
+        saveTask = nil
+        hasPendingAutosave = false
+        if let timelineID, let onTimelineAutosave {
+            onTimelineAutosave(timelineID, document)
+        } else {
+            BuilderStateStore.save(document, profileName: profileName)
         }
     }
 

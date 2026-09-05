@@ -17,6 +17,9 @@ struct AnalyzeView: View {
     @State private var showDuplicateScan = false
     @State private var showAnalyzeWizard = false
     @State private var showingImporter = false
+    @State private var showingProjectVideoPicker = false
+    @State private var showingProjectFromSelection = false
+    @State private var newProjectName = ""
     @AppStorage("analyze.activity.expanded") private var activityExpanded = false
 
     /// The video the preview pane shows — follows `selection` one run-loop
@@ -128,14 +131,37 @@ struct AnalyzeView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Raw Videos")
-        .navigationSubtitle("\(store.videos.count) source videos")
+        .screenTitle("Sources", subtitle: "\(store.videos.count) source videos")
         .toolbar {
             ToolbarItemGroup {
                 Button("Add Videos", systemImage: "plus") {
                     showingImporter = true
                 }
-                .help("Add source videos to this profile")
+                .help("Add source videos to this project")
+
+                if store.isHomeProject {
+                    Menu("Add to Project…", systemImage: "folder.badge.plus") {
+                        ForEach(store.projects.filter { !$0.isHome && !$0.archived }) { project in
+                            Button(project.name) {
+                                store.addVideos(Array(selection), to: project.id)
+                            }
+                        }
+                        Divider()
+                        Button("New Project from Selection…", systemImage: "plus") {
+                            beginProjectFromSelection()
+                        }
+                    }
+                    .disabled(selection.isEmpty)
+                } else {
+                    Button("Add Existing Videos", systemImage: "folder.badge.plus") {
+                        showingProjectVideoPicker = true
+                    }
+
+                    Button("Remove from Project", systemImage: "minus.circle") {
+                        removeSelectionFromProject()
+                    }
+                    .disabled(selection.isEmpty)
+                }
 
                 Button {
                     let videos = selectedVideos
@@ -170,7 +196,11 @@ struct AnalyzeView: View {
                       allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie],
                       allowsMultipleSelection: true) { result in
             if case .success(let urls) = result {
-                store.importVideos(urls)
+                if let projectID = store.activeProjectID {
+                    store.importVideos(urls, toProjectID: projectID)
+                } else {
+                    store.importVideos(urls)
+                }
             }
         }
         .sheet(item: $fightResearchTarget) { video in
@@ -195,6 +225,16 @@ struct AnalyzeView: View {
             DispatchPlanSheet(operation: pending.operation, videos: pending.videos,
                               onStart: pending.run)
         }
+        .sheet(isPresented: $showingProjectVideoPicker) {
+            ProjectVideoPickerSheet()
+        }
+        .alert("New Project from Selection", isPresented: $showingProjectFromSelection) {
+            TextField("Project name", text: $newProjectName)
+            Button("Create", action: createProjectFromSelection)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The selected Home files will also appear in the new project.")
+        }
         // A "re-run this batch" hand-off from the Scenes screen: select the
         // video and open the plan sheet with the batch's options loaded.
         .task {
@@ -203,7 +243,11 @@ struct AnalyzeView: View {
         .onChange(of: store.pendingAnalyzeSetup) { _, video in
             if let video { presentPrefilledPlan(for: video) }
         }
+        .onAppear { restoreProjectState() }
+        .onChange(of: store.projectStateVersion) { restoreProjectState() }
         .onChange(of: selection, initial: true) { _, new in
+            // Mid-load the table's selection is the previous project's.
+            if !store.isLoadingProject { store.sourceSelection = new }
             syncPreview(to: new)
         }
     }
@@ -345,6 +389,10 @@ struct AnalyzeView: View {
         // reading as debris under a short table — rows separate fine without
         // them.
         .alternatingRowBackgrounds(.disabled)
+        .scrollPosition(id: Binding(
+            get: { store.sourceScrollID },
+            set: { store.sourceScrollID = $0 }
+        ))
         .contextMenu(forSelectionType: Int64.self) { ids in
             let videos = store.videos.filter { ids.contains($0.id) }
             if !videos.isEmpty {
@@ -381,9 +429,24 @@ struct AnalyzeView: View {
             Button("Scan for Duplicates…") {
                 showDuplicateScan = true
             }
+            if store.isHomeProject {
+                Menu("Add to Project…") {
+                    ForEach(store.projects.filter { !$0.isHome && !$0.archived }) { project in
+                        Button(project.name) { store.addVideos(Array(ids), to: project.id) }
+                    }
+                }
+            } else {
+                Divider()
+                Button("Remove from Project", role: .destructive) {
+                    guard let projectID = store.activeProjectID else { return }
+                    store.removeVideos(Array(ids), from: projectID)
+                }
+            }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            store.importVideos(urls)
+            if let projectID = store.activeProjectID {
+                store.importVideos(urls, toProjectID: projectID)
+            }
             return urls.contains { Analyzer.videoExtensions.contains($0.pathExtension.lowercased()) }
         } isTargeted: { isDropTargeted = $0 }
         .overlay {
@@ -402,6 +465,28 @@ struct AnalyzeView: View {
                 }
             }
         }
+    }
+
+    private func restoreProjectState() {
+        selection = store.sourceSelection.intersection(Set(store.videos.map(\.id)))
+        syncPreview(to: selection)
+    }
+
+    private func removeSelectionFromProject() {
+        guard let projectID = store.activeProjectID else { return }
+        store.removeVideos(Array(selection), from: projectID)
+        selection = []
+    }
+
+    private func beginProjectFromSelection() {
+        guard let first = selectedVideos.first else { return }
+        newProjectName = (first.filename as NSString).deletingPathExtension
+        showingProjectFromSelection = true
+    }
+
+    private func createProjectFromSelection() {
+        store.createProject(named: newProjectName, videoIDs: selectedVideos.map(\.id))
+        showingProjectFromSelection = false
     }
 
 }

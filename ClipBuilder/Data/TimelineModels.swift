@@ -6,6 +6,8 @@ import Foundation
 /// trip between this app and the Python app's generated_videos.timeline_json.
 
 nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
+    var renderSettings = RenderSettings()
+    var pacing = EditPacing()
     var videoTrack: [TimelineClip] = []
     var soundTrack: [SoundItem] = []
     var textOverlays: [TextOverlayItem] = []
@@ -42,6 +44,8 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case renderSettings = "render_settings"
+        case pacing
         case videoTrack = "video_track"
         case soundTrack = "sound_track"
         case textOverlays = "text_overlays"
@@ -57,6 +61,9 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        renderSettings = try container.decodeIfPresent(RenderSettings.self, forKey: .renderSettings)
+            ?? RenderSettings()
+        pacing = try container.decodeIfPresent(EditPacing.self, forKey: .pacing) ?? EditPacing()
         videoTrack = try container.decodeIfPresent([TimelineClip].self, forKey: .videoTrack) ?? []
         soundTrack = try container.decodeIfPresent([SoundItem].self, forKey: .soundTrack) ?? []
         textOverlays = try container.decodeIfPresent([TextOverlayItem].self, forKey: .textOverlays) ?? []

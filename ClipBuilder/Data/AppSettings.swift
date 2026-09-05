@@ -12,6 +12,7 @@ nonisolated struct AppSettings: Codable, Sendable {
     var ai: AIConfig = AIConfig()
     var instagram: InstagramSettings = InstagramSettings()
     var transitions: TransitionSettings = TransitionSettings()
+    var podcast: PodcastSettings = PodcastSettings()
 
     enum CodingKeys: String, CodingKey {
         case analysisMode = "analysis_mode"
@@ -23,6 +24,7 @@ nonisolated struct AppSettings: Codable, Sendable {
         case ai
         case instagram
         case transitions
+        case podcast
     }
 
     init() {}
@@ -42,6 +44,28 @@ nonisolated struct AppSettings: Codable, Sendable {
         instagram = try container.decodeIfPresent(InstagramSettings.self, forKey: .instagram) ?? InstagramSettings()
         transitions = try container.decodeIfPresent(TransitionSettings.self, forKey: .transitions)
             ?? TransitionSettings()
+        podcast = try container.decodeIfPresent(PodcastSettings.self, forKey: .podcast) ?? PodcastSettings()
+    }
+}
+
+nonisolated struct PodcastSettings: Codable, Sendable {
+    var deadAirSeconds = 1.5
+    var fillerRunSeconds = 2.0
+    var reviewCutsByDefault = true
+
+    enum CodingKeys: String, CodingKey {
+        case deadAirSeconds = "dead_air_seconds"
+        case fillerRunSeconds = "filler_run_seconds"
+        case reviewCutsByDefault = "review_cuts_by_default"
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        deadAirSeconds = min(10, max(0.5, try container.decodeIfPresent(Double.self, forKey: .deadAirSeconds) ?? 1.5))
+        fillerRunSeconds = min(10, max(0.5, try container.decodeIfPresent(Double.self, forKey: .fillerRunSeconds) ?? 2))
+        reviewCutsByDefault = try container.decodeIfPresent(Bool.self, forKey: .reviewCutsByDefault) ?? true
     }
 }
 

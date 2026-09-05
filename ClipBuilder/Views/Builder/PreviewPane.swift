@@ -71,12 +71,15 @@ struct PreviewPane: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .frame(width: geo.size.width, height: geo.size.height)
         }
-        .aspectRatio(9 / 16, contentMode: .fit)
+        .aspectRatio(store.builder.document.renderSettings.aspectRatio, contentMode: .fit)
     }
 
     private func fittedFrame(in size: CGSize) -> CGSize {
-        let scale = min(size.width / 9, size.height / 16)
-        return CGSize(width: scale * 9, height: scale * 16)
+        let settings = store.builder.document.renderSettings
+        let width = Double(settings.width)
+        let height = Double(settings.height)
+        let scale = min(Double(size.width) / width, Double(size.height) / height)
+        return CGSize(width: width * scale, height: height * scale)
     }
 
     @ViewBuilder
@@ -88,9 +91,10 @@ struct PreviewPane: View {
             let cropped = clip.wide && (clip.cropXFrac ?? settings.defaultCropXFrac) != nil
             Group {
                 if let area {
-                    let box = AreaFramer.pixelBounds(of: area)
-                    let scale = frame.width / CGFloat(RenderEngine.outputWidth)
-                    let boxSize = CGSize(width: box.width * scale, height: box.height * scale)
+                    let bounds = area.bounds
+                    let box = CGRect(x: bounds.x * frame.width, y: bounds.y * frame.height,
+                                     width: bounds.w * frame.width, height: bounds.h * frame.height)
+                    let boxSize = box.size
                     if let window = clip.areaWindow {
                         // Hand-placed window: show exactly that part of the
                         // source, scaled so the window fills the area's box.
@@ -101,7 +105,7 @@ struct PreviewPane: View {
                             .offset(x: -window.xFrac * fullWidth, y: -window.yFrac * fullHeight)
                             .frame(width: boxSize.width, height: boxSize.height, alignment: .topLeading)
                             .clipped()
-                            .offset(x: box.minX * scale, y: box.minY * scale)
+                            .offset(x: box.minX, y: box.minY)
                     } else {
                         // Tracking camera: approximate with a center-filled
                         // thumbnail in the area's bounding box.
@@ -109,7 +113,7 @@ struct PreviewPane: View {
                             .aspectRatio(contentMode: .fill)
                             .frame(width: boxSize.width, height: boxSize.height)
                             .clipped()
-                            .offset(x: box.minX * scale, y: box.minY * scale)
+                            .offset(x: box.minX, y: box.minY)
                     }
                 } else if clip.wide && !cropped {
                     // Slot band: 1080x640 at top/center/bottom.
@@ -438,14 +442,14 @@ private struct TextOverlayLayer: View {
             }
         }()
         Text(overlay.text)
-            .font(.system(size: CGFloat(overlay.fontsize) * frame.width / 1080,
+            .font(.system(size: CGFloat(overlay.fontsize) * frame.height / 1920,
                           weight: overlay.bold ? .bold : .regular))
             .italic(overlay.italic)
             .foregroundStyle(Color(red: r, green: g, blue: b))
             .padding(4)
             .background(overlay.boxOpacity > 0
                         ? backgroundColor.opacity(overlay.boxOpacity) : .clear,
-                        in: RoundedRectangle(cornerRadius: (overlay.boxRadius ?? 4) * frame.width / 1080))
+                        in: RoundedRectangle(cornerRadius: (overlay.boxRadius ?? 4) * frame.height / 1920))
             .opacity(overlay.opacity)
             .position(x: frame.width * x, y: frame.height * y)
             .gesture(

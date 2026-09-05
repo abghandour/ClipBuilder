@@ -14,6 +14,8 @@ struct WizardView: View {
     @AppStorage(WizardDefaults.audioModeKey) private var audioModeRaw = WizardAudioMode.mix.rawValue
     @AppStorage(WizardDefaults.textModeKey) private var textModeRaw = WizardTextMode.automatic.rawValue
     @AppStorage("wizard.critiqueLoop") private var critiqueLoop = true
+    @AppStorage("wizard.captionLanguage") private var captionLanguage = ""
+    @AppStorage("wizard.reviewProposedCuts") private var reviewProposedCuts = false
     @AppStorage(WizardDefaults.layoutModeKey) private var layoutModeRaw = WizardLayoutMode.automatic.rawValue
     @AppStorage(WizardDefaults.selectedLayoutsKey) private var selectedLayoutsRaw = ""
     @AppStorage(WizardDefaults.brandingOverrideKey) private var brandingOverrideRaw = WizardBrandingOverride.savedDefault.rawValue
@@ -141,8 +143,11 @@ struct WizardView: View {
         brandingOverride.resolved()
     }
 
+    /// The saved batch selection is a global preference; only batches that
+    /// belong to the current project count (Home: every batch).
     private var selectedRunIDs: Set<Int64> {
-        Set(selectedRunIDsRaw.split(separator: ",").compactMap { Int64($0) })
+        let saved = Set(selectedRunIDsRaw.split(separator: ",").compactMap { Int64($0) })
+        return saved.intersection(Set(store.analysisRuns.map(\.id)))
     }
 
     private func setSelectedRunIDs(_ ids: Set<Int64>) {
@@ -165,12 +170,23 @@ struct WizardView: View {
         store.sceneIndex.usableCount
     }
 
+    /// People who appear in this project's scenes. Identities are
+    /// profile-wide, but a project can only plan around people it has
+    /// footage of.
+    private var projectPeople: [PersonRecord] {
+        let tags = Set(store.sceneIndex.personTagsByVideo.values.flatMap { $0 })
+        return store.people.filter { tags.contains($0.tag) }
+    }
+
+    /// The saved people filter is a global preference; names without
+    /// footage in this project are ignored rather than filtering to nothing.
     private var selectedSourcePeople: Set<String> {
-        Set(sourcePeopleRaw.split(separator: ",").map(String.init))
+        let saved = Set(sourcePeopleRaw.split(separator: ",").map(String.init))
+        return saved.intersection(Set(projectPeople.map(\.key)))
     }
 
     private var eligibleSourcePeople: [PersonRecord] {
-        guard limitToSelection, !selectedRunIDs.isEmpty else { return store.people }
+        guard limitToSelection, !selectedRunIDs.isEmpty else { return projectPeople }
         var tags = Set<String>()
         for runID in selectedRunIDs {
             tags.formUnion(store.sceneIndex.personTagsByRun[runID] ?? [])
@@ -195,8 +211,11 @@ struct WizardView: View {
         }
     }
 
+    /// Only this project's analyzed scenes can be planned from: no sources
+    /// or no analysis means nothing to generate.
     private var canGenerate: Bool {
-        analyzedSceneCount > 0 && (!limitToSelection || !selectedRunIDs.isEmpty)
+        !store.videos.isEmpty && analyzedSceneCount > 0
+            && (!limitToSelection || !selectedRunIDs.isEmpty)
     }
 
     var body: some View {
@@ -208,8 +227,8 @@ struct WizardView: View {
                 .frame(maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("AI Wizard")
-        .navigationSubtitle("\(analyzedSceneCount) scenes available")
+        .screenTitle("AI Wizard", subtitle: store.videos.isEmpty ? "No sources in this project"
+                                                 : "\(analyzedSceneCount) scenes available")
         .toolbar {
             Button("Content Gaps", systemImage: "checklist") {
                 showGapReport = true
@@ -273,10 +292,14 @@ struct WizardView: View {
                 applyPromptHandoff(handoff)
             }
         }
+        .onDisappear {
+            store.saveActiveProfile()
+        }
     }
 
     private var configurationForm: some View {
-        Form {
+        @Bindable var store = store
+        return Form {
             Section("What should we make?") {
                 TextEditor(text: $aiInstructions)
                     .font(.body)
@@ -298,6 +321,14 @@ struct WizardView: View {
                     Text("Fight recap").tag("recap")
                     Text("Best-of compilation").tag("compilation")
                     Text("Interview clip").tag("interview")
+                    Text("Podcast topic clip").tag("podcast")
+                }
+                .onChange(of: formatPreset) { oldValue, newValue in
+                    if newValue == "podcast", oldValue != "podcast" {
+                        reviewProposedCuts = true
+                    } else if oldValue == "podcast", newValue != "podcast" {
+                        reviewProposedCuts = false
+                    }
                 }
 
                 Picker("Length", selection: durationModeBinding) {
@@ -305,6 +336,8 @@ struct WizardView: View {
                         Text(mode.title).tag(mode)
                     }
                 }
+
+                EditPacingControls(pacing: $store.activeProfile.defaultPacing)
 
                 if durationMode == .custom {
                     HStack {
@@ -345,6 +378,8 @@ struct WizardView: View {
             }
 
             Section("Output") {
+                RenderSettingsControls(settings: $store.activeProfile.defaultRenderSettings)
+
                 Picker("Audio", selection: audioModeBinding) {
                     ForEach(WizardAudioMode.allCases, id: \.self) { mode in
                         Text(mode.title).tag(mode)
@@ -376,6 +411,16 @@ struct WizardView: View {
                         .foregroundStyle(.orange)
                 }
 
+                if textMode == .captions || textMode == .both {
+                    Picker("Caption language", selection: $captionLanguage) {
+                        Text("Original audio language").tag("")
+                        ForEach(store.activeProfile.captionLanguages, id: \.self) { language in
+                            Text(Locale.current.localizedString(forIdentifier: language) ?? language)
+                                .tag(language)
+                        }
+                    }
+                }
+
                 Picker("Quality", selection: $critiqueLoop) {
                     Text("Standard — one render").tag(false)
                     Text("Best — up to 3 versions").tag(true)
@@ -385,6 +430,7 @@ struct WizardView: View {
                      : "Renders the first planned version only.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Toggle("Review proposed cuts before rendering", isOn: $reviewProposedCuts)
             }
 
             if let handoff = store.pendingWizardTemplate {
@@ -476,7 +522,12 @@ struct WizardView: View {
 
     private var generationBar: some View {
         VStack(spacing: 8) {
-            if analyzedSceneCount == 0 {
+            if store.videos.isEmpty {
+                Text("This project has no sources — add files in Sources first.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if analyzedSceneCount == 0 {
                 Text("Analyze footage first — the wizard builds from analyzed scenes.")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -539,7 +590,7 @@ struct WizardView: View {
             summary = "All analyzed scenes"
         }
 
-        let names = store.people
+        let names = projectPeople
             .filter { selectedSourcePeople.contains($0.key) }
             .map(\.displayName)
         if !names.isEmpty {
@@ -797,6 +848,10 @@ struct WizardView: View {
         let branding = resolvedBranding
         var options = WizardOptions()
         options.useMusic = audio.useMusic && musicAvailable
+        options.renderSettings = store.activeProfile.defaultRenderSettings
+        options.pacing = store.activeProfile.defaultPacing
+        options.captionLanguage = captionLanguage.isEmpty ? nil : captionLanguage
+        options.reviewProposedCuts = reviewProposedCuts
         options.muteSource = audio.muteSource && options.useMusic
         options.addCaptions = text.captions
         options.enableTextOverlays = text.headlines
@@ -817,7 +872,7 @@ struct WizardView: View {
         options.curatedOnly = curatedOnly
 
         let eligibleKeys = Set(eligibleSourcePeople.map(\.key))
-        options.sourcePeople = sourcePeopleRaw.split(separator: ",").map(String.init)
+        options.sourcePeople = Array(selectedSourcePeople).sorted()
             .filter(eligibleKeys.contains)
 
         if let handoff = store.pendingWizardTemplate {

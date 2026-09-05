@@ -13,6 +13,7 @@ struct BuilderView: View {
     @State private var showScenePicker = false
     @State private var showImagePicker = false
     @State private var confirmClear = false
+    @State private var showMediaSuggestions = false
 
     var body: some View {
         let model = store.builder
@@ -52,9 +53,43 @@ struct BuilderView: View {
                 PrefillProgressOverlay()
             }
         }
-        .navigationTitle("Builder")
-        .navigationSubtitle("\(model.document.videoTrack.count) clips · \(model.totalDuration.timecode)")
+        .screenTitle(store.openTimeline?.name ?? "Timeline", subtitle: "\(store.activeProject?.name ?? "Project") · \(model.document.videoTrack.count) clips · \(model.totalDuration.timecode)")
         .toolbar {
+            // The open timeline's name is the switcher: every timeline in the
+            // project is one click away, the same way the sidebar header
+            // switches projects.
+            ToolbarItem(placement: .navigation) {
+                Menu {
+                    ForEach(store.switchableTimelines) { timeline in
+                        Button {
+                            store.switchTimeline(to: timeline)
+                        } label: {
+                            if timeline.id == store.openTimelineID {
+                                Label(timeline.name, systemImage: "checkmark")
+                            } else {
+                                Text(timeline.name)
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("New Timeline", systemImage: "plus") {
+                        store.createTimeline()
+                    }
+                    if let timeline = store.openTimeline {
+                        Button("Duplicate This Timeline", systemImage: "plus.square.on.square") {
+                            store.duplicateTimeline(timeline, openCopy: true)
+                        }
+                    }
+                    Divider()
+                    Button("All Timelines…", systemImage: "list.bullet") {
+                        store.closeTimeline()
+                    }
+                } label: {
+                    Label(store.openTimeline?.name ?? "Timeline", systemImage: "chevron.down")
+                        .labelStyle(.titleAndIcon)
+                }
+                .help("Switch to another timeline in this project, or create one. ⌥⌘[ and ⌥⌘] cycle.")
+            }
             ToolbarItem {
                 Button {
                     showLog.toggle()
@@ -125,6 +160,7 @@ struct BuilderView: View {
                 for url in urls { model.addImage(path: url.path) }
             }
         }
+        .sheet(isPresented: $showMediaSuggestions) { MediaSuggestionsSheet() }
         .onDeleteCommand {
             deleteSelection()
         }
@@ -142,9 +178,70 @@ struct BuilderView: View {
             BuilderAddMenu(showScenePicker: $showScenePicker,
                            showImagePicker: $showImagePicker)
 
+            Button("Suggestions", systemImage: "sparkles") {
+                showMediaSuggestions = true
+            }
+            .disabled(model.document.videoTrack.isEmpty)
+
             Divider().frame(height: 16)
 
             CropStyleMenu()
+
+            Menu {
+                Picker("Canvas", selection: Binding(
+                    get: { model.document.renderSettings.preset },
+                    set: { preset in
+                        var settings = model.document.renderSettings
+                        settings.preset = preset
+                        model.setRenderSettings(settings)
+                    })) {
+                    ForEach(RenderPreset.allCases) { preset in
+                        Text(preset.label).tag(preset)
+                    }
+                }
+                Picker("Quality", selection: Binding(
+                    get: { model.document.renderSettings.quality },
+                    set: { quality in
+                        var settings = model.document.renderSettings
+                        settings.quality = quality
+                        model.setRenderSettings(settings)
+                    })) {
+                    ForEach(EncodeQuality.allCases) { quality in
+                        Text(quality.label).tag(quality)
+                    }
+                }
+            } label: {
+                Label(model.document.renderSettings.preset.label, systemImage: "aspectratio")
+            }
+            .help("Output canvas and encode quality for this timeline")
+
+            Menu {
+                Picker("Cadence", selection: Binding(
+                    get: { model.document.pacing.cadence },
+                    set: { cadence in
+                        var pacing = model.document.pacing
+                        pacing.cadence = cadence
+                        model.setPacing(pacing)
+                    })) {
+                    ForEach(CutCadence.allCases) { cadence in
+                        Text(cadence.label).tag(cadence)
+                    }
+                }
+                Picker("Curve", selection: Binding(
+                    get: { model.document.pacing.curve },
+                    set: { curve in
+                        var pacing = model.document.pacing
+                        pacing.curve = curve
+                        model.setPacing(pacing)
+                    })) {
+                    ForEach(PaceCurve.allCases) { curve in
+                        Text(curve.label).tag(curve)
+                    }
+                }
+            } label: {
+                Label(model.document.pacing.cadence.label, systemImage: "metronome")
+            }
+            .help("Cadence guide shown on the timeline ruler")
 
             Spacer()
 
