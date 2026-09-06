@@ -24,6 +24,7 @@ struct ReviewSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            AIInfoButton(output: video)
             HStack {
                 Text("Review \(video.filename)")
                     .font(.headline)

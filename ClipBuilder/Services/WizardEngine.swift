@@ -1,7 +1,17 @@
 import CoreGraphics
 import Foundation
 
-nonisolated struct WizardOptions: Sendable {
+nonisolated struct WizardOptions: Codable, Sendable {
+    enum CodingKeys: String, CodingKey {
+        case sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, curatedOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro
+    }
+
+    var sourceSceneSelection = false
+    var sourceSceneIDs: Set<Int64> = []
+    var sourceVideoPaths: Set<String> = []
+    var sourcesRestricted = false
+    var stackLevel = "standard"
+
     /// Project that owns the run and every output it creates.
     var projectID: Int64?
     var renderSettings = RenderSettings()
@@ -1536,6 +1546,7 @@ actor WizardEngine {
              profile: BrandProfile,
              database: Database,
              emit: @escaping @Sendable (String) -> Void) async {
+        await AIRunCapture.context.withValue(AIRunCapture.current ?? AIRunCapture()) {
         await RenderContext.$settings.withValue(options.renderSettings) {
             do {
                 try await runThrowing(options: options, profile: profile, database: database, emit: emit)
@@ -1547,6 +1558,7 @@ actor WizardEngine {
                 emit("Error: \(error.userMessage)")
                 emit("DONE:error")
             }
+        }
         }
     }
 
@@ -1667,6 +1679,10 @@ actor WizardEngine {
         var scenes = try await database.fetchScenes(projectID: options.projectID,
                                                     includeExcluded: false)
             .filter { !$0.ignored }
+        if options.sourcesRestricted {
+            scenes = scenes.filter { options.includesCopiedSource($0) }
+        }
+        scenes = SceneStacks.tops(scenes, level: .from(options.stackLevel))
         if options.curatedOnly {
             let before = scenes.count
             scenes = scenes.filter(\.curated)
@@ -2886,7 +2902,11 @@ actor WizardEngine {
                                                                projectID: options.projectID,
                                                                rationale: plan.rationale,
                                                                qualityJSON: qualityJSON,
-                                                               planClipsJSON: planClipsJSON)
+                                                               planClipsJSON: planClipsJSON,
+                                                               settings: WizardRunSettings(options: options, stackLevel: options.stackLevel, sourceProfile: profile.profileName,
+                                                                   sourceVideoPaths: Array(Set(plan.clips.compactMap { sceneMap[$0.sceneID]?.videoPath })).sorted(),
+                                                                   sourceSceneIDs: plan.clips.map(\.sceneID), modelPrompts: AIRunCapture.current?.prompts ?? [:]),
+                                                               roles: plan.provenance.map { [AIRole(role: "Plan", provenance: $0)] } ?? [])
         try await database.saveGeneratedTraits(videoID: recordID,
                                                traits: .derive(document: document,
                                                                scenes: Array(sceneMap.values),

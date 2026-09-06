@@ -184,6 +184,23 @@ final class GoogleDriveTransfers {
         tasks[id]?.cancel()
         reconnectWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
     }
+    /// Cancel is final: the job leaves the list and its partial files are
+    /// discarded, unlike Stop which keeps everything for Resume.
+    func cancel(_ id: UUID) {
+        guard let job = jobs.first(where: { $0.id == id }) else { return }
+        offlineRetries.removeValue(forKey: id)?.cancel()
+        tasks[id]?.cancel()
+        reconnectWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+        jobs.removeAll { $0.id == id }
+        let context = contexts[job.profile]
+        Task {
+            _ = await tasks[id]?.result
+            await context?.media.discardArtifacts(for: job)
+            await persist(profile: job.profile)
+            revision += 1
+        }
+    }
+
     func resume(_ id: UUID) {
         offlineRetries.removeValue(forKey: id)?.cancel()
         if tasks[id] == nil { start(id) }

@@ -124,7 +124,7 @@ struct FightGraphView: View {
                     }
                     Spacer()
                     if let provenance = visible.first?.provenance {
-                        ProvenanceBadge(provenance: provenance, role: "Scored by", size: 11)
+                        AIInfoButton(provenance: provenance, role: "Scored by", size: 11)
                     }
                 }
             }

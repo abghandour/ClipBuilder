@@ -22,6 +22,8 @@ struct DriveSourceProgress: View {
                             OpenGoogleDriveSettingsButton()
                         }
                     }
+                    Button("Cancel") { store.googleDrive.cancel(job.id) }
+                        .help("Cancel this upload and forget its progress")
                 }
             }.font(.caption)
         }

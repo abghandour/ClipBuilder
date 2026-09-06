@@ -28,7 +28,7 @@ struct CoverFrameSheet: View {
 
             if let candidates {
                 if let provenance {
-                    ProvenanceBadge(provenance: provenance, style: .full, role: "Ranked by")
+                    AIInfoButton(provenance: provenance, style: .full, role: "Ranked by")
                 }
                 HStack(alignment: .top, spacing: 12) {
                     ForEach(candidates) { candidate in

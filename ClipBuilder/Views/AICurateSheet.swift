@@ -95,7 +95,7 @@ struct AICurateSheet: View {
                     Text("\(proposals.count) proposed promotion\(proposals.count == 1 ? "" : "s")")
                         .font(.headline)
                     if let provenance {
-                        ProvenanceBadge(provenance: provenance, style: .full, role: "Curated by")
+                        AIInfoButton(provenance: provenance, style: .full, role: "Curated by")
                     }
                 }
                 Text("Uncheck any you disagree with, then Curate. Everything else stays as it is.")

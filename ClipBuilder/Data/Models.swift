@@ -364,6 +364,8 @@ nonisolated struct AnalysisRun: Identifiable, Sendable, Hashable {
     var videoFilename: String
     var videoPath: String
     var sceneCount: Int
+    var settingsJSON: String? = nil
+    var modelsJSON: String? = nil
 
     var videoURL: URL { URL(fileURLWithPath: videoPath) }
 
@@ -417,6 +419,7 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var cropXFrac: Double?
     var freeCropsJSON: String?
     var centerStagePathJSON: String?
+    var modelsJSON: String? = nil
     var tags: [String]
     var gradeAverage: Double?
     var gradeCount: Int
@@ -545,6 +548,8 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     var driveLink: String? = nil
     var driveOffloaded: Bool = false
     var driveShared: Bool = false
+    var settingsJSON: String? = nil
+    var modelsJSON: String? = nil
 
     var url: URL { URL(fileURLWithPath: path) }
     var filename: String { url.lastPathComponent }

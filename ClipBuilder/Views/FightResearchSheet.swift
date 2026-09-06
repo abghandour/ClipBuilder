@@ -110,7 +110,7 @@ struct FightResearchSheet: View {
                                 Text(researchedAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "—")
                                     .foregroundStyle(.secondary)
                                 if let provenance {
-                                    ProvenanceBadge(provenance: provenance, style: .full,
+                                    AIInfoButton(provenance: provenance, style: .full,
                                                     role: "Summarized by", size: 12)
                                 }
                             }

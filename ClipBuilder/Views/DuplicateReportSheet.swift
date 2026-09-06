@@ -96,7 +96,7 @@ struct DuplicateReportSheet: View {
                         Text("\(groups.count) duplicate group\(groups.count == 1 ? "" : "s")")
                             .font(.headline)
                         if let provenance {
-                            ProvenanceBadge(provenance: provenance, style: .full, role: "Compared by")
+                            AIInfoButton(provenance: provenance, style: .full, role: "Compared by")
                         }
                     }
                     Text("KEEP marks the recommended copy. Nothing is deleted — reveal a lesser copy in Finder to clean up yourself.")

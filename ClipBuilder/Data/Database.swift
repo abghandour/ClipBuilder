@@ -623,7 +623,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 6
+    static let schemaVersion: Int64 = 7
 
     /// "wal" normally; "delete" after the fallback in `init`.
     func journalMode() throws -> String {
@@ -635,7 +635,8 @@ actor Database {
     /// the per-column probe statements.
     private static func migrate(_ connection: SQLiteConnection) throws {
         let textColumns: [(table: String, columns: [String])] = [
-            ("generated_videos", ["caption", "drive_file_id", "drive_link",
+            ("analysis_runs", ["settings_json", "models_json"]),
+            ("generated_videos", ["settings_json", "models_json", "caption", "drive_file_id", "drive_link",
                                   "caption_provider", "wizard_provider",
                                   "caption_model", "wizard_model",
                                   "rationale", "batch_id", "plan_clips_json",
@@ -652,7 +653,7 @@ actor Database {
             ("transcripts", ["provider", "model", "original_text", "words"]),
             // AI provenance: which provider/model produced each artifact.
             // NULL = human-made (or predates provenance tracking).
-            ("scenes", ["curated_provider", "curated_model"]),
+            ("scenes", ["models_json", "curated_provider", "curated_model"]),
             ("fight_events", ["provider", "model"]),
             ("video_notes", ["provider", "model"]),
             ("wizard_lessons", ["provider", "model"]),
@@ -1755,6 +1756,7 @@ actor Database {
                 cropXFrac: row["crop_x_frac"]?.doubleValue,
                 freeCropsJSON: row["free_crops"]?.stringValue,
                 centerStagePathJSON: row["center_stage_path"]?.stringValue,
+                modelsJSON: row["models_json"]?.stringValue,
                 tags: tagsByScene[id]?.sorted() ?? [],
                 gradeAverage: grade?.average,
                 gradeCount: grade?.count ?? 0,
@@ -1809,6 +1811,7 @@ actor Database {
     /// The analyzer's sequence understanding: what happens in the scene and
     /// how entertaining it is (0–10, escalation-aware, audio-boosted).
     func setSceneNarrative(_ sceneID: Int64, narrative: String?, score: Double?) throws {
+        try recordSceneRole(id: sceneID, role: "Narrative", provenance: AIRunCapture.current?.roles.last(where: { $0.provenance.task == "analysis" })?.provenance)
         try connection.execute("UPDATE scenes SET narrative = ?, score = ? WHERE id = ?",
                                [narrative.map(SQLValue.text) ?? .null,
                                 score.map(SQLValue.real) ?? .null, .integer(sceneID)])
@@ -1837,6 +1840,7 @@ actor Database {
     /// AI Curator that picked it; nil = the user's own pick (or a demotion).
     func setSceneCurated(_ sceneID: Int64, curated: Bool, provenance: AIProvenance? = nil) throws {
         let stamp = curated ? provenance : nil
+        try recordSceneRole(id: sceneID, role: "Curation", provenance: stamp)
         try connection.execute("""
             UPDATE scenes SET curated = ?, curated_provider = ?, curated_model = ? WHERE id = ?
             """, [.integer(curated ? 1 : 0),
@@ -1865,6 +1869,7 @@ actor Database {
     /// Center Stage camera path (SceneCameraPath JSON) recorded during
     /// analysis; the scene preview animates it and renders reuse it.
     func setSceneCenterStagePath(_ sceneID: Int64, json: String?) throws {
+        try recordSceneRole(id: sceneID, role: "Framing", provenance: json == nil ? nil : .appleVision(task: "framing"))
         try connection.execute("UPDATE scenes SET center_stage_path = ? WHERE id = ?",
                                [json.map(SQLValue.text) ?? .null, .integer(sceneID)])
     }
@@ -1907,7 +1912,8 @@ actor Database {
                         createdAt: row["created_at"]?.stringValue,
                         videoFilename: row["video_filename"]?.stringValue ?? "",
                         videoPath: row["video_path"]?.stringValue ?? "",
-                        sceneCount: Int(row["scene_count"]?.intValue ?? 0))
+                        sceneCount: Int(row["scene_count"]?.intValue ?? 0),
+                        settingsJSON: row["settings_json"]?.stringValue, modelsJSON: row["models_json"]?.stringValue)
         }
     }
 
@@ -1918,6 +1924,12 @@ actor Database {
 
     /// Record that this batch's analyze run produced (or kept) a transcript.
     func markAnalysisRunTranscribed(id: Int64) throws {
+        let row = try connection.query("SELECT settings_json FROM analysis_runs WHERE id = ?", [.integer(id)]).first
+        if var settings = AISettingsJSON.decode(AnalysisRunSettings.self, row?["settings_json"]?.stringValue) {
+            settings.includeTranscript = true
+            try saveAnalysisSettings(id: id, settings: settings)
+        }
+        try updateAnalysisModels(id: id)
         try connection.execute("UPDATE analysis_runs SET has_transcript = 1 WHERE id = ?",
                                [.integer(id)])
     }
@@ -1946,7 +1958,8 @@ actor Database {
                       tagRanges: [String: [(start: Double, end: Double)]],
                       moments: [(at: Double, note: String, dialog: String?)],
                       analyzedTags: [String],
-                      provider: String?, model: String?, mode: String) throws -> Int64 {
+                      provider: String?, model: String?, mode: String,
+                      settings: AnalysisRunSettings? = nil, roles: [AIRole] = []) throws -> Int64 {
         // (start, end) → set of tags, so one range shared by many tags makes one scene.
         var rangeTags: [String: (start: Double, end: Double, tags: Set<String>)] = [:]
         for (tag, ranges) in tagRanges {
@@ -1960,13 +1973,15 @@ actor Database {
         // half-saved analysis on failure).
         return try connection.transaction {
             try connection.execute("""
-                INSERT INTO analysis_runs (video_id, name, instructions, provider, model, sample_interval, notes_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO analysis_runs (video_id, name, instructions, provider, model, sample_interval, notes_json, settings_json, models_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, [.integer(videoID), .text(runName), .text(instructions),
                       provider.map(SQLValue.text) ?? .null,
                       model.map(SQLValue.text) ?? .null,
                       .real(sampleInterval ?? 0),
-                      notesJSON.map(SQLValue.text) ?? .null])
+                      notesJSON.map(SQLValue.text) ?? .null,
+                      settings.flatMap(AISettingsJSON.encode).map(SQLValue.text) ?? .null,
+                      AISettingsJSON.encode((AIRunCapture.current?.roles ?? []) + roles).map(SQLValue.text) ?? .null])
             let runID = connection.lastInsertRowID
             for (_, entry) in rangeTags {
                 // The no-op DO UPDATE makes RETURNING yield the id for the
@@ -2422,7 +2437,7 @@ actor Database {
                               projectID: Int64? = nil,
                               rationale: String? = nil, batchID: String? = nil,
                               qualityJSON: String? = nil,
-                              planClipsJSON: String? = nil) throws -> Int64 {
+                              planClipsJSON: String? = nil, settings: WizardRunSettings? = nil, roles: [AIRole] = []) throws -> Int64 {
         // The project may have been deleted while this render ran; the file
         // exists, so record it without an owner (Home shows it) rather than
         // fail the foreign key and lose it.
@@ -2433,8 +2448,8 @@ actor Database {
         }
         try connection.execute("""
             INSERT INTO generated_videos (path, duration, timeline_json, wizard_provider, wizard_model,
-                                          project_id, rationale, batch_id, quality_json, plan_clips_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          project_id, rationale, batch_id, quality_json, plan_clips_json, settings_json, models_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [.text(path), .real(duration), .text(timelineJSON),
                   wizardProvider.map(SQLValue.text) ?? .null,
                   wizardModel.map(SQLValue.text) ?? .null,
@@ -2442,7 +2457,9 @@ actor Database {
                   rationale.map(SQLValue.text) ?? .null,
                   batchID.map(SQLValue.text) ?? .null,
                   qualityJSON.map(SQLValue.text) ?? .null,
-                  planClipsJSON.map(SQLValue.text) ?? .null])
+                  planClipsJSON.map(SQLValue.text) ?? .null,
+                  settings.flatMap(AISettingsJSON.encode).map(SQLValue.text) ?? .null,
+                  AISettingsJSON.encode((AIRunCapture.current?.roles ?? []) + roles).map(SQLValue.text) ?? .null])
         let recordID = connection.lastInsertRowID
         if wizardProvider != nil, let projectID {
             try ensureWizardTimeline(
@@ -2549,13 +2566,15 @@ actor Database {
                              driveFileID: row["drive_file_id"]?.stringValue,
                              driveLink: row["drive_link"]?.stringValue,
                              driveOffloaded: row["drive_offloaded"]?.boolValue ?? false,
-                             driveShared: row["drive_shared"]?.boolValue ?? false)
+                             driveShared: row["drive_shared"]?.boolValue ?? false,
+                             settingsJSON: row["settings_json"]?.stringValue, modelsJSON: row["models_json"]?.stringValue)
     }
 
     /// Remember the picked cover frame — the Library card renders its
     /// thumbnail at this time from then on. `provenance` is the model that
     /// ranked the frame; nil = a hand pick.
     func updateGeneratedCover(id: Int64, time: Double, provenance: AIProvenance? = nil) throws {
+        try recordOutputRole(id: id, role: "Cover", provenance: provenance)
         try connection.execute("""
             UPDATE generated_videos SET cover_time = ?, cover_provider = ?, cover_model = ? WHERE id = ?
             """, [.real(time),
@@ -2566,6 +2585,8 @@ actor Database {
 
     /// Attach the AI critic's post-render review to a generated video.
     func updateGeneratedCritique(id: Int64, critiqueJSON: String) throws {
+        let value = AISettingsJSON.decode([String: JSONSetting].self, critiqueJSON)
+        try recordOutputRole(id: id, role: "Critique", provenance: AIProvenance(provider: value?["provider"]?.string, model: value?["model"]?.string))
         try connection.execute("UPDATE generated_videos SET critique_json = ? WHERE id = ?",
                                [.text(critiqueJSON), .integer(id)])
     }
@@ -2593,6 +2614,7 @@ actor Database {
     }
 
     func updateGeneratedCaption(id: Int64, caption: String, provider: String?, model: String?) throws {
+        try recordOutputRole(id: id, role: "Captions", provenance: AIProvenance(provider: provider, model: model))
         try connection.execute("""
             UPDATE generated_videos SET caption = ?, caption_provider = ?, caption_model = ? WHERE id = ?
             """, [.text(caption),
@@ -3717,5 +3739,57 @@ extension Database {
         let table = media.kind == .source ? "videos" : "generated_videos"
         try connection.execute("UPDATE \(table) SET drive_offloaded = ? WHERE id = ? AND drive_file_id IS NOT NULL",
                                [.integer(value ? 1 : 0), .integer(media.recordID)])
+    }
+}
+
+// MARK: - Captured AI run details
+extension Database {
+    func saveAnalysisSettings(id: Int64, settings: AnalysisRunSettings) throws {
+        var settings = settings
+        settings.modelPrompts = AIRunCapture.current?.prompts ?? settings.modelPrompts
+        try connection.execute("UPDATE analysis_runs SET settings_json = ? WHERE id = ?",
+                               [AISettingsJSON.encode(settings).map(SQLValue.text) ?? .null, .integer(id)])
+    }
+
+    func updateAnalysisModels(id: Int64) throws {
+        let row = try connection.query("SELECT video_id FROM analysis_runs WHERE id = ?", [.integer(id)]).first
+        let video = try row?["video_id"]?.intValue.flatMap { try self.video(id: $0) }
+        let existing = try connection.query("SELECT models_json FROM analysis_runs WHERE id = ?", [.integer(id)]).first
+        var roles = AISettingsJSON.decode([AIRole].self, existing?["models_json"]?.stringValue) ?? []
+        for role in AIRunCapture.current?.roles ?? [] where !roles.contains(role) { roles.append(role) }
+        if let video {
+            for (role, value) in [("Transcript", video.transcriptionProvenance), ("People", video.peopleProvenance), ("Naming", video.namingProvenance)] {
+                if let value { roles.append(AIRole(role: role, provenance: value)) }
+            }
+        }
+        try connection.execute("UPDATE analysis_runs SET models_json = ? WHERE id = ?", [AISettingsJSON.encode(roles).map(SQLValue.text) ?? .null, .integer(id)])
+    }
+
+    func recordSceneRole(id: Int64, role: String, provenance: AIProvenance?) throws {
+        guard var provenance else { return }
+        if provenance.at == nil { provenance.at = Date() }
+        let row = try connection.query("SELECT models_json FROM scenes WHERE id = ?", [.integer(id)]).first
+        var roles = AISettingsJSON.decode([AIRole].self, row?["models_json"]?.stringValue) ?? []
+        roles.removeAll { $0.role == role }
+        roles.append(AIRole(role: role, provenance: provenance))
+        try connection.execute("UPDATE scenes SET models_json = ? WHERE id = ?",
+                               [AISettingsJSON.encode(roles).map(SQLValue.text) ?? .null, .integer(id)])
+    }
+
+    func recordOutputRole(id: Int64, role: String, provenance: AIProvenance?) throws {
+        guard var provenance else { return }
+        if provenance.at == nil { provenance.at = Date() }
+        let row = try connection.query("SELECT models_json, settings_json FROM generated_videos WHERE id = ?", [.integer(id)]).first
+        var roles = AISettingsJSON.decode([AIRole].self, row?["models_json"]?.stringValue) ?? []
+        roles.removeAll { $0.role == role }
+        roles.append(AIRole(role: role, provenance: provenance))
+        if var settings = AISettingsJSON.decode(WizardRunSettings.self, row?["settings_json"]?.stringValue),
+           let prompts = AIRunCapture.current?.prompts {
+            settings.modelPrompts.merge(prompts) { _, new in new }
+            try connection.execute("UPDATE generated_videos SET settings_json = ? WHERE id = ?",
+                                   [AISettingsJSON.encode(settings).map(SQLValue.text) ?? .null, .integer(id)])
+        }
+        try connection.execute("UPDATE generated_videos SET models_json = ? WHERE id = ?",
+                               [AISettingsJSON.encode((AIRunCapture.current?.roles ?? []) + roles).map(SQLValue.text) ?? .null, .integer(id)])
     }
 }

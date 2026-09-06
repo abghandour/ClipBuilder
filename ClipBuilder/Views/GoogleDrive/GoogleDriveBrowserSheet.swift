@@ -150,13 +150,14 @@ struct GoogleDriveBrowserSheet: View {
                         )
                         .foregroundStyle(.secondary)
                         if file.isFolder {
-                            Button("Open", systemImage: "chevron.right") {
-                                breadcrumbs.append(file)
-                                selection = []
-                                reload()
-                            }
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.secondary)
+                                .accessibilityLabel("Folder")
                         }
-                    }.tag(file.id)
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { if file.isFolder { open(file) } }
+                    .tag(file.id)
                 }
                 .overlay {
                     if files.isEmpty && !loading && error == nil {
@@ -197,6 +198,11 @@ struct GoogleDriveBrowserSheet: View {
         breadcrumbs.last
             ?? (location == "My Drive"
                 ? DriveFile(id: "root", name: "My Drive", mimeType: "application/vnd.google-apps.folder") : nil)
+    }
+    private func open(_ folder: DriveFile) {
+        breadcrumbs.append(folder)
+        selection = []
+        reload()
     }
     private func reload() { Task { await load() } }
     private func load(append: Bool = false) async {

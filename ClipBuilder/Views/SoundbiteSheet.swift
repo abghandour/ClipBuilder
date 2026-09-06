@@ -90,7 +90,7 @@ struct SoundbiteSheet: View {
                     Text("\(soundbites.count) soundbite\(soundbites.count == 1 ? "" : "s")")
                         .font(.headline)
                     if let provenance {
-                        ProvenanceBadge(provenance: provenance, style: .full, role: "Found by")
+                        AIInfoButton(provenance: provenance, style: .full, role: "Found by")
                     }
                 }
                 Text("Checked soundbites save as timestamped video notes — they guide the next analysis and show in the plan sheet.")

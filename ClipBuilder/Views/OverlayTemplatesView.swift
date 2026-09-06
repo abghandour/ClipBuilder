@@ -108,7 +108,7 @@ struct OverlayTemplatesView: View {
                 }
                 Spacer(minLength: 0)
                 if let provenance = template.composition.provenance {
-                    ProvenanceBadge(provenance: provenance, role: "Extracted by", size: 12)
+                    AIInfoButton(provenance: provenance, role: "Extracted by", size: 12)
                 }
             }
             .tag(template.name)

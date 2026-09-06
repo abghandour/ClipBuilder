@@ -338,7 +338,7 @@ struct ScenesView: View {
             Text("AI search: “\(match.query)”")
                 .font(.callout)
                 .lineLimit(1)
-            ProvenanceBadge(provenance: match.provenance, style: .model, role: "Ranked by")
+            AIInfoButton(provenance: match.provenance, style: .model, role: "Ranked by")
             Spacer()
             Button("Clear") { aiMatches = nil }
                 .controlSize(.small)
@@ -373,9 +373,7 @@ struct ScenesView: View {
                             }
                         }
                         Spacer()
-                        if let provenance = run.provenance {
-                            ProvenanceBadge(provenance: provenance, role: "Analyzed by", size: 12)
-                        }
+                        AIInfoButton(run: run)
                         Text("\(run.sceneCount)")
                             .foregroundStyle(.secondary)
                             .font(.caption)
@@ -806,11 +804,7 @@ private struct BatchInfoSheet: View {
                 LabeledContent("Source video", value: run.videoFilename)
                 LabeledContent("Analyzed", value: run.createdAt ?? "—")
                 LabeledContent("Model") {
-                    if let provenance = run.provenance {
-                        ProvenanceBadge(provenance: provenance, style: .full, role: "Analyzed by")
-                    } else {
-                        Text("—")
-                    }
+                    AIInfoButton(run: run)
                 }
                 LabeledContent("Frame sampling", value: samplingLabel)
                 LabeledContent("Transcript included", value: run.hasTranscript ? "Yes" : "No")
@@ -929,10 +923,7 @@ struct SceneCard: View {
                                 .allowsHitTesting(false)
                                 .help(scene.narrative ?? "Entertainment score")
                         }
-                        if let analysisProvenance {
-                            ProvenanceBadge(provenance: analysisProvenance, role: "Analyzed by",
-                                            size: 11, plated: true)
-                        }
+                        AIInfoButton(size: 11, plated: true, scene: scene)
                     }
                     .padding(6)
                 }

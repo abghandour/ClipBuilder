@@ -28,6 +28,9 @@ struct WizardView: View {
     @AppStorage("wizard.sourcePeople") private var sourcePeopleRaw = ""
     @AppStorage(SceneStacks.levelKey) private var stackLevelRaw = SceneStackLevel.standard.rawValue
 
+    @AppStorage("wizard.modelOverride") private var copiedModelOverride = ""
+    @AppStorage(AISettingsPreferences.sourceNameKey) private var pastedSourceName = "another run"
+    @AppStorage(AISettingsPreferences.snapshotKey) private var pastedSnapshot = ""
     @State private var musicCount = 0
     @State private var showTrainingGuide = false
     @State private var showGapReport = false
@@ -136,7 +139,13 @@ struct WizardView: View {
     private var brandingOverrideBinding: Binding<WizardBrandingOverride> {
         Binding(
             get: { brandingOverride },
-            set: { brandingOverrideRaw = $0.rawValue }
+            set: {
+                brandingOverrideRaw = $0.rawValue
+                let branding = $0.resolved()
+                updateCopiedOption("includeWatermark", .bool(branding.includeWatermark))
+                updateCopiedOption("includeHeadline", .bool(branding.includeHeadline))
+                updateCopiedOption("includeOutro", .bool(branding.includeOutro))
+            }
         )
     }
 
@@ -231,6 +240,8 @@ struct WizardView: View {
         .screenTitle("AI Wizard", subtitle: store.videos.isEmpty ? "No sources in this project"
                                                  : "\(analyzedSceneCount) scenes available")
         .toolbar {
+            ToolbarItem { AIPasteSettingsBar(kind: .wizard) }
+            ToolbarItemGroup {
             Button("Content Gaps", systemImage: "checklist") {
                 showGapReport = true
             }
@@ -245,6 +256,7 @@ struct WizardView: View {
                 }
             } label: {
                 Label("Wizard tools", systemImage: "ellipsis.circle")
+            }
             }
         }
         .sheet(isPresented: $showGapReport) {
@@ -301,6 +313,18 @@ struct WizardView: View {
     private var configurationForm: some View {
         @Bindable var store = store
         return Form {
+            if !pastedSnapshot.isEmpty {
+                Section {
+                    HStack {
+                        Label("Pasted from \(pastedSourceName)", systemImage: "doc.on.clipboard")
+                        Spacer()
+                        Button("Clear") {
+                            AISettingsPreferences.clearWizardPaste(defaults: .standard)
+                        }
+                        .help("Clear pasted overrides and source restrictions; use profile defaults")
+                    }
+                }
+            }
             Section("What should we make?") {
                 TextEditor(text: $aiInstructions)
                     .font(.body)
@@ -452,6 +476,28 @@ struct WizardView: View {
             }
 
             DisclosureGroup("More options") {
+                TextField("Model override", text: $copiedModelOverride, prompt: Text("Automatic"))
+                    .textFieldStyle(.roundedBorder)
+                if !pastedSnapshot.isEmpty {
+                    DisclosureGroup("Copied advanced options") {
+                        ForEach(["framingCamera", "templateLabel", "pinnedOverlayTemplate", "pinnedOverlayText"], id: \.self) { key in
+                            TextField(key, text: Binding(get: {
+                                AISettingsJSON.decode([String: JSONSetting].self, pastedSnapshot)?[key]?.string ?? ""
+                            }, set: { updateCopiedOption(key, $0.isEmpty ? .null : .string($0)) }))
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        ForEach(["useFightResearch", "includeWatermark", "includeHeadline", "includeOutro"], id: \.self) { key in
+                            Toggle(key, isOn: Binding(get: {
+                                AISettingsJSON.decode([String: JSONSetting].self, pastedSnapshot)?[key] == .bool(true)
+                            }, set: { updateCopiedOption(key, .bool($0)) }))
+                        }
+                        Button("Use all available sources") {
+                            updateCopiedOption("sourcesRestricted", .bool(false))
+                            updateCopiedOption("sourceSceneIDs", .array([]))
+                            updateCopiedOption("sourceVideoPaths", .array([]))
+                        }
+                    }
+                }
                 Picker("Style reference", selection: $tastePreset) {
                     Text("Profile taste").tag("")
                     Text("No style reference").tag("none")
@@ -636,11 +682,15 @@ struct WizardView: View {
                                 limitToSelection: limitToSelection,
                                 selectedRunIDsRaw: selectedRunIDsRaw,
                                 personTags: personTags)
+        if !pastedSnapshot.isEmpty { return computeSourcePool(personTags: personTags) }
         return sourcePoolMemo(key) { computeSourcePool(personTags: personTags) }
     }
 
     private func computeSourcePool(personTags: Set<String>) -> [SceneRecord] {
         var pool = store.scenes.filter { !$0.excluded && !$0.ignored }
+        if let copied = AISettingsJSON.decode(WizardOptions.self, pastedSnapshot), copied.sourcesRestricted {
+            pool = pool.filter { copied.includesCopiedSource($0) }
+        }
         if curatedOnly {
             pool = pool.filter(\.curated)
         }
@@ -851,6 +901,12 @@ struct WizardView: View {
             : "Only use footage tagged: \(tags.joined(separator: ", ")). Skip everything else."
     }
 
+    private func updateCopiedOption(_ key: String, _ value: JSONSetting) {
+        guard var settings = AISettingsJSON.decode([String: JSONSetting].self, pastedSnapshot) else { return }
+        settings[key] = value
+        pastedSnapshot = AISettingsJSON.encode(settings) ?? ""
+    }
+
     private func runWizard() {
         guard canGenerate else { return }
 
@@ -858,19 +914,22 @@ struct WizardView: View {
         let audio = audioMode
         let text = textMode.output(transcriptsAvailable: transcriptsAvailable, recipe: formatPreset)
         let branding = resolvedBranding
-        var options = WizardOptions()
+        let pasted = AISettingsJSON.decode(WizardOptions.self, UserDefaults.standard.string(forKey: AISettingsPreferences.snapshotKey))
+        var options = pasted ?? WizardOptions()
+        options.stackLevel = stackLevelRaw
+        options.modelOverride = copiedModelOverride.isEmpty ? nil : copiedModelOverride
         options.useMusic = audio.useMusic && musicAvailable
-        options.renderSettings = store.activeProfile.defaultRenderSettings
-        options.pacing = store.activeProfile.defaultPacing
+        options.renderSettings = pasted?.renderSettings ?? store.activeProfile.defaultRenderSettings
+        options.pacing = pasted?.pacing ?? store.activeProfile.defaultPacing
         options.captionLanguage = captionLanguage.isEmpty ? nil : captionLanguage
         options.reviewProposedCuts = reviewProposedCuts
         options.muteSource = audio.muteSource && options.useMusic
         options.addCaptions = text.captions
         options.enableTextOverlays = text.headlines
-        options.framingCamera = WizardDefaults.fallbackFramingCamera
+        options.framingCamera = pasted?.framingCamera ?? WizardDefaults.fallbackFramingCamera
         options.screenCropLayouts = WizardDefaults.screenCropLayouts(for: layoutMode)
-        options.allowedTransitions = WizardOptions.allowedTransitionsFromDefaults()
-        options.useFightResearch = true
+        options.allowedTransitions = pasted?.allowedTransitions ?? WizardOptions.allowedTransitionsFromDefaults()
+        options.useFightResearch = pasted?.useFightResearch ?? true
         options.aiInstructions = aiInstructions
         options.targetDurationSeconds = durationMode.duration
             ?? (durationMode == .custom ? min(180, max(3, customDuration)) : nil)
@@ -878,9 +937,9 @@ struct WizardView: View {
         options.podcastFraming = PodcastFramingMode(rawValue: podcastFramingRaw) ?? .followSpeaker
         options.critiqueLoop = critiqueLoop
         options.tastePreset = tastePreset.isEmpty ? nil : tastePreset
-        options.includeWatermark = branding.includeWatermark
-        options.includeHeadline = branding.includeHeadline
-        options.includeOutro = branding.includeOutro
+        options.includeWatermark = pasted?.includeWatermark ?? branding.includeWatermark
+        options.includeHeadline = pasted?.includeHeadline ?? branding.includeHeadline
+        options.includeOutro = pasted?.includeOutro ?? branding.includeOutro
         options.selectedRunIDs = limitToSelection ? selectedRunIDs : []
         options.curatedOnly = curatedOnly
 

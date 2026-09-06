@@ -154,6 +154,7 @@ struct WizardResultsSheet: View {
             }
             .frame(width: 210)
 
+            AIInfoButton(output: video)
             Button {
                 if store.builder.document.videoTrack.isEmpty {
                     dismiss()
@@ -179,10 +180,6 @@ struct WizardResultsSheet: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(critique.score >= 85 ? .green
                                      : critique.score >= 70 ? .yellow : .orange)
-                if let judge = AIProvenance(provider: critique.provider, model: critique.model,
-                                            task: "critique") {
-                    ProvenanceBadge(provenance: judge, role: "Judged by", size: 11)
-                }
                 if isBest {
                     Text("BEST")
                         .font(.badgeCompact)

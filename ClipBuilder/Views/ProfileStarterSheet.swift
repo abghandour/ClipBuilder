@@ -113,7 +113,7 @@ struct ProfileStarterSheet: View {
                     Text("Review the generated style")
                         .font(.headline)
                     if let provenance {
-                        ProvenanceBadge(provenance: provenance, style: .full, role: "Written by")
+                        AIInfoButton(provenance: provenance, style: .full, role: "Written by")
                     }
                 }
                 Text("Edit anything, uncheck what you don't want written, then Apply.")

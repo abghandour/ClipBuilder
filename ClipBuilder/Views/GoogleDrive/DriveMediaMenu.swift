@@ -91,7 +91,10 @@ struct DriveActivityRows: View {
                 Text("\(job.projectName) · \(job.title)").lineLimit(1).help(job.title)
                 if store.googleDrive.states[job.profile]?.isConnected != true {
                     GoogleDriveConnectionPrompt(profile: job.profile)
-                    Button("Stop") { store.googleDrive.stop(job.id) }
+                    HStack {
+                        Button("Stop") { store.googleDrive.stop(job.id) }
+                        cancelButton(job)
+                    }
                 } else {
                     HStack {
                         Text(job.message).lineLimit(2)
@@ -104,6 +107,7 @@ struct DriveActivityRows: View {
                                 Button("Stop") { store.googleDrive.stop(job.id) }
                             }
                         }
+                        cancelButton(job)
                         if job.status == .reconnect {
                             OpenGoogleDriveSettingsButton()
                         }
@@ -118,5 +122,12 @@ struct DriveActivityRows: View {
                 ProgressView(value: job.progress).accessibilityLabel("\(job.title) progress")
             }.font(.caption)
         }
+    }
+
+    private func cancelButton(_ job: DriveTransfer) -> some View {
+        Button("Cancel") { store.googleDrive.cancel(job.id) }
+            .help(job.operation == .upload
+                  ? "Cancel this upload and forget its progress"
+                  : "Cancel this download and delete the partial file")
     }
 }

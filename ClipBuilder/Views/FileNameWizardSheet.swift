@@ -115,7 +115,7 @@ struct FileNameWizardSheet: View {
                          : "\(suggestions.count) rename suggestions")
                         .font(.headline)
                     if let provenance = suggestions.first?.provenance {
-                        ProvenanceBadge(provenance: provenance, style: .full, role: "Named by")
+                        AIInfoButton(provenance: provenance, style: .full, role: "Named by")
                     }
                 }
                 Text("Edit any name, uncheck files you want to keep as they are, then Rename.")

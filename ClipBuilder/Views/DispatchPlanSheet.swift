@@ -80,6 +80,7 @@ struct DispatchPlanSheet: View {
     /// Comma-joined tags whose scenes get the breakdown pass — AppStorage
     /// can't hold a Set directly.
     @AppStorage("analysis.breakdownTags") private var breakdownTagsRaw = ""
+    @AppStorage("analysis.detectPeople") private var detectPeople = true
     @AppStorage("analysis.includeTranscript") private var includeTranscript = false
     // Framing pass options: one static rect per scene by default, framed:
     // people tags on, unframed scenes letterboxed (no auto-zoom).
@@ -167,8 +168,34 @@ struct DispatchPlanSheet: View {
         return marker.personID.flatMap { id in store.people.first { $0.id == id }?.displayName }
     }
 
+    private var copiedAnalysis: Binding<AnalysisRunSettings> {
+        Binding(get: {
+            AnalysisRunSettings(instructions: instructions, sampleInterval: sampleInterval,
+                includeTranscript: includeTranscript, language: store.settings.transcribeLanguage, detectPeople: detectPeople,
+                autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTagsRaw.split(separator: ",").map(String.init),
+                trimRange: [trimStart, trimEnd], notes: AISettingsJSON.decode([AnalysisRunNote].self, UserDefaults.standard.string(forKey: "analysis.pastedNotes")) ?? [], provider: analysisChoice.provider, model: analysisChoice.model,
+                videoPath: videos.count == 1 ? videos.first?.path : nil, sourcePeople: Array(selectedPeopleKeys), sourceProfile: store.activeProfile.profileName)
+        }, set: { value in
+            instructions = value.instructions; sampleInterval = value.sampleInterval
+            includeTranscript = value.includeTranscript; store.settings.transcribeLanguage = value.language
+            detectPeople = value.detectPeople
+            autoZoomUnframed = value.autoZoomUnframed
+            breakdownTagsRaw = value.breakdownTags.joined(separator: ","); autoBreakdown = !value.breakdownTags.isEmpty
+            if let range = value.trimRange, range.count == 2 { trimStart = range[0]; trimEnd = range[1] }
+            else { trimStart = 0; trimEnd = videos.first?.duration ?? 0 }
+            if let provider = value.provider { choices["analysis"] = "\(provider)|\(value.model ?? "")" }
+            else { choices.removeValue(forKey: "analysis") }
+            selectedPeopleKeys = Set(value.sourcePeople); requirePeople = !value.sourcePeople.isEmpty
+
+        })
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            if operation == .analyze {
+                AIPasteSettingsBar(kind: .analysis, analysis: copiedAnalysis).padding()
+                Toggle("Detect people during analysis", isOn: $detectPeople).padding(.horizontal)
+            }
             if operation == .analyze {
                 Picker("Analysis step", selection: $analyzeTab) {
                     Text("1. Identify people").tag(AnalyzeTab.people)
@@ -1225,7 +1252,7 @@ private struct VideoNotesPanel: View {
                     if let trimSuggestionNote {
                         HStack(alignment: .firstTextBaseline, spacing: 4) {
                             if let trimSuggestionProvenance {
-                                ProvenanceBadge(provenance: trimSuggestionProvenance,
+                                AIInfoButton(provenance: trimSuggestionProvenance,
                                                 role: "Suggested by", size: 11)
                             }
                             Text(trimSuggestionNote)
@@ -1336,7 +1363,7 @@ private struct VideoNotesPanel: View {
                                             .font(.caption.monospacedDigit())
                                             .foregroundStyle(.tint)
                                         if let provenance = note.provenance {
-                                            ProvenanceBadge(provenance: provenance,
+                                            AIInfoButton(provenance: provenance,
                                                             role: "Written by", size: 11)
                                         }
                                         Text(note.note)

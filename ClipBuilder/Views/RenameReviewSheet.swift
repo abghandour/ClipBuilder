@@ -17,7 +17,7 @@ struct RenameReviewSheet: View {
                          : "\(request.suggestions.count) rename suggestions")
                         .font(.headline)
                     if let provenance = request.suggestions.first?.provenance {
-                        ProvenanceBadge(provenance: provenance, style: .full, role: "Named by")
+                        AIInfoButton(provenance: provenance, style: .full, role: "Named by")
                     }
                 }
                 Text("These filenames look auto-generated or misspelled, so the analyzer built corrected names from what it saw. Edit them, uncheck any you want to keep, then Rename.")

@@ -77,7 +77,7 @@ private struct WizardLessonRow: View {
                 if !lesson.evidence.isEmpty || lesson.provenance != nil {
                     HStack(spacing: Theme.spaceXS) {
                         if let provenance = lesson.provenance {
-                            ProvenanceBadge(provenance: provenance, role: "Distilled by", size: 11)
+                            AIInfoButton(provenance: provenance, role: "Distilled by", size: 11)
                         }
                         if !lesson.evidence.isEmpty {
                             Text(lesson.evidence)

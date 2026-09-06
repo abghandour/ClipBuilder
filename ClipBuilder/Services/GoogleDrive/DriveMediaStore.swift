@@ -163,13 +163,43 @@ actor DriveMediaStore {
         return (attributes[.size] as? NSNumber)?.int64Value ?? 0
     }
 
+    private func uploadCheckpoint(for media: DriveMedia) -> URL {
+        database.path.deletingLastPathComponent().appendingPathComponent("drive-transfers")
+            .appendingPathComponent(ContentHashForDrive.key(database.path.path + media.id) + ".json")
+    }
+
+    /// Remove everything a cancelled transfer left behind: partial download
+    /// bytes and checkpoints, restore staging, or the resumable upload session.
+    /// Registered media and Drive records are untouched.
+    func discardArtifacts(for job: DriveTransfer) {
+        let fm = FileManager.default
+        switch job.operation {
+        case .download:
+            guard let file = job.file else { return }
+            let destination = inputFolder.appendingPathComponent("Google Drive/\(ContentHashForDrive.key(file.id))", isDirectory: true)
+                .appendingPathComponent(URL(fileURLWithPath: file.name).lastPathComponent)
+            let files = DriveTransferFiles(for: destination)
+            for url in [files.partial, files.checkpoint] { try? fm.removeItem(at: url) }
+            try? fm.removeItem(at: files.directory)
+            if !fm.fileExists(atPath: destination.path) {
+                try? fm.removeItem(at: destination.deletingLastPathComponent())
+            }
+        case .fetch:
+            guard let media = job.media else { return }
+            let files = DriveTransferFiles(for: URL(fileURLWithPath: media.path))
+            for url in [files.restoring, files.partial, files.checkpoint] { try? fm.removeItem(at: url) }
+        case .upload:
+            guard let media = job.media else { return }
+            try? fm.removeItem(at: uploadCheckpoint(for: media))
+        }
+    }
+
     func upload(
         _ media: DriveMedia, folder: String,
         progress: @escaping @Sendable (Double) async -> Void = { _ in }
     ) async throws -> DriveFile {
         let url = try await ensure(media, progress: progress)
-        let checkpoint = database.path.deletingLastPathComponent().appendingPathComponent("drive-transfers")
-            .appendingPathComponent(ContentHashForDrive.key(database.path.path + media.id) + ".json")
+        let checkpoint = uploadCheckpoint(for: media)
         let file = try await client.upload(file: url, folder: folder, checkpoint: checkpoint, progress: progress)
         try await database.setDriveCopy(media, file: file)
         try? FileManager.default.removeItem(at: checkpoint)

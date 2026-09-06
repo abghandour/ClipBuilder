@@ -83,7 +83,7 @@ struct GapReportSheet: View {
                 Text("Content Gaps")
                     .font(.headline)
                 if let provenance {
-                    ProvenanceBadge(provenance: provenance, style: .full, role: "Written by")
+                    AIInfoButton(provenance: provenance, style: .full, role: "Written by")
                 }
             }
             .padding()

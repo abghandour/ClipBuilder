@@ -209,6 +209,7 @@ struct LibraryView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
+                AIInfoButton(output: video)
                 Menu("More", systemImage: "ellipsis") {
                     driveSelectionAction(video)
                     Button("Open in Builder", systemImage: "timeline.selection") {

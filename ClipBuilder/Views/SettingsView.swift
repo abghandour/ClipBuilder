@@ -330,7 +330,7 @@ private struct TasteSettingsTab: View {
                         Text("Drafted by")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        ProvenanceBadge(provenance: provenance, style: .full, role: "Drafted by", size: 12)
+                        AIInfoButton(provenance: provenance, style: .full, role: "Drafted by", size: 12)
                     }
                 }
                 TextEditor(text: $store.activeProfile.tasteRubric)
@@ -401,7 +401,7 @@ private struct TasteSettingsTab: View {
                             Text("Distilled by")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            ProvenanceBadge(provenance: provenance, style: .full,
+                            AIInfoButton(provenance: provenance, style: .full,
                                             role: "Distilled by", size: 12)
                         }
                     }
@@ -531,7 +531,7 @@ private struct GeneralSettingsTab: View {
             Section("Transcription") {
                 LabeledContent("Engine") {
                     HStack(spacing: 6) {
-                        ProvenanceBadge(provenance: .appleSpeech(), role: "Transcribed by")
+                        AIInfoButton(provenance: .appleSpeech(), role: "Transcribed by")
                         Text("Apple SpeechAnalyzer (on-device)")
                     }
                 }

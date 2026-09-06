@@ -177,9 +177,11 @@ actor AIService {
                 // The candidate that answered is the provenance — a
                 // prediction made before the call would misattribute
                 // anything produced after a failover.
-                return AIResponse(text: text, provider: candidate.provider,
+                let response = AIResponse(text: text, provider: candidate.provider,
                                   model: candidate.model ?? AICatalog.provider(candidate.provider)?.defaultModel,
                                   task: task, fellBack: index > 0)
+                AIRunCapture.current?.append(response.provenance, prompt: prompt)
+                return response
             } catch let error as AIError {
                 lastError = error
                 if case .promptTooLong = error { tooLongError = error }

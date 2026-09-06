@@ -328,9 +328,7 @@ struct AnalyzeView: View {
                     Text(video.filename)
                         .onTapGesture { nameTapped(video) }
                         .help("Double-click to rename")
-                    if let provenance = video.namingProvenance {
-                        ProvenanceBadge(provenance: provenance, role: "Named by", size: 11)
-                    }
+                    AIInfoButton(video: video)
                 }
             }
             .width(min: 200, ideal: 320)

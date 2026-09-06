@@ -351,7 +351,10 @@ actor MultitrackRenderer {
                                                                duration: (finalDuration * 10).rounded() / 10,
                                                                timelineJSON: timelineJSON,
                                                                wizardProvider: nil, wizardModel: nil,
-                                                               projectID: projectID)
+                                                               projectID: projectID,
+                                                               settings: WizardRunSettings(options: WizardOptions(renderSettings: document.renderSettings),
+                                                                   sourceProfile: profile.profileName, sourceVideoPaths: Array(Set(scenes.map(\.videoPath))).sorted(),
+                                                                   sourceSceneIDs: scenes.map(\.id), builderDocumentJSON: timelineJSON))
         try await database.saveGeneratedTraits(videoID: recordID,
                                                traits: .derive(document: document, scenes: scenes))
         emit("Saved \(outputURL.lastPathComponent)")

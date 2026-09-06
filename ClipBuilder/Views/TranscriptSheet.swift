@@ -39,15 +39,7 @@ struct TranscriptSheet: View {
                     Text("Transcript — \(video.filename)")
                         .font(.headline)
                     HStack(spacing: 8) {
-                        if let provenance = rows.first?.provenance {
-                            HStack(spacing: 4) {
-                                Text("Transcribed by")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                ProvenanceBadge(provenance: provenance, style: .full,
-                                                role: "Transcribed by", size: 12)
-                            }
-                        }
+                        AIInfoButton(video: video)
                         if !rows.isEmpty {
                             Text("\(rows.count) segments")
                                 .font(.caption)

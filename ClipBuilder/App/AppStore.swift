@@ -1156,7 +1156,7 @@ final class AppStore {
         let storedInterval = UserDefaults.standard.double(forKey: "analysis.sampleInterval")
         // People attribution is mandatory: the people-detection pass gates
         // tagging, and every scene must carry whoever is in it.
-        let detectPeople = true
+        let detectPeople = UserDefaults.standard.object(forKey: "analysis.detectPeople") as? Bool ?? true
         let autoZoomUnframed = UserDefaults.standard.bool(forKey: "analysis.autoZoomUnframed")
         let breakdownTags: [String] = UserDefaults.standard.bool(forKey: "analysis.autoBreakdown")
             ? (UserDefaults.standard.string(forKey: "analysis.breakdownTags") ?? "")
@@ -1179,6 +1179,8 @@ final class AppStore {
             .split(separator: ",").map(String.init)
         UserDefaults.standard.removeObject(forKey: "analysis.requiredPeople")
         let sampleInterval: Double? = storedInterval > 0 ? storedInterval : nil
+        let pastedNotes = AISettingsJSON.decode([AnalysisRunNote].self, UserDefaults.standard.string(forKey: "analysis.pastedNotes"))
+        UserDefaults.standard.removeObject(forKey: "analysis.pastedNotes")
         let includeTranscript = UserDefaults.standard.bool(forKey: "analysis.includeTranscript")
         let transcription = transcription
         let podcastAnalysis = podcastAnalysis
@@ -1186,6 +1188,7 @@ final class AppStore {
         if !instructions.isEmpty { analysisLog.append("Using analysis instructions: \(instructions)") }
         let generation = profileGeneration
         analysisTask = Task {
+            await AIRunCapture.context.withValue(AIRunCapture()) {
             defer {
                 isAnalyzing = false
                 refreshAll()
@@ -1212,6 +1215,7 @@ final class AppStore {
             var renameSuggestions: [RenameSuggestion] = []
             for (index, video) in targets.enumerated() {
                 if Task.isCancelled { break }
+                AIRunCapture.current?.reset()
                 var video = video
                 let base = Double(index) / Double(targets.count)
                 let span = 1.0 / Double(targets.count)
@@ -1222,7 +1226,14 @@ final class AppStore {
                         video.videoType = type.rawValue
                         try await database.setVideoType(id: video.id, type: type.rawValue)
                     }
-                    let notes = (try? await database.videoNotes(videoID: video.id)) ?? []
+                    let notes: [VideoNote]
+                    if let pastedNotes {
+                        notes = pastedNotes.enumerated().map {
+                            VideoNote(id: Int64($0.offset), videoID: video.id, atTime: $0.element.at, note: $0.element.note)
+                        }
+                    } else {
+                        notes = (try? await database.videoNotes(videoID: video.id)) ?? []
+                    }
                     if !notes.isEmpty {
                         analysisLog.append("\(video.filename): applying \(notes.count) timestamped note(s)")
                     }
@@ -1279,6 +1290,14 @@ final class AppStore {
                         videoNewPeople = result.newPeople
                         suggestedFilename = result.suggestedFilename
                     }
+                    if let runID {
+                        try await database.saveAnalysisSettings(id: runID, settings: AnalysisRunSettings(
+                            instructions: instructions, sampleInterval: sampleInterval ?? 0,
+                            includeTranscript: includeTranscript || video.type == .podcast, language: video.type == .podcast ? "" : language,
+                            detectPeople: detectPeople, autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTags,
+                            trimRange: trimRange.map { [$0.start, $0.end] }, notes: notes.map { AnalysisRunNote(at: $0.atTime, note: $0.note) },
+                            provider: provider, model: model, videoPath: video.path, sourcePeople: requiredPeopleKeys, sourceProfile: profile.profileName))
+                    }
                     let pendingKeys = Set(newPeople.map(\.key))
                     newPeople.append(contentsOf: videoNewPeople.filter { !pendingKeys.contains($0.key) })
                     if let suggestedFilename {
@@ -1327,6 +1346,7 @@ final class AppStore {
                             analysisLog.append("\(video.filename): fight scoring failed — \(error.userMessage)")
                         }
                     }
+                    if let runID { try await database.updateAnalysisModels(id: runID) }
                     analysisLog.append("\(video.filename): done")
                 } catch is CancellationError {
                     break
@@ -1357,6 +1377,7 @@ final class AppStore {
             if !renameSuggestions.isEmpty {
                 pendingRenameReview = RenameReviewRequest(suggestions: renameSuggestions)
             }
+        }
         }
     }
 
@@ -3893,6 +3914,7 @@ final class AppStore {
         // started in; after a profile switch its results must not land here.
         let generation = profileGeneration
         wizardTask = Task {
+            await AIRunCapture.context.withValue(AIRunCapture()) {
             defer {
                 isWizardRunning = false
                 wizardStatus = nil
@@ -3940,6 +3962,7 @@ final class AppStore {
             }
             queueComparisons(previousIDs: previousIDs)
         }
+        }
     }
 
     func renderApprovedCuts(_ plan: WizardPlan, options: WizardOptions) {
@@ -3956,6 +3979,7 @@ final class AppStore {
         let wizard = wizard
         let generation = profileGeneration
         wizardTask = Task {
+            await AIRunCapture.context.withValue(AIRunCapture()) {
             defer {
                 isWizardRunning = false
                 wizardStatus = nil
@@ -3979,6 +4003,7 @@ final class AppStore {
                 await recordWizardTimelines(fresh, projectID: projectID,
                                             formatName: options.formatPreset)
             }
+        }
         }
     }
 
@@ -5209,6 +5234,7 @@ final class AppStore {
         let profile = activeProfile
         let wizard = wizard
         wizardTask = Task {
+            await AIRunCapture.context.withValue(AIRunCapture()) {
             do {
                 let (plan, sceneMap) = try await wizard.plan(options: options, profile: profile,
                                                              database: database, emit: logSink(\.wizardLog))
@@ -5230,6 +5256,7 @@ final class AppStore {
             isWizardRunning = false
             wizardStatus = nil
             isPlanningIntoBuilder = false
+        }
         }
     }
 }

@@ -1103,6 +1103,7 @@ actor Analyzer {
                        log: @escaping @Sendable (String) -> Void,
                        progress: @escaping @Sendable (Double, String) -> Void) async throws
         -> (runID: Int64?, newPeople: [DetectedNewPerson], suggestedFilename: String?) {
+        return try await AIRunCapture.context.withValue(AIRunCapture.current ?? AIRunCapture()) {
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let tags = profile.effectiveTags
         var allTags = Set(tags.values.flatMap { $0 })
@@ -1541,7 +1542,13 @@ actor Analyzer {
                                                     analyzedTags: tagsToRecord,
                                                     provider: attribution.provider,
                                                     model: attribution.model,
-                                                    mode: "visual")
+                                                    mode: "visual",
+                                                    settings: AnalysisRunSettings(instructions: instructions, sampleInterval: sampleInterval ?? 0,
+                                                        detectPeople: detectPeople, autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTags,
+                                                        trimRange: trimRange.map { [$0.start, $0.end] }, notes: noteSnapshot,
+                                                        provider: provider, model: model, videoPath: video.path, sourceProfile: profile.profileName,
+                                                        modelPrompts: AIRunCapture.current?.prompts ?? [:]),
+                                                    roles: [AIRole(role: "Tagging", provenance: AIProvenance(provider: attribution.provider, model: attribution.model, task: "analysis", at: Date(), fellBack: provider != nil && provider != attribution.provider))])
 
         // A type already on the row wins — it's either the user's manual
         // pick or an earlier inference; re-analysis never flips it.
@@ -1733,7 +1740,9 @@ actor Analyzer {
             }
         }
         progress(1.0, "done")
+        try await database.updateAnalysisModels(id: runID)
         return (runID, newPeople, suggestedFilename)
+        }
     }
 
     /// The detections that matter for framing: boxes nearly as tall as the
