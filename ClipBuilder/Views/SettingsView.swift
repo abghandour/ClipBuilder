@@ -2,24 +2,33 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    @AppStorage("settings.selectedTab") private var selectedTab = "profile"
     @Environment(AppStore.self) private var store
 
     var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             ProfileSettingsTab()
                 .tabItem { Label("Profile", systemImage: "person.crop.square") }
+                .tag("profile")
             TasteSettingsTab()
                 .tabItem { Label("Taste", systemImage: "graduationcap") }
+                .tag("taste")
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
+                .tag("general")
             AISettingsTab()
                 .tabItem { Label("AI", systemImage: "sparkles") }
+                .tag("ai")
+            GoogleDriveSettingsView()
+                .tabItem { Label("Google Drive", systemImage: "cloud") }
+                .tag("googleDrive")
             InstagramSettingsTab()
                 .tabItem { Label("Instagram", systemImage: "play.rectangle.on.rectangle") }
+                .tag("instagram")
         }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            Label("Changes save automatically", systemImage: "checkmark")
+            Label(selectedTab == "googleDrive" ? "Your connection is saved securely on this Mac" : "Changes save automatically", systemImage: "checkmark")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -511,10 +520,10 @@ private struct GeneralSettingsTab: View {
         Form {
             Section("Analysis") {
                 LabeledContent("Analysis mode") {
-                    Text("Visual (frame sampling)")
+                    Text("Visual + transcript-first podcasts")
                         .foregroundStyle(.secondary)
                 }
-                Text("Visual analysis is available now. Speech-first scene detection is coming soon; transcription remains available from Raw Videos.")
+                Text("Podcast sources use on-device transcription and sparse speaker frames. Other source types keep the visual analysis pipeline.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -547,6 +556,27 @@ private struct GeneralSettingsTab: View {
                 Toggle("Review podcast cuts before rendering",
                        isOn: $store.settings.podcast.reviewCutsByDefault)
                 Text("Transcript Tools uses these thresholds for adjustable silence and filler-cut suggestions.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Podcast highlights") {
+                LabeledContent("Automatic favorite score") {
+                    Stepper(value: $store.settings.podcast.highlightThreshold,
+                            in: 0...10, step: 0.5) {
+                        Text(store.settings.podcast.highlightThreshold,
+                             format: .number.precision(.fractionLength(1)))
+                            .monospacedDigit()
+                    }
+                }
+                LabeledContent("Speaker hold") {
+                    Stepper(value: $store.settings.podcast.speakerHoldSeconds,
+                            in: 0.5...5, step: 0.25) {
+                        Text("\(store.settings.podcast.speakerHoldSeconds, format: .number.precision(.fractionLength(2)))s")
+                            .monospacedDigit()
+                    }
+                }
+                Text("Exchanges at or above the score become favorites and receive a Reel chip. Follow-speaker framing waits at least the hold time before cutting sides.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

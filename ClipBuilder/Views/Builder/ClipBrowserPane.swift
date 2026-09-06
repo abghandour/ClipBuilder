@@ -233,6 +233,11 @@ struct ClipBrowserPane: View {
                                              stackMembers: stack,
                                              onPickFromStack: stack != nil
                                                  ? { stackPickerSceneID = scene.id } : nil)
+                                .safeAreaInset(edge: .bottom) {
+                                    if let video = store.videos.first(where: { $0.id == scene.videoID }), video.driveFileID != nil {
+                                        DriveMediaMenu(media: [video.driveMedia]).font(.caption)
+                                    }
+                                }
                                 .popover(isPresented: Binding(
                                     get: { stackPickerSceneID == scene.id },
                                     set: { if !$0 { stackPickerSceneID = nil } })

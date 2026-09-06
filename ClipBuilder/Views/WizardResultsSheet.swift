@@ -57,6 +57,7 @@ struct WizardResultsSheet: View {
                 }
                 .help("Generate again with the same settings — a new plan, new videos")
 
+                DriveMediaMenu(media: results.videos.map(\.driveMedia))
                 Spacer()
 
                 Button("Done") { dismiss() }
@@ -66,13 +67,16 @@ struct WizardResultsSheet: View {
         }
         .frame(minWidth: 480)
         .modalCloseButton { dismiss() }
-        .onAppear {
+        .task {
             for video in results.videos {
-                players[video.id] = AVPlayer(url: video.url)
+                guard await DrivePlayback.prepare(video.url) else { continue }
+                guard let asset = try? await DriveLocalAsset.make(video.url) else { continue }
+                players[video.id] = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             }
         }
         .onDisappear {
             for player in players.values { player.pause() }
+            players = [:]
         }
         .sheet(item: $reviewTarget) { video in
             ReviewSheet(video: video)

@@ -314,8 +314,10 @@ struct PlayerSheet: View {
                 .frame(minWidth: 420, minHeight: 560)
         }
         .modalCloseButton { dismiss() }
-        .onAppear {
-            let item = AVPlayerItem(url: url)
+        .task(id: url) {
+            guard await DrivePlayback.prepare(url) else { return }
+            guard let asset = try? await DriveLocalAsset.make(url) else { return }
+            let item = AVPlayerItem(asset: asset)
             if let endTime, endTime > startTime {
                 item.forwardPlaybackEndTime = CMTime(seconds: endTime, preferredTimescale: 600)
             }
@@ -349,6 +351,7 @@ struct PlayerSheet: View {
         }
         .onDisappear {
             player?.pause()
+            player = nil
             if let endObserver {
                 NotificationCenter.default.removeObserver(endObserver)
             }
@@ -405,6 +408,7 @@ struct SceneInlinePlayer: View {
     @Environment(AppStore.self) private var store
     let scene: SceneRecord
 
+    @State private var playbackFetchTask: Task<Void, Never>?
     @State private var player: AVPlayer?
     @State private var endObserver: NSObjectProtocol?
 
@@ -477,30 +481,36 @@ struct SceneInlinePlayer: View {
     }
 
     private func play() {
-        let item = AVPlayerItem(url: scene.videoURL)
-        item.forwardPlaybackEndTime = CMTime(seconds: scene.endTime, preferredTimescale: 600)
-        let player = AVPlayer(playerItem: item)
-        // Finishing the scene's range returns the card to its thumbnail.
-        endObserver = NotificationCenter.default.addObserver(
-            forName: AVPlayerItem.didPlayToEndTimeNotification,
-            object: item, queue: .main) { _ in
-            stop()
-        }
-        // Seeking before the item is ready gets dropped and the file would
-        // play from 0:00 — wait for readiness, land on the start, then roll.
-        let target = CMTime(seconds: scene.startTime, preferredTimescale: 600)
-        Task { [weak player, weak item] in
-            for _ in 0..<100 where item?.status != .readyToPlay {
-                if item?.status == .failed { return }
-                try? await Task.sleep(for: .milliseconds(50))
+        playbackFetchTask = Task {
+            guard await DrivePlayback.prepare(scene.videoURL) else { return }
+            guard let asset = try? await DriveLocalAsset.make(scene.videoURL) else { return }
+            let item = AVPlayerItem(asset: asset)
+            item.forwardPlaybackEndTime = CMTime(seconds: scene.endTime, preferredTimescale: 600)
+            let player = AVPlayer(playerItem: item)
+            // Finishing the scene's range returns the card to its thumbnail.
+            endObserver = NotificationCenter.default.addObserver(
+                forName: AVPlayerItem.didPlayToEndTimeNotification,
+                object: item, queue: .main) { _ in
+                stop()
             }
-            await player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
-            player?.play()
+            // Seeking before the item is ready gets dropped and the file would
+            // play from 0:00 — wait for readiness, land on the start, then roll.
+            let target = CMTime(seconds: scene.startTime, preferredTimescale: 600)
+            Task { [weak player, weak item] in
+                for _ in 0..<100 where item?.status != .readyToPlay {
+                    if item?.status == .failed { return }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                await player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+                player?.play()
+            }
+            self.player = player
         }
-        self.player = player
     }
 
     private func stop() {
+        playbackFetchTask?.cancel()
+        playbackFetchTask = nil
         player?.pause()
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
@@ -515,11 +525,14 @@ struct TagChip: View {
     let tag: String
 
     var body: some View {
-        Text(tag)
+        Text(tag == "reel-highlight" ? "Reel" : tag)
             .font(.caption2)
+            .fontWeight(tag == "reel-highlight" ? .semibold : .regular)
+            .foregroundStyle(tag == "reel-highlight" ? Color.white : .primary)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(.quaternary, in: Capsule())
+            .background(tag == "reel-highlight" ? Color.accentColor : Color.secondary.opacity(0.14),
+                        in: Capsule())
     }
 }
 
@@ -540,7 +553,7 @@ struct SceneTagLine: View {
 
     /// Chip row content — person: tags ride as avatars instead.
     private var chipTags: [String] {
-        tags.filter { !$0.hasPrefix("person:") }
+        tags.filter { !$0.hasPrefix("person:") && $0 != "podcast-exchange" && $0 != "podcast:split" }
     }
 
     var body: some View {

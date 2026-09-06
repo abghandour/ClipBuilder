@@ -98,6 +98,7 @@ struct ClipInspector: View {
 
     var body: some View {
         let model = store.builder
+        let scene = model.scene(for: clip)
         let area = model.area(forTrack: clip.track, at: clip.startTime)
         VStack(alignment: .leading, spacing: Theme.spaceL) {
             // Header
@@ -169,8 +170,33 @@ struct ClipInspector: View {
                         cropPreview(fraction: crop)
                     }
                     InspectorRow("Camera") {
-                        Toggle("Tracking reframe", isOn: binding(\.centerStage))
-                            .help("Follow the action with a tracking camera instead of the static crop")
+                        Toggle(scene?.tags.contains("podcast") == true ? "Follow active speaker" : "Tracking reframe",
+                               isOn: binding(\.centerStage))
+                            .help(scene?.tags.contains("podcast") == true
+                                  ? "Cut the saved crop between speakers after the minimum hold time"
+                                  : "Follow the action with a tracking camera instead of the static crop")
+                    }
+                    if scene?.tags.contains("podcast:split") == true {
+                        Button("Split Zoom Feeds", systemImage: "rectangle.split.2x1") {
+                            let taggedPeople = (scene?.tags ?? []).compactMap { tag -> PersonRecord? in
+                                guard tag.hasPrefix("person:") else { return nil }
+                                return store.people.first { $0.key == String(tag.dropFirst("person:".count)) }
+                            }
+                            guard let video = store.videos.first(where: { $0.id == scene?.videoID }) else { return }
+                            let aspect = Double(video.width) / Double(max(1, video.height))
+                            Task {
+                                let roster = await store.videoPeople(for: video.id)
+                                let left = roster.first { person in
+                                    person.portraitBox.map { $0.x + $0.w / 2 < 0.5 } == true
+                                }?.displayName ?? taggedPeople[safe: 0]?.displayName ?? "Left speaker"
+                                let right = roster.first { person in
+                                    person.portraitBox.map { $0.x + $0.w / 2 >= 0.5 } == true
+                                }?.displayName ?? taggedPeople[safe: 1]?.displayName ?? "Right speaker"
+                                model.splitZoomFeeds(clip.uid, leftName: left, rightName: right,
+                                                     sourceAspect: aspect)
+                            }
+                        }
+                        .help("Pin each source half into the top and bottom of a 50/50 vertical reel")
                     }
                 } else {
                     Text("Full screen. Portrait clips fill the frame as they are.")

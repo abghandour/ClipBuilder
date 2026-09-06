@@ -6,6 +6,8 @@ import Foundation
 actor Database {
     private let connection: SQLiteConnection
     let path: URL
+    private let creationDates: VideoCreationDates
+    private var createdDatesBackfilled = false
 
     private static let schema = """
     CREATE TABLE IF NOT EXISTS videos (
@@ -18,7 +20,10 @@ actor Database {
         height INTEGER DEFAULT 0,
         wide BOOLEAN DEFAULT 0,
         discovered_at TEXT DEFAULT (datetime('now')),
-        analyzed_at TEXT
+        analyzed_at TEXT,
+        podcast_layout TEXT,
+        podcast_seam_x REAL,
+        podcast_layout_confidence REAL
     );
 
     CREATE TABLE IF NOT EXISTS analysis_runs (
@@ -265,6 +270,21 @@ actor Database {
         ON transcripts(video_id, start_time, end_time);
     CREATE INDEX IF NOT EXISTS idx_transcripts_text
         ON transcripts(video_id, language);
+
+    CREATE TABLE IF NOT EXISTS speaker_turns (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        start_time REAL NOT NULL,
+        end_time REAL NOT NULL,
+        cluster INTEGER NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0,
+        picture_side TEXT,
+        picture_confidence REAL NOT NULL DEFAULT 0,
+        resolved_side TEXT,
+        person_key TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_speaker_turns_video_time
+        ON speaker_turns(video_id, start_time, end_time);
 
     CREATE TABLE IF NOT EXISTS transcript_features (
         id INTEGER PRIMARY KEY,
@@ -571,7 +591,8 @@ actor Database {
     );
     """
 
-    init(path: URL) throws {
+    init(path: URL, creationDates: VideoCreationDates = VideoCreationDates()) throws {
+        self.creationDates = creationDates
         self.path = path
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
@@ -602,7 +623,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 3
+    static let schemaVersion: Int64 = 6
 
     /// "wal" normally; "delete" after the fallback in `init`.
     func journalMode() throws -> String {
@@ -619,12 +640,12 @@ actor Database {
                                   "caption_model", "wizard_model",
                                   "rationale", "batch_id", "plan_clips_json",
                                   "cover_provider", "cover_model"]),
-            ("videos", ["drive_file_id", "drive_link",
+            ("videos", ["created_at", "drive_file_id", "drive_link",
                         "analyzer_provider", "visual_analyzer_provider",
                         "speech_analyzer_provider", "analyzer_model",
                         "visual_analyzer_model", "speech_analyzer_model",
                         "visual_analyzed_at", "speech_analyzed_at",
-                        "video_type",
+                        "video_type", "podcast_layout",
                         "naming_provider", "naming_model",
                         "people_provider", "people_model"]),
             ("wizard_research", ["provider", "model"]),
@@ -642,7 +663,21 @@ actor Database {
                 try connection.execute("ALTER TABLE \(table) ADD COLUMN \(column) TEXT")
             }
         }
+        for table in ["videos", "generated_videos"] {
+            let columns = try connection.columnNames(of: table)
+            for name in ["drive_offloaded", "drive_shared"] where !columns.contains(name) {
+                try connection.execute("ALTER TABLE \(table) ADD COLUMN \(name) INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+        try connection.execute("CREATE TABLE IF NOT EXISTS drive_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         let sceneColumns = try connection.columnNames(of: "scenes")
+        let videoColumns = try connection.columnNames(of: "videos")
+        if !videoColumns.contains("podcast_seam_x") {
+            try connection.execute("ALTER TABLE videos ADD COLUMN podcast_seam_x REAL")
+        }
+        if !videoColumns.contains("podcast_layout_confidence") {
+            try connection.execute("ALTER TABLE videos ADD COLUMN podcast_layout_confidence REAL")
+        }
         if !sceneColumns.contains("favorite") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN favorite INTEGER DEFAULT 0")
         }
@@ -1189,20 +1224,24 @@ actor Database {
 
     @discardableResult
     func registerVideo(hash: String, filename: String, path: String, duration: Double,
-                       width: Int, height: Int, wide: Bool) throws -> Int64 {
+                       width: Int, height: Int, wide: Bool) async throws -> Int64 {
+        let existing = try connection.query("SELECT discovered_at FROM videos WHERE hash = ?", [.text(hash)]).first
+        let discovered = existing?["discovered_at"]?.stringValue ?? Date().ISO8601Format()
+        let created = await creationDates.resolve(path: path, discoveredAt: discovered)
         let rows = try connection.query("""
-            INSERT INTO videos (hash, filename, path, duration, width, height, wide)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO videos (hash, filename, path, duration, width, height, wide, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(hash) DO UPDATE SET
                 filename=excluded.filename,
                 path=excluded.path,
                 duration=excluded.duration,
                 width=excluded.width,
                 height=excluded.height,
-                wide=excluded.wide
+                wide=excluded.wide,
+                created_at=COALESCE(videos.created_at, excluded.created_at)
             RETURNING id
             """, [.text(hash), .text(filename), .text(path), .real(duration),
-                  .integer(Int64(width)), .integer(Int64(height)), .integer(wide ? 1 : 0)])
+                  .integer(Int64(width)), .integer(Int64(height)), .integer(wide ? 1 : 0), .text(created)])
         return rows.first?["id"]?.intValue ?? connection.lastInsertRowID
     }
 
@@ -1474,7 +1513,22 @@ actor Database {
                   .integer(id)])
     }
 
-    func fetchVideos(projectID: Int64? = nil) throws -> [VideoRecord] {
+    /// Resolve only missing dates once per open, off the main actor. Each saved
+    /// value makes the backfill restartable if the app closes partway through.
+    func backfillCreatedDates() async throws {
+        guard !createdDatesBackfilled else { return }
+        let rows = try connection.query("SELECT id, path, discovered_at FROM videos WHERE created_at IS NULL")
+        for row in rows {
+            let date = await creationDates.resolve(path: row["path"]?.stringValue ?? "",
+                                                  discoveredAt: row["discovered_at"]?.stringValue)
+            try connection.execute("UPDATE videos SET created_at = ? WHERE id = ? AND created_at IS NULL",
+                                   [.text(date), .integer(row["id"]?.intValue ?? 0)])
+        }
+        createdDatesBackfilled = true
+    }
+
+    func fetchVideos(projectID: Int64? = nil) async throws -> [VideoRecord] {
+        try await backfillCreatedDates()
         let projectID = try scopedProjectID(projectID)
         if let projectID {
             return try connection.query("""
@@ -1503,6 +1557,7 @@ actor Database {
             height: Int(row["height"]?.intValue ?? 0),
             wide: row["wide"]?.boolValue ?? false,
             discoveredAt: row["discovered_at"]?.stringValue,
+            createdAt: row["created_at"]?.stringValue,
             analyzedAt: row["analyzed_at"]?.stringValue,
             visualAnalyzedAt: row["visual_analyzed_at"]?.stringValue,
             speechAnalyzedAt: row["speech_analyzed_at"]?.stringValue,
@@ -1515,12 +1570,63 @@ actor Database {
             peopleModel: row["people_model"]?.stringValue,
             namingProvider: row["naming_provider"]?.stringValue,
             namingModel: row["naming_model"]?.stringValue,
-            videoType: row["video_type"]?.stringValue)
+            videoType: row["video_type"]?.stringValue,
+            podcastLayout: row["podcast_layout"]?.stringValue,
+            podcastSeamX: row["podcast_seam_x"]?.doubleValue,
+            podcastLayoutConfidence: row["podcast_layout_confidence"]?.doubleValue,
+            driveFileID: row["drive_file_id"]?.stringValue,
+            driveLink: row["drive_link"]?.stringValue,
+            driveOffloaded: row["drive_offloaded"]?.boolValue ?? false,
+            driveShared: row["drive_shared"]?.boolValue ?? false)
     }
 
     func setVideoType(id: Int64, type: String?) throws {
         try connection.execute("UPDATE videos SET video_type = ? WHERE id = ?",
                                [type.map(SQLValue.text) ?? .null, .integer(id)])
+    }
+
+    func setPodcastLayout(videoID: Int64, layout: PodcastLayout,
+                          seamX: Double?, confidence: Double) throws {
+        try connection.execute("""
+            UPDATE videos SET podcast_layout = ?, podcast_seam_x = ?, podcast_layout_confidence = ?
+            WHERE id = ?
+            """, [.text(layout.rawValue), seamX.map(SQLValue.real) ?? .null,
+                  .real(confidence), .integer(videoID)])
+    }
+
+    func replaceSpeakerTurns(videoID: Int64, turns: [SpeakerTurn]) throws {
+        try connection.transaction {
+            try connection.execute("DELETE FROM speaker_turns WHERE video_id = ?", [.integer(videoID)])
+            for turn in turns {
+                try connection.execute("""
+                    INSERT INTO speaker_turns
+                        (video_id, start_time, end_time, cluster, confidence, picture_side,
+                         picture_confidence, resolved_side, person_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, [.integer(videoID), .real(turn.start), .real(turn.end),
+                          .integer(Int64(turn.cluster)), .real(turn.confidence),
+                          .text(turn.pictureSide.rawValue), .real(turn.pictureConfidence),
+                          .text(turn.resolvedSide.rawValue),
+                          turn.personKey.map(SQLValue.text) ?? .null])
+            }
+        }
+    }
+
+    func fetchSpeakerTurns(videoID: Int64) throws -> [SpeakerTurn] {
+        try connection.query("""
+            SELECT * FROM speaker_turns WHERE video_id = ? ORDER BY start_time, id
+            """, [.integer(videoID)]).map { row in
+                SpeakerTurn(id: row["id"]?.intValue ?? 0,
+                            videoID: videoID,
+                            start: row["start_time"]?.doubleValue ?? 0,
+                            end: row["end_time"]?.doubleValue ?? 0,
+                            cluster: Int(row["cluster"]?.intValue ?? 0),
+                            confidence: row["confidence"]?.doubleValue ?? 0,
+                            pictureSide: PodcastSpeakerSide(rawValue: row["picture_side"]?.stringValue ?? "") ?? .unknown,
+                            pictureConfidence: row["picture_confidence"]?.doubleValue ?? 0,
+                            resolvedSide: PodcastSpeakerSide(rawValue: row["resolved_side"]?.stringValue ?? "") ?? .unknown,
+                            personKey: row["person_key"]?.stringValue)
+            }
     }
 
     // MARK: - Scenes
@@ -1533,9 +1639,9 @@ actor Database {
 
     /// Everything the main window's library state is built from, in one
     /// actor hop, so a refresh is a single round trip instead of nine.
-    func fetchLibrarySnapshot(projectID: Int64? = nil) throws -> LibrarySnapshot {
+    func fetchLibrarySnapshot(projectID: Int64? = nil) async throws -> LibrarySnapshot {
         let projectID = try scopedProjectID(projectID)
-        let videos = try fetchVideos(projectID: projectID)
+        let videos = try await fetchVideos(projectID: projectID)
         let videoIDs = Set(videos.map(\.id))
         let generatedVideos = try fetchGeneratedVideos(projectID: projectID)
         let generatedIDs = Set(generatedVideos.map(\.id))
@@ -1556,7 +1662,8 @@ actor Database {
         let projectID = try scopedProjectID(projectID)
         var sql = """
             SELECT s.*, v.path AS video_path, v.filename AS video_filename,
-                   v.duration AS video_duration, v.wide AS video_wide
+                   v.duration AS video_duration, v.wide AS video_wide,
+                   v.width AS video_width, v.height AS video_height
             FROM scenes s JOIN videos v ON v.id = s.video_id
             """
         var params: [SQLValue] = []
@@ -1655,6 +1762,8 @@ actor Database {
                 videoPath: row["video_path"]?.stringValue ?? "",
                 videoFilename: row["video_filename"]?.stringValue ?? "",
                 videoDuration: row["video_duration"]?.doubleValue ?? 0,
+                videoWidth: Int(row["video_width"]?.intValue ?? 0),
+                videoHeight: Int(row["video_height"]?.intValue ?? 0),
                 wide: row["video_wide"]?.boolValue ?? false)
         }
     }
@@ -1914,6 +2023,35 @@ actor Database {
 
     // MARK: - People
 
+    /// Profile-wide portrait references, deliberately independent of the active project.
+    func podcastPortraitReferences() throws -> [(key: String, path: String, time: Double,
+                                                box: VideoPersonRecord.PortraitBox)] {
+        var references: [(String, String, Double, VideoPersonRecord.PortraitBox)] = []
+        for person in try fetchPeople() {
+            if let videoID = person.avatarVideoID, let time = person.avatarTime,
+               let box = person.avatarBox,
+               let path = try connection.query("SELECT path FROM videos WHERE id = ?", [.integer(videoID)])
+                .first?["path"]?.stringValue {
+                references.append((person.key, path, time, box))
+            } else if let reference = try markerReference(personID: person.id) {
+                let marker = reference.marker
+                references.append((person.key, reference.videoPath, marker.atTime,
+                                   .init(x: marker.x, y: marker.y, w: marker.width, h: marker.height)))
+            } else if let row = try connection.query("""
+                SELECT v.path, vp.portrait_at, vp.portrait_json FROM video_people vp
+                JOIN videos v ON v.id = vp.video_id
+                WHERE vp.person_id = ? AND vp.portrait_json IS NOT NULL
+                ORDER BY vp.video_id DESC LIMIT 1
+                """, [.integer(person.id)]).first,
+                let path = row["path"]?.stringValue,
+                let data = row["portrait_json"]?.stringValue?.data(using: .utf8),
+                let box = try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: data) {
+                references.append((person.key, path, row["portrait_at"]?.doubleValue ?? 0, box))
+            }
+        }
+        return references
+    }
+
     func fetchPeople() throws -> [PersonRecord] {
         try connection.query("SELECT * FROM people ORDER BY name COLLATE NOCASE, id").map { row in
             PersonRecord(id: row["id"]?.intValue ?? 0,
@@ -1963,6 +2101,8 @@ actor Database {
     /// Remove a person and every scene tag pointing at them.
     func deletePerson(_ person: PersonRecord) throws {
         try connection.transaction {
+            try connection.execute("UPDATE speaker_turns SET person_key = NULL WHERE person_key = ?",
+                                   [.text(person.key)])
             try connection.execute("DELETE FROM scene_tags WHERE tag = ?", [.text(person.tag)])
             try connection.execute("UPDATE person_markers SET person_id = NULL WHERE person_id = ?",
                                    [.integer(person.id)])
@@ -1974,6 +2114,8 @@ actor Database {
     /// retags every scene of `source` onto `target` and drops `source`.
     func mergePeople(source: PersonRecord, into target: PersonRecord) throws {
         try connection.transaction {
+            try connection.execute("UPDATE speaker_turns SET person_key = ? WHERE person_key = ?",
+                                   [.text(target.key), .text(source.key)])
             try connection.execute("UPDATE OR IGNORE scene_tags SET tag = ? WHERE tag = ?",
                                    [.text(target.tag), .text(source.tag)])
             // Rows whose retag collided with an existing target tag remain.
@@ -2403,7 +2545,11 @@ actor Database {
                              coverTime: row["cover_time"]?.doubleValue,
                              coverProvider: row["cover_provider"]?.stringValue,
                              coverModel: row["cover_model"]?.stringValue,
-                             projectID: row["project_id"]?.intValue)
+                             projectID: row["project_id"]?.intValue,
+                             driveFileID: row["drive_file_id"]?.stringValue,
+                             driveLink: row["drive_link"]?.stringValue,
+                             driveOffloaded: row["drive_offloaded"]?.boolValue ?? false,
+                             driveShared: row["drive_shared"]?.boolValue ?? false)
     }
 
     /// Remember the picked cover frame — the Library card renders its
@@ -3534,5 +3680,42 @@ actor Database {
 
     nonisolated static func sqliteDateString(_ date: Date) -> String {
         sqliteDateFormatter.string(from: date)
+    }
+}
+
+// MARK: - Google Drive (media only; profile preferences stay in this local DB)
+extension Database {
+    func driveSetting(_ key: String) throws -> String? {
+        try connection.query("SELECT value FROM drive_settings WHERE key = ?", [.text(key)]).first?["value"]?.stringValue
+    }
+
+    func setDriveSetting(_ key: String, value: String) throws {
+        try connection.execute("INSERT INTO drive_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                               [.text(key), .text(value)])
+    }
+
+    func driveSource(fileID: String) throws -> VideoRecord? {
+        try connection.query("SELECT * FROM videos WHERE drive_file_id = ? LIMIT 1", [.text(fileID)])
+            .first.map(Self.videoRecord)
+    }
+
+    func driveMedia(path: String) throws -> DriveMedia? {
+        if let row = try connection.query("SELECT * FROM videos WHERE path = ? AND drive_file_id IS NOT NULL LIMIT 1", [.text(path)]).first {
+            return Self.videoRecord(row).driveMedia
+        }
+        return try connection.query("SELECT * FROM generated_videos WHERE path = ? AND drive_file_id IS NOT NULL LIMIT 1", [.text(path)])
+            .first.map { Self.generatedVideoRecord($0).driveMedia }
+    }
+
+    func setDriveCopy(_ media: DriveMedia, file: DriveFile) throws {
+        let table = media.kind == .source ? "videos" : "generated_videos"
+        try connection.execute("UPDATE \(table) SET drive_file_id = ?, drive_link = ?, drive_shared = ?, drive_offloaded = 0 WHERE id = ?",
+                               [.text(file.id), .text(file.link), .integer(file.isShared ? 1 : 0), .integer(media.recordID)])
+    }
+
+    func setDriveOffloaded(_ media: DriveMedia, _ value: Bool) throws {
+        let table = media.kind == .source ? "videos" : "generated_videos"
+        try connection.execute("UPDATE \(table) SET drive_offloaded = ? WHERE id = ? AND drive_file_id IS NOT NULL",
+                               [.integer(value ? 1 : 0), .integer(media.recordID)])
     }
 }

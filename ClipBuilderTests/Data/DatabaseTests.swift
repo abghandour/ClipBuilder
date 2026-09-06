@@ -14,6 +14,7 @@ struct DatabaseTests {
             .compactMap { $0["name"]?.stringValue }
         #expect(tables.contains("videos"))
         #expect(tables.contains("scenes"))
+        #expect(tables.contains("speaker_turns"))
         let indexes = try connection.query("SELECT name FROM sqlite_master WHERE type='index'")
         #expect(!indexes.isEmpty)
     }
@@ -32,6 +33,7 @@ struct DatabaseTests {
         let database = try Database(path: copy)
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         for (table, column) in [("videos", "video_type"), ("videos", "naming_provider"),
+                                ("videos", "podcast_layout"), ("videos", "podcast_seam_x"),
                                 ("scenes", "curated_provider"), ("scenes", "stack_choice"),
                                 ("video_notes", "provider"), ("fight_events", "model")] {
             #expect(try raw.columnNames(of: table).contains(column), "\(table).\(column) missing after migration")

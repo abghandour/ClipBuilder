@@ -75,6 +75,9 @@ nonisolated enum ProcessRunner {
                     timeout: TimeInterval? = nil,
                     environment: [String: String]? = nil) async throws -> ProcessResult {
         let toolName = executable.lastPathComponent
+        let mediaLeases = (toolName == "ffmpeg" || toolName == "ffprobe")
+            ? try await DriveMediaResolver.shared.prepareInputs(arguments, probe: toolName == "ffprobe") : []
+        defer { withExtendedLifetime(mediaLeases) {} }
         let state = ProcessRunState()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in

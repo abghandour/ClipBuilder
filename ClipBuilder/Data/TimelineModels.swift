@@ -650,6 +650,7 @@ private nonisolated func encodeOrNull<T: Encodable, K: CodingKey>(
 /// Per-layer settings (three entries, one per video track).
 nonisolated struct TrackSettings: Codable, Sendable, Equatable {
     var muted: Bool = false
+    var label: String?
     var defaultPosition: String = "top"     // wide-clip slot when the clip has no override
     var captions: String = "none"           // none | top | middle | bottom
     var defaultCropXFrac: Double?
@@ -657,14 +658,15 @@ nonisolated struct TrackSettings: Codable, Sendable, Equatable {
     static let captionChoices = ["none", "top", "middle", "bottom"]
 
     enum CodingKeys: String, CodingKey {
-        case muted, captions
+        case muted, captions, label
         case defaultPosition = "default_position"
         case defaultCropXFrac = "default_crop_x_frac"
     }
 
-    init(muted: Bool = false, defaultPosition: String = "top",
+    init(muted: Bool = false, label: String? = nil, defaultPosition: String = "top",
          captions: String = "none", defaultCropXFrac: Double? = nil) {
         self.muted = muted
+        self.label = label
         self.defaultPosition = defaultPosition
         self.captions = captions
         self.defaultCropXFrac = defaultCropXFrac
@@ -673,6 +675,7 @@ nonisolated struct TrackSettings: Codable, Sendable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         muted = try container.decodeIfPresent(Bool.self, forKey: .muted) ?? false
+        label = try container.decodeIfPresent(String.self, forKey: .label)
         defaultPosition = try container.decodeIfPresent(String.self, forKey: .defaultPosition) ?? ""
         if let flag = try? container.decode(Bool.self, forKey: .captions) {
             captions = flag ? "bottom" : "none"
@@ -688,6 +691,7 @@ nonisolated struct TrackSettings: Codable, Sendable, Equatable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(muted, forKey: .muted)
+        try encodeOrNull(label, in: &container, forKey: .label)
         try container.encode(defaultPosition, forKey: .defaultPosition)
         try container.encode(captions, forKey: .captions)
         try encodeOrNull(defaultCropXFrac, in: &container, forKey: .defaultCropXFrac)

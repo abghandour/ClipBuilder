@@ -139,7 +139,8 @@ private struct ProjectActivitySummary: View {
                 Spacer(minLength: 0)
             }
 
-            if activities.isEmpty {
+            DriveActivityRows()
+            if activities.isEmpty && store.googleDrive.jobs.allSatisfy({ $0.status == .complete }) {
                 Text("Idle")
                     .foregroundStyle(.tertiary)
                     .padding(.leading, 18)
@@ -163,6 +164,7 @@ private struct ProjectActivitySummary: View {
         .padding(.vertical, Theme.spaceS)
         .frame(minHeight: 34)
         .accessibilityElement(children: .combine)
+        .onChange(of: store.googleDrive.revision) { store.refreshAll() }
     }
 
     private var activities: [ProjectActivity] {

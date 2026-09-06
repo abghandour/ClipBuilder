@@ -52,11 +52,15 @@ nonisolated struct PodcastSettings: Codable, Sendable {
     var deadAirSeconds = 1.5
     var fillerRunSeconds = 2.0
     var reviewCutsByDefault = true
+    var highlightThreshold = 7.0
+    var speakerHoldSeconds = 1.5
 
     enum CodingKeys: String, CodingKey {
         case deadAirSeconds = "dead_air_seconds"
         case fillerRunSeconds = "filler_run_seconds"
         case reviewCutsByDefault = "review_cuts_by_default"
+        case highlightThreshold = "highlight_threshold"
+        case speakerHoldSeconds = "speaker_hold_seconds"
     }
 
     init() {}
@@ -66,6 +70,8 @@ nonisolated struct PodcastSettings: Codable, Sendable {
         deadAirSeconds = min(10, max(0.5, try container.decodeIfPresent(Double.self, forKey: .deadAirSeconds) ?? 1.5))
         fillerRunSeconds = min(10, max(0.5, try container.decodeIfPresent(Double.self, forKey: .fillerRunSeconds) ?? 2))
         reviewCutsByDefault = try container.decodeIfPresent(Bool.self, forKey: .reviewCutsByDefault) ?? true
+        highlightThreshold = min(10, max(0, try container.decodeIfPresent(Double.self, forKey: .highlightThreshold) ?? 7))
+        speakerHoldSeconds = min(5, max(0.5, try container.decodeIfPresent(Double.self, forKey: .speakerHoldSeconds) ?? 1.5))
     }
 }
 
@@ -397,11 +403,21 @@ nonisolated enum AICatalog {
 nonisolated enum SettingsStore {
     static let dataFolderDefaultsKey = "ClipBuilderDataFolder"
 
+    /// In-process override used by the test suite. It never touches the
+    /// persisted defaults, so a killed test run cannot leave the user's app
+    /// pointed at a temporary folder.
+    nonisolated(unsafe) static var dataFolderOverride: String?
+
+    /// The custom data folder, if any: the process override first, then the
+    /// user default (also settable per launch via `-ClipBuilderDataFolder`).
+    static var customDataFolder: URL? {
+        let custom = dataFolderOverride ?? UserDefaults.standard.string(forKey: dataFolderDefaultsKey)
+        guard let custom, !custom.isEmpty else { return nil }
+        return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
+    }
+
     static var dataDirectory: URL {
-        if let custom = UserDefaults.standard.string(forKey: dataFolderDefaultsKey), !custom.isEmpty {
-            return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
-        }
-        return ProfileStore.profilesDirectory.appendingPathComponent("data", isDirectory: true)
+        customDataFolder ?? ProfileStore.profilesDirectory.appendingPathComponent("data", isDirectory: true)
     }
 
     static var settingsURL: URL { dataDirectory.appendingPathComponent("app_settings.json") }

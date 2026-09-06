@@ -49,6 +49,7 @@ nonisolated enum WizardTextMode: String, CaseIterable, Sendable {
     func output(transcriptsAvailable: Bool, recipe: String) -> (captions: Bool, headlines: Bool) {
         switch self {
         case .automatic:
+            if recipe == "podcast" { return (transcriptsAvailable, true) }
             let spoken = recipe == "interview" && transcriptsAvailable
             return (spoken, !spoken)
         case .captions:

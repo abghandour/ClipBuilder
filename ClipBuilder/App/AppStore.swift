@@ -30,6 +30,7 @@ final class AppStore {
     var settings: AppSettings
     var profiles: [BrandProfile] = []
     var activeProfile: BrandProfile
+    let googleDrive = GoogleDriveTransfers.shared
     private(set) var database: Database?
 
     // Project workspace. Projects scope footage, scenes, timelines, and
@@ -115,6 +116,9 @@ final class AppStore {
     /// Projects with a job in flight — deleting one would strand its output.
     var busyProjectIDs: Set<Int64> {
         var ids = Set<Int64>()
+        for job in googleDrive.jobs where job.profile == activeProfile.profileName && job.status != .complete {
+            if let id = job.projectID { ids.insert(id) }
+        }
         if isWizardRunning, let wizardProjectID { ids.insert(wizardProjectID) }
         if isPipelineRunning, let pipelineProjectID { ids.insert(pipelineProjectID) }
         if isBuilderRendering, let builderRenderProjectID { ids.insert(builderRenderProjectID) }
@@ -351,6 +355,7 @@ final class AppStore {
     let renderEngine = RenderEngine()
     let transcription = TranscriptionService()
     private let analyzer: Analyzer
+    private let podcastAnalysis: PodcastAnalysisService
     private let wizard: WizardEngine
     private let multitrackRenderer: MultitrackRenderer
     private let instagram: InstagramService
@@ -381,6 +386,7 @@ final class AppStore {
         self.database = database
         self.ai = ai
         analyzer = Analyzer(ai: ai)
+        podcastAnalysis = PodcastAnalysisService(ai: ai)
         wizard = WizardEngine(ai: ai, render: renderEngine)
         multitrackRenderer = MultitrackRenderer(render: renderEngine)
         instagram = InstagramService(ai: ai)
@@ -493,6 +499,7 @@ final class AppStore {
 
     func initializeProjectWorkspace() async {
         guard let database else { return }
+        await googleDrive.attach(profile: activeProfile, database: database)
         do {
             let legacyJSON = BuilderStateStore.load(profileName: activeProfile.profileName)
                 .flatMap { try? JSONEncoder().encode($0) }
@@ -948,6 +955,7 @@ final class AppStore {
     func refreshAllNow() async {
         guard let database, let activeProjectID else { return }
         let generation = profileGeneration
+        await googleDrive.attach(profile: activeProfile, database: database)
         do {
             let snapshot = try await database.fetchLibrarySnapshot(projectID: activeProjectID)
             applyLibrarySnapshot(snapshot, generation: generation)
@@ -1173,6 +1181,7 @@ final class AppStore {
         let sampleInterval: Double? = storedInterval > 0 ? storedInterval : nil
         let includeTranscript = UserDefaults.standard.bool(forKey: "analysis.includeTranscript")
         let transcription = transcription
+        let podcastAnalysis = podcastAnalysis
         let language = settings.transcribeLanguage
         if !instructions.isEmpty { analysisLog.append("Using analysis instructions: \(instructions)") }
         let generation = profileGeneration
@@ -1203,9 +1212,16 @@ final class AppStore {
             var renameSuggestions: [RenameSuggestion] = []
             for (index, video) in targets.enumerated() {
                 if Task.isCancelled { break }
+                var video = video
                 let base = Double(index) / Double(targets.count)
                 let span = 1.0 / Double(targets.count)
                 do {
+                    if video.type == nil, video.duration >= 300,
+                       let type = try await analyzer.classifyLongRecording(
+                        video: video, provider: provider, model: model, log: logSink(\.analysisLog)) {
+                        video.videoType = type.rawValue
+                        try await database.setVideoType(id: video.id, type: type.rawValue)
+                    }
                     let notes = (try? await database.videoNotes(videoID: video.id)) ?? []
                     if !notes.isEmpty {
                         analysisLog.append("\(video.filename): applying \(notes.count) timestamped note(s)")
@@ -1218,28 +1234,51 @@ final class AppStore {
                     // additions are seen and the v-counter never repeats.
                     let existingBatches = ((try? await database.fetchAnalysisRuns()) ?? [])
                         .count { $0.videoID == video.id }
-                    let (runID, videoNewPeople, suggestedFilename) = try await analyzer.analyzeVisual(
-                        video: video, profile: profile, database: database,
-                        runName: Self.analysisRunName(for: video,
-                                                      existingBatchCount: existingBatches)
-                            + (trimRange.map { " (\($0.start.timecode)–\($0.end.timecode))" } ?? ""),
-                        provider: provider, model: model,
-                        instructions: instructions, notes: notes,
-                        knownPeople: knownPeople,
-                        personMarkers: markers,
-                        detectPeople: detectPeople,
-                        autoZoomUnframed: autoZoomUnframed,
-                        breakdownTags: breakdownTags,
-                        trimRange: trimRange,
-                        sampleInterval: sampleInterval,
-                        force: true,
-                        log: logSink(\.analysisLog),
-                        progress: { fraction, stage in
-                            Task { @MainActor in
-                                self.analysisProgress = base + span * fraction
-                                self.analysisStage = stage
-                            }
-                        })
+                    let runName = Self.analysisRunName(for: video,
+                                                       existingBatchCount: existingBatches)
+                        + (trimRange.map { " (\($0.start.timecode)–\($0.end.timecode))" } ?? "")
+                    let progress: @Sendable (Double, String) -> Void = { fraction, stage in
+                        Task { @MainActor in
+                            self.analysisProgress = base + span * fraction
+                            self.analysisStage = stage
+                        }
+                    }
+                    let runID: Int64?
+                    let videoNewPeople: [DetectedNewPerson]
+                    let suggestedFilename: String?
+                    if video.type == .podcast {
+                        let result = try await podcastAnalysis.analyze(
+                            video: video, profile: profile, database: database,
+                            runName: runName, provider: provider, model: model,
+                            // Podcasts always perform the plan's EN/pt-BR-first
+                            // detection; the generic transcription override is
+                            // intentionally limited to non-podcast footage.
+                            languageCode: "", analyzer: analyzer,
+                            transcription: transcription,
+                            highlightThreshold: settings.podcast.highlightThreshold,
+                            holdSeconds: settings.podcast.speakerHoldSeconds,
+                            log: logSink(\.analysisLog), progress: progress)
+                        runID = result.runID
+                        videoNewPeople = result.newPeople
+                        suggestedFilename = result.suggestedFilename
+                    } else {
+                        let result = try await analyzer.analyzeVisual(
+                            video: video, profile: profile, database: database,
+                            runName: runName, provider: provider, model: model,
+                            instructions: instructions, notes: notes,
+                            knownPeople: knownPeople,
+                            personMarkers: markers,
+                            detectPeople: detectPeople,
+                            autoZoomUnframed: autoZoomUnframed,
+                            breakdownTags: breakdownTags,
+                            trimRange: trimRange,
+                            sampleInterval: sampleInterval,
+                            force: true,
+                            log: logSink(\.analysisLog), progress: progress)
+                        runID = result.runID
+                        videoNewPeople = result.newPeople
+                        suggestedFilename = result.suggestedFilename
+                    }
                     let pendingKeys = Set(newPeople.map(\.key))
                     newPeople.append(contentsOf: videoNewPeople.filter { !pendingKeys.contains($0.key) })
                     if let suggestedFilename {
@@ -1247,7 +1286,7 @@ final class AppStore {
                                                                   currentFilename: video.filename,
                                                                   suggestedName: suggestedFilename))
                     }
-                    if includeTranscript {
+                    if includeTranscript && video.type != .podcast {
                         // A transcript failure shouldn't undo a good analysis
                         // — log it and keep going.
                         do {
@@ -1458,7 +1497,7 @@ final class AppStore {
                     if existing.isEmpty {
                         log("Transcribing \(video.filename)…")
                         do {
-                            _ = try await transcription.transcribe(video: video, database: database,
+                            _ = try await transcription.transcribeForVideo(video: video, database: database,
                                                                    languageCode: language, log: relay)
                         } catch {
                             log("\(video.filename): transcription failed — \(error.userMessage)")
@@ -2211,6 +2250,18 @@ final class AppStore {
     /// Wizard, the pipeline's rename step); nil for a hand rename.
     func renameVideo(_ video: VideoRecord, to rawName: String, provenance: AIProvenance? = nil) {
         guard let database else { return }
+        if video.driveFileID != nil, !FileManager.default.fileExists(atPath: video.path) {
+            let generation = profileGeneration
+            let profile = activeProfile.profileName
+            Task {
+                do {
+                    _ = try await googleDrive.fetch(video.driveMedia, profile: profile)
+                    guard generation == profileGeneration else { return }
+                    renameVideo(video, to: rawName, provenance: provenance)
+                } catch { presentError("Could not fetch the video to rename", error) }
+            }
+            return
+        }
         var name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "/", with: "-")
             .replacingOccurrences(of: ":", with: "-")
@@ -2760,7 +2811,7 @@ final class AppStore {
                 refreshAll()
             }
             do {
-                _ = try await transcription.transcribe(video: video, database: database,
+                _ = try await transcription.transcribeForVideo(video: video, database: database,
                                                        languageCode: language, force: force,
                                                        log: logSink(\.analysisLog))
                 analysisLog.append("\(video.filename): transcription saved")
@@ -4521,7 +4572,13 @@ final class AppStore {
                 // The history import phase may have written rows before the
                 // live sync failed; a period change must not serve old inputs.
                 await instagram.invalidateReportInputs()
-                presentError("Instagram fetch failed", error)
+                // InstagramError descriptions already carry the "Instagram
+                // fetch failed" context; only other error types need it.
+                if error is InstagramError {
+                    presentError(error.userMessage)
+                } else {
+                    presentError("Instagram fetch failed", error)
+                }
             }
             isFetchingInstagram = false
         }
@@ -5157,7 +5214,8 @@ final class AppStore {
                                                              database: database, emit: logSink(\.wizardLog))
                 let document = WizardEngine.timelineDocument(from: plan, sceneMap: sceneMap,
                                                              renderSettings: options.renderSettings,
-                                                             pacing: options.pacing)
+                                                             pacing: options.pacing,
+                                                             podcastFraming: options.podcastFraming)
                 if document.videoTrack.isEmpty {
                     presentError("The plan produced no usable clips")
                 } else {

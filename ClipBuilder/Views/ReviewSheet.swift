@@ -88,8 +88,11 @@ struct ReviewSheet: View {
         .padding(.bottom)
         .modalCloseButton { dismiss() }
         .frame(width: 720)
+        .onDisappear { player?.pause(); player = nil }
         .task {
-            let player = AVPlayer(url: video.url)
+            guard await DrivePlayback.prepare(video.url) else { return }
+            guard let asset = try? await DriveLocalAsset.make(video.url) else { return }
+            let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             self.player = player
             if let existing = await store.loadReview(for: video) {
                 verdict = existing.review.verdict

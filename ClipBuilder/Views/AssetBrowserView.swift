@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 /// per kind: audio rows with preview playback, font rows with rendered
 /// samples, image thumbnails in a grid.
 struct AssetBrowserView: View {
+    @State private var showingDriveBrowser = false
     @Environment(AppStore.self) private var store
     let kind: AssetKind
 
@@ -51,6 +52,7 @@ struct AssetBrowserView: View {
                 listContent
             }
         }
+        .sheet(isPresented: $showingDriveBrowser) { GoogleDriveBrowserSheet() }
         .screenTitle(kind.title, subtitle: subtitle)
         .toolbar {
             ToolbarItemGroup {
@@ -58,6 +60,8 @@ struct AssetBrowserView: View {
                     showingImporter = true
                 }
                 .help("Copy files into the current folder")
+                Button("Add from Google Drive…", systemImage: "icloud.and.arrow.down") { showingDriveBrowser = true }
+                    .help("Add Drive media to this project’s Sources")
 
                 if kind == .images {
                     Button("Ask Images", systemImage: "sparkle.magnifyingglass") {

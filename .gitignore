@@ -38,3 +38,8 @@ fastlane/test_output
 
 # Impeccable design-skill local state (critique snapshots)
 .impeccable/
+
+# Developer-local Google Drive build configuration
+Configuration/GoogleDrive-Local.xcconfig
+Configuration/GoogleDrive-Local.plist
+Configuration/GoogleDrive-Local.json

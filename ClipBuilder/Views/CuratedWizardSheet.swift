@@ -11,6 +11,7 @@ struct CuratedWizardSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
+    @State private var playbackFetchTask: Task<Void, Never>?
     @State private var model: CuratedWizardModel
     @State private var player: AVPlayer?
     @State private var loopObserver: Any?
@@ -608,7 +609,11 @@ struct CuratedWizardSheet: View {
             for pick in picks {
                 let scene = scenes[pick.scene.id] ?? pick.scene
                 let url = scene.videoURL
-                let asset = assets[url] ?? AVURLAsset(url: url)
+                guard await DrivePlayback.prepare(url) else { return }
+                let asset: AVURLAsset
+                if let cached = assets[url] { asset = cached }
+                else if let loaded = try? await DriveLocalAsset.make(url) { asset = loaded }
+                else { return }
                 assets[url] = asset
                 guard let source = try? await asset.loadTracks(withMediaType: .video).first,
                       let (orientation, orientedSize) = try? await Self.orientation(of: source)
@@ -645,6 +650,7 @@ struct CuratedWizardSheet: View {
             guard !Task.isCancelled, cursor > .zero else { return }
             videoComposition.instructions = instructions
             let item = AVPlayerItem(asset: composition)
+            DriveLocalAsset.retainSources(Array(assets.values), on: item)
             item.videoComposition = videoComposition
             installReelItem(item)
         }
@@ -1466,33 +1472,39 @@ struct CuratedWizardSheet: View {
     private func syncPlayer() {
         teardownPlayer()
         guard let scene = model.previewScene, let range = model.currentLoopRange else { return }
-        let newPlayer = AVPlayer(url: scene.videoURL)
-        newPlayer.isMuted = previewMuted
-        player = newPlayer
-        newPlayer.seek(to: CMTime(seconds: range.lowerBound, preferredTimescale: 600),
-                       toleranceBefore: .zero, toleranceAfter: .zero)
-        if previewPlaying { newPlayer.rate = previewRate }
-        // The observer reads the CURRENT bounds each tick, so dragging the
-        // trim handles immediately re-scopes the loop.
-        loopObserver = newPlayer.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { time in
-            Task { @MainActor in
-                guard let player = self.player, !self.isScrubbing,
-                      let range = model.currentLoopRange else { return }
-                // Track native-control mute changes as they happen.
-                if player.isMuted != self.previewMuted {
-                    self.previewMuted = player.isMuted
-                }
-                let seconds = time.seconds
-                if seconds >= range.upperBound || seconds < range.lowerBound - 0.5 {
-                    player.seek(to: CMTime(seconds: range.lowerBound, preferredTimescale: 600),
-                                toleranceBefore: .zero, toleranceAfter: .zero)
+        playbackFetchTask = Task {
+            guard await DrivePlayback.prepare(scene.videoURL) else { return }
+            guard let asset = try? await DriveLocalAsset.make(scene.videoURL) else { return }
+            let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+            newPlayer.isMuted = previewMuted
+            player = newPlayer
+            await newPlayer.seek(to: CMTime(seconds: range.lowerBound, preferredTimescale: 600),
+                           toleranceBefore: .zero, toleranceAfter: .zero)
+            if previewPlaying { newPlayer.rate = previewRate }
+            // The observer reads the CURRENT bounds each tick, so dragging the
+            // trim handles immediately re-scopes the loop.
+            loopObserver = newPlayer.addPeriodicTimeObserver(
+                forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { time in
+                Task { @MainActor in
+                    guard let player = self.player, !self.isScrubbing,
+                          let range = model.currentLoopRange else { return }
+                    // Track native-control mute changes as they happen.
+                    if player.isMuted != self.previewMuted {
+                        self.previewMuted = player.isMuted
+                    }
+                    let seconds = time.seconds
+                    if seconds >= range.upperBound || seconds < range.lowerBound - 0.5 {
+                        player.seek(to: CMTime(seconds: range.lowerBound, preferredTimescale: 600),
+                                    toleranceBefore: .zero, toleranceAfter: .zero)
+                    }
                 }
             }
         }
     }
 
     private func teardownPlayer() {
+        playbackFetchTask?.cancel()
+        playbackFetchTask = nil
         // The proposal player shows native controls — pausing or muting
         // there bypasses our state, so read the player's actual state before
         // letting it go and the next video starts the same way.

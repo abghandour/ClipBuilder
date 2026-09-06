@@ -198,7 +198,7 @@ actor CenterStageService {
     /// `requireWide` = the classic 9:16 reframe, which only makes sense on
     /// landscape footage; area framing (any target aspect) accepts anything.
     private func loadSource(_ url: URL, requireWide: Bool = true) async throws -> SourceInfo {
-        let asset = AVURLAsset(url: url)
+        let asset = try await DriveLocalAsset.make(url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw CenterStageError(message: "The file has no video track.")
         }

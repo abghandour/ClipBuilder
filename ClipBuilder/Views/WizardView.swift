@@ -16,6 +16,7 @@ struct WizardView: View {
     @AppStorage("wizard.critiqueLoop") private var critiqueLoop = true
     @AppStorage("wizard.captionLanguage") private var captionLanguage = ""
     @AppStorage("wizard.reviewProposedCuts") private var reviewProposedCuts = false
+    @AppStorage("wizard.podcastFraming") private var podcastFramingRaw = PodcastFramingMode.followSpeaker.rawValue
     @AppStorage(WizardDefaults.layoutModeKey) private var layoutModeRaw = WizardLayoutMode.automatic.rawValue
     @AppStorage(WizardDefaults.selectedLayoutsKey) private var selectedLayoutsRaw = ""
     @AppStorage(WizardDefaults.brandingOverrideKey) private var brandingOverrideRaw = WizardBrandingOverride.savedDefault.rawValue
@@ -321,14 +322,25 @@ struct WizardView: View {
                     Text("Fight recap").tag("recap")
                     Text("Best-of compilation").tag("compilation")
                     Text("Interview clip").tag("interview")
-                    Text("Podcast topic clip").tag("podcast")
+                    Text("Podcast highlights").tag("podcast")
                 }
                 .onChange(of: formatPreset) { oldValue, newValue in
                     if newValue == "podcast", oldValue != "podcast" {
-                        reviewProposedCuts = true
+                        reviewProposedCuts = store.settings.podcast.reviewCutsByDefault
                     } else if oldValue == "podcast", newValue != "podcast" {
                         reviewProposedCuts = false
                     }
+                }
+
+                if formatPreset == "podcast" {
+                    Picker("Framing", selection: $podcastFramingRaw) {
+                        ForEach(PodcastFramingMode.allCases) { mode in
+                            Text(mode.label).tag(mode.rawValue)
+                        }
+                    }
+                    Text("Follow speaker uses the saved talker timeline. Split Zoom feeds pins each source half into a 50/50 reel.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
                 Picker("Length", selection: durationModeBinding) {
@@ -863,6 +875,7 @@ struct WizardView: View {
         options.targetDurationSeconds = durationMode.duration
             ?? (durationMode == .custom ? min(180, max(3, customDuration)) : nil)
         options.formatPreset = formatPreset
+        options.podcastFraming = PodcastFramingMode(rawValue: podcastFramingRaw) ?? .followSpeaker
         options.critiqueLoop = critiqueLoop
         options.tastePreset = tastePreset.isEmpty ? nil : tastePreset
         options.includeWatermark = branding.includeWatermark

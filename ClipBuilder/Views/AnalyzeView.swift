@@ -5,6 +5,12 @@ import UniformTypeIdentifiers
 /// Analyze tab: source-video inventory with analysis/transcription status,
 /// batch AI tagging, and a live progress log.
 struct AnalyzeView: View {
+    @State private var showingDriveBrowser = false
+    @State private var confirmingDriveUpload = false
+    @State private var showingDriveUpload = false
+    @State private var pendingDriveUploads: [DriveMedia] = []
+    @State private var skippedDriveUploads = 0
+    @State private var sortOrder: [KeyPathComparator<VideoRecord>] = []
     @Environment(AppStore.self) private var store
 
     @State private var selection: Set<Int64> = []
@@ -131,6 +137,13 @@ struct AnalyzeView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .sheet(isPresented: $showingDriveBrowser) { GoogleDriveBrowserSheet() }
+        .sheet(isPresented: $showingDriveUpload) { GoogleDriveBrowserSheet(uploadMedia: pendingDriveUploads) }
+        .confirmationDialog("Upload selected videos to Google Drive?", isPresented: $confirmingDriveUpload) {
+            Button("Choose Folder…") { showingDriveUpload = true }
+        } message: {
+            Text("\(pendingDriveUploads.count) videos will upload. \(skippedDriveUploads) skipped (already in Drive). Uploads continue in the background.")
+        }
         .screenTitle("Sources", subtitle: "\(store.videos.count) source videos")
         .toolbar {
             ToolbarItemGroup {
@@ -138,6 +151,15 @@ struct AnalyzeView: View {
                     showingImporter = true
                 }
                 .help("Add source videos to this project")
+                Button("Add from Google Drive…", systemImage: "icloud.and.arrow.down") { showingDriveBrowser = true }
+                Button("Upload to Google Drive…", systemImage: "icloud.and.arrow.up") {
+                    pendingDriveUploads = GoogleDriveTransfers.uploadCandidates(selectedVideos.map(\.driveMedia))
+                    skippedDriveUploads = selectedVideos.count - pendingDriveUploads.count
+                    confirmingDriveUpload = true
+                }
+                .disabled(GoogleDriveTransfers.uploadCandidates(selectedVideos.map(\.driveMedia)).isEmpty)
+                DriveMediaMenu(media: selectedVideos.filter { $0.driveFileID != nil }.map(\.driveMedia))
+                    .disabled(!selectedVideos.contains { $0.driveFileID != nil })
 
                 if store.isHomeProject {
                     Menu("Add to Project…", systemImage: "folder.badge.plus") {
@@ -298,9 +320,11 @@ struct AnalyzeView: View {
         let peopleCounts = store.analysisRuns.reduce(into: [Int64: Set<String>]()) { result, run in
             if let tags = personTagsByRun[run.id] { result[run.videoID, default: []].formUnion(tags) }
         }.mapValues(\.count)
-        return Table(store.videos, selection: $selection) {
+        return Table(store.videos.sorted(using: sortOrder), selection: $selection, sortOrder: $sortOrder) {
             TableColumn("File") { video in
                 HStack {
+                    if video.driveFileID != nil { DriveMediaMenu(media: [video.driveMedia]) }
+                    DriveSourceProgress(media: video.driveMedia)
                     Text(video.filename)
                         .onTapGesture { nameTapped(video) }
                         .help("Double-click to rename")
@@ -310,6 +334,12 @@ struct AnalyzeView: View {
                 }
             }
             .width(min: 200, ideal: 320)
+
+            TableColumn("Created", value: \.createdDate) { video in
+                Text(video.createdDate, format: .dateTime.year().month(.twoDigits).day(.twoDigits))
+                    .help(video.createdDate.formatted(date: .complete, time: .standard))
+            }
+            .width(min: 85, ideal: 100)
 
             TableColumn("Duration") { video in
                 Text(video.duration.timecode)
@@ -794,7 +824,8 @@ private struct VideoPreviewPane: View {
             roster = []
             // Let the pane's loading state paint before the file is touched.
             await Task.yield()
-            let asset = AVURLAsset(url: video.url)
+            guard await DrivePlayback.prepare(video.url) else { return }
+            guard let asset = try? await DriveLocalAsset.make(video.url) else { return }
             _ = try? await asset.load(.isPlayable, .duration, .preferredTransform)
             guard !Task.isCancelled else { return }
             player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
@@ -810,6 +841,7 @@ private struct VideoPreviewPane: View {
         }
         .onDisappear {
             player?.pause()
+            player = nil
         }
     }
 }

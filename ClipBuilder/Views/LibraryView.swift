@@ -11,6 +11,7 @@ struct LibraryView: View {
         case shortest = "Shortest"
     }
 
+    @State private var driveSelection: Set<Int64> = []
     @State private var playing: GeneratedVideoRecord?
     @State private var deleting: GeneratedVideoRecord?
     @State private var reviewTarget: GeneratedVideoRecord?
@@ -54,6 +55,11 @@ struct LibraryView: View {
         .screenTitle("Outputs", subtitle: "\(store.generatedVideos.count) videos")
         .toolbar {
             ToolbarItem {
+                DriveMediaMenu(media: sorted.filter { driveSelection.contains($0.id) }.map(\.driveMedia))
+                    .disabled(driveSelection.isEmpty)
+                    .help("Select outputs using More or the context menu, then upload the selection.")
+            }
+            ToolbarItem {
                 // A named menu instead of a bare Picker — the toolbar showed
                 // only the selected value ("Newest") with nothing saying what
                 // the control was.
@@ -77,6 +83,8 @@ struct LibraryView: View {
                 .help("Order the library's videos")
             }
         }
+        .onChange(of: store.activeProjectID) { driveSelection = [] }
+        .onChange(of: store.profileGeneration) { driveSelection = [] }
         .sheet(item: $playing) { video in
             PlayerSheet(url: video.url, title: video.filename)
         }
@@ -202,6 +210,7 @@ struct LibraryView: View {
                     .buttonStyle(.borderedProminent)
                 }
                 Menu("More", systemImage: "ellipsis") {
+                    driveSelectionAction(video)
                     Button("Open in Builder", systemImage: "timeline.selection") {
                         openInBuilder(video)
                     }
@@ -235,9 +244,25 @@ struct LibraryView: View {
                 Spacer()
             }
         }
+        .safeAreaInset(edge: .bottom) {
+            if video.driveFileID != nil {
+                DriveMediaMenu(media: [video.driveMedia])
+                    .padding(.horizontal, 8).padding(.bottom, 8)
+            }
+        }
         .padding(Theme.cardPadding)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+        .overlay {
+            if driveSelection.contains(video.id) {
+                RoundedRectangle(cornerRadius: Theme.cardRadius)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
+        }
+        .accessibilityAddTraits(driveSelection.contains(video.id) ? .isSelected : [])
         .contextMenu {
+            driveSelectionAction(video)
+            if video.driveFileID != nil { DriveMediaMenu(media: [video.driveMedia]) }
             Button("Open in Builder") {
                 openInBuilder(video)
             }
@@ -253,6 +278,13 @@ struct LibraryView: View {
             Button("Show in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([video.url])
             }
+        }
+    }
+
+    private func driveSelectionAction(_ video: GeneratedVideoRecord) -> some View {
+        Button(driveSelection.contains(video.id) ? "Remove from Drive Selection" : "Select for Drive Actions") {
+            if driveSelection.contains(video.id) { driveSelection.remove(video.id) }
+            else { driveSelection.insert(video.id) }
         }
     }
 

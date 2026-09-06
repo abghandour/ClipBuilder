@@ -20,6 +20,9 @@ DIST_DIR="$REPO_ROOT/dist"
 INSTALLER_DIR="$REPO_ROOT/scripts/installer"
 PKG_ID="com.mokotti-solutions.clipbuilder.pkg"
 
+# The build reads the ignored local override; never package the empty fallback.
+/bin/sh "$REPO_ROOT/scripts/check_google_drive_credentials.sh" "$REPO_ROOT/Configuration/GoogleDrive-Local.plist"
+
 # ------------------------------------------------------- signing identities
 if [[ "${UNSIGNED:-0}" != "1" ]]; then
     : "${APP_SIGN_IDENTITY:=$(security find-identity -v -p codesigning 2>/dev/null \
@@ -72,6 +75,9 @@ if [[ ! -d "$APP_PATH" ]]; then
     echo "error: app not found at $APP_PATH" >&2
     exit 1
 fi
+
+# Check the actual bundle too, in case the build configuration ignored the override.
+/bin/sh "$REPO_ROOT/scripts/check_google_drive_credentials.sh" "$APP_PATH/Contents/Info.plist"
 
 if [[ -n "${APP_SIGN_IDENTITY:-}" ]]; then
     echo "==> Verifying app signature"

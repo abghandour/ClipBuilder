@@ -43,9 +43,10 @@ nonisolated enum TimelinePreviewComposer {
         }
 
         var assets: [URL: AVURLAsset] = [:]
-        func asset(for url: URL) -> AVURLAsset {
+        func asset(for url: URL) async throws -> AVURLAsset {
+            try await DriveMediaResolver.shared.ensureLocal(url)
             if let existing = assets[url] { return existing }
-            let created = AVURLAsset(url: url)
+            let created = try await DriveLocalAsset.make(url)
             assets[url] = created
             return created
         }
@@ -58,7 +59,7 @@ nonisolated enum TimelinePreviewComposer {
         var audioCursor = CMTime.zero
 
         for segment in segments {
-            let source = asset(for: segment.url)
+            let source = try await asset(for: segment.url)
             let sourceDuration = (try? await source.load(.duration).seconds) ?? segment.duration
             let clamped = min(segment.duration, max(0, sourceDuration - segment.sourceStart))
             guard clamped > 0.01 else { continue }
@@ -99,7 +100,7 @@ nonisolated enum TimelinePreviewComposer {
             let musicParams = AVMutableAudioMixInputParameters(track: musicTrack)
             var cursor = CMTime.zero
             for block in music {
-                let source = asset(for: block.url)
+                let source = try await asset(for: block.url)
                 guard let sourceAudio = try? await source.loadTracks(withMediaType: .audio).first else { continue }
                 let sourceDuration = (try? await source.load(.duration).seconds) ?? block.duration
                 // Overlapping blocks: start where the previous one ended.
@@ -119,6 +120,7 @@ nonisolated enum TimelinePreviewComposer {
         }
 
         let item = AVPlayerItem(asset: composition)
+        DriveLocalAsset.retainSources(Array(assets.values), on: item)
         let mix = AVMutableAudioMix()
         mix.inputParameters = mixParameters
         item.audioMix = mix

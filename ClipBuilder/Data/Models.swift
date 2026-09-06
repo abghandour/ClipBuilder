@@ -13,7 +13,9 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     var width: Int
     var height: Int
     var wide: Bool
+    var createdDate: Date { VideoCreationDates.parse(createdAt ?? discoveredAt) ?? .distantPast }
     var discoveredAt: String?
+    var createdAt: String? = nil
     var analyzedAt: String?
     var visualAnalyzedAt: String?
     var speechAnalyzedAt: String?
@@ -32,6 +34,15 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     /// VideoType raw value; nil until the analyzer infers it or the user
     /// picks one in the Analyze table.
     var videoType: String?
+    /// Podcast layout metadata populated by the sparse Vision pass.
+    var podcastLayout: String? = nil
+    var podcastSeamX: Double? = nil
+    var podcastLayoutConfidence: Double? = nil
+
+    var driveFileID: String? = nil
+    var driveLink: String? = nil
+    var driveOffloaded: Bool = false
+    var driveShared: Bool = false
 
     var url: URL { URL(fileURLWithPath: path) }
 
@@ -64,6 +75,7 @@ nonisolated enum VideoType: String, CaseIterable, Sendable {
     case fight
     case training
     case interview
+    case podcast
     case recap
     case other
 
@@ -72,6 +84,7 @@ nonisolated enum VideoType: String, CaseIterable, Sendable {
         case .fight: "Fight"
         case .training: "Training"
         case .interview: "Interview"
+        case .podcast: "Podcast"
         case .recap: "Fight Recap"
         case .other: "Other"
         }
@@ -414,6 +427,8 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var videoPath: String
     var videoFilename: String
     var videoDuration: Double
+    var videoWidth: Int = 0
+    var videoHeight: Int = 0
     var wide: Bool
 
     var duration: Double { endTime - startTime }
@@ -525,6 +540,11 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     /// Project that owns this output. Nil is possible only for a project
     /// whose database row was deleted while its file was kept.
     var projectID: Int64? = nil
+
+    var driveFileID: String? = nil
+    var driveLink: String? = nil
+    var driveOffloaded: Bool = false
+    var driveShared: Bool = false
 
     var url: URL { URL(fileURLWithPath: path) }
     var filename: String { url.lastPathComponent }

@@ -8,32 +8,48 @@ import CryptoKit
 /// `<data>/.cache/thumbs` keyed by (path, time, size).
 actor ThumbnailService {
     private let cacheDirectory: URL
+    private let mediaResolver: DriveMediaResolver
+    private let frameLoader: @Sendable (URL, Double, CGFloat) async -> Data?
 
-    init() {
-        cacheDirectory = SettingsStore.cacheDirectory.appendingPathComponent("thumbs", isDirectory: true)
-        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+    init(cacheDirectory: URL? = nil, mediaResolver: DriveMediaResolver = .shared,
+         frameLoader: @escaping @Sendable (URL, Double, CGFloat) async -> Data? = { url, time, dimension in
+             await ThumbnailService.jpegFrame(url: url, at: time, maxDimension: dimension, quality: 0.7)
+         }) {
+        self.cacheDirectory = cacheDirectory ?? SettingsStore.cacheDirectory.appendingPathComponent("thumbs", isDirectory: true)
+        self.mediaResolver = mediaResolver
+        self.frameLoader = frameLoader
+        try? FileManager.default.createDirectory(at: self.cacheDirectory, withIntermediateDirectories: true)
     }
 
     private func cacheKey(_ url: URL, time: Double, maxDimension: CGFloat) -> String {
         // Size + mtime ride along so a file re-encoded in place gets a
         // fresh frame instead of the old cached one.
         let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? -1
-        let mtime = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+        let identity = DriveTransferFiles(for: url).readIdentity()
+        let size = (attributes?[.size] as? NSNumber)?.int64Value ?? Int64(identity?.size ?? -1)
+        let mtime = (attributes?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? identity?.mtime ?? -1
         let digest = SHA256.hash(data: Data("\(url.path)|\(size)|\(mtime)|\(time)|\(Int(maxDimension))".utf8))
         return digest.prefix(16).map { String(format: "%02x", $0) }.joined() + ".jpg"
     }
 
     /// JPEG thumbnail for a video at a given timestamp, disk-cached.
     func thumbnail(for url: URL, at time: Double, maxDimension: CGFloat = 480) async -> Data? {
+        let files = DriveTransferFiles(for: url)
+        _ = files.readIdentity() // Migrate a pre-existing identity before looking up its cache.
+        let hasIdentity = FileManager.default.fileExists(atPath: files.identity.path)
+        let isDriveMedia = hasIdentity ? true : ((try? await mediaResolver.isDriveMedia(url)) ?? false)
+        let stable = cacheDirectory.appendingPathComponent(ContentHashForDrive.key("\(url.path)|\(time)|\(maxDimension)") + ".jpg")
+        if isDriveMedia, !FileManager.default.fileExists(atPath: url.path), let cached = try? Data(contentsOf: stable) { return cached }
         let cacheURL = cacheDirectory.appendingPathComponent(cacheKey(url, time: time, maxDimension: maxDimension))
         if let cached = try? Data(contentsOf: cacheURL) {
+            if isDriveMedia { try? cached.write(to: stable) }
             return cached
         }
-        guard let data = await Self.jpegFrame(url: url, at: time, maxDimension: maxDimension, quality: 0.7) else {
+        guard let data = await frameLoader(url, time, maxDimension) else {
             return nil
         }
         try? data.write(to: cacheURL)
+        if isDriveMedia { try? data.write(to: stable) }
         return data
     }
 
@@ -42,7 +58,7 @@ actor ThumbnailService {
     @concurrent
     static func jpegFrame(url: URL, at time: Double,
                           maxDimension: CGFloat = 0, quality: CGFloat = 0.85) async -> Data? {
-        let asset = AVURLAsset(url: url)
+        guard let asset = try? await DriveLocalAsset.make(url) else { return nil }
         let generator = AVAssetImageGenerator(asset: asset)
         configure(generator, maxDimension: maxDimension)
         let cmTime = CMTime(seconds: time, preferredTimescale: 600)
@@ -65,7 +81,7 @@ actor ThumbnailService {
         guard !timestamps.isEmpty else { return [] }
 
         let requestedTimes = timestamps.map { CMTime(seconds: $0, preferredTimescale: 600) }
-        let asset = AVURLAsset(url: url)
+        guard let asset = try? await DriveLocalAsset.make(url) else { return Array(repeating: nil, count: timestamps.count) }
         let generator = AVAssetImageGenerator(asset: asset)
         configure(generator, maxDimension: maxDimension)
 
@@ -117,7 +133,7 @@ actor ThumbnailService {
     /// feeds the auto-crop detail/motion scoring.
     @concurrent
     static func grayscaleFrame(url: URL, at time: Double, width: Int) async -> (pixels: [UInt8], width: Int, height: Int)? {
-        let asset = AVURLAsset(url: url)
+        guard let asset = try? await DriveLocalAsset.make(url) else { return nil }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: width, height: 0)

@@ -370,7 +370,7 @@ struct CuratedSceneEditor: View {
             editStart = scene.startTime
             editEnd = scene.endTime
             cameraPreset = scene.centerStagePath?.camera ?? cameraPreset
-            setUpPlayer()
+            await setUpPlayer()
             hints = await store.centerStageHints(for: scene.videoID)
             await reloadPortraits()
         }
@@ -587,11 +587,13 @@ struct CuratedSceneEditor: View {
 
     // MARK: - Player
 
-    private func setUpPlayer() {
+    private func setUpPlayer() async {
         tearDownPlayer()
         guard let video else { return }
-        let newPlayer = AVPlayer(url: video.url)
-        newPlayer.seek(to: CMTime(seconds: scene.startTime, preferredTimescale: 600))
+        guard await DrivePlayback.prepare(video.url) else { return }
+        guard let asset = try? await DriveLocalAsset.make(video.url) else { return }
+        let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+        await newPlayer.seek(to: CMTime(seconds: scene.startTime, preferredTimescale: 600))
         player = newPlayer
         clock.time = scene.startTime
         let clock = clock

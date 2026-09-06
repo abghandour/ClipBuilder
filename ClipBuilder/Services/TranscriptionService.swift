@@ -24,12 +24,125 @@ actor TranscriptionService {
 
     private let cacheDirectory: URL
 
-    init() {
-        cacheDirectory = SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true)
+    init(cacheDirectory: URL = SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true)) {
+        self.cacheDirectory = cacheDirectory
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
     }
 
-    private nonisolated struct CachedTranscript: Codable {
+    /// Shared entry point for manual and batch transcription.
+    @discardableResult
+    func transcribeForVideo(video: VideoRecord, database: Database,
+                            languageCode: String = "", force: Bool = false,
+                            log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+        if video.type == .podcast {
+            return try await transcribePodcast(video: video, database: database,
+                                               languageCode: languageCode, force: force, log: log)
+        }
+        return try await transcribe(video: video, database: database,
+                                    languageCode: languageCode, force: force, log: log)
+    }
+
+    func cachedPodcast(video: VideoRecord, force: Bool) throws -> CachedTranscript? {
+        guard !force else { return nil }
+        let hash = String(try ContentHash.fingerprint(of: video.url).prefix(32))
+        let prefix = "\(hash).\(Self.providerName).\(Self.modelName)."
+        let files = (try? FileManager.default.contentsOfDirectory(
+            at: cacheDirectory, includingPropertiesForKeys: nil)) ?? []
+        for url in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+            where url.lastPathComponent.hasPrefix(prefix) && url.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  let cached = try? JSONDecoder().decode(CachedTranscript.self, from: data),
+                  cached.provider == Self.providerName, cached.model == Self.modelName,
+                  !cached.translate else { continue }
+            return cached
+        }
+        return nil
+    }
+
+    private func restore(_ cached: CachedTranscript, video: VideoRecord, database: Database,
+                         log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+        log("Using cached transcript for \(video.filename)")
+        try await database.replaceTranscripts(videoID: video.id, language: cached.detectedLanguage,
+                                              isTranslation: false, segments: cached.segments,
+                                              provider: Self.providerName, model: Self.modelName)
+        do { try await enrich(cached.segments, video: video, database: database) }
+        catch { log("Transcript feature analysis failed: \(error)") }
+        return cached.segments
+    }
+
+    /// English and Brazilian Portuguese are the fast path. Installed
+    /// recognizers are considered only when neither primary recognizer can
+    /// make a credible transcript.
+    nonisolated static func choosePodcastLanguage(
+        primary: [PodcastLanguageCandidate],
+        installed: [PodcastLanguageCandidate] = [],
+        lowConfidence: Double = 0.45
+    ) -> PodcastLanguageCandidate? {
+        let bestPrimary = primary.max { $0.confidence < $1.confidence }
+        if let bestPrimary, bestPrimary.confidence >= lowConfidence { return bestPrimary }
+        return (primary + installed).max { $0.confidence < $1.confidence }
+    }
+
+    /// Podcast transcription always auto-detects unless the user explicitly
+    /// selected a language. Detection examines only the first minute.
+    @discardableResult
+    func transcribePodcast(video: VideoRecord, database: Database,
+                           languageCode: String = "", force: Bool = false,
+                           log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+        if !languageCode.isEmpty {
+            return try await transcribe(video: video, database: database,
+                                        languageCode: languageCode, force: force, log: log)
+        }
+        if let cached = try cachedPodcast(video: video, force: force) {
+            return try await restore(cached, video: video, database: database, log: log)
+        }
+        guard await FFmpeg.hasAudioStream(video.url) else {
+            throw TranscriptionError.noAudioTrack(video.filename)
+        }
+        let sampleURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cb_language_\(UUID().uuidString).wav")
+        defer { try? FileManager.default.removeItem(at: sampleURL) }
+        try await FFmpeg.run(["-y", "-i", video.url.path, "-t", "60", "-vn",
+                              "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+                              sampleURL.path], timeout: 180)
+
+        var primary: [PodcastLanguageCandidate] = []
+        var tried = Set<String>()
+        for identifier in ["en-US", "pt-BR"] {
+            guard let locale = await SpeechTranscriber.supportedLocale(
+                equivalentTo: Locale(identifier: identifier)) else { continue }
+            tried.insert(locale.identifier)
+            do {
+                let result = try await Self.runSpeechTranscriber(audioURL: sampleURL, locale: locale)
+                primary.append(PodcastLanguageCandidate(identifier: locale.identifier,
+                                                         confidence: result.confidence))
+                log("Language sample \(locale.identifier): \(Int(result.confidence * 100))% confidence")
+            } catch {
+                try Task.checkCancellation()
+                log("Language sample \(locale.identifier) unavailable: \(error)")
+            }
+        }
+        var other: [PodcastLanguageCandidate] = []
+        if primary.allSatisfy({ $0.confidence < 0.45 }) {
+            for locale in await SpeechTranscriber.installedLocales where !tried.contains(locale.identifier) {
+                do {
+                    let result = try await Self.runSpeechTranscriber(audioURL: sampleURL, locale: locale)
+                    other.append(PodcastLanguageCandidate(identifier: locale.identifier,
+                                                           confidence: result.confidence))
+                } catch {
+                    try Task.checkCancellation()
+                    log("Language sample \(locale.identifier) unavailable: \(error)")
+                }
+            }
+        }
+        let chosen = Self.choosePodcastLanguage(primary: primary, installed: other)
+            ?? PodcastLanguageCandidate(identifier: "en-US", confidence: 0)
+        log("Detected podcast language: \(chosen.identifier)")
+        return try await transcribe(video: video, database: database,
+                                    languageCode: chosen.identifier, force: force, log: log)
+    }
+
+    nonisolated struct CachedTranscript: Codable {
         var provider: String
         var model: String
         var language: String
@@ -64,14 +177,7 @@ actor TranscriptionService {
 
         if !force, let data = try? Data(contentsOf: cacheURL),
            let cached = try? JSONDecoder().decode(CachedTranscript.self, from: data) {
-            log("Using cached transcript for \(video.filename)")
-            try await database.replaceTranscripts(videoID: video.id, language: cached.detectedLanguage,
-                                                  isTranslation: false, segments: cached.segments,
-                                                  provider: Self.providerName, model: Self.modelName)
-            // The transcript is saved; a failed feature pass is logged, not fatal.
-            do { try await enrich(cached.segments, video: video, database: database) }
-            catch { log("Transcript feature analysis failed: \(error)") }
-            return cached.segments
+            return try await restore(cached, video: video, database: database, log: log)
         }
 
         guard await FFmpeg.hasAudioStream(video.url) else {
@@ -91,7 +197,7 @@ actor TranscriptionService {
                              timeout: 600)
 
         log("Transcribing \(video.filename) (\(supportedLocale.identifier))...")
-        let segments = try await Self.runSpeechTranscriber(audioURL: audioURL, locale: supportedLocale)
+        let segments = try await Self.runSpeechTranscriber(audioURL: audioURL, locale: supportedLocale).segments
         log("Transcribed \(segments.count) segments")
 
         let cached = CachedTranscript(provider: Self.providerName, model: Self.modelName,
@@ -127,11 +233,12 @@ actor TranscriptionService {
                                                      proposals: analysis.proposals)
     }
 
-    private static func runSpeechTranscriber(audioURL: URL, locale: Locale) async throws -> [TranscriptSegment] {
+    private static func runSpeechTranscriber(audioURL: URL, locale: Locale) async throws
+        -> (segments: [TranscriptSegment], confidence: Double) {
         let transcriber = SpeechTranscriber(locale: locale,
                                             transcriptionOptions: [],
                                             reportingOptions: [],
-                                            attributeOptions: [.audioTimeRange])
+                                            attributeOptions: [.audioTimeRange, .transcriptionConfidence])
         if let installationRequest = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
             try await installationRequest.downloadAndInstall()
         }
@@ -142,8 +249,9 @@ actor TranscriptionService {
         let analyzer = SpeechAnalyzer(modules: [transcriber])
 
         // Collect finalized results while the analyzer consumes the file.
-        let collector = Task<[TranscriptSegment], Error> {
+        let collector = Task<([TranscriptSegment], [Double]), Error> {
             var segments: [TranscriptSegment] = []
+            var confidences: [Double] = []
             for try await result in transcriber.results {
                 let text = result.text
                 let plain = String(text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -162,6 +270,9 @@ actor TranscriptionService {
                     segmentEnd = max(segmentEnd, end)
                     words.append(TranscriptWord(word: runText, start: start.rounded(toPlaces: 2),
                                                 end: end.rounded(toPlaces: 2)))
+                    if let confidence = run.transcriptionConfidence {
+                        confidences.append(confidence)
+                    }
                 }
                 guard segmentStart < segmentEnd else { continue }
                 segments.append(TranscriptSegment(start: segmentStart.rounded(toPlaces: 2),
@@ -169,7 +280,7 @@ actor TranscriptionService {
                                                   text: plain,
                                                   words: words.isEmpty ? nil : words))
             }
-            return segments
+            return (segments, confidences)
         }
 
         let lastSampleTime = try await analyzer.analyzeSequence(from: audioFile)
@@ -178,6 +289,15 @@ actor TranscriptionService {
         } else {
             await analyzer.cancelAndFinishNow()
         }
-        return try await collector.value
+        let (segments, confidences) = try await collector.value
+        let confidence: Double
+        if confidences.isEmpty {
+            // Some installed recognizers omit confidence attributes. A
+            // coherent non-empty result remains more useful than silence.
+            confidence = segments.isEmpty ? 0 : 0.5
+        } else {
+            confidence = confidences.reduce(0, +) / Double(confidences.count)
+        }
+        return (segments, confidence)
     }
 }

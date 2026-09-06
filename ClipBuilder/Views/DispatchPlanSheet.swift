@@ -1371,7 +1371,9 @@ private struct VideoNotesPanel: View {
             }
             stopSectionPlayback()
             player?.pause()
-            let newPlayer = AVPlayer(url: video.url)
+            guard await DrivePlayback.prepare(video.url) else { return }
+            guard let asset = try? await DriveLocalAsset.make(video.url) else { return }
+            let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             player = newPlayer
             clock.time = 0
             let clock = clock
@@ -1423,6 +1425,7 @@ private struct VideoNotesPanel: View {
             }
             stopSectionPlayback()
             player?.pause()
+            player = nil
         }
     }
 

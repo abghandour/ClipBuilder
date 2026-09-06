@@ -27,6 +27,7 @@
 		000000000000000000000120 /* Clip Builder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Clip Builder.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000121 /* ClipBuilderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClipBuilderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000122 /* ClipBuilderUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClipBuilderUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000123 /* Configuration/GoogleDrive.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Configuration/GoogleDrive.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -73,6 +74,7 @@
 				000000000000000000000011 /* ClipBuilderTests */,
 				000000000000000000000012 /* ClipBuilderUITests */,
 				000000000000000000000020 /* Products */,
+				000000000000000000000123 /* Configuration/GoogleDrive.xcconfig */,
 			);
 			sourceTree = "<group>";
 		};
@@ -377,6 +379,7 @@
 		};
 		000000000000000111000000 /* Debug configuration for PBXNativeTarget "Clip Builder" */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 000000000000000000000123 /* Configuration/GoogleDrive.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
@@ -451,6 +454,7 @@
 		};
 		000000000000000112000000 /* Release configuration for PBXNativeTarget "Clip Builder" */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 000000000000000000000123 /* Configuration/GoogleDrive.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";

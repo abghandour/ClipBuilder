@@ -170,10 +170,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         profileName = name
         brandName = name
         contentDomain = ""
-        if let custom = UserDefaults.standard.string(forKey: SettingsStore.dataFolderDefaultsKey),
-           !custom.isEmpty {
-            let root = URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
-                .deletingLastPathComponent().appendingPathComponent(name, isDirectory: true)
+        if let custom = SettingsStore.customDataFolder {
+            let root = custom.deletingLastPathComponent().appendingPathComponent(name, isDirectory: true)
             sourceFolder = root.appendingPathComponent("Input", isDirectory: true).path
             outputFolder = root.appendingPathComponent("Output", isDirectory: true).path
         } else {
@@ -305,10 +303,8 @@ nonisolated enum ProfileStore {
         // A custom data folder represents the shared app-data directory. Its
         // parent contains profile JSON, matching the normal ClipBuilder/data
         // and ClipBuilder/*.json layout.
-        if let custom = UserDefaults.standard.string(forKey: SettingsStore.dataFolderDefaultsKey),
-           !custom.isEmpty {
-            return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
-                .deletingLastPathComponent()
+        if let custom = SettingsStore.customDataFolder {
+            return custom.deletingLastPathComponent()
         }
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Documents/ClipBuilder", isDirectory: true)

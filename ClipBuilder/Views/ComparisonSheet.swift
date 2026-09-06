@@ -59,13 +59,16 @@ struct ComparisonSheet: View {
         .frame(minWidth: 480)
         // Closing without picking records nothing — same as Skip.
         .modalCloseButton { store.resolveComparison(batch, winner: nil) }
-        .onAppear {
+        .task {
             for video in batch.videos {
-                players[video.id] = AVPlayer(url: video.url)
+                guard await DrivePlayback.prepare(video.url) else { continue }
+                guard let asset = try? await DriveLocalAsset.make(video.url) else { continue }
+                players[video.id] = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             }
         }
         .onDisappear {
             for player in players.values { player.pause() }
+            players = [:]
         }
     }
 }

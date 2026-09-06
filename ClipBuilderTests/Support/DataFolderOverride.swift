@@ -2,26 +2,22 @@ import Foundation
 @testable import Clip_Builder
 
 /// Serial tests use this scope so production profile and settings data is never touched.
+/// The override lives only in this process: writing the persisted default would
+/// leave the user's app pointed at a temporary folder if the run were killed.
 final class DataFolderOverride {
     let directory: TempDirectory
-    private let previousValue: Any?
+    private let previousValue: String?
 
     init(prefix: String = "ClipBuilderData") throws {
         directory = try TempDirectory(prefix: prefix)
-        let defaults = UserDefaults.standard
-        previousValue = defaults.object(forKey: SettingsStore.dataFolderDefaultsKey)
-        defaults.set(directory.url.appendingPathComponent("data", isDirectory: true).path,
-                     forKey: SettingsStore.dataFolderDefaultsKey)
+        previousValue = SettingsStore.dataFolderOverride
+        SettingsStore.dataFolderOverride = directory.url
+            .appendingPathComponent("data", isDirectory: true).path
         ScreenCropStore.invalidateListing()
     }
 
     deinit {
-        let defaults = UserDefaults.standard
-        if let previousValue {
-            defaults.set(previousValue, forKey: SettingsStore.dataFolderDefaultsKey)
-        } else {
-            defaults.removeObject(forKey: SettingsStore.dataFolderDefaultsKey)
-        }
+        SettingsStore.dataFolderOverride = previousValue
         ScreenCropStore.invalidateListing()
     }
 }

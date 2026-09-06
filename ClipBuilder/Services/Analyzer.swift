@@ -370,7 +370,7 @@ actor Analyzer {
         \(tagList(tags))
         Return a JSON object with this exact structure:
         {
-          "video_type": "<fight|training|interview|recap|other>",
+          "video_type": "<fight|training|interview|podcast|recap|other>",
           "tags": {
             "tag_name": [{"start": 0.0, "end": 5.2}, {"start": 12.0, "end": 18.5}],
             "another_tag": [{"start": 0.0, "end": 30.0}]
@@ -391,7 +391,7 @@ actor Analyzer {
         - Non-action ranges (arena, backstage, interviews) don't need sequence entries.
 
         RULES:
-        - "video_type" classifies the WHOLE video: "fight" = an actual competitive bout (a result at stake, referee/cage/ring context), "training" = gym/practice/sparring/pad-work footage, "interview" = talking-head, press, or podcast-style content, "recap" = an edited recap/highlight package about a fight, "other" = anything else. Pick the single best fit for what dominates the video.
+        - "video_type" classifies the WHOLE video: "fight" = an actual competitive bout (a result at stake, referee/cage/ring context), "training" = gym/practice/sparring/pad-work footage, "interview" = a short talking-head or press clip, "podcast" = a long-form conversation, often two speakers side by side or in a studio, "recap" = an edited recap/highlight package about a fight, "other" = anything else. Pick the single best fit for what dominates the video.
         - Only include tags that actually appear in the video
         - Time ranges can overlap -- e.g. "striking" and "high-energy" can cover different ranges
         - A tag can have multiple ranges if it appears at different times
@@ -557,14 +557,40 @@ actor Analyzer {
     /// from on-screen graphics are fixed in place; a filename proposal
     /// (auto-generated or misspelled current name) rides along for review.
     /// Returns the fresh roster plus that proposal.
+    /// Route unclassified long recordings before committing to the visual pipeline.
+    func classifyLongRecording(video: VideoRecord, provider: String?, model: String?,
+                               log: @escaping @Sendable (String) -> Void) async throws -> VideoType? {
+        guard video.type == nil, video.duration >= 300 else { return video.type }
+        let times = (0..<5).map { (Double($0) + 0.5) * video.duration / 5 }
+        let frames = await extractFrames(url: video.url, timestamps: times)
+        guard !frames.isEmpty else { return nil }
+        let response = try await ai.call(prompt: """
+            Classify this \(Int(video.duration))-second recording from its sparse overview.
+            Return JSON {"video_type":"fight|training|interview|podcast|recap|other"}.
+            A podcast is a long conversation, usually stable talking heads in a studio,
+            a single-camera interview, or two equal Zoom feeds side by side.
+            Fight is a competitive bout; training is practice; recap is an edited highlights package.
+            Use interview for short press/talking-head material. Do not classify a bout as a podcast.
+            """, task: "analysis", frames: frames, model: model, provider: provider,
+            timeout: 120, log: log)
+        return (AIResponseParser.jsonObject(from: response.text)?["video_type"] as? String)
+            .flatMap(VideoType.init(rawValue:))
+    }
+
     func detectPeopleOnly(video: VideoRecord, profile: BrandProfile, database: Database,
                           provider: String? = nil, model: String? = nil,
+                          sampleTimes: [Double]? = nil,
                           log: @escaping @Sendable (String) -> Void) async throws
         -> (roster: [VideoPersonRecord], suggestedFilename: String?) {
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let duration = video.duration > 0 ? video.duration : await FFmpeg.duration(of: video.url)
-        let frames = await extractFrames(url: video.url, start: 0, end: duration,
+        let frames: [AIFrame]
+        if let sampleTimes {
+            frames = await extractFrames(url: video.url, timestamps: sampleTimes)
+        } else {
+            frames = await extractFrames(url: video.url, start: 0, end: duration,
                                          interval: nil, log: log)
+        }
         guard !frames.isEmpty else {
             throw FFmpegError.commandFailed(tool: "frame extraction", exitCode: 1,
                                             stderr: "no frames could be extracted from \(video.filename)")
@@ -589,12 +615,25 @@ actor Analyzer {
         }
 
         log("Detecting people in \(video.filename) (\(frames.count) frames)…")
+        var profilePortraits: [AIFrame] = []
+        if video.type == .podcast {
+            for reference in try await database.podcastPortraitReferences() {
+                try Task.checkCancellation()
+                let images = await ThumbnailService.jpegFrames(
+                    url: URL(fileURLWithPath: reference.path), at: [reference.time])
+                if let image = images.first ?? nil,
+                   let portrait = Self.boxPortrait(from: image, box: reference.box) {
+                    profilePortraits.append(AIFrame(jpeg: portrait,
+                                                   label: "KNOWN PERSON portrait: \(reference.key)"))
+                }
+            }
+        }
         let prompt = Self.peopleOnlyPrompt(domain: profile.effectiveDomain, duration: duration,
                                            knownPeople: knownPeople, markers: namedMarkers,
                                            ignoreCount: ignoreFrames.count,
                                            filename: video.filename)
         let response = try await callThinningFrames(prompt: prompt,
-                                                    auxiliary: markerFrames + ignoreFrames,
+                                                    auxiliary: profilePortraits + markerFrames + ignoreFrames,
                                                     sampled: frames,
                                                     model: model, provider: provider, log: log)
         guard let object = AIResponseParser.jsonObject(from: response.text),

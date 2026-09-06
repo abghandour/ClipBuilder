@@ -606,6 +606,47 @@ final class BuilderTimelineModel {
         documentDidChange()
     }
 
+    /// Turn one side-by-side podcast clip into two synchronized, pinned
+    /// source halves under the built-in 50/50 output layout.
+    func splitZoomFeeds(_ uid: UUID, leftName: String, rightName: String,
+                        sourceAspect: Double) {
+        guard let index = clipIndex(uid),
+              ScreenCropStore.layout(named: "50-50 Horizontal") != nil else { return }
+        let source = document.videoTrack[index]
+        guard !document.videoTrack.contains(where: {
+            $0.uid != uid && $0.track == 1 && $0.sceneID == source.sceneID
+                && abs($0.startTime - source.startTime) < 0.01
+                && abs(($0.sourceStart ?? 0) - (source.sourceStart ?? 0)) < 0.01
+                && abs(($0.sourceEnd ?? 0) - (source.sourceEnd ?? 0)) < 0.01
+        }) else { return }
+        registerUndo("Split Zoom Feeds")
+        var left = source
+        var right = left
+        right.uid = UUID()
+        left.track = 0
+        right.track = 1
+        left.screenCrop = ScreenCropStore.reference(layout: "50-50 Horizontal", area: "Top")
+        right.screenCrop = ScreenCropStore.reference(layout: "50-50 Horizontal", area: "Bottom")
+        let windows = PodcastFramingService.splitFeedWindows(sourceAspect: sourceAspect)
+        left.areaWindow = windows.left
+        right.areaWindow = windows.right
+        left.centerStage = false
+        right.centerStage = false
+        right.muted = true
+        document.videoTrack[index] = left
+        document.videoTrack.append(right)
+        document.trackCount = max(document.trackCount, 2)
+        document.trackSequential[1] = false
+        document.trackSettings[0].label = leftName.isEmpty ? "Left speaker" : leftName
+        document.trackSettings[1].label = rightName.isEmpty ? "Right speaker" : rightName
+        let block = CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"),
+                                  startTime: left.startTime, duration: left.duration)
+        document.cropBlocks.append(block)
+        document.normalizeCropBlocks(winner: block.uid)
+        selection = .clip(left.uid)
+        documentDidChange()
+    }
+
     /// Sequential tracks pack end-to-end from 0 in start-time order; free-form
     /// tracks keep clips where the user put them (overlaps render layered).
     func resolveLayout(track: Int) {

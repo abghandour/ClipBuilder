@@ -123,7 +123,9 @@ struct TrackHeader: View {
         let highlighted = model.highlightedTrack == track
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text("Track \(Self.numerals[safe: track] ?? "\(track + 1)")")
+                Text(settings.label?.isEmpty == false
+                     ? settings.label!
+                     : "Track \(Self.numerals[safe: track] ?? "\(track + 1)")")
                     .font(.caption.bold())
                     .help("Click the header to highlight this track's crop area")
                 TrackAreaLabel(track: track, highlighted: highlighted)

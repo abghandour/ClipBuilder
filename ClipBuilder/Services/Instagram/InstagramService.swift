@@ -201,6 +201,8 @@ actor InstagramService {
             throw InstagramError.fetchFailed(
                 "The Instagram access token is missing from the Keychain — reconnect in Settings → Instagram")
         }
+        let mediaLease = try await DriveMediaResolver.shared.acquire(file)
+        defer { withExtendedLifetime(mediaLease) {} }
         return try await provider.publishReel(username: settings.connectedUsername,
                                               file: file, caption: caption,
                                               shareToFeed: shareToFeed, log: log)

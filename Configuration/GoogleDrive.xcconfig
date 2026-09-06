@@ -1,0 +1,3 @@
+// Empty fallback is safe for development. Local values are never tracked.
+INFOPLIST_FILE = Configuration/GoogleDrive-Info.plist
+#include? "GoogleDrive-Local.xcconfig"
