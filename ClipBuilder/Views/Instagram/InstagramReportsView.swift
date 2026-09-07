@@ -567,7 +567,10 @@ struct InstagramReportsView: View {
                 Text(row.date.formatted(date: .abbreviated, time: .omitted)).monospacedDigit()
             }
             .width(min: 90, ideal: 100)
-            TableColumn("Type", value: \.type) { row in TypeBadge(type: row.type) }
+            // Table cells are hosted per row by AppKit and can be updated after
+            // their host environment is gone; carry the store in each cell that
+            // holds store-reading views (see the Sources table for the trap).
+            TableColumn("Type", value: \.type) { row in TypeBadge(type: row.type).environment(store) }
                 .width(min: 70, ideal: 80)
             TableColumn("Caption", value: \.caption) { row in
                 HStack(spacing: Theme.spaceS) {
@@ -575,6 +578,7 @@ struct InstagramReportsView: View {
                     Spacer(minLength: 0)
                     OpenPostButton(media: row.media)
                 }
+                .environment(store)
             }
             .width(min: 240, ideal: 380)
             TableColumn("Reach", value: \.reach) { Text($0.reach.formatted()).monospacedDigit() }.width(70)

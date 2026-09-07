@@ -178,6 +178,21 @@ actor Analyzer {
         }
     }
 
+    /// Best-effort explanation for a frame batch that yielded nothing.
+    nonisolated private static func unreadableSourceReason(_ url: URL) async -> String {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            let drive = (try? await DriveMediaResolver.shared.isDriveMedia(url)) ?? false
+            return drive ? "the local copy is not on disk; Drive download pending or failed" : "the file is missing"
+        }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        do {
+            _ = try await DriveMediaResolver.shared.acquire(url)
+        } catch {
+            return "Drive media lease refused: \(GoogleDriveError.message(for: error)); \(size) bytes on disk"
+        }
+        return "file present, \(size) bytes, but no decoder produced a frame"
+    }
+
     private func extractFrames(url: URL, timestamps: [Double],
                                log: @Sendable (String) -> Void) async -> [AIFrame] {
         let jpegFrames = await ThumbnailService.jpegFrames(
@@ -1210,8 +1225,12 @@ actor Analyzer {
                                                    interval: sampleInterval, log: log)
             try Task.checkCancellation()
             guard !frames.isEmpty else {
+                // Every decoder path came back empty. Say why the source was
+                // unreadable: a Drive-backed file can be mid-transfer or leased
+                // out for offload, which the frame APIs only report as "no frame".
+                let reason = await Self.unreadableSourceReason(video.url)
                 throw FFmpegError.commandFailed(tool: "frame extraction", exitCode: 1,
-                                                stderr: "no frames could be extracted from \(video.filename)")
+                                                stderr: "no frames could be extracted from \(video.filename) (\(reason))")
             }
             return frames
         }

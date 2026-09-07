@@ -362,6 +362,12 @@ struct AnalyzeView: View {
                         .help("Double-click to rename")
                     AIInfoButton(video: video)
                 }
+                // Table cells are hosted per row by AppKit. A recycled cell can
+                // still receive an observation update (Drive job status) after
+                // the host environment is gone, and its store-reading children
+                // then trap on the missing Observable. Carry the store in the
+                // cell's own tree so the lookup never depends on the host.
+                .environment(store)
             }
             .width(min: 200, ideal: 320)
 
