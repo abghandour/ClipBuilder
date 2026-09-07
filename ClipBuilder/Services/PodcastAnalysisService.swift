@@ -156,14 +156,11 @@ actor PodcastAnalysisService {
 nonisolated enum PodcastSpeakerSeparator {
     /// Lightweight on-device voice embeddings (energy, sign changes and
     /// autocorrelation) clustered deterministically into at most two voices.
+    @concurrent
     static func separate(video: VideoRecord, segments: [TranscriptSegment]) async throws -> [SpeakerTurn] {
         let segments = voiceWindows(segments)
         guard !segments.isEmpty else { return [] }
-        let audioURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cb_diarize_\(UUID().uuidString).wav")
-        defer { try? FileManager.default.removeItem(at: audioURL) }
-        try await FFmpeg.run(["-y", "-i", video.url.path, "-vn", "-ac", "1", "-ar", "16000",
-                              "-c:a", "pcm_f32le", audioURL.path], timeout: 600)
+        let audioURL = try await NormalizedAudioCache.shared.audio(source: video.url)
         let file = try AVAudioFile(forReading: audioURL)
         let rate = file.processingFormat.sampleRate
         var vectors: [[Double]] = []
@@ -538,6 +535,8 @@ actor PodcastExchangeSegmenter {
         }
         if !current.isEmpty { chunks.append(current) }
         var result = Outcome(exchanges: [], provenance: nil)
+        // Keep serial: AI calls append to the run's shared provenance capture;
+        // concurrent completion would reorder it and change failure ordering.
         for chunk in chunks {
             try Task.checkCancellation()
             let outcome = try await segmentChunk(segments: chunk, turns: turns,

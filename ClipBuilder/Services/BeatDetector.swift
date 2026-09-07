@@ -20,37 +20,21 @@ actor BeatDetector {
     }
 
     private static let sampleRate = 22050.0
-    private static let hop = 512
+    private static let hop = OnsetEnergyAccumulator.hop
 
     private static func detect(url: URL) async -> [Double] {
+        let accumulator = OnsetEnergyAccumulator()
         guard let executable = try? FFmpeg.ffmpegURL(),
               let result = try? await ProcessRunner.run(
                 executable: executable,
                 arguments: ["-v", "error", "-i", url.path,
                             "-ac", "1", "-ar", String(Int(sampleRate)),
                             "-f", "f32le", "-"],
-                timeout: 120),
-              result.exitCode == 0, result.stdout.count >= MemoryLayout<Float>.size * hop * 16
-        else { return [] }
-
-        let samples: [Float] = result.stdout.withUnsafeBytes { raw in
-            Array(raw.bindMemory(to: Float.self))
-        }
-
-        // Short-window energies, then flux against a trailing local average —
-        // a rising edge in energy marks an onset (kick, snare, hit).
-        var energies: [Double] = []
-        energies.reserveCapacity(samples.count / hop)
-        var index = 0
-        while index + hop <= samples.count {
-            var sum = 0.0
-            for offset in index..<(index + hop) {
-                let value = Double(samples[offset])
-                sum += value * value
-            }
-            energies.append(sum / Double(hop))
-            index += hop
-        }
+                timeout: 120, capture: .streamingStdout { accumulator.append($0) }),
+              result.exitCode == 0 else { return [] }
+        // Preserve the original 22.05 kHz decode (the podcast artifact is
+        // 16 kHz): changing sample rate or PCM precision changes cut positions.
+        let energies = accumulator.energies
         guard energies.count > 32 else { return [] }
 
         let window = 8

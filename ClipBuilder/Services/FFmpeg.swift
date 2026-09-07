@@ -21,6 +21,10 @@ nonisolated enum FFmpegError: Error, CustomStringConvertible {
 /// as the Python app's pipeline, with hardware (VideoToolbox) encoding and
 /// cached probes for speed.
 nonisolated enum FFmpeg {
+    /// Optional per-render diagnostics hook. Task-local so concurrent renders
+    /// and tests observe only their own successful ffmpeg invocations.
+    @TaskLocal static var commandCompleted: (@Sendable ([String]) -> Void)?
+
     static func ffmpegURL() throws -> URL {
         guard let url = ProcessRunner.locate("ffmpeg") else { throw FFmpegError.toolNotFound("ffmpeg") }
         return url
@@ -79,13 +83,15 @@ nonisolated enum FFmpeg {
 
     /// Run ffmpeg with the given arguments; throws with stderr tail on failure.
     @discardableResult
-    static func run(_ arguments: [String], timeout: TimeInterval? = nil) async throws -> String {
+    static func run(_ arguments: [String], timeout: TimeInterval? = nil,
+                    capture: ProcessRunner.Capture = .full) async throws -> String {
         let result = try await ProcessRunner.run(executable: ffmpegURL(),
-                                                 arguments: arguments, timeout: timeout)
+                                                 arguments: arguments, timeout: timeout, capture: capture)
         guard result.exitCode == 0 else {
             throw FFmpegError.commandFailed(tool: "ffmpeg", exitCode: result.exitCode,
                                             stderr: result.stderrText)
         }
+        commandCompleted?(arguments)
         return result.stdoutText
     }
 

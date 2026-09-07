@@ -44,7 +44,7 @@ actor TranscriptionService {
 
     func cachedPodcast(video: VideoRecord, force: Bool) throws -> CachedTranscript? {
         guard !force else { return nil }
-        let hash = String(try ContentHash.fingerprint(of: video.url).prefix(32))
+        let hash = String(try SourceIdentityCache.shared.fingerprint(of: video.url).prefix(32))
         let prefix = "\(hash).\(Self.providerName).\(Self.modelName)."
         let files = (try? FileManager.default.contentsOfDirectory(
             at: cacheDirectory, includingPropertiesForKeys: nil)) ?? []
@@ -102,12 +102,16 @@ actor TranscriptionService {
         let sampleURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("cb_language_\(UUID().uuidString).wav")
         defer { try? FileManager.default.removeItem(at: sampleURL) }
-        try await FFmpeg.run(["-y", "-i", video.url.path, "-t", "60", "-vn",
+        // Warm runs sample the artifact; cold runs keep the fast direct minute.
+        let sampleSource = try await NormalizedAudioCache.shared.existing(source: video.url) ?? video.url
+        try await FFmpeg.run(["-y", "-i", sampleSource.path, "-t", "60", "-vn",
                               "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
                               sampleURL.path], timeout: 180)
 
         var primary: [PodcastLanguageCandidate] = []
         var tried = Set<String>()
+        // Keep serial: candidates can install shared Speech assets, and the
+        // existing collector's failure/cancellation ordering is sequential.
         for identifier in ["en-US", "pt-BR"] {
             guard let locale = await SpeechTranscriber.supportedLocale(
                 equivalentTo: Locale(identifier: identifier)) else { continue }
@@ -171,7 +175,7 @@ actor TranscriptionService {
         let languageTag = supportedLocale.language.languageCode?.identifier ?? supportedLocale.identifier
 
         // Cache key mirrors transcription.py: hash32.provider.model.language.json
-        let hash = String(try ContentHash.fingerprint(of: video.url).prefix(32))
+        let hash = String(try SourceIdentityCache.shared.fingerprint(of: video.url).prefix(32))
         let cacheURL = cacheDirectory.appendingPathComponent(
             "\(hash).\(Self.providerName).\(Self.modelName).\(languageTag).json")
 
@@ -184,17 +188,8 @@ actor TranscriptionService {
             throw TranscriptionError.noAudioTrack(video.filename)
         }
 
-        // Extract 16 kHz mono audio, same command as transcription.py.
-        log("Extracting audio from \(video.filename)...")
-        // PCM/WAV: skips the AAC encode (the analyzer decodes it right back
-        // anyway) and avoids a lossy generation before transcription.
-        let audioURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cb_audio_\(UUID().uuidString).wav")
-        defer { try? FileManager.default.removeItem(at: audioURL) }
-        try await FFmpeg.run(["-y", "-i", video.url.path,
-                              "-vn", "-ac", "1", "-ar", "16000",
-                              "-c:a", "pcm_s16le", audioURL.path],
-                             timeout: 600)
+        log("Preparing audio from \(video.filename)...")
+        let audioURL = try await NormalizedAudioCache.shared.audio(source: video.url)
 
         log("Transcribing \(video.filename) (\(supportedLocale.identifier))...")
         let segments = try await Self.runSpeechTranscriber(audioURL: audioURL, locale: supportedLocale).segments
@@ -235,6 +230,8 @@ actor TranscriptionService {
 
     private static func runSpeechTranscriber(audioURL: URL, locale: Locale) async throws
         -> (segments: [TranscriptSegment], confidence: Double) {
+        let timing = PerfSignpost.begin("Transcription", metadata: locale.identifier)
+        defer { PerfSignpost.end(timing) }
         let transcriber = SpeechTranscriber(locale: locale,
                                             transcriptionOptions: [],
                                             reportingOptions: [],
