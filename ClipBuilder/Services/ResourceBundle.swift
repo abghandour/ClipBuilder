@@ -177,6 +177,11 @@ nonisolated enum ResourceBundle {
     // MARK: - Inventory
 
     /// Local items per category, for the export dialog.
+    @concurrent
+    static func inventoryAsync() async -> [ResourceCategory: [ResourceItem]] {
+        inventory()
+    }
+
     static func inventory() -> [ResourceCategory: [ResourceItem]] {
         var result: [ResourceCategory: [ResourceItem]] = [:]
         for category in ResourceCategory.allCases {

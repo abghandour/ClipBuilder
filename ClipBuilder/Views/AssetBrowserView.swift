@@ -16,6 +16,7 @@ struct AssetBrowserView: View {
     /// Path components below the library root; empty = root.
     @State private var path: [String] = []
     @State private var items: [AssetItem] = []
+    @State private var refreshVersion = 0
     @State private var watcher: FolderWatcher?
 
     @State private var showingImporter = false
@@ -345,11 +346,17 @@ struct AssetBrowserView: View {
     }
 
     private func refresh() {
-        items = AssetStore.items(of: kind, in: currentFolder)
-        if let playingID, !items.contains(where: { $0.id == playingID }) {
-            stopPlayback()
+        refreshVersion += 1
+        let version = refreshVersion
+        let folder = currentFolder
+        let kind = kind
+        Task {
+            let refreshed = await AssetStore.itemsAsync(of: kind, in: folder)
+            guard !Task.isCancelled, version == refreshVersion, folder == currentFolder else { return }
+            items = refreshed
+            if let playingID, !items.contains(where: { $0.id == playingID }) { stopPlayback() }
+            if kind == .images { loadMetadata() }
         }
-        if kind == .images { loadMetadata() }
     }
 
     private var filteredItems: [AssetItem] {
@@ -482,12 +489,18 @@ struct AssetBrowserView: View {
     }
 
     private func importFiles(_ urls: [URL]) {
-        perform {
-            let imported = try AssetStore.importFiles(urls, of: kind, into: currentFolder)
-            if imported == 0, !urls.isEmpty {
-                let allowed = kind.allowedExtensions.sorted().joined(separator: ", ").uppercased()
-                operationError = "No matching files to import. \(kind.title) accepts: \(allowed)."
-            }
+        let folder = currentFolder
+        let kind = kind
+        Task {
+            do {
+                let imported = try await AssetStore.importFiles(urls, of: kind, into: folder)
+                if imported == 0, !urls.isEmpty {
+                    let allowed = kind.allowedExtensions.sorted().joined(separator: ", ").uppercased()
+                    operationError = "No matching files to import. \(kind.title) accepts: \(allowed)."
+                }
+            } catch { operationError = error.localizedDescription }
+            // Also refresh after a partial success followed by an error.
+            refresh()
         }
     }
 

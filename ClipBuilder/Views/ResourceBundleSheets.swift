@@ -8,6 +8,7 @@ struct ResourceExportSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var selected: Set<ResourceCategory> = Set(ResourceCategory.allCases)
+    @State private var isLoading = true
     @State private var inventory: [ResourceCategory: [ResourceItem]] = [:]
     @State private var status: String?
     @State private var isRunning = false
@@ -27,6 +28,9 @@ struct ResourceExportSheet: View {
                     .foregroundStyle(.secondary)
             }
 
+            if isLoading {
+                ProgressView("Reading resources…").controlSize(.small)
+            }
             VStack(alignment: .leading, spacing: Theme.spaceS) {
                 ForEach(ResourceCategory.allCases) { category in
                     let items = inventory[category] ?? []
@@ -46,7 +50,7 @@ struct ResourceExportSheet: View {
                         }
                     }
                     .toggleStyle(.checkbox)
-                    .disabled(count == 0 || isRunning)
+                    .disabled(isLoading || count == 0 || isRunning)
                 }
             }
 
@@ -74,13 +78,16 @@ struct ResourceExportSheet: View {
                 Button("Export…") { export() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(selected.isEmpty || isRunning || exportedURL != nil)
+                    .disabled(isLoading || selected.isEmpty || isRunning || exportedURL != nil)
             }
         }
         .padding(Theme.spaceL)
         .frame(width: 460)
-        .onAppear {
-            inventory = ResourceBundle.inventory()
+        .task {
+            let loaded = await ResourceBundle.inventoryAsync()
+            guard !Task.isCancelled else { return }
+            inventory = loaded
+            isLoading = false
             selected = Set(ResourceCategory.allCases.filter { category in
                 category == .preferences ? !ResourceBundle.preferences().isEmpty : !(inventory[category] ?? []).isEmpty
             })

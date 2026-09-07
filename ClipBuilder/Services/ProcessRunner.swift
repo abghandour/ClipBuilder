@@ -6,7 +6,7 @@ nonisolated struct ProcessResult: Sendable {
     var exitCode: Int32
 
     var stdoutText: String { String(data: stdout, encoding: .utf8) ?? "" }
-    var stderrText: String { String(data: stderr, encoding: .utf8) ?? "" }
+    var stderrText: String { String(decoding: stderr, as: UTF8.self) }
 }
 
 nonisolated enum ProcessRunnerError: Error, CustomStringConvertible {
@@ -21,7 +21,7 @@ nonisolated enum ProcessRunnerError: Error, CustomStringConvertible {
     }
 }
 
-private final class DataBox: @unchecked Sendable {
+nonisolated private final class DataBox: @unchecked Sendable {
     var data = Data()
 }
 
@@ -69,15 +69,28 @@ nonisolated private final class ProcessRunState: @unchecked Sendable {
 /// Runs external tools (ffmpeg, ffprobe, claude, gemini, codex, qwen, kimi) off the main
 /// actor, with full stdout/stderr capture and an optional timeout.
 nonisolated enum ProcessRunner {
+    enum Capture: Sendable {
+        case full
+        /// Stdout remains complete; only diagnostics are truncated.
+        case boundedStderrTail(maxBytes: Int = 64 * 1024)
+        /// Called synchronously on the pipe reader queue, in byte order.
+        case streamingStdout(@Sendable (Data) -> Void)
+    }
+
     static func run(executable: URL,
                     arguments: [String],
                     stdin: Data? = nil,
                     timeout: TimeInterval? = nil,
-                    environment: [String: String]? = nil) async throws -> ProcessResult {
+                    environment: [String: String]? = nil,
+                    capture: Capture = .full) async throws -> ProcessResult {
         let toolName = executable.lastPathComponent
         let mediaLeases = (toolName == "ffmpeg" || toolName == "ffprobe")
             ? try await DriveMediaResolver.shared.prepareInputs(arguments, probe: toolName == "ffprobe") : []
         defer { withExtendedLifetime(mediaLeases) {} }
+        let permit = (toolName == "ffmpeg" || toolName == "ffprobe")
+            ? try await MediaWorkScheduler.shared.acquire(.encoding, priority: MediaWorkScheduler.priority) : nil
+        defer { withExtendedLifetime(permit) {} }
+        try Task.checkCancellation()
         let state = ProcessRunState()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -123,12 +136,32 @@ nonisolated enum ProcessRunner {
                     let readGroup = DispatchGroup()
                     readGroup.enter()
                     DispatchQueue.global(qos: .userInitiated).async {
-                        outBox.data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                        if case .streamingStdout(let consume) = capture {
+                            while true {
+                                let chunk = stdoutPipe.fileHandleForReading.readData(ofLength: 64 * 1024)
+                                guard !chunk.isEmpty else { break }
+                                consume(chunk)
+                            }
+                        } else {
+                            outBox.data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                        }
                         readGroup.leave()
                     }
                     readGroup.enter()
                     DispatchQueue.global(qos: .userInitiated).async {
-                        errBox.data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                        if case .boundedStderrTail(let maxBytes) = capture {
+                            let limit = max(0, maxBytes)
+                            var tail = Data()
+                            while true {
+                                let chunk = stderrPipe.fileHandleForReading.readData(ofLength: 64 * 1024)
+                                guard !chunk.isEmpty else { break }
+                                tail.append(chunk)
+                                if tail.count > limit { tail = Data(tail.suffix(limit)) }
+                            }
+                            errBox.data = tail
+                        } else {
+                            errBox.data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                        }
                         readGroup.leave()
                     }
 

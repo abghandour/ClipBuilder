@@ -138,7 +138,8 @@ final class AppStore {
         return timelines.first { $0.id == openTimelineID }
     }
 
-    var videos: [VideoRecord] = []
+    var videos: [VideoRecord] = [] { didSet { videosVersion &+= 1 } }
+    private(set) var videosVersion = 0
     @ObservationIgnored private var rebuildSceneIndexAfterWrite = true
     var scenes: [SceneRecord] = [] {
         didSet {
@@ -164,7 +165,8 @@ final class AppStore {
     /// Logs are capped at this many lines; a multi-hour run otherwise grows
     /// an observed array without bound.
     static let logLineCap = 4000
-    var analysisRuns: [AnalysisRun] = []
+    var analysisRuns: [AnalysisRun] = [] { didSet { analysisRunsVersion &+= 1 } }
+    private(set) var analysisRunsVersion = 0
     var people: [PersonRecord] = []
     /// Saved fight research by video id — the Analyze page's column and the
     /// wizards' story/caption injection read from here.
@@ -790,14 +792,12 @@ final class AppStore {
         guard let database else { return }
         builder.cancelPendingAutosave()
         if let timelineID = builder.timelineID {
-            let document = builder.document
-            let thumbnailVideoID = document.videoTrack.first?.sceneID
-                .flatMap { sceneID in scenes.first(where: { $0.id == sceneID })?.videoID }
-            if let data = try? JSONEncoder().encode(document),
-               let json = String(data: data, encoding: .utf8) {
-                try? await database.saveTimeline(id: timelineID, documentJSON: json,
-                                                 thumbnailVideoID: thumbnailVideoID)
-            }
+            saveTimeline(id: timelineID, document: builder.document)
+        }
+        // Includes saves from timelines/profiles closed while an encode was pending.
+        while !timelineSaveTasks.isEmpty {
+            let tasks = Array(timelineSaveTasks.values)
+            for task in tasks { await task.value }
         }
         projectStateSaveTask?.cancel()
         projectStateSaveTask = nil
@@ -980,6 +980,8 @@ final class AppStore {
     /// profile changed while the fetch was in flight, in which case the
     /// rows belong to the old profile and are dropped.
     func applyLibrarySnapshot(_ snapshot: LibrarySnapshot, generation: Int) {
+        let timing = PerfSignpost.begin("SnapshotApply", metadata: "scenes=\(snapshot.scenes.count)")
+        defer { PerfSignpost.end(timing) }
         guard generation == profileGeneration else { return }
         // Observation doesn't compare values: assigning an identical
         // array still invalidates every view reading it, so only the
@@ -1481,6 +1483,7 @@ final class AppStore {
         let total = Double(max(1, totalUnits))
 
         pipelineTask = Task {
+            await SampledFrameCache.$current.withValue(SampledFrameCache()) {
             var unitsDone = Double(pipelineDone.count)
             pipelineProgress = min(1, unitsDone / total)
             // Mark a unit finished; done units are skipped on Resume.
@@ -1793,6 +1796,7 @@ final class AppStore {
                 pipelineOptions = nil
             }
             isPipelineRunning = false
+            }
         }
     }
 
@@ -3479,21 +3483,55 @@ final class AppStore {
         }
     }
 
+    private struct TimelineSaveKey: Hashable {
+        let database: ObjectIdentifier
+        let id: Int64
+    }
+    private struct TimelineSaveSnapshot {
+        let version: UInt64
+        let document: TimelineDocument
+        let thumbnailVideoID: Int64?
+    }
+    @ObservationIgnored private var timelineSaveVersion: UInt64 = 0
+    @ObservationIgnored private var pendingTimelineSaves: [TimelineSaveKey: TimelineSaveSnapshot] = [:]
+    @ObservationIgnored private var timelineSaveTasks: [TimelineSaveKey: Task<Void, Never>] = [:]
+
+    @concurrent
+    nonisolated private static func encodeTimeline(_ document: TimelineDocument) async throws -> String {
+        String(decoding: try JSONEncoder().encode(document), as: UTF8.self)
+    }
+
     private func saveTimeline(id: Int64, document: TimelineDocument) {
         guard let database else { return }
-        let thumbnailVideoID = document.videoTrack.first?.sceneID
-            .flatMap { sceneID in scenes.first(where: { $0.id == sceneID })?.videoID }
-        guard let data = try? JSONEncoder().encode(document),
-              let json = String(data: data, encoding: .utf8) else { return }
-        Task {
-            do {
-                try await database.saveTimeline(id: id, documentJSON: json,
-                                                thumbnailVideoID: thumbnailVideoID)
-                if let activeProjectID {
-                    timelines = (try? await database.fetchTimelines(projectID: activeProjectID)) ?? timelines
-                    projects = (try? await database.fetchProjects()) ?? projects
-                }
-            } catch { presentError("Could not save the timeline", error) }
+        let key = TimelineSaveKey(database: ObjectIdentifier(database), id: id)
+        timelineSaveVersion += 1
+        pendingTimelineSaves[key] = TimelineSaveSnapshot(
+            version: timelineSaveVersion, document: document,
+            thumbnailVideoID: document.videoTrack.first?.sceneID
+                .flatMap { sceneID in scenes.first(where: { $0.id == sceneID })?.videoID })
+        guard timelineSaveTasks[key] == nil else { return }
+        // One drain per database/timeline serializes writes; newer snapshots
+        // replace queued snapshots and invalidate an encode still in progress.
+        timelineSaveTasks[key] = Task {
+            defer { timelineSaveTasks[key] = nil }
+            while let snapshot = pendingTimelineSaves.removeValue(forKey: key) {
+                do {
+                    let json = try await Self.encodeTimeline(snapshot.document)
+                    if let newer = pendingTimelineSaves[key], newer.version > snapshot.version { continue }
+                    try await database.saveTimeline(id: id, documentJSON: json,
+                                                    thumbnailVideoID: snapshot.thumbnailVideoID)
+                    let row = try await database.fetchTimeline(id: id)
+                    guard self.database === database, let row,
+                          activeProjectID == row.projectID,
+                          pendingTimelineSaves[key] == nil,
+                          let index = timelines.firstIndex(where: { $0.id == id }) else { continue }
+                    timelines[index] = row
+                    timelines.sort {
+                        if $0.editedAt != $1.editedAt { return ($0.editedAt ?? "") > ($1.editedAt ?? "") }
+                        return $0.id > $1.id
+                    }
+                } catch { presentError("Could not save the timeline", error) }
+            }
         }
     }
 

@@ -175,23 +175,71 @@ nonisolated enum ScreenCropStore {
         var fingerprint: [String] = []
         var layouts: [ScreenCropLayout] = []
         var checkedAt: TimeInterval = 0
+        var hasListing = false
+        var revision = 0
+        var refreshing = false
+        var root: URL?
     }
     private static let listingCache = Mutex(ListingCache())
     private static let recheckInterval: TimeInterval = 2
 
     static func invalidateListing() {
-        listingCache.withLock { $0.checkedAt = 0 }
+        listingCache.withLock {
+            $0.checkedAt = 0
+            $0.revision &+= 1
+        }
+        AssetCatalogChanges.publish()
+    }
+
+    private static func synchronizeRoot(_ root: URL) {
+        listingCache.withLock { cache in
+            guard cache.root != root else { return }
+            cache.root = root
+            cache.layouts = []
+            cache.fingerprint = []
+            cache.checkedAt = 0
+            cache.hasListing = false
+            cache.revision &+= 1
+        }
     }
 
     static func list() -> [ScreenCropLayout] {
+        AssetCatalogChanges.observe()
+        let root = directory
+        synchronizeRoot(root)
         let now = Date.timeIntervalSinceReferenceDate
         if let fresh = listingCache.withLock({
-            now - $0.checkedAt < recheckInterval ? $0.layouts : nil
+            $0.hasListing && now - $0.checkedAt < recheckInterval ? $0.layouts : nil
         }) {
             return fresh
         }
+        // A cold read must be complete for callers that only read once.
+        // Direct edit mutations do not make an unscanned catalog complete.
+        if Thread.isMainThread, listingCache.withLock({ $0.hasListing }) {
+            let state = listingCache.withLock { cache in
+                let launch = !cache.refreshing
+                cache.refreshing = true
+                return (launch, cache.revision, cache.layouts)
+            }
+            if state.0 {
+                Task { await refreshListing(root: root, revision: state.1) }
+            }
+            return state.2
+        }
+        return scanListing(root: root, revision: listingCache.withLock { $0.revision })
+    }
+
+    @concurrent
+    private static func refreshListing(root: URL, revision: Int) async {
+        _ = scanListing(root: root, revision: revision)
+        listingCache.withLock { $0.refreshing = false }
+        AssetCatalogChanges.publish()
+    }
+
+    private static func scanListing(root: URL, revision: Int) -> [ScreenCropLayout] {
+        let now = Date.timeIntervalSinceReferenceDate
         let files = ((try? FileManager.default.contentsOfDirectory(
-            at: directory, includingPropertiesForKeys: [.contentModificationDateKey],
+            at: root, includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles])) ?? [])
             .filter { $0.pathExtension.lowercased() == "json" }
         let fingerprint = files.map { url in
@@ -200,14 +248,21 @@ nonisolated enum ScreenCropStore {
             return "\(url.lastPathComponent)|\(stamp)"
         }.sorted()
         if let cached = listingCache.withLock({ cache -> [ScreenCropLayout]? in
-            guard cache.fingerprint == fingerprint else { return nil }
+            guard cache.revision == revision, cache.hasListing,
+                  cache.fingerprint == fingerprint else { return nil }
             cache.checkedAt = now
             return cache.layouts
         }) {
             return cached
         }
         let layouts = decodeLayouts(files)
-        listingCache.withLock { $0 = ListingCache(fingerprint: fingerprint, layouts: layouts, checkedAt: now) }
+        listingCache.withLock { cache in
+            guard cache.revision == revision else { return }
+            cache.fingerprint = fingerprint
+            cache.layouts = layouts
+            cache.checkedAt = now
+            cache.hasListing = true
+        }
         return layouts
     }
 
@@ -224,15 +279,24 @@ nonisolated enum ScreenCropStore {
     }
 
     static func save(_ layout: ScreenCropLayout) throws {
+        synchronizeRoot(directory)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(layout).write(to: layoutURL(name: layout.name), options: .atomic)
+        listingCache.withLock { cache in
+            cache.layouts.removeAll { $0.name == ProfileStore.sanitize(layout.name) }
+            var saved = layout
+            saved.name = ProfileStore.sanitize(layout.name)
+            cache.layouts.append(saved)
+            cache.layouts.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        }
         invalidateListing()
     }
 
     /// Returns the final (sanitized) name.
     static func rename(_ name: String, to newName: String) throws -> String {
+        synchronizeRoot(directory)
         let sanitized = ProfileStore.sanitize(newName)
         let current = ProfileStore.sanitize(name)
         guard sanitized != current else { return name }
@@ -248,12 +312,22 @@ nonisolated enum ScreenCropStore {
         } else {
             try FileManager.default.moveItem(at: source, to: destination)
         }
+        listingCache.withLock { cache in
+            if let index = cache.layouts.firstIndex(where: { $0.name == current }) {
+                cache.layouts[index].name = sanitized
+                cache.layouts.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            }
+        }
         invalidateListing()
         return sanitized
     }
 
     static func delete(name: String) throws {
+        synchronizeRoot(directory)
         try FileManager.default.trashItem(at: layoutURL(name: name), resultingItemURL: nil)
+        listingCache.withLock { cache in
+            cache.layouts.removeAll { $0.name == ProfileStore.sanitize(name) }
+        }
         invalidateListing()
     }
 

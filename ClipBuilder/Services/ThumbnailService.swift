@@ -11,6 +11,25 @@ actor ThumbnailService {
     private let mediaResolver: DriveMediaResolver
     private let frameLoader: @Sendable (URL, Double, CGFloat) async -> Data?
 
+    private nonisolated struct RequestKey: Hashable, Sendable {
+        let path: String
+        let time: Double
+        let maxDimension: CGFloat
+    }
+    private nonisolated struct Request: Sendable {
+        let id: UUID
+        let task: Task<Data?, Never>
+        var consumers: Set<UUID>
+    }
+    private var inFlight: [RequestKey: Request] = [:]
+
+    /// AVAssetImageGenerator is not Sendable. Configuration and generation
+    /// stay on the worker; only its cancellation API crosses executors.
+    private nonisolated struct GenerationCancellation: @unchecked Sendable {
+        let generator: AVAssetImageGenerator
+        func cancel() { generator.cancelAllCGImageGeneration() }
+    }
+
     init(cacheDirectory: URL? = nil, mediaResolver: DriveMediaResolver = .shared,
          frameLoader: @escaping @Sendable (URL, Double, CGFloat) async -> Data? = { url, time, dimension in
              await ThumbnailService.jpegFrame(url: url, at: time, maxDimension: dimension, quality: 0.7)
@@ -34,18 +53,68 @@ actor ThumbnailService {
 
     /// JPEG thumbnail for a video at a given timestamp, disk-cached.
     func thumbnail(for url: URL, at time: Double, maxDimension: CGFloat = 480) async -> Data? {
+        let timing = PerfSignpost.begin("Thumbnail", metadata: url.lastPathComponent)
+        defer { PerfSignpost.end(timing) }
+        guard !Task.isCancelled else { return nil }
+        let key = RequestKey(path: url.path, time: time, maxDimension: maxDimension)
+        let consumer = UUID()
+        let request: Request
+        if var existing = inFlight[key] {
+            PerfSignpost.event("ThumbnailCacheHit", metadata: "in flight")
+            existing.consumers.insert(consumer)
+            inFlight[key] = existing
+            request = existing
+        } else {
+            let task = Task {
+                await MediaWorkScheduler.$priority.withValue(.interactive) {
+                    await self.loadThumbnail(for: url, at: time, maxDimension: maxDimension)
+                }
+            }
+            request = Request(id: UUID(), task: task, consumers: [consumer])
+            inFlight[key] = request
+        }
+        return await withTaskCancellationHandler {
+            let data = await request.task.value
+            releaseConsumer(consumer, key: key, requestID: request.id)
+            return Task.isCancelled ? nil : data
+        } onCancel: {
+            PerfSignpost.event("ThumbnailCancel")
+            Task { await self.releaseConsumer(consumer, key: key, requestID: request.id) }
+        }
+    }
+
+    private func releaseConsumer(_ consumer: UUID, key: RequestKey, requestID: UUID) {
+        guard var request = inFlight[key], request.id == requestID else { return }
+        request.consumers.remove(consumer)
+        if request.consumers.isEmpty {
+            request.task.cancel()
+            inFlight[key] = nil
+        } else {
+            inFlight[key] = request
+        }
+    }
+
+    private func loadThumbnail(for url: URL, at time: Double, maxDimension: CGFloat) async -> Data? {
+        guard !Task.isCancelled else { return nil }
         let files = DriveTransferFiles(for: url)
         _ = files.readIdentity() // Migrate a pre-existing identity before looking up its cache.
         let hasIdentity = FileManager.default.fileExists(atPath: files.identity.path)
         let isDriveMedia = hasIdentity ? true : ((try? await mediaResolver.isDriveMedia(url)) ?? false)
+        guard !Task.isCancelled else { return nil }
         let stable = cacheDirectory.appendingPathComponent(ContentHashForDrive.key("\(url.path)|\(time)|\(maxDimension)") + ".jpg")
-        if isDriveMedia, !FileManager.default.fileExists(atPath: url.path), let cached = try? Data(contentsOf: stable) { return cached }
+        if isDriveMedia, !FileManager.default.fileExists(atPath: url.path), let cached = try? Data(contentsOf: stable) {
+            PerfSignpost.event("ThumbnailCacheHit", metadata: "Drive offline")
+            return cached
+        }
         let cacheURL = cacheDirectory.appendingPathComponent(cacheKey(url, time: time, maxDimension: maxDimension))
         if let cached = try? Data(contentsOf: cacheURL) {
+            PerfSignpost.event("ThumbnailCacheHit", metadata: "disk")
             if isDriveMedia { try? cached.write(to: stable) }
             return cached
         }
-        guard let data = await frameLoader(url, time, maxDimension) else {
+        guard !Task.isCancelled,
+              let data = await frameLoader(url, time, maxDimension),
+              !Task.isCancelled else {
             return nil
         }
         try? data.write(to: cacheURL)
@@ -58,15 +127,40 @@ actor ThumbnailService {
     @concurrent
     static func jpegFrame(url: URL, at time: Double,
                           maxDimension: CGFloat = 0, quality: CGFloat = 0.85) async -> Data? {
-        guard let asset = try? await DriveLocalAsset.make(url) else { return nil }
-        let generator = AVAssetImageGenerator(asset: asset)
-        configure(generator, maxDimension: maxDimension)
-        let cmTime = CMTime(seconds: time, preferredTimescale: 600)
-        if let cgImage = try? await generator.image(at: cmTime).image {
+        guard !Task.isCancelled, let asset = try? await DriveLocalAsset.make(url) else { return nil }
+        defer { withExtendedLifetime(asset) {} }
+        if let cgImage = await generatedFrame(asset: asset, at: time, maxDimension: maxDimension) {
+            guard !Task.isCancelled else { return nil }
             return jpegData(from: cgImage, quality: quality)
         }
-        // AVFoundation cannot read some containers (MKV/WebM) — fall back to ffmpeg.
+        guard !Task.isCancelled else { return nil }
+        // Release the decode permit before the external-process fallback.
         return await FFmpeg.jpegFrame(of: url, at: time, maxDimension: maxDimension)
+    }
+
+    @concurrent
+    private static func generatedFrame(asset: AVURLAsset, at time: Double, maxDimension: CGFloat,
+                                       widthOnly: Bool = false) async -> CGImage? {
+        guard let permit = try? await MediaWorkScheduler.shared.acquire(.decoding, priority: MediaWorkScheduler.priority)
+        else { return nil }
+        defer { withExtendedLifetime((asset, permit)) {} }
+        guard !Task.isCancelled else { return nil }
+        let generator = AVAssetImageGenerator(asset: asset)
+        if widthOnly {
+            // Retain the grayscale sampler's original seek tolerance and sizing.
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: maxDimension, height: 0)
+        } else {
+            configure(generator, maxDimension: maxDimension)
+        }
+        let cancellation = GenerationCancellation(generator: generator)
+        return await withTaskCancellationHandler {
+            guard !Task.isCancelled else { return nil }
+            let image = try? await generator.image(at: CMTime(seconds: time, preferredTimescale: 600)).image
+            return Task.isCancelled ? nil : image
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 
     /// JPEG frames for many timestamps, preserving the input order. One asset and
@@ -78,27 +172,17 @@ actor ThumbnailService {
     @concurrent
     static func jpegFrames(url: URL, at timestamps: [Double],
                            maxDimension: CGFloat = 0, quality: CGFloat = 0.85) async -> [Data?] {
+        let timing = PerfSignpost.begin("Frames", metadata: "count=\(timestamps.count) edge=\(maxDimension)")
+        defer { PerfSignpost.end(timing) }
         guard !timestamps.isEmpty else { return [] }
+        guard !Task.isCancelled else { return Array(repeating: nil, count: timestamps.count) }
 
-        let requestedTimes = timestamps.map { CMTime(seconds: $0, preferredTimescale: 600) }
-        guard let asset = try? await DriveLocalAsset.make(url) else { return Array(repeating: nil, count: timestamps.count) }
-        let generator = AVAssetImageGenerator(asset: asset)
-        configure(generator, maxDimension: maxDimension)
-
-        var frames = [Data?](repeating: nil, count: timestamps.count)
-        var fulfilled = Set<Int>()
-        for await result in generator.images(for: requestedTimes) {
-            // The async API reports failures per result, so keep collecting the
-            // other requested frames when a seek/decode error occurs.
-            guard let index = requestedTimes.indices.first(where: {
-                !fulfilled.contains($0) && CMTimeCompare(requestedTimes[$0], result.requestedTime) == 0
-            }) else {
-                continue
-            }
-            fulfilled.insert(index)
-            guard let image = try? result.image else { continue }
-            frames[index] = jpegData(from: image, quality: quality)
+        guard let asset = try? await DriveLocalAsset.make(url) else {
+            return Array(repeating: nil, count: timestamps.count)
         }
+        defer { withExtendedLifetime(asset) {} }
+        var frames = await generatedFrames(asset: asset, at: timestamps, maxDimension: maxDimension, quality: quality)
+        guard !Task.isCancelled else { return Array(repeating: nil, count: timestamps.count) }
 
         // AVFoundation does not support every source container. Only retry the
         // missing timestamps, preserving successful AVFoundation results.
@@ -112,6 +196,44 @@ actor ThumbnailService {
             }
         }
         return frames
+    }
+
+    @concurrent
+    private static func generatedFrames(asset: AVURLAsset, at timestamps: [Double],
+                                        maxDimension: CGFloat, quality: CGFloat) async -> [Data?] {
+        let requestedTimes = timestamps.map { CMTime(seconds: $0, preferredTimescale: 600) }
+        guard let permit = try? await MediaWorkScheduler.shared.acquire(.decoding, priority: MediaWorkScheduler.priority)
+        else { return Array(repeating: nil, count: timestamps.count) }
+        defer { withExtendedLifetime((asset, permit)) {} }
+        guard !Task.isCancelled else { return Array(repeating: nil, count: timestamps.count) }
+        let generator = AVAssetImageGenerator(asset: asset)
+        configure(generator, maxDimension: maxDimension)
+
+        let cancellation = GenerationCancellation(generator: generator)
+        return await withTaskCancellationHandler {
+            var frames = [Data?](repeating: nil, count: timestamps.count)
+            var fulfilled = Set<Int>()
+            guard !Task.isCancelled else { return frames }
+            for await result in generator.images(for: requestedTimes) {
+                // Drain cancelled results too, retaining the asset/Drive lease
+                // until the generator has finished the batch.
+                guard !Task.isCancelled else { continue }
+                // The async API reports failures per result, so keep collecting the
+                // other requested frames when a seek/decode error occurs.
+                guard let index = requestedTimes.indices.first(where: {
+                    !fulfilled.contains($0) && CMTimeCompare(requestedTimes[$0], result.requestedTime) == 0
+                }) else {
+                    continue
+                }
+                fulfilled.insert(index)
+                guard let image = try? result.image else { continue }
+                frames[index] = jpegData(from: image, quality: quality)
+            }
+
+            return frames
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 
     private static func configure(_ generator: AVAssetImageGenerator, maxDimension: CGFloat) {
@@ -133,16 +255,14 @@ actor ThumbnailService {
     /// feeds the auto-crop detail/motion scoring.
     @concurrent
     static func grayscaleFrame(url: URL, at time: Double, width: Int) async -> (pixels: [UInt8], width: Int, height: Int)? {
-        guard let asset = try? await DriveLocalAsset.make(url) else { return nil }
-        let generator = AVAssetImageGenerator(asset: asset)
-        generator.appliesPreferredTrackTransform = true
-        generator.maximumSize = CGSize(width: width, height: 0)
-        let cmTime = CMTime(seconds: time, preferredTimescale: 600)
-        var frame = try? await generator.image(at: cmTime).image
-        if frame == nil, let jpeg = await FFmpeg.jpegFrame(of: url, at: time, maxDimension: CGFloat(width)) {
+        guard !Task.isCancelled, let asset = try? await DriveLocalAsset.make(url) else { return nil }
+        defer { withExtendedLifetime(asset) {} }
+        var frame = await generatedFrame(asset: asset, at: time, maxDimension: CGFloat(width), widthOnly: true)
+        if frame == nil, !Task.isCancelled,
+           let jpeg = await FFmpeg.jpegFrame(of: url, at: time, maxDimension: CGFloat(width)) {
             frame = NSBitmapImageRep(data: jpeg)?.cgImage
         }
-        guard let cgImage = frame else { return nil }
+        guard !Task.isCancelled, let cgImage = frame else { return nil }
 
         let w = cgImage.width
         let h = cgImage.height

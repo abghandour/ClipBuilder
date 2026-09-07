@@ -88,6 +88,8 @@ nonisolated enum AssetStore {
         var files: [AssetKind: FileListing] = [:]
         var fontFamilies: FontFamilies?
         var revision = 0
+        var refreshing: Set<AssetKind> = []
+        var roots: [AssetKind: URL] = [:]
     }
 
     private static let catalogCache = Mutex(CatalogCache())
@@ -100,13 +102,14 @@ nonisolated enum AssetStore {
         catalogCache.withLock { cache in
             cache.revision &+= 1
             if let kind {
-                cache.files.removeValue(forKey: kind)
+                cache.files[kind]?.checkedAt = 0
                 if kind == .fonts { cache.fontFamilies = nil }
             } else {
-                cache.files.removeAll()
+                for kind in AssetKind.allCases { cache.files[kind]?.checkedAt = 0 }
                 cache.fontFamilies = nil
             }
         }
+        AssetCatalogChanges.publish()
     }
 
     static func libraryFontFamilies() -> [String] {
@@ -166,26 +169,63 @@ nonisolated enum AssetStore {
         }
     }
 
+    @concurrent
+    static func itemsAsync(of kind: AssetKind, in folder: URL) async -> [AssetItem] {
+        items(of: kind, in: folder)
+    }
+
     /// Recursive listing of a library's files with root-relative display
     /// names (extension dropped), name-sorted — the shape the Builder's
     /// Music/Image menus want.
     static func allFiles(of kind: AssetKind) -> [(name: String, url: URL)] {
+        AssetCatalogChanges.observe()
+        let root = kind.rootURL
+        catalogCache.withLock { cache in
+            if cache.roots[kind] != root {
+                cache.roots[kind] = root
+                cache.files[kind] = nil
+                cache.revision &+= 1
+                if kind == .fonts { cache.fontFamilies = nil }
+            }
+        }
         let now = Date.timeIntervalSinceReferenceDate
         if let cached = catalogCache.withLock({ cache -> [(name: String, url: URL)]? in
             guard let listing = cache.files[kind],
                   now - listing.checkedAt < recheckInterval else { return nil }
             return listing.files
         }) { return cached }
-        let revision = catalogCache.withLock { $0.revision }
-        let root = kind.rootURL
-        guard let enumerator = FileManager.default.enumerator(
+        // One-shot callers need a complete first listing, even on MainActor.
+        // An existing listing (including an empty one) can refresh lazily.
+        if Thread.isMainThread, catalogCache.withLock({ $0.files[kind] != nil }) {
+            let state = catalogCache.withLock { cache in
+                let launch = cache.refreshing.insert(kind).inserted
+                return (launch, cache.revision, cache.files[kind]?.files ?? [])
+            }
+            if state.0 {
+                Task { await refreshFiles(of: kind, root: root, revision: state.1) }
+            }
+            return state.2
+        }
+        return scanFiles(of: kind, root: root, revision: catalogCache.withLock { $0.revision })
+    }
+
+    @concurrent
+    private static func refreshFiles(of kind: AssetKind, root: URL, revision: Int) async {
+        _ = scanFiles(of: kind, root: root, revision: revision)
+        catalogCache.withLock { $0.refreshing.remove(kind) }
+        AssetCatalogChanges.publish()
+    }
+
+    private static func scanFiles(of kind: AssetKind, root: URL, revision: Int) -> [(name: String, url: URL)] {
+        let now = Date.timeIntervalSinceReferenceDate
+        let enumerator = FileManager.default.enumerator(
             at: root, includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
-            options: [.skipsHiddenFiles]) else { return [] }
+            options: [.skipsHiddenFiles])
         // The enumerator reports resolved paths (/private/var/…) even when
         // the root was given through a symlink (/var/…); compare resolved
         // forms so the library-relative name always strips the root.
         let rootPath = root.resolvingSymlinksInPath().path
-        let result: [(name: String, url: URL)] = enumerator.compactMap { $0 as? URL }
+        let result: [(name: String, url: URL)] = (enumerator?.compactMap { $0 as? URL } ?? [])
             .filter { kind.allowedExtensions.contains($0.pathExtension.lowercased()) }
             .map { url in
                 var name = url.resolvingSymlinksInPath().deletingPathExtension().path
@@ -219,19 +259,41 @@ nonisolated enum AssetStore {
     /// Copy external files into `folder`, skipping non-matching types.
     /// Returns how many files were actually imported.
     @discardableResult
-    static func importFiles(_ urls: [URL], of kind: AssetKind, into folder: URL) throws -> Int {
+    static func importFiles(_ urls: [URL], of kind: AssetKind, into folder: URL) async throws -> Int {
+        try await importWorker.copy(urls, of: kind, into: folder)
+    }
+
+    // Blocking I/O on the cooperative pool is intentional for this single serial worker.
+    private actor ImportWorker {
+        func copy(_ urls: [URL], of kind: AssetKind, into folder: URL) throws -> Int {
+            try AssetStore.copyFiles(urls, of: kind, into: folder)
+        }
+    }
+    private static let importWorker = ImportWorker()
+
+    private static func copyFiles(_ urls: [URL], of kind: AssetKind, into folder: URL) throws -> Int {
         var imported = 0
+        defer {
+            if imported > 0 {
+                invalidateCatalog(kind)
+                if kind == .fonts { registerFonts() }
+            }
+        }
         for url in urls {
+            try Task.checkCancellation()
             guard kind.allowedExtensions.contains(url.pathExtension.lowercased()) else { continue }
             // File-importer URLs are security-scoped; direct drags are not.
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            try FileManager.default.copyItem(at: url, to: uniqueDestination(for: url.lastPathComponent, in: folder))
+            // Stage under a hidden name; cancellation/errors never leave a
+            // partially copied file visible in a catalog or folder watcher.
+            let staging = folder.appendingPathComponent(".import-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: staging) }
+            try FileManager.default.copyItem(at: url, to: staging)
+            try Task.checkCancellation()
+            try FileManager.default.moveItem(at: staging,
+                to: uniqueDestination(for: url.lastPathComponent, in: folder))
             imported += 1
-        }
-        if imported > 0 {
-            invalidateCatalog(kind)
-            if kind == .fonts { registerFonts() }
         }
         return imported
     }
@@ -274,8 +336,18 @@ nonisolated enum AssetStore {
     /// registered fonts is a harmless no-op error that CTFontManager reports
     /// per-font; errors are ignored.
     static func registerFonts() {
+        if Thread.isMainThread {
+            Task { await registerFontsAsync() }
+            return
+        }
         let fontURLs = allFiles(of: .fonts).map(\.url)
         guard !fontURLs.isEmpty else { return }
         CTFontManagerRegisterFontURLs(fontURLs as CFArray, .process, true, nil)
+    }
+
+    @concurrent
+    private static func registerFontsAsync() async {
+        registerFonts()
+        AssetCatalogChanges.publish()
     }
 }

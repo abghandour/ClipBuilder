@@ -154,8 +154,15 @@ private struct CropEditorLayer: View {
     let frame: CGSize
 
     @State private var image: NSImage?
+    @State private var requestedFrameKey: String?
     @State private var drag: (crop: Int, corner: Corner?, start: FreeCropRect)?
     @State private var selectedCropIndex: Int?
+
+    private var frameKey: String? {
+        let model = store.builder
+        guard let url = model.sourceURL(for: clip) else { return nil }
+        return "\(url.path)|\(model.sourceTime(for: clip, atTimeline: time))|frame"
+    }
 
     private enum Corner: CaseIterable {
         case topLeft, topRight, bottomLeft, bottomRight
@@ -182,9 +189,11 @@ private struct CropEditorLayer: View {
             }
         }
         .frame(width: frame.width, height: frame.height)
-        .task(id: "\(clip.uid)|\(time)") {
+        .task(id: frameKey) {
+            guard !Task.isCancelled else { return }
+            requestedFrameKey = frameKey
             let model = store.builder
-            guard let url = model.sourceURL(for: clip) else { return }
+            guard !Task.isCancelled, let url = model.sourceURL(for: clip) else { return }
             let sourceTime = model.sourceTime(for: clip, atTimeline: time)
             let key = "\(url.path)|\(sourceTime)|frame"
             if let hit = ImageCache.cached(key: key) {
@@ -193,6 +202,7 @@ private struct CropEditorLayer: View {
             }
             if let data = await store.thumbnails.thumbnail(for: url, at: sourceTime),
                let loaded = await ImageCache.image(data: data, key: key, maxPixel: 480) {
+                guard !Task.isCancelled, key == requestedFrameKey else { return }
                 image = loaded
             }
         }

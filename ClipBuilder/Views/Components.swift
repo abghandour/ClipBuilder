@@ -81,6 +81,7 @@ struct VideoThumbnail: View {
 
     @State private var image: NSImage?
     @State private var loadedKey: String?
+    @State private var requestedKey: String?
 
     private var key: String { "\(url.path)|\(time)|frame" }
 
@@ -113,8 +114,9 @@ struct VideoThumbnail: View {
             // nil, which froze the thumbnail on its first frame when the
             // same view was later given a different time (preview scrub).
             let key = key
+            guard !Task.isCancelled else { return }
+            requestedKey = key
             guard loadedKey != key else { return }
-            image = nil
             if let hit = ImageCache.cached(key: key) {
                 image = hit
                 loadedKey = key
@@ -122,6 +124,7 @@ struct VideoThumbnail: View {
             }
             if let data = await store.thumbnails.thumbnail(for: url, at: time),
                let loaded = await ImageCache.image(data: data, key: key, maxPixel: 480) {
+                guard !Task.isCancelled, key == requestedKey else { return }
                 image = loaded
                 loadedKey = key
             }
