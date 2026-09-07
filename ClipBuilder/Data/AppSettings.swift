@@ -410,10 +410,72 @@ nonisolated enum SettingsStore {
 
     /// The custom data folder, if any: the process override first, then the
     /// user default (also settable per launch via `-ClipBuilderDataFolder`).
+    /// A folder on an external or unmounted volume is ignored (see
+    /// `rejectedDataFolder`): the databases and caches must live on the
+    /// internal disk, where SQLite writes and thumbnail reads stay fast.
     static var customDataFolder: URL? {
         let custom = dataFolderOverride ?? UserDefaults.standard.string(forKey: dataFolderDefaultsKey)
         guard let custom, !custom.isEmpty else { return nil }
+        if let rejection = dataFolderRejection(forPath: custom) {
+            rejectionLock.withLock { rejectedDataFolder = rejection }
+            return nil
+        }
         return URL(fileURLWithPath: (custom as NSString).expandingTildeInPath, isDirectory: true)
+    }
+
+    /// A configured data folder that failed validation, with the reason. Set
+    /// the first time `customDataFolder` resolves; the app reads it once at
+    /// launch to explain the fallback to the default folder.
+    struct DataFolderRejection: Equatable, Sendable {
+        var path: String
+        var reason: String
+    }
+
+    private static let rejectionLock = NSLock()
+    nonisolated(unsafe) private static var rejectedDataFolder: DataFolderRejection?
+    nonisolated(unsafe) private static var rejectionCache: [String: DataFolderRejection?] = [:]
+
+    /// Returns and clears the launch-time rejection, if any.
+    static func takeRejectedDataFolder() -> DataFolderRejection? {
+        rejectionLock.withLock {
+            defer { rejectedDataFolder = nil }
+            return rejectedDataFolder
+        }
+    }
+
+    /// Why `path` cannot be the data folder, or nil when it is acceptable.
+    /// The result is cached per path: `dataDirectory` is read on every
+    /// database and cache lookup and must not stat the disk each time.
+    static func dataFolderRejection(forPath path: String) -> DataFolderRejection? {
+        if let cached = rejectionLock.withLock({ rejectionCache[path] }) { return cached }
+        let rejection = validateDataFolderVolume(path)
+        rejectionLock.withLock { rejectionCache[path] = rejection }
+        return rejection
+    }
+
+    private static func validateDataFolderVolume(_ path: String) -> DataFolderRejection? {
+        let expanded = (path as NSString).expandingTildeInPath
+        let fm = FileManager.default
+        // The folder itself may not exist yet; judge the nearest existing
+        // ancestor, which is on the same volume.
+        var url = URL(fileURLWithPath: expanded, isDirectory: true).standardizedFileURL
+        while !fm.fileExists(atPath: url.path), url.pathComponents.count > 1 {
+            url.deleteLastPathComponent()
+        }
+        if url.path == "/Volumes" {
+            return DataFolderRejection(path: path, reason: "its volume is not mounted")
+        }
+        let keys: Set<URLResourceKey> = [.volumeIsInternalKey, .volumeIsRemovableKey,
+                                         .volumeIsEjectableKey, .volumeIsLocalKey]
+        guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
+        if values.volumeIsLocal == false {
+            return DataFolderRejection(path: path, reason: "it is on a network volume")
+        }
+        if values.volumeIsInternal == false || values.volumeIsRemovable == true
+            || values.volumeIsEjectable == true {
+            return DataFolderRejection(path: path, reason: "it is on an external drive")
+        }
+        return nil
     }
 
     static var dataDirectory: URL {

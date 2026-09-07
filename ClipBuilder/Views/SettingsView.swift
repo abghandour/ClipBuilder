@@ -510,10 +510,26 @@ private struct TasteSettingsTab: View {
 private struct GeneralSettingsTab: View {
     @Environment(AppStore.self) private var store
     @AppStorage(SettingsStore.dataFolderDefaultsKey) private var dataFolder = ""
+    @State private var dataFolderDraft = ""
+    @State private var dataFolderProblem: String?
     // Resolved off-main once: when ffmpeg is missing, the lookup falls back
     // to a blocking login-shell spawn, which must not run per body pass
     // (this tab re-renders on every keystroke in its text fields).
     @State private var missingTools: [String]?
+
+    /// Persist a new data folder, or refuse it and keep the saved one when
+    /// it sits on an external, network, or unmounted volume.
+    private func commitDataFolder(_ path: String) {
+        let trimmed = path.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty, let rejection = SettingsStore.dataFolderRejection(forPath: trimmed) {
+            dataFolderProblem = "The data folder must be on the internal disk: \(trimmed) can't be used because \(rejection.reason). Video files can stay on external drives."
+            dataFolderDraft = dataFolder
+            return
+        }
+        dataFolderProblem = nil
+        dataFolder = trimmed
+        dataFolderDraft = trimmed
+    }
 
     var body: some View {
         @Bindable var store = store
@@ -606,18 +622,26 @@ private struct GeneralSettingsTab: View {
 
             Section("Storage") {
                 HStack {
-                    TextField("Data folder", text: $dataFolder,
+                    // Edits land in a draft and are validated on commit, so
+                    // a half-typed path never reaches the persisted default.
+                    TextField("Data folder", text: $dataFolderDraft,
                               prompt: Text(SettingsStore.dataDirectory.path))
+                        .onSubmit { commitDataFolder(dataFolderDraft) }
                     Button("Choose…") {
                         let panel = NSOpenPanel()
                         panel.canChooseDirectories = true
                         panel.canChooseFiles = false
                         if panel.runModal() == .OK, let url = panel.url {
-                            dataFolder = url.path
+                            commitDataFolder(url.path)
                         }
                     }
                 }
-                Text("Databases and caches live here. Point this at a clip-builder checkout's data/ folder to share scene databases with the Python app, then relaunch.")
+                if let dataFolderProblem {
+                    Text(dataFolderProblem)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                Text("Databases and caches live here, and must stay on the internal disk (video files can live on external drives). Point this at a clip-builder checkout's data/ folder to share scene databases with the Python app, then relaunch.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -654,6 +678,7 @@ private struct GeneralSettingsTab: View {
         }
         .formStyle(.grouped)
         .onAppear {
+            dataFolderDraft = dataFolder
             // A previous build exposed an unfinished mode. Keep saved
             // preferences on the supported path instead of offering a
             // selection that cannot complete its job.

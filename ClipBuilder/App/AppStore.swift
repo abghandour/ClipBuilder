@@ -373,6 +373,16 @@ final class AppStore {
         let active = loaded.first { $0.profileName == activeName } ?? loaded[0]
         self.init(settings: settings, profiles: loaded, active: active,
                   ai: AIService(config: settings.ai), startWatcher: true, openProfile: true)
+        // A saved data folder on an external or unmounted volume was ignored
+        // while loading; forget it so the fallback is permanent and the
+        // explanation shows once.
+        if let rejected = SettingsStore.takeRejectedDataFolder() {
+            UserDefaults.standard.removeObject(forKey: SettingsStore.dataFolderDefaultsKey)
+            presentError("The data folder \(rejected.path) can't be used because \(rejected.reason). "
+                         + "Databases and caches must stay on the internal disk, so Clip Builder is using "
+                         + "the default folder \(SettingsStore.dataDirectory.path) instead. "
+                         + "Video files can stay on external drives.")
+        }
     }
 
     /// Dependency-injected construction for state tests and isolated tools.
