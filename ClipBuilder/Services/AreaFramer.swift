@@ -31,7 +31,10 @@ nonisolated enum AreaFramer {
                       tuning: CenterStageService.Tuning = .fastAction,
                       centerStage: CenterStageService,
                       scratch: URL,
+                      onFallback: (@Sendable () -> Void)? = nil,
                       log: @escaping @Sendable (String) -> Void) async throws -> URL {
+        let timing = PerfSignpost.begin("AreaFraming", metadata: "tracking")
+        defer { PerfSignpost.end(timing) }
         let box = pixelBounds(of: area)
         let output = scratch.appendingPathComponent("area_\(UUID().uuidString).mp4")
         let w = RenderEngine.outputWidth
@@ -47,6 +50,8 @@ nonisolated enum AreaFramer {
                                                        tuning: tuning, frame: box.size, log: log)
             log(String(format: "Area \"%@\": tracking camera at %.0f×%.0f", area.name, box.width, box.height))
         } catch {
+            try Task.checkCancellation()
+            onFallback?()
             log("Area \"\(area.name)\": \(error) — using a static center window")
         }
         defer { if let fitted { try? FileManager.default.removeItem(at: fitted) } }
@@ -80,19 +85,10 @@ nonisolated enum AreaFramer {
     static func frame(source: URL, start: Double, duration: Double,
                       area: ScreenCropArea, window: FreeCropRect,
                       scratch: URL) async throws -> URL {
-        let box = pixelBounds(of: area)
+        let timing = PerfSignpost.begin("AreaFraming", metadata: "static")
+        defer { PerfSignpost.end(timing) }
         let output = scratch.appendingPathComponent("area_\(UUID().uuidString).mp4")
-        let w = RenderEngine.outputWidth
-        let h = RenderEngine.outputHeight
-        func clamp(_ value: Double) -> Double { min(1, max(0, value)) }
-        let x = clamp(window.xFrac), y = clamp(window.yFrac)
-        let cw = max(0.01, min(window.wFrac, 1 - x))
-        let ch = max(0.01, min(window.hFrac, 1 - y))
-        // Even crop sizes keep yuv420p happy before the scale.
-        let filter = String(format: "[0:v]crop='2*floor(iw*%.5f/2)':'2*floor(ih*%.5f/2)':'iw*%.5f':'ih*%.5f',",
-                            cw, ch, x, y)
-            + "scale=\(Int(box.width)):\(Int(box.height)),"
-            + "pad=\(w):\(h):\(Int(box.minX)):\(Int(box.minY)):color=black,setsar=1,fps=30,format=yuv420p[vout]"
+        let filter = "[0:v]" + staticFilter(area: area, window: window) + "[vout]"
         var arguments: [String] = ["-y",
                                    "-ss", String(format: "%.3f", max(0, start)),
                                    "-t", String(format: "%.3f", duration), "-i", source.path,
@@ -102,6 +98,23 @@ nonisolated enum AreaFramer {
         arguments.append(output.path)
         try await FFmpeg.run(arguments, timeout: 600)
         return output
+    }
+
+    /// Shared by standalone framing and the fused segment graph. Preserve
+    /// crop rounding and crop → scale → pad → fps → pixel format order.
+    static func staticFilter(area: ScreenCropArea, window: FreeCropRect) -> String {
+        let box = pixelBounds(of: area)
+        let w = RenderEngine.outputWidth
+        let h = RenderEngine.outputHeight
+        func clamp(_ value: Double) -> Double { min(1, max(0, value)) }
+        let x = clamp(window.xFrac), y = clamp(window.yFrac)
+        let cw = max(0.01, min(window.wFrac, 1 - x))
+        let ch = max(0.01, min(window.hFrac, 1 - y))
+        // Even crop sizes keep yuv420p happy before the scale.
+        return String(format: "crop='2*floor(iw*%.5f/2)':'2*floor(ih*%.5f/2)':'iw*%.5f':'ih*%.5f',",
+                            cw, ch, x, y)
+            + "scale=\(Int(box.width)):\(Int(box.height)),"
+            + "pad=\(w):\(h):\(Int(box.minX)):\(Int(box.minY)):color=black,setsar=1,fps=30,format=yuv420p"
     }
 
     /// The largest window of the area's aspect that fits a source of

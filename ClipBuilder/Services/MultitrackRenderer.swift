@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Multi-track builder render pipeline — the Swift port of clip_builder.py's
 /// _generate_multitrack() + video.py's layered compositor. Slices the
@@ -15,7 +16,7 @@ actor MultitrackRenderer {
 
     /// One clip with every per-clip/track setting resolved to its effective
     /// value (clip override beats layer default; layer mute forces mute).
-    nonisolated struct ResolvedClip: Sendable {
+    nonisolated struct ResolvedClip: Codable, Sendable {
         var sourcePath: String
         var videoID: Int64?
         var sourceStart: Double
@@ -43,6 +44,12 @@ actor MultitrackRenderer {
         /// the reframe prepass replays it instead of re-tracking — the same
         /// path the curated preview and workbench show, so WYSIWYG holds.
         var cameraPath: [CameraPathKeyframe]?
+        var staticAreaFilter: String?
+        /// Original input and framing parameters, before temporary paths replace them.
+        var framingIdentity: String?
+        var originalSourcePath: String?
+        var sourceFingerprint: String?
+        var cacheable = true
     }
 
     nonisolated struct Segment: Sendable {
@@ -68,6 +75,7 @@ actor MultitrackRenderer {
         var freeCrops: [FreeCrop]?
         var screenCrop: String?
         var speed: Double = 1
+        var staticAreaFilter: String?
     }
 
     private static var width: Int { RenderEngine.outputWidth }
@@ -77,10 +85,12 @@ actor MultitrackRenderer {
         ["top": 0, "center": slotHeight, "bottom": slotHeight * 2]
     }
 
+    private let segmentCache: RenderSegmentCache
     private let render: RenderEngine
     private let centerStageService = CenterStageService()
 
-    init(render: RenderEngine) {
+    init(render: RenderEngine, segmentCache: RenderSegmentCache = .shared) {
+        self.segmentCache = segmentCache
         self.render = render
     }
 
@@ -110,87 +120,94 @@ actor MultitrackRenderer {
         // Overlay blocks render as their flattened text/image items.
         let document = document.expandingOverlayBlocks()
         var clips = Self.resolveClips(document: document, scenes: scenes)
-        // Center Stage prepass: flagged wide clips are reframed to portrait
-        // intermediates by the tracking camera, then composited as normal
-        // (non-wide) clips.
-        var reframedTemp: [URL] = []
-        for index in clips.indices where clips[index].centerStage {
-            // The reframe consumes SOURCE time: a 0.5× clip's screen
-            // duration covers half as many source seconds.
-            let sourceSpan = clips[index].duration * clips[index].speed
-            do {
-                let source = URL(fileURLWithPath: clips[index].sourcePath)
-                let portrait: URL
-                if let path = clips[index].cameraPath,
-                   CenterStageService.pathMatchesCanvas(path) {
-                    // Replay the stored path — the exact camera the preview
-                    // showed (including workbench edits). No re-tracking.
-                    emit("Clip \(index + 1): Center Stage reframe (saved camera path)…")
-                    portrait = try await centerStageService.reframeClip(
-                        source: source,
-                        start: clips[index].sourceStart,
-                        duration: sourceSpan,
-                        path: path,
-                        log: emit)
-                } else {
-                    if clips[index].cameraPath != nil {
-                        emit("Clip \(index + 1): saved camera path was framed for another canvas — tracking again")
-                    }
-                    emit("Clip \(index + 1): Center Stage reframe…")
-                    portrait = try await centerStageService.reframeClip(
-                        source: source,
-                        start: clips[index].sourceStart,
-                        duration: sourceSpan,
-                        tuning: .named(centerStageCamera),
-                        log: emit)
-                }
-                reframedTemp.append(portrait)
-                clips[index].sourcePath = portrait.path
-                clips[index].sourceStart = 0
-                clips[index].wide = false
-            } catch {
-                emit("Center Stage failed for clip \(index + 1) (\(error)) — using the static crop")
-            }
+        for index in clips.indices {
+            clips[index].originalSourcePath = clips[index].sourcePath
+            clips[index].sourceFingerprint = try SourceIdentityCache.shared.fingerprint(
+                of: URL(fileURLWithPath: clips[index].sourcePath))
         }
-        // Screen-crop prepass: a clip with an area is framed INTO that area
-        // (tracking camera at the area's aspect, black elsewhere) before the
-        // compositor masks it — so the fighters fill the area rather than
-        // whatever part of the full frame the polygon happens to cover.
         let framingScratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("cb_areas_\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: framingScratch, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: framingScratch, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: framingScratch) }
-        for index in clips.indices {
-            guard clips[index].freeCrops?.isEmpty != false,
-                  let area = ScreenCropStore.area(reference: clips[index].screenCrop) else { continue }
-            let sourceSpan = clips[index].duration * clips[index].speed
-            do {
-                let framed: URL
-                if let window = clips[index].areaWindow {
-                    emit("Clip \(index + 1): framing into \"\(clips[index].screenCrop ?? "")\" (hand-placed window)…")
-                    framed = try await AreaFramer.frame(
-                        source: URL(fileURLWithPath: clips[index].sourcePath),
-                        start: clips[index].sourceStart, duration: sourceSpan, area: area,
-                        window: window, scratch: framingScratch)
-                } else {
-                    emit("Clip \(index + 1): framing into \"\(clips[index].screenCrop ?? "")\"…")
-                    framed = try await AreaFramer.frame(
-                        source: URL(fileURLWithPath: clips[index].sourcePath),
-                        start: clips[index].sourceStart, duration: sourceSpan, area: area,
-                        tuning: .named(centerStageCamera), centerStage: centerStageService,
-                        scratch: framingScratch, log: emit)
+        // Group only source/framing inputs, not timeline placement. A repeated
+        // clip shares its intermediate. Permits remain in leaf media work.
+        for areaPass in [false, true] {
+            var groups: [String: [Int]] = [:]
+            var areas: [String: ScreenCropArea] = [:]
+            for index in clips.indices {
+                let clip = clips[index]
+                let area = ScreenCropStore.area(reference: clip.screenCrop)
+                guard (areaPass ? (clip.freeCrops?.isEmpty != false && area != nil) : clip.centerStage) else { continue }
+                if areaPass, let area, let window = clip.areaWindow {
+                    clips[index].staticAreaFilter = AreaFramer.staticFilter(area: area, window: window)
+                    clips[index].wide = false
+                    clips[index].effectiveCropXFrac = nil
+                    emit("Clip \(index + 1): static area fused; intermediates=0")
+                    continue
                 }
-                clips[index].sourcePath = framed.path
-                clips[index].sourceStart = 0
-                clips[index].wide = false
-                clips[index].centerStage = false
-                clips[index].cameraPath = nil
-                clips[index].effectiveCropXFrac = nil
-            } catch {
-                emit("Clip \(index + 1): area framing failed (\(error)) — masking the full frame")
+                let key = try Self.prepassKey(clip, area: areaPass ? area : nil, tuning: centerStageCamera)
+                groups[key, default: []].append(index)
+                if areaPass { areas[key] = area }
+            }
+            let jobs = groups.sorted { $0.key < $1.key }.map {
+                (key: $0.key, indices: $0.value, clip: clips[$0.value[0]], area: areas[$0.key])
+            }
+            let results = try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job -> PrepassArtifact? in
+                try Task.checkCancellation()
+                let clip = job.clip
+                let source = URL(fileURLWithPath: clip.sourcePath)
+                let fellBack = Mutex(false)
+                do {
+                    let framed: URL
+                    if let area = job.area {
+                        framed = try await AreaFramer.frame(source: source, start: clip.sourceStart,
+                            duration: clip.duration * clip.speed, area: area,
+                            tuning: .named(centerStageCamera), centerStage: self.centerStageService,
+                            scratch: framingScratch, onFallback: { fellBack.withLock { $0 = true } }, log: emit)
+                    } else {
+                        // CenterStageService's synchronous tracking loop still
+                        // serializes on its actor; only export/encode overlaps.
+                        if let path = clip.cameraPath, CenterStageService.pathMatchesCanvas(path) {
+                            framed = try await self.centerStageService.reframeClip(source: source,
+                                start: clip.sourceStart, duration: clip.duration * clip.speed, path: path, log: emit)
+                        } else {
+                            framed = try await self.centerStageService.reframeClip(source: source,
+                                start: clip.sourceStart, duration: clip.duration * clip.speed,
+                                tuning: .named(centerStageCamera), log: emit)
+                        }
+                    }
+                    let owned = framingScratch.appendingPathComponent(UUID().uuidString + ".mp4")
+                    defer { try? FileManager.default.removeItem(at: framed) }
+                    try Task.checkCancellation()
+                    try FileManager.default.moveItem(at: framed, to: owned)
+                    let intermediates = job.area == nil || fellBack.withLock({ $0 }) ? 1 : 2
+                    emit("Framing prepass: intermediates=\(intermediates); uses=\(job.indices.count)")
+                    return PrepassArtifact(url: owned, cacheable: !fellBack.withLock { $0 })
+                } catch {
+                    try Task.checkCancellation()
+                    emit("Framing failed (\(error)) — using the static crop")
+                    return nil
+                }
+            }
+            for (job, result) in zip(jobs, results) {
+                guard let result else {
+                    for index in job.indices { clips[index].cacheable = false }
+                    continue
+                }
+                for index in job.indices {
+                    clips[index].framingIdentity = (clips[index].framingIdentity ?? "") + job.key
+                    clips[index].sourcePath = result.url.path
+                    clips[index].cacheable = clips[index].cacheable && result.cacheable
+                    clips[index].sourceStart = 0
+                    clips[index].wide = false
+                    if areaPass {
+                        clips[index].centerStage = false
+                        clips[index].cameraPath = nil
+                        clips[index].effectiveCropXFrac = nil
+                    }
+                }
             }
         }
-        defer { for url in reframedTemp { try? FileManager.default.removeItem(at: url) } }
         guard !clips.isEmpty else {
             throw CocoaError(.fileNoSuchFile, userInfo: [
                 NSLocalizedDescriptionKey: "No valid clips in the video track"])
@@ -231,19 +248,52 @@ actor MultitrackRenderer {
         let captionCache = CaptionPNGCache(renderer: captionRenderer, directory: scratch)
         let segmentCount = fullSegments.count
 
+        // Text and image overlays — pre-rendered to full-frame PNGs and
+        // composited in one pass (images first so text stays on top).
+        func clampWindow(start: Double, end: Double) -> (Double, Double) {
+            (start, min(end, totalDuration))
+        }
+        let textRenderer = TextOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
+        let imageRenderer = ImageOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
+        var overlays: [TimedOverlayPNG] = []
+        for item in document.imageOverlays {
+            let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
+            guard end > start, let png = try? imageRenderer.render(item, to: scratch) else { continue }
+            let identity = try RenderSegmentCache.key(item) + SourceIdentityCache.shared.fingerprint(of: item.url)
+            overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,
+                transIn: item.transIn, transOut: item.transOut, identity: identity))
+        }
+        for item in document.textOverlays
+        where !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
+            guard end > start, let png = try? textRenderer.render(item, to: scratch) else { continue }
+            overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,
+                transIn: item.transIn, transOut: item.transOut, identity: try RenderSegmentCache.key(item)))
+        }
+        // Include font-file identity as well as rendered pixels and style.
+        // System-font output is represented by the raster PNG digest.
+        let fontFingerprints = try? AssetStore.allFiles(of: .fonts).map {
+            try SourceIdentityCache.shared.fingerprint(of: $0.url)
+        }.sorted()
+        let overlayPlan = Self.partitionOverlays(overlays, segments: fullSegments)
+        let fusedOverlayCount = overlayPlan.bySegment.values.reduce(0) { $0 + $1.count }
+        emit("Overlay plan: segment=\(fusedOverlayCount); timeline=\(overlayPlan.remaining.count)")
+
         // Render every segment concurrently (bounded) — each is one
         // independent ffmpeg job with captions burned in the same pass.
         try Task.checkCancellation()
-        let segmentPaths = try await BoundedConcurrency.map(fullSegments,
-                                                            limit: FFmpeg.jobLimit) { index, segment in
+        let artifacts = try await BoundedConcurrency.map(fullSegments,
+                                                        limit: FFmpeg.jobLimit) { index, segment in
             try await self.renderSegment(segment, index: index, of: segmentCount,
                                          scratch: scratch, database: database,
                                          captionLanguage: profile.captionLanguages.first,
                                          captionRenderer: captionRenderer,
-                                         captionCache: captionCache, emit: emit)
+                                         captionCache: captionCache, captionStyle: profile.captions,
+                                         fontFingerprints: fontFingerprints,
+                                         overlays: overlayPlan.bySegment[index] ?? [], emit: emit)
         }
         for (index, segment) in fullSegments.enumerated() {
-            clipPaths.append(segmentPaths[index])
+            clipPaths.append(artifacts[index].url)
             guard clipPaths.count > 1 else { continue }
             transitions.append(segment.clips.isEmpty ? nil : segment.clips.first?.transIn)
         }
@@ -257,6 +307,7 @@ actor MultitrackRenderer {
 
         try Task.checkCancellation()
         emit("Assembling \(clipPaths.count) segment(s)…")
+        var complete = true
         var assembled = scratch.appendingPathComponent("assembled.mp4")
         if clipPaths.count == 1 {
             assembled = clipPaths[0]
@@ -297,39 +348,27 @@ actor MultitrackRenderer {
                                                 segments: filled, output: withMusic)
                     assembled = withMusic
                 } catch {
+                    try Task.checkCancellation()
+                    complete = false
                     emit("Music overlay failed, continuing without music (\(error))")
                 }
             }
         }
 
-        // Text and image overlays — pre-rendered to full-frame PNGs and
-        // composited in one pass (images first so text stays on top).
-        func clampWindow(start: Double, end: Double) -> (Double, Double) {
-            (start, min(end, videoDuration))
+        let remainingOverlays = overlayPlan.remaining.compactMap { overlay -> TimedOverlayPNG? in
+            var overlay = overlay
+            overlay.endTime = min(overlay.endTime, videoDuration)
+            return overlay.endTime > overlay.startTime ? overlay : nil
         }
-        let textRenderer = TextOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
-        let imageRenderer = ImageOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
-        var overlays: [TimedOverlayPNG] = []
-        for item in document.imageOverlays {
-            let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
-            guard end > start, let png = try? imageRenderer.render(item, to: scratch) else { continue }
-            overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,
-                                            transIn: item.transIn, transOut: item.transOut))
-        }
-        for item in document.textOverlays
-        where !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
-            guard end > start, let png = try? textRenderer.render(item, to: scratch) else { continue }
-            overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,
-                                            transIn: item.transIn, transOut: item.transOut))
-        }
-        if !overlays.isEmpty {
-            emit("Burning \(overlays.count) overlay(s)…")
+        if !remainingOverlays.isEmpty {
+            emit("Burning \(remainingOverlays.count) overlay(s)…")
             let withText = scratch.appendingPathComponent("with_overlays.mp4")
             do {
-                try await addOverlays(video: assembled, overlays: overlays, output: withText)
+                try await addOverlays(video: assembled, overlays: remainingOverlays, output: withText)
                 assembled = withText
             } catch {
+                try Task.checkCancellation()
+                complete = false
                 emit("Overlay burn failed, continuing without overlays (\(error))")
             }
         }
@@ -337,7 +376,9 @@ actor MultitrackRenderer {
         try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)
         let finalDuration = await FFmpeg.duration(of: outputURL)
 
+        try Task.checkCancellation()
         if preview {
+            if complete && finalDuration > 0 { await publishSegments(artifacts, clips: clips) }
             emit("Exact preview ready (\(finalDuration.timecode))")
             return RenderResult(url: outputURL, duration: finalDuration)
         }
@@ -357,6 +398,8 @@ actor MultitrackRenderer {
                                                                    sourceSceneIDs: scenes.map(\.id), builderDocumentJSON: timelineJSON))
         try await database.saveGeneratedTraits(videoID: recordID,
                                                traits: .derive(document: document, scenes: scenes))
+        try Task.checkCancellation()
+        if complete && finalDuration > 0 { await publishSegments(artifacts, clips: clips) }
         emit("Saved \(outputURL.lastPathComponent)")
         return RenderResult(url: outputURL, duration: finalDuration)
     }
@@ -502,15 +545,38 @@ actor MultitrackRenderer {
         return segments
     }
 
+    private nonisolated struct PrepassArtifact: Sendable {
+        var url: URL
+        var cacheable: Bool
+    }
+
+    private nonisolated static func prepassKey(_ clip: ResolvedClip, area: ScreenCropArea?,
+                                               tuning: String) throws -> String {
+        nonisolated struct Input: Encodable {
+            var source: String
+            var fingerprint: String
+            var start: Double
+            var duration: Double
+            var path: [CameraPathKeyframe]?
+            var area: ScreenCropArea?
+            var tuning: String
+        }
+        return try RenderSegmentCache.key(Input(source: clip.framingIdentity ?? clip.sourcePath,
+            fingerprint: clip.framingIdentity ?? SourceIdentityCache.shared.fingerprint(of: URL(fileURLWithPath: clip.sourcePath)),
+            start: clip.sourceStart, duration: clip.duration * clip.speed,
+            path: clip.cameraPath, area: area, tuning: tuning))
+    }
+
     // MARK: - Segment rendering
 
     /// A caption PNG composited over a segment inside its enable window.
-    nonisolated struct CaptionOverlay: Sendable {
+    nonisolated struct CaptionOverlay: Codable, Sendable {
         var png: URL
         var x: Int
         var y: Int
         var start: Double
         var end: Double
+        var text: String?
     }
 
     /// Render one timeline segment to its own file: black gap placeholder, or
@@ -520,12 +586,26 @@ actor MultitrackRenderer {
                                captionLanguage: String?,
                                captionRenderer: CaptionRenderer,
                                captionCache: CaptionPNGCache,
-                               emit: @escaping @Sendable (String) -> Void) async throws -> URL {
+                               captionStyle: CaptionStyle, fontFingerprints: [String]?,
+                               overlays: [TimedOverlayPNG],
+                               emit: @escaping @Sendable (String) -> Void) async throws -> SegmentArtifact {
+        let timing = PerfSignpost.begin("SegmentEncode", metadata: "segment=\(index)/\(total)")
+        defer { PerfSignpost.end(timing) }
         if segment.clips.isEmpty {
             emit("Segment \(index + 1)/\(total): gap (\(String(format: "%.1fs", segment.duration)))")
             let gapPath = scratch.appendingPathComponent(String(format: "gap%03d.mp4", index))
+            let input = RenderSegmentKey(start: segment.start, duration: segment.duration, clips: [],
+                captions: [], overlays: [], masks: [:], fontFingerprints: [], captionStyle: CaptionStyle(),
+                settings: RenderContext.settings, encoder: FFmpeg.encodeArgs)
+            let key = try RenderSegmentCache.key(input)
+            if await segmentCache.restore(key: key, to: gapPath) {
+                emit("Segment \(index + 1): cache hit; encodes=0")
+                return SegmentArtifact(url: gapPath, key: nil)
+            }
+            emit("Segment \(index + 1): encode pass")
             try await generatePlaceholder(duration: segment.duration, output: gapPath)
-            return gapPath
+            try Task.checkCancellation()
+            return SegmentArtifact(url: gapPath, key: key)
         }
 
         emit("Segment \(index + 1)/\(total): compositing \(segment.clips.count) clip(s)…")
@@ -545,19 +625,26 @@ actor MultitrackRenderer {
                                         cropXFrac: clip.effectiveCropXFrac,
                                         freeCrops: clip.freeCrops,
                                         screenCrop: clip.screenCrop,
-                                        speed: clip.speed))
+                                        speed: clip.speed, staticAreaFilter: clip.staticAreaFilter))
         }
 
         // Captions ride the composite's filter graph — no second encode pass.
         var captions: [CaptionOverlay] = []
+        var segmentComplete = true
         for clip in segment.clips {
             guard let captionPosition = clip.captionsPosition, let videoID = clip.videoID else { continue }
             let clipOffset = (segment.start - clip.startTime) * clip.speed
             let sourceStart = clip.sourceStart + clipOffset
             let sourceEnd = sourceStart + segment.duration * clip.speed
-            let rows = (try? await database.transcriptSegments(videoID: videoID,
-                                                               start: sourceStart, end: sourceEnd,
-                                                               language: captionLanguage)) ?? []
+            let rows: [TranscriptSegment]
+            do {
+                rows = try await database.transcriptSegments(videoID: videoID,
+                    start: sourceStart, end: sourceEnd, language: captionLanguage)
+            } catch {
+                try Task.checkCancellation()
+                segmentComplete = false
+                continue
+            }
             for row in rows {
                 // Shift to segment-local SCREEN time (slow motion stretches
                 // it) and clamp to the window, like get_transcript_for_clip.
@@ -566,22 +653,81 @@ actor MultitrackRenderer {
                 guard end > start else { continue }
                 let text = row.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { continue }
-                guard let rendered = try? await captionCache.rendered(text) else { continue }
+                guard let rendered = try? await captionCache.rendered(text) else {
+                    try Task.checkCancellation()
+                    segmentComplete = false
+                    continue
+                }
                 let (x, y) = captionRenderer.position(for: rendered, positionOverride: captionPosition)
-                captions.append(CaptionOverlay(png: rendered.pngURL, x: x, y: y, start: start, end: end))
+                captions.append(CaptionOverlay(png: rendered.pngURL, x: x, y: y, start: start, end: end, text: text))
             }
         }
 
         let segmentPath = scratch.appendingPathComponent(String(format: "seg%03d_layered.mp4", index))
-        do {
-            try await compositeLayeredSegment(placements: placements, duration: segment.duration,
-                                              captions: captions, output: segmentPath)
-        } catch where !captions.isEmpty {
-            emit("Segment \(index + 1): caption burn failed, retrying without captions")
-            try await compositeLayeredSegment(placements: placements, duration: segment.duration,
-                                              captions: [], output: segmentPath)
+        placements = placements.enumerated().sorted {
+            ($0.element.layer, $0.element.startTime, $0.offset) < ($1.element.layer, $1.element.startTime, $1.offset)
+        }.map(\.element)
+        var masks: [Int: URL] = [:]
+        for (index, placement) in placements.enumerated() where placement.freeCrops?.isEmpty != false {
+            masks[index] = ScreenCropStore.maskFile(reference: placement.screenCrop, in: scratch)
         }
-        return segmentPath
+        var keyClips = segment.clips
+        for index in keyClips.indices {
+            keyClips[index].sourcePath = keyClips[index].originalSourcePath ?? keyClips[index].sourcePath
+        }
+        var keyCaptions = captions
+        for index in keyCaptions.indices {
+            let digest = try RenderSegmentCache.key(Data(contentsOf: captions[index].png))
+            keyCaptions[index].png = URL(fileURLWithPath: "/" + digest)
+        }
+        var keyOverlays = overlays
+        for index in keyOverlays.indices {
+            let digest = try RenderSegmentCache.key(Data(contentsOf: overlays[index].png))
+            keyOverlays[index].png = URL(fileURLWithPath: "/" + digest)
+        }
+        let maskKeys = try masks.reduce(into: [String: String]()) { result, entry in
+            result[String(entry.key)] = try RenderSegmentCache.key(Data(contentsOf: entry.value))
+        }
+        let input = RenderSegmentKey(start: segment.start, duration: segment.duration, clips: keyClips,
+            captions: keyCaptions, overlays: keyOverlays, masks: maskKeys,
+            fontFingerprints: fontFingerprints ?? [], captionStyle: captionStyle,
+            settings: RenderContext.settings, encoder: FFmpeg.encodeArgs)
+        var key: String? = segmentComplete && fontFingerprints != nil && segment.clips.allSatisfy(\.cacheable)
+            ? try RenderSegmentCache.key(input) : nil
+        if let key, await segmentCache.restore(key: key, to: segmentPath) {
+            emit("Segment \(index + 1): cache hit; encodes=0")
+            return SegmentArtifact(url: segmentPath, key: nil)
+        }
+        do {
+            emit("Segment \(index + 1): encode pass")
+            try await compositeLayeredSegment(placements: placements, duration: segment.duration,
+                captions: captions, overlays: overlays, maskFiles: masks, output: segmentPath)
+        } catch where !captions.isEmpty {
+            try Task.checkCancellation()
+            key = nil // A degraded result must never satisfy the full key.
+            emit("Segment \(index + 1): caption burn failed, retrying without captions; encode pass")
+            try await compositeLayeredSegment(placements: placements, duration: segment.duration,
+                captions: [], overlays: overlays, maskFiles: masks, output: segmentPath)
+        }
+        try Task.checkCancellation()
+        return SegmentArtifact(url: segmentPath, key: key)
+    }
+
+    nonisolated struct SegmentArtifact: Sendable {
+        var url: URL
+        var key: String?
+    }
+
+    private func publishSegments(_ artifacts: [SegmentArtifact], clips: [ResolvedClip]) async {
+        // Do not cache an encode whose source changed during the run.
+        for clip in clips {
+            guard let path = clip.originalSourcePath,
+                  let fingerprint = try? SourceIdentityCache.shared.fingerprint(of: URL(fileURLWithPath: path)),
+                  fingerprint == clip.sourceFingerprint else { return }
+        }
+        await segmentCache.store(artifacts.compactMap { artifact in
+            artifact.key.map { RenderSegmentCache.Entry(key: $0, source: artifact.url) }
+        })
     }
 
     // MARK: - FFmpeg stages
@@ -594,7 +740,7 @@ actor MultitrackRenderer {
                                      Self.width, Self.height, duration),
                               "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
                               "-t", String(format: "%.2f", duration)]
-                             + FFmpeg.encodeArgs + [output.path], timeout: 120)
+                             + FFmpeg.encodeArgs + [output.path], timeout: 120, capture: .boundedStderrTail())
     }
 
     /// Port of video.py composite_layered_segment(): black base canvas, each
@@ -605,6 +751,8 @@ actor MultitrackRenderer {
     /// clip audio mixes via amix (silence when none).
     private func compositeLayeredSegment(placements: [Placement], duration: Double,
                                          captions: [CaptionOverlay] = [],
+                                         overlays: [TimedOverlayPNG] = [],
+                                         maskFiles: [Int: URL] = [:],
                                          output: URL) async throws {
         guard !placements.isEmpty else {
             try await generatePlaceholder(duration: duration, output: output)
@@ -631,10 +779,9 @@ actor MultitrackRenderer {
         // Screen-crop masks: one PNG input per masked placement (after the
         // captions), looped for the segment so alphamerge has a frame for
         // every video frame.
-        let maskDirectory = output.deletingLastPathComponent()
         var maskInputs: [Int: Int] = [:]   // placement index → input index
         for (index, placement) in ordered.enumerated() where placement.freeCrops?.isEmpty != false {
-            guard let mask = ScreenCropStore.maskFile(reference: placement.screenCrop, in: maskDirectory)
+            guard let mask = maskFiles[index]
             else { continue }
             maskInputs[index] = 2 + ordered.count + captions.count + maskInputs.count
             arguments += ["-loop", "1", "-t", String(format: "%.3f", duration), "-i", mask.path]
@@ -666,6 +813,14 @@ actor MultitrackRenderer {
                                  crop.z))
                 }
                 freeCropOutputs[index] = outs.sorted { $0.z < $1.z }.map { ($0.label, $0.x, $0.y) }
+                continue
+            }
+
+            if let areaFilter = placement.staticAreaFilter {
+                filters.append("[\(sourceIndex):v]\(areaFilter),\(pts)," +
+                               "scale=\(Self.width):\(Self.height):force_original_aspect_ratio=decrease," +
+                               "pad=\(Self.width):\(Self.height):(ow-iw)/2:(oh-ih)/2:color=black," +
+                               "setsar=1,fps=30[v\(index)]")
                 continue
             }
 
@@ -722,7 +877,7 @@ actor MultitrackRenderer {
         }
         var previous = "[0:v]"
         for (stepIndex, step) in overlaySteps.enumerated() {
-            let isLast = stepIndex == overlaySteps.count - 1 && captions.isEmpty
+            let isLast = stepIndex == overlaySteps.count - 1 && captions.isEmpty && overlays.isEmpty
             let outLabel = isLast ? "[vout]" : "[ov\(stepIndex)]"
             filters.append("\(previous)[\(step.label)]overlay=x=\(step.x):y=\(step.y):shortest=0\(outLabel)")
             previous = outLabel
@@ -732,10 +887,16 @@ actor MultitrackRenderer {
         // inputs persist via repeatlast, gated by their enable windows).
         let captionBase = 2 + ordered.count
         for (capIndex, caption) in captions.enumerated() {
-            let outLabel = capIndex == captions.count - 1 ? "[vout]" : "[cap\(capIndex)]"
+            let outLabel = capIndex == captions.count - 1 && overlays.isEmpty ? "[vout]" : "[cap\(capIndex)]"
             filters.append("\(previous)[\(captionBase + capIndex):v]overlay=x=\(caption.x):y=\(caption.y):" +
                            String(format: "enable='between(t,%.3f,%.3f)'", caption.start, caption.end) + outLabel)
             previous = outLabel
+        }
+
+        if !overlays.isEmpty {
+            previous = Self.appendOverlayFilters(overlays, firstInput: 2 + ordered.count + captions.count + maskInputs.count,
+                previous: previous, arguments: &arguments, filters: &filters)
+            filters.append("\(previous)null[vout]")
         }
 
         // Audio: mix unmuted clips that actually carry audio.
@@ -764,7 +925,7 @@ actor MultitrackRenderer {
             "-filter_complex", filters.joined(separator: ";"),
             "-map", "[vout]", "-map", audioSource,
             "-t", String(format: "%.3f", duration),
-        ] + FFmpeg.encodeArgs + [output.path], timeout: 600)
+        ] + FFmpeg.encodeArgs + [output.path], timeout: 600, capture: .boundedStderrTail())
     }
 
     private nonisolated struct NormalizedCrop {
@@ -834,7 +995,7 @@ actor MultitrackRenderer {
             "-filter_complex", filters.joined(separator: ";"),
             "-map", "[final]",
             "-c:a", "aac", "-b:a", "192k", output.path,
-        ], timeout: 600)
+        ], timeout: 600, capture: .boundedStderrTail())
     }
 
     /// Port of video.py overlay_music_track(): duck the original audio per
@@ -855,23 +1016,71 @@ actor MultitrackRenderer {
                                   "[orig][1:a]amix=inputs=2:duration=first:dropout_transition=2[aout]",
                                   "-map", "0:v", "-map", "[aout]",
                                   "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                                  "-shortest", "-movflags", "+faststart", output.path], timeout: 600)
+                                  "-shortest", "-movflags", "+faststart", output.path], timeout: 600, capture: .boundedStderrTail())
         } else {
             try await FFmpeg.run(["-y", "-i", video.path, "-i", musicTrack.path,
                                   "-map", "0:v", "-map", "1:a",
                                   "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                                  "-shortest", "-movflags", "+faststart", output.path], timeout: 600)
+                                  "-shortest", "-movflags", "+faststart", output.path], timeout: 600, capture: .boundedStderrTail())
         }
     }
 
     /// A pre-rendered full-frame overlay PNG with its window and transitions
     /// — text and image overlays share this once rasterized.
-    nonisolated struct TimedOverlayPNG: Sendable {
+    nonisolated struct TimedOverlayPNG: Codable, Sendable {
         var png: URL
         var startTime: Double
         var endTime: Double
         var transIn: String
         var transOut: String
+        var identity: String?
+    }
+
+    nonisolated struct OverlayPlan {
+        var bySegment: [Int: [TimedOverlayPNG]] = [:]
+        var remaining: [TimedOverlayPNG] = []
+    }
+
+    /// Conservatively fuse before the first transition. Crossfades can shorten
+    /// all subsequent timeline positions (and can fall back to hard cuts), so
+    /// those overlays retain their original absolute clock in the final pass.
+    nonisolated static func partitionOverlays(_ overlays: [TimedOverlayPNG], segments: [Segment]) -> OverlayPlan {
+        var plan = OverlayPlan()
+        for overlay in overlays {
+            var elapsed = 0.0
+            var destination: Int?
+            for (index, segment) in segments.enumerated() {
+                if index > 0, segment.clips.first?.transIn != nil { break }
+                guard abs(elapsed - segment.start) < 0.001 else { break }
+                elapsed += segment.duration
+                var safeEnd = segment.end
+                if index + 1 < segments.count, let transition = segments[index + 1].clips.first?.transIn {
+                    // xfade consumes at most 40% of either adjacent clip;
+                    // recipe bridges consume their explicit tail piece.
+                    let tail = TransitionRecipes.isRecipe(transition) ? TransitionRecipes.pieces(for: transition).0 : 0
+                    safeEnd -= max(segment.duration * 0.4, tail)
+                }
+                if !segment.clips.isEmpty, overlay.startTime >= segment.start,
+                   overlay.endTime < safeEnd || (index == segments.count - 1 && overlay.endTime <= safeEnd) {
+                    destination = index
+                    break
+                }
+            }
+            // Images precede text. A lower layer left for the final pass must
+            // not suddenly cover a higher overlapping layer fused below it.
+            let overlapsRetained = plan.remaining.contains {
+                $0.startTime <= overlay.endTime && overlay.startTime <= $0.endTime
+            }
+            if let index = destination, !overlapsRetained {
+                var local = overlay
+                local.startTime -= segments[index].start
+                local.endTime -= segments[index].start
+                plan.bySegment[index, default: []].append(local)
+            } else {
+                plan.remaining.append(overlay)
+            }
+        }
+        return plan
     }
 
     /// Port of video.py add_multiple_text_overlays(): loop each pre-rendered
@@ -879,11 +1088,40 @@ actor MultitrackRenderer {
     /// inside its enable window.
     private func addOverlays(video: URL, overlays: [TimedOverlayPNG],
                              output: URL) async throws {
+        let timing = PerfSignpost.begin("OverlayBurn", metadata: "overlays=\(overlays.count)")
+        defer { PerfSignpost.end(timing) }
         let videoDuration = await FFmpeg.duration(of: video)
         var arguments = ["-y", "-i", video.path]
         var filters: [String] = []
-        var previous = "[0:v]"
-        var inputIndex = 0
+        let previous = Self.appendOverlayFilters(overlays, firstInput: 1, previous: "[0:v]",
+                                                 arguments: &arguments, filters: &filters)
+
+        guard !filters.isEmpty else {
+            try FileManager.default.copyItemReplacing(at: video, to: output)
+            return
+        }
+        // Overlay inputs can outlast the video; cap the output to the
+        // measured length. A failed probe reports 0 — leave the length
+        // alone rather than emit an empty file.
+        let lengthCap: [String] = videoDuration > 0
+            ? ["-t", String(format: "%.3f", videoDuration)] : []
+        try await FFmpeg.run(arguments + [
+            "-filter_complex", filters.joined(separator: ";"),
+            "-map", previous, "-map", "0:a?",
+        ] + FFmpeg.videoEncodeArgs + [
+            "-c:a", "copy", "-pix_fmt", "yuv420p",
+        ] + lengthCap + [
+            "-movflags", "+faststart", output.path,
+        ], timeout: 900, capture: .boundedStderrTail())
+    }
+
+    /// Both segment and full-timeline burns use the identical animation graph.
+    /// Wizard extractClip has a whole-clip animation API; Builder's independent
+    /// entry/exit windows must remain intact here.
+    private nonisolated static func appendOverlayFilters(_ overlays: [TimedOverlayPNG], firstInput: Int,
+        previous: String, arguments: inout [String], filters: inout [String]) -> String {
+        var previous = previous
+        var inputIndex = firstInput - 1
         let animDuration = 0.4
 
         for (index, overlay) in overlays.enumerated() {
@@ -936,23 +1174,7 @@ actor MultitrackRenderer {
             previous = outLabel
         }
 
-        guard !filters.isEmpty else {
-            try FileManager.default.copyItemReplacing(at: video, to: output)
-            return
-        }
-        // Overlay inputs can outlast the video; cap the output to the
-        // measured length. A failed probe reports 0 — leave the length
-        // alone rather than emit an empty file.
-        let lengthCap: [String] = videoDuration > 0
-            ? ["-t", String(format: "%.3f", videoDuration)] : []
-        try await FFmpeg.run(arguments + [
-            "-filter_complex", filters.joined(separator: ";"),
-            "-map", previous, "-map", "0:a?",
-        ] + FFmpeg.videoEncodeArgs + [
-            "-c:a", "copy", "-pix_fmt", "yuv420p",
-        ] + lengthCap + [
-            "-movflags", "+faststart", output.path,
-        ], timeout: 900)
+        return previous
     }
 
     /// Slide enter/exit x/y expressions (video.py _slide_enter/_slide_exit).

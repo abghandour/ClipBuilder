@@ -230,7 +230,7 @@ actor RenderEngine {
             arguments += ["-af", String(format: "atempo=%.4f", min(2, max(0.5, speed)))]
         }
         arguments += ["-t", String(format: "%.2f", duration)]
-        try await FFmpeg.run(arguments + FFmpeg.encodeArgs + [output.path], timeout: 900)
+        try await FFmpeg.run(arguments + FFmpeg.encodeArgs + [output.path], timeout: 900, capture: .boundedStderrTail())
     }
 
     /// A screen-crop layout block: every entry is a normalized 1080×1920
@@ -264,7 +264,7 @@ actor RenderEngine {
                       "-t", String(format: "%.3f", duration)]
         arguments += FFmpeg.encodeArgs
         arguments.append(output.path)
-        try await FFmpeg.run(arguments, timeout: 900)
+        try await FFmpeg.run(arguments, timeout: 900, capture: .boundedStderrTail())
     }
 
     /// Plain trim + normalize (no overlays).
@@ -494,6 +494,8 @@ actor RenderEngine {
     /// then plain-concats the groups. Falls back to the concat demuxer on
     /// degenerate durations.
     func concatenate(clips: [URL], transitions: [String?], output: URL) async throws {
+        let timing = PerfSignpost.begin("Assembly", metadata: "clips=\(clips.count)")
+        defer { PerfSignpost.end(timing) }
         guard !clips.isEmpty else { return }
         if clips.count == 1 {
             try FileManager.default.copyItemReplacing(at: clips[0], to: output)
@@ -623,7 +625,7 @@ actor RenderEngine {
                     lastFrame = scratch.appendingPathComponent("last_\(gap).png")
                     try await FFmpeg.run(["-y", "-ss", String(format: "%.3f", max(0, durations[gap] - 0.05)),
                                           "-i", clips[gap].path, "-frames:v", "1",
-                                          "-update", "1", lastFrame!.path], timeout: 60)
+                                          "-update", "1", lastFrame!.path], timeout: 60, capture: .boundedStderrTail())
                 }
                 var sfx: URL?
                 if sfxEnabled, let kind = TransitionSFX.kind(for: name) {
@@ -679,7 +681,7 @@ actor RenderEngine {
         try await FFmpeg.run(["-y", "-ss", String(format: "%.3f", max(0, start)),
                               "-i", source.path,
                               "-t", String(format: "%.3f", duration)]
-                             + FFmpeg.encodeArgs + [output.path], timeout: 300)
+                             + FFmpeg.encodeArgs + [output.path], timeout: 300, capture: .boundedStderrTail())
     }
 
     /// xfade every gap in one pass with per-gap transition durations (flash
@@ -733,7 +735,7 @@ actor RenderEngine {
         try await FFmpeg.run(arguments + [
             "-filter_complex", filterParts.joined(separator: ";"),
             "-map", "[vout]", "-map", "[aout]",
-        ] + FFmpeg.encodeArgs + [output.path], timeout: 1800)
+        ] + FFmpeg.encodeArgs + [output.path], timeout: 1800, capture: .boundedStderrTail())
     }
 
     /// Every input is one of our own normalized intermediates (identical
@@ -751,7 +753,7 @@ actor RenderEngine {
         try await FFmpeg.run(["-y", "-f", "concat", "-safe", "0", "-i", listFile.path,
                               "-c:v", "copy"] + FFmpeg.audioEncodeArgs +
                              ["-movflags", "+faststart", output.path],
-                             timeout: 600)
+                             timeout: 600, capture: .boundedStderrTail())
     }
 
     // MARK: - Audio
@@ -769,14 +771,14 @@ actor RenderEngine {
                                   "-filter_complex", filter,
                                   "-map", "0:v", "-map", "[aout]",
                                   "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
-                                  "-shortest", output.path], timeout: 1200)
+                                  "-shortest", output.path], timeout: 1200, capture: .boundedStderrTail())
         } else {
             let filter = String(format: "[1:a]volume=0.25,afade=t=out:st=%.2f:d=2.0[aout]", fadeStart)
             try await FFmpeg.run(["-y", "-i", video.path, "-stream_loop", "-1", "-i", music.path,
                                   "-filter_complex", filter,
                                   "-map", "0:v", "-map", "[aout]",
                                   "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
-                                  "-shortest", output.path], timeout: 1200)
+                                  "-shortest", output.path], timeout: 1200, capture: .boundedStderrTail())
         }
     }
 

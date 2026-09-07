@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Clip_Builder
 
@@ -48,6 +49,36 @@ struct MultitrackRendererPlanningTests {
         #expect(pieces.filter { $0.track == 0 }.count == 2)
         #expect(pieces.filter { $0.track == 1 }.count == 1)
         #expect(pieces.first { $0.track == 1 }?.duration == 2)
+    }
+
+    @Test("overlay planning preserves local clocks, gaps, transition windows and z-order")
+    func overlayPlanning() {
+        typealias Overlay = MultitrackRenderer.TimedOverlayPNG
+        func overlay(_ start: Double, _ end: Double) -> Overlay {
+            Overlay(png: URL(fileURLWithPath: "/overlay.png"), startTime: start, endTime: end,
+                    transIn: "fade", transOut: "slide_up")
+        }
+        let first = resolved(start: 0, duration: 3, track: 0)
+        var second = resolved(start: 3, duration: 3, track: 0)
+        let hardCuts = MultitrackRenderer.buildLayeredSegments([first, second])
+        let local = MultitrackRenderer.partitionOverlays([overlay(3.5, 5), overlay(0.5, 3)], segments: hardCuts)
+        #expect(local.bySegment[1]?.first?.startTime == 0.5)
+        #expect(local.bySegment[1]?.first?.endTime == 2)
+        #expect(local.bySegment[1]?.first?.transOut == "slide_up")
+        // An inclusive end exactly at a cut belongs on the first frame of
+        // the next segment too, so it must stay in the full-timeline pass.
+        #expect(local.remaining.count == 1)
+        second.transIn = "fade"
+        let transitions = MultitrackRenderer.buildLayeredSegments([first, second])
+        let mixed = MultitrackRenderer.partitionOverlays([overlay(0.2, 1), overlay(2.5, 3.5)], segments: transitions)
+        #expect(mixed.bySegment[0]?.count == 1)
+        #expect(mixed.remaining.count == 1)
+        let stacked = MultitrackRenderer.partitionOverlays([overlay(0, 4), overlay(0.5, 1)], segments: hardCuts)
+        #expect(stacked.bySegment.isEmpty)
+        #expect(stacked.remaining.count == 2)
+        let gaps = [MultitrackRenderer.Segment(start: 0, end: 2, clips: []),
+                    MultitrackRenderer.Segment(start: 2, end: 5, clips: [first])]
+        #expect(MultitrackRenderer.partitionOverlays([overlay(0.5, 1)], segments: gaps).remaining.count == 1)
     }
 
     private func resolved(start: Double, duration: Double, track: Int) -> MultitrackRenderer.ResolvedClip {

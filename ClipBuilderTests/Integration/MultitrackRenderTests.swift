@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import Synchronization
 @testable import Clip_Builder
 
 @Suite("Multitrack renderer integration", .tags(.integration), .serialized,
@@ -20,6 +21,93 @@ struct MultitrackRenderTests {
         )
         let scene = try #require(try await temp.database.fetchScenes(videoID: videoID).first)
         return (source, scene)
+    }
+
+    @Test("static area fuses its crop with zero intermediates and reuses the segment")
+    func staticAreaFusionAndReuse() async throws {
+        let scope = try DataFolderOverride()
+        defer { withExtendedLifetime(scope) {} }
+        let temp = try TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "static-area-fixture")
+        var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3)
+        clip.videoFile = source.path
+        clip.wide = true
+        clip.areaWindow = FreeCropRect(xFrac: 0.1, yFrac: 0.1, wFrac: 0.7, hFrac: 0.7)
+        var document = Fixtures.timelineDocument(clips: [clip])
+        document.cropBlocks = [CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"),
+                                             startTime: 0, duration: 3)]
+        let profile = Fixtures.brand(name: "Static")
+        let cache = RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("segments"))
+        let renderer = MultitrackRenderer(render: RenderEngine(), segmentCache: cache)
+        let messages = Mutex<[String]>([])
+        let result = try await renderer.render(document: document, scenes: [scene], profile: profile,
+            database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
+        defer { try? FileManager.default.removeItem(at: result.url) }
+        let lines = messages.withLock { $0 }
+        #expect(lines.contains { $0.contains("static area fused; intermediates=0") })
+        #expect(!lines.contains { $0.contains("Framing prepass:") })
+        #expect(lines.filter { $0.contains("encode pass") }.count == 1)
+        let dimensions = await FFmpeg.dimensions(of: result.url)
+        #expect(dimensions.width == document.renderSettings.width)
+        #expect(dimensions.height == document.renderSettings.height)
+        #expect(abs(result.duration - 3) < 0.15)
+        // Standalone AreaFramer is the old static prepass; compare its output
+        // geometry and duration with the fused render using the same window.
+        let resolved = try #require(MultitrackRenderer.resolveClips(document: document, scenes: [scene]).first)
+        let area = try #require(ScreenCropStore.area(reference: resolved.screenCrop))
+        let old = try await AreaFramer.frame(source: source, start: 0, duration: 3, area: area,
+                                             window: try #require(clip.areaWindow), scratch: temp.directory.url)
+        let oldDimensions = await FFmpeg.dimensions(of: old)
+        #expect(oldDimensions.width == dimensions.width && oldDimensions.height == dimensions.height)
+        #expect(abs(await FFmpeg.duration(of: old) - result.duration) < 0.15)
+        messages.withLock { $0.removeAll() }
+        let warm = try await renderer.render(document: document, scenes: [scene], profile: profile,
+            database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
+        defer { try? FileManager.default.removeItem(at: warm.url) }
+        #expect(messages.withLock { $0.contains { $0.contains("cache hit; encodes=0") } })
+        #expect(!messages.withLock { $0.contains { $0.contains("encode pass") } })
+        #expect(abs(warm.duration - result.duration) < 0.05)
+    }
+
+    @Test("local and transition-spanning overlays need two segment burns and one final overlay pass")
+    func mixedOverlayPasses() async throws {
+        let scope = try DataFolderOverride()
+        defer { withExtendedLifetime(scope) {} }
+        let temp = try TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "overlay-passes-fixture")
+        var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3)
+        first.videoFile = source.path
+        var second = first
+        second.uid = UUID()
+        second.startTime = 3
+        second.transIn = "fade"
+        var document = Fixtures.timelineDocument(clips: [first, second])
+        document.textOverlays = [TextOverlayItem(text: "Local", startTime: 0.2, endTime: 1),
+                                 TextOverlayItem(text: "Across", startTime: 2.5, endTime: 3.5)]
+        let messages = Mutex<[String]>([])
+        let renderer = MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("segments")))
+        let encodes = Mutex(0)
+        let result = try await FFmpeg.$commandCompleted.withValue({ arguments in
+            if let index = arguments.firstIndex(of: "-c:v"),
+               arguments.indices.contains(index + 1), arguments[index + 1] != "copy" {
+                encodes.withLock { $0 += 1 }
+            }
+        }) {
+            try await renderer.render(document: document, scenes: [scene], profile: Fixtures.brand(),
+                database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
+        }
+        defer { try? FileManager.default.removeItem(at: result.url) }
+        let lines = messages.withLock { $0 }
+        #expect(lines.contains("Overlay plan: segment=1; timeline=1"))
+        #expect(lines.filter { $0.contains("encode pass") }.count == 2)
+        #expect(lines.filter { $0.hasPrefix("Burning 1 overlay") }.count == 1)
+        #expect(!lines.contains { $0.contains("failed") })
+        // Two segment encodes, one xfade assembly, one remaining overlay burn.
+        // Stream-copy concat/music calls are deliberately excluded.
+        #expect(encodes.withLock { $0 } == 4)
+        let expected = 6 - min(SettingsStore.loadSettings().transitions.xfadeDuration, 1.2)
+        #expect(abs(result.duration - expected) < 0.15)
     }
 
     @Test("regression: wide masked clip and delayed faded text render successfully")
