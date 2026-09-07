@@ -414,23 +414,55 @@ actor CenterStageService {
                              avoidPortraits: [Data] = [],
                              orientation: CGImagePropertyOrientation,
                              tuning: Tuning) async throws -> [Target] {
+        let decodePermit = try await MediaWorkScheduler.shared.acquire(.decoding)
+        defer { withExtendedLifetime(decodePermit) {} }
+        try Task.checkCancellation()
         // Identity focus: reference fingerprints from the user's person
         // markers. With positive references, only detections matching one of
         // them are framed; detections matching a NEGATIVE reference (an
         // ignored person — referee, staff) are dropped outright.
         let references = focusPortraits.compactMap { AppearanceSignature(jpeg: $0) }
         let negatives = avoidPortraits.compactMap { AppearanceSignature(jpeg: $0) }
-        let reader = try AVAssetReader(asset: asset)
-        reader.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
-                                       duration: CMTime(seconds: duration, preferredTimescale: 600))
-        let readerOutput = AVAssetReaderTrackOutput(track: track, outputSettings: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-        ])
-        readerOutput.alwaysCopiesSampleData = false
-        reader.add(readerOutput)
-        guard reader.startReading() else {
-            throw CenterStageError(message: "Could not read the video for tracking.")
+        let naturalSize = try await track.load(.naturalSize)
+        let transform = try await track.load(.preferredTransform)
+        let displaySize = naturalSize.applying(transform)
+        let longestEdge = max(abs(displaySize.width), abs(displaySize.height))
+        let scale = longestEdge > 0 ? min(1, 960 / longestEdge) : 1
+        // AVAssetReaderOutput.h permits CV width/height scaling for 32BGRA;
+        // its high-bit-depth scaling restriction does not apply to this output.
+        func makeReader(scaled: Bool) throws -> (AVAssetReader, AVAssetReaderTrackOutput) {
+            let reader = try AVAssetReader(asset: asset)
+            reader.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
+                                           duration: CMTime(seconds: duration, preferredTimescale: 600))
+            var settings: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            ]
+            if scaled {
+                // Buffers stay in encoded orientation; Vision applies the transform.
+                settings[kCVPixelBufferWidthKey as String] = max(1, Int((abs(naturalSize.width) * scale).rounded()))
+                settings[kCVPixelBufferHeightKey as String] = max(1, Int((abs(naturalSize.height) * scale).rounded()))
+            }
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: settings)
+            output.alwaysCopiesSampleData = false
+            guard reader.canAdd(output) else {
+                throw CenterStageError(message: "Could not configure the video for tracking.")
+            }
+            reader.add(output)
+            guard reader.startReading() else {
+                reader.cancelReading()
+                throw CenterStageError(message: "Could not read the video for tracking.")
+            }
+            return (reader, output)
         }
+        let reader: AVAssetReader
+        let readerOutput: AVAssetReaderTrackOutput
+        do {
+            (reader, readerOutput) = try makeReader(scaled: scale < 1)
+        } catch {
+            try Task.checkCancellation()
+            (reader, readerOutput) = try makeReader(scaled: false)
+        }
+        defer { reader.cancelReading() }
 
         func inFocus(_ time: Double) -> Bool {
             focusRanges.isEmpty || focusRanges.contains { time >= $0.start && time <= $0.end }
@@ -458,7 +490,14 @@ actor CenterStageService {
             }
 
             let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
-            try? handler.perform([request])
+            do {
+                let visionPermit = try await MediaWorkScheduler.shared.acquire(.vision)
+                defer { withExtendedLifetime(visionPermit) {} }
+                try Task.checkCancellation()
+                let timing = PerfSignpost.begin("Vision", metadata: "tracking")
+                defer { PerfSignpost.end(timing) }
+                try? handler.perform([request])
+            }
             // With the orientation supplied, Vision reports boxes in upright
             // (display) space — bottom-left-origin normalized. Peripheral
             // detections (crowd, staff at distance) are dropped so the
@@ -535,16 +574,25 @@ actor CenterStageService {
     /// panel's live suggestion rectangle. Same detection, peripheral-people
     /// filter, and identity focus as the real pass. Normalized top-left
     /// display coordinates; nil when nobody is detected.
+    @concurrent
     nonisolated static func stillFrameCrop(source: URL, at time: Double,
                                            focusPortraits: [Data] = [],
                                            avoidPortraits: [Data] = [],
                                            tuning: Tuning = .balanced) async -> CGRect? {
-        guard let data = await ThumbnailService.jpegFrame(url: source, at: time, maxDimension: 960),
+        let data = await MediaWorkScheduler.$priority.withValue(.interactive) {
+            await ThumbnailService.jpegFrame(url: source, at: time, maxDimension: 960)
+        }
+        guard let data,
               let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
               let cg = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else { return nil }
         let request = VNDetectHumanRectanglesRequest()
         request.upperBodyOnly = false
-        try? VNImageRequestHandler(data: data).perform([request])
+        do {
+            let permit = try await MediaWorkScheduler.shared.acquire(.vision, priority: .interactive)
+            defer { withExtendedLifetime(permit) {} }
+            try Task.checkCancellation()
+            try? VNImageRequestHandler(data: data).perform([request])
+        } catch { return nil }
         var boxes = Analyzer.primaryPeopleBoxes((request.results ?? []).map { observation in
             let box = observation.boundingBox
             return CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
@@ -726,6 +774,8 @@ actor CenterStageService {
                         keyframes: [Keyframe],
                         renderSize: CGSize = CenterStageService.defaultRenderSize,
                         output: URL) async throws {
+        let timing = PerfSignpost.begin("FramingExport", metadata: "CenterStage")
+        defer { PerfSignpost.end(timing) }
         let composition = AVMutableComposition()
         let range = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
                                 duration: CMTime(seconds: duration, preferredTimescale: 600))

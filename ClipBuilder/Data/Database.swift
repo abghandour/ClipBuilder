@@ -1069,6 +1069,14 @@ actor Database {
             """, [.integer(projectID)]).map(Self.timelineRecord)
     }
 
+    func fetchTimeline(id: Int64) throws -> TimelineRecord? {
+        try connection.query("""
+            SELECT t.*, v.path AS thumbnail_path FROM timelines t
+            LEFT JOIN videos v ON v.id = t.thumbnail_video_id
+            WHERE t.id = ?
+            """, [.integer(id)]).first.map(Self.timelineRecord)
+    }
+
     @discardableResult
     func createTimeline(projectID: Int64, name: String, kind: String = "builder",
                         documentJSON: String = "{}", sourceRunID: String? = nil,
@@ -1701,6 +1709,12 @@ actor Database {
         } else if let videoID {
             sceneScope = " WHERE scene_id IN (SELECT id FROM scenes WHERE video_id = ?)"
             scopeParams = [.integer(videoID)]
+        } else if projectID != nil {
+            // Reuse the scene-row predicate, including exclusion filtering.
+            sceneScope = " WHERE scene_id IN (SELECT s.id FROM scenes s"
+                + " JOIN project_videos pv ON pv.video_id = s.video_id WHERE "
+                + conditions.joined(separator: " AND ") + ")"
+            scopeParams = params
         } else {
             sceneScope = ""
             scopeParams = []

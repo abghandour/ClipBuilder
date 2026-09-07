@@ -308,7 +308,32 @@ struct AnalyzeView: View {
         return w <= 50 && h <= 50 ? "\(w):\(h)" : String(format: "%.2f:1", value)
     }
 
-    private var table: some View {
+    private struct TableKey: Equatable {
+        var storeID: ObjectIdentifier
+        var videosVersion: Int
+        var runsVersion: Int
+        var scenesVersion: Int
+        var sortOrder: [KeyPathComparator<VideoRecord>]
+    }
+
+    private struct TableSummary {
+        var videos: [VideoRecord]
+        var sceneCounts: [Int64: Int]
+        var batchCounts: [Int64: Int]
+        var transcriptCounts: [Int64: Int]
+        var peopleCounts: [Int64: Int]
+    }
+
+    @State private var tableMemo = MemoBox<TableKey, TableSummary>()
+
+    private var tableSummary: TableSummary {
+        let key = TableKey(storeID: ObjectIdentifier(store),
+                           videosVersion: store.videosVersion, runsVersion: store.analysisRunsVersion,
+                           scenesVersion: store.scenesVersion, sortOrder: sortOrder)
+        return tableMemo(key) { computeTableSummary() }
+    }
+
+    private func computeTableSummary() -> TableSummary {
         // One pass over scenes/batches instead of an O(n) filter per table row.
         let sceneCounts = store.sceneIndex.countsByVideo
         let batchCounts = store.analysisRuns.reduce(into: [Int64: Int]()) { $0[$1.videoID, default: 0] += 1 }
@@ -320,7 +345,14 @@ struct AnalyzeView: View {
         let peopleCounts = store.analysisRuns.reduce(into: [Int64: Set<String>]()) { result, run in
             if let tags = personTagsByRun[run.id] { result[run.videoID, default: []].formUnion(tags) }
         }.mapValues(\.count)
-        return Table(store.videos.sorted(using: sortOrder), selection: $selection, sortOrder: $sortOrder) {
+        return TableSummary(videos: store.videos.sorted(using: sortOrder), sceneCounts: sceneCounts,
+                            batchCounts: batchCounts, transcriptCounts: transcriptCounts,
+                            peopleCounts: peopleCounts)
+    }
+
+    private var table: some View {
+        let summary = tableSummary
+        return Table(summary.videos, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("File") { video in
                 HStack {
                     if video.driveFileID != nil { DriveMediaMenu(media: [video.driveMedia]) }
@@ -362,10 +394,10 @@ struct AnalyzeView: View {
                     }
                     .foregroundStyle(.secondary)
                 } else {
-                    let batches = batchCounts[video.id] ?? 0
-                    let scenes = sceneCounts[video.id] ?? 0
-                    let people = peopleCounts[video.id] ?? 0
-                    let hasTranscript = (transcriptCounts[video.id] ?? 0) > 0
+                    let batches = summary.batchCounts[video.id] ?? 0
+                    let scenes = summary.sceneCounts[video.id] ?? 0
+                    let people = summary.peopleCounts[video.id] ?? 0
+                    let hasTranscript = (summary.transcriptCounts[video.id] ?? 0) > 0
                     // One line of glyphs: analyzed check + scene count, then
                     // a transcript mark and a people count, each only when
                     // the video actually has them.

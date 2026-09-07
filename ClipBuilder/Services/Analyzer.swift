@@ -26,16 +26,20 @@ actor Analyzer {
     /// Returns the number of newly discovered videos.
     @discardableResult
     func scanSourceFolder(profile: BrandProfile, database: Database) async throws -> Int {
+        let timing = PerfSignpost.begin("SourceScan", metadata: profile.sourceFolderURL.lastPathComponent)
+        defer { PerfSignpost.end(timing) }
         let folder = profile.sourceFolderURL
         let probeVersionKey = "analyzer.probeVersion.\(profile.profileName)"
         let reprobeAll = UserDefaults.standard.integer(forKey: probeVersionKey) < Self.probeVersion
         let known = Dictionary(try await database.fetchVideos().map { ($0.hash, ($0.path, $0.duration)) },
                                uniquingKeysWith: { first, _ in first })
         var candidates: [(url: URL, hash: String)] = []
-        let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: nil)
+        let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])
         while let item = enumerator?.nextObject() as? URL {
             guard Self.videoExtensions.contains(item.pathExtension.lowercased()) else { continue }
-            guard let hash = try? ContentHash.fingerprint(of: item) else { continue }
+            try Task.checkCancellation()
+            let fingerprint = try? SourceIdentityCache.shared.fingerprint(of: item, force: reprobeAll)
+            guard let hash = fingerprint else { continue }
             // Known and unmoved — skip the probes; rescans fire on every
             // folder event, so this must be cheap for existing files. A zero
             // duration means the registration probe failed (e.g. ffmpeg was
@@ -115,26 +119,57 @@ actor Analyzer {
                 log(String(format: "Sampling every %.1fs (%d frames)", interval, timestamps.count))
             }
         }
-        return await extractFrames(url: url, timestamps: timestamps)
+        return await extractFrames(url: url, timestamps: timestamps, log: log)
     }
 
     /// Run an analysis-task AI call, halving the sampled frame grid and
     /// retrying whenever the provider rejects the request as too long — a
     /// thinner analysis beats a dead one. Auxiliary frames (markers, notes,
-    /// taste examples) always ride along untouched.
+    /// taste examples) are never dropped; their labels and pixel sizes stay intact.
     private func callThinningFrames(prompt: String, auxiliary: [AIFrame], sampled: [AIFrame],
-                                    video: URL? = nil,
+                                    video: URL? = nil, lazySampled: AnalysisFrameSource? = nil,
                                     model: String?, provider: String?,
                                     log: @escaping @Sendable (String) -> Void) async throws -> AIResponse {
-        var frames = sampled
+        let auxiliary = try await AnalysisImageBudget.fitReferences(auxiliary, log: log)
+        let referenceBytes = auxiliary.reduce(0) { $0 + $1.jpeg.count }
+        var frames = await AnalysisImageBudget.fit(sampled, reservingBytes: referenceBytes, log: log)
+        try Task.checkCancellation()
+        guard sampled.isEmpty || !frames.isEmpty else {
+            throw AIError.unusableResponse("No sampled frame fits within the analysis image budget alongside the reference images.")
+        }
+        var currentVideo = video
+        let fallbackFrames: (@Sendable () async throws -> [AIFrame])?
+        if let lazySampled {
+            fallbackFrames = {
+                let sampled = try await lazySampled.frames()
+                let fitted = await AnalysisImageBudget.fit(sampled, reservingBytes: referenceBytes, log: log)
+                try Task.checkCancellation()
+                guard !fitted.isEmpty else {
+                    throw AIError.unusableResponse("No fallback still fits within the analysis image budget.")
+                }
+                return auxiliary + fitted
+            }
+        } else {
+            fallbackFrames = nil
+        }
         while true {
             do {
                 return try await ai.call(prompt: prompt, task: "analysis",
-                                         frames: auxiliary + frames, video: video,
+                                         frames: auxiliary + frames, video: currentVideo,
+                                         fallbackFrames: currentVideo == nil ? nil : fallbackFrames,
                                          model: model, provider: provider,
                                          timeout: 300, log: log)
             } catch let error as AIError {
-                guard case .promptTooLong = error, frames.count > 8 else { throw error }
+                guard case .promptTooLong = error else { throw error }
+                if currentVideo != nil, let lazySampled {
+                    currentVideo = nil
+                    frames = await AnalysisImageBudget.fit(try await lazySampled.frames(),
+                                                          reservingBytes: referenceBytes, log: log)
+                    guard !frames.isEmpty else { throw error }
+                    log("Native request too long — retrying with \(frames.count) still frames")
+                    continue
+                }
+                guard frames.count > 8 else { throw error }
                 frames = frames.enumerated()
                     .filter { $0.offset.isMultiple(of: 2) }
                     .map(\.element)
@@ -143,11 +178,14 @@ actor Analyzer {
         }
     }
 
-    private func extractFrames(url: URL, timestamps: [Double]) async -> [AIFrame] {
-        let jpegFrames = await ThumbnailService.jpegFrames(url: url, at: timestamps)
-        return zip(timestamps, jpegFrames).compactMap { timestamp, jpeg in
+    private func extractFrames(url: URL, timestamps: [Double],
+                               log: @Sendable (String) -> Void) async -> [AIFrame] {
+        let jpegFrames = await ThumbnailService.jpegFrames(
+            url: url, at: timestamps, maxDimension: CGFloat(AnalysisImageBudget.longestEdge))
+        let frames = zip(timestamps, jpegFrames).compactMap { timestamp, jpeg in
             jpeg.map { AIFrame(jpeg: $0, label: String(format: "%.1fs", timestamp)) }
         }
+        return await AnalysisImageBudget.fit(frames, log: log)
     }
 
     // MARK: - Prompts (verbatim from analyzer.py)
@@ -486,7 +524,7 @@ actor Analyzer {
             timestamps.append(t.rounded(toPlaces: 1))
             t += interval
         }
-        let frames = await extractFrames(url: url, timestamps: timestamps)
+        let frames = await extractFrames(url: url, timestamps: timestamps, log: log)
         guard !frames.isEmpty else { return ([:], []) }
         log(String(format: "Re-examining %.1f–%.1fs with %d dense frames…",
                    window.start, window.end, frames.count))
@@ -562,7 +600,7 @@ actor Analyzer {
                                log: @escaping @Sendable (String) -> Void) async throws -> VideoType? {
         guard video.type == nil, video.duration >= 300 else { return video.type }
         let times = (0..<5).map { (Double($0) + 0.5) * video.duration / 5 }
-        let frames = await extractFrames(url: video.url, timestamps: times)
+        let frames = await extractFrames(url: video.url, timestamps: times, log: log)
         guard !frames.isEmpty else { return nil }
         let response = try await ai.call(prompt: """
             Classify this \(Int(video.duration))-second recording from its sparse overview.
@@ -586,7 +624,7 @@ actor Analyzer {
         let duration = video.duration > 0 ? video.duration : await FFmpeg.duration(of: video.url)
         let frames: [AIFrame]
         if let sampleTimes {
-            frames = await extractFrames(url: video.url, timestamps: sampleTimes)
+            frames = await extractFrames(url: video.url, timestamps: sampleTimes, log: log)
         } else {
             frames = await extractFrames(url: video.url, start: 0, end: duration,
                                          interval: nil, log: log)
@@ -1005,7 +1043,7 @@ actor Analyzer {
         // Dense enough to catch every cut of a short reel, capped for cost.
         let timestamps = Self.frameTimestamps(duration: duration,
                                               interval: max(0.5, duration / 40))
-        let frames = await extractFrames(url: url, timestamps: timestamps)
+        let frames = await extractFrames(url: url, timestamps: timestamps, log: log)
         guard !frames.isEmpty else {
             throw FFmpegError.commandFailed(tool: "frame extraction", exitCode: 1,
                                             stderr: "no frames could be extracted from the exemplar")
@@ -1149,14 +1187,40 @@ actor Analyzer {
             return (nil, [], nil)
         }
 
-        progress(0.05, "extracting frames")
-        log("Extracting frames from \(video.filename)...")
-        let frames = await extractFrames(url: video.url,
-                                         start: clampStart, end: clampEnd,
-                                         interval: sampleInterval, log: log)
-        guard !frames.isEmpty else {
-            throw FFmpegError.commandFailed(tool: "frame extraction", exitCode: 1,
-                                            stderr: "no frames could be extracted from \(video.filename)")
+        // Video-native input: when Gemini is the resolved provider and the
+        // whole file is a reasonable upload, it watches the actual video —
+        // motion, impacts, and audio — instead of sampled stills. Trimmed
+        // runs stay frames-only so timestamps remain unambiguous, and any
+        // fallback provider gets a lazily extracted still grid.
+        var nativeVideo: URL?
+        let resolved = await ai.resolveProviderModel(task: "analysis",
+                                                     provider: provider, model: model)
+        if resolved.provider == "gemini", window == nil {
+            let size = ((try? FileManager.default.attributesOfItem(atPath: video.url.path))?[.size]
+                as? NSNumber)?.int64Value ?? .max
+            if size <= 300 * 1024 * 1024 {
+                nativeVideo = video.url
+                log("Attaching the video natively — Gemini reads motion and audio directly")
+            }
+        }
+
+        let frameSource = AnalysisFrameSource {
+            log("Extracting frames from \(video.filename)...")
+            let frames = await self.extractFrames(url: video.url, start: clampStart, end: clampEnd,
+                                                   interval: sampleInterval, log: log)
+            try Task.checkCancellation()
+            guard !frames.isEmpty else {
+                throw FFmpegError.commandFailed(tool: "frame extraction", exitCode: 1,
+                                                stderr: "no frames could be extracted from \(video.filename)")
+            }
+            return frames
+        }
+        progress(0.05, nativeVideo == nil ? "extracting frames" : "preparing video references")
+        let frames: [AIFrame]
+        if nativeVideo == nil {
+            frames = try await frameSource.frames()
+        } else {
+            frames = []
         }
 
         // Each note also sends the exact frame the user paused on when
@@ -1165,7 +1229,8 @@ actor Analyzer {
         var referenceFrames: [AIFrame] = []
         if !notes.isEmpty {
             let timestamps = notes.map { min(max(0, $0.atTime), max(0, duration - 0.1)) }
-            let jpegFrames = await ThumbnailService.jpegFrames(url: video.url, at: timestamps)
+            let jpegFrames = await ThumbnailService.jpegFrames(
+                url: video.url, at: timestamps, maxDimension: CGFloat(AnalysisImageBudget.longestEdge))
             referenceFrames = zip(notes, jpegFrames).compactMap { note, jpeg in
                 jpeg.map { AIFrame(jpeg: $0, label: String(format: "REFERENCE for note at %.1fs", note.atTime)) }
             }
@@ -1254,7 +1319,8 @@ actor Analyzer {
                                             notesHaveReferenceFrames: !referenceFrames.isEmpty)
             tagsToRecord = Array(newTags)
             progress(0.25, "tagging \(newTags.count) new tags")
-            log("Extracted \(frames.count) frames, checking \(newTags.count) new tags...")
+            log(nativeVideo == nil ? "Extracted \(frames.count) frames, checking \(newTags.count) new tags..."
+                : "Checking \(newTags.count) new tags from native video...")
         } else {
             prompt = Self.fullAnalysisPrompt(domain: domain, duration: duration, tags: tags,
                                              instructions: instructions, notes: notes,
@@ -1267,32 +1333,19 @@ actor Analyzer {
                                              tasteExampleCount: tasteFrames.count,
                                              ignoreCount: ignoreFrames.count)
             tagsToRecord = Array(allTags)
-            progress(0.25, "tagging (\(frames.count) frames)")
-            log("Extracted \(frames.count) frames, sending for full analysis...")
+            progress(0.25, nativeVideo == nil ? "tagging (\(frames.count) frames)" : "tagging native video")
+            log(nativeVideo == nil ? "Extracted \(frames.count) frames, sending for full analysis..."
+                : "Sending native video for full analysis...")
         }
 
-        // Video-native input: when Gemini is the resolved provider and the
-        // whole file is a reasonable upload, it watches the actual video —
-        // motion, impacts, and audio — instead of sampled stills. Trimmed
-        // runs stay frames-only so timestamps remain unambiguous, and any
-        // fallback provider still gets the frames.
-        var nativeVideo: URL?
-        let resolved = await ai.resolveProviderModel(task: "analysis",
-                                                     provider: provider, model: model)
-        if resolved.provider == "gemini", window == nil {
-            let size = ((try? FileManager.default.attributesOfItem(atPath: video.url.path))?[.size]
-                as? NSNumber)?.int64Value ?? .max
-            if size <= 300 * 1024 * 1024 {
-                nativeVideo = video.url
-                log("Attaching the video natively — Gemini reads motion and audio directly")
-            }
-        }
-
+        // Structured child: overlaps the remote wait and is cancelled on scope exit.
+        async let sourceLoudness = Self.cachedLoudnessCurve(url: video.url)
+        let sampledEvidence = SampledFrameCache.current ?? SampledFrameCache()
         let response = try await callThinningFrames(
             prompt: prompt,
             auxiliary: referenceFrames + markerFrames + ignoreFrames + tasteFrames,
             sampled: frames,
-            video: nativeVideo,
+            video: nativeVideo, lazySampled: nativeVideo == nil ? nil : frameSource,
             model: model, provider: provider, log: log)
         guard let object = AIResponseParser.jsonObject(from: response.text) else {
             throw AIError.emptyResponse("analysis (unparseable JSON)")
@@ -1608,9 +1661,9 @@ actor Analyzer {
         // Audio excitement: crowd/commentator loudness spikes lift the
         // scores of the scenes they land in — a knockdown that erupts the
         // arena outranks a quiet one. Pure ffmpeg RMS; no AI cost.
-        if !scored.isEmpty, await FFmpeg.hasAudioStream(video.url) {
+        if !scored.isEmpty {
             progress(0.96, "audio excitement")
-            let curve = await Self.loudnessCurve(url: video.url)
+            let curve = await sourceLoudness
             if curve.count > 4 {
                 let median = curve.sorted()[curve.count / 2]
                 var boosted = 0
@@ -1645,7 +1698,7 @@ actor Analyzer {
                 guard let result = await Self.portraitFit(url: video.url,
                                                           start: range.start, end: range.end,
                                                           videoWidth: video.width,
-                                                          videoHeight: video.height) else { continue }
+                                                          videoHeight: video.height, frameCache: sampledEvidence) else { continue }
                 switch result.fit {
                 case .fits:
                     try? await database.addSceneTag(sceneID: range.id, tag: "portrait-fit:good")
@@ -1757,6 +1810,21 @@ actor Analyzer {
         return primaries.isEmpty ? boxes : Array(primaries)
     }
 
+    @concurrent
+    nonisolated static func cachedLoudnessCurve(url: URL) async -> [Double] {
+        guard !Task.isCancelled else { return [] }
+        let cache = SourceIdentityCache.shared
+        guard let fingerprint = try? cache.fingerprint(of: url) else { return [] }
+        let version = "loudness-v1-8000-rms"
+        if let curve = cache.read([Double].self, fingerprint: fingerprint, version: version) { return curve }
+        guard await FFmpeg.hasAudioStream(url), !Task.isCancelled else { return [] }
+        let curve = await loudnessCurve(url: url)
+        if !Task.isCancelled, !curve.isEmpty {
+            cache.write(curve, fingerprint: fingerprint, version: version)
+        }
+        return curve
+    }
+
     /// Per-second RMS loudness (dB) of the source audio — crowd and
     /// commentator spikes mark the exciting moments. Pure ffmpeg; empty on
     /// failure or silence.
@@ -1789,8 +1857,10 @@ actor Analyzer {
     /// Builder's crop slider and the renderers use). Samples three frames,
     /// unions the detected human boxes per frame, majority-votes; nil when
     /// no frame could be sampled at all (can't judge).
+    @concurrent
     nonisolated static func portraitFit(url: URL, start: Double, end: Double,
-                                        videoWidth: Int, videoHeight: Int) async
+                                        videoWidth: Int, videoHeight: Int,
+                                        frameCache: SampledFrameCache? = nil) async
         -> (fit: PortraitFit, cropXFrac: Double?)? {
         guard videoWidth > 0, videoHeight > 0 else { return nil }
         // Fraction of the frame width a full-height 9:16 crop covers.
@@ -1799,14 +1869,22 @@ actor Analyzer {
         var good = 0, judged = 0, sampled = 0
         var centers: [Double] = []
         let fractions = [0.25, 0.5, 0.75]
-        let frames = await ThumbnailService.jpegFrames(
+        let cache = frameCache ?? SampledFrameCache.current ?? SampledFrameCache()
+        let frames = await cache.jpegFrames(
             url: url, at: fractions.map { start + duration * $0 }, maxDimension: 720)
         for data in frames {
             guard let data else { continue }
             sampled += 1
             let request = VNDetectHumanRectanglesRequest()
             request.upperBodyOnly = false
-            try? VNImageRequestHandler(data: data).perform([request])
+            do {
+                let permit = try await MediaWorkScheduler.shared.acquire(.vision)
+                defer { withExtendedLifetime(permit) {} }
+                try Task.checkCancellation()
+                let timing = PerfSignpost.begin("Vision", metadata: "portraitFit")
+                defer { PerfSignpost.end(timing) }
+                try? VNImageRequestHandler(data: data).perform([request])
+            } catch { return nil }
             let boxes = Self.primaryPeopleBoxes((request.results ?? []).map(\.boundingBox))
             guard !boxes.isEmpty else { continue }
             judged += 1

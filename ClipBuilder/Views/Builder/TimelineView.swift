@@ -10,6 +10,12 @@ struct TimelineView: View {
     let onPlayClip: (TimelineClip) -> Void
     @State private var verticalScrollPosition = ScrollPosition()
     @State private var horizontalScrollPosition = ScrollPosition()
+    @State private var visibleRect: CGRect?
+
+    private struct HorizontalViewport: Equatable {
+        var rect: CGRect
+        var offset: Double
+    }
 
     private static let rulerHeight: CGFloat = 26
     static let cropLaneHeight: CGFloat = 52
@@ -22,49 +28,58 @@ struct TimelineView: View {
         let contentWidth = max(800, CGFloat(model.totalDuration + 15) * model.pointsPerSecond)
         let layout = model.timelineLayout()
 
-        ScrollView(.vertical) {
-            HStack(alignment: .top, spacing: 0) {
-                headerColumn(model: model, layout: layout)
-                    .frame(width: Self.headerWidth)
-                ScrollView(.horizontal) {
-                    VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
-                        TimeRuler(contentWidth: contentWidth)
-                            .frame(width: contentWidth, height: Self.rulerHeight)
-                        CropLane(contentWidth: contentWidth, height: Self.cropLaneHeight)
-                        ForEach(0..<model.document.trackCount, id: \.self) { track in
-                            VideoTrackLane(track: track, layout: layout.videoTracks[track],
-                                           contentWidth: contentWidth,
-                                           onPlayClip: onPlayClip)
+        GeometryReader { viewport in
+            let viewportRect = visibleRect ?? CGRect(
+                x: store.timelineScrollX, y: 0,
+                width: max(1, viewport.size.width - Self.headerWidth), height: 0)
+            ScrollView(.vertical) {
+                HStack(alignment: .top, spacing: 0) {
+                    headerColumn(model: model, layout: layout)
+                        .frame(width: Self.headerWidth)
+                    ScrollView(.horizontal) {
+                        VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
+                            TimeRuler(contentWidth: contentWidth)
+                                .frame(width: contentWidth, height: Self.rulerHeight)
+                            CropLane(contentWidth: contentWidth, height: Self.cropLaneHeight)
+                            ForEach(0..<model.document.trackCount, id: \.self) { track in
+                                VideoTrackLane(track: track, layout: layout.videoTracks[track],
+                                               contentWidth: contentWidth,
+                                               visibleRect: viewportRect,
+                                               cullClips: model.document.videoTrack.count >= 40,
+                                               onPlayClip: onPlayClip)
+                            }
+                            SoundLane(contentWidth: contentWidth, height: Self.soundLaneHeight)
+                            OverlayLane(layout: layout, contentWidth: contentWidth)
                         }
-                        SoundLane(contentWidth: contentWidth, height: Self.soundLaneHeight)
-                        OverlayLane(layout: layout, contentWidth: contentWidth)
+                        .overlay(alignment: .topLeading) {
+                            PlayheadLine()
+                        }
+                        .padding(.bottom, 8)
                     }
-                    .overlay(alignment: .topLeading) {
-                        PlayheadLine()
+                    .scrollPosition($horizontalScrollPosition)
+                    .onScrollGeometryChange(for: HorizontalViewport.self) { geometry in
+                        HorizontalViewport(rect: geometry.visibleRect, offset: Double(geometry.contentOffset.x))
+                    } action: { _, viewport in
+                        visibleRect = viewport.rect
+                        store.timelineScrollX = max(0, viewport.offset)
                     }
-                    .padding(.bottom, 8)
-                }
-                .scrollPosition($horizontalScrollPosition)
-                .onScrollGeometryChange(for: Double.self) { geometry in
-                    Double(geometry.contentOffset.x)
-                } action: { _, offset in
-                    store.timelineScrollX = max(0, offset)
                 }
             }
+            .scrollPosition($verticalScrollPosition)
+            .onScrollGeometryChange(for: Double.self) { geometry in
+                Double(geometry.contentOffset.y)
+            } action: { _, offset in
+                store.timelineScrollY = max(0, offset)
+            }
+            .onAppear(perform: restoreScrollPosition)
+            .onChange(of: store.openTimelineID) { restoreScrollPosition() }
+            .onChange(of: store.activeProjectID) { restoreScrollPosition() }
+            .background(.background)
         }
-        .scrollPosition($verticalScrollPosition)
-        .onScrollGeometryChange(for: Double.self) { geometry in
-            Double(geometry.contentOffset.y)
-        } action: { _, offset in
-            store.timelineScrollY = max(0, offset)
-        }
-        .onAppear(perform: restoreScrollPosition)
-        .onChange(of: store.openTimelineID) { restoreScrollPosition() }
-        .onChange(of: store.activeProjectID) { restoreScrollPosition() }
-        .background(.background)
     }
 
     private func restoreScrollPosition() {
+        visibleRect = nil
         horizontalScrollPosition.scrollTo(x: store.timelineScrollX)
         verticalScrollPosition.scrollTo(y: store.timelineScrollY)
     }
@@ -349,19 +364,40 @@ struct VideoTrackLane: View {
     let track: Int
     let layout: TimelineLayoutSnapshot.VideoTrack
     let contentWidth: CGFloat
+    let visibleRect: CGRect
+    let cullClips: Bool
     let onPlayClip: (TimelineClip) -> Void
 
     @State private var isDropTarget = false
+    @State private var interactingClips: Set<UUID> = []
+
+    private func visibleClips(model: BuilderTimelineModel) -> [TimelineClip] {
+        // Keep the full destination lane alive during scene drops, including
+        // offscreen targets reached by edge scrolling. Filter preserves z-order.
+        guard cullClips, !isDropTarget else { return layout.clips }
+        let lower = visibleRect.minX - visibleRect.width
+        let upper = visibleRect.maxX + visibleRect.width
+        return layout.clips.filter { clip in
+            if model.selection == .clip(clip.uid) || interactingClips.contains(clip.uid) { return true }
+            let x = CGFloat(clip.startTime) * model.pointsPerSecond
+            let width = max(24, CGFloat(clip.duration) * model.pointsPerSecond)
+            return x + width >= lower && x <= upper
+        }
+    }
 
     var body: some View {
         let model = store.builder
         ZStack(alignment: .topLeading) {
             RoundedRectangle(cornerRadius: 6)
                 .fill(.quaternary.opacity(isDropTarget ? 0.55 : 0.25))
-            ForEach(layout.clips) { clip in
+            ForEach(visibleClips(model: model)) { clip in
                 TimelineClipBlock(clip: clip,
                                   row: layout.rows[clip.uid] ?? 0,
-                                  onPlay: onPlayClip)
+                                  onPlay: onPlayClip,
+                                  onInteractionChange: { id, active in
+                                      if active { interactingClips.insert(id) }
+                                      else { interactingClips.remove(id) }
+                                  })
             }
         }
         .frame(width: contentWidth,
@@ -414,6 +450,7 @@ struct TimelineClipBlock: View {
         }
     }
     let onPlay: (TimelineClip) -> Void
+    let onInteractionChange: (UUID, Bool) -> Void
 
     @State private var dragOffset: CGSize = .zero
     @State private var isDragging = false
@@ -517,6 +554,7 @@ struct TimelineClipBlock: View {
                 .resizeCursorOnHover()
                 .gesture(DragGesture(minimumDistance: 1)
                     .onChanged { value in
+                        if !isTrimming { onInteractionChange(clip.uid, true) }
                         isTrimming = true
                         trimDelta = value.translation.width
                     }
@@ -541,6 +579,7 @@ struct TimelineClipBlock: View {
         }
         .gesture(DragGesture(minimumDistance: 3)
             .onChanged { value in
+                if !isDragging { onInteractionChange(clip.uid, true) }
                 isDragging = true
                 dragOffset = value.translation
             }
@@ -564,6 +603,10 @@ struct TimelineClipBlock: View {
         .help(model.scene(for: clip)?.videoFilename ?? clip.videoFile ?? "")
         .focusable()
         .focused($isFocused)
+        .onChange(of: isDragging || isTrimming || isFocused) { _, active in
+            onInteractionChange(clip.uid, active)
+        }
+        .onDisappear { onInteractionChange(clip.uid, false) }
         .onMoveCommand { direction in
             model.selection = .clip(clip.uid)
             switch direction {

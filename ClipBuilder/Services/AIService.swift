@@ -145,6 +145,7 @@ actor AIService {
               task: String,
               frames: [AIFrame]? = nil,
               video: URL? = nil,
+              fallbackFrames: (@Sendable () async throws -> [AIFrame])? = nil,
               model: String? = nil,
               provider providerOverride: String? = nil,
               timeout: TimeInterval = 300,
@@ -158,11 +159,12 @@ actor AIService {
             emit("──── prompt (\(AICatalog.taskLabels[task] ?? task)\(frameNote)) ────\n\(prompt)\n──── end prompt ────")
         }
         let candidates = dispatchCandidates(task: task, providerOverride: providerOverride,
-                                            model: model, needsImages: frames?.isEmpty == false)
+                                            model: model, needsImages: frames?.isEmpty == false || video != nil)
         guard !candidates.isEmpty else {
             throw AIError.notConfigured(
                 "No AI provider available for \(AICatalog.taskLabels[task] ?? task). Install the claude, gemini, codex, qwen, or kimi CLI, or check Settings → AI.")
         }
+        var loadedFallbackFrames: [AIFrame]?
         var lastError: Error?
         var tooLongError: Error?
         for (index, candidate) in candidates.enumerated() {
@@ -171,8 +173,21 @@ actor AIService {
                 emit("Falling back to \(label) (\(candidate.model ?? "default model"))...")
             }
             do {
+                try Task.checkCancellation()
+                var candidateFrames = frames
+                var candidateVideo = video
+                if video != nil, candidate.provider != "gemini" {
+                    if let fallbackFrames {
+                        if loadedFallbackFrames == nil { loadedFallbackFrames = try await fallbackFrames() }
+                        candidateFrames = loadedFallbackFrames
+                    }
+                    guard candidateFrames?.isEmpty == false else {
+                        throw AIError.notConfigured("\(candidate.provider) cannot accept native video. A still-frame fallback is required.")
+                    }
+                    candidateVideo = nil
+                }
                 let text = try await callProvider(key: candidate.provider, model: candidate.model,
-                                                  prompt: prompt, frames: frames, video: video,
+                                                  prompt: prompt, frames: candidateFrames, video: candidateVideo,
                                                   timeout: timeout, webAccess: webAccess, emit: emit)
                 // The candidate that answered is the provenance — a
                 // prediction made before the call would misattribute
@@ -187,6 +202,10 @@ actor AIService {
                 if case .promptTooLong = error { tooLongError = error }
                 let label = AICatalog.provider(candidate.provider)?.label ?? candidate.provider
                 emit("\(label) failed: \(error)")
+            } catch {
+                if error is CancellationError || video == nil { throw error }
+                lastError = error
+                emit("\(candidate.provider) native-video request failed: \(error)")
             }
         }
         // When ANY candidate choked on prompt size, surface that — the
@@ -206,11 +225,13 @@ actor AIService {
             throw AIError.notConfigured(
                 "\(provider.label) CLI ('\(provider.bin)') not found. Install it or change the provider in Settings → AI.")
         }
-        var effectiveFrames = frames
-        if frames?.isEmpty == false && !provider.supportsImages {
-            emit("\(provider.label) does not support image input — running text-only (analysis quality will degrade).")
-            effectiveFrames = nil
+        guard video == nil || key == "gemini" else {
+            throw AIError.notConfigured("\(provider.label) cannot accept native video. Supply still frames or choose Gemini.")
         }
+        guard frames?.isEmpty != false || provider.supportsImages else {
+            throw AIError.notConfigured("\(provider.label) cannot accept image input. Choose an image-capable provider.")
+        }
+        let effectiveFrames = frames
 
         if webAccess && key != "claude" {
             emit("\(provider.label) runs without live web tools here — the research relies on the model's own knowledge.")
@@ -241,11 +262,21 @@ actor AIService {
         }
     }
 
+    private func runRequest(executable: URL, arguments: [String], stdin: Data? = nil,
+                            timeout: TimeInterval?, environment: [String: String]? = nil) async throws -> ProcessResult {
+        let timing = PerfSignpost.begin("AIRemoteWait", metadata: executable.lastPathComponent)
+        defer { PerfSignpost.end(timing) }
+        return try await ProcessRunner.run(executable: executable, arguments: arguments,
+                                           stdin: stdin, timeout: timeout, environment: environment)
+    }
+
     // MARK: - Claude (stream-json protocol)
 
     private func callClaude(binary: URL, prompt: String, frames: [AIFrame]?,
                             model: String?, timeout: TimeInterval, webAccess: Bool = false,
                             log: @Sendable (String) -> Void) async throws -> String {
+        var preparation = PerfSignpost.begin("AIInput", metadata: "claude")
+        defer { PerfSignpost.end(preparation) }
         var content: [[String: Any]] = []
         for frame in frames ?? [] {
             content.append(["type": "text", "text": "[Frame at \(frame.label)]"])
@@ -278,11 +309,13 @@ actor AIService {
         let environment: [String: String]? = model?.contains("fable") == true
             ? ["MAX_THINKING_TOKENS": "31999"] : nil
 
+        PerfSignpost.end(preparation)
+        preparation = nil
         let maxRetries = 2
         for attempt in 0...maxRetries {
             let result: ProcessResult
             do {
-                result = try await ProcessRunner.run(executable: binary, arguments: arguments,
+                result = try await runRequest(executable: binary, arguments: arguments,
                                                      stdin: stdin, timeout: timeout,
                                                      environment: environment)
             } catch {
@@ -380,6 +413,8 @@ actor AIService {
                             video: URL? = nil,
                             model: String?, timeout: TimeInterval,
                             log: @Sendable (String) -> Void) async throws -> String {
+        var preparation = PerfSignpost.begin("AIInput", metadata: "gemini")
+        defer { PerfSignpost.end(preparation) }
         var arguments: [String] = []
         if let model { arguments += ["-m", model] }
 
@@ -387,11 +422,13 @@ actor AIService {
         var fullPrompt = prompt
         if let video {
             // The real video beats sampled stills: motion, impacts, and the
-            // audio track all inform the analysis. Frames are skipped.
+            // audio track all inform the analysis. Auxiliary note/identity
+            // frames still ride along; the sampled fallback grid is lazy.
             fullPrompt = "[Video file — watch it directly] @\(video.path)\n"
                 + "(The complete video is attached; timestamps in the instructions refer to video time.)\n\n"
                 + prompt
-        } else if let frames, !frames.isEmpty {
+        }
+        if let frames, !frames.isEmpty {
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("cb_gemini_\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -402,7 +439,7 @@ actor AIService {
                 try frame.jpeg.write(to: file)
                 references.append("[Frame at \(frame.label)] @\(file.path)")
             }
-            fullPrompt = references.joined(separator: "\n") + "\n\n" + prompt
+            fullPrompt = references.joined(separator: "\n") + "\n\n" + fullPrompt
         }
         defer {
             if let temporaryDirectory {
@@ -411,7 +448,9 @@ actor AIService {
         }
         arguments += ["-p", fullPrompt]
 
-        let result = try await ProcessRunner.run(executable: binary, arguments: arguments, timeout: timeout)
+        PerfSignpost.end(preparation)
+        preparation = nil
+        let result = try await runRequest(executable: binary, arguments: arguments, timeout: timeout)
         if result.exitCode != 0 {
             let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
             if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
@@ -437,11 +476,14 @@ actor AIService {
     private func callCodex(binary: URL, prompt: String, model: String?,
                            timeout: TimeInterval,
                            log: @Sendable (String) -> Void) async throws -> String {
+        let preparation = PerfSignpost.begin("AIInput", metadata: "codex")
         var arguments = ["exec"]
         if let model { arguments += ["--model", model] }
         arguments.append("-")
-        let result = try await ProcessRunner.run(executable: binary, arguments: arguments,
-                                                 stdin: Data(prompt.utf8), timeout: timeout)
+        let stdin = Data(prompt.utf8)
+        PerfSignpost.end(preparation)
+        let result = try await runRequest(executable: binary, arguments: arguments,
+                                                 stdin: stdin, timeout: timeout)
         if result.exitCode != 0 {
             let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
             if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
@@ -462,12 +504,15 @@ actor AIService {
     private func callQwen(binary: URL, prompt: String, model: String?,
                           timeout: TimeInterval,
                           log: @Sendable (String) -> Void) async throws -> String {
+        let preparation = PerfSignpost.begin("AIInput", metadata: "qwen")
         // Gemini CLI fork: headless mode reads the prompt from stdin, which
         // sidesteps argv length limits on long transcripts.
         var arguments: [String] = []
         if let model { arguments += ["-m", model] }
-        let result = try await ProcessRunner.run(executable: binary, arguments: arguments,
-                                                 stdin: Data(prompt.utf8), timeout: timeout)
+        let stdin = Data(prompt.utf8)
+        PerfSignpost.end(preparation)
+        let result = try await runRequest(executable: binary, arguments: arguments,
+                                                 stdin: stdin, timeout: timeout)
         if result.exitCode != 0 {
             let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
             if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
@@ -493,12 +538,14 @@ actor AIService {
     private func callKimi(binary: URL, prompt: String, model: String?,
                           timeout: TimeInterval,
                           log: @Sendable (String) -> Void) async throws -> String {
+        let preparation = PerfSignpost.begin("AIInput", metadata: "kimi")
         // `kimi -p` runs one prompt non-interactively: assistant text goes to
         // stdout; thinking and tool progress go to stderr.
         var arguments: [String] = []
         if let model { arguments += ["--model", model] }
         arguments += ["-p", prompt]
-        let result = try await ProcessRunner.run(executable: binary, arguments: arguments, timeout: timeout)
+        PerfSignpost.end(preparation)
+        let result = try await runRequest(executable: binary, arguments: arguments, timeout: timeout)
         if result.exitCode != 0 {
             let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
             if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }

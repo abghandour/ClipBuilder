@@ -39,4 +39,75 @@ struct AIServiceTests {
         #expect(candidates.first?.provider == "claude")
         #expect(Set(candidates.map(\.provider)).count == candidates.count)
     }
+    @Test("native video does not load fallback stills on success")
+    func nativeVideoIsLazy() async throws {
+        var config = AIConfig()
+        config.providers["gemini"] = AIProviderSettings(bin: "/bin/echo", model: "fixture")
+        let service = AIService(config: config)
+        let source = AnalysisFrameSource {
+            Issue.record("Native success must not extract the fallback grid")
+            return []
+        }
+        let response = try await service.call(
+            prompt: "Analyze video", task: "analysis", video: URL(fileURLWithPath: "/tmp/native.mp4"),
+            fallbackFrames: { try await source.frames() }, provider: "gemini", timeout: 5)
+        #expect(response.provider == "gemini")
+        #expect(!response.fellBack)
+    }
+
+    @Test("native failure lazily supplies stills and records the answering provider")
+    func nativeVideoFallbackProvenance() async throws {
+        let directory = try TempDirectory(prefix: "LazyAI")
+        let failure = directory.url.appendingPathComponent("fail.sh")
+        let success = directory.url.appendingPathComponent("answer.sh")
+        try "#!/bin/sh\nexit 1\n".write(to: failure, atomically: true, encoding: .utf8)
+        try #"""
+        #!/bin/sh
+        cat >/dev/null
+        printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"fixture answer"}]}}'
+        """#.write(to: success, atomically: true, encoding: .utf8)
+        for script in [failure, success] {
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        }
+        var config = AIConfig()
+        config.providers["gemini"] = AIProviderSettings(bin: failure.path, model: "native-fixture")
+        config.providers["claude"] = AIProviderSettings(bin: success.path, model: "still-fixture")
+        let service = AIService(config: config)
+        let capture = AIRunCapture()
+        let counter = FrameLoadCounter()
+        let response = try await AIRunCapture.context.withValue(capture) {
+            try await service.call(
+                prompt: "Analyze video", task: "analysis", video: URL(fileURLWithPath: "/tmp/native.mp4"),
+                fallbackFrames: {
+                    await counter.increment()
+                    return [AIFrame(jpeg: Data("fixture".utf8), label: "1.0s")]
+                }, provider: "gemini", timeout: 5)
+        }
+        #expect(await counter.count == 1)
+        #expect(response.provider == "claude")
+        #expect(response.fellBack)
+        #expect(capture.roles.count == 1)
+        #expect(capture.roles.first?.provenance.provider == "claude")
+    }
+
+    @Test("video-only requests cannot fall through to a provider without video support")
+    func videoRequiresCapableProvider() async throws {
+        var config = AIConfig()
+        config.providers["claude"] = AIProviderSettings(bin: "/bin/echo", model: "fixture")
+        config.providers["gemini"] = AIProviderSettings(bin: "/nonexistent/clipbuilder-test-gemini", model: "fixture")
+        let service = AIService(config: config)
+        do {
+            _ = try await service.call(prompt: "Analyze", task: "analysis",
+                                       video: URL(fileURLWithPath: "/tmp/native.mp4"),
+                                       provider: "claude", timeout: 5)
+            Issue.record("Video-only request must fail without a capable provider or still fallback")
+        } catch let error as AIError {
+            #expect(error.description.contains("still-frame fallback"))
+        }
+    }
+}
+
+private actor FrameLoadCounter {
+    private(set) var count = 0
+    func increment() { count += 1 }
 }

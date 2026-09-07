@@ -74,6 +74,7 @@ nonisolated enum FramingService {
                                                  duration: video.duration)
         }
 
+        let frameCache = SampledFrameCache.current ?? SampledFrameCache()
         let centerStage = CenterStageService()
         var summary = Summary()
         for (index, scene) in scenes.enumerated() {
@@ -82,7 +83,7 @@ nonisolated enum FramingService {
 
             // People at three sample moments: the static rect's subject, and
             // the "who sits inside the framing" evidence for framed: tags.
-            let samples = await sampleFrames(url: video.url, scene: scene)
+            let samples = await sampleFrames(url: video.url, scene: scene, frameCache: frameCache)
             let sceneHints = hints
                 .filter { $0.atTime >= scene.startTime - 0.25 && $0.atTime <= scene.endTime + 0.25 }
 
@@ -235,17 +236,24 @@ nonisolated enum FramingService {
     /// People detections (normalized, top-left origin) at three moments of
     /// the scene — same peripheral-people filter as portrait fit — plus an
     /// appearance signature per box for identity matching.
-    private static func sampleFrames(url: URL, scene: SceneRecord) async -> [SceneSample] {
+    private static func sampleFrames(url: URL, scene: SceneRecord,
+                                     frameCache: SampledFrameCache? = nil) async -> [SceneSample] {
         var samples: [SceneSample] = []
-        for fraction in [0.25, 0.5, 0.75] {
-            let time = scene.startTime + scene.duration * fraction
-            guard let data = await ThumbnailService.jpegFrame(url: url, at: time,
-                                                              maxDimension: 720),
+        let times = [0.25, 0.5, 0.75].map { scene.startTime + scene.duration * $0 }
+        let cache = frameCache ?? SampledFrameCache.current ?? SampledFrameCache()
+        let frames = await cache.jpegFrames(url: url, at: times, maxDimension: 720)
+        for (time, frame) in zip(times, frames) {
+            guard let data = frame,
                   let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
                   let cg = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else { continue }
             let request = VNDetectHumanRectanglesRequest()
             request.upperBodyOnly = false
-            try? VNImageRequestHandler(data: data).perform([request])
+            do {
+                let permit = try await MediaWorkScheduler.shared.acquire(.vision)
+                defer { withExtendedLifetime(permit) {} }
+                try Task.checkCancellation()
+                try? VNImageRequestHandler(data: data).perform([request])
+            } catch { return samples }
             let boxes = Analyzer.primaryPeopleBoxes((request.results ?? []).map { observation in
                 let box = observation.boundingBox
                 return CGRect(x: box.minX, y: 1 - box.maxY,

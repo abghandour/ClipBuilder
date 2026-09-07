@@ -104,6 +104,48 @@ struct DatabaseTests {
         #expect(updated.gradeCount == 2)
     }
 
+    @Test("project-scoped scenes retain only their tags and grade aggregates")
+    func projectSceneAggregates() async throws {
+        let temp = try TempDatabase()
+        let firstVideo = try await temp.seedVideo(sceneCount: 2)
+        let secondVideo = try await temp.seedVideo(sceneCount: 2)
+        let firstProject = try await temp.database.createProject(
+            profileName: "Fixture", name: "First", videoIDs: [firstVideo])
+        let secondProject = try await temp.database.createProject(
+            profileName: "Fixture", name: "Second", videoIDs: [secondVideo])
+        let firstScenes = try await temp.database.fetchScenes(videoID: firstVideo)
+        let secondScenes = try await temp.database.fetchScenes(videoID: secondVideo)
+        for scene in firstScenes {
+            try await temp.database.addSceneTag(sceneID: scene.id, tag: "first-only")
+            try await temp.database.addGrade(sceneID: scene.id, score: 4)
+            try await temp.database.addGrade(sceneID: scene.id, score: 8)
+        }
+        for scene in secondScenes {
+            try await temp.database.addSceneTag(sceneID: scene.id, tag: "second-only")
+            try await temp.database.addGrade(sceneID: scene.id, score: 9)
+        }
+        let excluded = try #require(firstScenes.last?.id)
+        try await temp.database.setSceneExcluded(excluded, excluded: true)
+        let all = try await temp.database.fetchScenes()
+        let first = try await temp.database.fetchScenes(projectID: firstProject)
+        let second = try await temp.database.fetchScenes(projectID: secondProject)
+        #expect(first.count == 2)
+        #expect(second.count == 2)
+        #expect(first == all.filter { $0.videoID == firstVideo })
+        #expect(second == all.filter { $0.videoID == secondVideo })
+        #expect(first.allSatisfy {
+            Set($0.tags) == ["fixture", "first-only"]
+                && $0.gradeAverage == 6 && $0.gradeCount == 2 && $0.lastGrade == 8
+        })
+        #expect(second.allSatisfy {
+            Set($0.tags) == ["fixture", "second-only"]
+                && $0.gradeAverage == 9 && $0.gradeCount == 1 && $0.lastGrade == 9
+        })
+        let included = try await temp.database.fetchScenes(projectID: firstProject, includeExcluded: false)
+        #expect(included == first.filter { !$0.excluded })
+        #expect(included.count == 1)
+    }
+
     @Test("deleting an analysis run cascades its scenes and tags")
     func deleteAnalysisRunCascades() async throws {
         let temp = try TempDatabase()
