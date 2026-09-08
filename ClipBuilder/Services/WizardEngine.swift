@@ -2774,6 +2774,10 @@ actor WizardEngine {
                           database: Database,
                           sceneMap: [Int64: SceneRecord],
                           emit: @escaping @Sendable (String) -> Void) async throws -> AssemblyResult {
+        let renderStarted = ContinuousClock.now
+        emit("Wizard render start")
+        defer { emit("Wizard render end; duration=\(renderStarted.duration(to: .now))") }
+
         let scratch = try await render.makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
 

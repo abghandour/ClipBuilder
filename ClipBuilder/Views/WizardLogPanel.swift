@@ -127,6 +127,10 @@ struct WizardLogPanel: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
             HStack {
+                Button("Report…") {
+                    BugReporting.presentReport(title: "Generation failed", details: message)
+                }
+                .controlSize(.small)
                 Button("Try Again") {
                     store.wizardFailureMessage = nil
                     store.retryWizard()

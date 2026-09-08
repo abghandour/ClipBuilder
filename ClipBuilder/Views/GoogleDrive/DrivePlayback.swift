@@ -13,7 +13,17 @@ enum DrivePlayback {
             let alert = NSAlert()
             alert.messageText = "Could not open media"
             alert.informativeText = error.localizedDescription
-            if let window = NSApp.keyWindow { _ = await alert.beginSheetModal(for: window) }
+            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: "Report…")
+            let response: NSApplication.ModalResponse
+            if let window = NSApp.keyWindow {
+                response = await alert.beginSheetModal(for: window)
+            } else {
+                response = alert.runModal()
+            }
+            if response == .alertSecondButtonReturn {
+                BugReporting.presentReport(title: alert.messageText, details: alert.informativeText)
+            }
             return false
         }
     }

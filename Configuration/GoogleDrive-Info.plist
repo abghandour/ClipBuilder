@@ -6,5 +6,9 @@
     <string></string>
     <key>GoogleOAuthClientSecret</key>
     <string></string>
+    <key>VCIngestKey</key>
+    <string></string>
+    <key>VCEndpoint</key>
+    <string></string>
 </dict>
 </plist>

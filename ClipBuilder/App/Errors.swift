@@ -5,6 +5,8 @@ import Foundation
 nonisolated struct AppError: Identifiable, Equatable, Sendable {
     let id = UUID()
     var message: String
+    var context: String = "Error"
+    var details: String = ""
 }
 
 nonisolated extension Error {

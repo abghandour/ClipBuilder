@@ -23,7 +23,9 @@ nonisolated struct DriveTransfer: Codable, Identifiable, Sendable {
 final class GoogleDriveTransfers {
     static let shared = GoogleDriveTransfers()
     let auth: GoogleDriveAuth
-    var jobs: [DriveTransfer] = []
+    var jobs: [DriveTransfer] = [] {
+        didSet { BugReporting.logDriveChanges(from: oldValue, to: jobs) }
+    }
     var states: [String: DriveConnectionState] = [:]
     var connecting: Set<String> = []
     var connectionError: String?

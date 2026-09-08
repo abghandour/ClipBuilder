@@ -6,6 +6,10 @@
 	objectVersion = 90;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		000000000000000000000401 /* BugReporterKit in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000403 /* BugReporterKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		000000000000000200000001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 		000000000000000130000000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				000000000000000000000401 /* BugReporterKit in Frameworks */,
 			);
 		};
 		000000000000000130000001 /* Frameworks */ = {
@@ -105,6 +110,9 @@
 				000000000000000000000010 /* ClipBuilder */,
 			);
 			name = "Clip Builder";
+			packageProductDependencies = (
+				000000000000000000000403 /* BugReporterKit */,
+			);
 			productName = MyApp;
 			productReference = 000000000000000000000120 /* Clip Builder.app */;
 			productType = "com.apple.product-type.application";
@@ -183,6 +191,9 @@
 			);
 			mainGroup = 000000000000000000000001;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				000000000000000000000402 /* XCLocalSwiftPackageReference "../verticalcorn" */,
+			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
 			projectDirPath = "";
@@ -563,6 +574,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		000000000000000000000402 /* XCLocalSwiftPackageReference "../verticalcorn" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../verticalcorn;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		000000000000000000000403 /* BugReporterKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BugReporterKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 000000000000000000000000 /* Project object */;
 }

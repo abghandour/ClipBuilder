@@ -1,3 +1,4 @@
+import BugReporterKit
 import SwiftUI
 
 // THESIS: Project scope is the app's primary orientation; the old twelve-screen global sidebar is retired.
@@ -14,9 +15,13 @@ final class TerminationDelegate: NSObject, NSApplicationDelegate {
     weak var store: AppStore?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let store else { return .terminateNow }
+        guard let store else {
+            BugReporter.markCleanExit()
+            return .terminateNow
+        }
         Task { @MainActor in
             await store.flushForTermination()
+            BugReporter.markCleanExit()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -25,8 +30,14 @@ final class TerminationDelegate: NSObject, NSApplicationDelegate {
 
 @main
 struct ClipBuilderApp: App {
-    @State private var store = AppStore()
+    @State private var store: AppStore
     @NSApplicationDelegateAdaptor(TerminationDelegate.self) private var terminationDelegate
+
+    init() {
+        let store = AppStore()
+        BugReporting.configureIfPossible(store: store)
+        _store = State(initialValue: store)
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -84,6 +95,15 @@ struct ClipBuilderApp: App {
                 Button("Next Timeline") { store.cycleTimeline(offset: 1) }
                     .keyboardShortcut("]", modifiers: [.command, .option])
                     .disabled(store.openTimelineID == nil)
+            }
+            if BugReporting.isConfigured {
+                BugReporterCommands()
+            } else {
+                CommandGroup(replacing: .help) {
+                    Button("Report a Bug…") { BugReporting.presentReport() }
+                        .keyboardShortcut("b", modifiers: [.command, .shift])
+                    Button("My Reports…") { MyReportsWindowPresenter.show() }
+                }
             }
             CommandGroup(before: .help) {
                 Button("Training Guide") {
@@ -232,6 +252,10 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 
 struct MainWindowView: View {
     @Environment(AppStore.self) private var store
+    @AppStorage("qa.toolbarButton") private var showsQAButton = false
+    @AppStorage(SettingsStore.dataFolderDefaultsKey) private var dataFolder = ""
+    @State private var appeared = false
+    @State private var checkedForCrashes = false
 
     var body: some View {
         @Bindable var store = store
@@ -240,6 +264,19 @@ struct MainWindowView: View {
                 .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 290)
         } detail: {
             ProjectWorkspaceDetail()
+        }
+        .bugReporterCrashPrompt()
+        .onAppear {
+            // AppStore.init already loads the library; do not refresh again here.
+            guard !appeared else { return }
+            appeared = true
+            checkForCrashesWhenReady()
+        }
+        .onChange(of: store.currentError) { _, error in
+            if error == nil { checkForCrashesWhenReady() }
+        }
+        .onChange(of: dataFolder) {
+            store.diagnosticsDataFolder = BugReporting.homeRelative(SettingsStore.dataDirectory)
         }
         .onChange(of: store.requestedSection) { _, requested in
             handleRequestedSection(requested)
@@ -279,15 +316,17 @@ struct MainWindowView: View {
         .alert("Error", isPresented: Binding(
             get: { store.currentError != nil },
             set: { if !$0 { store.dismissCurrentError() } }
-        )) {
+        ), presenting: store.currentError) { error in
             Button("OK", role: .cancel) {}
             Button("Copy Details") {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(store.currentError?.message ?? "",
-                                               forType: .string)
+                NSPasteboard.general.setString(error.message, forType: .string)
             }
-        } message: {
-            Text(store.currentError?.message ?? "")
+            Button("Report…") {
+                BugReporting.presentReport(title: error.context, details: error.details)
+            }
+        } message: { error in
+            Text(error.message)
         }
         .sheet(isPresented: $store.showTrainingGuide) {
             HelpSheet()
@@ -348,6 +387,17 @@ struct MainWindowView: View {
             store.builder.flushPendingAutosave()
             store.flushActiveProjectState()
         }
+        // Rightmost control on every screen: a trailing title-bar accessory,
+        // not a toolbar item (root toolbar items sort before a screen's own).
+        .background(QATitlebarAccessoryInstaller(
+            visible: BugReporting.qaButtonVisible(preference: showsQAButton, isDebug: BugReporting.isDebugBuild)))
+    }
+
+    private func checkForCrashesWhenReady() {
+        guard appeared, !checkedForCrashes, store.currentError == nil,
+              BugReporting.isConfigured else { return }
+        checkedForCrashes = true
+        BugReporter.checkForCrashesAndPrompt()
     }
 
     private func handleRequestedSection(_ requested: SidebarSection?) {

@@ -534,6 +534,7 @@ private struct GeneralSettingsTab: View {
     var body: some View {
         @Bindable var store = store
         Form {
+            FeedbackSettingsSection()
             Section("Analysis") {
                 LabeledContent("Analysis mode") {
                     Text("Visual + transcript-first podcasts")

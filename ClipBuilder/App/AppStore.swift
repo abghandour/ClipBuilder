@@ -1,4 +1,5 @@
 import AppKit
+import BugReporterKit
 import Foundation
 import Observation
 import UniformTypeIdentifiers
@@ -27,21 +28,38 @@ struct WizardRunResults: Identifiable {
 final class AppStore {
     // MARK: - State
 
-    var settings: AppSettings
+    var settings: AppSettings { didSet { updateBugReportContext() } }
     var profiles: [BrandProfile] = []
-    var activeProfile: BrandProfile
+    var activeProfile: BrandProfile {
+        didSet {
+            updateBugReportContext()
+            if oldValue.profileName != activeProfile.profileName {
+                diagnosticLogSink("app", "Profile switched: \(activeProfile.profileName)")
+            }
+        }
+    }
     let googleDrive = GoogleDriveTransfers.shared
     private(set) var database: Database?
 
     // Project workspace. Projects scope footage, scenes, timelines, and
     // outputs while people, Instagram, and resources remain profile-wide.
-    var projects: [ProjectRecord] = []
-    var activeProjectID: Int64?
+    var projects: [ProjectRecord] = [] { didSet { updateBugReportContext() } }
+    var activeProjectID: Int64? {
+        didSet {
+            updateBugReportContext()
+            if oldValue != activeProjectID {
+                diagnosticLogSink("app", "Project switched: \(activeProject?.name ?? "none")")
+            }
+        }
+    }
     var timelines: [TimelineRecord] = []
     var selectedSection: SidebarSection = .sources {
-        didSet { scheduleProjectStateSave() }
+        didSet {
+            scheduleProjectStateSave()
+            updateBugReportContext()
+        }
     }
-    var isShowingProjectsHome = false
+    var isShowingProjectsHome = false { didSet { updateBugReportContext() } }
     var openTimelineID: Int64?
     var sceneMode = "all" {
         didSet { scheduleProjectStateSave() }
@@ -203,7 +221,9 @@ final class AppStore {
     var pendingAnalyzeSetup: VideoRecord?
 
     // Analysis job
-    var isAnalyzing = false
+    var isAnalyzing = false {
+        didSet { logDiagnosticOperation("Analysis", channel: "analysis", running: isAnalyzing, previously: oldValue) }
+    }
     var analysisLog: [String] = []
     var analysisProgress: Double = 0
     var analysisStage = ""
@@ -218,10 +238,18 @@ final class AppStore {
     /// True while a Builder pre-fill plan runs — drives the Builder's
     /// loading overlay.
     var isPlanningIntoBuilder = false
-    var wizardLog: [String] = []
+    var wizardLog: [String] = [] {
+        didSet { updateDiagnosticStatus(wizardLog, previousCount: oldValue.count) }
+    }
     /// Human-readable progress for the running generation, derived from the
     /// engine's log stream — so multi-minute AI calls don't look like a hang.
-    var wizardStatus: WizardRunStatus?
+    var wizardStatus: WizardRunStatus? {
+        didSet {
+            if let wizardStatus {
+                recordDiagnosticStatus("\(wizardStatus.stage): \(wizardStatus.detail)")
+            }
+        }
+    }
     /// Videos produced by the finished run, presented as the results sheet.
     var wizardResults: WizardRunResults?
     var pendingCutReview: ProposedCutReviewRequest?
@@ -278,10 +306,14 @@ final class AppStore {
 
     // Clip Builder
     let builder = BuilderTimelineModel()
-    var isBuilderRendering = false
+    var isBuilderRendering = false {
+        didSet { logDiagnosticOperation("Builder render", channel: "builder", running: isBuilderRendering, previously: oldValue) }
+    }
     /// True while Builder is rendering an exact, temporary preview. Unlike a
     /// normal render, this never creates a Library item.
-    var isBuilderPreviewRendering = false
+    var isBuilderPreviewRendering = false {
+        didSet { logDiagnosticOperation("Builder preview render", channel: "builder", running: isBuilderPreviewRendering, previously: oldValue) }
+    }
     var builderLog: [String] = []
     private var builderRenderTask: Task<Void, Never>?
 
@@ -464,19 +496,89 @@ final class AppStore {
         if startWatcher { AssetStore.ensureRoots() }
         if openProfile { openActiveProfile() }
         refreshBumpers()
+        updateBugReportContext()
+    }
+
+    // MARK: - Diagnostics
+
+    @ObservationIgnored let bugReportContext = BugReportContextSnapshot()
+    @ObservationIgnored var diagnosticLogSink: (String, String) -> Void = { BugReporter.log($0, $1) }
+    @ObservationIgnored var diagnosticsDataFolder = "" { didSet { updateBugReportContext() } }
+    @ObservationIgnored var diagnosticsFFmpegVersion: String? { didSet { updateBugReportContext() } }
+    @ObservationIgnored private var diagnosticStatus: [String] = []
+    @ObservationIgnored private var diagnosticStarts: [String: ContinuousClock.Instant] = [:]
+    @ObservationIgnored private var observesBugReportState = false
+
+    func updateBugReportContext() {
+        let connected: Bool
+        if case .connected = googleDrive.states[activeProfile.profileName] { connected = true }
+        else { connected = false }
+        bugReportContext.update(BugReportContext(
+            profile: activeProfile.profileName, project: activeProject?.name ?? "",
+            section: isShowingProjectsHome ? "projects" : selectedSection.rawValue,
+            version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
+            build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
+            ffmpegVersion: diagnosticsFFmpegVersion,
+            driveConnected: connected, instagramConnected: settings.instagram.isGraphConnected,
+            dataFolder: diagnosticsDataFolder, recentStatus: diagnosticStatus
+        ))
+    }
+
+    func startBugReportObservation() {
+        guard !observesBugReportState else { return }
+        observesBugReportState = true
+        observeBugReportConnections()
+    }
+
+    private func observeBugReportConnections() {
+        updateBugReportContext()
+        withObservationTracking {
+            _ = googleDrive.states
+        } onChange: { [weak self] in
+            // Observation fires before mutation; read and re-arm on the next actor turn.
+            Task { @MainActor [weak self] in self?.observeBugReportConnections() }
+        }
+    }
+
+    private func updateDiagnosticStatus(_ lines: [String], previousCount: Int) {
+        guard !lines.isEmpty else { updateBugReportContext(); return }
+        let count = min(3, max(1, lines.count - previousCount))
+        diagnosticStatus.append(contentsOf: lines.suffix(count))
+        diagnosticStatus = Array(diagnosticStatus.suffix(3))
+        updateBugReportContext()
+    }
+
+    private func recordDiagnosticStatus(_ line: String) {
+        diagnosticStatus.append(line)
+        diagnosticStatus = Array(diagnosticStatus.suffix(3))
+        updateBugReportContext()
+    }
+
+    private func logDiagnosticOperation(_ name: String, channel: String, running: Bool, previously: Bool) {
+        guard running != previously else { return }
+        if running {
+            diagnosticStarts[name] = .now
+            diagnosticLogSink(channel, "\(name) start")
+        } else if let start = diagnosticStarts.removeValue(forKey: name) {
+            diagnosticLogSink(channel, "\(name) end; duration=\(start.duration(to: .now))")
+        }
     }
 
     // MARK: - Errors
 
     func presentError(_ message: String) {
-        errorQueue.append(AppError(message: message))
+        diagnosticLogSink("error", message)
+        errorQueue.append(AppError(message: message, context: message, details: message))
     }
 
     /// Queue an alert for a failed operation; user-initiated cancellations
     /// are not errors and are dropped.
     func presentError(_ context: String, _ error: Error) {
+        let details = "\(error.userMessage)\n\(String(reflecting: error))"
+        diagnosticLogSink("error", "\(context): \(details)")
         guard !(error is CancellationError) else { return }
-        presentError("\(context): \(error.userMessage)")
+        errorQueue.append(AppError(message: "\(context): \(error.userMessage)",
+                                   context: context, details: details))
     }
 
     func dismissCurrentError() {
@@ -972,6 +1074,18 @@ final class AppStore {
 
     /// Append lines to a log in one write, trimming to the cap.
     func appendLog(_ keyPath: ReferenceWritableKeyPath<AppStore, [String]>, _ lines: [String]) {
+        if let channel = BugReporting.logChannel(for: keyPath) {
+            for line in lines { diagnosticLogSink(channel, line) }
+        }
+        if diagnosticsFFmpegVersion == nil {
+            for line in lines where line.contains("ffmpeg version ") {
+                if let version = line.split(whereSeparator: \.isNewline)
+                    .first(where: { $0.hasPrefix("ffmpeg version ") }) {
+                    diagnosticsFFmpegVersion = String(version)
+                    break
+                }
+            }
+        }
         var log = self[keyPath: keyPath]
         log.append(contentsOf: lines)
         if log.count > Self.logLineCap {
@@ -1074,7 +1188,7 @@ final class AppStore {
             do {
                 let discovered = try await analyzer.scanSourceFolder(profile: profile, database: database)
                 if discovered > 0 {
-                    analysisLog.append("Discovered \(discovered) new video(s)")
+                    appendLog(\.analysisLog, ["Discovered \(discovered) new video(s)"])
                 }
                 refreshAll()
             } catch {
@@ -1102,7 +1216,7 @@ final class AppStore {
             }
             await MainActor.run { [copied, failures] in
                 if copied > 0 {
-                    self.analysisLog.append("Added \(copied) video(s) to the Input folder")
+                    self.appendLog(\.analysisLog, ["Added \(copied) video(s) to the Input folder"])
                     self.scanSourceFolder()
                 }
                 for failure in failures {
@@ -1241,7 +1355,7 @@ final class AppStore {
         let transcription = transcription
         let podcastAnalysis = podcastAnalysis
         let language = settings.transcribeLanguage
-        if !instructions.isEmpty { analysisLog.append("Using analysis instructions: \(instructions)") }
+        if !instructions.isEmpty { appendLog(\.analysisLog, ["Using analysis instructions: \(instructions)"]) }
         let generation = profileGeneration
         analysisTask = Task {
             await AIRunCapture.context.withValue(AIRunCapture()) {
@@ -1262,7 +1376,7 @@ final class AppStore {
                     + names.joined(separator: ", ")
                     + ". Omit every range where any of them is absent, mostly occluded, or barely in frame."
                 instructions = instructions.isEmpty ? filterLine : filterLine + "\n" + instructions
-                analysisLog.append("Requiring people in every scene: \(names.joined(separator: ", "))")
+                appendLog(\.analysisLog, ["Requiring people in every scene: \(names.joined(separator: ", "))"])
             }
             // People first seen anywhere in this batch — reviewed once at the
             // end. Later videos already treat them as known (people are
@@ -1291,7 +1405,7 @@ final class AppStore {
                         notes = (try? await database.videoNotes(videoID: video.id)) ?? []
                     }
                     if !notes.isEmpty {
-                        analysisLog.append("\(video.filename): applying \(notes.count) timestamped note(s)")
+                        appendLog(\.analysisLog, ["\(video.filename): applying \(notes.count) timestamped note(s)"])
                     }
                     // Refetched per video so people discovered earlier in this
                     // batch keep their identity in the following videos.
@@ -1372,9 +1486,9 @@ final class AppStore {
                                     video: video, database: database,
                                     languageCode: language,
                                     log: logSink(\.analysisLog))
-                                analysisLog.append("\(video.filename): transcript saved")
+                                appendLog(\.analysisLog, ["\(video.filename): transcript saved"])
                             } else {
-                                analysisLog.append("\(video.filename): already has a transcript — keeping it")
+                                appendLog(\.analysisLog, ["\(video.filename): already has a transcript — keeping it"])
                             }
                             if let runID {
                                 try? await database.markAnalysisRunTranscribed(id: runID)
@@ -1382,7 +1496,7 @@ final class AppStore {
                         } catch is CancellationError {
                             break
                         } catch {
-                            analysisLog.append("\(video.filename): transcription failed — \(error.userMessage)")
+                            appendLog(\.analysisLog, ["\(video.filename): transcription failed — \(error.userMessage)"])
                         }
                     }
                     // Fight scoring: dense pass over the fight scenes so the
@@ -1399,25 +1513,25 @@ final class AppStore {
                         } catch is CancellationError {
                             break
                         } catch {
-                            analysisLog.append("\(video.filename): fight scoring failed — \(error.userMessage)")
+                            appendLog(\.analysisLog, ["\(video.filename): fight scoring failed — \(error.userMessage)"])
                         }
                     }
                     if let runID { try await database.updateAnalysisModels(id: runID) }
-                    analysisLog.append("\(video.filename): done")
+                    appendLog(\.analysisLog, ["\(video.filename): done"])
                 } catch is CancellationError {
                     break
                 } catch let error as AIError {
-                    analysisLog.append("\(video.filename): \(error)")
+                    appendLog(\.analysisLog, ["\(video.filename): \(error)"])
                     if case .quotaExhausted = error {
-                        analysisLog.append("Quota exhausted — stopping the run.")
+                        appendLog(\.analysisLog, ["Quota exhausted — stopping the run."])
                         break
                     }
                 } catch {
-                    analysisLog.append("\(video.filename): \(error.userMessage)")
+                    appendLog(\.analysisLog, ["\(video.filename): \(error.userMessage)"])
                 }
             }
             if Task.isCancelled {
-                analysisLog.append("Analysis stopped.")
+                appendLog(\.analysisLog, ["Analysis stopped."])
                 analysisStage = "stopped"
             } else {
                 analysisProgress = 1
@@ -1446,9 +1560,15 @@ final class AppStore {
     /// Fire-and-forget orchestration state — the bottom bar renders from
     /// these while the run works through its steps in the background.
     var isPipelineRunning = false
-    var pipelineLog: [String] = []
+    var pipelineLog: [String] = [] {
+        didSet { updateDiagnosticStatus(pipelineLog, previousCount: oldValue.count) }
+    }
     var pipelineProgress: Double = 0
-    var pipelineStage = ""
+    var pipelineStage = "" {
+        didSet {
+            if !pipelineStage.isEmpty, oldValue != pipelineStage { recordDiagnosticStatus(pipelineStage) }
+        }
+    }
     /// Opens the full pipeline log sheet (clicking the bottom bar).
     var showPipelineLog = false
     private var pipelineTask: Task<Void, Never>?
@@ -1503,7 +1623,7 @@ final class AppStore {
             presentError("Another analysis or generation is already running — stop it or let it finish first.")
             return
         }
-        pipelineLog.append("Resuming…")
+        appendLog(\.pipelineLog, ["Resuming…"])
         runPipeline()
     }
 
@@ -1537,7 +1657,7 @@ final class AppStore {
                 pipelineProgress = min(1, unitsDone / total)
             }
             func completed(_ key: String) -> Bool { pipelineDone.contains(key) }
-            func log(_ message: String) { pipelineLog.append(message) }
+            func log(_ message: String) { appendLog(\.pipelineLog, [message]) }
             // Sendable relay for service `log:` closures.
             let relay: @Sendable (String) -> Void = logSink(\.pipelineLog)
             // The run never prompts: rename proposals from inner passes are
@@ -1890,7 +2010,7 @@ final class AppStore {
     /// Stop the run: the pipeline task plus whichever inner engine (analysis
     /// or wizard) is mid-flight right now.
     func cancelPipeline() {
-        pipelineLog.append("Stopping…")
+        appendLog(\.pipelineLog, ["Stopping…"])
         pipelineTask?.cancel()
         cancelAnalysis()
         cancelWizard()
@@ -2894,9 +3014,9 @@ final class AppStore {
                 _ = try await transcription.transcribeForVideo(video: video, database: database,
                                                        languageCode: language, force: force,
                                                        log: logSink(\.analysisLog))
-                analysisLog.append("\(video.filename): transcription saved")
+                appendLog(\.analysisLog, ["\(video.filename): transcription saved"])
             } catch is CancellationError {
-                analysisLog.append("\(video.filename): transcription stopped")
+                appendLog(\.analysisLog, ["\(video.filename): transcription stopped"])
             } catch {
                 presentError("Transcription failed", error)
             }
@@ -3155,7 +3275,7 @@ final class AppStore {
             do {
                 let count = try await wizard.distillLessons(database: database, emit: logSink(\.wizardLog))
                 lessons = try await database.fetchLessons()
-                wizardLog.append("Distilled \(count) lesson(s) from your reviews")
+                appendLog(\.wizardLog, ["Distilled \(count) lesson(s) from your reviews"])
             } catch {
                 presentError("Lesson distillation failed", error)
             }
@@ -3178,7 +3298,7 @@ final class AppStore {
                 activeProfile.houseStyle = style.value
                 activeProfile.houseStyleProvenance = style.provenance
                 saveActiveProfile()
-                wizardLog.append("House style updated from the analyzed reels")
+                appendLog(\.wizardLog, ["House style updated from the analyzed reels"])
             } catch {
                 presentError("House style distillation failed", error)
             }
@@ -3635,11 +3755,11 @@ final class AppStore {
                                                        centerStageCamera: WizardDefaults.fallbackFramingCamera,
                                                        projectID: projectID,
                                                        emit: logSink(\.builderLog))
-                builderLog.append("Done: \(result.url.lastPathComponent) (\(result.duration.timecode))")
+                appendLog(\.builderLog, ["Done: \(result.url.lastPathComponent) (\(result.duration.timecode))"])
             } catch is CancellationError {
-                builderLog.append("Render stopped.")
+                appendLog(\.builderLog, ["Render stopped."])
             } catch {
-                builderLog.append("Failed: \(error.userMessage)")
+                appendLog(\.builderLog, ["Failed: \(error.userMessage)"])
                 presentError("Builder render failed", error)
             }
             isBuilderRendering = false
@@ -3664,7 +3784,7 @@ final class AppStore {
 
         isBuilderPreviewRendering = true
         defer { isBuilderPreviewRendering = false }
-        builderLog.append("— Exact preview: rendering \(builder.document.videoTrack.count) clip(s) —")
+        appendLog(\.builderLog, ["— Exact preview: rendering \(builder.document.videoTrack.count) clip(s) —"])
 
         let document = builder.document
         let scenes = builder.scenes
@@ -3675,13 +3795,13 @@ final class AppStore {
                                                    profile: profile, database: database,
                                                    centerStageCamera: WizardDefaults.fallbackFramingCamera,
                                                    preview: true, emit: logSink(\.builderLog))
-            builderLog.append("Exact preview ready: \(result.duration.timecode)")
+            appendLog(\.builderLog, ["Exact preview ready: \(result.duration.timecode)"])
             return result.url
         } catch is CancellationError {
-            builderLog.append("Exact preview stopped.")
+            appendLog(\.builderLog, ["Exact preview stopped."])
             return nil
         } catch {
-            builderLog.append("Exact preview failed: \(error.userMessage)")
+            appendLog(\.builderLog, ["Exact preview failed: \(error.userMessage)"])
             presentError("Exact preview failed", error)
             return nil
         }
@@ -3689,9 +3809,13 @@ final class AppStore {
 
     // MARK: - Curated wizard
 
-    var isCuratedRendering = false
+    var isCuratedRendering = false {
+        didSet { logDiagnosticOperation("Curated render", channel: "wizard", running: isCuratedRendering, previously: oldValue) }
+    }
     /// An exact (real-pipeline) preview render is in flight for the wizard.
-    var isCuratedPreviewRendering = false
+    var isCuratedPreviewRendering = false {
+        didSet { logDiagnosticOperation("Curated preview render", channel: "wizard", running: isCuratedPreviewRendering, previously: oldValue) }
+    }
 
     /// Render a curated-wizard document through the Builder's multitrack
     /// pipeline, logging into the wizard's Generation Log. The branded outro
@@ -3700,7 +3824,7 @@ final class AppStore {
     func renderCuratedDocument(_ document: TimelineDocument, includeOutro: Bool) {
         guard let database, !isCuratedRendering else { return }
         isCuratedRendering = true
-        wizardLog.append("— Curated video: rendering \(document.videoTrack.count) clip(s) —")
+        appendLog(\.wizardLog, ["— Curated video: rendering \(document.videoTrack.count) clip(s) —"])
         let profile = activeProfile
         let renderer = multitrackRenderer
         let scenes = self.scenes
@@ -3714,11 +3838,11 @@ final class AppStore {
                                                        centerStageCamera: WizardDefaults.fallbackFramingCamera,
                                                        projectID: projectID,
                                                        emit: logSink(\.wizardLog))
-                wizardLog.append("VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))")
+                appendLog(\.wizardLog, ["VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))"])
             } catch is CancellationError {
-                wizardLog.append("Curated render stopped.")
+                appendLog(\.wizardLog, ["Curated render stopped."])
             } catch {
-                wizardLog.append("Error: \(error.userMessage)")
+                appendLog(\.wizardLog, ["Error: \(error.userMessage)"])
                 presentError("Curated video render failed", error)
             }
             isCuratedRendering = false
@@ -3759,19 +3883,19 @@ final class AppStore {
                 clip.startTime = document.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0
                 clip.transIn = "fadeblack"
                 document.videoTrack.append(clip)
-                wizardLog.append("Branded outro card appended")
+                appendLog(\.wizardLog, ["Branded outro card appended"])
             }
         }
         if let cached = curatedBumperSelection, cached.key == selectionKey {
             for clip in cached.clips {
                 BumperPlanner.insertGap(in: &document, at: clip.startTime, duration: clip.duration)
                 document.videoTrack.append(clip)
-                wizardLog.append("Bumper '\(clip.bumperName ?? "Bumper")' inserted at \(clip.startTime.timecode)")
+                appendLog(\.wizardLog, ["Bumper '\(clip.bumperName ?? "Bumper")' inserted at \(clip.startTime.timecode)"])
             }
         } else {
             let existing = Set(document.videoTrack.map(\.uid))
             let log = BumperPlanner.apply(to: &document, bumpers: assets, options: options)
-            wizardLog.append(contentsOf: log)
+            appendLog(\.wizardLog, log)
             curatedBumperSelection = (selectionKey, document.videoTrack.filter { $0.bumper && !existing.contains($0.uid) }
                 .sorted { $0.startTime < $1.startTime })
         }
@@ -3787,7 +3911,7 @@ final class AppStore {
         guard let database, !isCuratedPreviewRendering else { return nil }
         isCuratedPreviewRendering = true
         defer { isCuratedPreviewRendering = false }
-        wizardLog.append("— Exact preview: rendering \(document.videoTrack.count) clip(s) —")
+        appendLog(\.wizardLog, ["— Exact preview: rendering \(document.videoTrack.count) clip(s) —"])
         let profile = activeProfile
         let renderer = multitrackRenderer
         let scenes = self.scenes
@@ -3800,10 +3924,10 @@ final class AppStore {
                                                    preview: true, emit: logSink(\.wizardLog))
             return result.url
         } catch is CancellationError {
-            wizardLog.append("Exact preview stopped.")
+            appendLog(\.wizardLog, ["Exact preview stopped."])
             return nil
         } catch {
-            wizardLog.append("Exact preview failed: \(error.userMessage)")
+            appendLog(\.wizardLog, ["Exact preview failed: \(error.userMessage)"])
             presentError("Exact preview failed", error)
             return nil
         }
@@ -4008,7 +4132,7 @@ final class AppStore {
             guard pendingWizardPrompt?.description == trimmed else { return }
             pendingWizardPrompt?.statusMessage = nil
             pendingWizardPrompt?.parseFailed = true
-            wizardLog.append("Could not interpret the request with AI — it will be passed to the wizard as-is. (\(error.userMessage))")
+            appendLog(\.wizardLog, ["Could not interpret the request with AI — it will be passed to the wizard as-is. (\(error.userMessage))"])
         }
     }
 
@@ -4048,7 +4172,7 @@ final class AppStore {
                                                                sceneMap: prepared.sceneMap,
                                                                options: options)
                 } catch is CancellationError {
-                    wizardLog.append("Planning stopped.")
+                    appendLog(\.wizardLog, ["Planning stopped."])
                 } catch {
                     presentError("Could not prepare proposed cuts", error)
                 }
@@ -4056,7 +4180,7 @@ final class AppStore {
             }
             await wizard.run(options: options, profile: profile, database: database) { message in
                 Task { @MainActor in
-                    self.wizardLog.append(message)
+                    self.appendLog(\.wizardLog, [message])
                     self.updateWizardStatus(from: message)
                 }
             }
@@ -4107,7 +4231,7 @@ final class AppStore {
                 try await wizard.renderApprovedPlan(plan, options: options, profile: profile,
                                                     database: database, emit: logSink(\.wizardLog))
             } catch is CancellationError {
-                wizardLog.append("Render stopped.")
+                appendLog(\.wizardLog, ["Render stopped."])
             } catch {
                 presentError("Could not render approved cuts", error)
             }
@@ -4318,10 +4442,10 @@ final class AppStore {
                 isInstallingTools = false
                 return
             }
-            analysisLog.append("\(missing.joined(separator: ", ")) not installed — installing now...")
+            appendLog(\.analysisLog, ["\(missing.joined(separator: ", ")) not installed — installing now..."])
             do {
                 try await ToolInstaller.installMissing(log: logSink(\.analysisLog))
-                analysisLog.append("All required tools are ready.")
+                appendLog(\.analysisLog, ["All required tools are ready."])
                 scanSourceFolder()
             } catch {
                 presentError("Could not install required tools", error)
@@ -4336,7 +4460,7 @@ final class AppStore {
         guard !installingProviderCLIs.contains(key) else { return }
         installingProviderCLIs.insert(key)
         let label = AICatalog.provider(key)?.label ?? key
-        analysisLog.append("Installing \(label)...")
+        appendLog(\.analysisLog, ["Installing \(label)..."])
         Task {
             do {
                 try await ProviderCLIInstaller.install(key, log: logSink(\.analysisLog))
