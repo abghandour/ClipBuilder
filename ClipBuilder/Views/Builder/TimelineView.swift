@@ -629,6 +629,8 @@ struct TimelineClipBlock: View {
             case .down:
                 model.placeClip(clip.uid, startTime: clip.startTime,
                                 track: min(model.document.trackCount - 1, clip.track + 1))
+            @unknown default:
+                break
             }
         }
         .accessibilityElement(children: .ignore)

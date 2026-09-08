@@ -269,6 +269,7 @@ private struct CropEditorLayer: View {
             case .right: nudgeCrop(index: index, dx: 0.02, dy: 0)
             case .up: nudgeCrop(index: index, dx: 0, dy: -0.02)
             case .down: nudgeCrop(index: index, dx: 0, dy: 0.02)
+            @unknown default: break
             }
         }
         .accessibilityElement(children: .ignore)
@@ -427,6 +428,7 @@ private struct ImageOverlayLayer: View {
             case .right: nudge(x: 0.02, y: 0)
             case .up: nudge(x: 0, y: -0.02)
             case .down: nudge(x: 0, y: 0.02)
+            @unknown default: break
             }
         }
         .accessibilityElement(children: .ignore)
@@ -508,6 +510,7 @@ private struct TextOverlayLayer: View {
                 case .right: nudge(x: 0.02, y: 0)
                 case .up: nudge(x: 0, y: -0.02)
                 case .down: nudge(x: 0, y: 0.02)
+                @unknown default: break
                 }
             }
             .accessibilityElement(children: .ignore)

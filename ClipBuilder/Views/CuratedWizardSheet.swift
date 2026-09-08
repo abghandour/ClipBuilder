@@ -1067,7 +1067,7 @@ struct CuratedWizardSheet: View {
                             reelRow(pick, number: index + 1)
                                 .draggable(pick.id.uuidString)
                                 .dropDestination(for: String.self) { items, _ in
-                                    model.movePick(idString: items.first, before: pick.id)
+                                    _ = model.movePick(idString: items.first, before: pick.id)
                                 }
                         }
                     }
@@ -1076,7 +1076,7 @@ struct CuratedWizardSheet: View {
                 }
                 // Dropping past the last row appends.
                 .dropDestination(for: String.self) { items, _ in
-                    model.movePick(idString: items.first, before: nil)
+                    _ = model.movePick(idString: items.first, before: nil)
                 }
             }
         }

@@ -151,14 +151,18 @@ nonisolated enum AssetStore {
 
     @concurrent
     static func foldersAsync(of kind: AssetKind) async -> Set<URL> {
+        folders(of: kind)
+    }
+
+    /// Synchronous walk: `FileManager`'s enumerator cannot be iterated from
+    /// an async context.
+    static func folders(of kind: AssetKind) -> Set<URL> {
         let root = kind.rootURL
-        let entries = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey],
-                                                      options: [.skipsHiddenFiles])
         var folders: Set<URL> = [root]
-        if let entries {
-            for case let url as URL in entries {
-                if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { folders.insert(url) }
-            }
+        guard let entries = FileManager.default.enumerator(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return folders }
+        for case let url as URL in entries {
+            if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { folders.insert(url) }
         }
         return folders
     }
@@ -231,7 +235,7 @@ nonisolated enum AssetStore {
     @concurrent
     private static func refreshFiles(of kind: AssetKind, root: URL, revision: Int) async {
         _ = scanFiles(of: kind, root: root, revision: revision)
-        catalogCache.withLock { $0.refreshing.remove(kind) }
+        catalogCache.withLock { _ = $0.refreshing.remove(kind) }
         AssetCatalogChanges.publish()
     }
 
