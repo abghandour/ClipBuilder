@@ -751,95 +751,22 @@ actor WizardEngine {
 
             """
         }
-        var presetBlock = ""
-        switch options.formatPreset {
-        case "mma-finish":
-            presetBlock = """
+        // Recipes: the same catalog entry feeds the Wizard's picker caption
+        // and this format contract, so the two never drift apart.
+        var presetBlock = ReelRecipe.promptBlock(for: options.formatPreset)
+        // Learned video types: "cat:<key>" injects that category's rubric as
+        // the format contract.
+        if options.formatPreset.hasPrefix("cat:") {
+            let key = String(options.formatPreset.dropFirst(4))
+            if let category = profile.tasteCategories.first(where: { $0.key == key }) {
+                presetBlock = """
 
-            ## FORMAT: MMA FINISH (hard requirements)
-            - Make an 8–15 second finish-first reel. The opening 1–1.5 seconds MUST show the cleanest impact, tap, or immediate reaction; then give only enough lead-in to make the payoff intelligible.
-            - Preserve the referee/crowd/commentator reaction after the finish. Use at most one slow-motion replay, and only for the decisive impact.
-            - Text should be factual and minimal: fighter name, round, or verified finish method only. Never imply a result not in FIGHT OUTCOMES.
+                ## VIDEO TYPE: \(category.label.uppercased()) (learned from the user's Instagram exemplars)
+                This reel must be a \(category.label) video. What a keeper moment looks like for this type:
+                \(category.rubric)
+                STRONGLY prefer scenes tagged "highlight:\(category.key)" — they matched this type's rubric during analysis. Build the reel's arc from moments of this kind.
 
-            """
-        case "mma-submission":
-            presetBlock = """
-
-            ## FORMAT: MMA SUBMISSION SEQUENCE (hard requirements)
-            - Tell a comprehensible technical arc: entry → control/escape attempt → tap or reaction. Do not open on a static hold without an immediate promise in text.
-            - Favor source audio and commentary; use slower, deliberate cuts rather than aggressive transition effects.
-            - Only call a submission/tap when FIGHT OUTCOMES or the analyzed scene explicitly confirms it.
-
-            """
-        case "mma-exchange":
-            presetBlock = """
-
-            ## FORMAT: MMA EXCHANGE (hard requirements)
-            - Build a 12–22 second escalating exchange: pressure → answer/counter → clearest reaction. Include both fighters when possible so the action reads instantly on mute.
-            - Start with the most surprising strike or reaction, then return to the setup. Preserve crowd swell and commentator peak around the payoff.
-            - Use hard cuts as the default; one action transition maximum for the decisive strike.
-
-            """
-        case "mma-technique":
-            presetBlock = """
-
-            ## FORMAT: MMA TECHNIQUE BREAKDOWN (hard requirements)
-            - Make a save-worthy 20–45 second educational reel: show the completed technique first, then a concise setup and the decisive detail.
-            - Use no more than three factual overlays: technique name, setup cue, and key detail. Do not invent technical terminology; use only what is visible or in user instructions.
-            - Prefer clarity, clean framing, and source audio over rapid montage effects.
-
-            """
-        case "recap":
-            presetBlock = """
-
-            ## FORMAT: FIGHT RECAP (hard requirements)
-            - Tell the fight CHRONOLOGICALLY: build through the best exchanges to the finish, and END on the finishing sequence or the hand raise/celebration (tags: knockdown, knockout, submission-attempt, celebration).
-            - Set "headline" to the result (e.g. "MILES JOHNS BEATS GIANNI VAZQUEZ") from the FIGHT OUTCOMES block; use last names when the full line exceeds ~6 words.
-            - Keep per-clip text overlays minimal — the headline carries the story.
-
-            """
-        case "compilation":
-            presetBlock = """
-
-            ## FORMAT: BEST-OF COMPILATION (hard requirements)
-            - Pick the highest-impact moments across ALL available sources; order for escalating impact, best moment last.
-            - Set "intro_title" to a punchy 3-6 word ALL-CAPS compilation title (e.g. "BEST KO & TKO'S").
-            - Label clips from different fights with a short banner overlay naming the fighters (use the person: tags to know who is who).
-
-            """
-        case "interview":
-            presetBlock = """
-
-            ## FORMAT: INTERVIEW CLIP (hard requirements)
-            - Pick coherent SPOKEN segments (interview/talking tags); never cut mid-sentence when the moments/dialog hints show sentence boundaries.
-            - One "lower-third" overlay naming the speaker on their first clip; put their role in "kicker". No other text overlays.
-            - Keep source audio primary: quiet music at most.
-
-            """
-        case "podcast":
-            presetBlock = """
-
-            ## FORMAT: PODCAST HIGHLIGHT (hard requirements)
-            - Every available scene is already a reel-worthy, complete question-and-answer exchange. Choose exactly one scene and keep the entire exchange unless it exceeds the requested target length.
-            - When trimming an overlong exchange, preserve complete sentences; validation snaps every boundary to transcript sentence ends.
-            - Add one "lower-third" overlay for each named speaker's first appearance; keep source audio primary and music quiet or absent.
-
-            """
-        default:
-            // Learned video types: "cat:<key>" injects that category's
-            // rubric as the format contract.
-            if options.formatPreset.hasPrefix("cat:") {
-                let key = String(options.formatPreset.dropFirst(4))
-                if let category = profile.tasteCategories.first(where: { $0.key == key }) {
-                    presetBlock = """
-
-                    ## VIDEO TYPE: \(category.label.uppercased()) (learned from the user's Instagram exemplars)
-                    This reel must be a \(category.label) video. What a keeper moment looks like for this type:
-                    \(category.rubric)
-                    STRONGLY prefer scenes tagged "highlight:\(category.key)" — they matched this type's rubric during analysis. Build the reel's arc from moments of this kind.
-
-                    """
-                }
+                """
             }
         }
         let domain = profile.effectiveDomain
