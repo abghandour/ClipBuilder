@@ -32,16 +32,16 @@ struct MainThreadWatchdogTests {
         // The sample itself takes ~1 s and only starts after the threshold.
         try await Task.sleep(for: .seconds(4))
 
-        let stalls = box.all
-        let stall = try #require(stalls.first)
-        // Measured from the ping, which other suites' main-thread work can
-        // delay into the sleep; the sample threshold is what must be crossed.
+        // Other suites share the main thread, so shorter stalls of theirs can
+        // be reported around ours; the one that crossed the sample threshold
+        // is the one that matters.
+        let stall = try #require(box.all.first { $0.sampleFile != nil })
         #expect(stall.duration >= configuration.sampleThreshold)
         let file = try #require(stall.sampleFile)
         #expect(file.lastPathComponent.hasPrefix("hang-"))
         let text = try String(contentsOf: file, encoding: .utf8)
         #expect(text.contains("Call graph") || text.contains("Thread"))
-        #expect(watchdog.sampleFiles == [file])
+        #expect(watchdog.sampleFiles.contains(file))
     }
 
     @Test("Short stalls below the log threshold are not reported")
