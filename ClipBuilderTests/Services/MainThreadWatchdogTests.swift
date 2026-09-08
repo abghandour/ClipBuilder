@@ -12,6 +12,22 @@ struct MainThreadWatchdogTests {
         var all: [MainThreadWatchdog.Stall] { lock.withLock { stalls } }
     }
 
+    /// A stand-in for `/usr/bin/sample` with the same argument shape
+    /// (pid, seconds, -mayDie, -file, path). The real tool suspends the
+    /// process while it samples, which perturbs every other suite running in
+    /// parallel; the real tool is exercised by launching the app with
+    /// `-ClipBuilderSimulateStall`.
+    private func makeFakeSample(in directory: URL) throws -> String {
+        let script = directory.appendingPathComponent("fake-sample.sh")
+        try """
+        #!/bin/sh
+        sleep 0.3
+        printf 'Call graph (fake sample of pid %s for %ss)\n' "$1" "$2" > "$5"
+        """.write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        return script.path
+    }
+
     @Test("A blocked main thread is sampled while stuck and reported when it returns")
     func samplesAStall() async throws {
         let temp = try TempDirectory(prefix: "Watchdog")
@@ -23,6 +39,7 @@ struct MainThreadWatchdogTests {
         configuration.sampleThreshold = 0.4
         configuration.sampleSeconds = 1
         configuration.minimumSecondsBetweenSamples = 0
+        configuration.samplePath = try makeFakeSample(in: temp.url)
         watchdog.start(directory: temp.url, configuration: configuration) { box.append($0) }
         defer { watchdog.stop() }
 
@@ -40,7 +57,7 @@ struct MainThreadWatchdogTests {
         let file = try #require(stall.sampleFile)
         #expect(file.lastPathComponent.hasPrefix("hang-"))
         let text = try String(contentsOf: file, encoding: .utf8)
-        #expect(text.contains("Call graph") || text.contains("Thread"))
+        #expect(text.contains("Call graph (fake sample of pid \(ProcessInfo.processInfo.processIdentifier) for 1s)"))
         #expect(watchdog.sampleFiles.contains(file))
     }
 
