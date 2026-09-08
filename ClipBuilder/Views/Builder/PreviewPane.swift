@@ -11,9 +11,12 @@ struct PreviewPane: View {
 
     var body: some View {
         let model = store.builder
-        // Snap the preview time to the 0.5s grid so scrubbing reuses cached
-        // thumbnails instead of extracting a frame per pixel.
-        let time = BuilderTimelineModel.snap(model.playhead)
+        // Membership uses the exact playhead so a short bumper cannot be
+        // skipped by thumbnail sampling. Frames still reuse the 0.5s grid.
+        let time = model.playhead
+        let bumper = model.document.videoTrack.filter {
+            $0.bumper && $0.startTime <= time && time < $0.startTime + $0.duration
+        }.sorted { ($0.startTime, $0.track) < ($1.startTime, $1.track) }.last
         // The cropping row decides each track's area at this instant; a
         // track without one shows nothing, exactly like the render.
         let layout = model.document.cropBlock(at: time)?.layout
@@ -26,45 +29,57 @@ struct PreviewPane: View {
             let frame = fittedFrame(in: geo.size)
             ZStack(alignment: .topLeading) {
                 Rectangle().fill(.black)
-                ForEach(active) { clip in
-                    clipLayer(clip: clip, time: time, frame: frame, model: model,
-                              area: layout?.area(forTrack: clip.track))
-                }
-                ForEach(model.document.imageOverlays.filter {
-                    $0.startTime <= time && time < $0.endTime
-                }) { overlay in
-                    ImageOverlayLayer(overlay: overlay, frame: frame)
-                }
-                ForEach(model.document.textOverlays.filter {
-                    $0.startTime <= time && time < $0.endTime
-                }) { overlay in
-                    TextOverlayLayer(overlay: overlay, frame: frame)
-                }
-                if case .clip(let uid) = model.selection,
-                   let selected = active.first(where: { $0.uid == uid }),
-                   selected.freeCrops?.isEmpty == false {
-                    CropEditorLayer(clip: selected, time: time, frame: frame)
-                }
-                // A selected crop block outlines its areas over the still —
-                // the focused track's area in green — so the layout reads
-                // even where a track has no clip yet.
-                if case .crop(let uid) = model.selection,
-                   let block = model.cropBlock(uid),
-                   block.startTime <= time + 0.001, time < block.endTime + 0.001,
-                   let layout {
-                    ForEach(Array(layout.orderedAreas.enumerated()), id: \.offset) { index, area in
-                        ScreenCropPolygon(points: area.points)
-                            .stroke(index == model.highlightedTrack ? Color.green : Color.white.opacity(0.7),
-                                    lineWidth: index == model.highlightedTrack ? 2 : 1)
+                if let bumper {
+                    if let url = model.sourceURL(for: bumper), FileManager.default.fileExists(atPath: url.path) {
+                        VideoThumbnail(url: url, time: model.sourceTime(for: bumper, atTimeline: sampledTime(for: bumper, at: time)),
+                                       cornerRadius: 0, contentMode: .fit)
                             .frame(width: frame.width, height: frame.height)
-                            .allowsHitTesting(false)
+                    } else {
+                        Label("Bumper missing", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                            .frame(width: frame.width, height: frame.height)
                     }
-                }
-                if active.isEmpty {
-                    Image(systemName: "film")
-                        .font(.largeTitle)
-                        .foregroundStyle(.secondary)
-                        .frame(width: frame.width, height: frame.height)
+                } else {
+                    ForEach(active) { clip in
+                        clipLayer(clip: clip, time: time, frame: frame, model: model,
+                                  area: layout?.area(forTrack: clip.track))
+                    }
+                    ForEach(model.document.imageOverlays.filter {
+                        $0.startTime <= time && time < $0.endTime
+                    }) { overlay in
+                        ImageOverlayLayer(overlay: overlay, frame: frame)
+                    }
+                    ForEach(model.document.textOverlays.filter {
+                        $0.startTime <= time && time < $0.endTime
+                    }) { overlay in
+                        TextOverlayLayer(overlay: overlay, frame: frame)
+                    }
+                    if case .clip(let uid) = model.selection,
+                       let selected = active.first(where: { $0.uid == uid }),
+                       selected.freeCrops?.isEmpty == false {
+                        CropEditorLayer(clip: selected, time: time, frame: frame)
+                    }
+                    // A selected crop block outlines its areas over the still —
+                    // the focused track's area in green — so the layout reads
+                    // even where a track has no clip yet.
+                    if case .crop(let uid) = model.selection,
+                       let block = model.cropBlock(uid),
+                       block.startTime <= time + 0.001, time < block.endTime + 0.001,
+                       let layout {
+                        ForEach(Array(layout.orderedAreas.enumerated()), id: \.offset) { index, area in
+                            ScreenCropPolygon(points: area.points)
+                                .stroke(index == model.highlightedTrack ? Color.green : Color.white.opacity(0.7),
+                                        lineWidth: index == model.highlightedTrack ? 2 : 1)
+                                .frame(width: frame.width, height: frame.height)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    if active.isEmpty {
+                        Image(systemName: "film")
+                            .font(.largeTitle)
+                            .foregroundStyle(.secondary)
+                            .frame(width: frame.width, height: frame.height)
+                    }
                 }
             }
             .frame(width: frame.width, height: frame.height)
@@ -72,6 +87,11 @@ struct PreviewPane: View {
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .aspectRatio(store.builder.document.renderSettings.aspectRatio, contentMode: .fit)
+    }
+
+    private func sampledTime(for clip: TimelineClip, at time: Double) -> Double {
+        min(max(clip.startTime, clip.startTime + clip.duration - 1.0 / 30),
+            max(clip.startTime, BuilderTimelineModel.snap(time)))
     }
 
     private func fittedFrame(in size: CGSize) -> CGSize {
@@ -86,7 +106,7 @@ struct PreviewPane: View {
     private func clipLayer(clip: TimelineClip, time: Double, frame: CGSize,
                            model: BuilderTimelineModel, area: ScreenCropArea?) -> some View {
         if let url = model.sourceURL(for: clip) {
-            let sourceTime = model.sourceTime(for: clip, atTimeline: time)
+            let sourceTime = model.sourceTime(for: clip, atTimeline: sampledTime(for: clip, at: time))
             let settings = model.document.trackSettings[safe: clip.track] ?? TrackSettings()
             let cropped = clip.wide && (clip.cropXFrac ?? settings.defaultCropXFrac) != nil
             Group {

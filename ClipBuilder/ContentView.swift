@@ -63,10 +63,12 @@ struct ClipBuilderApp: App {
             CommandGroup(after: .sidebar) {
                 Divider()
                 ForEach(SidebarSection.visibleSections) { section in
-                    Button(section.title) {
-                        store.requestedSection = section
+                    if let shortcut = section.shortcut {
+                        Button(section.title) { store.requestedSection = section }
+                            .keyboardShortcut(shortcut, modifiers: .command)
+                    } else {
+                        Button(section.title) { store.requestedSection = section }
                     }
-                    .keyboardShortcut(section.shortcut ?? "0", modifiers: .command)
                 }
                 Divider()
                 Button("Switch Project…") { store.showProjectsHome() }
@@ -116,6 +118,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case overlays
     case effects
     case screenCrops
+    case bumpers
     case wizard
     case builder
     case library
@@ -130,12 +133,13 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     static let studioSections: [SidebarSection] = [.instagram, .instagramReports]
     /// Every resource library is its own row: one click, one screen, as the
     /// app always had it — a tab strip inside one screen hid them.
-    static let resourceSections: [SidebarSection] = [.music, .fonts, .images, .overlays, .effects, .screenCrops]
+    static let resourceSections: [SidebarSection] = [.music, .fonts, .images, .overlays, .effects, .screenCrops, .bumpers]
     static let visibleSections = projectSections + studioSections + resourceSections
 
-    /// ⌘1–⌘8 matching the visible sidebar's top-to-bottom order.
+    /// Project/studio shortcuts use ⌘1–⌘8; Bumpers uses the remaining ⌘9.
     private var shortcutDigit: Character? {
         switch self {
+        case .bumpers: return "9"
         case .sources: return "1"
         case .scenes: return "2"
         case .wizard: return "3"
@@ -176,6 +180,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .images: return AssetKind.images.title
         case .overlays: return "Overlays"
         case .effects: return "Effects"
+        case .bumpers: return "Bumpers"
         case .screenCrops: return "Screen Crop"
         }
     }
@@ -198,6 +203,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .images: return AssetKind.images.systemImage
         case .overlays: return "character.textbox"
         case .effects: return "sparkles.tv"
+        case .bumpers: return "film.stack"
         case .screenCrops: return "crop"
         }
     }
@@ -218,6 +224,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .images: .images
         case .overlays: .overlays
         case .effects: .effects
+        case .bumpers: .bumpers
         case .screenCrops: .screenCrops
         }
     }

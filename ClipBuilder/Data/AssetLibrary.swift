@@ -12,6 +12,7 @@ nonisolated enum AssetKind: String, CaseIterable, Identifiable, Sendable {
     case music
     case fonts
     case images
+    case bumpers
 
     var id: String { rawValue }
 
@@ -19,6 +20,7 @@ nonisolated enum AssetKind: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .music: return "Music"
         case .fonts: return "Fonts"
+        case .bumpers: return "Bumpers"
         case .images: return "Images"
         }
     }
@@ -27,6 +29,7 @@ nonisolated enum AssetKind: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .music: return "music.note"
         case .fonts: return "textformat"
+        case .bumpers: return "film.stack"
         case .images: return "photo.on.rectangle.angled"
         }
     }
@@ -40,6 +43,7 @@ nonisolated enum AssetKind: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .music: return ["mp3", "m4a", "wav", "aac", "flac"]
         case .fonts: return ["ttf", "otf", "ttc"]
+        case .bumpers: return ["mp4", "mov", "m4v"]
         case .images: return ["png", "jpg", "jpeg", "gif", "heic", "webp", "tiff", "bmp"]
         }
     }
@@ -53,6 +57,7 @@ nonisolated enum AssetKind: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .music: return "Add audio tracks (MP3, M4A, WAV, AAC, FLAC) for the Wizard and Builder to use as background music."
         case .fonts: return "Add font files (TTF, OTF, TTC) to use in captions and text overlays."
+        case .bumpers: return "Add short videos for intros, outros, or mid-roll ads and calls to action. Bumpers always take the full screen."
         case .images: return "Add images (PNG, JPEG, HEIC, …) to keep logos and artwork alongside your footage."
         }
     }
@@ -142,6 +147,20 @@ nonisolated enum AssetStore {
     @concurrent
     static func libraryFontFamiliesAsync() async -> [String] {
         libraryFontFamilies()
+    }
+
+    @concurrent
+    static func foldersAsync(of kind: AssetKind) async -> Set<URL> {
+        let root = kind.rootURL
+        let entries = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey],
+                                                      options: [.skipsHiddenFiles])
+        var folders: Set<URL> = [root]
+        if let entries {
+            for case let url as URL in entries {
+                if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true { folders.insert(url) }
+            }
+        }
+        return folders
     }
 
     static func ensureRoots() {
@@ -298,9 +317,10 @@ nonisolated enum AssetStore {
         return imported
     }
 
-    static func rename(_ item: AssetItem, to newName: String) throws {
+    @discardableResult
+    static func rename(_ item: AssetItem, to newName: String) throws -> URL {
         var name = newName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
+        guard !name.isEmpty else { return item.url }
         // Keep the original extension so a display-name edit can't break the
         // file's type.
         if !item.isFolder, !item.url.pathExtension.isEmpty,
@@ -308,9 +328,10 @@ nonisolated enum AssetStore {
             name += "." + item.url.pathExtension
         }
         let target = item.url.deletingLastPathComponent().appendingPathComponent(name)
-        guard target != item.url else { return }
+        guard target != item.url else { return item.url }
         try FileManager.default.moveItem(at: item.url, to: target)
         invalidateCatalog()
+        return target
     }
 
     static func trash(_ item: AssetItem) throws {

@@ -19,6 +19,9 @@ struct WizardView: View {
     @AppStorage("wizard.podcastFraming") private var podcastFramingRaw = PodcastFramingMode.followSpeaker.rawValue
     @AppStorage(WizardDefaults.layoutModeKey) private var layoutModeRaw = WizardLayoutMode.automatic.rawValue
     @AppStorage(WizardDefaults.selectedLayoutsKey) private var selectedLayoutsRaw = ""
+    @AppStorage("wizard.bumperIntro") private var includeIntroBumper = false
+    @AppStorage("wizard.bumperOutro") private var includeOutroBumper = false
+    @AppStorage("wizard.bumperMiddle") private var includeMiddleBumper = false
     @AppStorage(WizardDefaults.brandingOverrideKey) private var brandingOverrideRaw = WizardBrandingOverride.savedDefault.rawValue
     @AppStorage("wizard.limitToSelection") private var limitToSelection = false
     @AppStorage("wizard.curatedOnly") private var curatedOnly = false
@@ -524,6 +527,13 @@ struct WizardView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Bumpers").font(.headline)
+                    bumperToggle("Include an intro", placement: .intro, value: $includeIntroBumper)
+                    bumperToggle("Include an outro", placement: .outro, value: $includeOutroBumper)
+                    bumperToggle("Include one at random in the middle", placement: .anywhere, value: $includeMiddleBumper)
+                }
+
                 Picker("Branding", selection: brandingOverrideBinding) {
                     ForEach(WizardBrandingOverride.allCases, id: \.self) { option in
                         Text(option.title).tag(option)
@@ -544,6 +554,24 @@ struct WizardView: View {
         .formStyle(.grouped)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             generationBar
+        }
+    }
+
+    private func bumperToggle(_ title: String, placement: BumperPlacement, value: Binding<Bool>) -> some View {
+        let count = store.bumpers.count { $0.placements.contains(placement) }
+        let optionKey: String = switch placement {
+        case .intro: "includeIntroBumper"
+        case .outro: "includeOutroBumper"
+        case .anywhere: "includeMiddleBumper"
+        }
+        return VStack(alignment: .leading, spacing: 2) {
+            Toggle(title, isOn: value).disabled(count == 0)
+                .onChange(of: value.wrappedValue) { _, enabled in
+                    updateCopiedOption(optionKey, .bool(enabled))
+                }
+            Text(count == 0 ? "No bumpers allow this placement. Add one in Resources → Bumpers."
+                 : "\(count) bumper\(count == 1 ? "" : "s") allow this placement.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 
@@ -940,6 +968,9 @@ struct WizardView: View {
         options.includeWatermark = pasted?.includeWatermark ?? branding.includeWatermark
         options.includeHeadline = pasted?.includeHeadline ?? branding.includeHeadline
         options.includeOutro = pasted?.includeOutro ?? branding.includeOutro
+        options.includeIntroBumper = pasted?.includeIntroBumper ?? includeIntroBumper
+        options.includeOutroBumper = pasted?.includeOutroBumper ?? includeOutroBumper
+        options.includeMiddleBumper = pasted?.includeMiddleBumper ?? includeMiddleBumper
         options.selectedRunIDs = limitToSelection ? selectedRunIDs : []
         options.curatedOnly = curatedOnly
 

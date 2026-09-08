@@ -3,7 +3,7 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, curatedOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro
+        case sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, curatedOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper
     }
 
     var sourceSceneSelection = false
@@ -98,6 +98,15 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var includeWatermark = true
     var includeHeadline = true
     var includeOutro = true
+    var includeIntroBumper = false
+    var includeOutroBumper = false
+    var includeMiddleBumper = false
+
+    mutating func readBumperDefaults(_ defaults: UserDefaults = .standard) {
+        includeIntroBumper = defaults.bool(forKey: "wizard.bumperIntro")
+        includeOutroBumper = defaults.bool(forKey: "wizard.bumperOutro")
+        includeMiddleBumper = defaults.bool(forKey: "wizard.bumperMiddle")
+    }
 }
 
 /// A plain-language request ("action-packed 15s, fight footage only, use the
@@ -2817,6 +2826,34 @@ actor WizardEngine {
             throw AIError.notConfigured("No clips could be extracted for this plan")
         }
 
+        var editPlan = plan
+        if !options.enableTextOverlays {
+            for index in editPlan.clips.indices { editPlan.clips[index].textOverlay = nil }
+        }
+        var document = Self.timelineDocument(from: editPlan, sceneMap: sceneMap,
+            renderSettings: options.renderSettings, pacing: options.pacing, podcastFraming: options.podcastFraming)
+        for index in document.videoTrack.indices {
+            document.videoTrack[index].muted = options.muteSource || document.videoTrack[index].muted
+            document.videoTrack[index].captions = options.addCaptions ? "bottom" : "none"
+        }
+        // Brand cards must outlive scratch cleanup so Builder can reopen them.
+        let cards = SettingsStore.cacheDirectory.appendingPathComponent("wizard-cards/" + UUID().uuidString,
+                                                                       isDirectory: true)
+        try FileManager.default.createDirectory(at: cards, withIntermediateDirectories: true)
+        func retainCard(_ url: URL, duration: Double, at time: Double, transition: String?) throws {
+            let retained = cards.appendingPathComponent(url.lastPathComponent)
+            try FileManager.default.copyItem(at: url, to: retained)
+            var clip = TimelineClip()
+            clip.videoFile = retained.path
+            clip.sourceStart = 0
+            clip.sourceEnd = duration
+            clip.duration = duration
+            clip.startTime = time
+            clip.captions = "none"
+            clip.transIn = transition
+            document.videoTrack.append(clip)
+        }
+
         // Brand cards: typographic intro for compilations, branded outro for
         // everything (given brand assets to draw with).
         if options.formatPreset == "compilation", let title = plan.introTitle,
@@ -2826,6 +2863,11 @@ actor WizardEngine {
             try await BrandRenderer.cardClip(png: png, duration: 2.0, output: card)
             clipURLs.insert(card, at: 0)
             clipTransitions.insert("fade", at: 0)
+            BumperPlanner.insertGap(in: &document, at: 0, duration: 2)
+            if let first = document.videoTrack.indices.min(by: { document.videoTrack[$0].startTime < document.videoTrack[$1].startTime }) {
+                document.videoTrack[first].transIn = "fade"
+            }
+            try retainCard(card, duration: 2, at: 0, transition: nil)
             emit("Intro card: \(title)")
         }
         if options.includeOutro,
@@ -2835,13 +2877,49 @@ actor WizardEngine {
             try await BrandRenderer.cardClip(png: png, duration: 2.5, output: card)
             clipTransitions.append("fadeblack")
             clipURLs.append(card)
+            try retainCard(card, duration: 2.5,
+                at: document.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0, transition: "fadeblack")
             emit("Branded outro card appended")
         }
 
+        let bumpers = try await database.bumpers()
+        let bumperLog = BumperPlanner.apply(to: &document, bumpers: bumpers, options: options)
+        bumperLog.forEach(emit)
         emit("Assembling \(clipURLs.count) segments...")
         let assembled = scratch.appendingPathComponent("assembled.mp4")
-        try await render.concatenate(clips: clipURLs, transitions: clipTransitions.map { Optional($0) },
-                                     output: assembled)
+        if !bumperLog.isEmpty {
+            // Ordinary clips already contain their captions/branding/layouts.
+            // Only the raw bumper is added here, using the same exclusive
+            // compositor as Builder. The editable document retains originals.
+            var prepared = TimelineDocument()
+            prepared.renderSettings = options.renderSettings
+            var sourceIndex = 0
+            for clip in document.videoTrack.filter({ $0.track == 0 }).sorted(by: { $0.startTime < $1.startTime }) {
+                if clip.bumper {
+                    prepared.videoTrack.append(clip)
+                } else {
+                    guard sourceIndex < clipURLs.count else { continue }
+                    var normalized = TimelineClip()
+                    normalized.videoFile = clipURLs[sourceIndex].path
+                    normalized.sourceStart = 0
+                    normalized.sourceEnd = clip.duration
+                    normalized.duration = clip.duration
+                    normalized.startTime = clip.startTime
+                    normalized.transIn = clip.transIn
+                    normalized.transOut = clip.transOut
+                    normalized.captions = "none"
+                    prepared.videoTrack.append(normalized)
+                    sourceIndex += 1
+                }
+            }
+            let result = try await MultitrackRenderer(render: render).render(document: prepared, scenes: [],
+                profile: profile, database: database, preview: true, emit: emit)
+            defer { try? FileManager.default.removeItem(at: result.url) }
+            try FileManager.default.copyItemReplacing(at: result.url, to: assembled)
+        } else {
+            try await render.concatenate(clips: clipURLs, transitions: clipTransitions.map { Optional($0) },
+                                         output: assembled)
+        }
 
         let outputURL = try outputFile(profile: profile, plan: plan)
         if let musicName = plan.musicName,
@@ -2863,16 +2941,6 @@ actor WizardEngine {
         // their source ranges and transitions, overlay items with timing,
         // and the music block — so "Open in Builder" can load any wizard
         // video for editing. (Replaces the legacy flat Python format.)
-        var editPlan = plan
-        if !options.enableTextOverlays {
-            // A stray overlay the model emitted anyway wasn't burned in;
-            // keep the document faithful to the rendered video.
-            for index in editPlan.clips.indices { editPlan.clips[index].textOverlay = nil }
-        }
-        let document = Self.timelineDocument(from: editPlan, sceneMap: sceneMap,
-                                             renderSettings: options.renderSettings,
-                                             pacing: options.pacing,
-                                             podcastFraming: options.podcastFraming)
         let timelineJSON = (try? JSONEncoder().encode(document))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 

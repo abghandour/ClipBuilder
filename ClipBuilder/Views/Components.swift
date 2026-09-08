@@ -78,6 +78,7 @@ struct VideoThumbnail: View {
     let url: URL
     let time: Double
     var cornerRadius: CGFloat = 6
+    var contentMode: ContentMode = .fill
 
     @State private var image: NSImage?
     @State private var loadedKey: String?
@@ -97,7 +98,7 @@ struct VideoThumbnail: View {
                     .overlay {
                         Image(nsImage: image)
                             .resizable()
-                            .aspectRatio(contentMode: .fill)
+                            .aspectRatio(contentMode: contentMode)
                     }
             } else {
                 Rectangle()

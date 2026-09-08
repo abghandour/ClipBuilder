@@ -160,6 +160,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     /// Whether some part of the clip falls where its track has no area —
     /// that stretch is not rendered.
     func isOrphaned(_ clip: TimelineClip) -> Bool {
+        if clip.bumper { return false }
         guard !cropBlocks.isEmpty, clip.track > 0 else { return false }
         return cropBlocks.contains { block in
             block.startTime < clip.startTime + clip.duration - 0.001
@@ -465,6 +466,9 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// SwiftUI identity only — never encoded.
     var uid = UUID()
 
+    var bumper: Bool = false
+    /// Snapshot survives deletion or renaming in Resources.
+    var bumperName: String?
     var sceneID: Int64?
     var videoFile: String?
     var sourceStart: Double?      // trim start within the source file
@@ -503,6 +507,19 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// whether the clip is trimmed. Never encoded; refilled on hydration.
     var sceneFullDuration: Double?
 
+    mutating func enforceBumperRules() {
+        guard bumper else { return }
+        sceneID = nil
+        wide = false
+        centerStage = false
+        captions = "none"
+        freeCrops = nil
+        screenCrop = nil
+        areaWindow = nil
+        cropXFrac = nil
+        position = nil
+    }
+
     var effectiveSpeed: Double { speed ?? 1 }
 
     /// Source seconds this clip consumes (screen duration × speed).
@@ -522,6 +539,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case sourceStart = "start"
         case sourceEnd = "end"
         case startTime = "start_time"
+        case bumper, bumperName
         case track, wide, muted, position, volume, captions, duration
         case stackOrder = "stack_order"
         case transIn = "trans_in"
@@ -538,6 +556,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        bumper = try container.decodeIfPresent(Bool.self, forKey: .bumper) ?? false
+        bumperName = try container.decodeIfPresent(String.self, forKey: .bumperName)
         sceneID = try container.decodeIfPresent(Int64.self, forKey: .sceneID)
         videoFile = try container.decodeIfPresent(String.self, forKey: .videoFile)
         sourceStart = try container.decodeIfPresent(Double.self, forKey: .sourceStart)
@@ -569,6 +589,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             // screen for 2 s of source).
             duration = max(0, end - start) / max(0.01, speed ?? 1)
         }
+        enforceBumperRules()
     }
 
     /// Old saves use booleans for captions (true→bottom, false→none) —
@@ -586,6 +607,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(bumper, forKey: .bumper)
+        try container.encodeIfPresent(bumperName, forKey: .bumperName)
         try container.encode("clip", forKey: .type)
         try container.encode(startTime, forKey: .startTime)
         try container.encode(track, forKey: .track)
@@ -625,7 +648,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     }
 
     static func == (lhs: TimelineClip, rhs: TimelineClip) -> Bool {
-        lhs.uid == rhs.uid && lhs.sceneID == rhs.sceneID && lhs.videoFile == rhs.videoFile
+        lhs.uid == rhs.uid && lhs.bumper == rhs.bumper && lhs.bumperName == rhs.bumperName && lhs.sceneID == rhs.sceneID && lhs.videoFile == rhs.videoFile
             && lhs.sourceStart == rhs.sourceStart && lhs.startTime == rhs.startTime
             && lhs.duration == rhs.duration && lhs.track == rhs.track && lhs.wide == rhs.wide
             && lhs.stackOrder == rhs.stackOrder && lhs.volume == rhs.volume && lhs.muted == rhs.muted

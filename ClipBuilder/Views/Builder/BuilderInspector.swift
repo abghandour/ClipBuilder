@@ -113,8 +113,8 @@ struct ClipInspector: View {
                         .foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                    Text(model.scene(for: clip)?.videoFilename
-                         ?? (clip.videoFile as NSString?)?.lastPathComponent ?? "Clip")
+                    Text(clip.bumper ? "Bumper · " + store.bumperDisplayName(for: clip)
+                         : model.scene(for: clip)?.videoFilename ?? (clip.videoFile as NSString?)?.lastPathComponent ?? "Clip")
                         .font(.headline)
                         .lineLimit(1)
                     Text("\(clip.startTime.timecode) · \(String(format: "%.1fs", clip.duration))")
@@ -129,104 +129,107 @@ struct ClipInspector: View {
             }
 
             // Framing — the decision that changes the picture most.
-            InspectorSection("Framing") {
-                if let area {
-                    InspectorRow("Crop area") {
-                        Text(area.name)
-                            .help("Set by the cropping row: this track shows this area while the clip starts")
-                    }
-                    AreaWindowEditor(clip: clip, area: area)
-                } else if model.document.isOrphaned(clip) {
-                    Label("No crop area on this track here — this stretch will not render. Move the clip or change the crop block.",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
-                } else if clip.wide {
-                    InspectorRow("Position") {
-                        Picker("Position", selection: Binding(
-                            get: { clip.position ?? "layer" },
-                            set: { value in
-                                model.updateClip(clip.uid) { $0.position = value == "layer" ? nil : value }
-                            })) {
-                            Text("Track default").tag("layer")
-                            Text("Top").tag("top")
-                            Text("Center").tag("center")
-                            Text("Bottom").tag("bottom")
+            if !clip.bumper {
+                InspectorSection("Framing") {
+                    if let area {
+                        InspectorRow("Crop area") {
+                            Text(area.name)
+                                .help("Set by the cropping row: this track shows this area while the clip starts")
                         }
-                        .labelsHidden()
-                        .help("Where a wide clip sits when it is not cropped to 9:16")
-                    }
-                    InspectorRow("Crop") {
-                        Toggle("Crop to 9:16", isOn: Binding(
-                            get: { clip.cropXFrac != nil },
-                            set: { value in model.updateClip(clip.uid) { $0.cropXFrac = value ? 0.5 : nil } }))
-                    }
-                    if let crop = clip.cropXFrac {
-                        Slider(value: Binding(
-                            get: { crop },
-                            set: { value in model.updateClip(clip.uid) { $0.cropXFrac = value } }),
-                            in: 0...1)
-                            .accessibilityLabel("Wide clip crop position")
-                        cropPreview(fraction: crop)
-                    }
-                    InspectorRow("Camera") {
-                        Toggle(scene?.tags.contains("podcast") == true ? "Follow active speaker" : "Tracking reframe",
-                               isOn: binding(\.centerStage))
-                            .help(scene?.tags.contains("podcast") == true
-                                  ? "Cut the saved crop between speakers after the minimum hold time"
-                                  : "Follow the action with a tracking camera instead of the static crop")
-                    }
-                    if scene?.tags.contains("podcast:split") == true {
-                        Button("Split Zoom Feeds", systemImage: "rectangle.split.2x1") {
-                            let taggedPeople = (scene?.tags ?? []).compactMap { tag -> PersonRecord? in
-                                guard tag.hasPrefix("person:") else { return nil }
-                                return store.people.first { $0.key == String(tag.dropFirst("person:".count)) }
+                        AreaWindowEditor(clip: clip, area: area)
+                    } else if model.document.isOrphaned(clip) {
+                        Label("No crop area on this track here — this stretch will not render. Move the clip or change the crop block.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                    } else if clip.wide {
+                        InspectorRow("Position") {
+                            Picker("Position", selection: Binding(
+                                get: { clip.position ?? "layer" },
+                                set: { value in
+                                    model.updateClip(clip.uid) { $0.position = value == "layer" ? nil : value }
+                                })) {
+                                Text("Track default").tag("layer")
+                                Text("Top").tag("top")
+                                Text("Center").tag("center")
+                                Text("Bottom").tag("bottom")
                             }
-                            guard let video = store.videos.first(where: { $0.id == scene?.videoID }) else { return }
-                            let aspect = Double(video.width) / Double(max(1, video.height))
-                            Task {
-                                let roster = await store.videoPeople(for: video.id)
-                                let left = roster.first { person in
-                                    person.portraitBox.map { $0.x + $0.w / 2 < 0.5 } == true
-                                }?.displayName ?? taggedPeople[safe: 0]?.displayName ?? "Left speaker"
-                                let right = roster.first { person in
-                                    person.portraitBox.map { $0.x + $0.w / 2 >= 0.5 } == true
-                                }?.displayName ?? taggedPeople[safe: 1]?.displayName ?? "Right speaker"
-                                model.splitZoomFeeds(clip.uid, leftName: left, rightName: right,
-                                                     sourceAspect: aspect)
-                            }
+                            .labelsHidden()
+                            .help("Where a wide clip sits when it is not cropped to 9:16")
                         }
-                        .help("Pin each source half into the top and bottom of a 50/50 vertical reel")
+                        InspectorRow("Crop") {
+                            Toggle("Crop to 9:16", isOn: Binding(
+                                get: { clip.cropXFrac != nil },
+                                set: { value in model.updateClip(clip.uid) { $0.cropXFrac = value ? 0.5 : nil } }))
+                        }
+                        if let crop = clip.cropXFrac {
+                            Slider(value: Binding(
+                                get: { crop },
+                                set: { value in model.updateClip(clip.uid) { $0.cropXFrac = value } }),
+                                in: 0...1)
+                                .accessibilityLabel("Wide clip crop position")
+                            cropPreview(fraction: crop)
+                        }
+                        InspectorRow("Camera") {
+                            Toggle(scene?.tags.contains("podcast") == true ? "Follow active speaker" : "Tracking reframe",
+                                   isOn: binding(\.centerStage))
+                                .help(scene?.tags.contains("podcast") == true
+                                      ? "Cut the saved crop between speakers after the minimum hold time"
+                                      : "Follow the action with a tracking camera instead of the static crop")
+                        }
+                        if scene?.tags.contains("podcast:split") == true {
+                            Button("Split Zoom Feeds", systemImage: "rectangle.split.2x1") {
+                                let taggedPeople = (scene?.tags ?? []).compactMap { tag -> PersonRecord? in
+                                    guard tag.hasPrefix("person:") else { return nil }
+                                    return store.people.first { $0.key == String(tag.dropFirst("person:".count)) }
+                                }
+                                guard let video = store.videos.first(where: { $0.id == scene?.videoID }) else { return }
+                                let aspect = Double(video.width) / Double(max(1, video.height))
+                                Task {
+                                    let roster = await store.videoPeople(for: video.id)
+                                    let left = roster.first { person in
+                                        person.portraitBox.map { $0.x + $0.w / 2 < 0.5 } == true
+                                    }?.displayName ?? taggedPeople[safe: 0]?.displayName ?? "Left speaker"
+                                    let right = roster.first { person in
+                                        person.portraitBox.map { $0.x + $0.w / 2 >= 0.5 } == true
+                                    }?.displayName ?? taggedPeople[safe: 1]?.displayName ?? "Right speaker"
+                                    model.splitZoomFeeds(clip.uid, leftName: left, rightName: right,
+                                                         sourceAspect: aspect)
+                                }
+                            }
+                            .help("Pin each source half into the top and bottom of a 50/50 vertical reel")
+                        }
+                    } else {
+                        Text("Full screen. Portrait clips fill the frame as they are.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                } else {
-                    Text("Full screen. Portrait clips fill the frame as they are.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+
+                    // Custom crop rectangles predate the cropping row and
+                    // bypass it in the renderer; older timelines can still
+                    // carry them, so they stay removable but cannot be added.
+                    if let crops = clip.freeCrops, !crops.isEmpty {
+                        Label("Custom crops (legacy) — these override the crop area.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.yellow)
+                        ForEach(crops.indices, id: \.self) { index in
+                            HStack {
+                                Image(systemName: "crop")
+                                    .foregroundStyle(.secondary)
+                                Text("Crop \(index + 1)")
+                                Spacer()
+                                Button("Remove Crop", systemImage: "trash") { removeCrop(at: index) }
+                                    .labelStyle(.iconOnly)
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.secondary)
+                                    .help("Remove Crop \(index + 1)")
+                            }
+                            .font(.caption)
+                        }
+                    }
                 }
 
-                // Custom crop rectangles predate the cropping row and
-                // bypass it in the renderer; older timelines can still
-                // carry them, so they stay removable but cannot be added.
-                if let crops = clip.freeCrops, !crops.isEmpty {
-                    Label("Custom crops (legacy) — these override the crop area.",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.yellow)
-                    ForEach(crops.indices, id: \.self) { index in
-                        HStack {
-                            Image(systemName: "crop")
-                                .foregroundStyle(.secondary)
-                            Text("Crop \(index + 1)")
-                            Spacer()
-                            Button("Remove Crop", systemImage: "trash") { removeCrop(at: index) }
-                                .labelStyle(.iconOnly)
-                                .buttonStyle(.plain)
-                                .foregroundStyle(.secondary)
-                                .help("Remove Crop \(index + 1)")
-                        }
-                        .font(.caption)
-                    }
-                }
             }
 
             InspectorSection("Sound") {
@@ -293,6 +296,7 @@ struct ClipInspector: View {
                     }
                     .labelsHidden()
                     .help("Inherit uses the track's caption setting")
+                    .disabled(clip.bumper)
                 }
             }
 

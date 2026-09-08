@@ -5,7 +5,7 @@ import Foundation
 /// Actor isolation keeps restore/touch/eviction atomic within this process.
 actor RenderSegmentCache {
     static let shared = RenderSegmentCache()
-    nonisolated static let rendererVersion = "multitrack-segment-v1"
+    nonisolated static let rendererVersion = "multitrack-segment-v2"
     private let root: URL?
     private let byteLimit: Int64
 

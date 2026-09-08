@@ -24,6 +24,9 @@ actor MultitrackRenderer {
         var duration: Double
         var track: Int
         var wide: Bool
+        var bumper: Bool = false
+        var missingBumper: Bool = false
+        var volume: Int = 5
         var centerStage: Bool = false
         var muted: Bool
         var transIn: String?
@@ -65,6 +68,8 @@ actor MultitrackRenderer {
         var sourceStart: Double
         var sourceDur: Double
         var isWide: Bool
+        var bumper: Bool = false
+        var volume: Int = 5
         var layer: Int
         var position: String
         var muted: Bool
@@ -118,9 +123,14 @@ actor MultitrackRenderer {
                                   centerStageCamera: String, projectID: Int64?, preview: Bool,
                                   emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         // Overlay blocks render as their flattened text/image items.
-        let document = document.expandingOverlayBlocks()
+        let document = Self.removingMissingEdgeBumpers(document.expandingOverlayBlocks(), emit: emit)
+        var bumperSpans = document.videoTrack.filter(\.bumper).map { $0.startTime..<($0.startTime + $0.duration) }
         var clips = Self.resolveClips(document: document, scenes: scenes)
         for index in clips.indices {
+            if clips[index].bumper && !FileManager.default.fileExists(atPath: clips[index].sourcePath) {
+                clips[index].missingBumper = true
+                continue
+            }
             clips[index].originalSourcePath = clips[index].sourcePath
             clips[index].sourceFingerprint = try SourceIdentityCache.shared.fingerprint(
                 of: URL(fileURLWithPath: clips[index].sourcePath))
@@ -295,7 +305,12 @@ actor MultitrackRenderer {
         for (index, segment) in fullSegments.enumerated() {
             clipPaths.append(artifacts[index].url)
             guard clipPaths.count > 1 else { continue }
-            transitions.append(segment.clips.isEmpty ? nil : segment.clips.first?.transIn)
+            let incoming = segment.clips.first
+            let outgoing = fullSegments[index - 1].clips.first
+            let entry = incoming.flatMap { abs($0.startTime - segment.start) < 0.001 ? $0.transIn : nil }
+            let exit = outgoing.flatMap { abs($0.startTime + $0.duration - segment.start) < 0.001 ? $0.transOut : nil }
+            transitions.append(incoming?.bumper == true || outgoing?.bumper == true
+                ? entry ?? exit : incoming?.transIn)
         }
 
         guard !clipPaths.isEmpty else {
@@ -311,6 +326,9 @@ actor MultitrackRenderer {
         var assembled = scratch.appendingPathComponent("assembled.mp4")
         if clipPaths.count == 1 {
             assembled = clipPaths[0]
+        } else if !bumperSpans.isEmpty {
+            bumperSpans = try await concatenateWithBumpers(paths: clipPaths, segments: fullSegments,
+                transitions: transitions, scratch: scratch, output: assembled)
         } else {
             try await render.concatenate(clips: clipPaths, transitions: transitions, output: assembled)
         }
@@ -364,7 +382,7 @@ actor MultitrackRenderer {
             emit("Burning \(remainingOverlays.count) overlay(s)…")
             let withText = scratch.appendingPathComponent("with_overlays.mp4")
             do {
-                try await addOverlays(video: assembled, overlays: remainingOverlays, output: withText)
+                try await addOverlays(video: assembled, overlays: remainingOverlays, excluding: bumperSpans, output: withText)
                 assembled = withText
             } catch {
                 try Task.checkCancellation()
@@ -404,6 +422,148 @@ actor MultitrackRenderer {
         return RenderResult(url: outputURL, duration: finalDuration)
     }
 
+    /// Join ordinary runs normally, then join each bumper boundary while
+    /// measuring the resulting clock. This accounts for recipe bridges and
+    /// hard-cut fallbacks as well as successful crossfades; final overlays
+    /// must never use an estimated, pre-transition bumper position.
+    private func concatenateWithBumpers(paths: [URL], segments: [Segment], transitions: [String?],
+                                        scratch: URL, output: URL) async throws -> [Range<Double>] {
+        var runs: [Range<Int>] = []
+        var start = 0
+        for index in 1..<segments.count {
+            let previous = segments[index - 1].clips.first
+            let current = segments[index].clips.first
+            let sameBumper = previous?.bumper == true && current?.bumper == true
+                && previous?.sourcePath == current?.sourcePath && previous?.startTime == current?.startTime
+            if !sameBumper && (previous?.bumper == true || current?.bumper == true) {
+                runs.append(start..<index)
+                start = index
+            }
+        }
+        runs.append(start..<segments.count)
+        var assembled: URL?
+        var elapsed = 0.0
+        var spans: [Range<Double>] = []
+        for (index, run) in runs.enumerated() {
+            let part = scratch.appendingPathComponent("bumper_run_\(index).mp4")
+            try await render.concatenate(clips: Array(paths[run]),
+                transitions: run.count > 1 ? Array(transitions[run.lowerBound..<(run.upperBound - 1)]) : [], output: part)
+            let duration = await FFmpeg.duration(of: part)
+            let isBumper = segments[run.lowerBound].clips.first?.bumper == true
+            if let previous = assembled {
+                let joined = scratch.appendingPathComponent("bumper_join_\(index).mp4")
+                let outgoingDuration = segments[run.lowerBound - 1].duration
+                let incomingDuration = segments[run.lowerBound].duration
+                var transition = transitions[safe: run.lowerBound - 1] ?? nil
+                if let name = transition, TransitionRecipes.isRecipe(name) {
+                    let (tail, head) = TransitionRecipes.pieces(for: name)
+                    if outgoingDuration - tail < 0.4 || incomingDuration - head < 0.4 { transition = nil }
+                }
+                // Grouping must not let a short adjacent clip borrow the
+                // whole preceding run's duration for a longer crossfade.
+                try await render.concatenate(clips: [previous, part], transitions: [transition], output: joined,
+                    maximumOverlap: min(outgoingDuration, incomingDuration) * 0.4)
+                let measured = await FFmpeg.duration(of: joined)
+                let overlap = max(0, elapsed + duration - measured)
+                let pieces = transition.map { TransitionRecipes.pieces(for: $0) } ?? (0.0, 0.0)
+                if isBumper { spans.append(max(0, elapsed - max(overlap, pieces.0))..<measured) }
+                if segments[run.lowerBound - 1].clips.first?.bumper == true, let last = spans.indices.last,
+                   !isBumper {
+                    spans[last] = spans[last].lowerBound..<min(measured, elapsed + max(0, pieces.1 - overlap))
+                }
+                elapsed = measured
+                assembled = joined
+            } else {
+                assembled = part
+                elapsed = duration
+                if isBumper { spans.append(0..<duration) }
+            }
+        }
+        if let assembled { try FileManager.default.copyItemReplacing(at: assembled, to: output) }
+        return spans
+    }
+
+    /// Missing interior bumpers remain exclusive black spans. Only an
+    /// uncovered leading/trailing edge is removed, keeping interior timing.
+    nonisolated static func removingMissingEdgeBumpers(_ input: TimelineDocument,
+        exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
+        emit: (String) -> Void = { _ in }) -> TimelineDocument {
+        var document = input
+        let missing = input.videoTrack.filter { $0.bumper && !exists($0.videoFile ?? "") }
+        var logged: Set<String> = []
+        for clip in missing where logged.insert(clip.videoFile ?? clip.uid.uuidString).inserted {
+            let name = clip.bumperName ?? URL(fileURLWithPath: clip.videoFile ?? "Bumper").deletingPathExtension().lastPathComponent
+            emit("Bumper '\(name)' is missing; skipped")
+        }
+        guard !missing.isEmpty else { return input }
+        let missingIDs = Set(missing.map(\.uid))
+        let live = input.videoTrack.filter { !missingIDs.contains($0.uid) }
+        let end = input.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0
+        let firstLive = live.map(\.startTime).min() ?? end
+        let lastLive = live.map { $0.startTime + $0.duration }.max() ?? 0
+        var lower = 0.0
+        for clip in missing.sorted(by: { $0.startTime < $1.startTime }) {
+            if clip.startTime <= lower + 0.001 {
+                lower = min(firstLive, max(lower, clip.startTime + clip.duration))
+            }
+        }
+        var upper = end
+        for clip in missing.sorted(by: { $0.startTime > $1.startTime }) {
+            if clip.startTime + clip.duration >= upper - 0.001 {
+                upper = max(lastLive, min(upper, clip.startTime))
+            }
+        }
+        upper = max(lower, upper)
+        document.videoTrack = input.videoTrack.compactMap { item in
+            let start = max(lower, item.startTime)
+            let stop = min(upper, item.startTime + item.duration)
+            guard stop > start else { return nil }
+            var clip = item
+            clip.sourceStart = (item.sourceStart ?? 0) + (start - item.startTime) * item.effectiveSpeed
+            clip.startTime = start - lower
+            clip.duration = stop - start
+            return clip
+        }
+        document.soundTrack = input.soundTrack.compactMap { item in
+            let start = max(lower, item.startTime), stop = min(upper, item.startTime + item.duration)
+            guard stop > start else { return nil }
+            var item = item
+            item.startTime = start - lower
+            item.duration = stop - start
+            return item
+        }
+        document.textOverlays = input.textOverlays.compactMap { item in
+            let start = max(lower, item.startTime), stop = min(upper, item.endTime)
+            guard stop > start else { return nil }
+            var item = item
+            item.startTime = start - lower
+            item.endTime = stop - lower
+            return item
+        }
+        document.imageOverlays = input.imageOverlays.compactMap { item in
+            let start = max(lower, item.startTime), stop = min(upper, item.endTime)
+            guard stop > start else { return nil }
+            var item = item
+            item.startTime = start - lower
+            item.endTime = stop - lower
+            return item
+        }
+        document.overlayBlocks = input.overlayBlocks.compactMap { item in
+            let start = max(lower, item.startTime), stop = min(upper, item.endTime)
+            guard stop > start else { return nil }
+            var item = item
+            item.startTime = start - lower
+            item.duration = stop - start
+            return item
+        }
+        document.cropBlocks = input.cropBlocks.compactMap { item in
+            let start = max(lower, item.startTime), stop = min(upper, item.endTime)
+            guard stop > start else { return nil }
+            return CropBlockItem(layout: item.layout, startTime: start - lower, duration: stop - start)
+        }
+        return document
+    }
+
     // MARK: - Clip resolution
 
     /// Port of the resolve/effective-settings pass in _generate_multitrack.
@@ -413,7 +573,8 @@ actor MultitrackRenderer {
         let settings = document.trackSettings
         var resolved: [ResolvedClip] = []
 
-        for clip in document.videoTrack {
+        for var clip in document.videoTrack {
+            clip.enforceBumperRules()
             var sourcePath: String?
             var videoID: Int64?
             var sourceStart = 0.0
@@ -445,7 +606,7 @@ actor MultitrackRenderer {
             let track = min(max(0, clip.track), TimelineDocument.maxTracks - 1)
             let trackSettings = settings[safe: track] ?? TrackSettings()
             let effectivePosition = clip.position ?? trackSettings.defaultPosition
-            let effectiveCrop = clip.cropXFrac ?? trackSettings.defaultCropXFrac
+            let effectiveCrop = clip.bumper ? nil : clip.cropXFrac ?? trackSettings.defaultCropXFrac
             let muted = clip.muted || trackSettings.muted
             let captionsResolved = clip.captions == "inherit" ? trackSettings.captions : clip.captions
 
@@ -456,6 +617,8 @@ actor MultitrackRenderer {
                                          duration: duration,
                                          track: track,
                                          wide: clip.wide,
+                                         bumper: clip.bumper,
+                                         volume: clip.volume,
                                          centerStage: clip.centerStage && clip.wide,
                                          muted: muted,
                                          transIn: clip.transIn,
@@ -485,6 +648,7 @@ actor MultitrackRenderer {
         guard !blocks.isEmpty else { return clips }
         var pieces: [ResolvedClip] = []
         for clip in clips {
+            if clip.bumper { pieces.append(clip); continue }
             let clipEnd = clip.startTime + clip.duration
             var cursor = clip.startTime
             var covering = blocks.filter { $0.startTime < clipEnd - 0.001 && cursor < $0.endTime - 0.001 }
@@ -539,7 +703,12 @@ actor MultitrackRenderer {
                 $0.startTime <= start + 0.001 && $0.startTime + $0.duration >= end - 0.001
             }
             if !active.isEmpty {
-                segments.append(Segment(start: start, end: end, clips: active))
+                // A bumper owns the canvas regardless of track, layout, or
+                // other clips. Later-starting bumpers win deterministically.
+                let winner = active.filter(\.bumper).sorted {
+                    ($0.startTime, $0.track) < ($1.startTime, $1.track)
+                }.last
+                segments.append(Segment(start: start, end: end, clips: winner.map { [$0] } ?? active))
             }
         }
         return segments
@@ -591,7 +760,7 @@ actor MultitrackRenderer {
                                emit: @escaping @Sendable (String) -> Void) async throws -> SegmentArtifact {
         let timing = PerfSignpost.begin("SegmentEncode", metadata: "segment=\(index)/\(total)")
         defer { PerfSignpost.end(timing) }
-        if segment.clips.isEmpty {
+        if segment.clips.isEmpty || segment.clips.allSatisfy(\.missingBumper) {
             emit("Segment \(index + 1)/\(total): gap (\(String(format: "%.1fs", segment.duration)))")
             let gapPath = scratch.appendingPathComponent(String(format: "gap%03d.mp4", index))
             let input = RenderSegmentKey(start: segment.start, duration: segment.duration, clips: [],
@@ -618,6 +787,7 @@ actor MultitrackRenderer {
                                         sourceStart: clip.sourceStart + clipOffset,
                                         sourceDur: segment.duration * clip.speed,
                                         isWide: clip.wide,
+                                        bumper: clip.bumper, volume: clip.volume,
                                         layer: clip.track,
                                         position: clip.effectivePosition,
                                         muted: clip.muted,
@@ -836,6 +1006,8 @@ actor MultitrackRenderer {
                                       sourceIndex, pts, aspect, aspect, fraction, Self.width, Self.height,
                                       Self.width, Self.height, index))
             } else {
+                // Bumpers deliberately use fit, with black padding: no
+                // content (including text baked into the video) is cropped.
                 let targetHeight = placement.isWide ? Self.slotHeight : Self.height
                 filters.append(String(format: "[%d:v]%@," +
                                       "scale=%d:%d:force_original_aspect_ratio=decrease," +
@@ -906,7 +1078,8 @@ actor MultitrackRenderer {
             guard await FFmpeg.hasAudioStream(URL(fileURLWithPath: placement.sourcePath)) else { continue }
             let tempo = placement.speed == 1 ? ""
                 : String(format: "atempo=%.4f,", min(2, max(0.5, placement.speed)))
-            filters.append("[\(index + 2):a]\(tempo)asetpts=PTS-STARTPTS[a\(index)]")
+            let gain = placement.bumper ? String(format: "volume=%.3f,", Double(min(5, max(0, placement.volume))) / 5) : ""
+            filters.append("[\(index + 2):a]\(tempo)\(gain)asetpts=PTS-STARTPTS[a\(index)]")
             audioLabels.append("[a\(index)]")
         }
         let audioSource: String
@@ -1047,6 +1220,15 @@ actor MultitrackRenderer {
     nonisolated static func partitionOverlays(_ overlays: [TimedOverlayPNG], segments: [Segment]) -> OverlayPlan {
         var plan = OverlayPlan()
         for overlay in overlays {
+            // An intersecting overlay stays in the final pass, where its
+            // visible windows are split around every bumper (including black
+            // placeholders for missing mid-roll files).
+            if segments.contains(where: { segment in
+                segment.clips.contains(where: \.bumper) && overlay.startTime < segment.end && overlay.endTime > segment.start
+            }) {
+                plan.remaining.append(overlay)
+                continue
+            }
             var elapsed = 0.0
             var destination: Int?
             for (index, segment) in segments.enumerated() {
@@ -1060,7 +1242,7 @@ actor MultitrackRenderer {
                     let tail = TransitionRecipes.isRecipe(transition) ? TransitionRecipes.pieces(for: transition).0 : 0
                     safeEnd -= max(segment.duration * 0.4, tail)
                 }
-                if !segment.clips.isEmpty, overlay.startTime >= segment.start,
+                if !segment.clips.isEmpty, !segment.clips.contains(where: \.bumper), overlay.startTime >= segment.start,
                    overlay.endTime < safeEnd || (index == segments.count - 1 && overlay.endTime <= safeEnd) {
                     destination = index
                     break
@@ -1083,11 +1265,41 @@ actor MultitrackRenderer {
         return plan
     }
 
+    /// Half-open visibility windows prevent an overlay from leaking onto
+    /// the first bumper frame. Keep animations only at the original edges.
+    nonisolated static func overlayWindows(_ overlays: [TimedOverlayPNG],
+                                           excluding spans: [Range<Double>]) -> [TimedOverlayPNG] {
+        overlays.flatMap { overlay in
+            var windows = [overlay]
+            for span in spans.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+                windows = windows.flatMap { item -> [TimedOverlayPNG] in
+                    guard item.startTime < span.upperBound, item.endTime > span.lowerBound else { return [item] }
+                    var result: [TimedOverlayPNG] = []
+                    if item.startTime < span.lowerBound {
+                        var head = item
+                        head.endTime = span.lowerBound
+                        head.transOut = "none"
+                        result.append(head)
+                    }
+                    if item.endTime > span.upperBound {
+                        var tail = item
+                        tail.startTime = span.upperBound
+                        tail.transIn = "none"
+                        result.append(tail)
+                    }
+                    return result
+                }
+            }
+            return windows
+        }
+    }
+
     /// Port of video.py add_multiple_text_overlays(): loop each pre-rendered
     /// full-frame PNG as an input and composite with fade/slide expressions
     /// inside its enable window.
     private func addOverlays(video: URL, overlays: [TimedOverlayPNG],
-                             output: URL) async throws {
+                             excluding bumperSpans: [Range<Double>] = [], output: URL) async throws {
+        let overlays = Self.overlayWindows(overlays, excluding: bumperSpans)
         let timing = PerfSignpost.begin("OverlayBurn", metadata: "overlays=\(overlays.count)")
         defer { PerfSignpost.end(timing) }
         let videoDuration = await FFmpeg.duration(of: video)
@@ -1166,10 +1378,10 @@ actor MultitrackRenderer {
                 if enterX == "0" && exitX == "0" { xExpr = "0" }
                 if enterY == "0" && exitY == "0" { yExpr = "0" }
                 filters.append("\(previous)\(current)overlay=x='\(xExpr)':y='\(yExpr)':" +
-                               String(format: "enable='between(t,%.3f,%.3f)'", start, end) + outLabel)
+                               String(format: "enable='gte(t,%.3f)*lt(t,%.3f)'", start, end) + outLabel)
             } else {
                 filters.append("\(previous)\(current)overlay=0:0:" +
-                               String(format: "enable='between(t,%.3f,%.3f)':shortest=0", start, end) + outLabel)
+                               String(format: "enable='gte(t,%.3f)*lt(t,%.3f)':shortest=0", start, end) + outLabel)
             }
             previous = outLabel
         }

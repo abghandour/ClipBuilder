@@ -6,6 +6,7 @@ nonisolated enum ResourceCategory: String, CaseIterable, Identifiable, Codable, 
     case music
     case fonts
     case images
+    case bumpers
     case overlays
     case screenCrops = "screen_crops"
     case profiles
@@ -17,6 +18,7 @@ nonisolated enum ResourceCategory: String, CaseIterable, Identifiable, Codable, 
         switch self {
         case .music: "Music"
         case .fonts: "Fonts"
+        case .bumpers: "Bumpers"
         case .images: "Images"
         case .overlays: "Overlay templates"
         case .screenCrops: "Screen crop layouts"
@@ -29,6 +31,7 @@ nonisolated enum ResourceCategory: String, CaseIterable, Identifiable, Codable, 
         switch self {
         case .music: "music.note"
         case .fonts: "textformat"
+        case .bumpers: "film.stack"
         case .images: "photo.on.rectangle.angled"
         case .overlays: "square.2.layers.3d"
         case .screenCrops: "crop"
@@ -45,6 +48,7 @@ nonisolated enum ResourceCategory: String, CaseIterable, Identifiable, Codable, 
         switch self {
         case .music: AssetKind.music.rootURL
         case .fonts: AssetKind.fonts.rootURL
+        case .bumpers: AssetKind.bumpers.rootURL
         case .images: AssetKind.images.rootURL
         case .overlays: OverlayTemplateStore.directory
         case .screenCrops: ScreenCropStore.directory
@@ -57,6 +61,7 @@ nonisolated enum ResourceCategory: String, CaseIterable, Identifiable, Codable, 
         switch self {
         case .music: AssetKind.music.allowedExtensions
         case .fonts: AssetKind.fonts.allowedExtensions
+        case .bumpers: AssetKind.bumpers.allowedExtensions
         case .images: AssetKind.images.allowedExtensions
         case .overlays, .screenCrops, .profiles: ["json"]
         case .preferences: nil
@@ -129,6 +134,7 @@ nonisolated struct ResourceImportSummary: Sendable {
     var fontsChanged = false
     var profilesChanged = false
     var screenCropsChanged = false
+    var bumperMetadata: [LibraryAssetMetadata] = []
 
     var message: String {
         var parts: [String] = []
@@ -233,6 +239,7 @@ nonisolated enum ResourceBundle {
     // MARK: - Export
 
     static func export(categories: Set<ResourceCategory>, to destination: URL,
+                       bumperMetadata: [LibraryAssetMetadata] = [],
                        progress: @escaping @Sendable (String) -> Void) throws {
         let staging = FileManager.default.temporaryDirectory
             .appendingPathComponent("cb_export_\(UUID().uuidString)", isDirectory: true)
@@ -247,7 +254,7 @@ nonisolated enum ResourceBundle {
             let folder = root.appendingPathComponent(category.folderName, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             switch category {
-            case .music, .fonts, .images, .screenCrops:
+            case .music, .fonts, .images, .bumpers, .screenCrops:
                 let items = files(in: category.localRoot!, category: category)
                 for item in items {
                     let target = folder.appendingPathComponent(item.relativePath)
@@ -255,6 +262,17 @@ nonisolated enum ResourceBundle {
                                                             withIntermediateDirectories: true)
                     try FileManager.default.copyItem(at: category.localRoot!.appendingPathComponent(item.relativePath),
                                                      to: target)
+                }
+                if category == .bumpers {
+                    let root = AssetKind.bumpers.rootURL.resolvingSymlinksInPath().path + "/"
+                    let rows = bumperMetadata.compactMap { row -> LibraryAssetMetadata? in
+                        let path = URL(fileURLWithPath: row.path).resolvingSymlinksInPath().path
+                        guard path.hasPrefix(root) else { return nil }
+                        var copy = row
+                        copy.path = String(path.dropFirst(root.count))
+                        return copy
+                    }
+                    try JSONEncoder().encode(rows).write(to: folder.appendingPathComponent("_metadata.json"))
                 }
                 counts[category.rawValue] = items.count
             case .overlays:
@@ -416,13 +434,24 @@ nonisolated enum ResourceBundle {
                     UserDefaults.standard.set(value, forKey: key)
                     summary.preferencesApplied += 1
                 }
-            case .music, .fonts, .images, .screenCrops:
+            case .music, .fonts, .images, .bumpers, .screenCrops:
                 let local = category.localRoot!
                 try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
                 for item in preview.items[category] ?? [] {
                     let source = folder.appendingPathComponent(item.relativePath)
                     let target = local.appendingPathComponent(item.relativePath)
+                    let final = resolvedTarget(for: target, policy: policy)
                     try place(source, at: target, policy: policy, summary: &summary)
+                    if category == .bumpers, let final {
+                        let data = try? Data(contentsOf: folder.appendingPathComponent("_metadata.json"))
+                        let rows = data.flatMap { try? JSONDecoder().decode([LibraryAssetMetadata].self, from: $0) } ?? []
+                        var metadata = rows.first { $0.path == item.relativePath }
+                            ?? LibraryAssetMetadata(path: item.relativePath, kind: AssetKind.bumpers.rawValue,
+                                                    isBRoll: false, subjects: [], tags: [], provider: nil, model: nil)
+                        metadata.path = final.path
+                        metadata.kind = AssetKind.bumpers.rawValue
+                        summary.bumperMetadata.append(metadata)
+                    }
                 }
                 if category == .fonts { summary.fontsChanged = true }
                 if category == .screenCrops { summary.screenCropsChanged = true }

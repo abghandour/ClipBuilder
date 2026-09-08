@@ -15,6 +15,19 @@ struct BuilderAddMenu: View {
             }
             .disabled(store.scenes.isEmpty)
 
+            Menu("Bumper", systemImage: "film.stack") {
+                if store.bumpers.isEmpty {
+                    Text("Add short videos under Resources > Bumpers")
+                } else {
+                    ForEach(store.bumpers) { bumper in
+                        Button(bumper.displayName) { store.builder.addBumper(bumper) }
+                            .disabled(bumper.duration == nil)
+                    }
+                }
+            }
+            .disabled(store.bumpers.isEmpty)
+            .help(store.bumpers.isEmpty ? "Add short videos under Resources > Bumpers" : "Insert a bumper at the playhead")
+
             Menu("Music", systemImage: "music.note") {
                 let music = WizardEngine.availableMusic()
                 if music.isEmpty {

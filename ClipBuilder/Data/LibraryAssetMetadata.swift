@@ -8,6 +8,8 @@ nonisolated struct LibraryAssetMetadata: Identifiable, Codable, Sendable, Hashab
     var tags: [String]
     var provider: String?
     var model: String?
+    var displayName: String? = nil
+    var placements: [String]? = nil
 
     var id: String { path }
 }

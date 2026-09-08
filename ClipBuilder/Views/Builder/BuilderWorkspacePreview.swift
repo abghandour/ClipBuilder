@@ -55,6 +55,9 @@ struct BuilderWorkspacePreview: View {
     /// never covers crop rectangles.
     private var isCropEditing: Bool {
         let model = store.builder
+        if model.document.videoTrack.contains(where: {
+            $0.bumper && $0.startTime <= model.playhead && model.playhead < $0.startTime + $0.duration
+        }) { return false }
         if case .clip(let uid) = model.selection,
            let clip = model.clip(uid), clip.freeCrops?.isEmpty == false {
             return true

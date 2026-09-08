@@ -14,7 +14,12 @@ final class AssetCatalogChanges {
         }
     }
 
+    static let notification = Notification.Name("AssetCatalogChanges")
+
     nonisolated static func publish() {
-        Task { @MainActor in shared.revision &+= 1 }
+        Task { @MainActor in
+            shared.revision &+= 1
+            NotificationCenter.default.post(name: notification, object: nil)
+        }
     }
 }

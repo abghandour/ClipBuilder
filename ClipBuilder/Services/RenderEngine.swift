@@ -493,7 +493,8 @@ actor RenderEngine {
     /// rest groups consecutive xfade-joined clips, xfades within each group,
     /// then plain-concats the groups. Falls back to the concat demuxer on
     /// degenerate durations.
-    func concatenate(clips: [URL], transitions: [String?], output: URL) async throws {
+    func concatenate(clips: [URL], transitions: [String?], output: URL,
+                     maximumOverlap: Double? = nil) async throws {
         let timing = PerfSignpost.begin("Assembly", metadata: "clips=\(clips.count)")
         defer { PerfSignpost.end(timing) }
         guard !clips.isEmpty else { return }
@@ -523,7 +524,7 @@ actor RenderEngine {
         }
         if padded.allSatisfy({ $0 != nil }) {
             do {
-                try await xfadeAll(clips: clips, transitions: padded.compactMap { $0 }, output: output)
+                try await xfadeAll(clips: clips, transitions: padded.compactMap { $0 }, output: output, maximumOverlap: maximumOverlap)
             } catch {
                 try await concatPlain(clips: clips, output: output)
             }
@@ -555,7 +556,7 @@ actor RenderEngine {
             } else {
                 let groupOutput = scratch.appendingPathComponent("group_\(index).mp4")
                 do {
-                    try await xfadeAll(clips: group.clips, transitions: group.transitions, output: groupOutput)
+                    try await xfadeAll(clips: group.clips, transitions: group.transitions, output: groupOutput, maximumOverlap: maximumOverlap)
                 } catch {
                     try await concatPlain(clips: group.clips, output: groupOutput)
                 }
@@ -688,7 +689,8 @@ actor RenderEngine {
     /// cuts run 0.12s, regular crossfades the configured duration); throws
     /// when durations can't support the crossfades so callers can fall back
     /// to a plain concat.
-    private func xfadeAll(clips: [URL], transitions: [String], output: URL) async throws {
+    private func xfadeAll(clips: [URL], transitions: [String], output: URL,
+                          maximumOverlap: Double? = nil) async throws {
         let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
             await FFmpeg.duration(of: clip)
         }
@@ -703,7 +705,7 @@ actor RenderEngine {
             let (name, requested) = Self.xfadeAliases[raw]
                 ?? (Self.transitions.contains(raw) ? raw : "fade", configured)
             let affordable = min(durations[index], durations[index + 1]) * 0.4
-            let actual = min(requested, affordable)
+            let actual = min(requested, affordable, maximumOverlap ?? .greatestFiniteMagnitude)
             guard actual >= 0.05 else { throw CocoaError(.featureUnsupported) }
             resolved.append((name, actual))
         }

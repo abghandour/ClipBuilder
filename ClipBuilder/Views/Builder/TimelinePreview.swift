@@ -14,6 +14,8 @@ nonisolated struct PreviewSegment: Sendable {
     var timelineStart: Double
     var duration: Double
     var volume: Double          // 0-1 gain for the clip's own audio
+    var bumper: Bool = false
+    var speed: Double = 1
 }
 
 nonisolated struct PreviewMusicBlock: Sendable {
@@ -32,8 +34,10 @@ nonisolated enum PreviewError: Error, CustomStringConvertible {
 nonisolated enum TimelinePreviewComposer {
     /// Build a playable item from resolved segments. Assets are loaded once
     /// per distinct source file; ranges are clamped to what the file holds.
+    @concurrent
     static func makePlayerItem(segments: [PreviewSegment],
-                               music: [PreviewMusicBlock]) async throws -> AVPlayerItem {
+                               music: [PreviewMusicBlock],
+                               settings: RenderSettings = RenderSettings()) async throws -> sending AVPlayerItem {
         let composition = AVMutableComposition()
         guard let videoTrack = composition.addMutableTrack(withMediaType: .video,
                                                            preferredTrackID: kCMPersistentTrackID_Invalid),
@@ -42,6 +46,24 @@ nonisolated enum TimelinePreviewComposer {
             throw PreviewError.compositionFailed
         }
 
+        let fitsCanvas = segments.contains(where: \.bumper)
+        let canvas = CGSize(width: Double(settings.width), height: Double(settings.height))
+        var instructions: [AVMutableVideoCompositionInstruction] = []
+        func instruction(start: CMTime, duration: CMTime,
+                         transform: CGAffineTransform? = nil) {
+            guard fitsCanvas, duration.seconds > 0 else { return }
+            let instruction = AVMutableVideoCompositionInstruction()
+            instruction.timeRange = CMTimeRange(start: start, duration: duration)
+            instruction.backgroundColor = CGColor(gray: 0, alpha: 1)
+            if let transform {
+                let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
+                layer.setTransform(transform, at: start)
+                instruction.layerInstructions = [layer]
+            } else {
+                instruction.layerInstructions = []
+            }
+            instructions.append(instruction)
+        }
         var assets: [URL: AVURLAsset] = [:]
         func asset(for url: URL) async throws -> AVURLAsset {
             try await DriveMediaResolver.shared.ensureLocal(url)
@@ -59,26 +81,50 @@ nonisolated enum TimelinePreviewComposer {
         var audioCursor = CMTime.zero
 
         for segment in segments {
+            if segment.bumper && !FileManager.default.fileExists(atPath: segment.url.path) {
+                let end = time(segment.timelineStart + segment.duration)
+                videoTrack.insertEmptyTimeRange(CMTimeRange(start: videoCursor, end: end))
+                clipAudioTrack.insertEmptyTimeRange(CMTimeRange(start: audioCursor, end: end))
+                instruction(start: videoCursor, duration: end - videoCursor)
+                videoCursor = end
+                audioCursor = end
+                continue
+            }
             let source = try await asset(for: segment.url)
             let sourceDuration = (try? await source.load(.duration).seconds) ?? segment.duration
-            let clamped = min(segment.duration, max(0, sourceDuration - segment.sourceStart))
+            let clamped = min(segment.duration * segment.speed, max(0, sourceDuration - segment.sourceStart))
             guard clamped > 0.01 else { continue }
             let start = time(segment.timelineStart)
             let range = CMTimeRange(start: time(segment.sourceStart), duration: time(clamped))
+            let screenDuration = time(clamped / segment.speed)
 
             // Composition tracks must stay contiguous — fill timeline gaps.
             if start > videoCursor {
                 videoTrack.insertEmptyTimeRange(CMTimeRange(start: videoCursor, end: start))
+                instruction(start: videoCursor, duration: start - videoCursor)
             }
             if let sourceVideo = try await source.loadTracks(withMediaType: .video).first {
                 try videoTrack.insertTimeRange(range, of: sourceVideo, at: start)
-                if videoTrack.preferredTransform == .identity {
+                if fitsCanvas {
+                    let natural = try await sourceVideo.load(.naturalSize)
+                    let preferred = try await sourceVideo.load(.preferredTransform)
+                    let bounds = CGRect(origin: .zero, size: natural).applying(preferred)
+                    let scale = min(canvas.width / max(1, bounds.width), canvas.height / max(1, bounds.height))
+                    let transform = preferred
+                        .concatenating(CGAffineTransform(translationX: -bounds.minX, y: -bounds.minY))
+                        .concatenating(CGAffineTransform(scaleX: scale, y: scale))
+                        .concatenating(CGAffineTransform(translationX: (canvas.width - bounds.width * scale) / 2,
+                                                       y: (canvas.height - bounds.height * scale) / 2))
+                    instruction(start: start, duration: screenDuration, transform: transform)
+                } else if videoTrack.preferredTransform == .identity {
                     videoTrack.preferredTransform = try await sourceVideo.load(.preferredTransform)
                 }
             } else {
                 videoTrack.insertEmptyTimeRange(CMTimeRange(start: start, duration: range.duration))
+                instruction(start: start, duration: screenDuration)
             }
-            videoCursor = start + range.duration
+            videoTrack.scaleTimeRange(CMTimeRange(start: start, duration: range.duration), toDuration: screenDuration)
+            videoCursor = start + screenDuration
 
             if start > audioCursor {
                 clipAudioTrack.insertEmptyTimeRange(CMTimeRange(start: audioCursor, end: start))
@@ -90,7 +136,8 @@ nonisolated enum TimelinePreviewComposer {
                 clipAudioTrack.insertEmptyTimeRange(CMTimeRange(start: start, duration: range.duration))
             }
             clipAudioParams.setVolume(Float(segment.volume), at: start)
-            audioCursor = start + range.duration
+            clipAudioTrack.scaleTimeRange(CMTimeRange(start: start, duration: range.duration), toDuration: screenDuration)
+            audioCursor = start + screenDuration
         }
 
         var mixParameters = [clipAudioParams]
@@ -120,6 +167,13 @@ nonisolated enum TimelinePreviewComposer {
         }
 
         let item = AVPlayerItem(asset: composition)
+        if fitsCanvas {
+            let videoComposition = AVMutableVideoComposition()
+            videoComposition.renderSize = canvas
+            videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+            videoComposition.instructions = instructions
+            item.videoComposition = videoComposition
+        }
         DriveLocalAsset.retainSources(Array(assets.values), on: item)
         let mix = AVMutableAudioMix()
         mix.inputParameters = mixParameters
@@ -140,6 +194,8 @@ extension BuilderTimelineModel {
         // Expired entries are removed lazily when they reach the root, so
         // every clip enters and leaves the heap at most once.
         func outranks(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
+            if lhs.clip.bumper != rhs.clip.bumper { return lhs.clip.bumper }
+            if lhs.clip.bumper, lhs.clip.startTime != rhs.clip.startTime { return lhs.clip.startTime > rhs.clip.startTime }
             if lhs.clip.track != rhs.clip.track { return lhs.clip.track > rhs.clip.track }
             if lhs.clip.startTime != rhs.clip.startTime { return lhs.clip.startTime > rhs.clip.startTime }
             return lhs.index < rhs.index
@@ -202,19 +258,20 @@ extension BuilderTimelineModel {
             guard let top = heap.first?.clip, let url = sourceURL(for: top) else { continue }
             let trackMuted = document.trackSettings[safe: top.track]?.muted ?? false
             let gain = (top.muted || trackMuted) ? 0.0 : Double(top.volume) / 5.0
-            let sourceStart = (top.sourceStart ?? 0) + (start - top.startTime)
+            let sourceStart = (top.sourceStart ?? 0) + (start - top.startTime) * top.effectiveSpeed
             if let lastIndex = segments.indices.last,
                segments[lastIndex].url == url,
                abs(segments[lastIndex].timelineStart + segments[lastIndex].duration - start) < 0.001,
-               abs(segments[lastIndex].sourceStart + segments[lastIndex].duration - sourceStart) < 0.001,
-               segments[lastIndex].volume == gain {
+               abs(segments[lastIndex].sourceStart + segments[lastIndex].duration * top.effectiveSpeed - sourceStart) < 0.001,
+               segments[lastIndex].volume == gain,
+               segments[lastIndex].speed == top.effectiveSpeed, segments[lastIndex].bumper == top.bumper {
                 segments[lastIndex].duration += end - start
             } else {
                 segments.append(PreviewSegment(url: url,
                                                sourceStart: sourceStart,
                                                timelineStart: start,
                                                duration: end - start,
-                                               volume: gain))
+                                               volume: gain, bumper: top.bumper, speed: top.effectiveSpeed))
             }
         }
 
@@ -384,7 +441,7 @@ struct TimelinePreviewSheet: View {
         }
         do {
             let item = try await TimelinePreviewComposer.makePlayerItem(segments: plan.segments,
-                                                                        music: plan.music)
+                                                                        music: plan.music, settings: model.document.renderSettings)
             let player = AVPlayer(playerItem: item)
             let playhead = model.playhead
             if playhead > 0.1 && playhead < model.totalDuration - 0.1 {

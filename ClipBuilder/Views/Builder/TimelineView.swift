@@ -464,12 +464,13 @@ struct TimelineClipBlock: View {
         let isSelected = model.selection == .clip(clip.uid)
         let width = max(24, CGFloat(clip.duration) * pps + (isTrimming ? trimDelta : 0))
         let blockHeight = BuilderTimelineModel.rowHeight - 6
-        let clipName = model.scene(for: clip)?.videoFilename ?? clip.videoFile ?? "Untitled"
+        let clipName = clip.bumper ? "Bumper · " + store.bumperDisplayName(for: clip)
+            : model.scene(for: clip)?.videoFilename ?? clip.videoFile ?? "Untitled"
         let accessibilityValue = "Track \(clip.track + 1), starts at \(clip.startTime.timecode), "
             + String(format: "%.1f seconds", clip.duration)
 
         ZStack(alignment: .bottomLeading) {
-            if let url = model.sourceURL(for: clip) {
+            if let url = model.sourceURL(for: clip), !clip.bumper || FileManager.default.fileExists(atPath: url.path) {
                 VideoThumbnail(url: url, time: clip.sourceStart ?? 0, cornerRadius: 5)
             } else {
                 RoundedRectangle(cornerRadius: 5).fill(.gray.opacity(0.4))
@@ -497,7 +498,16 @@ struct TimelineClipBlock: View {
             }
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 3) {
-                    if clip.wide {
+                    if clip.bumper {
+                        Label("Bumper · " + store.bumperDisplayName(for: clip), systemImage: "film.stack")
+                            .font(.caption2).foregroundStyle(.white)
+                            .padding(3).background(.purple, in: .capsule)
+                        if !FileManager.default.fileExists(atPath: clip.videoFile ?? "") {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.yellow).help("Bumper file is missing")
+                        }
+                    }
+                    if clip.wide && !clip.bumper {
                         WideBadge(compact: true)
                     }
                     if clip.effectiveSpeed != 1 {

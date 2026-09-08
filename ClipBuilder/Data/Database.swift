@@ -623,7 +623,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 7
+    static let schemaVersion: Int64 = 8
 
     /// "wal" normally; "delete" after the fallback in `init`.
     func journalMode() throws -> String {
@@ -635,6 +635,7 @@ actor Database {
     /// the per-column probe statements.
     private static func migrate(_ connection: SQLiteConnection) throws {
         let textColumns: [(table: String, columns: [String])] = [
+            ("library_asset_metadata", ["display_name", "placements_json"]),
             ("analysis_runs", ["settings_json", "models_json"]),
             ("generated_videos", ["settings_json", "models_json", "caption", "drive_file_id", "drive_link",
                                   "caption_provider", "wizard_provider",
@@ -2411,16 +2412,19 @@ actor Database {
         let tagsData = try JSONEncoder().encode(metadata.tags)
         try connection.execute("""
             INSERT INTO library_asset_metadata
-                (path, kind, is_broll, subjects_json, tags_json, provider, model, analyzed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                (path, kind, is_broll, subjects_json, tags_json, provider, model, display_name, placements_json, analyzed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(path) DO UPDATE SET kind=excluded.kind, is_broll=excluded.is_broll,
                 subjects_json=excluded.subjects_json, tags_json=excluded.tags_json,
+                display_name=excluded.display_name, placements_json=excluded.placements_json,
                 provider=excluded.provider, model=excluded.model, analyzed_at=datetime('now')
             """, [.text(metadata.path), .text(metadata.kind), .integer(metadata.isBRoll ? 1 : 0),
                   .text(String(data: subjectsData, encoding: .utf8) ?? "[]"),
                   .text(String(data: tagsData, encoding: .utf8) ?? "[]"),
                   metadata.provider.map(SQLValue.text) ?? .null,
-                  metadata.model.map(SQLValue.text) ?? .null])
+                  metadata.model.map(SQLValue.text) ?? .null,
+                  metadata.displayName.map(SQLValue.text) ?? .null,
+                  try metadata.placements.map { SQLValue.text(String(decoding: try JSONEncoder().encode($0), as: UTF8.self)) } ?? .null])
     }
 
     func fetchAssetMetadata(kind: String? = nil) throws -> [LibraryAssetMetadata] {
@@ -2439,8 +2443,47 @@ actor Database {
                                         isBRoll: row["is_broll"]?.boolValue ?? false,
                                         subjects: strings("subjects_json"), tags: strings("tags_json"),
                                         provider: row["provider"]?.stringValue,
-                                        model: row["model"]?.stringValue)
+                                        model: row["model"]?.stringValue,
+                                        displayName: row["display_name"]?.stringValue,
+                                        placements: row["placements_json"]?.stringValue == nil ? nil : strings("placements_json"))
         }
+    }
+
+    func bumpers() async throws -> [BumperAsset] {
+        let metadata = Dictionary(uniqueKeysWithValues: try fetchAssetMetadata(kind: AssetKind.bumpers.rawValue).map { ($0.path, $0) })
+        var result: [BumperAsset] = []
+        for file in AssetStore.allFiles(of: .bumpers) {
+            let info = metadata[file.url.path]
+            let name = info?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            result.append(BumperAsset(path: file.url.path,
+                displayName: name.flatMap { $0.isEmpty ? nil : $0 } ?? file.url.deletingPathExtension().lastPathComponent,
+                placements: Set((info?.placements ?? BumperPlacement.allCases.map(\.rawValue)).compactMap(BumperPlacement.init(rawValue:))),
+                duration: await BumperDurationCache.shared.duration(of: file.url)))
+        }
+        return result.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+    }
+
+    func moveBumperMetadata(from source: URL, to destination: URL) throws {
+        guard source != destination else { return }
+        let old = source.path
+        for var row in try fetchAssetMetadata(kind: AssetKind.bumpers.rawValue)
+        where row.path == old || row.path.hasPrefix(old + "/") {
+            let previous = row.path
+            row.path = destination.path + String(previous.dropFirst(old.count))
+            try upsertAssetMetadata(row)
+            try connection.execute("DELETE FROM library_asset_metadata WHERE path = ?", [.text(previous)])
+        }
+        AssetCatalogChanges.publish()
+    }
+
+    func saveBumper(path: String, displayName: String, placements: Set<BumperPlacement>) throws {
+        var metadata = try fetchAssetMetadata(kind: AssetKind.bumpers.rawValue).first { $0.path == path }
+            ?? LibraryAssetMetadata(path: path, kind: AssetKind.bumpers.rawValue, isBRoll: false,
+                                    subjects: [], tags: [], provider: nil, model: nil)
+        metadata.displayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        metadata.placements = placements.map(\.rawValue).sorted()
+        try upsertAssetMetadata(metadata)
+        AssetCatalogChanges.publish()
     }
 
     // MARK: - Generated videos

@@ -117,9 +117,18 @@ struct ResourceExportSheet: View {
         status = "Preparing…"
         let categories = selected
         Task {
+            let metadata: [LibraryAssetMetadata]
+            do {
+                metadata = categories.contains(.bumpers)
+                    ? try await store.database?.fetchAssetMetadata(kind: AssetKind.bumpers.rawValue) ?? [] : []
+            } catch {
+                isRunning = false
+                store.presentError("Could not read bumper metadata", error)
+                return
+            }
             let result: Result<Void, Error> = await Task.detached(priority: .userInitiated) {
                 do {
-                    try ResourceBundle.export(categories: categories, to: destination) { message in
+                    try ResourceBundle.export(categories: categories, to: destination, bumperMetadata: metadata) { message in
                         Task { @MainActor in status = message }
                     }
                     return .success(())
@@ -297,6 +306,14 @@ struct ResourceImportSheet: View {
             isRunning = false
             switch result {
             case .success(let done):
+                do {
+                    for metadata in done.bumperMetadata {
+                        try await store.database?.upsertAssetMetadata(metadata)
+                    }
+                } catch {
+                    store.presentError("Files imported, but bumper metadata could not be saved", error)
+                }
+                AssetCatalogChanges.publish()
                 summary = done
                 status = done.message
                 store.resourcesDidChange(done)

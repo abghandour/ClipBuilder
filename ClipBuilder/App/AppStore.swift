@@ -362,6 +362,44 @@ final class AppStore {
     private let multitrackRenderer: MultitrackRenderer
     private let instagram: InstagramService
     private let fightResearchService: FightResearchService
+    private(set) var bumpers: [BumperAsset] = []
+    private var bumperWatchers: [URL: FolderWatcher] = [:]
+    private var watchesBumpers = false
+    private var bumperObserver: AssetCatalogSubscription?
+    private var bumperRefresh: Task<Void, Never>?
+
+    func refreshBumpers() {
+        bumperRefresh?.cancel()
+        let database = database
+        bumperRefresh = Task { [weak self] in
+            let loaded = (try? await database?.bumpers()) ?? []
+            guard !Task.isCancelled else { return }
+            self?.bumpers = loaded
+            if self?.watchesBumpers == true {
+                let folders = await AssetStore.foldersAsync(of: .bumpers)
+                guard !Task.isCancelled else { return }
+                self?.watchBumperFolders(folders)
+            }
+        }
+    }
+
+    private func watchBumperFolders(_ folders: Set<URL>) {
+        for url in Array(bumperWatchers.keys) where !folders.contains(url) {
+            bumperWatchers.removeValue(forKey: url)?.stop()
+        }
+        for url in folders where bumperWatchers[url] == nil {
+            let watcher = FolderWatcher { AssetStore.invalidateCatalog(.bumpers) }
+            watcher.watch(url)
+            bumperWatchers[url] = watcher
+        }
+    }
+
+    func bumperDisplayName(for clip: TimelineClip) -> String {
+        if let asset = bumpers.first(where: { $0.path == clip.videoFile }) { return asset.displayName }
+        if let name = clip.bumperName { return name }
+        return clip.videoFile.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? "Bumper"
+    }
+
     private var watcher: FolderWatcher?
     @ObservationIgnored private let opensProfiles: Bool
     @ObservationIgnored private var projectStateSaveTask: Task<Void, Never>?
@@ -421,7 +459,11 @@ final class AppStore {
                 self?.scanSourceFolder()
             }
         }
+        bumperObserver = AssetCatalogSubscription { [weak self] in self?.refreshBumpers() }
+        watchesBumpers = startWatcher
+        if startWatcher { AssetStore.ensureRoots() }
         if openProfile { openActiveProfile() }
+        refreshBumpers()
     }
 
     // MARK: - Errors
@@ -451,6 +493,7 @@ final class AppStore {
             database = nil
             presentError("Could not open the profile database", error)
         }
+        refreshBumpers()
         watcher?.watch(activeProfile.sourceFolderURL)
         builder.load(profileName: activeProfile.profileName,
                      defaultRenderSettings: activeProfile.defaultRenderSettings)
@@ -963,6 +1006,7 @@ final class AppStore {
     /// Awaitable refresh for callers that need the fresh lists (e.g. the
     /// wizard's post-run variation-batch detection).
     func refreshAllNow() async {
+        refreshBumpers()
         guard let database, let activeProjectID else { return }
         let generation = profileGeneration
         await googleDrive.attach(profile: activeProfile, database: database)
@@ -1839,6 +1883,7 @@ final class AppStore {
         options.includeWatermark = branding.includeWatermark
         options.includeHeadline = branding.includeHeadline
         options.includeOutro = branding.includeOutro
+        options.readBumperDefaults(defaults)
         return options
     }
 
@@ -3684,9 +3729,20 @@ final class AppStore {
     /// The curated document exactly as a render receives it — the branded
     /// outro card appended when enabled. Shared by Generate and the exact
     /// preview so both see the same timeline.
+    private var curatedBumperSelection: (key: String, clips: [TimelineClip])?
+
     private func curatedDocument(_ document: TimelineDocument, includeOutro: Bool,
                                  profile: BrandProfile) async throws -> TimelineDocument {
         var document = document
+        var options = WizardOptions()
+        options.readBumperDefaults()
+        let assets = (try? await database?.bumpers()) ?? []
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let original = try encoder.encode(document)
+        let preferenceKey = "\(options.includeIntroBumper)|\(options.includeOutroBumper)|\(options.includeMiddleBumper)"
+        let catalogKey = assets.map { "\($0.path)|\($0.displayName)|\($0.duration ?? 0)|\($0.placements.map(\.rawValue).sorted())" }.joined(separator: ";")
+        let selectionKey = original.base64EncodedString() + preferenceKey + catalogKey + "\(includeOutro)|\(profile.profileName)"
         if includeOutro,
            profile.logoURL != nil || !(profile.socials["instagram"]?.handle ?? "").isEmpty {
             let scratch = FileManager.default.temporaryDirectory
@@ -3705,6 +3761,19 @@ final class AppStore {
                 document.videoTrack.append(clip)
                 wizardLog.append("Branded outro card appended")
             }
+        }
+        if let cached = curatedBumperSelection, cached.key == selectionKey {
+            for clip in cached.clips {
+                BumperPlanner.insertGap(in: &document, at: clip.startTime, duration: clip.duration)
+                document.videoTrack.append(clip)
+                wizardLog.append("Bumper '\(clip.bumperName ?? "Bumper")' inserted at \(clip.startTime.timecode)")
+            }
+        } else {
+            let existing = Set(document.videoTrack.map(\.uid))
+            let log = BumperPlanner.apply(to: &document, bumpers: assets, options: options)
+            wizardLog.append(contentsOf: log)
+            curatedBumperSelection = (selectionKey, document.videoTrack.filter { $0.bumper && !existing.contains($0.uid) }
+                .sorted { $0.startTime < $1.startTime })
         }
         return document
     }

@@ -26,6 +26,7 @@ struct AssetBrowserView: View {
     @State private var renameText = ""
     @State private var deleteTarget: AssetItem?
     @State private var previewImage: AssetItem?
+    @State private var editingBumper: BumperAsset?
     @State private var operationError: String?
     @State private var searchText = ""
     @State private var metadata: [String: LibraryAssetMetadata] = [:]
@@ -47,6 +48,8 @@ struct AssetBrowserView: View {
             Divider()
             if items.isEmpty {
                 emptyState
+            } else if kind == .bumpers {
+                bumperGrid
             } else if kind == .images {
                 imageGrid
             } else {
@@ -140,6 +143,9 @@ struct AssetBrowserView: View {
             if let deleteTarget, deleteTarget.isFolder {
                 Text("The folder and everything inside it moves to the Trash.")
             }
+        }
+        .sheet(item: $editingBumper) { bumper in
+            BumperEditor(bumper: bumper).environment(store)
         }
         .sheet(item: $previewImage) { item in
             ImagePreviewSheet(url: item.url, title: item.name)
@@ -250,6 +256,46 @@ struct AssetBrowserView: View {
         }
     }
 
+    private func bumper(for item: AssetItem) -> BumperAsset {
+        store.bumpers.first { $0.path == item.url.path }
+            ?? BumperAsset(path: item.url.path, displayName: item.displayName)
+    }
+
+    private var bumperGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), alignment: .top)], spacing: 12) {
+                ForEach(filteredItems) { item in
+                    if item.isFolder {
+                        imageTile(for: item).contextMenu { contextMenu(for: item) }
+                    } else {
+                        let asset = bumper(for: item)
+                        VStack(alignment: .leading, spacing: 6) {
+                            VideoThumbnail(url: item.url, time: 0)
+                                .frame(height: 110)
+                            HStack {
+                                Text(asset.displayName).lineLimit(1)
+                                Spacer()
+                                Button("Edit Bumper", systemImage: "pencil") { editingBumper = asset }
+                                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+                            }
+                            Text(asset.duration.map { String(format: "%.1f seconds", $0) } ?? "Duration unavailable")
+                                .font(.caption).foregroundStyle(.secondary)
+                            HStack(spacing: 4) {
+                                ForEach(BumperPlacement.allCases.filter { asset.placements.contains($0) }) { placement in
+                                    Text(placement.title).font(.caption2)
+                                        .padding(4).background(.quaternary, in: .capsule)
+                                }
+                            }
+                        }
+                        .padding(8)
+                        .background(.quaternary.opacity(0.3), in: .rect(cornerRadius: 8))
+                        .contextMenu { contextMenu(for: item) }
+                    }
+                }
+            }.padding()
+        }
+    }
+
     // MARK: - Grid (images)
 
     private var imageGrid: some View {
@@ -317,6 +363,9 @@ struct AssetBrowserView: View {
 
     @ViewBuilder
     private func contextMenu(for item: AssetItem) -> some View {
+        if kind == .bumpers, !item.isFolder {
+            Button("Edit Bumper…", systemImage: "pencil") { editingBumper = bumper(for: item) }
+        }
         if item.isFolder {
             Button("Open") { open(item) }
         } else if kind == .music {
@@ -355,7 +404,8 @@ struct AssetBrowserView: View {
             guard !Task.isCancelled, version == refreshVersion, folder == currentFolder else { return }
             items = refreshed
             if let playingID, !items.contains(where: { $0.id == playingID }) { stopPlayback() }
-            if kind == .images { loadMetadata() }
+            if kind == .images || kind == .bumpers { loadMetadata() }
+            if kind == .bumpers { store.refreshBumpers() }
         }
     }
 
@@ -365,6 +415,7 @@ struct AssetBrowserView: View {
             guard matchesAI else { return false }
             guard !searchText.isEmpty else { return true }
             return item.isFolder || item.name.localizedStandardContains(searchText)
+                || (kind == .bumpers && bumper(for: item).displayName.localizedStandardContains(searchText))
                 || metadata[item.url.path]?.subjects.contains(where: { $0.localizedStandardContains(searchText) }) == true
                 || metadata[item.url.path]?.tags.contains(where: { $0.localizedStandardContains(searchText) }) == true
         }
@@ -373,7 +424,7 @@ struct AssetBrowserView: View {
     private func loadMetadata() {
         guard let database = store.database else { return }
         Task {
-            let rows = (try? await database.fetchAssetMetadata(kind: AssetKind.images.rawValue)) ?? []
+            let rows = (try? await database.fetchAssetMetadata(kind: kind.rawValue)) ?? []
             metadata = Dictionary(uniqueKeysWithValues: rows.map { ($0.path, $0) })
         }
     }
@@ -484,8 +535,18 @@ struct AssetBrowserView: View {
     }
 
     private func renameItem() {
-        if let renameTarget { perform { try AssetStore.rename(renameTarget, to: renameText) } }
+        guard let item = renameTarget else { return }
+        let name = renameText
         renameTarget = nil
+        Task {
+            do {
+                let destination = try AssetStore.rename(item, to: name)
+                if kind == .bumpers {
+                    try await store.database?.moveBumperMetadata(from: item.url, to: destination)
+                }
+            } catch { operationError = error.localizedDescription }
+            refresh()
+        }
     }
 
     private func importFiles(_ urls: [URL]) {

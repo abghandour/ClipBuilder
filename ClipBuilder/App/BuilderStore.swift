@@ -320,6 +320,11 @@ final class BuilderTimelineModel {
         guard !scenesByID.isEmpty else { return }
         for index in document.videoTrack.indices {
             var clip = document.videoTrack[index]
+            if clip.bumper {
+                clip.enforceBumperRules()
+                document.videoTrack[index] = clip
+                continue
+            }
             guard let sceneID = clip.sceneID, let scene = scenesByID[sceneID] else { continue }
             clip.sceneFullDuration = (scene.duration * 10).rounded() / 10
             if clip.videoFile == nil { clip.videoFile = scene.videoPath }
@@ -496,6 +501,17 @@ final class BuilderTimelineModel {
 
     // MARK: - Clip mutations
 
+    func addBumper(_ bumper: BumperAsset, at time: Double? = nil) {
+        guard let clip = bumper.clip(at: Self.snap(time ?? playhead)) else { return }
+        registerUndo("Add Bumper")
+        if document.trackSequential[0] {
+            BumperPlanner.insertGap(in: &document, at: clip.startTime, duration: clip.duration)
+        }
+        document.videoTrack.append(clip)
+        selection = .clip(clip.uid)
+        documentDidChange()
+    }
+
     func addScene(_ scene: SceneRecord, at time: Double? = nil, track: Int = 0) {
         var clip = TimelineClip()
         clip.sceneID = scene.id
@@ -527,13 +543,13 @@ final class BuilderTimelineModel {
         let oldTrack = document.videoTrack[index].track
         let newTrack = min(max(0, track), document.trackCount - 1)
         // A track without an area there cannot take the clip: keep it put.
-        guard canPlace(track: newTrack, at: Self.snap(startTime)) else { return }
+        guard document.videoTrack[index].bumper || canPlace(track: newTrack, at: Self.snap(startTime)) else { return }
         registerUndo("Move Clip")
         document.videoTrack[index].startTime = Self.snap(startTime)
         document.videoTrack[index].track = newTrack
-        resolveLayout(track: newTrack)
-        if oldTrack != newTrack {
-            resolveLayout(track: oldTrack)
+        if !document.videoTrack[index].bumper {
+            resolveLayout(track: newTrack)
+            if oldTrack != newTrack { resolveLayout(track: oldTrack) }
         }
         documentDidChange()
     }
@@ -603,6 +619,7 @@ final class BuilderTimelineModel {
         guard let index = clipIndex(uid) else { return }
         registerUndo("Edit Clip", coalescing: "clip-\(uid)")
         mutate(&document.videoTrack[index])
+        document.videoTrack[index].enforceBumperRules()
         documentDidChange()
     }
 
@@ -655,8 +672,12 @@ final class BuilderTimelineModel {
         var cursor = 0.0
         for clip in sorted {
             if let index = clipIndex(clip.uid) {
-                document.videoTrack[index].startTime = cursor
-                cursor += document.videoTrack[index].duration
+                if clip.bumper {
+                    cursor = max(cursor, clip.startTime + clip.duration)
+                } else {
+                    document.videoTrack[index].startTime = cursor
+                    cursor += document.videoTrack[index].duration
+                }
             }
         }
     }
