@@ -209,6 +209,9 @@ nonisolated enum WizardDefaults {
     static let layoutModeKey = "wizard.layoutMode"
     static let brandingModeKey = "wizard.brandingMode"
     static let brandingOverrideKey = "wizard.brandingOverride"
+    /// Root-relative music-library folder the Wizard picks songs from; "" =
+    /// the whole library.
+    static let musicFolderKey = "wizard.musicFolder"
 
     static let useScreenCropsKey = "wizard.useScreenCrops"
     static let screenCropLayoutsKey = "wizard.screenCropLayouts"
@@ -251,6 +254,14 @@ nonisolated enum WizardDefaults {
     static func audioMode(defaults: UserDefaults = .standard) -> WizardAudioMode {
         migrateLegacy(defaults: defaults)
         return WizardAudioMode(rawValue: defaults.string(forKey: audioModeKey) ?? "") ?? .mix
+    }
+
+    /// nil when the whole library is in play or the saved folder no longer
+    /// holds any music (so a deleted folder never silently mutes a run).
+    static func musicFolder(defaults: UserDefaults = .standard) -> String? {
+        let saved = defaults.string(forKey: musicFolderKey) ?? ""
+        guard !saved.isEmpty else { return nil }
+        return AssetStore.resolveFolderName(saved, of: .music)
     }
 
     static func textMode(defaults: UserDefaults = .standard) -> WizardTextMode {

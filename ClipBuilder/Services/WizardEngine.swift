@@ -3,7 +3,7 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, curatedOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper
+        case sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, curatedOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
     }
 
     var sourceSceneSelection = false
@@ -22,6 +22,9 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var addCaptions = false
     var enableTextOverlays = false
     var useMusic = true
+    /// Restrict the planner's music to one library folder (root-relative,
+    /// e.g. "Fights/Intros"; subfolders included). nil = the whole library.
+    var musicFolder: String?
     var aiInstructions = ""
     /// Inject each in-play video's saved fight research (crawled fan
     /// reactions, run from the Analyze page) into planning and captions.
@@ -124,6 +127,9 @@ nonisolated struct ParsedWizardRequest: Sendable, Equatable {
     var enableTextOverlays: Bool?
     var addCaptions: Bool?
     var useMusic: Bool?
+    /// Exact music-library folder the user asked to pick a song from
+    /// (validated against the folders that exist).
+    var musicFolder: String?
     /// Everything that maps to no setting — fed to the planner as
     /// highest-priority instructions so no intent is lost.
     var residualInstructions = ""
@@ -372,6 +378,31 @@ actor WizardEngine {
         AssetStore.allFiles(of: .music)
     }
 
+    /// Music under one library folder (subfolders included); nil = all.
+    static func availableMusic(inFolder folder: String?) -> [(name: String, url: URL)] {
+        AssetStore.allFiles(of: .music, inFolder: folder)
+    }
+
+    /// Root-relative names of the music folders that hold at least one track.
+    static func musicFolders() -> [String] {
+        AssetStore.populatedFolderNames(of: .music)
+    }
+
+    /// Tracks grouped by their immediate folder for menus: the root group
+    /// first (folder ""), then folders in name order. Track names keep their
+    /// root-relative form so a choice round-trips to the catalog.
+    static func musicByFolder() -> [(folder: String, tracks: [(name: String, url: URL)])] {
+        let grouped = Dictionary(grouping: availableMusic()) { track -> String in
+            track.name.split(separator: "/").dropLast().joined(separator: "/")
+        }
+        return grouped.keys
+            .sorted { lhs, rhs in
+                if lhs.isEmpty != rhs.isEmpty { return lhs.isEmpty }
+                return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+            }
+            .map { (folder: $0, tracks: grouped[$0] ?? []) }
+    }
+
     // MARK: - Editorial playbook
 
     /// Curated combat-sports Reels playbook. This app is specialized for
@@ -412,11 +443,14 @@ actor WizardEngine {
     // MARK: - Request parsing
 
     private func parseRequestPrompt(description: String, templateNames: [String],
-                                    tagVocabulary: [String]) -> String {
+                                    tagVocabulary: [String], musicFolders: [String] = []) -> String {
         let templates = templateNames.isEmpty
             ? "None saved."
             : templateNames.map { "\"\($0)\"" }.joined(separator: ", ")
         let tags = tagVocabulary.isEmpty ? "None." : tagVocabulary.joined(separator: ", ")
+        let folders = musicFolders.isEmpty
+            ? "None."
+            : musicFolders.map { "\"\($0)\"" }.joined(separator: ", ")
         return """
         You are configuring an AI video-generation wizard from a user's plain-language request.
 
@@ -429,6 +463,9 @@ actor WizardEngine {
         ## Content tag vocabulary (the only tags that exist)
         \(tags)
 
+        ## Music library folders (the only folders that exist)
+        \(folders)
+
         Return a JSON object with EXACTLY this structure:
         {
           "target_duration_seconds": <int, or null if the user gave no duration>,
@@ -438,6 +475,7 @@ actor WizardEngine {
           "enable_text_overlays": <true|false|null>,
           "add_captions": <true|false|null>,
           "use_music": <true|false|null>,
+          "music_folder": "<exact folder name from the list, or null>",
           "residual_instructions": "<every remaining creative requirement, imperative voice; \"\" if none>"
         }
 
@@ -447,6 +485,7 @@ actor WizardEngine {
         - "overlay_template": the user may refer to a template loosely (e.g. 'the text overlays "Sample 1"'). Match by meaning but return the EXACT listed name; null when nothing matches.
         - "overlay_text": text the user wants shown ON the video — often a quoted phrase they call a caption, title, or overlay (e.g. 'with the caption "Porrada day!"' → "Porrada day!"). Copy it verbatim; never invent text.
         - "add_captions" is ONLY for burned-in spoken-word transcript subtitles, not overlay text.
+        - "music_folder": when the user asks for a song/track/music from a particular folder (e.g. "use a song from folder A", "music from Intros"), return the EXACT listed folder name that matches (nested folders are written "Parent/Child"; a bare child name is fine to match). Set "use_music" to true in that case. null when they name no folder or nothing matches.
         - "enable_text_overlays": true whenever the user asks for any on-screen text, overlay template, or overlay text.
         - "residual_instructions": everything not captured above (style, pacing, mood, hook ideas...). Do NOT repeat anything you already captured in a field.
         - Return ONLY the JSON object.
@@ -460,9 +499,11 @@ actor WizardEngine {
                       emit: @escaping @Sendable (String) -> Void) async throws -> ParsedWizardRequest {
         let templateNames = OverlayTemplateStore.list().map(\.name)
         let tagVocabulary = profile.effectiveTags.values.flatMap(\.self).sorted()
+        let musicFolders = Self.musicFolders()
         let prompt = parseRequestPrompt(description: description,
                                         templateNames: templateNames,
-                                        tagVocabulary: tagVocabulary)
+                                        tagVocabulary: tagVocabulary,
+                                        musicFolders: musicFolders)
         let response = try await ai.call(prompt: prompt, task: "parse", timeout: 120, log: emit)
         guard let object = AIResponseParser.jsonObject(from: response.text) else {
             throw AIError.emptyResponse("request parsing (unparseable JSON)")
@@ -489,6 +530,11 @@ actor WizardEngine {
         }
         parsed.addCaptions = object["add_captions"] as? Bool
         parsed.useMusic = object["use_music"] as? Bool
+        if let folder = object["music_folder"] as? String,
+           let match = AssetStore.resolveFolderName(folder, of: .music) {
+            parsed.musicFolder = match
+            parsed.useMusic = true
+        }
         parsed.residualInstructions = (object["residual_instructions"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return parsed
@@ -1737,8 +1783,17 @@ actor WizardEngine {
         if options.templateJSON != nil {
             emit("Using reference template: \(options.templateLabel ?? "Instagram reel")")
         }
-        let music = options.useMusic ? Self.availableMusic() : []
-        if !options.useMusic { emit("No-music mode: original audio only.") }
+        var music = options.useMusic ? Self.availableMusic(inFolder: options.musicFolder) : []
+        if !options.useMusic {
+            emit("No-music mode: original audio only.")
+        } else if let folder = options.musicFolder, !folder.isEmpty {
+            if music.isEmpty {
+                music = Self.availableMusic()
+                emit("Music folder \"\(folder)\" has no tracks — choosing from the whole library instead.")
+            } else {
+                emit("Music limited to folder \"\(folder)\" (\(music.count) track\(music.count == 1 ? "" : "s"))")
+            }
+        }
         if options.muteSource { emit("Source audio will be muted (music only)") }
         if options.enableTextOverlays { emit("Text overlays enabled") }
         let signals = await loadTrainingSignals(database: database)

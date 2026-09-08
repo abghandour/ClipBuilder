@@ -42,5 +42,6 @@ nonisolated extension WizardOptions {
         includeIntroBumper = try values.decodeIfPresent(Bool.self, forKey: .includeIntroBumper) ?? includeIntroBumper
         includeOutroBumper = try values.decodeIfPresent(Bool.self, forKey: .includeOutroBumper) ?? includeOutroBumper
         includeMiddleBumper = try values.decodeIfPresent(Bool.self, forKey: .includeMiddleBumper) ?? includeMiddleBumper
+        musicFolder = try values.decodeIfPresent(String.self, forKey: .musicFolder)
     }
 }

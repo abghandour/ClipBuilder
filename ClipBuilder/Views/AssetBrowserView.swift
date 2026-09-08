@@ -16,6 +16,8 @@ struct AssetBrowserView: View {
     /// Path components below the library root; empty = root.
     @State private var path: [String] = []
     @State private var items: [AssetItem] = []
+    /// Every folder in the library (root-relative), for "Move to…".
+    @State private var folderNames: [String] = []
     @State private var refreshVersion = 0
     @State private var watcher: FolderWatcher?
 
@@ -106,7 +108,7 @@ struct AssetBrowserView: View {
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            importFiles(urls)
+            receive(urls, into: currentFolder)
             return true
         }
         .alert("New Folder", isPresented: $showingNewFolder) {
@@ -205,13 +207,24 @@ struct AssetBrowserView: View {
     }
 
     private func breadcrumbButton(title: String, depth: Int) -> some View {
-        Button(title) {
+        let target = folderURL(forDepth: depth)
+        return Button(title) {
             path = Array(path.prefix(depth))
         }
         .buttonStyle(.plain)
         .fontWeight(depth == path.count ? .semibold : .regular)
         .foregroundStyle(depth == path.count ? .primary : .secondary)
         .disabled(depth == path.count)
+        // Dragging a row onto an ancestor crumb moves it up the tree.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard depth < path.count else { return false }
+            receive(urls, into: target)
+            return true
+        }
+    }
+
+    private func folderURL(forDepth depth: Int) -> URL {
+        path.prefix(depth).reduce(kind.rootURL) { $0.appendingPathComponent($1, isDirectory: true) }
     }
 
     private var emptyState: some View {
@@ -231,6 +244,8 @@ struct AssetBrowserView: View {
         List(items) { item in
             row(for: item)
                 .contextMenu { contextMenu(for: item) }
+                .draggable(item.url)
+                .modifier(FolderDropTarget(folder: item.isFolder ? item.url : nil) { receive($0, into: $1) })
         }
         .listStyle(.inset)
     }
@@ -267,6 +282,8 @@ struct AssetBrowserView: View {
                 ForEach(filteredItems) { item in
                     if item.isFolder {
                         imageTile(for: item).contextMenu { contextMenu(for: item) }
+                            .draggable(item.url)
+                            .modifier(FolderDropTarget(folder: item.url) { receive($0, into: $1) })
                     } else {
                         let asset = bumper(for: item)
                         VStack(alignment: .leading, spacing: 6) {
@@ -290,6 +307,7 @@ struct AssetBrowserView: View {
                         .padding(8)
                         .background(.quaternary.opacity(0.3), in: .rect(cornerRadius: 8))
                         .contextMenu { contextMenu(for: item) }
+                        .draggable(item.url)
                     }
                 }
             }.padding()
@@ -304,6 +322,8 @@ struct AssetBrowserView: View {
                 ForEach(filteredItems) { item in
                     imageTile(for: item)
                         .contextMenu { contextMenu(for: item) }
+                        .draggable(item.url)
+                        .modifier(FolderDropTarget(folder: item.isFolder ? item.url : nil) { receive($0, into: $1) })
                 }
             }
             .padding()
@@ -383,6 +403,15 @@ struct AssetBrowserView: View {
             renameText = item.name
             renameTarget = item
         }
+        Menu("Move to…", systemImage: "folder") {
+            let destinations = moveDestinations(for: item)
+            if destinations.isEmpty {
+                Text("No other folders")
+            }
+            ForEach(destinations, id: \.url) { destination in
+                Button(destination.title) { receive([item.url], into: destination.url) }
+            }
+        }
         Button("Show in Finder") {
             NSWorkspace.shared.activateFileViewerSelecting([item.url])
         }
@@ -394,15 +423,65 @@ struct AssetBrowserView: View {
         path.append(folder.name)
     }
 
+    /// Folders `item` can move into: the root plus every library folder,
+    /// minus where it already is and (for a folder) itself and its subtree.
+    private func moveDestinations(for item: AssetItem) -> [(title: String, url: URL)] {
+        let here = AssetStore.relativeFolderName(item.url.deletingLastPathComponent(), of: kind)
+        let own = item.isFolder ? AssetStore.relativeFolderName(item.url, of: kind) : nil
+        let candidates = [""] + folderNames
+        return candidates.compactMap { name in
+            guard name != here else { return nil }
+            if let own, name == own || name.hasPrefix(own + "/") { return nil }
+            let url = name.split(separator: "/").reduce(kind.rootURL) {
+                $0.appendingPathComponent(String($1), isDirectory: true)
+            }
+            return (name.isEmpty ? kind.title : name, url)
+        }
+    }
+
+    private func isLibraryURL(_ url: URL) -> Bool {
+        let root = kind.rootURL.resolvingSymlinksInPath().path
+        return url.resolvingSymlinksInPath().path.hasPrefix(root + "/")
+    }
+
+    /// Dropped or chosen URLs: items already in this library move into
+    /// `folder`; anything else is copied in from outside.
+    private func receive(_ urls: [URL], into folder: URL) {
+        let (internalURLs, external) = urls.reduce(into: ([URL](), [URL]())) { result, url in
+            if isLibraryURL(url) { result.0.append(url) } else { result.1.append(url) }
+        }
+        if !internalURLs.isEmpty { moveItems(internalURLs, into: folder) }
+        if !external.isEmpty { importFiles(external, into: folder) }
+    }
+
+    private func moveItems(_ urls: [URL], into folder: URL) {
+        let kind = kind
+        Task {
+            do {
+                for url in urls {
+                    let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                    let item = AssetItem(url: url, isFolder: isFolder)
+                    let destination = try AssetStore.move(item, into: folder)
+                    if kind == .bumpers, !isFolder, destination != url {
+                        try await store.database?.moveBumperMetadata(from: url, to: destination)
+                    }
+                }
+            } catch { operationError = error.localizedDescription }
+            refresh()
+        }
+    }
+
     private func refresh() {
         refreshVersion += 1
         let version = refreshVersion
         let folder = currentFolder
         let kind = kind
         Task {
+            async let folders = AssetStore.folderNamesAsync(of: kind)
             let refreshed = await AssetStore.itemsAsync(of: kind, in: folder)
             guard !Task.isCancelled, version == refreshVersion, folder == currentFolder else { return }
             items = refreshed
+            folderNames = await folders
             if let playingID, !items.contains(where: { $0.id == playingID }) { stopPlayback() }
             if kind == .images || kind == .bumpers { loadMetadata() }
             if kind == .bumpers { store.refreshBumpers() }
@@ -550,7 +629,10 @@ struct AssetBrowserView: View {
     }
 
     private func importFiles(_ urls: [URL]) {
-        let folder = currentFolder
+        importFiles(urls, into: currentFolder)
+    }
+
+    private func importFiles(_ urls: [URL], into folder: URL) {
         let kind = kind
         Task {
             do {
@@ -590,6 +672,33 @@ struct AssetBrowserView: View {
         player?.pause()
         player = nil
         playingID = nil
+    }
+}
+
+/// Makes a folder row or tile accept dragged library items (and outside
+/// files); a nil folder leaves the view untouched so file rows stay inert.
+private struct FolderDropTarget: ViewModifier {
+    let folder: URL?
+    let receive: ([URL], URL) -> Void
+
+    @State private var isTargeted = false
+
+    func body(content: Content) -> some View {
+        if let folder {
+            content
+                .background(isTargeted ? Color.accentColor.opacity(0.15) : .clear,
+                            in: RoundedRectangle(cornerRadius: 6))
+                .dropDestination(for: URL.self) { urls, _ in
+                    // A folder dropped on itself is a no-op, not an error.
+                    guard !urls.contains(where: { $0.standardizedFileURL == folder.standardizedFileURL }) else {
+                        return false
+                    }
+                    receive(urls, folder)
+                    return true
+                } isTargeted: { isTargeted = $0 }
+        } else {
+            content
+        }
     }
 }
 

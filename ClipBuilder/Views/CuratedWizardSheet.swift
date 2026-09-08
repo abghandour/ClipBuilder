@@ -1303,11 +1303,24 @@ struct CuratedWizardSheet: View {
     @ViewBuilder
     private var musicStep: some View {
         let tracks = WizardEngine.availableMusic().map(\.name)
+        let groups = WizardEngine.musicByFolder()
         VStack(spacing: 0) {
             HStack {
                 Menu("Set one soundtrack for the whole reel") {
-                    ForEach(tracks, id: \.self) { name in
-                        Button(name) { model.setSoundtrackForAll(name) }
+                    ForEach(groups, id: \.folder) { group in
+                        if group.folder.isEmpty {
+                            ForEach(group.tracks, id: \.name) { track in
+                                Button(track.name) { model.setSoundtrackForAll(track.name) }
+                            }
+                        } else {
+                            Menu(group.folder, systemImage: "folder") {
+                                ForEach(group.tracks, id: \.name) { track in
+                                    Button(track.name.split(separator: "/").last.map(String.init) ?? track.name) {
+                                        model.setSoundtrackForAll(track.name)
+                                    }
+                                }
+                            }
+                        }
                     }
                     Divider()
                     Button("No music anywhere") { model.setSoundtrackForAll(nil) }

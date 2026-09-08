@@ -269,6 +269,96 @@ nonisolated enum AssetStore {
         return result
     }
 
+    /// Root-relative path of a folder inside a library ("" for the root,
+    /// "Fights/Intros" for a nested folder). Compares resolved paths so a
+    /// /var vs /private/var root still strips.
+    static func relativeFolderName(_ folder: URL, of kind: AssetKind) -> String {
+        let rootPath = kind.rootURL.resolvingSymlinksInPath().path
+        let path = folder.resolvingSymlinksInPath().path
+        guard path.hasPrefix(rootPath + "/") else { return "" }
+        return String(path.dropFirst(rootPath.count + 1))
+    }
+
+    /// Root-relative names of every folder in a library (root excluded),
+    /// sorted; includes empty folders, so it is what a "Move to…" menu wants.
+    @concurrent
+    static func folderNamesAsync(of kind: AssetKind) async -> [String] {
+        let root = kind.rootURL
+        return await foldersAsync(of: kind)
+            .subtracting([root])
+            .map { relativeFolderName($0, of: kind) }
+            .filter { !$0.isEmpty }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// Folders that contain at least one matching file (plus their
+    /// ancestors), derived from the cached catalog so menus rebuilt on the
+    /// main actor stay cheap. Empty folders are omitted: they hold nothing a
+    /// picker could choose.
+    static func populatedFolderNames(of kind: AssetKind) -> [String] {
+        var names = Set<String>()
+        for file in allFiles(of: kind) {
+            var components = file.name.split(separator: "/").dropLast()
+            while !components.isEmpty {
+                names.insert(components.joined(separator: "/"))
+                components = components.dropLast()
+            }
+        }
+        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    /// Files whose root-relative name sits under `folder` (case-insensitive;
+    /// nil or "" = the whole library). Subfolders of `folder` are included.
+    static func allFiles(of kind: AssetKind, inFolder folder: String?) -> [(name: String, url: URL)] {
+        let files = allFiles(of: kind)
+        guard let folder = folder?.trimmingCharacters(in: CharacterSet(charactersIn: "/ ")),
+              !folder.isEmpty else { return files }
+        let prefix = folder.lowercased() + "/"
+        return files.filter { $0.name.lowercased().hasPrefix(prefix) }
+    }
+
+    /// The library folder matching `name` case-insensitively, as the catalog
+    /// spells it; nil when no populated folder matches.
+    static func resolveFolderName(_ name: String, of kind: AssetKind) -> String? {
+        let wanted = name.trimmingCharacters(in: CharacterSet(charactersIn: "/ ")).lowercased()
+        guard !wanted.isEmpty else { return nil }
+        let folders = populatedFolderNames(of: kind)
+        if let exact = folders.first(where: { $0.lowercased() == wanted }) { return exact }
+        // "folder A" for a nested "Season 2/folder A": match on the last component.
+        let matches = folders.filter { $0.split(separator: "/").last?.lowercased() == wanted }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
+    nonisolated enum MoveError: LocalizedError {
+        case intoItself
+
+        var errorDescription: String? {
+            switch self {
+            case .intoItself: return "A folder can't be moved into itself."
+            }
+        }
+    }
+
+    /// Move a file or folder into another folder of the same library,
+    /// renaming on collision. Moving into the folder it is already in is a
+    /// no-op; moving a folder into itself or a descendant is refused.
+    @discardableResult
+    static func move(_ item: AssetItem, into folder: URL) throws -> URL {
+        let sourceFolder = item.url.deletingLastPathComponent().resolvingSymlinksInPath().path
+        let targetFolder = folder.resolvingSymlinksInPath().path
+        guard sourceFolder != targetFolder else { return item.url }
+        if item.isFolder {
+            let itemPath = item.url.resolvingSymlinksInPath().path
+            if targetFolder == itemPath || targetFolder.hasPrefix(itemPath + "/") {
+                throw MoveError.intoItself
+            }
+        }
+        let destination = uniqueDestination(for: item.name, in: folder)
+        try FileManager.default.moveItem(at: item.url, to: destination)
+        invalidateCatalog()
+        return destination
+    }
+
     static func createFolder(named name: String, in folder: URL) throws {
         let target = folder.appendingPathComponent(ProfileStore.sanitize(name), isDirectory: true)
         try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false)

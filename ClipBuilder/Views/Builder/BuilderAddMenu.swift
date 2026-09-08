@@ -29,13 +29,23 @@ struct BuilderAddMenu: View {
             .help(store.bumpers.isEmpty ? "Add short videos under Resources > Bumpers" : "Insert a bumper at the playhead")
 
             Menu("Music", systemImage: "music.note") {
-                let music = WizardEngine.availableMusic()
-                if music.isEmpty {
+                let groups = WizardEngine.musicByFolder()
+                if groups.isEmpty {
                     Text("Add music files to the Music library first")
                 } else {
-                    ForEach(music, id: \.name) { track in
-                        Button(track.name) {
-                            store.builder.addSound(name: track.name)
+                    ForEach(groups, id: \.folder) { group in
+                        if group.folder.isEmpty {
+                            ForEach(group.tracks, id: \.name) { track in
+                                Button(track.name) { store.builder.addSound(name: track.name) }
+                            }
+                        } else {
+                            Menu(group.folder, systemImage: "folder") {
+                                ForEach(group.tracks, id: \.name) { track in
+                                    Button(track.name.split(separator: "/").last.map(String.init) ?? track.name) {
+                                        store.builder.addSound(name: track.name)
+                                    }
+                                }
+                            }
                         }
                     }
                 }

@@ -34,7 +34,9 @@ struct WizardView: View {
     @AppStorage("wizard.modelOverride") private var copiedModelOverride = ""
     @AppStorage(AISettingsPreferences.sourceNameKey) private var pastedSourceName = "another run"
     @AppStorage(AISettingsPreferences.snapshotKey) private var pastedSnapshot = ""
+    @AppStorage(WizardDefaults.musicFolderKey) private var musicFolderRaw = ""
     @State private var musicCount = 0
+    @State private var musicFolders: [String] = []
     @State private var showTrainingGuide = false
     @State private var showGapReport = false
     @State private var showSourcePicker = false
@@ -425,9 +427,24 @@ struct WizardView: View {
                     }
                 }
 
+                if audioMode.useMusic, !musicFolders.isEmpty {
+                    Picker("Music from", selection: $musicFolderRaw) {
+                        Text("Whole library").tag("")
+                        Divider()
+                        ForEach(musicFolders, id: \.self) { folder in
+                            Text(folder).tag(folder)
+                        }
+                    }
+                    .help("Only songs in this Music folder (and its subfolders) are offered to the planner")
+                    .onChange(of: musicFolderRaw) { refreshMusicCount() }
+                }
+
                 if audioMode.useMusic && musicCount == 0 {
                     HStack {
-                        Label("No music has been added yet", systemImage: "music.note.list")
+                        Label(musicFolderRaw.isEmpty
+                              ? "No music has been added yet"
+                              : "The “\(musicFolderRaw)” folder has no music — the whole library will be used",
+                              systemImage: "music.note.list")
                             .font(.caption)
                             .foregroundStyle(.orange)
                         Spacer()
@@ -793,7 +810,14 @@ struct WizardView: View {
     }
 
     private func refreshMusicCount() {
-        musicCount = WizardEngine.availableMusic().count
+        musicFolders = WizardEngine.musicFolders()
+        // A folder that was renamed or emptied falls back to the library.
+        if !musicFolderRaw.isEmpty,
+           let resolved = AssetStore.resolveFolderName(musicFolderRaw, of: .music),
+           resolved != musicFolderRaw {
+            musicFolderRaw = resolved
+        }
+        musicCount = WizardEngine.availableMusic(inFolder: musicFolderRaw).count
     }
 
     private func migrateLegacySelections() {
@@ -892,6 +916,10 @@ struct WizardView: View {
                 audioModeRaw = WizardAudioMode.original.rawValue
             }
         }
+        if let folder = parsed.musicFolder {
+            musicFolderRaw = folder
+            refreshMusicCount()
+        }
         applyParsedTextOptions(captions: parsed.addCaptions,
                                headlines: parsed.enableTextOverlays)
 
@@ -947,6 +975,7 @@ struct WizardView: View {
         options.stackLevel = stackLevelRaw
         options.modelOverride = copiedModelOverride.isEmpty ? nil : copiedModelOverride
         options.useMusic = audio.useMusic && musicAvailable
+        options.musicFolder = options.useMusic && !musicFolderRaw.isEmpty ? musicFolderRaw : nil
         options.renderSettings = pasted?.renderSettings ?? store.activeProfile.defaultRenderSettings
         options.pacing = pasted?.pacing ?? store.activeProfile.defaultPacing
         options.captionLanguage = captionLanguage.isEmpty ? nil : captionLanguage
