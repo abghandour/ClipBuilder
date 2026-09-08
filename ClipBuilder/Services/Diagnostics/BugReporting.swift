@@ -11,6 +11,7 @@ enum BugReporting {
 
     /// The override permits missing-key tests without configuring the process-wide kit.
     static func configureIfPossible(store: AppStore, info: [String: Any]? = nil) {
+        startFieldDiagnostics()
         let info = info ?? Bundle.main.infoDictionary ?? [:]
         let key = (info["VCIngestKey"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let endpoint = (info["VCEndpoint"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -58,6 +59,37 @@ enum BugReporting {
         let context = snapshot.read()
         BugReporter.log("app", "Launch version=\(context.version) build=\(context.build) dataFolder=\(context.dataFolder)")
         store.startBugReportObservation()
+    }
+
+    /// The main-thread watchdog and the click-timing monitor run in every
+    /// build, configured kit or not: their output goes to the rolling log and
+    /// the diagnostics folder that bug reports pick up, and to the unified
+    /// log for a Console.app session. Idempotent.
+    private static var fieldDiagnosticsStarted = false
+
+    static func startFieldDiagnostics() {
+        guard !fieldDiagnosticsStarted else { return }
+        fieldDiagnosticsStarted = true
+        UITiming.install()
+        let directory = DiagnosticFiles.directory(
+            under: SettingsStore.dataDirectory.appendingPathComponent("logs", isDirectory: true))
+        MainThreadWatchdog.shared.start(directory: directory) { stall in
+            let seconds = String(format: "%.2f", stall.duration)
+            let sample = stall.sampleFile.map { " — sample: \($0.lastPathComponent)" }
+                ?? (stall.duration >= 1 ? " — no sample captured" : "")
+            BugReporter.log("hang", "Main thread stalled \(seconds) s\(sample)")
+            Logger(subsystem: "com.mokotti-solutions.clipbuilder", category: "watchdog")
+                .error("Main thread stalled \(seconds, privacy: .public) s\(sample, privacy: .public)")
+        }
+        // `-ClipBuilderSimulateStall 2` blocks the main thread for that many
+        // seconds shortly after launch, to prove the watchdog end to end.
+        let simulated = UserDefaults.standard.double(forKey: "ClipBuilderSimulateStall")
+        if simulated > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                BugReporter.log("hang", "Simulating a \(simulated) s main-thread stall")
+                Thread.sleep(forTimeInterval: simulated)
+            }
+        }
     }
 
     static func presentReport(title: String? = nil, details: String? = nil) {

@@ -279,9 +279,10 @@ struct AnalyzeView: View {
         }
         .onAppear { restoreProjectState() }
         .onChange(of: store.projectStateVersion) { restoreProjectState() }
-        .onChange(of: selection, initial: true) { _, new in
+        .onChange(of: selection, initial: true) { old, new in
             // Mid-load the table's selection is the previous project's.
             if !store.isLoadingProject { store.sourceSelection = new }
+            if old != new { UITiming.selectionChanged(screen: "Sources", count: new.count) }
             syncPreview(to: new)
         }
     }
@@ -877,6 +878,7 @@ private struct VideoPreviewPane: View {
             _ = try? await asset.load(.isPlayable, .duration, .preferredTransform)
             guard !Task.isCancelled else { return }
             player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+            UITiming.responseReady(screen: "Sources", what: "preview player")
             roster = await store.videoPeople(for: video.id)
         }
         // Re-check when a transcription for this video finishes.
