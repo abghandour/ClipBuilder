@@ -374,6 +374,10 @@ final class AppStore {
     /// stays silent unless there is something to install.
     var updateCheckResult: UpdateCheckResult?
     var isDownloadingUpdate = false
+    /// Set once the update flow has already run `flushForTermination()`, so
+    /// the app delegate can answer `terminate` with `.terminateNow` instead
+    /// of deferring (see `installUpdate`).
+    @ObservationIgnored var hasFlushedForTermination = false
     private var hasCheckedForUpdatesAtLaunch = false
 
     // Required command-line tools (ffmpeg, ffprobe, yt-dlp)
@@ -1978,6 +1982,7 @@ final class AppStore {
         let audio = WizardDefaults.audioMode(defaults: defaults)
         options.useMusic = audio.useMusic && !WizardEngine.availableMusic().isEmpty
         options.muteSource = audio.muteSource && options.useMusic
+        options.musicFolder = options.useMusic ? WizardDefaults.musicFolder(defaults: defaults) : nil
         options.formatPreset = defaults.string(forKey: "wizard.formatPreset") ?? "custom"
         let text = WizardDefaults.textMode(defaults: defaults)
             .output(transcriptsAvailable: transcriptsAvailable, recipe: options.formatPreset)
@@ -4392,6 +4397,13 @@ final class AppStore {
     /// the installer can replace the app cleanly. The quit waits for
     /// Installer to be running; if it never launches, the app stays open,
     /// reveals the pkg in Finder, and explains what went wrong.
+    ///
+    /// The flush happens here, before `terminate`, rather than through the
+    /// delegate's `.terminateLater` path: that path spins a nested run loop
+    /// inside `terminate`, and because this call site is itself a main-queue
+    /// (Task) callout, the nested loop can never drain the main-actor flush
+    /// task that would reply to it. The app then sits forever behind the
+    /// "Downloading update…" overlay with Installer already open.
     func installUpdate(_ update: AppUpdate) {
         guard !isDownloadingUpdate else { return }
         isDownloadingUpdate = true
@@ -4401,6 +4413,8 @@ final class AppStore {
                 let downloaded = try await UpdateService.downloadInstaller(update)
                 pkg = downloaded
                 try await UpdateService.launchInstaller(at: downloaded)
+                await flushForTermination()
+                hasFlushedForTermination = true
                 NSApp.terminate(nil)
             } catch {
                 if let pkg {

@@ -15,10 +15,14 @@ final class TerminationDelegate: NSObject, NSApplicationDelegate {
     weak var store: AppStore?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let store else {
+        guard let store, !store.hasFlushedForTermination else {
             BugReporter.markCleanExit()
             return .terminateNow
         }
+        // Deferring only works when `terminate` was reached from the event
+        // loop (Cmd-Q). A caller inside a main-queue callout must flush first
+        // and set `hasFlushedForTermination`, or the nested run loop below
+        // never runs this task and the app hangs.
         Task { @MainActor in
             await store.flushForTermination()
             BugReporter.markCleanExit()
