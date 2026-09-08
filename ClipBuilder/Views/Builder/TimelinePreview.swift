@@ -23,6 +23,9 @@ nonisolated struct PreviewMusicBlock: Sendable {
     var timelineStart: Double
     var duration: Double
     var volume: Double
+    /// Where in the song this block starts: nonzero for the pieces left
+    /// after a bumper cuts a block, so the song continues rather than restarts.
+    var sourceOffset: Double = 0
 }
 
 nonisolated enum PreviewError: Error, CustomStringConvertible {
@@ -177,13 +180,14 @@ nonisolated enum TimelinePreviewComposer {
                 let sourceDuration = (try? await source.load(.duration).seconds) ?? block.duration
                 // Overlapping blocks: start where the previous one ended.
                 let start = max(block.timelineStart, cursor.seconds)
-                let clamped = min(block.duration - (start - block.timelineStart), sourceDuration)
+                let sourceStart = block.sourceOffset + (start - block.timelineStart)
+                let clamped = min(block.duration - (start - block.timelineStart), sourceDuration - sourceStart)
                 guard clamped > 0.01 else { continue }
                 if time(start) > cursor {
                     musicTrack.insertEmptyTimeRange(CMTimeRange(start: cursor, end: time(start)))
                 }
                 try musicTrack.insertTimeRange(
-                    CMTimeRange(start: time(start - block.timelineStart), duration: time(clamped)),
+                    CMTimeRange(start: time(sourceStart), duration: time(clamped)),
                     of: sourceAudio, at: time(start))
                 musicParams.setVolume(Float(block.volume), at: time(start))
                 cursor = time(start + clamped)
@@ -210,7 +214,8 @@ extension BuilderTimelineModel {
     /// Flatten the multi-track document into non-overlapping preview segments:
     /// at each instant the top-most clip wins, matching PreviewPane's draw
     /// order (highest track, then stack order).
-    func previewPlan() -> (segments: [PreviewSegment], music: [PreviewMusicBlock]) {
+    /// - Parameter musicLookup: track name → file; nil reads the Music library.
+    func previewPlan(musicLookup: [String: URL]? = nil) -> (segments: [PreviewSegment], music: [PreviewMusicBlock]) {
         let clips = document.videoTrack
         typealias Candidate = (clip: TimelineClip, index: Int, end: Double)
 
@@ -299,16 +304,21 @@ extension BuilderTimelineModel {
             }
         }
 
-        let musicLookup = Dictionary(uniqueKeysWithValues:
+        let musicLookup = musicLookup ?? Dictionary(uniqueKeysWithValues:
             WizardEngine.availableMusic().map { ($0.name, $0.url) })
+        let bumperSpans = document.bumperSpans
         let music = document.soundTrack
             .sorted { $0.startTime < $1.startTime }
-            .compactMap { item -> PreviewMusicBlock? in
-                guard let url = musicLookup[item.name] else { return nil }
-                return PreviewMusicBlock(url: url,
-                                         timelineStart: item.startTime,
-                                         duration: item.duration,
-                                         volume: Double(item.volume) / 5.0 * 0.7)
+            .flatMap { item -> [PreviewMusicBlock] in
+                guard let url = musicLookup[item.name], item.duration > 0 else { return [] }
+                // Silent under bumpers, like the final render; each remaining
+                // piece keeps its place in the song.
+                return TimelineDocument.subtracting(bumperSpans, from: item.startTime..<(item.startTime + item.duration))
+                    .map { PreviewMusicBlock(url: url,
+                                             timelineStart: $0.lowerBound,
+                                             duration: $0.upperBound - $0.lowerBound,
+                                             volume: Double(item.volume) / 5.0 * 0.7,
+                                             sourceOffset: $0.lowerBound - item.startTime) }
             }
         return (segments, music)
     }

@@ -157,6 +157,49 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         return track < block.layout.areaCount
     }
 
+    /// Time ranges owned by bumpers. A bumper is the highest-priority item
+    /// on the timeline: while it plays nothing else is rendered or heard.
+    var bumperSpans: [Range<Double>] {
+        videoTrack.filter(\.bumper)
+            .map { $0.startTime..<($0.startTime + max(0, $0.duration)) }
+            .filter { !$0.isEmpty }
+            .sorted { $0.lowerBound < $1.lowerBound }
+    }
+
+    /// The parts of `clip` a bumper covers; empty when it plays in full.
+    func bumperCoverage(of clip: TimelineClip) -> [Range<Double>] {
+        guard !clip.bumper else { return [] }
+        let start = clip.startTime, end = clip.startTime + clip.duration
+        return bumperSpans.compactMap { span in
+            // Check the intersection before forming a range: a clip that lies
+            // entirely before or after the bumper would give an inverted one.
+            let lower = max(start, span.lowerBound), upper = min(end, span.upperBound)
+            return upper - lower > 0.001 ? lower..<upper : nil
+        }
+    }
+
+    /// Whether a bumper hides any part of the clip.
+    func isCoveredByBumper(_ clip: TimelineClip) -> Bool {
+        !bumperCoverage(of: clip).isEmpty
+    }
+
+    /// `range` with every span cut out, in order. Pieces shorter than
+    /// `minimum` are dropped.
+    static func subtracting(_ spans: [Range<Double>], from range: Range<Double>,
+                            minimum: Double = 0.01) -> [Range<Double>] {
+        var pieces = [range]
+        for span in spans.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            pieces = pieces.flatMap { piece -> [Range<Double>] in
+                guard piece.lowerBound < span.upperBound, piece.upperBound > span.lowerBound else { return [piece] }
+                var out: [Range<Double>] = []
+                if piece.lowerBound < span.lowerBound { out.append(piece.lowerBound..<span.lowerBound) }
+                if piece.upperBound > span.upperBound { out.append(span.upperBound..<piece.upperBound) }
+                return out
+            }
+        }
+        return pieces.filter { $0.upperBound - $0.lowerBound >= minimum }
+    }
+
     /// Whether some part of the clip falls where its track has no area —
     /// that stretch is not rendered.
     func isOrphaned(_ clip: TimelineClip) -> Bool {
@@ -295,6 +338,40 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
 /// that time. Areas map to video tracks in reading order (left-to-right,
 /// then top-to-bottom), so Track I shows the first area, Track II the
 /// second, and so on.
+/// What a bumper does to the rest of the timeline. Either way the bumper
+/// itself is exclusive while it plays; the difference is whether the
+/// timeline waits for it or keeps running underneath.
+nonisolated enum BumperMode: String, Codable, Sendable, CaseIterable, Identifiable {
+    /// The timeline keeps running; whatever falls under the bumper is hidden.
+    case overlap
+    /// The timeline pauses: everything from the bumper's start is pushed
+    /// later by its length and resumes after it.
+    case pause
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .overlap: "Overlap everything"
+        case .pause: "Pause everything"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .overlap: "The timeline keeps running underneath. Whatever falls under the bumper is not shown or heard."
+        case .pause: "The timeline waits. Everything after the bumper's start moves later by its length and resumes when it ends."
+        }
+    }
+
+    var badge: String {
+        switch self {
+        case .overlap: "covers everything"
+        case .pause: "pauses everything"
+        }
+    }
+}
+
 nonisolated struct CropBlockItem: Codable, Sendable, Equatable, Identifiable {
     /// SwiftUI identity only — never encoded.
     var uid = UUID()
@@ -469,6 +546,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     var bumper: Bool = false
     /// Snapshot survives deletion or renaming in Resources.
     var bumperName: String?
+    /// How the bumper treats the rest of the timeline (bumpers only).
+    var bumperMode: BumperMode = .overlap
     var sceneID: Int64?
     var videoFile: String?
     var sourceStart: Double?      // trim start within the source file
@@ -509,6 +588,9 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
 
     mutating func enforceBumperRules() {
         guard bumper else { return }
+        // Bumpers live on the cropping row; the track index is meaningless
+        // but stays 0 so older code paths never index past the track count.
+        track = 0
         sceneID = nil
         wide = false
         centerStage = false
@@ -540,6 +622,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case sourceEnd = "end"
         case startTime = "start_time"
         case bumper, bumperName
+        case bumperMode = "bumper_mode"
         case track, wide, muted, position, volume, captions, duration
         case stackOrder = "stack_order"
         case transIn = "trans_in"
@@ -558,6 +641,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         bumper = try container.decodeIfPresent(Bool.self, forKey: .bumper) ?? false
         bumperName = try container.decodeIfPresent(String.self, forKey: .bumperName)
+        bumperMode = try container.decodeIfPresent(BumperMode.self, forKey: .bumperMode) ?? .overlap
         sceneID = try container.decodeIfPresent(Int64.self, forKey: .sceneID)
         videoFile = try container.decodeIfPresent(String.self, forKey: .videoFile)
         sourceStart = try container.decodeIfPresent(Double.self, forKey: .sourceStart)
@@ -609,6 +693,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(bumper, forKey: .bumper)
         try container.encodeIfPresent(bumperName, forKey: .bumperName)
+        if bumper { try container.encode(bumperMode, forKey: .bumperMode) }
         try container.encode("clip", forKey: .type)
         try container.encode(startTime, forKey: .startTime)
         try container.encode(track, forKey: .track)
@@ -648,7 +733,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     }
 
     static func == (lhs: TimelineClip, rhs: TimelineClip) -> Bool {
-        lhs.uid == rhs.uid && lhs.bumper == rhs.bumper && lhs.bumperName == rhs.bumperName && lhs.sceneID == rhs.sceneID && lhs.videoFile == rhs.videoFile
+        lhs.uid == rhs.uid && lhs.bumper == rhs.bumper && lhs.bumperName == rhs.bumperName && lhs.bumperMode == rhs.bumperMode && lhs.sceneID == rhs.sceneID && lhs.videoFile == rhs.videoFile
             && lhs.sourceStart == rhs.sourceStart && lhs.startTime == rhs.startTime
             && lhs.duration == rhs.duration && lhs.track == rhs.track && lhs.wide == rhs.wide
             && lhs.stackOrder == rhs.stackOrder && lhs.volume == rhs.volume && lhs.muted == rhs.muted

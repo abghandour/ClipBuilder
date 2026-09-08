@@ -11,15 +11,18 @@ struct TimelineLayoutSnapshot {
     }
 
     var videoTracks: [VideoTrack]
+    /// Bumpers, in time order; drawn on the cropping row, never in a track.
+    var bumpers: [TimelineClip]
     var overlayEntries: [OverlayLaneEntry]
     var overlayRows: [UUID: Int]
     var overlayRowCount: Int
 
     init(document: TimelineDocument) {
         var clipsByTrack = Array(repeating: [TimelineClip](), count: document.trackCount)
-        for clip in document.videoTrack where clipsByTrack.indices.contains(clip.track) {
+        for clip in document.videoTrack where !clip.bumper && clipsByTrack.indices.contains(clip.track) {
             clipsByTrack[clip.track].append(clip)
         }
+        bumpers = document.videoTrack.filter(\.bumper).sorted { $0.startTime < $1.startTime }
         videoTracks = clipsByTrack.map { clips in
             let sorted = clips.sorted { $0.startTime < $1.startTime }
             let layout = Self.packRows(sorted.map { ($0.uid, $0.startTime, $0.startTime + $0.duration) })

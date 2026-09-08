@@ -123,6 +123,31 @@ struct ClipInspector: View {
                 }
             }
 
+            if clip.bumper {
+                InspectorSection("Bumper") {
+                    InspectorRow("Behavior") {
+                        Picker("Behavior", selection: Binding(
+                            get: { clip.bumperMode },
+                            set: { model.setBumperMode(clip.uid, mode: $0) })) {
+                            ForEach(BumperMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .help("Whether the timeline waits for the bumper or keeps running underneath it")
+                    }
+                    Text(clip.bumperMode.summary + " Either way the bumper plays full screen and alone.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else if !model.document.bumperCoverage(of: clip).isEmpty {
+                let hidden = model.document.bumperCoverage(of: clip).reduce(0) { $0 + $1.upperBound - $1.lowerBound }
+                Label(String(format: "A bumper covers %.1f s of this clip; that stretch is not shown or heard.", hidden),
+                      systemImage: "film.stack")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             // Trim against the raw video, right under the clip identity.
             InspectorSection("Trim") {
                 ClipTrimEditor(clip: clip)

@@ -44,6 +44,70 @@ nonisolated struct BumperPlanner {
         return log
     }
 
+    /// The inverse of ``insertGap``: close the stretch `time..<time+duration`
+    /// on every lane. Items after it move earlier; items spanning it shrink;
+    /// items entirely inside it collapse to the gap's start (video clips) or
+    /// disappear (sound, overlays, crop blocks). Video pieces a previous
+    /// insertion split stay two clips; sequential packing keeps them
+    /// adjacent, which plays as one.
+    static func removeGap(in document: inout TimelineDocument, at time: Double, duration: Double) {
+        guard duration > 0 else { return }
+        let gap = time..<(time + duration)
+        func closed(_ start: Double, _ end: Double) -> (start: Double, end: Double)? {
+            if end <= gap.lowerBound { return (start, end) }
+            if start >= gap.upperBound { return (start - duration, end - duration) }
+            let before = max(0, gap.lowerBound - start)
+            let after = max(0, end - gap.upperBound)
+            guard before + after > 0.001 else { return nil }
+            let newStart = start < gap.lowerBound ? start : gap.lowerBound
+            return (newStart, newStart + before + after)
+        }
+        for i in document.videoTrack.indices {
+            let clip = document.videoTrack[i]
+            if clip.startTime >= gap.upperBound {
+                document.videoTrack[i].startTime -= duration
+            } else if clip.startTime >= gap.lowerBound {
+                document.videoTrack[i].startTime = gap.lowerBound
+            }
+        }
+        document.soundTrack = document.soundTrack.compactMap { item in
+            guard let range = closed(item.startTime, item.startTime + item.duration) else { return nil }
+            var item = item
+            item.startTime = range.start
+            item.duration = range.end - range.start
+            return item
+        }
+        document.textOverlays = document.textOverlays.compactMap { item in
+            guard let range = closed(item.startTime, item.endTime) else { return nil }
+            var item = item
+            item.startTime = range.start
+            item.endTime = range.end
+            return item
+        }
+        document.imageOverlays = document.imageOverlays.compactMap { item in
+            guard let range = closed(item.startTime, item.endTime) else { return nil }
+            var item = item
+            item.startTime = range.start
+            item.endTime = range.end
+            return item
+        }
+        document.overlayBlocks = document.overlayBlocks.compactMap { item in
+            guard let range = closed(item.startTime, item.endTime) else { return nil }
+            var item = item
+            item.startTime = range.start
+            item.duration = range.end - range.start
+            return item
+        }
+        document.cropBlocks = document.cropBlocks.compactMap { block in
+            guard let range = closed(block.startTime, block.endTime) else { return nil }
+            var block = block
+            block.startTime = range.start
+            block.duration = range.end - range.start
+            return block
+        }
+        if !document.cropBlocks.isEmpty { document.normalizeCropBlocks() }
+    }
+
     /// Split crossing video/crop items and shift every lane. A sound already
     /// playing continues across the insertion; later sound starts move with
     /// their footage. Overlays keep their window and are suppressed by the
@@ -88,17 +152,29 @@ nonisolated struct BumperPlanner {
             else if document.overlayBlocks[i].endTime > time { document.overlayBlocks[i].duration += duration }
         }
         var blocks: [CropBlockItem] = []
+        var spannedByLayout = false
         for var block in document.cropBlocks {
             if block.startTime >= time { block.startTime += duration }
             else if block.endTime > time {
-                blocks.append(CropBlockItem(layout: block.layout, startTime: time + duration,
-                                           duration: block.endTime - time))
-                block.duration = time - block.startTime
+                // Splitting would leave a piece the row normalizer drops
+                // (under 0.5 s), and that piece could never be restored when
+                // the gap closes. Stretch the block across the gap instead;
+                // the bumper covers the row there anyway.
+                if time - block.startTime < 0.5 || block.endTime - time < 0.5 {
+                    block.duration += duration
+                    spannedByLayout = true
+                } else {
+                    blocks.append(CropBlockItem(layout: block.layout, startTime: time + duration,
+                                               duration: block.endTime - time))
+                    block.duration = time - block.startTime
+                }
             }
             blocks.append(block)
         }
         if !blocks.isEmpty {
-            blocks.append(CropBlockItem(layout: .fullScreen, startTime: time, duration: duration))
+            if !spannedByLayout {
+                blocks.append(CropBlockItem(layout: .fullScreen, startTime: time, duration: duration))
+            }
             document.cropBlocks = blocks.sorted { $0.startTime < $1.startTime }
         }
     }

@@ -339,23 +339,31 @@ actor MultitrackRenderer {
         if !document.soundTrack.isEmpty {
             let musicLookup = Dictionary(uniqueKeysWithValues:
                 WizardEngine.availableMusic().map { ($0.name, $0.url) })
-            var blocks: [(start: Double, duration: Double, music: URL?, volume: Int)] = []
+            var blocks: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)] = []
             for item in document.soundTrack.sorted(by: { $0.startTime < $1.startTime }) {
-                guard let url = musicLookup[item.name] else { continue }
-                blocks.append((item.startTime, item.duration, url, item.volume))
+                guard let url = musicLookup[item.name], item.duration > 0 else { continue }
+                blocks.append((item.startTime, item.duration, url, item.volume, 0))
+            }
+            // A bumper owns the sound as well as the picture: cut every
+            // music block around the measured bumper spans. Each remaining
+            // piece keeps its offset into the song so it continues, not restarts.
+            blocks = blocks.flatMap { block in
+                TimelineDocument.subtracting(bumperSpans, from: block.start..<(block.start + block.duration))
+                    .map { (start: $0.lowerBound, duration: $0.upperBound - $0.lowerBound,
+                            music: block.music, volume: block.volume, offset: $0.lowerBound - block.start) }
             }
             if !blocks.isEmpty {
-                var filled: [(start: Double, duration: Double, music: URL?, volume: Int)] = []
+                var filled: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)] = []
                 var soundCursor = 0.0
                 for block in blocks {
                     if block.start > soundCursor + 0.05 {
-                        filled.append((soundCursor, block.start - soundCursor, nil, 0))
+                        filled.append((soundCursor, block.start - soundCursor, nil, 0, 0))
                     }
                     filled.append(block)
                     soundCursor = block.start + block.duration
                 }
                 if soundCursor < videoDuration {
-                    filled.append((soundCursor, videoDuration - soundCursor, nil, 0))
+                    filled.append((soundCursor, videoDuration - soundCursor, nil, 0, 0))
                 }
                 emit("Building music track (\(blocks.count) block(s))…")
                 let musicTrack = scratch.appendingPathComponent("music_track.m4a")
@@ -1133,7 +1141,7 @@ actor MultitrackRenderer {
 
     /// Port of video.py build_music_track(): concat per-block trimmed music
     /// (volume = level/5 × 0.7) and silence gaps, 2s fade-out at the end.
-    private func buildMusicTrack(segments: [(start: Double, duration: Double, music: URL?, volume: Int)],
+    private func buildMusicTrack(segments: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)],
                                  totalDuration: Double, output: URL) async throws {
         var arguments = ["-y"]
         var filters: [String] = []
@@ -1142,8 +1150,8 @@ actor MultitrackRenderer {
             let musicVolume = Double(segment.volume) / 5.0 * 0.7
             if let music = segment.music, musicVolume > 0 {
                 arguments += ["-stream_loop", "-1", "-i", music.path]
-                filters.append(String(format: "[%d:a]atrim=0:%.3f,asetpts=PTS-STARTPTS,volume=%.3f[s%d]",
-                                      index, segment.duration, musicVolume, index))
+                filters.append(String(format: "[%d:a]atrim=%.3f:%.3f,asetpts=PTS-STARTPTS,volume=%.3f[s%d]",
+                                      index, segment.offset, segment.offset + segment.duration, musicVolume, index))
             } else {
                 arguments += ["-f", "lavfi", "-i",
                               String(format: "anullsrc=r=44100:cl=stereo:d=%.3f", segment.duration)]
@@ -1174,7 +1182,7 @@ actor MultitrackRenderer {
     /// Port of video.py overlay_music_track(): duck the original audio per
     /// block (1 − level/5) and mix the pre-built music bed under it.
     private func overlayMusicTrack(video: URL, musicTrack: URL,
-                                   segments: [(start: Double, duration: Double, music: URL?, volume: Int)],
+                                   segments: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)],
                                    output: URL) async throws {
         if await FFmpeg.hasAudioStream(video) {
             let parts = segments.map { segment in

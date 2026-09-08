@@ -26,7 +26,8 @@ struct BuilderAddMenu: View {
                 }
             }
             .disabled(store.bumpers.isEmpty)
-            .help(store.bumpers.isEmpty ? "Add short videos under Resources > Bumpers" : "Insert a bumper at the playhead")
+            .help(store.bumpers.isEmpty ? "Add short videos under Resources > Bumpers"
+                  : "Insert a bumper on the cropping row at the playhead; it covers everything while it plays")
 
             Menu("Music", systemImage: "music.note") {
                 let groups = WizardEngine.musicByFolder()

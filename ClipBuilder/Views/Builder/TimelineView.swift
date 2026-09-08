@@ -533,6 +533,12 @@ struct TimelineClipBlock: View {
                             .foregroundStyle(.yellow)
                             .help("Part of this clip has no crop area on this track and will not render")
                     }
+                    if model.document.isCoveredByBumper(clip) {
+                        Image(systemName: "film.stack")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.purple)
+                            .help("A bumper covers part of this clip; that stretch is not shown or heard")
+                    }
                     Spacer(minLength: 0)
                 }
                 Text(String(format: "%.1fs", clip.duration))
@@ -543,6 +549,22 @@ struct TimelineClipBlock: View {
         }
         .frame(width: width, height: blockHeight)
         .clipShape(RoundedRectangle(cornerRadius: 5))
+        .overlay {
+            // Shade the stretches a bumper covers, so hidden footage reads
+            // as hidden rather than quietly missing from the render.
+            let coverage = model.document.bumperCoverage(of: clip)
+            if !coverage.isEmpty {
+                ZStack(alignment: .leading) {
+                    ForEach(Array(coverage.enumerated()), id: \.offset) { _, range in
+                        Rectangle()
+                            .fill(Color.purple.opacity(0.45))
+                            .frame(width: max(2, CGFloat(range.upperBound - range.lowerBound) * pps))
+                            .offset(x: CGFloat(range.lowerBound - clip.startTime) * pps)
+                    }
+                }
+                .allowsHitTesting(false)
+            }
+        }
         // The fill-scaled thumbnail overflows the block (a 20 s clip's 16:9
         // frame is hundreds of points tall); clipShape hides that but hit
         // testing does not, so without this a long clip catches clicks
@@ -680,7 +702,7 @@ struct CropLaneHeader: View {
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
             .controlSize(.small)
-            .help("Add a Screen Crop layout at the playhead. Layouts come from Resources > Screen Crop.")
+            .help("Add a Screen Crop layout or a bumper at the playhead. Layouts come from Resources > Screen Crop, bumpers from Resources > Bumpers.")
             .popover(isPresented: $showAdd) {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(BuilderTimelineModel.availableCropLayouts(), id: \.self) { layout in
@@ -700,9 +722,29 @@ struct CropLaneHeader: View {
                     .buttonStyle(.plain)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 3)
+                    Divider()
+                    Text("Bumpers")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                    if store.bumpers.isEmpty {
+                        Text("Add short videos under Resources > Bumpers")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    ForEach(store.bumpers) { bumper in
+                        Button(bumper.displayName) {
+                            model.addBumper(bumper)
+                            showAdd = false
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3)
+                        .disabled(bumper.duration == nil)
+                    }
                 }
                 .padding(10)
-                .frame(width: 200)
+                .frame(width: 220)
             }
         }
         .padding(.horizontal, 8)
@@ -728,8 +770,136 @@ struct CropLane: View {
                               isLast: block.uid == model.document.cropBlocks.last?.uid,
                               contentWidth: contentWidth)
             }
+            // Bumpers sit above the layouts: while one plays, nothing else
+            // on the timeline is shown or heard.
+            ForEach(model.timelineLayout().bumpers) { bumper in
+                BumperBlockView(clip: bumper, height: height)
+            }
         }
         .frame(width: contentWidth, height: height)
+    }
+}
+
+/// A bumper on the cropping row: full-screen, top priority, movable in
+/// time and trimmable at its right edge. Selecting it opens the inspector.
+struct BumperBlockView: View {
+    @Environment(AppStore.self) private var store
+    let clip: TimelineClip
+    let height: CGFloat
+
+    @State private var dragOffset: CGFloat = 0
+    @State private var isDragging = false
+    @State private var trimDelta: CGFloat = 0
+    @State private var isTrimming = false
+
+    var body: some View {
+        let model = store.builder
+        let pps = model.pointsPerSecond
+        let isSelected = model.selection == .clip(clip.uid)
+        let width = max(24, CGFloat(clip.duration) * pps + (isTrimming ? trimDelta : 0))
+        let missing = !FileManager.default.fileExists(atPath: clip.videoFile ?? "")
+        let name = store.bumperDisplayName(for: clip)
+
+        HStack(spacing: 6) {
+            if let url = model.sourceURL(for: clip), !missing {
+                VideoThumbnail(url: url, time: 0, cornerRadius: 3)
+                    .frame(width: (height - 14) * 9 / 16, height: height - 14)
+            } else {
+                Image(systemName: "film.stack")
+                    .frame(width: (height - 14) * 9 / 16, height: height - 14)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text("Bumper · \(name)")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    if missing {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.yellow)
+                            .help("Bumper file is missing")
+                    }
+                }
+                Text(String(format: "%.1fs · ", clip.duration) + clip.bumperMode.badge)
+                    .font(.caption2)
+                    .lineLimit(1)
+                    .opacity(0.85)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 6)
+        .foregroundStyle(.white)
+        .frame(width: width, height: height - 8, alignment: .leading)
+        .clipped()
+        .background(Color.purple.opacity(missing ? 0.5 : 0.85), in: RoundedRectangle(cornerRadius: 5))
+        // The whole block is the hit target for selecting and moving; the
+        // thumbnail and labels inside must not swallow the press.
+        .contentShape(RoundedRectangle(cornerRadius: 5))
+        .overlay {
+            RoundedRectangle(cornerRadius: 5)
+                .strokeBorder(isSelected ? Color.accentColor : .white.opacity(0.25),
+                              lineWidth: isSelected ? 2 : 1)
+                .allowsHitTesting(false)
+        }
+        // Move: the press anywhere on the block starts a drag; a plain
+        // click selects. High priority so the block wins over the lane
+        // and the scroll view, which otherwise claimed the first pixels.
+        .highPriorityGesture(DragGesture(minimumDistance: 2)
+            .onChanged { value in
+                if !isDragging { model.selection = .clip(clip.uid) }
+                isDragging = true
+                dragOffset = value.translation.width
+            }
+            .onEnded { value in
+                model.placeClip(clip.uid, startTime: clip.startTime + Double(value.translation.width / pps), track: 0)
+                isDragging = false
+                dragOffset = 0
+            })
+        .onTapGesture { model.selection = .clip(clip.uid) }
+        .overlay(alignment: .trailing) {
+            // Trim: a narrow grip on the right edge, added after the move
+            // gesture so it takes precedence only inside its own strip.
+            Rectangle()
+                .fill(.white.opacity(isSelected ? 0.5 : 0.25))
+                .frame(width: 6)
+                .clipShape(RoundedRectangle(cornerRadius: 2))
+                .padding(.vertical, 8)
+                .contentShape(Rectangle().inset(by: -3))
+                .resizeCursorOnHover()
+                .highPriorityGesture(DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        isTrimming = true
+                        trimDelta = value.translation.width
+                    }
+                    .onEnded { value in
+                        model.trimClip(clip.uid, duration: clip.duration + Double(value.translation.width / pps))
+                        isTrimming = false
+                        trimDelta = 0
+                    })
+                .help("Drag to change how long the bumper plays")
+        }
+        .offset(x: CGFloat(clip.startTime) * pps + (isDragging ? dragOffset : 0), y: 4)
+        .opacity(isDragging ? 0.75 : 1)
+        .zIndex(100 + clip.startTime)
+        .contextMenu {
+            Picker("Behavior", selection: Binding(
+                get: { clip.bumperMode },
+                set: { model.setBumperMode(clip.uid, mode: $0) })) {
+                ForEach(BumperMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            Button("Duplicate") { model.duplicateClip(clip.uid) }
+            Divider()
+            Button("Delete", role: .destructive) { model.removeClip(clip.uid) }
+        }
+        .help("Bumper, \(clip.bumperMode.title.lowercased()): plays full screen and alone for \(String(format: "%.1f", clip.duration)) seconds. Drag to move; drag the right edge to trim.")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Bumper \(name)")
+        .accessibilityValue("Starts at \(clip.startTime.timecode), " + String(format: "%.1f seconds", clip.duration))
+        .accessibilityHint("Covers every track while it plays.")
+        .accessibilityAction(named: "Move earlier") { model.nudgeBumper(clip.uid, by: -0.5) }
+        .accessibilityAction(named: "Move later") { model.nudgeBumper(clip.uid, by: 0.5) }
+        .accessibilityAction(named: "Delete") { model.removeClip(clip.uid) }
     }
 }
 

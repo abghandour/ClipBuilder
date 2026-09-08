@@ -317,6 +317,8 @@ final class BuilderTimelineModel {
     }
 
     private func hydrateClips() {
+        // Bumper rules hold even in a project with no analyzed scenes yet.
+        normalizeBumpers()
         guard !scenesByID.isEmpty else { return }
         for index in document.videoTrack.indices {
             var clip = document.videoTrack[index]
@@ -423,8 +425,9 @@ final class BuilderTimelineModel {
         return layout
     }
 
+    /// The track's own clips; bumpers belong to the cropping row.
     func clips(inTrack track: Int) -> [TimelineClip] {
-        document.videoTrack.filter { $0.track == track }
+        document.videoTrack.filter { $0.track == track && !$0.bumper }
     }
 
     /// The track whose area the cropping row highlights: the selected clip's
@@ -501,15 +504,179 @@ final class BuilderTimelineModel {
 
     // MARK: - Clip mutations
 
-    func addBumper(_ bumper: BumperAsset, at time: Double? = nil) {
-        guard let clip = bumper.clip(at: Self.snap(time ?? playhead)) else { return }
+    /// Bumpers go on the cropping row and are exclusive while they play.
+    /// In overlap mode nothing moves for them; in pause mode the timeline
+    /// opens a gap of the bumper's length. Two bumpers never overlap: a
+    /// bumper placed onto another slides to just after it.
+    func addBumper(_ bumper: BumperAsset, at time: Double? = nil, mode: BumperMode = .overlap) {
+        guard var clip = bumper.clip(at: max(0, Self.snap(time ?? playhead))) else { return }
         registerUndo("Add Bumper")
-        if document.trackSequential[0] {
+        clip.bumperMode = mode
+        clip.startTime = nonOverlappingBumperStart(clip.startTime, duration: clip.duration, excluding: nil)
+        if mode == .pause {
             BumperPlanner.insertGap(in: &document, at: clip.startTime, duration: clip.duration)
         }
         document.videoTrack.append(clip)
         selection = .clip(clip.uid)
         documentDidChange()
+    }
+
+    // MARK: - Bumper rules
+
+    /// Bumpers other than `excluding`, in time order.
+    private func otherBumpers(excluding uid: UUID?) -> [TimelineClip] {
+        document.videoTrack.filter { $0.bumper && $0.uid != uid }.sorted { $0.startTime < $1.startTime }
+    }
+
+    /// The first time at or after `start` where a bumper of `duration`
+    /// touches no other bumper.
+    func nonOverlappingBumperStart(_ start: Double, duration: Double, excluding uid: UUID?) -> Double {
+        var start = max(0, start)
+        let others = otherBumpers(excluding: uid)
+        // Round UP to the grid: rounding a 6.1 s end down to 6.0 would leave
+        // the overlap in place and this loop would never finish. The bound
+        // is a belt on top of that: each pass moves past at least one bumper.
+        for _ in 0...(others.count + 1) {
+            var moved = false
+            for other in others where start < other.startTime + other.duration - 0.001
+                && other.startTime < start + duration - 0.001 {
+                start = Self.snapUp(other.startTime + other.duration)
+                moved = true
+            }
+            if !moved { break }
+        }
+        return start
+    }
+
+    /// The half-second grid, never earlier than the given time.
+    static func snapUp(_ time: Double) -> Double {
+        max(0, (time * 2 - 0.0001).rounded(.up) / 2)
+    }
+
+    /// The longest an overlap-mode bumper at `start` can be before it would
+    /// touch the next bumper. Pause-mode bumpers push later bumpers instead.
+    func maximumBumperDuration(for uid: UUID) -> Double {
+        guard let clip = clip(uid), clip.bumper, clip.bumperMode == .overlap else { return .greatestFiniteMagnitude }
+        let next = otherBumpers(excluding: uid).first { $0.startTime >= clip.startTime + 0.001 }
+        return next.map { max(0.5, $0.startTime - clip.startTime) } ?? .greatestFiniteMagnitude
+    }
+
+    /// Switch a bumper between covering and pausing. Pausing opens the gap
+    /// the bumper needs; going back closes it.
+    func setBumperMode(_ uid: UUID, mode: BumperMode) {
+        guard let index = clipIndex(uid), document.videoTrack[index].bumper,
+              document.videoTrack[index].bumperMode != mode else { return }
+        registerUndo("Change Bumper Behavior")
+        var bumper = document.videoTrack.remove(at: index)
+        bumper.bumperMode = mode
+        switch mode {
+        case .pause:
+            BumperPlanner.insertGap(in: &document, at: bumper.startTime, duration: bumper.duration)
+        case .overlap:
+            BumperPlanner.removeGap(in: &document, at: bumper.startTime, duration: bumper.duration)
+            bumper.startTime = nonOverlappingBumperStart(bumper.startTime, duration: bumper.duration, excluding: uid)
+        }
+        document.videoTrack.append(bumper)
+        resolveAllLayouts()
+        documentDidChange()
+    }
+
+    /// Move a bumper to `startTime`, keeping the no-overlap rule and, for a
+    /// pausing bumper, closing its old gap and opening a new one.
+    private func moveBumper(at index: Int, to startTime: Double) {
+        var bumper = document.videoTrack.remove(at: index)
+        let old = bumper.startTime
+        var target = max(0, Self.snap(startTime))
+        if bumper.bumperMode == .pause {
+            BumperPlanner.removeGap(in: &document, at: old, duration: bumper.duration)
+            // The drop point was read off a timeline that still had the
+            // gap: content after it now sits earlier by the gap's length.
+            if target > old { target = max(old, target - bumper.duration) }
+        }
+        target = nonOverlappingBumperStart(target, duration: bumper.duration, excluding: bumper.uid)
+        bumper.startTime = target
+        if bumper.bumperMode == .pause {
+            BumperPlanner.insertGap(in: &document, at: target, duration: bumper.duration)
+        }
+        document.videoTrack.append(bumper)
+        resolveAllLayouts()
+    }
+
+    /// Move a bumper by a relative amount (arrow keys, accessibility). Unlike
+    /// a drop point, the delta is not read off the gapped timeline, so a
+    /// pausing bumper needs no drop adjustment.
+    func nudgeBumper(_ uid: UUID, by delta: Double) {
+        guard let index = clipIndex(uid), document.videoTrack[index].bumper else { return }
+        registerUndo("Move Bumper")
+        var bumper = document.videoTrack.remove(at: index)
+        if bumper.bumperMode == .pause {
+            BumperPlanner.removeGap(in: &document, at: bumper.startTime, duration: bumper.duration)
+        }
+        let target = nonOverlappingBumperStart(max(0, Self.snap(bumper.startTime + delta)),
+                                               duration: bumper.duration, excluding: bumper.uid)
+        bumper.startTime = target
+        if bumper.bumperMode == .pause {
+            BumperPlanner.insertGap(in: &document, at: target, duration: bumper.duration)
+        }
+        document.videoTrack.append(bumper)
+        resolveAllLayouts()
+        documentDidChange()
+    }
+
+    /// Change a bumper's length; a pausing bumper's gap grows or shrinks
+    /// with it and an overlapping one stops short of the next bumper.
+    private func resizeBumper(at index: Int, duration: Double) {
+        var bumper = document.videoTrack.remove(at: index)
+        let old = bumper.duration
+        var new = max(0.5, Self.snap(duration))
+        // Never longer than the bumper file itself, even when the file is
+        // shorter than the half-second minimum.
+        if let start = bumper.sourceStart, let end = bumper.sourceEnd {
+            new = max(0.05, min(new, (end - start) / bumper.effectiveSpeed))
+        }
+        if bumper.bumperMode == .overlap {
+            document.videoTrack.append(bumper)
+            new = min(new, maximumBumperDuration(for: bumper.uid))
+            document.videoTrack.removeLast()
+        }
+        if bumper.bumperMode == .pause {
+            if new > old {
+                BumperPlanner.insertGap(in: &document, at: bumper.startTime + old, duration: new - old)
+            } else if new < old {
+                BumperPlanner.removeGap(in: &document, at: bumper.startTime + new, duration: old - new)
+            }
+        }
+        bumper.duration = new
+        document.videoTrack.append(bumper)
+        resolveAllLayouts()
+    }
+
+    private func resolveAllLayouts() {
+        for track in 0..<document.trackCount { resolveLayout(track: track) }
+    }
+
+    /// Loaded documents: bumpers must not overlap; a later one that does
+    /// slides after the earlier one. A pausing bumper takes its gap along.
+    private func normalizeBumpers() {
+        let uids = document.videoTrack.filter(\.bumper)
+            .sorted { $0.startTime < $1.startTime }.map(\.uid)
+        var cursor = -Double.greatestFiniteMagnitude
+        for uid in uids {
+            guard let index = clipIndex(uid) else { continue }
+            if document.videoTrack[index].startTime < cursor - 0.001 {
+                var bumper = document.videoTrack.remove(at: index)
+                if bumper.bumperMode == .pause {
+                    BumperPlanner.removeGap(in: &document, at: bumper.startTime, duration: bumper.duration)
+                }
+                bumper.startTime = Self.snapUp(cursor)
+                if bumper.bumperMode == .pause {
+                    BumperPlanner.insertGap(in: &document, at: bumper.startTime, duration: bumper.duration)
+                }
+                document.videoTrack.append(bumper)
+            }
+            guard let moved = clip(uid) else { continue }
+            cursor = moved.startTime + moved.duration
+        }
     }
 
     func addScene(_ scene: SceneRecord, at time: Double? = nil, track: Int = 0) {
@@ -540,22 +707,33 @@ final class BuilderTimelineModel {
 
     func placeClip(_ uid: UUID, startTime: Double, track: Int) {
         guard let index = clipIndex(uid) else { return }
+        if document.videoTrack[index].bumper {
+            // Bumpers only move in time; the cropping row has no tracks.
+            registerUndo("Move Bumper")
+            moveBumper(at: index, to: startTime)
+            documentDidChange()
+            return
+        }
         let oldTrack = document.videoTrack[index].track
         let newTrack = min(max(0, track), document.trackCount - 1)
         // A track without an area there cannot take the clip: keep it put.
-        guard document.videoTrack[index].bumper || canPlace(track: newTrack, at: Self.snap(startTime)) else { return }
+        guard canPlace(track: newTrack, at: Self.snap(startTime)) else { return }
         registerUndo("Move Clip")
         document.videoTrack[index].startTime = Self.snap(startTime)
         document.videoTrack[index].track = newTrack
-        if !document.videoTrack[index].bumper {
-            resolveLayout(track: newTrack)
-            if oldTrack != newTrack { resolveLayout(track: oldTrack) }
-        }
+        resolveLayout(track: newTrack)
+        if oldTrack != newTrack { resolveLayout(track: oldTrack) }
         documentDidChange()
     }
 
     func trimClip(_ uid: UUID, duration: Double) {
         guard let index = clipIndex(uid) else { return }
+        if document.videoTrack[index].bumper {
+            registerUndo("Trim Bumper")
+            resizeBumper(at: index, duration: duration)
+            documentDidChange()
+            return
+        }
         registerUndo("Trim Clip")
         var clip = document.videoTrack[index]
         // The ceiling is measured in source seconds; the clip's duration is
@@ -584,6 +762,14 @@ final class BuilderTimelineModel {
         let newEnd = max(newStart + 0.5, min(end, ceiling))
         let duration = ((newEnd - newStart) / clip.effectiveSpeed * 10).rounded() / 10
         guard abs((clip.sourceStart ?? -1) - newStart) > 0.001 || abs(clip.duration - duration) > 0.001 else { return }
+        if clip.bumper {
+            registerUndo("Trim Bumper", coalescing: "trim-\(uid)")
+            document.videoTrack[index].sourceStart = newStart
+            document.videoTrack[index].sourceEnd = newEnd
+            resizeBumper(at: index, duration: max(0.5, duration))
+            documentDidChange()
+            return
+        }
         registerUndo("Trim Clip", coalescing: "trim-\(uid)")
         clip.sourceStart = newStart
         clip.sourceEnd = newEnd
@@ -596,10 +782,14 @@ final class BuilderTimelineModel {
     func removeClip(_ uid: UUID) {
         guard let index = clipIndex(uid) else { return }
         registerUndo("Delete Clip")
-        let track = document.videoTrack[index].track
-        document.videoTrack.remove(at: index)
+        let removed = document.videoTrack.remove(at: index)
         if selection == .clip(uid) { selection = nil }
-        resolveLayout(track: track)
+        if removed.bumper, removed.bumperMode == .pause {
+            BumperPlanner.removeGap(in: &document, at: removed.startTime, duration: removed.duration)
+            resolveAllLayouts()
+        } else {
+            resolveLayout(track: removed.track)
+        }
         documentDidChange()
     }
 
@@ -609,8 +799,17 @@ final class BuilderTimelineModel {
         var copy = original
         copy.uid = UUID()
         copy.startTime = Self.snap(original.startTime + original.duration)
-        document.videoTrack.append(copy)
-        resolveLayout(track: copy.track)
+        if copy.bumper {
+            copy.startTime = nonOverlappingBumperStart(copy.startTime, duration: copy.duration, excluding: nil)
+            if copy.bumperMode == .pause {
+                BumperPlanner.insertGap(in: &document, at: copy.startTime, duration: copy.duration)
+            }
+            document.videoTrack.append(copy)
+            resolveAllLayouts()
+        } else {
+            document.videoTrack.append(copy)
+            resolveLayout(track: copy.track)
+        }
         selection = .clip(copy.uid)
         documentDidChange()
     }
@@ -618,8 +817,20 @@ final class BuilderTimelineModel {
     func updateClip(_ uid: UUID, _ mutate: (inout TimelineClip) -> Void) {
         guard let index = clipIndex(uid) else { return }
         registerUndo("Edit Clip", coalescing: "clip-\(uid)")
+        let before = document.videoTrack[index]
         mutate(&document.videoTrack[index])
         document.videoTrack[index].enforceBumperRules()
+        if before.bumper {
+            let after = document.videoTrack[index]
+            if abs(after.duration - before.duration) > 0.001 {
+                document.videoTrack[index].duration = before.duration
+                resizeBumper(at: index, duration: after.duration)
+            }
+            if let bumperIndex = clipIndex(uid), abs(after.startTime - before.startTime) > 0.001 {
+                document.videoTrack[bumperIndex].startTime = before.startTime
+                moveBumper(at: bumperIndex, to: after.startTime)
+            }
+        }
         documentDidChange()
     }
 
@@ -666,19 +877,53 @@ final class BuilderTimelineModel {
 
     /// Sequential tracks pack end-to-end from 0 in start-time order; free-form
     /// tracks keep clips where the user put them (overlaps render layered).
+    /// Bumpers are not part of any track. An overlapping bumper is ignored
+    /// and covers whatever the packing puts under it; a pausing bumper is
+    /// an obstacle the packing steps over, which keeps its gap open.
     func resolveLayout(track: Int) {
         guard track >= 0, track < TimelineDocument.maxTracks, document.trackSequential[track] else { return }
         let sorted = clips(inTrack: track).sorted { $0.startTime < $1.startTime }
+        let pauses = document.videoTrack
+            .filter { $0.bumper && $0.bumperMode == .pause }
+            .sorted { $0.startTime < $1.startTime }
         var cursor = 0.0
-        for clip in sorted {
-            if let index = clipIndex(clip.uid) {
-                if clip.bumper {
-                    cursor = max(cursor, clip.startTime + clip.duration)
-                } else {
-                    document.videoTrack[index].startTime = cursor
-                    cursor += document.videoTrack[index].duration
-                }
+        var pending = sorted.filter { !$0.bumper }.map(\.uid)
+        var position = 0
+        while position < pending.count {
+            guard let index = clipIndex(pending[position]) else { position += 1; continue }
+            for pause in pauses where pause.startTime <= cursor + 0.001 && pause.startTime + pause.duration > cursor {
+                cursor = pause.startTime + pause.duration
             }
+            let duration = document.videoTrack[index].duration
+            // A clip that would run into a pausing bumper is split there so
+            // its tail resumes after it; a sliver of a head is pushed whole.
+            if let pause = pauses.first(where: {
+                $0.startTime > cursor + 0.001 && $0.startTime < cursor + duration - 0.001
+            }) {
+                let head = pause.startTime - cursor
+                if head < 0.5 {
+                    cursor = pause.startTime + pause.duration
+                    continue
+                }
+                var tail = document.videoTrack[index]
+                let speed = tail.effectiveSpeed
+                tail.uid = UUID()
+                tail.sourceStart = (tail.sourceStart ?? 0) + head * speed
+                tail.duration = duration - head
+                tail.transIn = nil
+                document.videoTrack[index].startTime = cursor
+                document.videoTrack[index].duration = head
+                document.videoTrack[index].sourceEnd = (document.videoTrack[index].sourceStart ?? 0) + head * speed
+                document.videoTrack[index].transOut = nil
+                document.videoTrack.append(tail)
+                pending.insert(tail.uid, at: position + 1)
+                cursor = pause.startTime + pause.duration
+                position += 1
+                continue
+            }
+            document.videoTrack[index].startTime = cursor
+            cursor += duration
+            position += 1
         }
     }
 
