@@ -334,6 +334,7 @@ struct WizardView: View {
                 TextEditor(text: $aiInstructions)
                     .font(.body)
                     .frame(minHeight: 76)
+                    .fieldHelp(WizardFieldHelp.instructions)
                 Text("Describe the outcome, hook, or must-have moments. Saved research and learned rules are applied automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -341,17 +342,12 @@ struct WizardView: View {
 
             Section("Plan") {
                 Picker("Recipe", selection: $formatPreset) {
-                    Text("Custom").tag("custom")
-                    Divider()
-                    Text("MMA finish").tag("mma-finish")
-                    Text("MMA submission sequence").tag("mma-submission")
-                    Text("MMA exchange").tag("mma-exchange")
-                    Text("MMA technique breakdown").tag("mma-technique")
-                    Divider()
-                    Text("Fight recap").tag("recap")
-                    Text("Best-of compilation").tag("compilation")
-                    Text("Interview clip").tag("interview")
-                    Text("Podcast highlights").tag("podcast")
+                    ForEach(Array(ReelRecipe.menuSections.enumerated()), id: \.offset) { index, section in
+                        if index > 0 { Divider() }
+                        ForEach(section) { recipe in
+                            Text(recipe.title).tag(recipe.id)
+                        }
+                    }
                 }
                 .onChange(of: formatPreset) { oldValue, newValue in
                     if newValue == "podcast", oldValue != "podcast" {
@@ -360,6 +356,13 @@ struct WizardView: View {
                         reviewProposedCuts = false
                     }
                 }
+                .fieldHelp(WizardFieldHelp.recipe)
+
+                if let recipe = ReelRecipe.recipe(id: formatPreset) {
+                    Text(recipe.summary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 if formatPreset == "podcast" {
                     Picker("Framing", selection: $podcastFramingRaw) {
@@ -367,6 +370,7 @@ struct WizardView: View {
                             Text(mode.label).tag(mode.rawValue)
                         }
                     }
+                    .fieldHelp(WizardFieldHelp.podcastFraming)
                     Text("Follow speaker uses the saved talker timeline. Split Zoom feeds pins each source half into a 50/50 reel.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -377,6 +381,8 @@ struct WizardView: View {
                         Text(mode.title).tag(mode)
                     }
                 }
+                .fieldHelp(WizardFieldHelp.length)
+                FieldCaption(WizardFieldHelp.length)
 
                 EditPacingControls(pacing: $store.activeProfile.defaultPacing)
 
@@ -388,8 +394,10 @@ struct WizardView: View {
                             .labelsHidden()
                             .multilineTextAlignment(.trailing)
                             .frame(width: 58)
+                            .fieldHelp(WizardFieldHelp.customLength)
                         Stepper("Custom length", value: $customDuration, in: 3...180)
                             .labelsHidden()
+                            .fieldHelp(WizardFieldHelp.customLength)
                         Text("seconds")
                             .foregroundStyle(.secondary)
                     }
@@ -412,6 +420,8 @@ struct WizardView: View {
                     }
                     .buttonStyle(.borderless)
                 }
+                .fieldHelp(WizardFieldHelp.sources)
+                FieldCaption(WizardFieldHelp.sources)
 
                 Text(framingStatus)
                     .font(.caption)
@@ -426,6 +436,8 @@ struct WizardView: View {
                         Text(mode.title).tag(mode)
                     }
                 }
+                .fieldHelp(WizardFieldHelp.audio)
+                FieldCaption(WizardFieldHelp.audio)
 
                 if audioMode.useMusic, !musicFolders.isEmpty {
                     Picker("Music from", selection: $musicFolderRaw) {
@@ -435,7 +447,7 @@ struct WizardView: View {
                             Text(folder).tag(folder)
                         }
                     }
-                    .help("Only songs in this Music folder (and its subfolders) are offered to the planner")
+                    .fieldHelp(WizardFieldHelp.musicFolder)
                     .onChange(of: musicFolderRaw) { refreshMusicCount() }
                 }
 
@@ -460,6 +472,8 @@ struct WizardView: View {
                         Text(mode.title).tag(mode)
                     }
                 }
+                .fieldHelp(WizardFieldHelp.onScreenText)
+                FieldCaption(WizardFieldHelp.onScreenText)
 
                 if (textMode == .captions || textMode == .both), !transcriptsAvailable {
                     Text("No transcript is available in these sources, so captions will be skipped.")
@@ -475,18 +489,23 @@ struct WizardView: View {
                                 .tag(language)
                         }
                     }
+                    .fieldHelp(WizardFieldHelp.captionLanguage)
+                    FieldCaption(WizardFieldHelp.captionLanguage)
                 }
 
                 Picker("Quality", selection: $critiqueLoop) {
                     Text("Standard — one render").tag(false)
                     Text("Best — up to 3 versions").tag(true)
                 }
+                .fieldHelp(WizardFieldHelp.quality)
                 Text(critiqueLoop
                      ? "The critic can request up to two better alternatives; every version is kept in the Library."
                      : "Renders the first planned version only.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("Review proposed cuts before rendering", isOn: $reviewProposedCuts)
+                    .fieldHelp(WizardFieldHelp.reviewProposedCuts)
+                FieldCaption(WizardFieldHelp.reviewProposedCuts)
             }
 
             if let handoff = store.pendingWizardTemplate {
@@ -498,6 +517,8 @@ struct WizardView: View {
             DisclosureGroup("More options") {
                 TextField("Model override", text: $copiedModelOverride, prompt: Text("Automatic"))
                     .textFieldStyle(.roundedBorder)
+                    .fieldHelp(WizardFieldHelp.modelOverride)
+                FieldCaption(WizardFieldHelp.modelOverride)
                 if !pastedSnapshot.isEmpty {
                     DisclosureGroup("Copied advanced options") {
                         ForEach(["framingCamera", "templateLabel", "pinnedOverlayTemplate", "pinnedOverlayText"], id: \.self) { key in
@@ -528,12 +549,15 @@ struct WizardView: View {
                         }
                     }
                 }
+                .fieldHelp(WizardFieldHelp.styleReference)
+                FieldCaption(WizardFieldHelp.styleReference)
 
                 Picker("Layouts", selection: layoutModeBinding) {
                     ForEach(WizardLayoutMode.allCases, id: \.self) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
+                .fieldHelp(WizardFieldHelp.layouts)
                 if layoutMode == .selected {
                     layoutChecklist
                 } else {
@@ -556,6 +580,8 @@ struct WizardView: View {
                         Text(option.title).tag(option)
                     }
                 }
+                .fieldHelp(WizardFieldHelp.branding)
+                FieldCaption(WizardFieldHelp.branding)
                 if store.activeProfile.logoPath.isEmpty,
                    resolvedBranding.includeWatermark || resolvedBranding.includeOutro {
                     Text("No brand logo is set. Add one in Settings → Profile to use the watermark or outro.")
@@ -581,11 +607,17 @@ struct WizardView: View {
         case .outro: "includeOutroBumper"
         case .anywhere: "includeMiddleBumper"
         }
+        let help: FieldHelp = switch placement {
+        case .intro: WizardFieldHelp.bumperIntro
+        case .outro: WizardFieldHelp.bumperOutro
+        case .anywhere: WizardFieldHelp.bumperMiddle
+        }
         return VStack(alignment: .leading, spacing: 2) {
             Toggle(title, isOn: value).disabled(count == 0)
                 .onChange(of: value.wrappedValue) { _, enabled in
                     updateCopiedOption(optionKey, .bool(enabled))
                 }
+                .fieldHelp(help)
             Text(count == 0 ? "No bumpers allow this placement. Add one in Resources → Bumpers."
                  : "\(count) bumper\(count == 1 ? "" : "s") allow this placement.")
                 .font(.caption).foregroundStyle(.secondary)

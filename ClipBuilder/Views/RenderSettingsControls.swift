@@ -11,6 +11,8 @@ struct RenderSettingsControls: View {
                 Text(preset.label).tag(preset)
             }
         }
+        .fieldHelp(WizardFieldHelp.canvas)
+        FieldCaption(WizardFieldHelp.canvas)
 
         if settings.preset == .custom {
             LabeledContent("Custom size") {
@@ -22,6 +24,7 @@ struct RenderSettingsControls: View {
                         .frame(width: 72)
                 }
             }
+            .fieldHelp(WizardFieldHelp.customSize)
         }
 
         Picker("Encode quality", selection: $settings.quality) {
@@ -29,6 +32,8 @@ struct RenderSettingsControls: View {
                 Text(quality.label).tag(quality)
             }
         }
+        .fieldHelp(WizardFieldHelp.encodeQuality)
+        FieldCaption(WizardFieldHelp.encodeQuality)
 
         if settings.quality == .custom {
             LabeledContent("CRF") {
@@ -36,6 +41,7 @@ struct RenderSettingsControls: View {
                     Text(settings.customCRF.formatted()).monospacedDigit()
                 }
             }
+            .fieldHelp(WizardFieldHelp.customCRF)
             Text("Lower CRF is higher quality and creates a larger file.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
