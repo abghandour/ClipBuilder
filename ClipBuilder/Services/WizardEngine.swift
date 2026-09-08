@@ -2790,11 +2790,12 @@ actor WizardEngine {
             }
         let clipCount = plan.clips.count
         let captionStyle = profile.captions
+        let brandOverlayFiles = brandOverlays
         let extracted = try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
             try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
                                               scene: job.scene, sceneMap: sceneMap, options: options,
                                               captionStyle: captionStyle,
-                                              brandOverlays: brandOverlays,
+                                              brandOverlays: brandOverlayFiles,
                                               database: database, scratch: scratch,
                                               emit: emit)
         }

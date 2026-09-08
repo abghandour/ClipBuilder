@@ -1651,23 +1651,27 @@ final class AppStore {
         let total = Double(max(1, totalUnits))
 
         pipelineTask = Task {
-            await SampledFrameCache.$current.withValue(SampledFrameCache()) {
+            // The operation closure is nonisolated by type; pin it to the main
+            // actor so the nested helpers that touch pipeline state are too.
+            await SampledFrameCache.$current.withValue(SampledFrameCache()) { @MainActor in
             var unitsDone = Double(pipelineDone.count)
             pipelineProgress = min(1, unitsDone / total)
             // Mark a unit finished; done units are skipped on Resume.
-            func finish(_ key: String) {
+            // Local functions do not inherit the closure's actor, hence the
+            // explicit isolation on each helper.
+            @MainActor func finish(_ key: String) {
                 pipelineDone.insert(key)
                 unitsDone += 1
                 pipelineProgress = min(1, unitsDone / total)
             }
-            func completed(_ key: String) -> Bool { pipelineDone.contains(key) }
-            func log(_ message: String) { appendLog(\.pipelineLog, [message]) }
+            @MainActor func completed(_ key: String) -> Bool { pipelineDone.contains(key) }
+            @MainActor func log(_ message: String) { appendLog(\.pipelineLog, [message]) }
             // Sendable relay for service `log:` closures.
             let relay: @Sendable (String) -> Void = logSink(\.pipelineLog)
             // The run never prompts: rename proposals from inner passes are
             // superseded by the pipeline's own rename step, and new-people
             // reviews queue for the end.
-            func swallowPrompts() {
+            @MainActor func swallowPrompts() {
                 if options.proposeNames { pendingRenameReview = nil }
                 if let people = pendingPeopleReview {
                     pipelineDeferredPeople = people

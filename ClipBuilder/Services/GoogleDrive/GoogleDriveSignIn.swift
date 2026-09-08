@@ -50,8 +50,11 @@ final class GoogleDriveSignIn: NSObject, ASWebAuthenticationPresentationContextP
         let listener = try NWListener(using: parameters)
         self.listener = listener
         listener.stateUpdateHandler = { [weak self, weak listener] status in
+            // Bind the weak captures to lets before hopping actors: a weak
+            // capture is a mutable box the task closure may not share.
+            guard let self else { return }
+            let listener = listener
             Task { @MainActor in
-                guard let self else { return }
                 switch status {
                 case .ready:
                     guard let port = listener?.port else {
@@ -66,20 +69,28 @@ final class GoogleDriveSignIn: NSObject, ASWebAuthenticationPresentationContextP
         }
         listener.newConnectionHandler = { [weak self] connection in
             connection.start(queue: .main)
-            Task { @MainActor in self?.receiveCallback(connection, buffered: Data()) }
+            guard let self else { return }
+            Task { @MainActor in self.receiveCallback(connection, buffered: Data()) }
         }
         listener.start(queue: .main)
-        timeout = Task { [weak self] in
+        // A strong capture is fine: finish() cancels this task, so the
+        // sign-in object lives at most until the callback or the timeout.
+        timeout = Task {
             try? await Task.sleep(for: .seconds(300))
             guard !Task.isCancelled else { return }
-            self?.finish(.failure(GoogleDriveError.cancelled))
+            finish(.failure(GoogleDriveError.cancelled))
         }
     }
 
     private func receiveCallback(_ connection: NWConnection, buffered: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 16_384) { [weak self] data, _, complete, error in
+            // Same weak-capture rule as the listener handlers: bind first.
+            guard let self else {
+                connection.cancel()
+                return
+            }
             Task { @MainActor in
-                guard let self, let data, error == nil, self.continuation != nil else {
+                guard let data, error == nil, self.continuation != nil else {
                     connection.cancel()
                     return
                 }

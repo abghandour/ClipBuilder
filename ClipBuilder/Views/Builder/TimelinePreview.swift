@@ -31,13 +31,38 @@ nonisolated enum PreviewError: Error, CustomStringConvertible {
     var description: String { "Could not create the preview composition" }
 }
 
+/// Everything a preview player item is made of, built off the main actor.
+/// `AVPlayerItem` itself is main-actor bound in the current SDK, so the
+/// composer hands this back and the item is created on the main actor.
+nonisolated struct PreviewComposition {
+    var composition: AVMutableComposition
+    var videoComposition: AVMutableVideoComposition?
+    var audioMix: AVMutableAudioMix
+    /// Source assets whose Drive leases the item must keep alive.
+    var sources: [AVURLAsset]
+}
+
 nonisolated enum TimelinePreviewComposer {
-    /// Build a playable item from resolved segments. Assets are loaded once
-    /// per distinct source file; ranges are clamped to what the file holds.
-    @concurrent
+    /// Build a playable item from resolved segments. The composition work
+    /// runs off the main actor; only the item itself is created on it.
+    @MainActor
     static func makePlayerItem(segments: [PreviewSegment],
                                music: [PreviewMusicBlock],
                                settings: RenderSettings = RenderSettings()) async throws -> sending AVPlayerItem {
+        let built = try await makeComposition(segments: segments, music: music, settings: settings)
+        let item = AVPlayerItem(asset: built.composition)
+        item.videoComposition = built.videoComposition
+        DriveLocalAsset.retainSources(built.sources, on: item)
+        item.audioMix = built.audioMix
+        return item
+    }
+
+    /// Assets are loaded once per distinct source file; ranges are clamped
+    /// to what the file holds.
+    @concurrent
+    static func makeComposition(segments: [PreviewSegment],
+                                music: [PreviewMusicBlock],
+                                settings: RenderSettings = RenderSettings()) async throws -> sending PreviewComposition {
         let composition = AVMutableComposition()
         guard let videoTrack = composition.addMutableTrack(withMediaType: .video,
                                                            preferredTrackID: kCMPersistentTrackID_Invalid),
@@ -166,19 +191,18 @@ nonisolated enum TimelinePreviewComposer {
             mixParameters.append(musicParams)
         }
 
-        let item = AVPlayerItem(asset: composition)
+        var videoComposition: AVMutableVideoComposition?
         if fitsCanvas {
-            let videoComposition = AVMutableVideoComposition()
-            videoComposition.renderSize = canvas
-            videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-            videoComposition.instructions = instructions
-            item.videoComposition = videoComposition
+            let fitted = AVMutableVideoComposition()
+            fitted.renderSize = canvas
+            fitted.frameDuration = CMTime(value: 1, timescale: 30)
+            fitted.instructions = instructions
+            videoComposition = fitted
         }
-        DriveLocalAsset.retainSources(Array(assets.values), on: item)
         let mix = AVMutableAudioMix()
         mix.inputParameters = mixParameters
-        item.audioMix = mix
-        return item
+        return PreviewComposition(composition: composition, videoComposition: videoComposition,
+                                  audioMix: mix, sources: Array(assets.values))
     }
 }
 

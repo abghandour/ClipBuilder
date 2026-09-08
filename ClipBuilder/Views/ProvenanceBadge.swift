@@ -30,7 +30,7 @@ struct ProviderLogo: View {
     }
 }
 
-extension Color {
+nonisolated extension Color {
     /// "#RRGGBB" → Color; nil for anything else.
     init?(hex: String) {
         var text = hex.trimmingCharacters(in: .whitespacesAndNewlines)

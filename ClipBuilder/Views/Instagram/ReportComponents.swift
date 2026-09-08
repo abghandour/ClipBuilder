@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Chart series hues shared with the peace-grappler web reports (indigo,
 /// pink, green, orange, red). Chrome stays native — these color data only.
-enum ReportColors {
+nonisolated enum ReportColors {
     static let accent = Color(red: 0x63 / 255, green: 0x66 / 255, blue: 0xF1 / 255)
     static let pink = Color(red: 0xEC / 255, green: 0x48 / 255, blue: 0x99 / 255)
     static let green = Color(red: 0x10 / 255, green: 0xB9 / 255, blue: 0x81 / 255)

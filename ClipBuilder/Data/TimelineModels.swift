@@ -412,7 +412,7 @@ nonisolated struct CropLayoutRef: Sendable, Hashable {
     }
 }
 
-extension ScreenCropLayout {
+nonisolated extension ScreenCropLayout {
     /// Areas in reading order — rows by their top edge (a 6% tolerance so
     /// slightly uneven hand-drawn splits still share a row), then left to
     /// right within a row. This is the order tracks map to areas.

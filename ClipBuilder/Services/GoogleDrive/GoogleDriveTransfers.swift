@@ -253,9 +253,11 @@ final class GoogleDriveTransfers {
                     let connectionGeneration = connectionGenerations[job.profile, default: 0]
                     do {
                         let throttle = DriveProgressThrottle()
-                        let progress: @Sendable (Double) async -> Void = { [weak self] value in
+                        // The enclosing task already holds self strongly for
+                        // the transfer's lifetime; a weak capture here adds nothing.
+                        let progress: @Sendable (Double) async -> Void = { value in
                             guard await throttle.acceptsUpdate() else { return }
-                            await self?.reportProgress(id, value: value)
+                            await self.reportProgress(id, value: value)
                         }
                         let url: URL
                         switch job.operation {
@@ -321,9 +323,9 @@ final class GoogleDriveTransfers {
                 }
                 await persist(profile: job.profile)
                 if error as? GoogleDriveError == .offline {
-                    offlineRetries[id] = Task { [weak self] in
+                    offlineRetries[id] = Task {
                         do { try await Task.sleep(for: .seconds(15)) } catch { return }
-                        guard let self, self.jobs.first(where: { $0.id == id })?.status == .failed else { return }
+                        guard self.jobs.first(where: { $0.id == id })?.status == .failed else { return }
                         self.resume(id)
                     }
                 }
