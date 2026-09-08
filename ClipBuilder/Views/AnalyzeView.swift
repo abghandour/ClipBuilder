@@ -7,6 +7,8 @@ import UniformTypeIdentifiers
 struct AnalyzeView: View {
     @State private var showingDriveBrowser = false
     @State private var confirmingDriveUpload = false
+    /// Videos queued for "Remove from Project"; non-empty shows the confirmation.
+    @State private var pendingRemoval: Set<Int64> = []
     @State private var showingDriveUpload = false
     @State private var pendingDriveUploads: [DriveMedia] = []
     @State private var skippedDriveUploads = 0
@@ -144,6 +146,16 @@ struct AnalyzeView: View {
         } message: {
             Text("\(pendingDriveUploads.count) videos will upload. \(skippedDriveUploads) skipped (already in Drive). Uploads continue in the background.")
         }
+        .confirmationDialog(
+            pendingRemoval.count == 1 ? "Remove this video from the project?"
+                : "Remove \(pendingRemoval.count) videos from the project?",
+            isPresented: Binding(get: { !pendingRemoval.isEmpty }, set: { if !$0 { pendingRemoval = [] } }),
+            titleVisibility: .visible
+        ) {
+            Button("Remove from Project", role: .destructive) { removeFromProject(pendingRemoval) }
+        } message: {
+            Text("The video stays in Home and in any other project, with its scenes, transcripts and timelines. Only its place in this project is removed.")
+        }
         .screenTitle("Sources", subtitle: "\(store.videos.count) source videos")
         .toolbar {
             ToolbarItemGroup {
@@ -180,7 +192,7 @@ struct AnalyzeView: View {
                     }
 
                     Button("Remove from Project", systemImage: "minus.circle") {
-                        removeSelectionFromProject()
+                        pendingRemoval = selection
                     }
                     .disabled(selection.isEmpty)
                 }
@@ -355,7 +367,7 @@ struct AnalyzeView: View {
         return Table(summary.videos, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("File") { video in
                 HStack {
-                    if video.driveFileID != nil { DriveMediaMenu(media: [video.driveMedia]) }
+                    if video.driveFileID != nil { DriveMediaBadge(media: video.driveMedia) }
                     DriveSourceProgress(media: video.driveMedia)
                     Text(video.filename)
                         .onTapGesture { nameTapped(video) }
@@ -504,8 +516,7 @@ struct AnalyzeView: View {
             } else {
                 Divider()
                 Button("Remove from Project", role: .destructive) {
-                    guard let projectID = store.activeProjectID else { return }
-                    store.removeVideos(Array(ids), from: projectID)
+                    pendingRemoval = ids
                 }
             }
         }
@@ -538,10 +549,11 @@ struct AnalyzeView: View {
         syncPreview(to: selection)
     }
 
-    private func removeSelectionFromProject() {
-        guard let projectID = store.activeProjectID else { return }
-        store.removeVideos(Array(selection), from: projectID)
-        selection = []
+    private func removeFromProject(_ ids: Set<Int64>) {
+        guard let projectID = store.activeProjectID, !ids.isEmpty else { return }
+        store.removeVideos(Array(ids), from: projectID)
+        selection.subtract(ids)
+        pendingRemoval = []
     }
 
     private func beginProjectFromSelection() {

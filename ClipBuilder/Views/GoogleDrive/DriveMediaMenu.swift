@@ -79,6 +79,28 @@ struct DriveMediaMenu: View {
     }
 }
 
+/// Read-only Drive state for a list row: the cloud glyph without the menu.
+/// Actions live in the screen's toolbar menu, which acts on the selection.
+struct DriveMediaBadge: View {
+    @Environment(AppStore.self) private var store
+    let media: DriveMedia
+
+    private var current: DriveMedia {
+        if media.kind == .source { return store.videos.first(where: { $0.path == media.path })?.driveMedia ?? media }
+        return store.generatedVideos.first(where: { $0.path == media.path })?.driveMedia ?? media
+    }
+
+    var body: some View {
+        if current.fileID != nil {
+            let offloaded = current.offloaded
+            Image(systemName: offloaded ? "cloud" : "cloud.fill")
+                .foregroundStyle(.secondary)
+                .help(offloaded ? "In Drive — no local copy" : "Local and Drive")
+                .accessibilityLabel(offloaded ? "In Drive" : "Local and Drive")
+        }
+    }
+}
+
 struct DriveActivityRows: View {
     @Environment(AppStore.self) private var store
     var body: some View {
