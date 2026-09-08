@@ -192,7 +192,7 @@
 			mainGroup = 000000000000000000000001;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				000000000000000000000402 /* XCLocalSwiftPackageReference "../verticalcorn" */,
+				000000000000000000000402 /* XCLocalSwiftPackageReference "../VerticalCorn" */,
 			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
@@ -576,9 +576,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		000000000000000000000402 /* XCLocalSwiftPackageReference "../verticalcorn" */ = {
+		000000000000000000000402 /* XCLocalSwiftPackageReference "../VerticalCorn" */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../verticalcorn;
+			relativePath = ../VerticalCorn;
 		};
 /* End XCLocalSwiftPackageReference section */
 
