@@ -252,16 +252,14 @@ struct WizardView: View {
             }
             .help("See what to post next and what is blocking output")
 
-            Menu {
-                Button("Training Guide", systemImage: "questionmark.circle") {
-                    showTrainingGuide = true
-                }
-                Button("Manage Learned Rules…", systemImage: "brain.head.profile") {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
-                }
-            } label: {
-                Label("Wizard tools", systemImage: "ellipsis.circle")
+            Button("Manage Learned Rules…", systemImage: "brain.head.profile") {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
             }
+            .help("Review and edit the rules the Wizard has learned, in Settings")
+            Button("Training Guide", systemImage: "questionmark.circle") {
+                showTrainingGuide = true
+            }
+            .help("How to teach the Wizard your taste")
             }
         }
         .sheet(isPresented: $showGapReport) {
@@ -696,15 +694,11 @@ struct WizardView: View {
 
                 Spacer()
 
-                Menu {
-                    Button("Build manually…", systemImage: "checklist") {
-                        showCuratedWizard = true
-                    }
-                    .disabled(!canGenerate || store.isCuratedRendering)
-                } label: {
-                    Label("More", systemImage: "ellipsis")
+                Button("Build manually…", systemImage: "checklist") {
+                    showCuratedWizard = true
                 }
-                .help("Build this reel manually from the same source selection")
+                .disabled(!canGenerate || store.isCuratedRendering)
+                .help("Build this reel yourself from the same source selection, scene by scene")
             }
         }
         .padding(.horizontal, 16)

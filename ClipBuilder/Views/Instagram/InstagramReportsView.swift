@@ -83,9 +83,7 @@ struct InstagramReportsView: View {
             HStack {
                 Button("Refresh") { store.refreshInstagram(username: account.username) }
                     .buttonStyle(.borderedProminent)
-                Menu("More", systemImage: "ellipsis.circle") {
-                    Button("Import Report History") { store.importPeaceGrapplerReports() }
-                }
+                Button("Import Report History") { store.importPeaceGrapplerReports() }
             }
         }
     }

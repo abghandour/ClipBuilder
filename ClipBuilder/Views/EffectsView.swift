@@ -75,12 +75,12 @@ struct EffectsView: View {
         .screenTitle("Transitions", subtitle: "\(effects.count) transitions")
         .toolbar {
             ToolbarItemGroup {
-                Menu("More", systemImage: "ellipsis.circle") {
-                    Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
-                        renderAll()
-                    }
-                    .disabled(renderAllTask != nil)
-                    Menu("AI Palette", systemImage: "wand.and.stars") {
+                Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
+                    renderAll()
+                }
+                .disabled(renderAllTask != nil)
+                .help("Render a sample of every transition through the real pipeline")
+                Menu("AI Palette", systemImage: "wand.and.stars") {
                         Button("Let AI Choose Any Effect") {
                             setAITransitionAvailability(Set(effects.map(\.name)))
                         }
@@ -96,15 +96,14 @@ struct EffectsView: View {
                                 }
                             }
                         }
-                    }
-                    Divider()
-                    Button("Show in Finder", systemImage: "folder") {
-                        try? FileManager.default.createDirectory(at: EffectPreviewRenderer.directory,
-                                                                 withIntermediateDirectories: true)
-                        NSWorkspace.shared.open(EffectPreviewRenderer.directory)
-                    }
                 }
-                .help("Render previews, manage AI availability, or reveal cached files")
+                .help("Choose which transitions the AI Wizard may use")
+                Button("Show in Finder", systemImage: "folder") {
+                    try? FileManager.default.createDirectory(at: EffectPreviewRenderer.directory,
+                                                             withIntermediateDirectories: true)
+                    NSWorkspace.shared.open(EffectPreviewRenderer.directory)
+                }
+                .help("Reveal the rendered preview files in Finder")
             }
         }
         .fileImporter(isPresented: Binding(get: { pickingSample != nil },

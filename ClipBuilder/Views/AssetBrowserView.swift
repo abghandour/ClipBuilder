@@ -9,7 +9,6 @@ import UniformTypeIdentifiers
 /// per kind: audio rows with preview playback, font rows with rendered
 /// samples, image thumbnails in a grid.
 struct AssetBrowserView: View {
-    @State private var showingDriveBrowser = false
     @Environment(AppStore.self) private var store
     let kind: AssetKind
 
@@ -58,7 +57,6 @@ struct AssetBrowserView: View {
                 listContent
             }
         }
-        .sheet(isPresented: $showingDriveBrowser) { GoogleDriveBrowserSheet() }
         .screenTitle(kind.title, subtitle: subtitle)
         .toolbar {
             ToolbarItemGroup {
@@ -66,38 +64,34 @@ struct AssetBrowserView: View {
                     showingImporter = true
                 }
                 .help("Copy files into the current folder")
-                Button("Add from Google Drive…", systemImage: "icloud.and.arrow.down") { showingDriveBrowser = true }
-                    .help("Add Drive media to this project’s Sources")
+                Button("New Folder", systemImage: "folder.badge.plus") {
+                    newFolderName = ""
+                    showingNewFolder = true
+                }
+                .help("Create a folder inside the current folder")
 
                 if kind == .images {
                     Button("Ask Images", systemImage: "sparkle.magnifyingglass") {
                         showingAskImages = true
                     }
                     .disabled(items.filter { !$0.isFolder }.isEmpty)
+                    .help("Find images by describing what you need")
                     if matchedImagePaths != nil {
                         Button("Clear AI Search", systemImage: "xmark.circle") {
                             matchedImagePaths = nil
                         }
                     }
+                    Button("Tag Images with AI", systemImage: "sparkles") {
+                        analyzeVisibleImages()
+                    }
+                    .disabled(analyzingPaths.isEmpty == false)
+                    .help("Tag every visible image with its subjects and a B-roll mark")
                 }
 
-                Menu("More", systemImage: "ellipsis.circle") {
-                    Button("New Folder", systemImage: "folder.badge.plus") {
-                        newFolderName = ""
-                        showingNewFolder = true
-                    }
-                    Divider()
-                    Button("Show in Finder", systemImage: "folder") {
-                        NSWorkspace.shared.open(currentFolder)
-                    }
-                    if kind == .images {
-                        Button("Tag Images with AI", systemImage: "sparkles") {
-                            analyzeVisibleImages()
-                        }
-                        .disabled(analyzingPaths.isEmpty == false)
-                    }
+                Button("Show in Finder", systemImage: "folder") {
+                    NSWorkspace.shared.open(currentFolder)
                 }
-                .help("Create folders or reveal this library in Finder")
+                .help("Reveal the current folder in Finder")
             }
         }
         .fileImporter(isPresented: $showingImporter,

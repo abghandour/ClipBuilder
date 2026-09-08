@@ -138,18 +138,16 @@ struct ScreenCropsView: View {
                     .font(.caption)
                     .foregroundStyle(isSaving ? Color.secondary : Color.green)
             }
-            Menu("More", systemImage: "ellipsis.circle") {
-                Menu("AI availability", systemImage: "wand.and.stars") {
-                    aiAvailabilityMenuItems
-                }
-                Divider()
-                Button("Show in Finder", systemImage: "folder") {
-                    try? FileManager.default.createDirectory(at: ScreenCropStore.directory,
-                                                             withIntermediateDirectories: true)
-                    NSWorkspace.shared.open(ScreenCropStore.directory)
-                }
+            Menu("AI Availability", systemImage: "wand.and.stars") {
+                aiAvailabilityMenuItems
             }
-            .help("Open AI availability and file-location options")
+            .help("Choose which layouts the AI Wizard may use")
+            Button("Show in Finder", systemImage: "folder") {
+                try? FileManager.default.createDirectory(at: ScreenCropStore.directory,
+                                                         withIntermediateDirectories: true)
+                NSWorkspace.shared.open(ScreenCropStore.directory)
+            }
+            .help("Reveal the layout files in Finder")
         }
     }
 

@@ -137,16 +137,14 @@ struct OverlayTemplatesView: View {
                         .font(.caption)
                     .foregroundStyle(isSaving ? Color.secondary : Color.green)
             }
-            Menu("More", systemImage: "ellipsis.circle") {
-                Button("Create from Image…", systemImage: "wand.and.stars") {
-                    showOverlayWizard = true
-                }
-                Divider()
-                Button("Show in Finder", systemImage: "folder") {
-                    NSWorkspace.shared.open(OverlayTemplateStore.directory)
-                }
+            Button("Create from Image…", systemImage: "wand.and.stars") {
+                showOverlayWizard = true
             }
-            .help("Open less-frequent overlay actions")
+            .help("Build an overlay template from a reference image")
+            Button("Show in Finder", systemImage: "folder") {
+                NSWorkspace.shared.open(OverlayTemplateStore.directory)
+            }
+            .help("Reveal the template files in Finder")
         }
     }
 

@@ -209,21 +209,20 @@ struct AnalyzeView: View {
                       ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
                       : "Runs a fresh analysis of the selected video. Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
 
-                Menu("More", systemImage: "ellipsis.circle") {
-                    Button("Run Full Pipeline", systemImage: "wand.and.rays") {
-                        showAnalyzeWizard = true
-                    }
-                    .disabled(selection.isEmpty || store.isPipelineRunning)
-                    Divider()
-                    Button("Generate Video…", systemImage: "wand.and.stars") {
-                        showGenerateSheet = true
-                    }
-                    .disabled(selection.isEmpty || store.isAnalyzing)
-                    Button("Scan for Duplicates…", systemImage: "rectangle.on.rectangle") {
-                        showDuplicateScan = true
-                    }
+                Button("Run Full Pipeline", systemImage: "wand.and.rays") {
+                    showAnalyzeWizard = true
                 }
-                .help("Open less-frequent video actions")
+                .disabled(selection.isEmpty || store.isPipelineRunning)
+                .help("Analyze the selected videos and generate reels from them in one run")
+                Button("Generate Video…", systemImage: "wand.and.stars") {
+                    showGenerateSheet = true
+                }
+                .disabled(selection.isEmpty || store.isAnalyzing)
+                .help("Describe a video to make from the selected sources; the AI Wizard is filled in from your words")
+                Button("Scan for Duplicates…", systemImage: "rectangle.on.rectangle") {
+                    showDuplicateScan = true
+                }
+                .help("Find source videos that are copies of each other")
             }
         }
         .fileImporter(isPresented: $showingImporter,
