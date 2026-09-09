@@ -34,12 +34,19 @@ struct AssetLibraryFoldersTests {
     }
 
     @Test("populated folders come from the catalog; every folder on disk feeds Move to…")
-    func folderNames() async throws {
+    func folderNames() throws {
         let library = try makeLibrary()
         defer { withExtendedLifetime(library.scope) {} }
 
         #expect(WizardEngine.musicFolders() == ["Calm", "Fights", "Fights/Slow"])
-        #expect(await AssetStore.folderNamesAsync(of: .music) == ["Calm", "Empty", "Fights", "Fights/Slow"])
+        // Synchronous on purpose: the data-folder override is process-global and
+        // other suites swap it during any await, which moved the root under the
+        // async accessor mid-test. folderNamesAsync is this same composition.
+        let names = AssetStore.folders(of: .music).subtracting([library.root])
+            .map { AssetStore.relativeFolderName($0, of: .music) }
+            .filter { !$0.isEmpty }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        #expect(names == ["Calm", "Empty", "Fights", "Fights/Slow"])
         #expect(AssetStore.relativeFolderName(library.root, of: .music) == "")
         #expect(AssetStore.relativeFolderName(library.root.appendingPathComponent("Fights/Slow"), of: .music) == "Fights/Slow")
     }

@@ -23,7 +23,7 @@ struct ResourceExportSheet: View {
             VStack(alignment: .leading, spacing: Theme.spaceXS) {
                 Text("Export Resources")
                     .font(.headline)
-                Text("Bundles the chosen items into one zip you can import on another Mac or keep as a backup.")
+                Text("Share brand taste with Learned preferences. Brand profiles are full backups and include private settings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -89,7 +89,7 @@ struct ResourceExportSheet: View {
             inventory = loaded
             isLoading = false
             selected = Set(ResourceCategory.allCases.filter { category in
-                category == .preferences ? !ResourceBundle.preferences().isEmpty : !(inventory[category] ?? []).isEmpty
+                category != .profiles && (category == .preferences ? !ResourceBundle.preferences().isEmpty : !(inventory[category] ?? []).isEmpty)
             })
         }
     }
@@ -118,17 +118,24 @@ struct ResourceExportSheet: View {
         let categories = selected
         Task {
             let metadata: [LibraryAssetMetadata]
+            let learned: [LearnedDocumentBuilder.Build]
             do {
+                if categories.contains(.learned), let database = store.database {
+                    guard !store.activeProfile.learnedSharing.deviceNickname.isEmpty else {
+                        throw AIError.notConfigured("Enter a device nickname on What Clip Builder has learned before exporting learned preferences.")
+                    }
+                    learned = [try await LearnedDocumentBuilder.build(profile: store.activeProfile, database: database, benchmarks: store.igBenchmarks)]
+                } else { learned = [] }
                 metadata = categories.contains(.bumpers)
                     ? try await store.database?.fetchAssetMetadata(kind: AssetKind.bumpers.rawValue) ?? [] : []
             } catch {
                 isRunning = false
-                store.presentError("Could not read bumper metadata", error)
+                store.presentError("Could not prepare resource export", error)
                 return
             }
             let result: Result<Void, Error> = await Task.detached(priority: .userInitiated) {
                 do {
-                    try ResourceBundle.export(categories: categories, to: destination, bumperMetadata: metadata) { message in
+                    try ResourceBundle.export(categories: categories, to: destination, bumperMetadata: metadata, learned: learned) { message in
                         Task { @MainActor in status = message }
                     }
                     return .success(())
@@ -292,11 +299,12 @@ struct ResourceImportSheet: View {
         status = "Importing…"
         let categories = selected
         let chosenPolicy = policy
+        let learnedLibrary = LearnedLibrary(profile: store.activeProfile.profileName)
         Task {
             let result: Result<ResourceImportSummary, Error> = await Task.detached(priority: .userInitiated) {
                 do {
                     return .success(try ResourceBundle.importBundle(preview, categories: categories,
-                                                                   policy: chosenPolicy) { message in
+                                                                   policy: chosenPolicy, learnedLibrary: learnedLibrary) { message in
                         Task { @MainActor in status = message }
                     })
                 } catch {

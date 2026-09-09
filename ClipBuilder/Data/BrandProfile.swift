@@ -42,6 +42,7 @@ nonisolated struct TasteCategory: Codable, Sendable, Hashable, Identifiable {
 /// Brand profile — mirrors the JSON files the Python app keeps at
 /// `~/Documents/ClipBuilder/<name>.json` so both apps can share profiles.
 nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
+    var learnedSharing = LearnedSharing()
     var profileName: String
     var brandName: String
     var contentDomain: String
@@ -99,6 +100,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var id: String { profileName }
 
     enum CodingKeys: String, CodingKey {
+        case learnedSharing = "learned_sharing"
         case profileName = "profile_name"
         case brandName = "brand_name"
         case contentDomain = "content_domain"
@@ -129,6 +131,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        learnedSharing = try container.decodeIfPresent(LearnedSharing.self, forKey: .learnedSharing) ?? LearnedSharing()
         profileName = try container.decodeIfPresent(String.self, forKey: .profileName) ?? "Default"
         brandName = try container.decodeIfPresent(String.self, forKey: .brandName) ?? profileName
         contentDomain = try container.decodeIfPresent(String.self, forKey: .contentDomain) ?? ""

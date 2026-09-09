@@ -416,7 +416,42 @@ final class GoogleDriveTransfers {
         guard let context = contexts[profile], let home = assetHomes[profile],
             !assetHomes.values.contains(where: { $0.isRefreshing })
         else { return }
-        home.refresh(client: context.client, database: context.database, transfers: self, profile: profile, log: log)
+        home.refresh(client: context.client, database: context.database, transfers: self, profile: profile,
+            learnedStep: { runner in
+                let current = ProfileStore.load(name: profile) ?? context.profile
+                // No nickname yet: assets still refresh; publishing needs the user-entered identity.
+                guard !current.learnedSharing.deviceNickname.isEmpty else {
+                    log("Learned preferences: enter a device nickname on the learning page to publish")
+                    return
+                }
+                let wizard = WizardEngine(ai: AIService(config: SettingsStore.loadSettings().ai), render: RenderEngine())
+                try await LearnedSync.run(executor: runner, profile: current, database: context.database, log: log) {
+                    _ = try await wizard.distillLessons(database: context.database, emit: { _ in })
+                }
+            }, log: log)
+    }
+
+    func publishLearned(profile: BrandProfile, benchmarks: AccountBenchmarks?,
+                        library: LearnedLibrary = LearnedLibrary()) async throws {
+        guard let context = contexts[profile.profileName], let home = assetHomes[profile.profileName],
+              !assetHomes.values.contains(where: { $0.isRefreshing }),
+              try await home.validate(client: context.client) else { throw GoogleDriveError.notFound }
+        home.isRefreshing = true
+        defer { home.isRefreshing = false }
+        let group = UUID()
+        let task = Task {
+            let runner = AssetSyncExecutor(roots: AssetSyncRoots(), client: context.client, transfers: self,
+                profile: profile.profileName, group: group, journal: AssetSyncJournal(homeID: home.selection.id))
+            let wizard = WizardEngine(ai: AIService(config: SettingsStore.loadSettings().ai), render: RenderEngine())
+            try await LearnedSync.run(executor: runner, profile: profile, database: context.database,
+                                      library: library, benchmarks: benchmarks) {
+                _ = try await wizard.distillLessons(database: context.database, emit: { _ in })
+            }
+        }
+        home.learnedStop = { task.cancel() }
+        beginAssetGroup(group) { home.stop() }
+        defer { home.learnedStop = nil; endAssetGroup(group) }
+        try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
 
     func beginAssetGroup(_ id: UUID, stop: @escaping () -> Void) { assetGroupStops[id] = stop }

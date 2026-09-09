@@ -704,6 +704,8 @@ nonisolated struct PreferenceRecord: Identifiable, Sendable, Hashable {
 /// Pinned lessons are user-authored hard constraints; unpinned ones are
 /// machine-distilled and replaced by the next distillation pass.
 nonisolated struct WizardLesson: Identifiable, Sendable, Hashable {
+    var learnedID: String = ""
+    var updatedAt: String? = nil
     var id: Int64
     var text: String
     var pinned: Bool

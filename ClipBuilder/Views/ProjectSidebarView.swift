@@ -95,6 +95,10 @@ struct ProjectSidebarView: View {
                     }
                 }
 
+                Section("AI") {
+                    Label(SidebarSection.learned.title, systemImage: SidebarSection.learned.systemImage).tag(SidebarSection.learned)
+                }
+
                 Section("Resources") {
                     ForEach(SidebarSection.resourceSections) { section in
                         Label {

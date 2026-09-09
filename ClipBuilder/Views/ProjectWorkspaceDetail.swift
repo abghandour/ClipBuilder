@@ -5,7 +5,9 @@ struct ProjectWorkspaceDetail: View {
 
     var body: some View {
         Group {
-            if store.isShowingProjectsHome || store.activeProjectID == nil {
+            if store.selectedSection == .learned && !store.isShowingProjectsHome {
+                LearnedPreferencesView()
+            } else if store.isShowingProjectsHome || store.activeProjectID == nil {
                 ProjectsHomeView()
             } else {
                 switch store.selectedSection.projectDestination {

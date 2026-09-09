@@ -144,6 +144,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case screenCrops
     case bumpers
     case wizard
+    case learned
     case builder
     case library
     case instagram          // Instagram → Posts (raw value kept for handoffs)
@@ -158,7 +159,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     /// Every resource library is its own row: one click, one screen, as the
     /// app always had it — a tab strip inside one screen hid them.
     static let resourceSections: [SidebarSection] = [.music, .fonts, .images, .overlays, .effects, .screenCrops, .bumpers]
-    static let visibleSections = projectSections + studioSections + resourceSections
+    static let visibleSections = projectSections + studioSections + [.learned] + resourceSections
 
     /// Project/studio shortcuts use ⌘1–⌘8; Bumpers uses the remaining ⌘9.
     private var shortcutDigit: Character? {
@@ -172,7 +173,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .people: return "6"
         case .instagram: return "7"
         case .instagramReports: return "8"
-        case .projects, .analyze, .curated, .builder, .library, .resources,
+        case .projects, .analyze, .curated, .builder, .library, .resources, .learned,
              .music, .fonts, .images, .overlays, .effects, .screenCrops: return nil
         }
     }
@@ -195,6 +196,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .people: return "People"
         case .timelines, .builder: return "Timelines"
         case .outputs, .library: return "Outputs"
+        case .learned: return "What Clip Builder has learned"
         case .wizard: return "AI Wizard"
         case .instagram: return "Posts"
         case .instagramReports: return "Reports"
@@ -218,6 +220,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .people: return "person.2"
         case .timelines, .builder: return "timeline.selection"
         case .outputs, .library: return "play.rectangle"
+        case .learned: return "graduationcap"
         case .wizard: return "wand.and.stars"
         case .instagram: return "camera"
         case .instagramReports: return "chart.bar.xaxis"
@@ -238,6 +241,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .sources, .analyze: .sources
         case .scenes, .curated: .scenes
         case .timelines, .builder: .timelines
+        case .learned: .learned
         case .wizard: .wizard
         case .outputs, .library: .outputs
         case .people: .people

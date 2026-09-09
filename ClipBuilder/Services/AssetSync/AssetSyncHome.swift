@@ -12,6 +12,7 @@ final class AssetSyncHome {
     var isLost = false
     var isRefreshing = false
     var status = "Ready to refresh"
+    @ObservationIgnored var learnedStop: (() -> Void)?
     @ObservationIgnored private var task: Task<Void, Never>?
     var canRefresh: Bool { !isLost && !isRefreshing }
     var rowStatus: String { isLost ? "Folder no longer available — choose again" : status }
@@ -47,11 +48,15 @@ final class AssetSyncHome {
         return !isLost
     }
 
-    func stop() { task?.cancel() }
+    func stop() {
+        task?.cancel()
+        learnedStop?()
+    }
 
     func refresh(
         client: GoogleDriveClient, database: Database, transfers: GoogleDriveTransfers,
-        profile: String, roots: AssetSyncRoots = AssetSyncRoots(), log: @escaping (String) -> Void
+        profile: String, roots: AssetSyncRoots = AssetSyncRoots(),
+        learnedStep: ((AssetSyncExecutor) async throws -> Void)? = nil, log: @escaping (String) -> Void
     ) {
         guard canRefresh else { return }
         isRefreshing = true
@@ -85,6 +90,12 @@ final class AssetSyncHome {
                         self.status = "Refreshing… \(done) of \(total)"
                     }, log: log)
                 try Task.checkCancellation()
+                LearnedCache.invalidate(profile: profile)
+                if let learnedStep {
+                    status = "Refreshing… learned preferences"
+                    try await learnedStep(runner)
+                    try Task.checkCancellation()
+                }
                 runner.journal.lastRefresh = Date()
                 runner.journal.summary = runner.summary
                 try await runner.journal.save(database: database)

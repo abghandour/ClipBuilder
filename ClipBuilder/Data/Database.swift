@@ -623,7 +623,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 9
+    static let schemaVersion: Int64 = 10
 
     func cachedDetectors(videoID: Int64, fingerprint: String) throws -> VideoDetectors? {
         guard let row = try connection.query("SELECT * FROM video_detectors WHERE video_id = ? AND algorithm_version = ?", [.integer(videoID), .text(fingerprint)]).first,
@@ -687,7 +687,7 @@ actor Database {
             ("scenes", ["models_json", "curated_provider", "curated_model"]),
             ("fight_events", ["provider", "model"]),
             ("video_notes", ["provider", "model"]),
-            ("wizard_lessons", ["provider", "model"]),
+            ("wizard_lessons", ["provider", "model", "learned_id"]),
         ]
         for (table, columns) in textColumns {
             let existing = try connection.columnNames(of: table)
@@ -2886,8 +2886,13 @@ actor Database {
     }
 
     func fetchLessons() throws -> [WizardLesson] {
-        try connection.query("SELECT * FROM wizard_lessons ORDER BY pinned DESC, id").map {
-            WizardLesson(id: $0["id"]?.intValue ?? 0,
+        for row in try connection.query("SELECT id, text FROM wizard_lessons WHERE learned_id IS NULL") {
+            try connection.execute("UPDATE wizard_lessons SET learned_id = ? WHERE id = ?",
+                [.text(LearnedPreferences.stableID(row["text"]?.stringValue ?? "")), row["id"] ?? .null])
+        }
+        return try connection.query("SELECT * FROM wizard_lessons ORDER BY pinned DESC, id").map {
+            WizardLesson(learnedID: $0["learned_id"]?.stringValue ?? "",
+                         updatedAt: $0["updated_at"]?.stringValue, id: $0["id"]?.intValue ?? 0,
                          text: $0["text"]?.stringValue ?? "",
                          pinned: $0["pinned"]?.boolValue ?? false,
                          evidence: $0["evidence"]?.stringValue ?? "",
@@ -2910,6 +2915,7 @@ actor Database {
     }
 
     func updateLesson(id: Int64, text: String, pinned: Bool) throws {
+        _ = try fetchLessons() // Preserve original-text identity before a rewrite.
         try connection.execute("""
             UPDATE wizard_lessons SET text = ?, pinned = ?, updated_at = datetime('now') WHERE id = ?
             """, [.text(text), .integer(pinned ? 1 : 0), .integer(id)])
@@ -2933,6 +2939,31 @@ actor Database {
                           provenance?.model.map(SQLValue.text) ?? .null])
             }
         }
+    }
+
+    /// Local-only fingerprint of the exact feedback inputs consumed by distillLessons.
+    func learnedFeedbackFingerprint() throws -> String? {
+        var rows: [String] = []
+        for table in ["generation_reviews", "clip_reviews", "wizard_preferences", "wizard_feedback"] {
+            for row in try connection.query("SELECT * FROM \(table) ORDER BY rowid") {
+                rows.append(row.keys.sorted().map { "\($0)=\(String(describing: row[$0]))" }.joined(separator: "|"))
+            }
+        }
+        return rows.isEmpty ? nil : LearnedPreferences.stableID(rows.joined(separator: "\n"))
+    }
+
+    func learnedBenchmarks() throws -> AccountBenchmarks? {
+        guard let account = try fetchIGAccounts().first(where: \.isOwn) else { return nil }
+        return AccountBenchmarks.build(inputs: try fetchIGReportInputs(account: account),
+            gridMedia: try fetchIGMedia(accountID: account.id), templates: try fetchIGTemplateLinks())
+    }
+
+    func learnedEvidence() throws -> (reviews: Int, studies: Int, research: [String]) {
+        let reviews = try connection.query("SELECT COUNT(*) AS n FROM generation_reviews").first?["n"]?.intValue ?? 0
+        let studies = try connection.query("SELECT COUNT(*) AS n FROM taste_studies").first?["n"]?.intValue ?? 0
+        let plans = try connection.query("SELECT result_json FROM wizard_research ORDER BY id")
+            .compactMap { $0["result_json"]?.stringValue }
+        return (Int(reviews), Int(studies), plans)
     }
 
     // MARK: - Wizard research + feedback

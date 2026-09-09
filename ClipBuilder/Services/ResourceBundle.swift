@@ -10,6 +10,7 @@ nonisolated enum ResourceCategory: String, CaseIterable, Identifiable, Codable, 
     case overlays
     case screenCrops = "screen_crops"
     case profiles
+    case learned
     case preferences
 
     var id: String { rawValue }
@@ -22,7 +23,8 @@ nonisolated enum ResourceCategory: String, CaseIterable, Identifiable, Codable, 
         case .images: "Images"
         case .overlays: "Overlay templates"
         case .screenCrops: "Screen crop layouts"
-        case .profiles: "Brand profiles"
+        case .profiles: "Brand profiles (full backup)"
+        case .learned: "Learned preferences (recommended for sharing)"
         case .preferences: "Wizard & analysis preferences"
         }
     }
@@ -36,6 +38,7 @@ nonisolated enum ResourceCategory: String, CaseIterable, Identifiable, Codable, 
         case .overlays: "square.2.layers.3d"
         case .screenCrops: "crop"
         case .profiles: "person.crop.rectangle"
+        case .learned: "graduationcap"
         case .preferences: "slider.horizontal.3"
         }
     }
@@ -53,7 +56,7 @@ nonisolated enum ResourceCategory: String, CaseIterable, Identifiable, Codable, 
         case .overlays: OverlayTemplateStore.directory
         case .screenCrops: ScreenCropStore.directory
         case .profiles: ProfileStore.profilesDirectory
-        case .preferences: nil
+        case .preferences, .learned: nil
         }
     }
 
@@ -63,6 +66,7 @@ nonisolated enum ResourceCategory: String, CaseIterable, Identifiable, Codable, 
         case .fonts: AssetKind.fonts.allowedExtensions
         case .bumpers: AssetKind.bumpers.allowedExtensions
         case .images: AssetKind.images.allowedExtensions
+        case .learned: ["json", "jpg"]
         case .overlays, .screenCrops, .profiles: ["json"]
         case .preferences: nil
         }
@@ -191,6 +195,10 @@ nonisolated enum ResourceBundle {
     static func inventory() -> [ResourceCategory: [ResourceItem]] {
         var result: [ResourceCategory: [ResourceItem]] = [:]
         for category in ResourceCategory.allCases {
+            if category == .learned {
+                result[category] = [ResourceItem(category: category, relativePath: "learned.json", bytes: 0)]
+                continue
+            }
             if category == .preferences {
                 let count = preferences().count
                 result[category] = count == 0 ? [] : [ResourceItem(category: category, relativePath: "preferences.json", bytes: 0)]
@@ -240,6 +248,7 @@ nonisolated enum ResourceBundle {
 
     static func export(categories: Set<ResourceCategory>, to destination: URL,
                        bumperMetadata: [LibraryAssetMetadata] = [],
+                       learned: [LearnedDocumentBuilder.Build] = [],
                        progress: @escaping @Sendable (String) -> Void) throws {
         let staging = FileManager.default.temporaryDirectory
             .appendingPathComponent("cb_export_\(UUID().uuidString)", isDirectory: true)
@@ -254,6 +263,9 @@ nonisolated enum ResourceBundle {
             let folder = root.appendingPathComponent(category.folderName, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             switch category {
+            case .learned:
+                guard !learned.isEmpty else { throw LearnedRedaction.Failure.invalidDocument }
+                counts[category.rawValue] = try LearnedResourceBundle.pack(learned, root: root)
             case .music, .fonts, .images, .bumpers, .screenCrops:
                 let items = files(in: category.localRoot!, category: category)
                 for item in items {
@@ -420,6 +432,7 @@ nonisolated enum ResourceBundle {
 
     static func importBundle(_ preview: ResourceBundlePreview, categories: Set<ResourceCategory>,
                              policy: ResourceImportPolicy,
+                             learnedLibrary: LearnedLibrary = LearnedLibrary(),
                              progress: @escaping @Sendable (String) -> Void) throws -> ResourceImportSummary {
         var summary = ResourceImportSummary()
         let imagesRoot = AssetKind.images.rootURL
@@ -427,6 +440,8 @@ nonisolated enum ResourceBundle {
             progress("Importing \(category.title.lowercased())…")
             let folder = preview.root.appendingPathComponent(category.folderName, isDirectory: true)
             switch category {
+            case .learned:
+                summary.imported += try LearnedResourceBundle.unpack(root: preview.root, library: learnedLibrary)
             case .preferences:
                 guard let data = try? Data(contentsOf: folder.appendingPathComponent("preferences.json")),
                       let values = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }

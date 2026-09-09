@@ -959,7 +959,7 @@ final class AppStore {
     }
 
     func selectSection(_ section: SidebarSection) {
-        if activeProjectID != nil { isShowingProjectsHome = false }
+        if activeProjectID != nil || section == .learned { isShowingProjectsHome = false }
         selectedSection = section.projectDestination
         persistActiveProjectState()
     }
@@ -975,6 +975,22 @@ final class AppStore {
     }
 
     func saveActiveProfile() {
+        LearnedCache.invalidate(profile: activeProfile.profileName)
+        if let old = ProfileStore.load(name: activeProfile.profileName) {
+            let date = Date()
+            if old.houseStyle != activeProfile.houseStyle || old.learnedHookStyle != activeProfile.learnedHookStyle
+                || old.learnedLayoutPreference != activeProfile.learnedLayoutPreference
+                || old.defaultPacing != activeProfile.defaultPacing || old.captionLanguages != activeProfile.captionLanguages {
+                activeProfile.learnedSharing.updatedAt["style"] = date
+            }
+            if old.tasteRubric != activeProfile.tasteRubric || old.tasteCategories != activeProfile.tasteCategories
+                || old.tasteExemplarFrames != activeProfile.tasteExemplarFrames {
+                activeProfile.learnedSharing.updatedAt["taste"] = date
+            }
+            if old.tagSchema != activeProfile.tagSchema || old.hashtags != activeProfile.hashtags {
+                activeProfile.learnedSharing.updatedAt["vocabulary"] = date
+            }
+        }
         do {
             try ProfileStore.save(activeProfile)
             if let index = profiles.firstIndex(where: { $0.profileName == activeProfile.profileName }) {
@@ -4653,6 +4669,7 @@ final class AppStore {
         }
         igBenchmarks = try? await instagram.buildBenchmarks(account: account, database: database,
                                                             reuseInputs: reuseInputs)
+        LearnedCache.invalidate(profile: activeProfile.profileName)
         await recordAudienceScores()
     }
 

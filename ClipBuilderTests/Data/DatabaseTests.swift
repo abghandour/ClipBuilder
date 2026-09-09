@@ -509,3 +509,25 @@ struct DatabaseTests {
 }
 
 private final class DatabaseBundleToken {}
+
+struct LearnedDatabaseMigrationTests {
+    @Test func versionNineDatabaseGetsStableLessonIDs() async throws {
+        let temp = try TempDirectory()
+        let path = temp.url.appendingPathComponent("legacy.db")
+        let raw = try SQLiteConnection(path: path.path)
+        try raw.executeScript("""
+            CREATE TABLE wizard_lessons (
+                id INTEGER PRIMARY KEY, text TEXT NOT NULL, pinned INTEGER DEFAULT 0,
+                evidence TEXT DEFAULT '', provider TEXT, model TEXT,
+                created_at TEXT DEFAULT (datetime('now')), updated_at TEXT DEFAULT (datetime('now'))
+            );
+            INSERT INTO wizard_lessons (text) VALUES ('Original');
+            PRAGMA user_version = 9;
+            """)
+        let database = try Database(path: path)
+        let lesson = try #require(try await database.fetchLessons().first)
+        #expect(lesson.learnedID == LearnedPreferences.stableID("Original"))
+        try await database.updateLesson(id: lesson.id, text: "Edited", pinned: true)
+        #expect(try await database.fetchLessons().first?.learnedID == lesson.learnedID)
+    }
+}

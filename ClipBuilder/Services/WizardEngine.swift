@@ -728,7 +728,7 @@ actor WizardEngine {
         return sections.joined(separator: "\n\n")
     }
 
-    private func planPrompt(profile: BrandProfile,
+    func planPrompt(profile: BrandProfile,
                             research: [String: Any],
                             scenes: [SceneRecord],
                             musicNames: [String],
@@ -740,7 +740,98 @@ actor WizardEngine {
                             topics: [TopicRange] = [],
                             cleanupCuts: [EditProposal] = [],
                             editingInsights: EditingPerformanceInsights? = nil,
-                            options: WizardOptions) -> String {
+                            options: WizardOptions,
+                            learnedContributors: [LearnedPreferences]? = nil,
+                            localLearning: LearnedPreferences? = nil) -> String {
+        let contributors = learnedContributors ?? LearnedLibrary(profile: profile.profileName).documents()
+        let local = localLearning ?? (try? LearnedDocumentBuilder.build(profile: profile, lessons: signals.lessons,
+            benchmarks: options.accountBenchmarks, now: .distantPast, readFrame: { _ in Data() }).document)
+        let merged = local.map { LearnedCache.merged(profile: profile, local: $0, contributors: contributors) } ?? []
+        // Preserve the existing local prompt byte for byte; shared context is
+        // attributed separately, so AIRunCapture retains its exact origin.
+        // The merge has already removed overridden single values and muted authors.
+        let shared = LearnedMerge.contributorBlock(merged)
+        var visibleSignals = signals
+        visibleSignals.lessons.removeAll {
+            profile.learnedSharing.dismissedLessons.contains($0.learnedID.isEmpty
+                ? LearnedPreferences.stableID($0.text) : $0.learnedID)
+        }
+        var promptProfile = profile
+        var promptOptions = options
+        let hasContributors = merged.contains { !$0.local }
+        if hasContributors || localLearning != nil, local != nil {
+            // The four legacy blocks receive the local portion of the merged
+            // document. Remote winners are emitted once, with their origins,
+            // after the unchanged prompt. This also removes superseded lessons
+            // and applies the shared budget before rendering either portion.
+            let own = merged.filter(\.local)
+            promptProfile.houseStyle = own.first { $0.item.field == "houseStyle" }?.item.text ?? ""
+            promptProfile.learnedHookStyle = own.first { $0.item.field == "hookStyle" }?.item.text ?? ""
+            promptProfile.learnedLayoutPreference = own.first { $0.item.field == "layout" }?.item.text ?? ""
+            promptProfile.tasteRubric = own.first { $0.item.field == "rubric" }?.item.text ?? ""
+            promptProfile.tasteCategories.removeAll { category in
+                !own.contains { $0.item.field == "category" && $0.item.id == category.key }
+            }
+            visibleSignals.lessons = visibleSignals.lessons.compactMap { lesson in
+                let id = lesson.learnedID.isEmpty ? LearnedPreferences.stableID(lesson.text) : lesson.learnedID
+                guard let line = own.first(where: { $0.item.field == "lesson" && $0.item.id == id }) else { return nil }
+                var copy = lesson
+                copy.text = line.item.text
+                return copy
+            }
+            if !own.contains(where: { $0.section == .benchmarks && $0.item.field == "summary" }) {
+                promptOptions.accountBenchmarks = nil
+            }
+        }
+        var benchmarkText: String?
+        var localVocabulary = ""
+        if localLearning != nil {
+            let own = merged.filter(\.local)
+            func attributed(_ field: String) -> String {
+                own.filter { $0.item.field == field }.map(\.text).joined(separator: "\n")
+            }
+            promptProfile.houseStyle = attributed("houseStyle")
+            promptProfile.learnedHookStyle = attributed("hookStyle")
+            promptProfile.learnedLayoutPreference = attributed("layout")
+            promptProfile.tasteRubric = attributed("rubric")
+            for index in promptProfile.tasteCategories.indices {
+                let key = promptProfile.tasteCategories[index].key
+                if let line = own.first(where: { $0.item.field == "category" && $0.item.id == key }) {
+                    promptProfile.tasteCategories[index].rubric = line.text
+                }
+            }
+            visibleSignals.lessons = visibleSignals.lessons.map { lesson in
+                var copy = lesson
+                let id = lesson.learnedID.isEmpty ? LearnedPreferences.stableID(lesson.text) : lesson.learnedID
+                if let line = own.first(where: { $0.item.field == "lesson" && $0.item.id == id }) {
+                    copy.text = line.text
+                    copy.evidence = "" // The attributed line already carries evidence.
+                }
+                return copy
+            }
+            benchmarkText = own.filter { $0.section == .benchmarks }.map(\.text).joined(separator: "\n")
+            let vocabulary = own.filter { $0.section == .vocabulary }.map(\.text).joined(separator: "\n")
+            if !vocabulary.isEmpty { localVocabulary = "\n\n## LEARNED VOCABULARY\n" + vocabulary }
+        }
+        return legacyPlanPrompt(profile: promptProfile, research: research, scenes: scenes, musicNames: musicNames,
+            signals: visibleSignals, people: people, outcomes: outcomes, fightResearch: fightResearch,
+            videoTypes: videoTypes, topics: topics, cleanupCuts: cleanupCuts, editingInsights: editingInsights,
+            options: promptOptions, learnedBenchmarks: benchmarkText) + localVocabulary + shared
+    }
+
+    func legacyPlanPrompt(profile: BrandProfile,
+                            research: [String: Any],
+                            scenes: [SceneRecord],
+                            musicNames: [String],
+                            signals: TrainingSignals,
+                            people: [PersonRecord],
+                            outcomes: [FightOutcome],
+                            fightResearch: [FightResearchRecord] = [],
+                            videoTypes: [Int64: VideoType] = [:],
+                            topics: [TopicRange] = [],
+                            cleanupCuts: [EditProposal] = [],
+                            editingInsights: EditingPerformanceInsights? = nil,
+                            options: WizardOptions, learnedBenchmarks: String? = nil) -> String {
         // Fight results the analyzer extracted — the ground truth behind
         // "headline" and recap storytelling.
         let namesByKey = Dictionary(uniqueKeysWithValues: people.map { ($0.key, $0.displayName) })
@@ -819,6 +910,10 @@ actor WizardEngine {
             ## THIS ACCOUNT'S BENCHMARKS (measured from its Instagram insights — outranks the generic playbook)
             \(benchmarks.plannerBlock())
             """
+        }
+
+        if let learnedBenchmarks {
+            benchmarksBlock = learnedBenchmarks.isEmpty ? "" : "\n\n## THIS ACCOUNT'S BENCHMARKS (measured from its Instagram insights — outranks the generic playbook)\n" + learnedBenchmarks
         }
 
         // Explicit pacing wins over every learned, benchmark, or reference
@@ -1568,6 +1663,7 @@ actor WizardEngine {
 
     /// Everything the planning phase needs, loaded once per run.
     private struct PlanningInputs {
+        var localLearning: LearnedPreferences? = nil
         var research: [String: Any]
         var scenes: [SceneRecord]
         var sceneMap: [Int64: SceneRecord]
@@ -1787,7 +1883,17 @@ actor WizardEngine {
                     segments: segments, turns: podcastSpeakerTurns[scene.videoID] ?? [], scene: scene)
             }
         }
-        return PlanningInputs(research: research, scenes: scenes,
+        let home = (try? await database.driveSetting("assetHome")) ?? ""
+        let hasContributors = LearnedLibrary(profile: profile.profileName).documents().contains {
+            $0.contributor != LearnedPreferences.contributor(profile: profile)
+                && !profile.learnedSharing.mutedContributors.contains($0.contributor)
+        }
+        let localLearning: LearnedPreferences?
+        if !home.isEmpty || hasContributors {
+            localLearning = try await LearnedDocumentBuilder.build(profile: profile, database: database,
+                benchmarks: options.accountBenchmarks, readFrame: { _ in Data() }).document
+        } else { localLearning = nil }
+        return PlanningInputs(localLearning: localLearning, research: research, scenes: scenes,
                               sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
                               music: music, signals: signals, people: people,
                               outcomes: outcomes, fightResearch: fightResearch,
@@ -1814,7 +1920,8 @@ actor WizardEngine {
     /// Visual definitions of "a keeper moment" for the planner: exemplar
     /// frames from the taste category steering this run (or a spread across
     /// categories), attached to the plan call for multimodal providers.
-    private func tasteExemplarFrames(profile: BrandProfile, options: WizardOptions) -> [AIFrame] {
+    func tasteExemplarFrames(profile: BrandProfile, options: WizardOptions,
+                             learnedLibrary: LearnedLibrary? = nil) -> [AIFrame] {
         var entries: [(path: String, label: String)] = []
         if let preset = options.tastePreset, preset.hasPrefix("cat:"),
            let category = profile.tasteCategories.first(where: { $0.key == String(preset.dropFirst(4)) }) {
@@ -1824,6 +1931,20 @@ actor WizardEngine {
             for category in profile.tasteCategories {
                 entries += category.exemplarFrames.suffix(1)
                     .map { ($0, "TASTE EXAMPLE (\(category.label))") }
+            }
+        }
+        if options.tastePreset != "none" {
+            let library = learnedLibrary ?? LearnedLibrary(profile: profile.profileName)
+            if let local = try? LearnedDocumentBuilder.build(profile: profile, now: .distantPast, readFrame: { _ in Data() }).document {
+                let merged = LearnedCache.merged(profile: profile, local: local, contributors: library.documents())
+                for line in merged where !line.local && line.section == .taste {
+                    if let preset = options.tastePreset, preset.hasPrefix("cat:"), line.item.id != String(preset.dropFirst(4)) { continue }
+                    for frame in line.item.frames {
+                        if let url = try? library.frameURL(frame, contributor: line.origin) {
+                            entries.append((url.path, "[\(line.origin)] TASTE EXAMPLE (\(line.item.field))"))
+                        }
+                    }
+                }
             }
         }
         var frames: [AIFrame] = []
@@ -1876,7 +1997,7 @@ actor WizardEngine {
                                 videoTypes: inputs.videoTypes, topics: inputs.topics,
                                 cleanupCuts: inputs.cleanupCuts,
                                 editingInsights: inputs.editingInsights,
-                                options: options)
+                                options: options, localLearning: inputs.localLearning)
         // A critic reviewed the previous rendered version — its notes become
         // binding instructions for this plan.
         if let critiqueFeedback {
@@ -2498,6 +2619,7 @@ actor WizardEngine {
     /// most 10 imperative style rules, replacing the previous machine-learned
     /// set (pinned rules are user-owned and untouched). Returns the new count.
     func distillLessons(database: Database, emit: @escaping @Sendable (String) -> Void) async throws -> Int {
+        let learningFingerprint = try await database.learnedFeedbackFingerprint()
         // Wider windows than a generation prompt: distillation is rare and
         // benefits from the full history.
         let reviews = (try? await database.fetchReviewSummaries(limit: 50)) ?? []
@@ -2550,6 +2672,10 @@ actor WizardEngine {
             return (text, (raw["evidence"] as? String) ?? "")
         }
         try await database.replaceLearnedLessons(distilled, provenance: response.provenance)
+        if let learningFingerprint {
+            try await database.setDriveSetting("learnedDistilledFeedback", value: learningFingerprint)
+        }
+        LearnedCache.invalidate()
         return distilled.count
     }
 

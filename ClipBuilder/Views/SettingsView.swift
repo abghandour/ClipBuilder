@@ -704,6 +704,7 @@ private struct GeneralSettingsTab: View {
 // MARK: - AI
 
 private struct AISettingsTab: View {
+    @State private var showingLearned = false
     @Environment(AppStore.self) private var store
 
     // Optimistic until the async CLI check lands, mirroring the plan sheet.
@@ -744,6 +745,13 @@ private struct AISettingsTab: View {
                 Text("Restores the recommended model for every task and re-enables the model-plan prompts shown before Analyze and Generate.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Learning") {
+                Button("What Clip Builder has learned") { showingLearned = true }
+                    .sheet(isPresented: $showingLearned) {
+                        LearnedPreferencesView().frame(minWidth: 760, minHeight: 560)
+                    }
             }
 
             WizardLearningSettingsSection()

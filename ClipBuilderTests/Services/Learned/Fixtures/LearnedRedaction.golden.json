@@ -1,0 +1,122 @@
+{
+  "contributor" : "Brand - Studio",
+  "sections" : [
+    {
+      "enabled" : true,
+      "evidence" : "Profile style; 0 studies",
+      "items" : [
+        {
+          "evidence" : "Profile",
+          "field" : "houseStyle",
+          "frames" : [
+
+          ],
+          "id" : "houseStyle",
+          "numbers" : {
+
+          },
+          "pinned" : false,
+          "text" : "Strong openings",
+          "updatedAt" : -63114076800
+        },
+        {
+          "evidence" : "",
+          "field" : "captionLanguage",
+          "frames" : [
+
+          ],
+          "id" : "e1d030fb804b7bcf5db27ff00f63709e051dd52aed698999e9bebcb460658094",
+          "numbers" : {
+
+          },
+          "pinned" : false,
+          "text" : "en",
+          "updatedAt" : -63114076800
+        }
+      ],
+      "kind" : "style",
+      "updatedAt" : -63114076800
+    },
+    {
+      "enabled" : true,
+      "evidence" : "0 exemplar studies",
+      "items" : [
+        {
+          "evidence" : "",
+          "field" : "rubric",
+          "frames" : [
+            "learned/Brand - Studio/frames/d96f581cceddfaf96d5ef73465cd75fe036a717fea10ffd82b2484771d1f93e9.jpg"
+          ],
+          "id" : "rubric",
+          "numbers" : {
+
+          },
+          "pinned" : false,
+          "text" : "Keep action",
+          "updatedAt" : -63114076800
+        }
+      ],
+      "kind" : "taste",
+      "updatedAt" : -63114076800
+    },
+    {
+      "enabled" : true,
+      "evidence" : "0 reviews; 0 distilled lessons",
+      "items" : [
+
+      ],
+      "kind" : "lessons",
+      "updatedAt" : -63114076800
+    },
+    {
+      "enabled" : true,
+      "evidence" : "Profile vocabulary",
+      "items" : [
+
+      ],
+      "kind" : "vocabulary",
+      "updatedAt" : -63114076800
+    },
+    {
+      "enabled" : true,
+      "evidence" : "0 reels with insights",
+      "items" : [
+
+      ],
+      "kind" : "benchmarks",
+      "updatedAt" : -63114076800
+    },
+    {
+      "enabled" : true,
+      "evidence" : "1 registered people",
+      "items" : [
+        {
+          "evidence" : "",
+          "field" : "person",
+          "frames" : [
+
+          ],
+          "id" : "9ecf575055485d7ad428f4a28773a6c01d6f4311c83d68ba0d144445ac79e7eb",
+          "numbers" : {
+
+          },
+          "pinned" : false,
+          "text" : "Trainer: Coach",
+          "updatedAt" : -63114076800
+        }
+      ],
+      "kind" : "people",
+      "updatedAt" : -63114076800
+    },
+    {
+      "enabled" : false,
+      "evidence" : "0 research summaries; 0 saved plans",
+      "items" : [
+
+      ],
+      "kind" : "research",
+      "updatedAt" : -63114076800
+    }
+  ],
+  "version" : 1
+}
