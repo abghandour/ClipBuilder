@@ -41,6 +41,7 @@ struct LearnedPreferencesView: View {
                     }
                 }
                 if !status.isEmpty { Text(status).foregroundStyle(.secondary) }
+                ReelModelsLearnedSection()
                 if let document {
                     ForEach(document.sections) { section in
                         GroupBox {

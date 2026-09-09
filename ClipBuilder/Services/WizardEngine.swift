@@ -1813,7 +1813,24 @@ actor WizardEngine {
         // Shortlist: rank by analyzed quality and user signals, cap the
         // candidate pool so the strong scenes aren't diluted by hundreds of
         // filler lines (and the prompt stays fast and cheap).
-        scenes = shortlistScenes(scenes, targetSeconds: options.targetDurationSeconds, emit: emit)
+        let modelConfig = await ai.config
+        let models = ReelModelStore(databasePath: database.path,
+            reports: database.path.deletingLastPathComponent().appendingPathComponent("on-device-agreement"))
+        if let predictor = try? models.predictor(item: .ranker, config: modelConfig, trainer: CreateMLReelModelTrainer()) {
+            do {
+                var sceneTraits: [Int64: ReelTraits] = [:]
+                for scene in scenes {
+                    sceneTraits[scene.id] = try await SceneTraitExtractor.traits(for: scene, database: database)
+                }
+                scenes = try ClipRanker.ranked(scenes, predictor: predictor, traits: sceneTraits)
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                emit("Clip ranking unavailable: \(error.localizedDescription)")
+                scenes = shortlistScenes(scenes, targetSeconds: options.targetDurationSeconds, emit: emit)
+            }
+        } else {
+            scenes = shortlistScenes(scenes, targetSeconds: options.targetDurationSeconds, emit: emit)
+        }
         if options.templateJSON != nil {
             emit("Using reference template: \(options.templateLabel ?? "Instagram reel")")
         }
@@ -1986,7 +2003,7 @@ actor WizardEngine {
     /// check with at most ONE corrective re-plan (weak hook, low-quality or
     /// badly-fitting footage, template drift). Nil plan when the response is
     /// unusable. Prompt and raw response ride along for the run report.
-    private func makePlan(inputs: PlanningInputs, options: WizardOptions, profile: BrandProfile,
+    private func makePlan(inputs: PlanningInputs, options: WizardOptions, profile: BrandProfile, database: Database,
                           critiqueFeedback: String? = nil,
                           emit: @escaping @Sendable (String) -> Void) async throws
         -> (plan: WizardPlan?, prompt: String, response: String) {
@@ -1998,6 +2015,17 @@ actor WizardEngine {
                                 cleanupCuts: inputs.cleanupCuts,
                                 editingInsights: inputs.editingInsights,
                                 options: options, localLearning: inputs.localLearning)
+        let modelConfig = await ai.config
+        let models = ReelModelStore(databasePath: database.path,
+            reports: database.path.deletingLastPathComponent().appendingPathComponent("on-device-agreement"))
+        if (try? models.predictor(item: .outcome, config: modelConfig, trainer: CreateMLReelModelTrainer())) != nil,
+           let report = models.report(.outcome) {
+            let importance = report.importance.filter { $0.value > 0 }.sorted { $0.value > $1.value }.prefix(6)
+            if !importance.isEmpty {
+                prompt += "\n[\(report.origin ?? "Local outcome model") v\(report.version)] Measured feature importance (association, not causation): "
+                    + importance.map { "\($0.key) \($0.value.formatted(.number.precision(.fractionLength(3))))" }.joined(separator: ", ")
+            }
+        }
         // A critic reviewed the previous rendered version — its notes become
         // binding instructions for this plan.
         if let critiqueFeedback {
@@ -2097,6 +2125,29 @@ actor WizardEngine {
                 plan = await snapCutsToBeats(titled, music: inputs.music,
                                              sceneMap: inputs.sceneMap, emit: emit)
             }
+        }
+        if ReelModelItem.outcome.isEnabled(config: modelConfig), let candidate = plan {
+            do {
+                // Check the local gate before spending time rendering a proxy.
+                if try models.predictor(item: .outcome, config: modelConfig, trainer: CreateMLReelModelTrainer()) != nil {
+                    var proxySettings = options.renderSettings
+                    proxySettings.preset = .custom
+                    proxySettings.customWidth = max(240, options.renderSettings.width / 3)
+                    proxySettings.customHeight = max(240, options.renderSettings.height / 3)
+                    proxySettings.quality = .compact
+                    let document = Self.timelineDocument(from: candidate, sceneMap: inputs.sceneMap,
+                        renderSettings: proxySettings, pacing: options.pacing, podcastFraming: options.podcastFraming)
+                    let proxy = try await MultitrackRenderer(render: render).render(document: document,
+                        scenes: inputs.scenes, profile: profile, database: database, preview: true, emit: emit)
+                    defer { try? FileManager.default.removeItem(at: proxy.url) }
+                    let transcript = try await ReelTraitRecording.transcript(document: document, scenes: inputs.scenes, database: database)
+                    if let prediction = try await ReelModelScoring.candidate(proxy: proxy.url, id: UUID().uuidString,
+                        caption: nil, transcript: transcript, config: modelConfig, database: database, store: models) {
+                        emit("Candidate " + ReelOutcomeModel.predictedLine(prediction))
+                    }
+                }
+            } catch is CancellationError { throw CancellationError() }
+            catch { emit("Candidate scoring unavailable: \(error.localizedDescription)") }
         }
         return (plan, prompt, response)
     }
@@ -2231,7 +2282,7 @@ actor WizardEngine {
         let inputs = try await loadPlanningInputs(options: options, profile: profile,
                                                   database: database, emit: emit)
         emit("\nPhase 2: Planning the timeline...")
-        guard let plan = try await makePlan(inputs: inputs, options: options, profile: profile,
+        guard let plan = try await makePlan(inputs: inputs, options: options, profile: profile, database: database,
                                             emit: emit).plan else {
             throw AIError.unusableResponse("Reel planning failed: the AI did not produce a usable plan — its raw response is in the log above. If your instructions filter footage by tags, check that the selected footage actually carries those tags.")
         }
@@ -2306,7 +2357,7 @@ actor WizardEngine {
                 emit("\n══════ Version \(attempt) — rebuilding from the critique ══════")
             }
             emit("\nPhase 2: Planning the timeline...")
-            let outcome = try await makePlan(inputs: inputs, options: options, profile: profile,
+            let outcome = try await makePlan(inputs: inputs, options: options, profile: profile, database: database,
                                              critiqueFeedback: critiqueFeedback, emit: emit)
             guard let plan = outcome.plan else {
                 if producedCount > 0 {
@@ -2384,7 +2435,7 @@ actor WizardEngine {
                                                          plan: plan, sceneMap: sceneMap,
                                                          options: options, profile: profile,
                                                          attempt: attempt, previous: critiques,
-                                                         ai: ai, emit: emit)
+                                                         ai: ai, emit: emit, database: database, generatedID: result.recordID)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -3111,6 +3162,8 @@ actor WizardEngine {
                                                traits: .derive(document: document,
                                                                scenes: Array(sceneMap.values),
                                                                plan: plan))
+        await ReelTraitRecording.record(url: outputURL, id: recordID, database: database,
+            document: document, scenes: Array(sceneMap.values), log: emit)
         return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID)
     }
 

@@ -124,6 +124,10 @@ actor InstagramService {
         } else if provider.sourceName != "graph" {
             log("Report data needs the connected Graph account — skipped for @\(username)")
         }
+        if let account = try await database.fetchIGAccounts().first(where: { $0.id == accountID }) {
+            log("Compute traits for local reels…")
+            try await computeReelTraits(account: account, database: database, log: log)
+        }
         return accountID
     }
 
@@ -176,15 +180,18 @@ actor InstagramService {
         let inputs = try await reportInputs(account: account, database: database, reuse: reuseInputs)
         let grid = try await database.fetchIGMedia(accountID: account.id)
         let templates = try await database.fetchIGTemplateLinks()
-        return AccountBenchmarks.build(inputs: inputs, gridMedia: grid, templates: templates)
+        return AccountBenchmarks.build(inputs: inputs, gridMedia: grid, templates: templates,
+            outcomes: try await database.reelOutcomes(accountID: account.id))
     }
 
     /// Backfill history from a peace-grappler checkout.
     func importPeaceGrapplerHistory(repoPath: String, account: IGAccountRecord, database: Database,
                                     log: @escaping @Sendable (String) -> Void) async throws
         -> PeaceGrapplerImporter.Summary {
-        try await PeaceGrapplerImporter.run(repoPath: repoPath, accountID: account.id,
+        let summary = try await PeaceGrapplerImporter.run(repoPath: repoPath, accountID: account.id,
                                             username: account.username, database: database, log: log)
+        try await computeReelTraits(account: account, database: database, log: log)
+        return summary
     }
 
     /// Publish a rendered video to the connected account as a Reel. Graph
@@ -213,7 +220,10 @@ actor InstagramService {
     func ensureDownloaded(media: IGMediaRecord, account: IGAccountRecord, database: Database,
                           settings: InstagramSettings,
                           log: @escaping @Sendable (String) -> Void) async throws -> URL {
-        if let existing = media.localVideoURL { return existing }
+        if let existing = media.localVideoURL {
+            try await cacheDownloadedReelTraits(media: media, account: account, file: existing, database: database, log: log)
+            return existing
+        }
         let destination = videoDestination(username: account.username, mediaID: media.mediaID)
 
         if media.source == "graph" {
@@ -265,6 +275,7 @@ actor InstagramService {
                                                     title: String(media.caption.prefix(120)),
                                                     pageURL: media.permalink,
                                                     localPath: destination.path)
+        try await cacheDownloadedReelTraits(media: media, account: account, file: destination, database: database, log: log)
         return destination
     }
 

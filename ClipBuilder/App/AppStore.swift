@@ -2716,6 +2716,17 @@ final class AppStore {
         if scoped.count < candidates.count {
             log("Searching the \(scoped.count) most recent of \(candidates.count) scenes")
         }
+        var tasteLines: [String] = []
+        if let modelStore = reelModelStore,
+           let taste = try? modelStore.predictor(item: .taste, config: settings.ai, trainer: CreateMLReelModelTrainer()) {
+            for scene in scoped {
+                if let image = await ThumbnailService.jpegFrame(url: scene.videoURL, at: (scene.startTime + scene.endTime) / 2),
+                   let score = try? await TasteSimilarity.scoreOnDevice(image: image, predictor: taste) {
+                    let line = "Scene \(scene.id) looks like ours: \((score * 100).formatted(.number.precision(.fractionLength(0))))%"
+                    tasteLines.append(line); log(line)
+                }
+            }
+        }
         if useLocal {
             let names = Dictionary(uniqueKeysWithValues: people.map { ($0.tag, $0.name) })
             let vocabularyOnly = LocalSceneSearch.vocabularyOnly(query, vocabulary: activeProfile.effectiveTags.values.flatMap(\.self) + people.map(\.name))
@@ -2735,6 +2746,7 @@ final class AppStore {
         }
         log(useLocal ? "Scene candidates narrowed by keywords — asking the model" : "Scene search — asking the model")
         let prompt = SceneFinder.prompt(query: query, scenes: scoped, people: people)
+            + (tasteLines.isEmpty ? "" : "\n" + tasteLines.joined(separator: "\n"))
         let response = try await ai.call(prompt: prompt, task: "search",
                                          model: model, provider: provider,
                                          timeout: 120, log: log)
@@ -2803,7 +2815,16 @@ final class AppStore {
                                          task: "cover", frames: frames,
                                          model: model, provider: provider,
                                          timeout: 180, log: log)
-        let candidates = CoverFramePicker.parse(response.text, sampledTimes: sampledTimes)
+        var candidates = CoverFramePicker.parse(response.text, sampledTimes: sampledTimes)
+        if let modelStore = reelModelStore,
+           let taste = try? modelStore.predictor(item: .taste, config: settings.ai, trainer: CreateMLReelModelTrainer()) {
+            for index in candidates.indices {
+                if let frame = sampledTimes.firstIndex(of: candidates[index].time),
+                   let score = try? await TasteSimilarity.scoreOnDevice(image: frames[frame].jpeg, predictor: taste) {
+                    candidates[index].reason += " · Looks like ours: \((score * 100).formatted(.number.precision(.fractionLength(0))))%"
+                }
+            }
+        }
         guard !candidates.isEmpty else {
             throw AIError.unusableResponse("The model returned no usable cover picks.")
         }
@@ -4926,6 +4947,29 @@ final class AppStore {
             throw CancellationError()
         } catch {
             igLog.append("History import failed (\(error)) — continuing with the live refresh; it retries next time")
+        }
+    }
+
+    func downloadInstagramTraitFiles(account: IGAccountRecord) {
+        guard let database, !isFetchingInstagram else { return }
+        let configuration = settings.instagram
+        isFetchingInstagram = true
+        igLog = []
+        igStatus = IGSyncStatus(title: "Reel traits", stage: "Downloading missing reels", fraction: 0)
+        igFetchTask = Task {
+            defer { isFetchingInstagram = false }
+            do {
+                try await instagram.computeReelTraits(account: account, database: database,
+                    settings: configuration, downloadMissing: true, log: igLogSink())
+                try await reloadIGMedia()
+                await reloadIGBenchmarks()
+                finishIGStatus("done")
+            } catch is CancellationError {
+                finishIGStatus("stopped")
+            } catch {
+                finishIGStatus("failed")
+                presentError(error.localizedDescription)
+            }
         }
     }
 

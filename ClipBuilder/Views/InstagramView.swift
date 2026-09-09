@@ -205,6 +205,10 @@ struct InstagramView: View {
                 }
                 .disabled(selectedAccount == nil)
                 .help("Fetch the latest reels, stats and report data")
+                Button("Download missing reels and compute traits") {
+                    if let account = selectedAccount { store.downloadInstagramTraitFiles(account: account) }
+                }.disabled(selectedAccount == nil)
+                .help("Opt in to downloading reel videos for on-device learning. Download counts appear in the import log.")
             }
         }
     }

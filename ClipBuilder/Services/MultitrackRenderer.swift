@@ -424,6 +424,8 @@ actor MultitrackRenderer {
                                                                    sourceSceneIDs: scenes.map(\.id), builderDocumentJSON: timelineJSON))
         try await database.saveGeneratedTraits(videoID: recordID,
                                                traits: .derive(document: document, scenes: scenes))
+        await ReelTraitRecording.record(url: outputURL, id: recordID, database: database,
+            document: document, scenes: scenes, log: emit)
         try Task.checkCancellation()
         if complete && finalDuration > 0 { await publishSegments(artifacts, clips: clips) }
         emit("Saved \(outputURL.lastPathComponent)")

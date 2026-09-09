@@ -102,6 +102,8 @@ nonisolated struct AccountBenchmarks: Codable, Sendable, Hashable {
     var commentsPer1k: Double
     var qualityMedian: Double
     var qualityP75: Double
+    /// Nil on legacy cached benchmarks; computed outcome rows use posting-month lift.
+    var qualityUsesLift: Bool? = nil
     var watchSecondsMedian: Double?
     var watchSecondsTop: Double?
 
@@ -134,7 +136,27 @@ nonisolated struct AccountBenchmarks: Codable, Sendable, Hashable {
     }()
 
     static func build(inputs: IGReportInputs, gridMedia: [IGMediaRecord], templates: [IGTemplateLink],
-                      now: Date = Date()) -> AccountBenchmarks? {
+                      now: Date = Date(), outcomes: [ReelOutcome]? = nil) -> AccountBenchmarks? {
+        var inputs = inputs
+        // Outcome rows exist only for reels with a local file and computed
+        // traits. Media without one keep their report metrics, so benchmarks
+        // never shrink because traits have not been computed yet. Lift-based
+        // quality is used only when every reel has it: mixing lift (about 1.0)
+        // with the legacy score would make the top/bottom ranking meaningless.
+        let outcomesByID = Dictionary((outcomes ?? []).filter { !$0.reference }.map { ($0.videoID, $0) },
+                                      uniquingKeysWith: { a, _ in a })
+        inputs.media = inputs.media.map { media in
+            guard let row = outcomesByID[String(media.id)] else { return media }
+            var media = media
+            media.metrics = row.raw
+            media.metrics["saved"] = row.raw["saves"]
+            // Keep the Graph unit (milliseconds) so the conversion below stays uniform.
+            media.metrics["ig_reels_avg_watch_time"] = row.raw["watchFraction"].map { $0 * row.traits.duration * 1000 }
+            return media
+        }
+        let liftForAll = !outcomesByID.isEmpty && inputs.media.filter(\.isReel).allSatisfy {
+            !(outcomesByID[String($0.id)]?.lift.isEmpty ?? true)
+        }
         var windowDays = 90
         var since = ReportDates.calendar.date(byAdding: .day, value: -windowDays, to: now) ?? now
         var posts = inputs.media.filter { !$0.isStory && ($0.postedAt ?? .distantPast) >= since }
@@ -165,8 +187,14 @@ nonisolated struct AccountBenchmarks: Codable, Sendable, Hashable {
             return IGStats(views: row.views, likes: row.likes, comments: row.comments, shares: row.shares,
                            saves: row.saves, reach: row.reach, avgWatchTime: watch)
         }
-        func quality(_ row: IGReportMediaRow) -> Double { ReelPerformance.score(stats(row)) }
+        func quality(_ row: IGReportMediaRow) -> Double {
+            if liftForAll, let outcome = outcomesByID[String(row.id)], !outcome.lift.isEmpty {
+                return ReelTraitExtractor.average(Array(outcome.lift.values))
+            }
+            return ReelPerformance.score(stats(row))
+        }
         func duration(_ row: IGReportMediaRow) -> Double? {
+            if let outcome = outcomesByID[String(row.id)] { return outcome.traits.duration }
             guard let id = row.mediaID else { return nil }
             return durations[id] ?? templateDurations[id]
         }
@@ -176,6 +204,7 @@ nonisolated struct AccountBenchmarks: Codable, Sendable, Hashable {
             return hook["type"] as? String
         }
         func cadence(_ row: IGReportMediaRow) -> Double? {
+            if let outcome = outcomesByID[String(row.id)] { return outcome.traits.cutsPerMinute }
             guard let id = row.mediaID, let template = templateByMedia[id] else { return nil }
             return (template["cuts_per_minute"] as? NSNumber)?.doubleValue
         }
@@ -219,6 +248,7 @@ nonisolated struct AccountBenchmarks: Codable, Sendable, Hashable {
             watchSecondsTop: top.compactMap { stats($0).avgWatchTime }.isEmpty ? nil
                 : median(top.compactMap { stats($0).avgWatchTime }))
 
+        benchmarks.qualityUsesLift = liftForAll ? true : nil
         if topDurations.count >= 3 {
             benchmarks.durationSweetSpotMin = Int(percentile(topDurations, 0.25).rounded())
             benchmarks.durationSweetSpotMax = Int(percentile(topDurations, 0.75).rounded())
@@ -409,7 +439,8 @@ nonisolated struct AccountBenchmarks: Codable, Sendable, Hashable {
         lines.append("@\(username)'s audience, measured over \(reelCount) reels (\(windowLabel)): median \(reachMedian.formatted()) reach, "
             + String(format: "%.1f saves and %.1f shares per 1k reach", savesPer1k, sharesPer1k)
             + (watchSecondsMedian.map { String(format: ", %.0fs avg watch", $0) } ?? "")
-            + ". Quality score = (saves×45 + shares×35 + comments×12 + likes×8) ÷ reach; median "
+            + (qualityUsesLift == true ? ". Quality score = mean measured lift against posting-month medians; median "
+                : ". Quality score = (saves×45 + shares×35 + comments×12 + likes×8) ÷ reach; median ")
             + String(format: "%.1f, top quartile %.1f.", qualityMedian, qualityP75))
         if !topTraits.isEmpty { lines.append("What the top-quartile reels share: " + topTraits.joined(separator: "; ")) }
         if !bottomTraits.isEmpty { lines.append("What the bottom-quartile reels share: " + bottomTraits.joined(separator: "; ")) }

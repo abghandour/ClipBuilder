@@ -66,7 +66,8 @@ nonisolated enum ReelCritic {
                          options: WizardOptions, profile: BrandProfile,
                          attempt: Int, previous: [ReelCritique],
                          ai: AIService,
-                         emit: @escaping @Sendable (String) -> Void) async throws -> ReelCritique {
+                         emit: @escaping @Sendable (String) -> Void,
+                         database: Database? = nil, generatedID: Int64? = nil) async throws -> ReelCritique {
         var frames: [AIFrame] = []
         for time in sampleTimes(duration: duration) {
             if let jpeg = await ThumbnailService.jpegFrame(url: video, at: time,
@@ -79,10 +80,23 @@ nonisolated enum ReelCritic {
         }
         emit("Critique: reviewing \(frames.count) frames of the rendered reel...")
 
+        var learnedLines: [String] = []
+        if let database {
+            let config = await ai.config
+            let models = ReelModelStore(databasePath: database.path,
+                reports: database.path.deletingLastPathComponent().appendingPathComponent("on-device-agreement"))
+            let traits: ReelTraits?
+            if let generatedID { traits = try? await database.reelTraits(kind: "generated", videoID: String(generatedID)) }
+            else { traits = nil }
+            do {
+                learnedLines = try ReelModelScoring.criticLines(config: config, store: models, traits: traits, frames: frames.map(\.jpeg))
+            } catch { emit("Trained scoring unavailable: \(error.localizedDescription)") }
+        }
+        let learnedBlock = learnedLines.isEmpty ? "" : "\n" + learnedLines.joined(separator: "\n")
         let response = try await ai.call(prompt: prompt(duration: duration, plan: plan,
                                                         sceneMap: sceneMap, options: options,
                                                         profile: profile, attempt: attempt,
-                                                        previous: previous),
+                                                        previous: previous) + learnedBlock,
                                          task: "critique", frames: frames,
                                          timeout: 180, log: emit)
         guard let object = AIResponseParser.jsonObject(from: response.text) else {
@@ -119,6 +133,7 @@ nonisolated enum ReelCritic {
         if let forecast = critique.forecast, forecast < 55, critique.score < 92, !critique.notes.isEmpty {
             critique.regenerate = true
         }
+        critique.strengths += learnedLines
         return critique
     }
 

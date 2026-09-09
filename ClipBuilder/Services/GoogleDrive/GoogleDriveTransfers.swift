@@ -425,7 +425,7 @@ final class GoogleDriveTransfers {
                     return
                 }
                 let wizard = WizardEngine(ai: AIService(config: SettingsStore.loadSettings().ai), render: RenderEngine())
-                try await LearnedSync.run(executor: runner, profile: current, database: context.database, log: log) {
+                try await LearnedSync.run(executor: runner, profile: current, database: context.database, log: log, config: SettingsStore.loadSettings().ai) {
                     _ = try await wizard.distillLessons(database: context.database, emit: { _ in })
                 }
             }, log: log)
@@ -444,7 +444,7 @@ final class GoogleDriveTransfers {
                 profile: profile.profileName, group: group, journal: AssetSyncJournal(homeID: home.selection.id))
             let wizard = WizardEngine(ai: AIService(config: SettingsStore.loadSettings().ai), render: RenderEngine())
             try await LearnedSync.run(executor: runner, profile: profile, database: context.database,
-                                      library: library, benchmarks: benchmarks) {
+                                      library: library, benchmarks: benchmarks, config: SettingsStore.loadSettings().ai) {
                 _ = try await wizard.distillLessons(database: context.database, emit: { _ in })
             }
         }

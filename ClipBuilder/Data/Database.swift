@@ -333,6 +333,22 @@ actor Database {
         analyzed_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS reel_traits (
+        video_kind TEXT NOT NULL,
+        video_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        traits_json TEXT NOT NULL,
+        computed_at TEXT NOT NULL,
+        reference INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (video_kind, video_id)
+    );
+    CREATE TABLE IF NOT EXISTS reel_outcomes (
+        video_id TEXT PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        traits_version INTEGER NOT NULL,
+        outcome_json TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS generated_video_traits (
         generated_video_id INTEGER PRIMARY KEY REFERENCES generated_videos(id) ON DELETE CASCADE,
         output_width INTEGER NOT NULL,
@@ -623,7 +639,150 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 10
+    static let schemaVersion: Int64 = 11
+
+    func reelTraits(kind: String, videoID: String, version: Int = ReelTraits.version) throws -> ReelTraits? {
+        guard let text = try connection.query("SELECT traits_json FROM reel_traits WHERE video_kind = ? AND video_id = ? AND version = ?",
+            [.text(kind), .text(videoID), .integer(Int64(version))]).first?["traits_json"]?.stringValue else { return nil }
+        return try JSONDecoder().decode(ReelTraits.self, from: Data(text.utf8))
+    }
+
+    func saveReelTraits(_ traits: ReelTraits, kind: String, videoID: String, reference: Bool = false,
+                        version: Int = ReelTraits.version) throws {
+        try connection.execute("INSERT OR REPLACE INTO reel_traits (video_kind, video_id, version, traits_json, computed_at, reference) VALUES (?, ?, ?, ?, ?, ?)",
+            [.text(kind), .text(videoID), .integer(Int64(version)),
+             .text(String(decoding: try JSONEncoder().encode(traits), as: UTF8.self)),
+             .text(ReportDates.iso(Date())), .integer(reference ? 1 : 0)])
+    }
+
+    func reelTraitIsReference(kind: String, videoID: String) throws -> Bool {
+        try connection.query("SELECT reference FROM reel_traits WHERE video_kind = ? AND video_id = ?",
+            [.text(kind), .text(videoID)]).first?["reference"]?.boolValue ?? false
+    }
+
+    func replaceReelOutcomes(accountID: Int64, rows: [ReelOutcome]) throws {
+        try connection.transaction {
+            try connection.execute("DELETE FROM reel_outcomes WHERE account_id = ?", [.integer(accountID)])
+            let own = try connection.query("SELECT kind FROM ig_accounts WHERE id = ?", [.integer(accountID)]).first?["kind"]?.stringValue == "own"
+            for row in rows where own && row.accountID == accountID && !row.reference {
+                try connection.execute("INSERT INTO reel_outcomes (video_id, account_id, traits_version, outcome_json) VALUES (?, ?, ?, ?)",
+                    [.text(row.videoID), .integer(accountID), .integer(Int64(ReelTraits.version)), .text(String(decoding: try JSONEncoder().encode(row), as: UTF8.self))])
+            }
+        }
+    }
+
+    func reelOutcomes(accountID: Int64? = nil) throws -> [ReelOutcome] {
+        let rows = try connection.query("SELECT o.outcome_json FROM reel_outcomes o JOIN ig_accounts a ON a.id = o.account_id WHERE a.kind = 'own' AND o.traits_version = \(ReelTraits.version)" + (accountID == nil ? "" : " AND o.account_id = ?"),
+            accountID.map { [.integer($0)] } ?? [])
+        return try rows.compactMap { row in
+            guard let text = row["outcome_json"]?.stringValue else { return nil }
+            return try JSONDecoder().decode(ReelOutcome.self, from: Data(text.utf8))
+        }.sorted { ($0.postedAt, $0.videoID) < ($1.postedAt, $1.videoID) }
+    }
+
+    func rebuildReelOutcomes(account: IGAccountRecord) throws {
+        var inputs = try fetchIGReportInputs(account: account)
+        // Instagram supplies daily totals, not per-reel medians. Materialize
+        // the account's posting-month medians from its own insight snapshots;
+        // never substitute daily totals or the month the import happened.
+        var monthly: [String: [String: [Double]]] = [:]
+        let grid = try fetchIGMedia(accountID: account.id)
+        if account.isOwn {
+            for media in inputs.media where media.isReel {
+                guard let posted = media.postedAt else { continue }
+                let month = String(ReportDates.iso(posted).prefix(7))
+                let traits = try reelTraits(kind: "imported", videoID: String(media.id))
+                let duration = traits?.duration ?? grid.first(where: { $0.mediaID == media.mediaID })?.duration ?? 0
+                var raw: [String: Double] = [:]
+                raw["saves"] = media.metrics["saved"] ?? media.metrics["saves"]
+                raw["shares"] = media.metrics["shares"]
+                raw["comments"] = media.metrics["comments"]
+                if duration > 0, let watch = media.metrics["ig_reels_avg_watch_time"] {
+                    raw["watch_fraction"] = watch / 1000 / duration
+                }
+                for (metric, value) in raw where value.isFinite && value >= 0 {
+                    monthly[month, default: [:]][metric, default: []].append(value)
+                }
+            }
+            try connection.execute("DELETE FROM ig_account_insights WHERE account_id = ? AND source = 'reel-traits'", [.integer(account.id)])
+            let medians = monthly.flatMap { month, metrics in
+                metrics.map { metric, values in
+                    IGAccountInsightRow(metric: "reel_" + metric + "_median", period: "month", dimension: "", breakdown: "",
+                        value: ReelTraitExtractor.median(values), endTime: month + "-01T00:00:00Z", source: "reel-traits")
+                }
+            }
+            try upsertIGAccountInsights(accountID: account.id, medians)
+            inputs.accountInsights.removeAll { $0.source == "reel-traits" }
+            inputs.accountInsights += medians
+        }
+        var outcomes: [ReelOutcome] = []
+        for media in inputs.media where media.isReel {
+            guard let traits = try reelTraits(kind: "imported", videoID: String(media.id)),
+                  !(try reelTraitIsReference(kind: "imported", videoID: String(media.id))),
+                  let row = ReelOutcome.joined(media: media, traits: traits, account: account, insights: inputs.accountInsights) else { continue }
+            outcomes.append(row)
+        }
+        try replaceReelOutcomes(accountID: account.id, rows: outcomes)
+    }
+
+    func importedReelFiles() throws -> [(id: String, path: String, videoID: Int64?)] {
+        try connection.query("SELECT external_id, local_path, video_id FROM imported_externals WHERE platform = 'instagram' AND local_path IS NOT NULL").compactMap { row in
+            guard let id = row["external_id"]?.stringValue, let path = row["local_path"]?.stringValue,
+                  FileManager.default.fileExists(atPath: path) else { return nil }
+            return (id, path, row["video_id"]?.intValue)
+        }
+    }
+
+    func importedReelPath(externalIDs: [String]) throws -> (path: String, videoID: Int64?)? {
+        for id in externalIDs {
+            if let row = try connection.query("SELECT local_path, video_id FROM imported_externals WHERE platform = 'instagram' AND external_id = ?", [.text(id)]).first,
+               let path = row["local_path"]?.stringValue, FileManager.default.fileExists(atPath: path) {
+                return (path, row["video_id"]?.intValue)
+            }
+        }
+        return nil
+    }
+
+    func topLiftReelFiles(before cutoff: Date) throws -> [URL] {
+        let rows = try reelOutcomes().filter { $0.postedAt <= cutoff && !$0.lift.isEmpty }
+            .sorted { ReelTraitExtractor.average(Array($0.lift.values)) > ReelTraitExtractor.average(Array($1.lift.values)) }
+        return try rows.prefix(10).compactMap { outcome in
+            guard let id = Int64(outcome.videoID),
+                  let row = try connection.query("SELECT media_id, shortcode FROM ig_report_media WHERE id = ?", [.integer(id)]).first,
+                  let local = try importedReelPath(externalIDs: [row["media_id"]?.stringValue ?? "", row["shortcode"]?.stringValue ?? ""]) else { return nil }
+            return URL(fileURLWithPath: local.path)
+        }
+    }
+
+    func clipModelRows() throws -> [ReelModelRow] {
+        let scenes = try fetchScenes(includeExcluded: true)
+        var rows: [ReelModelRow] = []
+        for scene in scenes {
+            var votes: [Double] = []
+            if scene.favorite || scene.curated { votes.append(1) }
+            if let grade = scene.gradeAverage, scene.gradeCount > 0 { votes.append(grade >= 3 ? 1 : 0) }
+            let reviews = try connection.query("SELECT verdict FROM clip_reviews WHERE scene_id = ?", [.integer(scene.id)])
+            votes += reviews.compactMap { $0["verdict"]?.intValue }.filter { $0 != 0 }.map { $0 > 0 ? 1 : 0 }
+            let proposals = try connection.query("SELECT decision FROM edit_proposals WHERE video_id = ? AND start_time < ? AND end_time > ? AND decision != 'pending'",
+                [.integer(scene.videoID), .real(scene.endTime), .real(scene.startTime)])
+            // Accepting a proposed CUT means reject this footage, not keep it.
+            votes += proposals.compactMap { $0["decision"]?.stringValue }.map { $0 == "accepted" ? 0 : 1 }
+            guard !votes.isEmpty else { continue }
+            let date = try connection.query("SELECT discovered_at FROM videos WHERE id = ?", [.integer(scene.videoID)]).first?["discovered_at"]?.stringValue
+            rows.append(ReelModelRow(id: String(scene.id), date: Self.parseSQLiteDate(date) ?? .distantPast,
+                features: ClipRanker.features(scene, traits: try reelTraits(kind: "scene", videoID: SceneTraitExtractor.cacheKey(scene))), targets: ["keep": ReelTraitExtractor.average(votes) >= 0.5 ? 1 : 0]))
+        }
+        return rows
+    }
+
+    func modelPreferencePairs() throws -> [(ReelTraits, ReelTraits)] {
+        try connection.query("SELECT chosen_video_id, rejected_video_id FROM wizard_preferences ORDER BY id").compactMap { row in
+            guard let chosen = row["chosen_video_id"]?.intValue, let rejected = row["rejected_video_id"]?.intValue,
+                  let a = try reelTraits(kind: "generated", videoID: String(chosen)),
+                  let b = try reelTraits(kind: "generated", videoID: String(rejected)) else { return nil }
+            return (a, b)
+        }
+    }
 
     func cachedDetectors(videoID: Int64, fingerprint: String) throws -> VideoDetectors? {
         guard let row = try connection.query("SELECT * FROM video_detectors WHERE video_id = ? AND algorithm_version = ?", [.integer(videoID), .text(fingerprint)]).first,
@@ -2709,6 +2868,9 @@ actor Database {
                   provider.map(SQLValue.text) ?? .null,
                   model.map(SQLValue.text) ?? .null,
                   .integer(id)])
+        if let traits = try reelTraits(kind: "generated", videoID: String(id)) {
+            try saveReelTraits(ReelTraitExtractor.applying(caption: caption, to: traits), kind: "generated", videoID: String(id))
+        }
     }
 
     func recentGeneratedPerformance(limit: Int = 12) throws -> [GeneratedPerformanceRecord] {
@@ -2955,7 +3117,8 @@ actor Database {
     func learnedBenchmarks() throws -> AccountBenchmarks? {
         guard let account = try fetchIGAccounts().first(where: \.isOwn) else { return nil }
         return AccountBenchmarks.build(inputs: try fetchIGReportInputs(account: account),
-            gridMedia: try fetchIGMedia(accountID: account.id), templates: try fetchIGTemplateLinks())
+            gridMedia: try fetchIGMedia(accountID: account.id), templates: try fetchIGTemplateLinks(),
+            outcomes: try reelOutcomes(accountID: account.id))
     }
 
     func learnedEvidence() throws -> (reviews: Int, studies: Int, research: [String]) {

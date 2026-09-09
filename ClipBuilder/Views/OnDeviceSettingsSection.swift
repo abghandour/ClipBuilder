@@ -18,7 +18,7 @@ struct OnDeviceSettingsSection: View {
             Toggle("Prefer on-device processing", isOn: $store.settings.ai.preferOnDevice)
             Text("Use on-device matching and detection before asking a model.")
                 .font(.caption).foregroundStyle(.secondary)
-            ForEach(OnDeviceAgreement.items, id: \.self) { item in
+            ForEach(OnDeviceAgreement.items + ReelModelItem.allCases.map(\.rawValue), id: \.self) { item in
                 Toggle(isOn: overrideBinding(item)) {
                     VStack(alignment: .leading) {
                         Text(item.replacingOccurrences(of: "-", with: " ").capitalized)
@@ -26,6 +26,18 @@ struct OnDeviceSettingsSection: View {
                     }
                 }
             }
+            ForEach(ReelModelItem.allCases, id: \.rawValue) { item in
+                Button("Evaluate " + item.rawValue.replacingOccurrences(of: "-", with: " ")) {
+                    comparing = true
+                    Task {
+                        defer { comparing = false }
+                        do { status = try await store.evaluateReelModel(item).summary }
+                        catch { status = error.localizedDescription }
+                    }
+                }.disabled(comparing)
+            }
+            if comparing { ProgressView("Evaluating…") }
+            if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
             if comparisonVisible {
                 Button("Compare on-device with model") {
                     comparing = true
@@ -37,8 +49,6 @@ struct OnDeviceSettingsSection: View {
                         comparing = false
                     }
                 }.disabled(comparing)
-                if comparing { ProgressView("Comparing library samples…") }
-                if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
             }
         }
     }
@@ -47,6 +57,11 @@ struct OnDeviceSettingsSection: View {
                 set: { store.settings.ai.onDeviceOverrides[item] = $0 })
     }
     private func label(_ item: String) -> String {
+        if let model = ReelModelItem(rawValue: item) {
+            guard let report = store.reelModelStore?.report(model) else { return "Not evaluated for this profile" }
+            guard report.localEvaluation else { return "Adopted — local evaluation required" }
+            return report.passed ? "Local holdout passed" : "Local holdout did not pass"
+        }
         guard let percentage = store.settings.ai.onDeviceAgreement[item] else { return "Model only (not measured)" }
         return percentage >= 90 ? "On-device: passed \(Int(percentage))%" : "Model only (\(Int(percentage))%)"
     }

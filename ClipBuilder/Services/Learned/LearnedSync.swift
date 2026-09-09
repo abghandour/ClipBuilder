@@ -90,7 +90,7 @@ extension AssetSyncExecutor {
         LearnedCache.invalidate(profile: profile)
     }
 
-    private func learnedFiles(in folder: String) async throws -> [DriveFile] {
+    func learnedFiles(in folder: String) async throws -> [DriveFile] {
         var result: [DriveFile] = []
         var token: String?
         repeat {
@@ -104,7 +104,7 @@ extension AssetSyncExecutor {
         }
     }
 
-    private func learnedDownload(_ file: DriveFile, staging: URL) async throws -> Data {
+    func learnedDownload(_ file: DriveFile, staging: URL) async throws -> Data {
         guard (Int64(file.size ?? "") ?? Int64.max) <= 20_000_000 else { throw LearnedRedaction.Failure.invalidDocument }
         let target = staging.appendingPathComponent(UUID().uuidString)
         _ = try await transfers.assetTransfer(profile: profile, group: group, path: "learned/" + file.name,
@@ -118,7 +118,7 @@ extension AssetSyncExecutor {
 @MainActor enum LearnedSync {
     static func run(executor: AssetSyncExecutor, profile: BrandProfile, database: Database,
                     library: LearnedLibrary = LearnedLibrary(), benchmarks: AccountBenchmarks? = nil,
-                    log: (String) -> Void = { _ in },
+                    log: (String) -> Void = { _ in }, config: AIConfig? = nil,
                     distill: () async throws -> Void) async throws {
         guard !profile.learnedSharing.deviceNickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AIError.notConfigured("Open What Clip Builder has learned and enter a device nickname before publishing.")
@@ -137,6 +137,10 @@ extension AssetSyncExecutor {
         var destination = library
         destination.profile = profile.profileName
         try await executor.publishLearned(build, database: database, library: destination)
+        if let config {
+            try await executor.syncLearnedModels(contributor: build.document.contributor, database: database,
+                library: destination, config: config)
+        }
     }
 
     @discardableResult
