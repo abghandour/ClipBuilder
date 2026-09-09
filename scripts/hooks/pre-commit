@@ -1,0 +1,17 @@
+#!/bin/zsh
+# Refuse a commit whose staged code breaks the unit tests. Commits that touch
+# only docs or other non-build files are not tested.
+set -euo pipefail
+
+if ! git diff --cached --name-only --diff-filter=ACMRD \
+     | grep -qE '^(ClipBuilder/|ClipBuilderTests/|Clip Builder\.xcodeproj/|scripts/)'; then
+    exit 0
+fi
+
+# Tests run against the working tree; warn when unstaged changes mean the
+# tested tree is not exactly the committed one.
+if ! git diff --quiet -- ClipBuilder ClipBuilderTests "Clip Builder.xcodeproj"; then
+    echo "[pre-commit] note: unstaged source changes exist; tests run on the working tree, not only the staged files." >&2
+fi
+
+exec "$(git rev-parse --show-toplevel)/scripts/hooks/verify-tests.sh" "$(git write-tree)" pre-commit

@@ -259,8 +259,15 @@ Tag with `.tags(.integration)` and skip when
    - In `scripts/release.sh`, run the `xcodebuild ... test` command (unit
      target only, `-only-testing:ClipBuilderTests`) before the package step
      and abort on failure.
-   - Add `scripts/test.sh` wrapping the command with `DEVELOPER_DIR`, and a
-     `.git/hooks/pre-push` sample in `scripts/hooks/` that calls it.
+   - `scripts/test.sh` wraps the command with `DEVELOPER_DIR`. Git hooks in
+     `scripts/hooks/` run it: `pre-commit` refuses a commit that touches
+     `ClipBuilder/`, `ClipBuilderTests/`, the project, or `scripts/` unless
+     the unit tests pass, and `pre-push` refuses to push a HEAD whose tree
+     never passed (so `--no-verify` on commit is caught at push). A passing
+     tree is stamped in `.git/tests-passed-tree` so the same tree is not
+     retested. Install once per clone: `git config core.hooksPath scripts/hooks`.
+     Failed tests are retried once (`-retry-tests-on-failure`) to absorb the
+     known parallel-run flakes.
    - Later: GitHub Actions on a `macos-26` runner running `scripts/test.sh`
      without the integration tag. Not first, because the local toolchain is
      Xcode beta on macOS 27.

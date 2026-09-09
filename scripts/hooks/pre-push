@@ -1,5 +1,6 @@
 #!/bin/zsh
+# Refuse a push whose HEAD tree has not passed the unit tests (catches
+# commits made with --no-verify).
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-"$REPO_ROOT/scripts/test.sh"
+exec "$(git rev-parse --show-toplevel)/scripts/hooks/verify-tests.sh" "$(git rev-parse HEAD^{tree})" pre-push

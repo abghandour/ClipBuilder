@@ -16,4 +16,5 @@ exec xcodebuild \
     -derivedDataPath "$DERIVED_DATA" \
     CODE_SIGN_IDENTITY=- \
     test \
-    -only-testing:ClipBuilderTests
+    -only-testing:ClipBuilderTests \
+    "$@"
