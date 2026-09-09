@@ -61,6 +61,23 @@ struct ImageLibrarySearchSheet: View {
 
     private func run() {
         guard !isRunning else { return }
+        let useLocal = OnDevicePolicy.isEnabled(item: "image-search", config: store.settings.ai)
+        if useLocal {
+            let rows = candidates.map { item in
+                let info = metadata[item.url.path]
+                return LocalTextMatcher.Row(id: item.url.path,
+                    fields: (info?.subjects ?? []) + (info?.tags ?? []),
+                    date: (try? item.url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast)
+            }
+            let paths = LocalImageMatcher.match(query: query, rows: rows)
+            if !paths.isEmpty {
+                store.appendLog(\.pipelineLog, ["Matched \(paths.count) images by keyword"])
+                onResults(paths)
+                dismiss()
+                return
+            }
+        }
+        store.appendLog(\.pipelineLog, [useLocal ? "Keyword match found nothing — asking the model" : "Image search — asking the model"])
         let inventory = candidates.enumerated().map { index, item in
             let info = metadata[item.url.path]
             return

@@ -159,11 +159,17 @@ nonisolated struct AIConfig: Codable, Sendable {
     /// Dispatch-plan prompts the user muted with "remember my choices"
     /// ("analyze", "generate"). Reset from Settings → AI.
     var mutedDispatchPlans: [String] = []
+    var preferOnDevice: Bool = true
+    var onDeviceOverrides: [String: Bool] = [:]
+    var onDeviceAgreement: [String: Double] = [:]
 
     init() {}
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        preferOnDevice = try container.decodeIfPresent(Bool.self, forKey: .preferOnDevice) ?? true
+        onDeviceAgreement = try container.decodeIfPresent([String: Double].self, forKey: .onDeviceAgreement) ?? [:]
+        onDeviceOverrides = try container.decodeIfPresent([String: Bool].self, forKey: .onDeviceOverrides) ?? [:]
         tasks = try container.decodeIfPresent([String: String].self, forKey: .tasks) ?? [:]
         taskModels = try container.decodeIfPresent([String: String].self, forKey: .taskModels) ?? [:]
         providers = try container.decodeIfPresent([String: AIProviderSettings].self, forKey: .providers) ?? [:]
@@ -172,6 +178,9 @@ nonisolated struct AIConfig: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case tasks, providers
+        case preferOnDevice = "prefer_on_device"
+        case onDeviceAgreement = "on_device_agreement"
+        case onDeviceOverrides = "on_device_overrides"
         case taskModels = "task_models"
         case mutedDispatchPlans = "muted_dispatch_plans"
     }

@@ -6,6 +6,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
         case sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, curatedOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
     }
 
+    var localHashtags = false
     var sourceSceneSelection = false
     var sourceSceneIDs: Set<Int64> = []
     var sourceVideoPaths: Set<String> = []
@@ -496,9 +497,16 @@ actor WizardEngine {
     /// settings. Template and tag answers are validated against what actually
     /// exists; anything else the model claims is dropped, not trusted.
     func parseRequest(description: String, profile: BrandProfile,
-                      emit: @escaping @Sendable (String) -> Void) async throws -> ParsedWizardRequest {
+                      emit: @escaping @Sendable (String) -> Void, useLocal: Bool = false) async throws -> ParsedWizardRequest {
         let templateNames = OverlayTemplateStore.list().map(\.name)
         let tagVocabulary = profile.effectiveTags.values.flatMap(\.self).sorted()
+        let local = useLocal ? WizardRequestParser.parse(description, tags: tagVocabulary, templates: templateNames) : nil
+        if let local, local.confident {
+            AIRunCapture.current?.append(.local(technique: "structured-request-parser"), prompt: description)
+            emit("Wizard request answered by structured parsing")
+            return local.request
+        }
+        emit(useLocal ? "Structured parsing unsure — asking the model" : "Wizard request — asking the model")
         let musicFolders = Self.musicFolders()
         let prompt = parseRequestPrompt(description: description,
                                         templateNames: templateNames,
@@ -537,7 +545,8 @@ actor WizardEngine {
         }
         parsed.residualInstructions = (object["residual_instructions"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return parsed
+        if local != nil { AIRunCapture.current?.annotateLast(technique: "structured-request-parser") }
+        return local.map { WizardRequestParser.merge(parsed, local: $0.request) } ?? parsed
     }
 
     // MARK: - Planning phase
@@ -1482,11 +1491,11 @@ actor WizardEngine {
         return lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
     }
 
-    private func captionPrompt(profile: BrandProfile, plan: WizardPlan,
+    func captionPrompt(profile: BrandProfile, plan: WizardPlan,
                                duration: Double, tags: [String],
                                fightResearch: [FightResearchRecord] = [],
                                captionStyleReference: String? = nil,
-                               benchmarks: AccountBenchmarks? = nil) -> String {
+                               benchmarks: AccountBenchmarks? = nil, localHashtags: Bool = false, people: [PersonRecord] = []) -> String {
         let handle = profile.socials["instagram"]?.handle ?? ""
         let domain = profile.effectiveDomain
         let languages = profile.captionLanguages.isEmpty ? ["en"] : profile.captionLanguages
@@ -1511,7 +1520,9 @@ actor WizardEngine {
         Requirements:
         - Caption should be 1-3 punchy lines that drive engagement (likes, comments, saves, shares)
         - Include a hook or question to encourage comments
-        - Add 5-10 relevant hashtags (mix of broad \(domain) hashtags + niche + trending); when measured hashtags are listed above, lead with the ones that fit this reel
+        \(localHashtags
+            ? "- Use these hashtags and add at most three more: " + HashtagCandidates.make(pins: profile.hashtags, tags: tags.filter { !$0.hasPrefix("person:") }, people: people.filter { tags.contains($0.tag) }.map(\.name), limit: 7).joined(separator: " ")
+            : "- Add 5-10 relevant hashtags (mix of broad \(domain) hashtags + niche + trending); when measured hashtags are listed above, lead with the ones that fit this reel")
         \(languageRule)
         - Keep it authentic to \(domain) culture
         - Do NOT use emojis excessively (max 2-3 per language block)
@@ -2124,16 +2135,20 @@ actor WizardEngine {
                                             sceneMap: inputs.sceneMap, emit: emit)
             let tags = Array(Set(plan.clips.flatMap { inputs.sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
             do {
+                emit(options.localHashtags ? "Caption hashtags prepared locally — asking the model" : "Caption — asking the model")
                 let caption = try await ai.call(
                     prompt: captionPrompt(profile: profile, plan: plan, duration: result.duration,
                                           tags: tags, fightResearch: inputs.fightResearch,
                                           captionStyleReference: nil,
-                                          benchmarks: options.accountBenchmarks),
+                                          benchmarks: options.accountBenchmarks, localHashtags: options.localHashtags, people: inputs.people),
                     task: "captions", timeout: 60, log: emit)
+                var captionProvenance = caption.provenance
+                if options.localHashtags { captionProvenance.technique = "hashtag-candidates" }
                 try await database.updateGeneratedCaption(id: result.recordID,
                                                           caption: caption.text,
                                                           provider: caption.provider,
                                                           model: caption.model)
+                try await database.recordOutputRole(id: result.recordID, role: "Captions", provenance: captionProvenance)
             } catch {
                 emit("Caption generation failed: \(error.userMessage)")
             }
@@ -2204,18 +2219,22 @@ actor WizardEngine {
                 .flatMap { $0["caption_style"] as? String }
             var captionText: String?
             do {
+                emit(options.localHashtags ? "Caption hashtags prepared locally — asking the model" : "Caption — asking the model")
                 let caption = try await ai.call(
                     prompt: captionPrompt(profile: profile, plan: plan,
                                           duration: result.duration, tags: tagsUsed,
                                           fightResearch: inputs.fightResearch,
                                           captionStyleReference: captionStyleReference,
-                                          benchmarks: options.accountBenchmarks),
+                                          benchmarks: options.accountBenchmarks, localHashtags: options.localHashtags, people: inputs.people),
                     task: "captions", timeout: 60, log: emit)
                 captionText = caption.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                var captionProvenance = caption.provenance
+                if options.localHashtags { captionProvenance.technique = "hashtag-candidates" }
                 try await database.updateGeneratedCaption(id: result.recordID,
                                                           caption: captionText ?? "",
                                                           provider: caption.provider,
                                                           model: caption.model)
+                try await database.recordOutputRole(id: result.recordID, role: "Captions", provenance: captionProvenance)
                 emit("Caption generated!")
             } catch {
                 emit("Caption generation failed: \(error)")

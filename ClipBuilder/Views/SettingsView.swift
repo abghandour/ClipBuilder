@@ -227,6 +227,8 @@ private struct ProfileSettingsTab: View {
                           prompt: Text("#E31B23 — used by headlines and cards"))
                 TextField("Tagline", text: $store.activeProfile.tagline,
                           prompt: Text("shown under the logo on the outro card"))
+                CommaListField("Pinned hashtags", items: $store.activeProfile.hashtags,
+                               prompt: Text("MMA, FightNight"))
                 CommaListField("Caption languages", items: $store.activeProfile.captionLanguages,
                                lowercased: true,
                                prompt: Text("en, pt — one caption block per language"))
@@ -729,6 +731,7 @@ private struct AISettingsTab: View {
     var body: some View {
         @Bindable var store = store
         Form {
+            OnDeviceSettingsSection()
             Section("Task Routing") {
                 ForEach(AICatalog.tasks, id: \.self) { task in
                     ModelPicker(title: AICatalog.taskLabels[task] ?? task,

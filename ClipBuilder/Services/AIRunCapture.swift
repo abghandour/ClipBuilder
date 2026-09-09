@@ -15,6 +15,12 @@ nonisolated final class AIRunCapture: @unchecked Sendable {
             usedPrompts = [:]
         }
     }
+    func annotateLast(technique: String) {
+        lock.withLock {
+            guard !captured.isEmpty else { return }
+            captured[captured.count - 1].provenance.technique = technique
+        }
+    }
     func append(_ provenance: AIProvenance, prompt: String) {
         lock.withLock {
             let role = provenance.taskLabel ?? provenance.task ?? "AI"

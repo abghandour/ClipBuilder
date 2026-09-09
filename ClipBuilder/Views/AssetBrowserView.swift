@@ -522,15 +522,16 @@ struct AssetBrowserView: View {
     private func analyzeVisibleImages() {
         let pending = filteredItems.filter { !$0.isFolder && !analyzingPaths.contains($0.url.path) }
         guard !pending.isEmpty else { return }
+        let useLocal = OnDevicePolicy.isEnabled(item: "image-tagging", config: store.settings.ai)
         for item in pending { analyzingPaths.insert(item.url.path) }
         Task {
             await withTaskGroup(of: Void.self) { group in
                 var iterator = pending.makeIterator()
                 for _ in 0..<Self.imageTaggingConcurrency {
-                    if let item = iterator.next() { group.addTask { await self.tagImage(item) } }
+                    if let item = iterator.next() { group.addTask { await self.tagImage(item, useLocal: useLocal) } }
                 }
                 for await _ in group {
-                    if let item = iterator.next() { group.addTask { await self.tagImage(item) } }
+                    if let item = iterator.next() { group.addTask { await self.tagImage(item, useLocal: useLocal) } }
                 }
             }
         }
@@ -539,7 +540,8 @@ struct AssetBrowserView: View {
     private func analyzeImage(_ item: AssetItem) {
         guard !analyzingPaths.contains(item.url.path) else { return }
         analyzingPaths.insert(item.url.path)
-        Task { await tagImage(item) }
+        let useLocal = OnDevicePolicy.isEnabled(item: "image-tagging", config: store.settings.ai)
+        Task { await tagImage(item, useLocal: useLocal) }
     }
 
     /// Downsampled JPEG for the tagger, decoded away from the main actor: a
@@ -561,7 +563,7 @@ struct AssetBrowserView: View {
     }
 
     /// Tag one image; the caller has already marked it in `analyzingPaths`.
-    private func tagImage(_ item: AssetItem) async {
+    private func tagImage(_ item: AssetItem, useLocal: Bool) async {
         defer { analyzingPaths.remove(item.url.path) }
         guard let database = store.database else { return }
         let knownPeople = store.people.filter { !$0.name.isEmpty }.map(\.name)
@@ -570,7 +572,18 @@ struct AssetBrowserView: View {
                 store.presentError("Could not read \(item.name)")
                 return
             }
+            let signals = useLocal ? await Task.detached { try? VisionImageTagger.inspect(jpeg) }.value : nil
+            if let signals, let tag = VisionImageTagger.localTag(signals) {
+                let info = LibraryAssetMetadata(path: item.url.path, kind: AssetKind.images.rawValue,
+                    isBRoll: true, subjects: [], tags: [tag], provider: "local", model: "vision-classify", technique: "vision-classify")
+                try await database.upsertAssetMetadata(info)
+                metadata[item.url.path] = info
+                store.appendLog(\.pipelineLog, ["\(item.name): tagged by Vision"])
+                return
+            }
+            store.appendLog(\.pipelineLog, [useLocal ? "Vision tagging unsure — asking the model" : "Image tagging — asking the model"])
             let prompt = """
+                \(signals.map { "Vision hints: " + VisionImageTagger.hints($0) } ?? "")
                 Tag this owned library image for editorial search. Known people: \(knownPeople.joined(separator: ", ")).
                 Return only JSON: {"subjects":["person/event/topic"],"tags":["crowd|walkout|training|establishing-shot|action|portrait|graphic|other"],"is_broll":true|false}.
                 Match a known person only when visually confident. B-roll means a cutaway, atmosphere, training, walkout, crowd, or establishing visual.
@@ -586,7 +599,7 @@ struct AssetBrowserView: View {
                 isBRoll: object["is_broll"] as? Bool ?? false,
                 subjects: object["subjects"] as? [String] ?? [],
                 tags: object["tags"] as? [String] ?? [],
-                provider: response.provider, model: response.model)
+                provider: response.provider, model: response.model, technique: signals == nil ? nil : "vision-classify")
             try await database.upsertAssetMetadata(info)
             metadata[item.url.path] = info
         } catch {

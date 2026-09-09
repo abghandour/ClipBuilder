@@ -23,7 +23,7 @@ actor PodcastAnalysisService {
                  analyzer: Analyzer, transcription: TranscriptionService,
                  highlightThreshold: Double, holdSeconds: Double,
                  log: @escaping @Sendable (String) -> Void,
-                 progress: @escaping @Sendable (Double, String) -> Void) async throws -> Result {
+                 progress: @escaping @Sendable (Double, String) -> Void, useLocal: Bool = false) async throws -> Result {
         progress(0.03, "transcribing podcast")
         let segments = try await transcription.transcribePodcast(
             video: video, database: database, languageCode: languageCode, log: log)
@@ -72,7 +72,7 @@ actor PodcastAnalysisService {
 
         progress(0.70, "grouping complete exchanges")
         let outcome = try await PodcastExchangeSegmenter(ai: ai).segment(
-            segments: segments, turns: resolved, provider: provider, model: model, log: log)
+            segments: segments, turns: resolved, provider: provider, model: model, log: log, useLocal: useLocal)
         let tagRanges = Self.exchangeTagRanges(outcome.exchanges, layout: visual.layout,
                                                highlightThreshold: highlightThreshold)
         let runID = try await database.saveAnalysis(
@@ -514,7 +514,7 @@ actor PodcastExchangeSegmenter {
 
     func segment(segments: [TranscriptSegment], turns: [SpeakerTurn],
                  provider: String?, model: String?,
-                 log: @escaping @Sendable (String) -> Void) async throws -> Outcome {
+                 log: @escaping @Sendable (String) -> Void, useLocal: Bool = false) async throws -> Outcome {
         let sentences = Self.sentenceSegments(segments, turns: turns)
         let candidates = Self.candidateExchanges(segments: sentences, turns: turns)
         var chunks: [[TranscriptSegment]] = []
@@ -540,7 +540,7 @@ actor PodcastExchangeSegmenter {
         for chunk in chunks {
             try Task.checkCancellation()
             let outcome = try await segmentChunk(segments: chunk, turns: turns,
-                                                 provider: provider, model: model, log: log)
+                                                 provider: provider, model: model, log: log, useLocal: useLocal)
             result.exchanges += outcome.exchanges
             result.provenance = outcome.provenance ?? result.provenance
         }
@@ -549,9 +549,11 @@ actor PodcastExchangeSegmenter {
 
     private func segmentChunk(segments: [TranscriptSegment], turns: [SpeakerTurn],
                               provider: String?, model: String?,
-                              log: @escaping @Sendable (String) -> Void) async throws -> Outcome {
+                              log: @escaping @Sendable (String) -> Void, useLocal: Bool = false) async throws -> Outcome {
         let candidates = Self.candidateExchanges(segments: segments, turns: turns)
         guard !candidates.isEmpty else { return Outcome(exchanges: [], provenance: nil) }
+        let locked = useLocal ? candidates.map { PodcastExchange(start: $0.start, end: $0.end, title: "", summary: "", score: 0, speakerKeys: $0.speakerKeys) }.filter { PodcastLocalRules.locked($0, segments: segments, turns: turns) } : []
+        log(useLocal ? "Podcast boundaries locked where unambiguous — asking the model for scores and remaining boundaries" : "Podcast exchanges — asking the model")
         let lines = segments.enumerated().map { index, sentence in
             "[\(index)] \(sentence.start.timecode)-\(sentence.end.timecode): \(sentence.text)"
         }.joined(separator: "\n")
@@ -559,7 +561,7 @@ actor PodcastExchangeSegmenter {
             let indices = segments.indices.filter {
                 segments[$0].end > candidate.start && segments[$0].start < candidate.end
             }
-            return "\(indices.first ?? 0)-\(indices.last ?? 0)"
+            return "\(indices.first ?? 0)-\(indices.last ?? 0)\(locked.contains { $0.start == candidate.start && $0.end == candidate.end } ? " LOCKED: score and title only; never move these boundaries" : " open for repair")"
         }.joined(separator: ", ")
         let prompt = """
         You are editing a spoken podcast. The numbered rows below are word-safe sentence
@@ -583,8 +585,11 @@ actor PodcastExchangeSegmenter {
                   let raw = object["exchanges"] as? [[String: Any]] else {
                 throw AIError.unusableResponse("Podcast exchange response was not valid JSON")
             }
-            let exchanges = try Self.validatedExchanges(raw, segments: segments, turns: turns)
-            return Outcome(exchanges: exchanges, provenance: response.provenance)
+            var exchanges = try Self.validatedExchanges(raw, segments: segments, turns: turns)
+            exchanges = PodcastLocalRules.preserve(exchanges, locked: locked)
+            var provenance = response.provenance
+            if useLocal { provenance.technique = "locked-exchanges" }
+            return Outcome(exchanges: exchanges, provenance: provenance)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -593,9 +598,9 @@ actor PodcastExchangeSegmenter {
                 PodcastExchange(start: item.start, end: item.end,
                                 title: "Exchange \(index + 1)",
                                 summary: "A complete question-and-answer exchange.",
-                                score: Self.heuristicScore(duration: item.end - item.start),
+                                score: useLocal ? PodcastLocalRules.score(segments: segments, start: item.start, end: item.end) : Self.heuristicScore(duration: item.end - item.start),
                                 speakerKeys: item.speakerKeys)
-            }, provenance: nil)
+            }, provenance: useLocal ? .local(technique: "transcript-features") : nil)
         }
     }
 

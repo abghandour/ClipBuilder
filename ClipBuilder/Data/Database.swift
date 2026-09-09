@@ -623,7 +623,29 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 8
+    static let schemaVersion: Int64 = 9
+
+    func cachedDetectors(videoID: Int64, fingerprint: String) throws -> VideoDetectors? {
+        guard let row = try connection.query("SELECT * FROM video_detectors WHERE video_id = ? AND algorithm_version = ?", [.integer(videoID), .text(fingerprint)]).first,
+              let black = row["black_json"]?.stringValue,
+              let frozen = row["frozen_json"]?.stringValue,
+              let cuts = row["cuts_json"]?.stringValue else { return nil }
+        return try VideoDetectors(
+            black: JSONDecoder().decode([ClosedRange<Double>].self, from: Data(black.utf8)),
+            frozen: JSONDecoder().decode([ClosedRange<Double>].self, from: Data(frozen.utf8)),
+            cuts: JSONDecoder().decode([Double].self, from: Data(cuts.utf8)))
+    }
+
+    func cacheDetectors(_ detectors: VideoDetectors, videoID: Int64, fingerprint: String) throws {
+        let encoder = JSONEncoder()
+        try connection.execute("""
+            INSERT OR REPLACE INTO video_detectors (video_id, algorithm_version, black_json, frozen_json, cuts_json)
+            VALUES (?, ?, ?, ?, ?)
+            """, [.integer(videoID), .text(fingerprint),
+                  .text(String(decoding: try encoder.encode(detectors.black), as: UTF8.self)),
+                  .text(String(decoding: try encoder.encode(detectors.frozen), as: UTF8.self)),
+                  .text(String(decoding: try encoder.encode(detectors.cuts), as: UTF8.self))])
+    }
 
     /// "wal" normally; "delete" after the fallback in `init`.
     func journalMode() throws -> String {
@@ -634,8 +656,16 @@ actor Database {
     /// identical across both apps. One `PRAGMA table_info` per table replaces
     /// the per-column probe statements.
     private static func migrate(_ connection: SQLiteConnection) throws {
+        try connection.execute("""
+            CREATE TABLE IF NOT EXISTS video_detectors (
+                video_id INTEGER PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+                algorithm_version TEXT NOT NULL, black_json TEXT NOT NULL,
+                frozen_json TEXT NOT NULL, cuts_json TEXT NOT NULL,
+                computed_at TEXT DEFAULT (datetime('now'))
+            )
+            """)
         let textColumns: [(table: String, columns: [String])] = [
-            ("library_asset_metadata", ["display_name", "placements_json"]),
+            ("library_asset_metadata", ["display_name", "placements_json", "technique"]),
             ("analysis_runs", ["settings_json", "models_json"]),
             ("generated_videos", ["settings_json", "models_json", "caption", "drive_file_id", "drive_link",
                                   "caption_provider", "wizard_provider",
@@ -651,7 +681,7 @@ actor Database {
                         "naming_provider", "naming_model",
                         "people_provider", "people_model"]),
             ("wizard_research", ["provider", "model"]),
-            ("transcripts", ["provider", "model", "original_text", "words"]),
+            ("transcripts", ["provider", "model", "original_text", "words", "technique"]),
             // AI provenance: which provider/model produced each artifact.
             // NULL = human-made (or predates provenance tracking).
             ("scenes", ["models_json", "curated_provider", "curated_model"]),
@@ -2209,7 +2239,7 @@ actor Database {
     // MARK: - Transcripts
 
     func replaceTranscripts(videoID: Int64, language: String, isTranslation: Bool,
-                            segments: [TranscriptSegment], provider: String?, model: String?) throws {
+                            segments: [TranscriptSegment], provider: String?, model: String?, technique: String? = nil) throws {
         // One transaction: long videos have thousands of segments, and the
         // delete + inserts must land atomically.
         try connection.transaction {
@@ -2219,13 +2249,13 @@ actor Database {
             for segment in segments {
                 let wordsJSON = segment.words.flatMap { try? encoder.encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
                 try connection.execute("""
-                    INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, words, provider, model)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, words, provider, model, technique)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0),
                           .real(segment.start), .real(segment.end), .text(segment.text),
                           wordsJSON.map(SQLValue.text) ?? .null,
                           provider.map(SQLValue.text) ?? .null,
-                          model.map(SQLValue.text) ?? .null])
+                          model.map(SQLValue.text) ?? .null, technique.map(SQLValue.text) ?? .null])
             }
         }
     }
@@ -2243,7 +2273,7 @@ actor Database {
                           originalText: $0["original_text"]?.stringValue,
                           wordsJSON: $0["words"]?.stringValue,
                           provider: $0["provider"]?.stringValue,
-                          model: $0["model"]?.stringValue)
+                          model: $0["model"]?.stringValue, technique: $0["technique"]?.stringValue)
         }
     }
 
@@ -2412,19 +2442,20 @@ actor Database {
         let tagsData = try JSONEncoder().encode(metadata.tags)
         try connection.execute("""
             INSERT INTO library_asset_metadata
-                (path, kind, is_broll, subjects_json, tags_json, provider, model, display_name, placements_json, analyzed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                (path, kind, is_broll, subjects_json, tags_json, provider, model, display_name, placements_json, technique, analyzed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(path) DO UPDATE SET kind=excluded.kind, is_broll=excluded.is_broll,
                 subjects_json=excluded.subjects_json, tags_json=excluded.tags_json,
                 display_name=excluded.display_name, placements_json=excluded.placements_json,
-                provider=excluded.provider, model=excluded.model, analyzed_at=datetime('now')
+                provider=excluded.provider, model=excluded.model, technique=excluded.technique, analyzed_at=datetime('now')
             """, [.text(metadata.path), .text(metadata.kind), .integer(metadata.isBRoll ? 1 : 0),
                   .text(String(data: subjectsData, encoding: .utf8) ?? "[]"),
                   .text(String(data: tagsData, encoding: .utf8) ?? "[]"),
                   metadata.provider.map(SQLValue.text) ?? .null,
                   metadata.model.map(SQLValue.text) ?? .null,
                   metadata.displayName.map(SQLValue.text) ?? .null,
-                  try metadata.placements.map { SQLValue.text(String(decoding: try JSONEncoder().encode($0), as: UTF8.self)) } ?? .null])
+                  try metadata.placements.map { SQLValue.text(String(decoding: try JSONEncoder().encode($0), as: UTF8.self)) } ?? .null,
+                  metadata.technique.map(SQLValue.text) ?? .null])
     }
 
     func fetchAssetMetadata(kind: String? = nil) throws -> [LibraryAssetMetadata] {
@@ -2444,7 +2475,7 @@ actor Database {
                                         subjects: strings("subjects_json"), tags: strings("tags_json"),
                                         provider: row["provider"]?.stringValue,
                                         model: row["model"]?.stringValue,
-                                        displayName: row["display_name"]?.stringValue,
+                                        technique: row["technique"]?.stringValue, displayName: row["display_name"]?.stringValue,
                                         placements: row["placements_json"]?.stringValue == nil ? nil : strings("placements_json"))
         }
     }

@@ -612,11 +612,28 @@ actor Analyzer {
     /// Returns the fresh roster plus that proposal.
     /// Route unclassified long recordings before committing to the visual pipeline.
     func classifyLongRecording(video: VideoRecord, provider: String?, model: String?,
-                               log: @escaping @Sendable (String) -> Void) async throws -> VideoType? {
+                               log: @escaping @Sendable (String) -> Void, useLocal: Bool = false,
+                               speechFraction: Double? = nil, cuts: [Double]? = nil) async throws -> VideoType? {
         guard video.type == nil, video.duration >= 300 else { return video.type }
         let times = (0..<5).map { (Double($0) + 0.5) * video.duration / 5 }
         let frames = await extractFrames(url: video.url, timestamps: times, log: log)
         guard !frames.isEmpty else { return nil }
+        if useLocal {
+            let signals = await Task.detached { frames.compactMap { try? VisionImageTagger.inspect($0.jpeg) } }.value
+            // The caller passes the cached detector cut list when it has one;
+            // otherwise detect here. No cut count means no rule can fire: the
+            // recap rule reads a high rate.
+            var cuts = cuts
+            if cuts == nil { cuts = try? await FFmpeg.sceneChangeTimestamps(of: video.url) }
+            if let cuts,
+               let label = LongRecordingClassifier.classify(frames: signals,
+                cutsPerMinute: Double(cuts.count) * 60 / video.duration, speechFraction: speechFraction) {
+                AIRunCapture.current?.append(.local(technique: "vision-cut-rate"), prompt: "Long recording classification")
+                log("Long recording classified by Vision and cut-rate signals")
+                return VideoType(rawValue: label)
+            }
+        }
+        log(useLocal ? "Classification signals unsure — asking the model" : "Long recording classification — asking the model")
         let response = try await ai.call(prompt: """
             Classify this \(Int(video.duration))-second recording from its sparse overview.
             Return JSON {"video_type":"fight|training|interview|podcast|recap|other"}.
@@ -767,10 +784,25 @@ actor Analyzer {
     /// worth analyzing — screen-recording chrome, menus, replays, and dead
     /// air trimmed off before the expensive dense pass spends tokens on them.
     func suggestTrim(video: VideoRecord, provider: String? = nil, model: String? = nil,
-                     log: @escaping @Sendable (String) -> Void) async throws
+                     log: @escaping @Sendable (String) -> Void, useLocal: Bool = false,
+                     detectors: VideoDetectors? = nil) async throws
         -> (start: Double, end: Double, reason: String, provenance: AIProvenance) {
+        try Task.checkCancellation()
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let duration = video.duration > 0 ? video.duration : await FFmpeg.duration(of: video.url)
+        if useLocal && !video.filename.hasPrefix("Screen Recording") && !video.filename.hasPrefix("ScreenRecording") {
+            do {
+                let signals: VideoDetectors
+                if let detectors { signals = detectors } else { signals = try await FFmpeg.detectors(of: video.url, duration: duration) }
+                if let range = signals.contentWindow(duration: duration) {
+                    log("Trim answered by ffmpeg black/freeze detection")
+                    return (range.lowerBound, range.upperBound,
+                            range == 0...duration ? "no static or black sections found" : "leading/trailing black or frozen sections",
+                            .local(technique: "ffmpeg-blackdetect-freezedetect"))
+                }
+            } catch is CancellationError { throw CancellationError() } catch { }
+        }
+        log("Trim detection unsure or disabled — asking the model")
         let frames = await extractFrames(url: video.url, start: 0, end: duration,
                                          interval: max(2, duration / 24), log: log)
         guard !frames.isEmpty else {

@@ -17,6 +17,7 @@ struct TranscriptToolsSheet: View {
     @State private var translationConfiguration: TranslationSession.Configuration?
     @State private var isWorking = false
     @State private var status = ""
+    @State private var batchFallback = false
 
     var body: some View {
         NavigationStack {
@@ -168,6 +169,7 @@ struct TranscriptToolsSheet: View {
     }
 
     private func startTranslation() {
+        batchFallback = OnDevicePolicy.isEnabled(item: "translation-batch", config: store.settings.ai)
         let original = transcripts.first { !$0.isTranslation }
         let source = original.map { Locale.Language(identifier: $0.language) }
         translationConfiguration = TranslationSession.Configuration(
@@ -189,6 +191,16 @@ struct TranscriptToolsSheet: View {
                 uniqueKeysWithValues: responses.compactMap { response in
                     response.clientIdentifier.map { ($0, response.targetText) }
                 })
+            let missing = originals.filter { translated[String($0.id)] == nil }
+            if batchFallback && !missing.isEmpty {
+                await translateWithAI(missing, database: database, existing: originals.compactMap { row in
+                    guard let text = translated[String(row.id)] else { return nil }
+                    return TranscriptSegment(start: row.startTime, end: row.endTime, text: text, words: nil)
+                })
+                translationConfiguration = nil
+                isWorking = false
+                return
+            }
             let segments = originals.compactMap { row -> TranscriptSegment? in
                 guard let text = translated[String(row.id)] else { return nil }
                 return TranscriptSegment(start: row.startTime, end: row.endTime, text: text, words: nil)
@@ -197,6 +209,7 @@ struct TranscriptToolsSheet: View {
                 videoID: video.id, language: targetLanguage,
                 isTranslation: true, segments: segments,
                 provider: "apple", model: "Translation")
+            store.appendLog(\.pipelineLog, ["Translation answered by Apple Translation"])
             status = "Translated \(segments.count) segments to \(targetLanguage) on device."
             translationConfiguration = nil
             await load()
@@ -207,29 +220,46 @@ struct TranscriptToolsSheet: View {
         isWorking = false
     }
 
-    private func translateWithAI(_ originals: [TranscriptRow], database: Database) async {
+    private func translateWithAI(_ originals: [TranscriptRow], database: Database, existing: [TranscriptSegment] = []) async {
         var segments: [TranscriptSegment] = []
-        for row in originals {
-            do {
-                let response = try await store.ai.call(
-                    prompt:
-                        "Translate this caption to \(targetLanguage). Preserve names and meaning. Return only the translation:\n\(row.text)",
-                    task: "translate", timeout: 60, log: { _ in })
-                segments.append(
-                    .init(
-                        start: row.startTime, end: row.endTime,
-                        text: response.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                        words: nil))
-            } catch {
-                store.presentError("Caption translation failed", error)
-                return
+        var provenance: AIProvenance?
+        do {
+            if batchFallback {
+                let response = try await TranslationBatch.perform(
+                    texts: originals.map(\.text), language: targetLanguage, ai: store.ai)
+                provenance = response.provenance
+                let translated = TranslationBatch.parse(response.text, count: originals.count)
+                segments = originals.enumerated().compactMap { index, row in
+                    guard let text = translated[index] else { return nil }
+                    return TranscriptSegment(start: row.startTime, end: row.endTime, text: text, words: nil)
+                }
+                store.appendLog(\.pipelineLog, ["Translation fallback answered by model in one batch"])
+            } else {
+                for row in originals {
+                    let response = try await store.ai.call(
+                        prompt: "Translate this caption to \(targetLanguage). Preserve names and meaning. Return only the translation:\n\(row.text)",
+                        task: "translate", timeout: 60, log: { _ in })
+                    provenance = response.provenance
+                    segments.append(.init(start: row.startTime, end: row.endTime,
+                                          text: response.text.trimmingCharacters(in: .whitespacesAndNewlines), words: nil))
+                }
+                store.appendLog(\.pipelineLog, ["Translation fallback answered by model per row"])
             }
+        } catch {
+            store.presentError("Caption translation failed", error)
+            return
         }
+        let answered = existing + segments
+        let unchanged = transcripts.filter { row in
+            row.isTranslation && row.language == targetLanguage && !answered.contains { $0.start == row.startTime && $0.end == row.endTime }
+        }.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: nil) }
+        segments = (answered + unchanged).sorted { $0.start < $1.start }
         do {
             try await database.replaceTranscripts(
                 videoID: video.id, language: targetLanguage,
                 isTranslation: true, segments: segments,
-                provider: "ai", model: nil)
+                provider: provenance?.provider ?? "ai", model: provenance?.model,
+                technique: existing.isEmpty ? (batchFallback ? "numbered-translation-batch" : nil) : "apple-translation")
             status = "Translated \(segments.count) segments to \(targetLanguage) with the configured AI provider."
             await load()
         } catch {

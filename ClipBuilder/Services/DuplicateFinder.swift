@@ -17,6 +17,34 @@ nonisolated enum DuplicateFinder {
     /// Library cap per scan — one mid-video frame rides along per video.
     static let maxVideos = 30
 
+    /// Collapse overlapping groups by video id; earlier groups keep their recommendation.
+    static func merge(_ groups: [Group]) -> [Group] {
+        var result: [Group] = []
+        for group in groups {
+            var ids = Set(group.videoIDs)
+            var keep = group.keepID
+            var reason = group.reason
+            var hasEarlierKeep = false
+            var changed = true
+            while changed {
+                changed = false
+                if let index = result.firstIndex(where: { !ids.isDisjoint(with: $0.videoIDs) }) {
+                    let earlier = result.remove(at: index)
+                    ids.formUnion(earlier.videoIDs)
+                    if !hasEarlierKeep {
+                        keep = earlier.keepID
+                        reason = earlier.reason
+                        hasEarlierKeep = true
+                    }
+                    changed = true
+                }
+            }
+            guard ids.count >= 2 else { continue }
+            result.append(Group(videoIDs: ids.sorted(), keepID: ids.contains(keep) ? keep : ids.min()!, reason: reason))
+        }
+        return result
+    }
+
     static func prompt(inventory: String) -> String {
         """
         You are checking a video library for DUPLICATE IMPORTS — videos that contain the SAME underlying footage (the same fight, the same recording) brought in more than once: a re-download at a different resolution, a cropped variant, a shorter or longer cut of the same material.

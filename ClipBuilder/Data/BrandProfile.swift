@@ -58,6 +58,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     /// Short motto rendered under the logo on the outro card.
     var tagline: String
     /// Caption languages, e.g. ["en", "pt"] — one caption block per language.
+    var hashtags: [String] = []
     var captionLanguages: [String]
     var defaultRenderSettings: RenderSettings
     var defaultPacing: EditPacing
@@ -105,6 +106,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case outputFolder = "output_folder"
         case tagSchema = "tag_schema"
         case socials
+        case hashtags
         case captions
         case logoPath = "logo_path"
         case accentColor = "accent_color"
@@ -140,6 +142,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         logoPath = try container.decodeIfPresent(String.self, forKey: .logoPath) ?? ""
         accentColor = try container.decodeIfPresent(String.self, forKey: .accentColor) ?? ""
         tagline = try container.decodeIfPresent(String.self, forKey: .tagline) ?? ""
+        hashtags = try container.decodeIfPresent([String].self, forKey: .hashtags) ?? []
         captionLanguages = try container.decodeIfPresent([String].self, forKey: .captionLanguages)
             ?? ["en"]
         defaultRenderSettings = try container.decodeIfPresent(RenderSettings.self, forKey: .defaultRenderSettings)

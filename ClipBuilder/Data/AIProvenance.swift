@@ -17,10 +17,12 @@ nonisolated struct AIProvenance: Codable, Sendable, Hashable {
     /// When the output was produced, when known.
     var at: Date?
     /// The dispatcher failed over from the configured choice to this one.
+    var technique: String?
     var fellBack: Bool = false
 
     init(provider: String, model: String? = nil, task: String? = nil,
-         at: Date? = nil, fellBack: Bool = false) {
+         at: Date? = nil, fellBack: Bool = false, technique: String? = nil) {
+        self.technique = technique
         self.provider = provider
         self.model = model
         self.task = task
@@ -41,6 +43,10 @@ nonisolated struct AIProvenance: Codable, Sendable, Hashable {
     }
 
     // MARK: - Local (non-LLM) engines
+
+    static func local(technique: String) -> AIProvenance {
+        AIProvenance(provider: "local", model: technique, at: Date(), technique: technique)
+    }
 
     static let appleProvider = "apple"
     static let speechModel = "SpeechTranscriber"
@@ -97,6 +103,7 @@ nonisolated struct AIProvenance: Codable, Sendable, Hashable {
         lines.append("\(role ?? "AI"): \(shortLabel)")
         if brand.vendor != brand.label { lines.append("Vendor: \(brand.vendor)") }
         if let model, model != modelDisplayName { lines.append("Model id: \(model)") }
+        if let technique { lines.append("Technique: \(technique)") }
         if let taskLabel { lines.append("Task: \(taskLabel)") }
         if let at { lines.append("When: \(Self.dateFormatter.string(from: at))") }
         if fellBack { lines.append("Ran as a fallback — the configured provider failed") }

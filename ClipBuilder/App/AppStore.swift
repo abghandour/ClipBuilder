@@ -1357,6 +1357,8 @@ final class AppStore {
         UserDefaults.standard.removeObject(forKey: "analysis.pastedNotes")
         let includeTranscript = UserDefaults.standard.bool(forKey: "analysis.includeTranscript")
         let transcription = transcription
+        let localClassification = OnDevicePolicy.isEnabled(item: "long-recording", config: settings.ai)
+        let localPodcast = OnDevicePolicy.isEnabled(item: "podcast-exchanges", config: settings.ai)
         let podcastAnalysis = podcastAnalysis
         let language = settings.transcribeLanguage
         if !instructions.isEmpty { appendLog(\.analysisLog, ["Using analysis instructions: \(instructions)"]) }
@@ -1394,9 +1396,14 @@ final class AppStore {
                 let base = Double(index) / Double(targets.count)
                 let span = 1.0 / Double(targets.count)
                 do {
+                    let transcriptFeatures = localClassification ? ((try? await database.fetchTranscriptFeatures(videoID: video.id)) ?? []) : []
+                    let speechFraction = transcriptFeatures.isEmpty ? nil : transcriptFeatures.filter { $0.kind == .speech }.reduce(0) { $0 + $1.endTime - $1.startTime } / max(1, video.duration)
+                    let cuts = localClassification && video.type == nil && video.duration >= 300
+                        ? await cachedDetectors(for: video)?.cuts : nil
                     if video.type == nil, video.duration >= 300,
                        let type = try await analyzer.classifyLongRecording(
-                        video: video, provider: provider, model: model, log: logSink(\.analysisLog)) {
+                        video: video, provider: provider, model: model, log: logSink(\.analysisLog),
+                        useLocal: localClassification, speechFraction: speechFraction, cuts: cuts) {
                         video.videoType = type.rawValue
                         try await database.setVideoType(id: video.id, type: type.rawValue)
                     }
@@ -1442,7 +1449,7 @@ final class AppStore {
                             transcription: transcription,
                             highlightThreshold: settings.podcast.highlightThreshold,
                             holdSeconds: settings.podcast.speakerHoldSeconds,
-                            log: logSink(\.analysisLog), progress: progress)
+                            log: logSink(\.analysisLog), progress: progress, useLocal: localPodcast)
                         runID = result.runID
                         videoNewPeople = result.newPeople
                         suggestedFilename = result.suggestedFilename
@@ -2572,6 +2579,7 @@ final class AppStore {
     /// join the videos table and follow automatically).
     func suggestFileNames(for videos: [VideoRecord], provider: String?, model: String?,
                           log: @escaping @Sendable (String) -> Void) async throws -> [RenameSuggestion] {
+        let useLocal = OnDevicePolicy.isEnabled(item: "file-naming", config: settings.ai)
         guard let database else { throw AIError.notConfigured("No profile is open.") }
         // Latest outcome per video, fetched once for the whole batch.
         let outcomes = (try? await database.fetchOutcomes()) ?? []
@@ -2581,6 +2589,16 @@ final class AppStore {
             log("Naming \(video.filename) (\(index + 1)/\(videos.count))…")
             let scenes = (try? await database.fetchScenes(videoID: video.id)) ?? []
             let people = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
+            if useLocal, let stem = MetadataFileNamer.stem(people: people.map(\.name),
+                hasResearch: fightResearch[video.id] != nil, fightDate: fightResearch[video.id]?.fightDate) {
+                log("\(video.filename): named from people and fight date")
+                if let name = Analyzer.sanitizedFilenameSuggestion(stem, currentFilename: video.filename) {
+                    suggestions.append(RenameSuggestion(videoID: video.id, currentFilename: video.filename,
+                        suggestedName: name, provenance: .local(technique: "metadata-filename")))
+                }
+                continue
+            }
+            log("\(video.filename): naming — asking the model")
             let moments = (try? await database.moments(videoID: video.id)) ?? []
             let transcripts = (try? await database.fetchTranscripts(videoID: video.id)) ?? []
             let prompt = FileNamer.prompt(video: video, scenes: scenes, people: people,
@@ -2674,19 +2692,40 @@ final class AppStore {
     func findScenes(matching query: String, in candidates: [SceneRecord],
                     provider: String?, model: String?,
                     log: @escaping @Sendable (String) -> Void) async throws -> AIOutcome<[Int64]> {
+        let useLocal = OnDevicePolicy.isEnabled(item: "scene-search", config: settings.ai)
         // Most recent scenes win when the library outgrows one call.
-        let scoped = candidates.count > SceneFinder.maxCandidates
+        var scoped = candidates.count > SceneFinder.maxCandidates
             ? Array(candidates.sorted { $0.id > $1.id }.prefix(SceneFinder.maxCandidates))
             : candidates
         if scoped.count < candidates.count {
             log("Searching the \(scoped.count) most recent of \(candidates.count) scenes")
         }
+        if useLocal {
+            let names = Dictionary(uniqueKeysWithValues: people.map { ($0.tag, $0.name) })
+            let vocabularyOnly = LocalSceneSearch.vocabularyOnly(query, vocabulary: activeProfile.effectiveTags.values.flatMap(\.self) + people.map(\.name))
+            let rows = scoped.map { scene in
+                LocalTextMatcher.Row(id: String(scene.id),
+                    fields: scene.tags + scene.tags.compactMap { names[$0] } + (vocabularyOnly ? [] : [scene.narrative ?? ""]),
+                    date: AIProvenance.parseDate(analysisRuns.first { $0.id == scene.runID }?.createdAt) ?? .distantPast)
+            }
+            if vocabularyOnly {
+                let ids = LocalTextMatcher.rank(query: query, rows: rows, useEmbedding: false)
+                    .filter { $0.score >= 3 }.prefix(SceneFinder.maxMatches).compactMap { Int64($0.row.id) }
+                log("Scene search answered by tags and people")
+                return AIOutcome(value: ids, provenance: .local(technique: "keyword-match"))
+            }
+            let ids = Set(LocalSceneSearch.narrow(query: query, rows: rows))
+            scoped = scoped.filter { ids.contains(String($0.id)) }
+        }
+        log(useLocal ? "Scene candidates narrowed by keywords — asking the model" : "Scene search — asking the model")
         let prompt = SceneFinder.prompt(query: query, scenes: scoped, people: people)
         let response = try await ai.call(prompt: prompt, task: "search",
                                          model: model, provider: provider,
                                          timeout: 120, log: log)
+        var provenance = response.provenance
+        if useLocal { provenance.technique = "keyword-narrowing" }
         return AIOutcome(value: SceneFinder.parse(response.text, validIDs: Set(scoped.map(\.id))),
-                         provenance: response.provenance)
+                         provenance: provenance)
     }
 
     // MARK: - Soundbite finder
@@ -2720,28 +2759,41 @@ final class AppStore {
     func proposeCoverFrames(for video: GeneratedVideoRecord, provider: String?, model: String?,
                             log: @escaping @Sendable (String) -> Void) async throws
         -> AIOutcome<[CoverFramePicker.Candidate]> {
+        let useLocal = OnDevicePolicy.isEnabled(item: "cover-frames", config: settings.ai)
+        var sampledTimes: [Double] = []
         let times = CoverFramePicker.sampleTimes(duration: video.duration)
         log("Sampling \(times.count) frames…")
         var frames: [AIFrame] = []
         for time in times {
             if let jpeg = await ThumbnailService.jpegFrame(url: video.url, at: time,
                                                           maxDimension: 768) {
+                sampledTimes.append(time)
                 frames.append(AIFrame(jpeg: jpeg, label: String(format: "%.1fs", time)))
             }
         }
         guard !frames.isEmpty else {
             throw AIError.notConfigured("No frames could be read from \(video.filename).")
         }
+        if useLocal {
+            let data = frames.map(\.jpeg)
+            let metrics = await Task.detached { data.map { FrameQuality.metrics($0) ?? .init(luminance: 0.5, variance: .greatestFiniteMagnitude) } }.value
+            let indices = FrameQuality.survivingIndices(metrics)
+            frames = indices.map { frames[$0] }
+            sampledTimes = indices.map { sampledTimes[$0] }
+        }
+        log(useLocal ? "Cover frames filtered by luminance/sharpness — asking the model" : "Cover selection — asking the model")
         let response = try await ai.call(prompt: CoverFramePicker.prompt(filename: video.filename,
                                                                          duration: video.duration),
                                          task: "cover", frames: frames,
                                          model: model, provider: provider,
                                          timeout: 180, log: log)
-        let candidates = CoverFramePicker.parse(response.text, sampledTimes: times)
+        let candidates = CoverFramePicker.parse(response.text, sampledTimes: sampledTimes)
         guard !candidates.isEmpty else {
             throw AIError.unusableResponse("The model returned no usable cover picks.")
         }
-        return AIOutcome(value: candidates, provenance: response.provenance)
+        var provenance = response.provenance
+        if useLocal { provenance.technique = "frame-quality-filter" }
+        return AIOutcome(value: candidates, provenance: provenance)
     }
 
     /// Remember the picked cover frame and patch the card in place.
@@ -2768,7 +2820,24 @@ final class AppStore {
     /// fills the plan sheet's trim slider.
     func suggestTrim(for video: VideoRecord) async throws
         -> (start: Double, end: Double, reason: String, provenance: AIProvenance) {
-        try await analyzer.suggestTrim(video: video, log: logSink(\.analysisLog))
+        let useLocal = OnDevicePolicy.isEnabled(item: "trim", config: settings.ai)
+        let detectors = useLocal ? await cachedDetectors(for: video) : nil
+        return try await analyzer.suggestTrim(video: video, log: logSink(\.analysisLog), useLocal: useLocal, detectors: detectors)
+    }
+
+    /// ffmpeg black/freeze/cut detectors for a video, computed once per file
+    /// (size + modification date) and kept in `video_detectors`. Shared by
+    /// the trim suggestion and long-recording classification so a 30-minute
+    /// recording is decoded once, not once per consumer.
+    func cachedDetectors(for video: VideoRecord) async -> VideoDetectors? {
+        guard let database,
+              let values = try? video.url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        else { return nil }
+        let fingerprint = "1:\(values.fileSize ?? 0):\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+        if let cached = try? await database.cachedDetectors(videoID: video.id, fingerprint: fingerprint) { return cached }
+        guard let fresh = try? await FFmpeg.detectors(of: video.url, duration: video.duration) else { return nil }
+        try? await database.cacheDetectors(fresh, videoID: video.id, fingerprint: fingerprint)
+        return fresh
     }
 
     // MARK: - Duplicate detection
@@ -2779,14 +2848,26 @@ final class AppStore {
     func findDuplicateVideos(provider: String?, model: String?,
                              log: @escaping @Sendable (String) -> Void) async throws
         -> AIOutcome<[DuplicateFinder.Group]> {
+        let useLocal = OnDevicePolicy.isEnabled(item: "duplicates", config: settings.ai)
         guard let database else { throw AIError.notConfigured("No profile is open.") }
         guard videos.count >= 2 else {
             throw AIError.notConfigured("Fewer than two videos in the library — nothing to compare.")
         }
-        let scoped = Array(videos.prefix(DuplicateFinder.maxVideos))
+        var scoped = Array(videos.prefix(DuplicateFinder.maxVideos))
         if scoped.count < videos.count {
             log("Comparing the first \(scoped.count) of \(videos.count) videos")
         }
+        var localGroups: [DuplicateFinder.Group] = []
+        if useLocal {
+            localGroups = try await DuplicateFinder.local(videos: scoped)
+            let grouped = Set(localGroups.flatMap(\.videoIDs))
+            scoped.removeAll { grouped.contains($0.id) }
+            if scoped.count < 2 {
+                log("Duplicate scan answered by file and frame hashes")
+                return AIOutcome(value: localGroups, provenance: .local(technique: "sha256-dhash"))
+            }
+        }
+        log(useLocal ? "Local duplicate groups excluded — asking the model" : "Duplicate scan — asking the model")
         var lines: [String] = []
         var frames: [AIFrame] = []
         for video in scoped {
@@ -2806,8 +2887,10 @@ final class AppStore {
                                          task: "dedupe", frames: frames,
                                          model: model, provider: provider,
                                          timeout: 240, log: log)
-        return AIOutcome(value: DuplicateFinder.parse(response.text, validIDs: Set(scoped.map(\.id))),
-                         provenance: response.provenance)
+        var provenance = response.provenance
+        if useLocal { provenance.technique = "sha256-dhash" }
+        return AIOutcome(value: DuplicateFinder.merge(localGroups + DuplicateFinder.parse(response.text, validIDs: Set(scoped.map(\.id)))),
+                         provenance: provenance)
     }
 
     // MARK: - Content gap report
@@ -3969,7 +4052,8 @@ final class AppStore {
         defer { fightResearchInFlight.remove(video.id) }
         let record = try await fightResearchService.run(video: video, identity: identity,
                                                         profile: activeProfile,
-                                                        database: database, emit: log)
+                                                        database: database, emit: log,
+                                                        useLocal: OnDevicePolicy.isEnabled(item: "fight-queries", config: settings.ai))
         fightResearch[video.id] = record
         return record
     }
@@ -4132,7 +4216,8 @@ final class AppStore {
         let profile = activeProfile
         let wizard = wizard
         do {
-            let parsed = try await wizard.parseRequest(description: trimmed, profile: profile, emit: logSink(\.wizardLog))
+            let parsed = try await wizard.parseRequest(description: trimmed, profile: profile, emit: logSink(\.wizardLog),
+                                                       useLocal: OnDevicePolicy.isEnabled(item: "wizard-request", config: settings.ai))
             // The user may have dismissed or replaced the request meanwhile.
             guard pendingWizardPrompt?.description == trimmed else { return }
             pendingWizardPrompt?.parsed = parsed
@@ -4150,6 +4235,7 @@ final class AppStore {
         var options = options
         options.projectID = options.projectID ?? activeProjectID
         guard let projectID = options.projectID else { return }
+        options.localHashtags = OnDevicePolicy.isEnabled(item: "hashtags", config: settings.ai)
         options.accountBenchmarks = igBenchmarks
         isWizardRunning = true
         wizardProjectID = projectID
@@ -5517,5 +5603,178 @@ final class AppStore {
             isPlanningIntoBuilder = false
         }
         }
+    }
+}
+
+extension AppStore {
+    /// Explicit diagnostic action. Ordinary operations never run both paths.
+    func compareOnDeviceWithModel() async -> [OnDeviceAgreement.Report] {
+        guard let database else { return [] }
+        let profile = activeProfile
+        let sourceScenes = scenes
+        let log = logSink(\.pipelineLog)
+        var reports: [OnDeviceAgreement.Report] = []
+        let root = SettingsStore.cacheDirectory.appendingPathComponent("on-device-agreement")
+        let metadata = (try? await database.fetchAssetMetadata(kind: "images")) ?? []
+        let imageRows = metadata.map { LocalTextMatcher.Row(id: $0.path, fields: $0.subjects + $0.tags) }
+        // A sample set, not the whole library: every case below costs one or
+        // two model calls, several of them multimodal.
+        let sample = OnDeviceAgreement.sampleLimit
+        let sourceVideos = Array(videos.prefix(sample))
+        let outputVideos = Array(generatedVideos.prefix(sample))
+        let queries = Array(Array(Set(sourceScenes.flatMap(\.tags) + metadata.flatMap { $0.subjects + $0.tags })).filter { !$0.isEmpty }.sorted().prefix(sample))
+        for item in OnDeviceAgreement.items {
+            var report = OnDeviceAgreement.Report(item: item, cases: [])
+            log("Comparing \(item)…")
+            do {
+                switch item {
+                case "file-naming":
+                    for video in sourceVideos {
+                        let roster = try await database.fetchVideoPeople(videoID: video.id)
+                        guard roster.contains(where: { !$0.name.isEmpty }) else { continue }
+                        let local = try await OnDevicePolicy.comparison.withValue(true) {
+                            try await self.suggestFileNames(for: [video], provider: nil, model: nil, log: log)
+                        }
+                        let model = try await OnDevicePolicy.comparison.withValue(false) {
+                            try await self.suggestFileNames(for: [video], provider: nil, model: nil, log: log)
+                        }
+                        report.cases.append(.exactCase(id: String(video.id), local: local.map(\.suggestedName).joined(), model: model.map(\.suggestedName).joined()))
+                    }
+                case "scene-search":
+                    for query in queries where !sourceScenes.isEmpty {
+                        let local = try await OnDevicePolicy.comparison.withValue(true) { try await self.findScenes(matching: query, in: sourceScenes, provider: nil, model: nil, log: log) }
+                        let model = try await OnDevicePolicy.comparison.withValue(false) { try await self.findScenes(matching: query, in: sourceScenes, provider: nil, model: nil, log: log) }
+                        report.cases.append(.exactCase(id: query, local: local.value.sorted().description, model: model.value.sorted().description))
+                    }
+                case "image-search":
+                    for query in Array(Set(metadata.flatMap { $0.subjects + $0.tags })).sorted().prefix(sample) {
+                        let local = LocalImageMatcher.match(query: query, rows: imageRows)
+                        guard !local.isEmpty else { continue }
+                        let inventory = metadata.enumerated().map { "id \($0.offset): \($0.element.subjects + $0.element.tags)" }.joined(separator: "\n")
+                        let response = try await ai.call(prompt: "Rank the owned images which match this request: \(query)\n\(inventory)\nReturn only JSON: {\"ids\":[0,1]}. Include only strong matches, best first. Never invent an id.", task: "search", timeout: 120, log: log)
+                        let ids = AIResponseParser.jsonObject(from: response.text)?["ids"] as? [Int] ?? []
+                        let paths = ids.compactMap { metadata.indices.contains($0) ? metadata[$0].path : nil }
+                        report.cases.append(.exactCase(id: query, local: local.sorted().description, model: paths.sorted().description))
+                    }
+                case "wizard-request":
+                    let templates = OverlayTemplateStore.list().map(\.name)
+                    for query in queries {
+                        let description = "30 seconds of \(query) with subtitles no music"
+                        let local = WizardRequestParser.parse(description, tags: profile.effectiveTags.values.flatMap(\.self), templates: templates)
+                        guard local.confident else { continue }
+                        let model = try await wizard.parseRequest(description: description, profile: profile, emit: log, useLocal: false)
+                        report.cases.append(.init(id: description, local: String(describing: local.request), model: String(describing: model), agrees: local.request == model))
+                    }
+                case "trim":
+                    for video in sourceVideos where !video.filename.hasPrefix("Screen Recording") && !video.filename.hasPrefix("ScreenRecording") {
+                        let local = try await analyzer.suggestTrim(video: video, log: log, useLocal: true)
+                        guard local.provenance.provider == "local" else { continue }
+                        let model = try await analyzer.suggestTrim(video: video, log: log, useLocal: false)
+                        report.cases.append(.init(id: String(video.id), local: "\(local.start)-\(local.end)", model: "\(model.start)-\(model.end)", agrees: abs(local.start - model.start) <= 0.5 && abs(local.end - model.end) <= 0.5))
+                    }
+                case "duplicates":
+                    if sourceVideos.count >= 2 {
+                        let local = try await OnDevicePolicy.comparison.withValue(true) { try await self.findDuplicateVideos(provider: nil, model: nil, log: log) }
+                        let model = try await OnDevicePolicy.comparison.withValue(false) { try await self.findDuplicateVideos(provider: nil, model: nil, log: log) }
+                        let a = local.value.map { "\($0.videoIDs.sorted()):\($0.keepID)" }.sorted()
+                        let b = model.value.map { "\($0.videoIDs.sorted()):\($0.keepID)" }.sorted()
+                        report.cases.append(.exactCase(id: "library", local: a.description, model: b.description))
+                    }
+                case "cover-frames":
+                    for video in outputVideos {
+                        let local = try await OnDevicePolicy.comparison.withValue(true) { try await self.proposeCoverFrames(for: video, provider: nil, model: nil, log: log) }
+                        let model = try await OnDevicePolicy.comparison.withValue(false) { try await self.proposeCoverFrames(for: video, provider: nil, model: nil, log: log) }
+                        report.cases.append(.exactCase(id: String(video.id), local: local.value.map(\.time).sorted().description, model: model.value.map(\.time).sorted().description))
+                    }
+                case "long-recording":
+                    for video in sourceVideos where video.duration >= 300 {
+                        let times = (0..<5).map { (Double($0) + 0.5) * video.duration / 5 }
+                        let data = await ThumbnailService.jpegFrames(url: video.url, at: times)
+                        let signals = await Task.detached { data.compactMap { $0.flatMap { try? VisionImageTagger.inspect($0) } } }.value
+                        let cuts = try await FFmpeg.sceneChangeTimestamps(of: video.url)
+                        let rows = try await database.fetchTranscripts(videoID: video.id)
+                        let fraction = rows.isEmpty ? nil : rows.filter { !$0.isTranslation }.reduce(0) { $0 + $1.endTime - $1.startTime } / video.duration
+                        guard let local = LongRecordingClassifier.classify(frames: signals, cutsPerMinute: Double(cuts.count) * 60 / video.duration, speechFraction: fraction) else { continue }
+                        var unclassified = video
+                        unclassified.videoType = nil
+                        let model = try await analyzer.classifyLongRecording(video: unclassified, provider: nil, model: nil, log: log)
+                        report.cases.append(.exactCase(id: String(video.id), local: local, model: model?.rawValue ?? ""))
+                    }
+                case "image-tagging":
+                    for row in metadata.prefix(sample) {
+                        guard let data = try? Data(contentsOf: URL(fileURLWithPath: row.path)),
+                              let signals = await Task.detached(operation: { try? VisionImageTagger.inspect(data) }).value else { continue }
+                        let prompt = "Tag this owned library image for editorial search. Return only JSON: {\"subjects\":[\"person/event/topic\"],\"tags\":[\"crowd|walkout|training|establishing-shot|action|portrait|graphic|other\"],\"is_broll\":true|false}. B-roll means a cutaway, atmosphere, training, walkout, crowd, or establishing visual."
+                        let model = try await ai.call(prompt: prompt, task: "analyze", frames: [.init(jpeg: data, label: row.path)], timeout: 120, log: log)
+                        guard let tag = VisionImageTagger.localTag(signals) else { continue }
+                        let object = AIResponseParser.jsonObject(from: model.text)
+                        let agrees = object?["tags"] as? [String] == [tag] && (object?["subjects"] as? [String] ?? []).isEmpty && object?["is_broll"] as? Bool == true
+                        report.cases.append(.init(id: row.path, local: tag, model: model.text, agrees: agrees))
+                    }
+                case "podcast-exchanges":
+                    for video in sourceVideos where video.type == .podcast {
+                        let rows = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
+                        let segments = rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: nil) }
+                        let turns = try await database.fetchSpeakerTurns(videoID: video.id)
+                        let service = PodcastExchangeSegmenter(ai: ai)
+                        let local = try await service.segment(segments: segments, turns: turns, provider: nil, model: nil, log: log, useLocal: true)
+                        let model = try await service.segment(segments: segments, turns: turns, provider: nil, model: nil, log: log, useLocal: false)
+                        let a = local.exchanges.map { "\($0.start)-\($0.end)" }
+                        let b = model.exchanges.map { "\($0.start)-\($0.end)" }
+                        report.cases.append(.exactCase(id: String(video.id), local: a.description, model: b.description))
+                    }
+                case "fight-queries":
+                    let records = try await database.fetchFightResearch()
+                    let known = people.map(\.name) + records.flatMap { FightNameResolver.names($0.fightLabel) }
+                    for row in records.prefix(sample) {
+                        let identity = FightResearchService.Identity(fighters: row.fightLabel, event: row.event, date: row.fightDate)
+                        let local = await fightResearchService.comparisonQueryPlan(identity: identity, profile: profile, records: records, known: known, useLocal: true, emit: log)
+                        let model = await fightResearchService.comparisonQueryPlan(identity: identity, profile: profile, records: records, known: known, useLocal: false, emit: log)
+                        report.cases.append(.exactCase(id: String(row.id), local: local, model: model))
+                    }
+                case "hashtags":
+                    for video in outputVideos {
+                        let tags = Array(Set(sourceScenes.flatMap(\.tags))).sorted()
+                        let plan = WizardPlan(targetDuration: video.duration, rationale: video.rationale ?? "", musicName: nil, musicVolume: 0, clips: [], transitions: [], headline: nil, introTitle: nil, fileName: nil)
+                        let localPrompt = await wizard.captionPrompt(profile: profile, plan: plan, duration: video.duration, tags: tags, localHashtags: true)
+                        let modelPrompt = await wizard.captionPrompt(profile: profile, plan: plan, duration: video.duration, tags: tags)
+                        let local = try await ai.call(prompt: localPrompt, task: "captions", timeout: 60, log: log)
+                        let model = try await ai.call(prompt: modelPrompt, task: "captions", timeout: 60, log: log)
+                        let a = local.text.split(whereSeparator: \.isWhitespace).filter { $0.hasPrefix("#") }.map { $0.lowercased() }.sorted()
+                        let b = model.text.split(whereSeparator: \.isWhitespace).filter { $0.hasPrefix("#") }.map { $0.lowercased() }.sorted()
+                        report.cases.append(.exactCase(id: String(video.id), local: a.description, model: b.description))
+                    }
+                case "translation-batch":
+                    for video in sourceVideos {
+                        let rows = Array(try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }.prefix(sample))
+                        guard !rows.isEmpty else { continue }
+                        let texts = rows.map(\.text)
+                        let batch = try await ai.call(prompt: TranslationBatch.prompt(texts: texts, language: "pt-BR"), task: "translate", timeout: 60, log: log)
+                        let translated = TranslationBatch.parse(batch.text, count: rows.count)
+                        for (index, row) in rows.enumerated() {
+                            let model = try await ai.call(prompt: "Translate this caption to pt-BR. Preserve names and meaning. Return only the translation:\n\(row.text)", task: "translate", timeout: 60, log: log)
+                            report.cases.append(.exactCase(id: String(row.id), local: translated[index] ?? "", model: model.text.trimmingCharacters(in: .whitespacesAndNewlines)))
+                        }
+                    }
+                default:
+                    report.errors.append("Unknown comparison item")
+                }
+            } catch {
+                report.errors.append(error.localizedDescription)
+            }
+            do {
+                try OnDeviceAgreement.save(report, root: root)
+                // Only a measured item moves its switch; an item with no
+                // comparable cases keeps whatever the user set by hand.
+                if report.errors.isEmpty, let percentage = report.percentage {
+                    settings.ai.onDeviceAgreement[item] = percentage
+                    settings.ai.onDeviceOverrides[item] = report.passed
+                } else {
+                    settings.ai.onDeviceAgreement.removeValue(forKey: item)
+                }
+            } catch { report.errors.append("Could not save report: \(error.localizedDescription)") }
+            reports.append(report)
+        }
+        return reports
     }
 }

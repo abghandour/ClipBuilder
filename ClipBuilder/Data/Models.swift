@@ -247,7 +247,9 @@ nonisolated struct FightResearchRecord: Identifiable, Sendable, Hashable {
     var model: String?
 
     var provenance: AIProvenance? {
-        AIProvenance(provider: provider, model: model, task: "fight_research", at: researchedAt)
+        var provenance = AIProvenance(provider: provider, model: model, task: "fight_research", at: researchedAt)
+        provenance?.technique = summary["technique"] as? String
+        return provenance
     }
 
     var summary: [String: Any] {
@@ -494,9 +496,12 @@ nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable {
     var wordsJSON: String?
     var provider: String?
     var model: String?
+    var technique: String? = nil
 
     var provenance: AIProvenance? {
-        AIProvenance(provider: provider, model: model, task: "transcribe")
+        var provenance = AIProvenance(provider: provider, model: model, task: "transcribe")
+        provenance?.technique = technique
+        return provenance
     }
 }
 

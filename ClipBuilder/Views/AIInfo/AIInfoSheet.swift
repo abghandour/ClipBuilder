@@ -42,6 +42,9 @@ struct AIInfoSheet: View {
                                         ?? "Date not recorded"
                                 )
                                 .foregroundStyle(.secondary)
+                                if let technique = item.provenance.technique {
+                                    Text("Technique: \(technique)").foregroundStyle(.secondary)
+                                }
                                 if item.provenance.fellBack {
                                     Text("Fallback model").foregroundStyle(.secondary)
                                 }

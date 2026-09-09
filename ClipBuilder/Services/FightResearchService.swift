@@ -71,7 +71,12 @@ actor FightResearchService {
     /// result saved on the video. Throws with actionable messages.
     func run(video: VideoRecord, identity: Identity, profile: BrandProfile,
              database: Database, modelOverride: String? = nil,
-             emit: @escaping @Sendable (String) -> Void) async throws -> FightResearchRecord {
+             emit: @escaping @Sendable (String) -> Void, useLocal: Bool = false) async throws -> FightResearchRecord {
+        var identity = identity
+        let records = useLocal ? (try await database.fetchFightResearch()) : []
+        let known = useLocal ? (try await database.fetchPeople()).map(\.name) + records.flatMap { FightNameResolver.names($0.fightLabel) } : []
+        let resolved = FightNameResolver.names(identity.fighters).map { FightNameResolver.resolve($0, known: known) }
+        if useLocal { identity.fighters = resolved.map(\.name).joined(separator: " vs ") }
         let fighters = identity.fighters.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !fighters.isEmpty else {
             throw AIError.notConfigured("No fighters to search for — fill in the fight identity first")
@@ -84,8 +89,15 @@ actor FightResearchService {
         }
 
         emit("Planning search queries for \(identity.label)…")
-        let plan = await planQueries(identity: identity, profile: profile,
-                                     modelOverride: modelOverride, emit: emit)
+        let plan: QueryPlan
+        if useLocal, !resolved.isEmpty, resolved.allSatisfy(\.resolved),
+           let saved = FightNameResolver.savedPlan(for: resolved.map(\.name), records: records) {
+            plan = QueryPlan(queries: saved.queries, subreddits: saved.subreddits)
+            emit("Fight queries reused from saved research")
+        } else {
+            emit(useLocal ? "Fighter names resolved locally — asking the model for queries" : "Fight query planning — asking the model")
+            plan = await planQueries(identity: identity, profile: profile, modelOverride: modelOverride, emit: emit)
+        }
 
         emit("Crawling the web (plain HTTP — no login-walled sources)…")
         let corpus = await crawl(identity: identity, plan: plan, sources: sources, emit: emit)
@@ -100,7 +112,10 @@ actor FightResearchService {
         let summary = try await summarize(identity: identity, corpus: corpus,
                                           profile: profile, modelOverride: modelOverride,
                                           emit: emit)
-        let summaryJSON = summary.value
+        var summaryObject = AIResponseParser.jsonObject(from: summary.value) ?? [:]
+        if useLocal { summaryObject["technique"] = "fighter-name-resolution" }
+        summaryObject["query_plan"] = ["queries": plan.queries, "subreddits": plan.subreddits]
+        let summaryJSON = String(decoding: try JSONSerialization.data(withJSONObject: summaryObject), as: UTF8.self)
         let attribution = summary.provenance
         let sourcesJSON = String(data: (try? JSONSerialization.data(withJSONObject: fetched)) ?? Data("[]".utf8),
                                  encoding: .utf8) ?? "[]"
@@ -164,6 +179,22 @@ actor FightResearchService {
             emit("Query planning failed (\(error)) — using default queries")
             return fallback
         }
+    }
+
+    func comparisonQueryPlan(identity: Identity, profile: BrandProfile,
+                             records: [FightResearchRecord], known: [String], useLocal: Bool,
+                             emit: @escaping @Sendable (String) -> Void) async -> String {
+        var identity = identity
+        if useLocal {
+            let resolved = FightNameResolver.names(identity.fighters).map { FightNameResolver.resolve($0, known: known) }
+            identity.fighters = resolved.map(\.name).joined(separator: " vs ")
+            if !resolved.isEmpty, resolved.allSatisfy(\.resolved),
+               let saved = FightNameResolver.savedPlan(for: resolved.map(\.name), records: records) {
+                return saved.queries.sorted().description + saved.subreddits.sorted().description
+            }
+        }
+        let plan = await planQueries(identity: identity, profile: profile, modelOverride: nil, emit: emit)
+        return plan.queries.sorted().description + plan.subreddits.sorted().description
     }
 
     // MARK: - Crawling (standard code)
