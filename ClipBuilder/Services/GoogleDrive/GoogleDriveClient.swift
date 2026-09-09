@@ -165,7 +165,7 @@ actor GoogleDriveClient {
     }
 
     func upload(
-        file: URL, folder: String, checkpoint: URL,
+        file: URL, folder: String, checkpoint: URL, replacingID: String? = nil, verifyChecksum: Bool = false,
         progress: @escaping @Sendable (Double) async -> Void = { _ in }
     ) async throws -> DriveFile {
         let attrs = try FileManager.default.attributesOfItem(atPath: file.path)
@@ -173,11 +173,16 @@ actor GoogleDriveClient {
         guard size > 0 else { throw GoogleDriveError.invalidResponse }
         let signature =
             "\(file.path)|\(size)|\((attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)|\(folder)"
+        let uploadSignature = signature + (replacingID.map { "|replace:\($0)" } ?? "")
+        let expectedMD5 = verifyChecksum ? try checksum(file) : nil
         var saved = (try? Data(contentsOf: checkpoint)).flatMap {
             try? JSONDecoder().decode(UploadCheckpoint.self, from: $0)
         }
-        if saved?.signature != signature { saved = nil }
-        if let completed = saved?.completed { return completed }
+        if saved?.signature != uploadSignature { saved = nil }
+        if let completed = saved?.completed {
+            try verifyUpload(completed, expectedMD5: expectedMD5)
+            return completed
+        }
         var offset: Int64 = 0
         if let existing = saved {
             guard existing.session.scheme == "https", existing.session.host == "www.googleapis.com" else {
@@ -187,9 +192,11 @@ actor GoogleDriveClient {
             probe.httpMethod = "PUT"
             probe.setValue("bytes */\(size)", forHTTPHeaderField: "Content-Range")
             probe.setValue("0", forHTTPHeaderField: "Content-Length")
-            let (data, response) = try await send(probe, allowing: [308, 404, 410])
+            let (data, response) = try await send(
+                probe, allowing: [308, 404, 410], reportReplacementForbidden: replacingID != nil)
             if response.statusCode == 200 || response.statusCode == 201 {
                 let result = try JSONDecoder().decode(DriveFile.self, from: data)
+                try verifyUpload(result, expectedMD5: expectedMD5)
                 saved?.completed = result
                 try saveCheckpoint(saved!, at: checkpoint)
                 return result
@@ -201,25 +208,26 @@ actor GoogleDriveClient {
             }
         }
         if saved == nil {
-            var url = URLComponents(string: "https://www.googleapis.com/upload/drive/v3/files")!
+            let suffix = replacingID.map { "/" + encodeID($0) } ?? ""
+            var url = URLComponents(string: "https://www.googleapis.com/upload/drive/v3/files\(suffix)")!
             url.queryItems = [
                 URLQueryItem(name: "uploadType", value: "resumable"),
                 URLQueryItem(name: "fields", value: Self.fields),
                 URLQueryItem(name: "supportsAllDrives", value: "true"),
             ]
             var request = URLRequest(url: url.url!)
-            request.httpMethod = "POST"
+            request.httpMethod = replacingID == nil ? "POST" : "PATCH"
             request.setValue("application/json; charset=UTF-8", forHTTPHeaderField: "Content-Type")
             request.setValue("\(size)", forHTTPHeaderField: "X-Upload-Content-Length")
             request.setValue("application/octet-stream", forHTTPHeaderField: "X-Upload-Content-Type")
-            request.httpBody = try JSONSerialization.data(withJSONObject: [
-                "name": file.lastPathComponent, "parents": [folder],
-            ])
-            let (_, response) = try await send(request)
+            var metadata: [String: Any] = ["name": file.lastPathComponent]
+            if replacingID == nil { metadata["parents"] = [folder] }
+            request.httpBody = try JSONSerialization.data(withJSONObject: metadata)
+            let (_, response) = try await send(request, reportReplacementForbidden: replacingID != nil)
             guard let location = response.value(forHTTPHeaderField: "Location"), let session = URL(string: location),
                 session.scheme == "https", session.host == "www.googleapis.com"
             else { throw GoogleDriveError.invalidResponse }
-            saved = UploadCheckpoint(session: session, signature: signature)
+            saved = UploadCheckpoint(session: session, signature: uploadSignature)
             try saveCheckpoint(saved!, at: checkpoint)
         }
         let handle = try FileHandle(forReadingFrom: file)
@@ -235,9 +243,11 @@ actor GoogleDriveClient {
             request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
             request.setValue(
                 "bytes \(offset)-\(offset + Int64(data.count) - 1)/\(size)", forHTTPHeaderField: "Content-Range")
-            let (body, response) = try await send(request, allowing: [308])
+            let (body, response) = try await send(
+                request, allowing: [308], reportReplacementForbidden: replacingID != nil)
             if response.statusCode == 200 || response.statusCode == 201 {
                 let result = try JSONDecoder().decode(DriveFile.self, from: body)
+                try verifyUpload(result, expectedMD5: expectedMD5)
                 saved?.completed = result
                 try saveCheckpoint(saved!, at: checkpoint)
                 await progress(1)
@@ -249,6 +259,18 @@ actor GoogleDriveClient {
             await progress(Double(offset) / Double(size))
         }
         throw GoogleDriveError.invalidResponse
+    }
+
+    private func verifyUpload(_ file: DriveFile, expectedMD5: String?) throws {
+        if let expectedMD5, file.md5Checksum?.lowercased() != expectedMD5.lowercased() {
+            throw GoogleDriveError.conflict
+        }
+    }
+
+    /// Only the optional asset home asks for trash state; ordinary metadata requests stay unchanged.
+    func assetHomeMetadata(id: String) async throws -> DriveFile {
+        try await json(
+            "files/\(encodeID(id))", query: ["fields": Self.fields + ",trashed", "supportsAllDrives": "true"])
     }
 
     private func uploadOffset(_ response: HTTPURLResponse, total: Int64) throws -> Int64 {
@@ -282,7 +304,9 @@ actor GoogleDriveClient {
         let (data, _) = try await send(URLRequest(url: endpoint(path, query: query)))
         return try JSONDecoder().decode(T.self, from: data)
     }
-    private func send(_ original: URLRequest, allowing: Set<Int> = []) async throws -> (Data, HTTPURLResponse) {
+    private func send(_ original: URLRequest, allowing: Set<Int> = [], reportReplacementForbidden: Bool = false)
+        async throws -> (Data, HTTPURLResponse)
+    {
         try Task.checkCancellation()
         var request = original
         request.setValue("Bearer \(try await auth.accessToken(profile: profile))", forHTTPHeaderField: "Authorization")
@@ -301,6 +325,7 @@ actor GoogleDriveClient {
             {
                 throw GoogleDriveError.quota
             }
+            if reportReplacementForbidden { throw GoogleDriveError.cannotReplaceAsset }
             if body.contains("insufficientPermissions") || body.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
                 await auth.invalidate(profile: profile)
                 throw GoogleDriveError.reconnect

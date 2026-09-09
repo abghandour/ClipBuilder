@@ -3,6 +3,8 @@ import Observation
 
 nonisolated struct DriveTransfer: Codable, Identifiable, Sendable {
     enum Operation: String, Codable, Sendable { case download, fetch, upload }
+    // Separate asset operations keep the media-only switch in DriveMediaStore unchanged.
+    enum AssetOperation: String, Codable, Sendable { case assetDownload, assetUpload }
     enum Status: String, Codable, Sendable { case waiting, running, reconnect, stopped, failed, complete }
     var id = UUID()
     var profile: String
@@ -16,7 +18,12 @@ nonisolated struct DriveTransfer: Codable, Identifiable, Sendable {
     var totalBytes: Int64?
     var progress = 0.0
     var message = ""
-    var title: String { file?.name ?? URL(fileURLWithPath: media?.path ?? "").lastPathComponent }
+    var assetOperation: AssetOperation?
+    var assetPath: String?
+    var groupID: UUID?
+    var isAsset: Bool { assetOperation != nil }
+    var isUpload: Bool { operation == .upload }
+    var title: String { assetPath ?? file?.name ?? URL(fileURLWithPath: media?.path ?? "").lastPathComponent }
 }
 
 @MainActor @Observable
@@ -30,6 +37,11 @@ final class GoogleDriveTransfers {
     var connecting: Set<String> = []
     var connectionError: String?
     var revision = 0
+    var assetHomes: [String: AssetSyncHome] = [:]
+    @ObservationIgnored private var assetWork:
+        [UUID: @MainActor (@escaping @Sendable (Double) async -> Void) async throws -> DriveFile] = [:]
+    @ObservationIgnored private var assetWaiters: [UUID: CheckedContinuation<DriveFile, Error>] = [:]
+    @ObservationIgnored private var assetGroupStops: [UUID: () -> Void] = [:]
     @ObservationIgnored private var connectionGenerations: [String: Int] = [:]
     @ObservationIgnored private var contexts: [String: Context] = [:]
     @ObservationIgnored private var tasks: [UUID: Task<URL, Error>] = [:]
@@ -54,12 +66,18 @@ final class GoogleDriveTransfers {
         contexts[name] = Context(database: database, client: client, media: media, profile: profile)
         await DriveMediaResolver.shared.register(database: database, profile: name)
         await refreshState(profile: name)
+        // Reading the opt-in setting does not initialize or run sync for an unset profile.
+        assetHomes[name] = nil
+        if let json = try? await database.driveSetting("assetHome"), !json.isEmpty {
+            assetHomes[name] = await AssetSyncHome.restore(json: json, database: database)
+        }
         if let json = try? await database.driveSetting("transferQueue"),
             let saved = try? JSONDecoder().decode([DriveTransfer].self, from: Data(json.utf8))
         {
-            for var job in saved where job.status != .complete && !jobs.contains(where: { $0.id == job.id }) {
+            for var job in saved
+            where job.status != .complete && !job.isAsset && !jobs.contains(where: { $0.id == job.id }) {
                 job.status = .stopped
-                job.message = "Interrupted — Resume to continue"
+                job.message = job.isAsset ? "Interrupted — Refresh to continue" : "Interrupted — Resume to continue"
                 jobs.append(job)
             }
         }
@@ -150,7 +168,7 @@ final class GoogleDriveTransfers {
     }
 
     private func pumpUploads() {
-        for job in jobs where job.operation == .upload && job.status == .waiting { start(job.id) }
+        for job in jobs where job.isUpload && job.status == .waiting { start(job.id) }
     }
 
     func fetch(_ media: DriveMedia, profile: String) async throws -> URL {
@@ -175,11 +193,18 @@ final class GoogleDriveTransfers {
     }
 
     func stop(_ id: UUID) {
+        if let job = jobs.first(where: { $0.id == id }), job.isAsset {
+            if let group = job.groupID { assetGroupStops[group]?() }
+            if tasks[id] == nil {
+                assetWork[id] = nil
+                assetWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
+            }
+        }
         offlineRetries.removeValue(forKey: id)?.cancel()
         if tasks[id] == nil, let job = jobs.first(where: { $0.id == id }) {
             update(id) {
                 $0.status = .stopped
-                $0.message = "Stopped — Resume to continue"
+                $0.message = job.isAsset ? "Stopped — Refresh to continue" : "Stopped — Resume to continue"
             }
             Task { await persist(profile: job.profile) }
         }
@@ -190,6 +215,7 @@ final class GoogleDriveTransfers {
     /// discarded, unlike Stop which keeps everything for Resume.
     func cancel(_ id: UUID) {
         guard let job = jobs.first(where: { $0.id == id }) else { return }
+        if job.isAsset { stop(id) }
         offlineRetries.removeValue(forKey: id)?.cancel()
         tasks[id]?.cancel()
         reconnectWaiters.removeValue(forKey: id)?.resume(throwing: CancellationError())
@@ -197,13 +223,15 @@ final class GoogleDriveTransfers {
         let context = contexts[job.profile]
         Task {
             _ = await tasks[id]?.result
-            await context?.media.discardArtifacts(for: job)
+            if !job.isAsset { await context?.media.discardArtifacts(for: job) }
             await persist(profile: job.profile)
             revision += 1
         }
     }
 
     func resume(_ id: UUID) {
+        // Asset groups are replanned by manual Refresh; stale actions must never resume alone.
+        guard jobs.first(where: { $0.id == id })?.isAsset != true else { return }
         offlineRetries.removeValue(forKey: id)?.cancel()
         if tasks[id] == nil { start(id) }
     }
@@ -213,8 +241,10 @@ final class GoogleDriveTransfers {
         body(&jobs[index])
     }
     private func persist(profile: String) async {
+        // Asset rows are replanned by the next Refresh; only media transfers need recovery.
         guard let context = contexts[profile],
-            let data = try? JSONEncoder().encode(jobs.filter { $0.profile == profile && $0.status != .complete })
+            let data = try? JSONEncoder().encode(
+                jobs.filter { $0.profile == profile && $0.status != .complete && !$0.isAsset })
         else { return }
         do {
             try await context.database.setDriveSetting("transferQueue", value: String(decoding: data, as: UTF8.self))
@@ -226,8 +256,8 @@ final class GoogleDriveTransfers {
     private func start(_ id: UUID) {
         guard let job = jobs.first(where: { $0.id == id }), let context = contexts[job.profile] else { return }
         guard tasks[id] == nil else { return }
-        if job.operation == .upload {
-            let active = jobs.filter { $0.operation == .upload && tasks[$0.id] != nil }.count
+        if job.isUpload {
+            let active = jobs.filter { $0.isUpload && tasks[$0.id] != nil }.count
             if active >= 2 {
                 update(id) {
                     $0.status = .waiting
@@ -244,6 +274,7 @@ final class GoogleDriveTransfers {
         let task = Task<URL, Error> {
             defer {
                 tasks[id] = nil
+                assetWork[id] = nil
                 pumpUploads()
             }
             await persist(profile: job.profile)
@@ -260,21 +291,30 @@ final class GoogleDriveTransfers {
                             await self.reportProgress(id, value: value)
                         }
                         let url: URL
-                        switch job.operation {
-                        case .download:
-                            guard let file = job.file else { throw GoogleDriveError.invalidResponse }
-                            url = try await context.media.download(file, projectID: job.projectID, progress: progress)
-                        case .fetch:
-                            guard let media = job.media else { throw GoogleDriveError.invalidResponse }
-                            url = try await context.media.ensure(media, progress: progress)
-                        case .upload:
-                            guard let media = job.media, let folder = job.folder else {
-                                throw GoogleDriveError.invalidResponse
+                        var assetResult: DriveFile?
+                        if job.isAsset {
+                            guard let work = assetWork[id] else { throw CancellationError() }
+                            let result = try await work(progress)
+                            assetResult = result
+                            url = URL(fileURLWithPath: job.assetPath ?? "")
+                        } else {
+                            switch job.operation {
+                            case .download:
+                                guard let file = job.file else { throw GoogleDriveError.invalidResponse }
+                                url = try await context.media.download(
+                                    file, projectID: job.projectID, progress: progress)
+                            case .fetch:
+                                guard let media = job.media else { throw GoogleDriveError.invalidResponse }
+                                url = try await context.media.ensure(media, progress: progress)
+                            case .upload:
+                                guard let media = job.media, let folder = job.folder else {
+                                    throw GoogleDriveError.invalidResponse
+                                }
+                                let size = try await context.media.byteCount(media)
+                                update(id) { $0.totalBytes = size }
+                                _ = try await context.media.upload(media, folder: folder, progress: progress)
+                                url = URL(fileURLWithPath: media.path)
                             }
-                            let size = try await context.media.byteCount(media)
-                            update(id) { $0.totalBytes = size }
-                            _ = try await context.media.upload(media, folder: folder, progress: progress)
-                            url = URL(fileURLWithPath: media.path)
                         }
                         update(id) {
                             $0.status = .complete
@@ -283,7 +323,18 @@ final class GoogleDriveTransfers {
                         }
                         revision += 1
                         await persist(profile: job.profile)
+                        if let assetResult {
+                            assetWaiters.removeValue(forKey: id)?.resume(returning: assetResult)
+                        }
                         return url
+                    } catch GoogleDriveError.offline where job.isAsset {
+                        update(id) {
+                            $0.status = .waiting
+                            $0.message = GoogleDriveError.offline.localizedDescription
+                        }
+                        await persist(profile: job.profile)
+                        try await Task.sleep(for: .seconds(15))
+                        update(id) { $0.status = .running }
                     } catch GoogleDriveError.reconnect {
                         update(id) {
                             $0.status = .reconnect
@@ -300,7 +351,7 @@ final class GoogleDriveTransfers {
                             continue
                         }
                         // Uploads do not occupy a queue slot while awaiting sign-in.
-                        if job.operation == .upload { throw GoogleDriveError.reconnect }
+                        if job.operation == .upload && !job.isAsset { throw GoogleDriveError.reconnect }
                         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                             reconnectWaiters[id] = continuation
                         }
@@ -315,14 +366,18 @@ final class GoogleDriveTransfers {
                     // The reconnect state was already persisted above.
                     throw error
                 }
+                assetWaiters.removeValue(forKey: id)?.resume(throwing: error)
                 update(id) {
-                    $0.status = error is CancellationError ? .stopped : .failed
+                    $0.status =
+                        error is CancellationError || error as? GoogleDriveError == .cannotReplaceAsset
+                        ? .stopped : .failed
                     $0.message =
                         error is CancellationError
-                        ? "Stopped — Resume to continue" : GoogleDriveError.message(for: error)
+                        ? (job.isAsset ? "Stopped — Refresh to continue" : "Stopped — Resume to continue")
+                        : GoogleDriveError.message(for: error)
                 }
                 await persist(profile: job.profile)
-                if error as? GoogleDriveError == .offline {
+                if !job.isAsset && error as? GoogleDriveError == .offline {
                     offlineRetries[id] = Task {
                         do { try await Task.sleep(for: .seconds(15)) } catch { return }
                         guard self.jobs.first(where: { $0.id == id })?.status == .failed else { return }
@@ -338,6 +393,69 @@ final class GoogleDriveTransfers {
     }
 
     private func reportProgress(_ id: UUID, value: Double) { update(id) { $0.progress = value } }
+
+    func chooseAssetHome(_ folder: DriveFile, breadcrumb: String, profile: String) async throws {
+        guard folder.isFolder, let context = contexts[profile], assetHomes[profile]?.isRefreshing != true else {
+            throw GoogleDriveError.conflict
+        }
+        let home = AssetSyncHome(folder: folder, breadcrumb: breadcrumb)
+        try await home.remember(database: context.database)
+        assetHomes[profile] = home
+    }
+
+    func forgetAssetHome(profile: String) async throws {
+        guard let context = contexts[profile], assetHomes[profile]?.isRefreshing != true else {
+            throw GoogleDriveError.conflict
+        }
+        try await context.database.setDriveSetting("assetHome", value: "")
+        assetHomes[profile] = nil
+        try await context.database.setDriveSetting("assetSyncJournal", value: "")
+    }
+
+    func refreshAssets(profile: String, log: @escaping (String) -> Void) {
+        guard let context = contexts[profile], let home = assetHomes[profile],
+            !assetHomes.values.contains(where: { $0.isRefreshing })
+        else { return }
+        home.refresh(client: context.client, database: context.database, transfers: self, profile: profile, log: log)
+    }
+
+    func beginAssetGroup(_ id: UUID, stop: @escaping () -> Void) { assetGroupStops[id] = stop }
+    func endAssetGroup(_ id: UUID) { assetGroupStops[id] = nil }
+
+    func assetTransfer(
+        profile: String, group: UUID, path: String, upload: Bool, size: Int64,
+        work: @escaping @MainActor (@escaping @Sendable (Double) async -> Void) async throws -> DriveFile
+    ) async throws -> DriveFile {
+        try Task.checkCancellation()
+        guard contexts[profile] != nil else { throw GoogleDriveError.notFound }
+        let job = DriveTransfer(
+            profile: profile, projectName: "Asset library",
+            operation: upload ? .upload : .download, totalBytes: size,
+            assetOperation: upload ? .assetUpload : .assetDownload, assetPath: path, groupID: group)
+        jobs.append(job)
+        assetWork[job.id] = work
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                assetWaiters[job.id] = continuation
+                start(job.id)
+            }
+        } onCancel: {
+            Task { @MainActor in self.stop(job.id) }
+        }
+    }
+
+    func assetReport(profile: String, group: UUID, path: String, message: String) {
+        if let job = jobs.last(where: { $0.groupID == group && $0.assetPath == path && $0.status != .complete }) {
+            update(job.id) { $0.message = message }
+        } else {
+            jobs.append(
+                DriveTransfer(
+                    profile: profile, projectName: "Asset library", operation: .download,
+                    status: .stopped, message: message, assetOperation: .assetDownload, assetPath: path, groupID: group)
+            )
+        }
+        Task { await persist(profile: profile) }
+    }
 
     func offload(_ media: [DriveMedia], profile: String) async throws {
         guard let context = contexts[profile] else { throw GoogleDriveError.notFound }

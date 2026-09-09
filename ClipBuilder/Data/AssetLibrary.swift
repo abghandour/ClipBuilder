@@ -369,6 +369,31 @@ nonisolated enum AssetStore {
         invalidateCatalog()
     }
 
+    /// Sync preserves exact names and can target isolated roots without disturbing the shared catalog.
+    static func createFolder(at url: URL, syncKind: AssetKind?, invalidate: Bool) throws {
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        if invalidate { invalidateCatalog(syncKind) }
+    }
+
+    /// The staging file is on the destination volume. Replace atomically, never remove the old file first.
+    static func installSyncedFile(
+        _ staging: URL, at destination: URL, modifiedDate: Date,
+        replacing: Bool, syncKind: AssetKind?, invalidate: Bool
+    ) throws {
+        try Task.checkCancellation()
+        try FileManager.default.setAttributes([.modificationDate: modifiedDate], ofItemAtPath: staging.path)
+        if replacing {
+            _ = try FileManager.default.replaceItemAt(
+                destination, withItemAt: staging,
+                options: .usingNewMetadataOnly)
+        } else {
+            guard !FileManager.default.fileExists(atPath: destination.path) else { throw GoogleDriveError.conflict }
+            try FileManager.default.moveItem(at: staging, to: destination)
+        }
+        if invalidate { invalidateCatalog(syncKind) }
+        try FileManager.default.setAttributes([.modificationDate: modifiedDate], ofItemAtPath: destination.path)
+    }
+
     /// Copy external files into `folder`, skipping non-matching types.
     /// Returns how many files were actually imported.
     @discardableResult

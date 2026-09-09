@@ -103,12 +103,17 @@ struct DriveMediaBadge: View {
 
 struct DriveActivityRows: View {
     @Environment(AppStore.self) private var store
+    var assetProfile: String? = nil
     var body: some View {
         let uploads = store.googleDrive.jobs.filter {
             $0.operation == .upload && ($0.status == .running || $0.status == .waiting)
         }
         if uploads.count > 1 { Text("Uploading \(uploads.count) files").font(.caption) }
-        ForEach(store.googleDrive.jobs.filter { $0.status != .complete }) { job in
+        ForEach(
+            store.googleDrive.jobs.filter { job in
+                job.status != .complete && (assetProfile == nil || (job.isAsset && job.profile == assetProfile))
+            }
+        ) { job in
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(job.projectName) · \(job.title)").lineLimit(1).help(job.title)
                 if store.googleDrive.states[job.profile]?.isConnected != true {
@@ -124,7 +129,9 @@ struct DriveActivityRows: View {
                         if job.status == .running || job.status == .reconnect || job.status == .waiting {
                             Button("Stop") { store.googleDrive.stop(job.id) }
                         } else {
-                            Button("Resume") { store.googleDrive.resume(job.id) }
+                            if !job.isAsset {
+                                Button("Resume") { store.googleDrive.resume(job.id) }
+                            }
                             if job.message == GoogleDriveError.offline.localizedDescription {
                                 Button("Stop") { store.googleDrive.stop(job.id) }
                             }
@@ -150,6 +157,8 @@ struct DriveActivityRows: View {
         Button("Cancel") { store.googleDrive.cancel(job.id) }
             .help(job.operation == .upload
                   ? "Cancel this upload and forget its progress"
-                  : "Cancel this download and delete the partial file")
+                    : job.isAsset
+                        ? "Dismiss this report or stop this asset Refresh"
+                        : "Cancel this download and delete the partial file")
     }
 }

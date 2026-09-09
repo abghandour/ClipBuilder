@@ -32,12 +32,21 @@ struct GoogleDriveSettingsView: View {
                 }
                 if let error = drive.connectionError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             }
+            if AssetSyncSettingsSection.isVisible(connection: drive.states[profile]) {
+                AssetSyncSettingsSection()
+            }
             Section { GoogleDriveAdvancedSettings() }
             Section {
                 Text(
                     "Google may ask you to sign in again after seven days. Use the same account to continue your transfers. Your connection is saved securely on this Mac."
                 )
-                Text("Only media files are uploaded. Projects, timelines, analysis and settings stay on this Mac.")
+                if drive.assetHomes[profile] != nil {
+                    Text(
+                        "Media and library assets can be uploaded. Projects, timelines, analysis and settings stay on this Mac."
+                    )
+                } else {
+                    Text("Only media files are uploaded. Projects, timelines, analysis and settings stay on this Mac.")
+                }
             }.font(.caption).foregroundStyle(.secondary)
         }
         .formStyle(.grouped)

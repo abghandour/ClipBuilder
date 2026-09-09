@@ -5,6 +5,7 @@ struct GoogleDriveBrowserSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     var uploadMedia: [DriveMedia] = []
+    var pickFolder: ((DriveFile, String) async throws -> Void)? = nil
     @State private var profile = ""
     @State private var projectID: Int64?
     @State private var projectName = ""
@@ -25,6 +26,7 @@ struct GoogleDriveBrowserSheet: View {
     @State private var newFolder = ""
     @State private var uploadFolderLoaded = false
     private var isUpload: Bool { !uploadMedia.isEmpty }
+    private var isFolderPicker: Bool { isUpload || pickFolder != nil }
     private var client: GoogleDriveClient? { store.googleDrive.client(profile: profile) }
 
     var body: some View {
@@ -75,7 +77,10 @@ struct GoogleDriveBrowserSheet: View {
     private var browserContents: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(isUpload ? "Upload to Google Drive" : "Add from Google Drive").font(.headline)
+                Text(
+                    pickFolder != nil
+                        ? "Choose asset library folder" : isUpload ? "Upload to Google Drive" : "Add from Google Drive"
+                ).font(.headline)
                 Spacer()
                 Text(projectName).foregroundStyle(.secondary)
             }
@@ -84,7 +89,7 @@ struct GoogleDriveBrowserSheet: View {
                     ForEach(["My Drive", "Shared with me", "Shared drives", "Recent"], id: \.self) { Text($0) }
                 }.labelsHidden().frame(width: 180)
                 TextField("Search Drive", text: $search).textFieldStyle(.roundedBorder)
-                if !isUpload { Toggle("Videos only", isOn: $videosOnly) }
+                if !isFolderPicker { Toggle("Videos only", isOn: $videosOnly) }
             }
             HStack {
                 Button(location) {
@@ -174,15 +179,18 @@ struct GoogleDriveBrowserSheet: View {
                 }
                 if nextPage != nil { Button("Load More") { Task { await load(append: true) } }.disabled(loading) }
                 Spacer()
-                if isUpload {
+                if isFolderPicker {
                     TextField("New folder name", text: $newFolder).frame(width: 180)
                     Button("Create Folder") { Task { await createFolder() } }.disabled(
                         newFolder.trimmingCharacters(in: .whitespaces).isEmpty || loading || currentFolder == nil)
                 }
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(isUpload ? "Upload Here" : "Download \(selectedFiles.count) Files") { Task { await accept() } }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(loading || (isUpload ? currentFolder == nil : selectedFiles.isEmpty))
+                Button(
+                    pickFolder != nil
+                        ? "Choose Folder" : isUpload ? "Upload Here" : "Download \(selectedFiles.count) Files"
+                ) { Task { await accept() } }
+                .keyboardShortcut(.defaultAction)
+                .disabled(loading || (isFolderPicker ? currentFolder == nil : selectedFiles.isEmpty))
             }
         }
     }
@@ -226,7 +234,7 @@ struct GoogleDriveBrowserSheet: View {
                 let page = try await client.list(
                     folder: currentFolder?.id, search: search, videosOnly: videosOnly,
                     sharedWithMe: location == "Shared with me" && breadcrumbs.isEmpty,
-                    driveID: driveID, pageToken: append ? nextPage : nil, foldersOnly: isUpload)
+                    driveID: driveID, pageToken: append ? nextPage : nil, foldersOnly: isFolderPicker)
                 guard requestID == token else { return }
                 files =
                     append
@@ -254,7 +262,10 @@ struct GoogleDriveBrowserSheet: View {
     }
     private func accept() async {
         do {
-            if isUpload, let folder = currentFolder {
+            if let pickFolder, let folder = currentFolder {
+                let breadcrumb = ([location] + breadcrumbs.map(\.name)).joined(separator: " › ")
+                try await pickFolder(folder, breadcrumb)
+            } else if isUpload, let folder = currentFolder {
                 try await store.googleDrive.rememberFolder(folder, profile: profile)
                 store.googleDrive.enqueueUpload(
                     uploadMedia, folder: folder.id, profile: profile, projectID: projectID, projectName: projectName)

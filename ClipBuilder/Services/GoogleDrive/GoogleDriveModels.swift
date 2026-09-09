@@ -3,7 +3,7 @@ import Foundation
 nonisolated enum GoogleDriveError: Error, LocalizedError, Equatable {
     case accountMismatch(expected: String)
     case notConfigured, reconnect, quota, notFound, offline, cancelled
-    case invalidResponse, conflict, inUse
+    case invalidResponse, conflict, inUse, cannotReplaceAsset
     case server(Int)
     case keychain(Int32)
 
@@ -24,6 +24,7 @@ nonisolated enum GoogleDriveError: Error, LocalizedError, Equatable {
         case .offline: "You appear to be offline. We'll retry when you're back."
         case .cancelled: "Google sign-in was cancelled."
         case .invalidResponse: "Google Drive couldn't finish that request. Please try again."
+        case .cannotReplaceAsset: "cannot replace (not created by Clip Builder)"
         case .inUse: "This video is being used. Close its previews and wait for its other work to finish."
         case .conflict: "This file has changed. Please try again to get the latest copy."
         case .server: "Google Drive is having trouble. Please try again later."
@@ -44,6 +45,7 @@ nonisolated struct DriveFile: Codable, Identifiable, Hashable, Sendable {
     var ownedByMe: Bool?
     var md5Checksum: String?
     var version: String?
+    var trashed: Bool?
     var isFolder: Bool { mimeType == "application/vnd.google-apps.folder" }
     var byteCount: Int64 { Int64(size ?? "") ?? 0 }
     var link: String { webViewLink ?? "https://drive.google.com/file/d/\(id)/view" }

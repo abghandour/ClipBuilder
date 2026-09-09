@@ -60,6 +60,9 @@ struct AssetBrowserView: View {
         .screenTitle(kind.title, subtitle: subtitle)
         .toolbar {
             ToolbarItemGroup {
+                if let home = store.googleDrive.assetHomes[store.activeProfile.profileName] {
+                    AssetSyncRefreshButton(home: home)
+                }
                 Button("Add Files", systemImage: "plus") {
                     showingImporter = true
                 }
