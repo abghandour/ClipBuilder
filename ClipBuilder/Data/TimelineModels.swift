@@ -204,12 +204,27 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     /// that stretch is not rendered.
     func isOrphaned(_ clip: TimelineClip) -> Bool {
         if clip.bumper { return false }
+        // A cover-all cutaway needs no area: it fills the canvas.
+        if clip.isCutaway, clip.coverAllAreas { return false }
         guard !cropBlocks.isEmpty, clip.track > 0 else { return false }
         return cropBlocks.contains { block in
             block.startTime < clip.startTime + clip.duration - 0.001
                 && clip.startTime < block.endTime - 0.001
                 && clip.track >= block.layout.areaCount
         }
+    }
+
+    /// The ordinary footage on a track, in timeline order (no cutaways,
+    /// no bumpers — bumpers live on the cropping row).
+    func mainClips(inTrack track: Int) -> [TimelineClip] {
+        videoTrack.filter { !$0.bumper && $0.role == .main && $0.track == track }
+            .sorted { $0.startTime < $1.startTime }
+    }
+
+    /// The cutaways riding above a track, in timeline order.
+    func cutaways(inTrack track: Int) -> [TimelineClip] {
+        videoTrack.filter { $0.isCutaway && $0.track == track }
+            .sorted { $0.startTime < $1.startTime }
     }
 
     /// Re-tile the cropping row: blocks sorted, overlaps resolved in favor
@@ -368,6 +383,44 @@ nonisolated enum BumperMode: String, Codable, Sendable, CaseIterable, Identifiab
         switch self {
         case .overlap: "covers everything"
         case .pause: "pauses everything"
+        }
+    }
+}
+
+/// What a clip is for: ordinary footage on a track, or a cutaway (B-roll)
+/// that replaces the picture of one area while the clip underneath keeps
+/// playing and keeps its sound.
+nonisolated enum ClipRole: String, Codable, Sendable, CaseIterable, Identifiable {
+    /// Ordinary footage: it packs, it is pushed, it owns its track's area.
+    case main
+    /// B-roll bound to time: never packed, never an obstacle, muted by
+    /// default, drawn over the main clips of its track.
+    case cutaway
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .main: "Main clip"
+        case .cutaway: "B-roll"
+        }
+    }
+}
+
+/// What a cutaway does with its own sound. Ducking the underlying audio is
+/// a later phase.
+nonisolated enum CutawayAudio: String, Codable, Sendable, CaseIterable, Identifiable {
+    /// Silent: only the clip underneath is heard.
+    case muted
+    /// Mixed in on top of the underlying clip's sound.
+    case mixed
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .muted: "Muted"
+        case .mixed: "Mixed in"
         }
     }
 }
@@ -548,6 +601,21 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     var bumperName: String?
     /// How the bumper treats the rest of the timeline (bumpers only).
     var bumperMode: BumperMode = .overlap
+    /// Main footage or a cutaway (B-roll). Absent in older documents.
+    var role: ClipRole = .main
+    /// Cutaways only: cover the whole canvas instead of the track's area.
+    var coverAllAreas: Bool = false
+    /// Cutaways only: whether the cutaway's own sound joins the mix.
+    var cutawayAudio: CutawayAudio = .muted
+    /// Cutaways only: dissolve in/out in seconds (0 = a hard cut).
+    var fadeIn: Double = 0
+    var fadeOut: Double = 0
+    /// Stable identity of the clip this one came from, saved with the
+    /// document (`uid` is regenerated on every load). Pieces produced by a
+    /// gap or crop split share it, so the renderer's draw order and the
+    /// preview's ranking never change when a clip is split. A duplicate
+    /// gets a new one.
+    var originKey: String = UUID().uuidString
     var sceneID: Int64?
     var videoFile: String?
     var sourceStart: Double?      // trim start within the source file
@@ -600,6 +668,46 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         areaWindow = nil
         cropXFrac = nil
         position = nil
+        // A bumper is never a cutaway: it owns the canvas outright.
+        role = .main
+        coverAllAreas = false
+        cutawayAudio = .muted
+    }
+
+    var isCutaway: Bool { !bumper && role == .cutaway }
+
+    /// Keep the cutaway invariants: a bumper wins over the role, a cutaway
+    /// stays inside its area with no captions and no Center Stage, and its
+    /// mute flag follows `cutawayAudio`. Cover-all cutaways drop every
+    /// framing choice — the renderer scales them to fill the canvas.
+    mutating func enforceCutawayRules() {
+        enforceBumperRules()
+        guard isCutaway else {
+            coverAllAreas = false
+            fadeIn = 0
+            fadeOut = 0
+            return
+        }
+        // Only clamp once the duration is known: a full-scene clip decodes
+        // with duration 0 and gets it from hydration, and clamping here
+        // would zero the dissolves before that happens.
+        if duration > 0.001 {
+            fadeIn = max(0, min(fadeIn, duration / 2))
+            fadeOut = max(0, min(fadeOut, duration / 2))
+        } else {
+            fadeIn = max(0, fadeIn)
+            fadeOut = max(0, fadeOut)
+        }
+        centerStage = false
+        captions = "none"
+        freeCrops = nil
+        muted = cutawayAudio == .muted
+        if coverAllAreas {
+            screenCrop = nil
+            areaWindow = nil
+            wide = false
+            position = nil
+        }
     }
 
     var effectiveSpeed: Double { speed ?? 1 }
@@ -623,6 +731,12 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case startTime = "start_time"
         case bumper, bumperName
         case bumperMode = "bumper_mode"
+        case role
+        case coverAllAreas = "cover_all"
+        case originKey = "origin"
+        case fadeIn = "fade_in"
+        case fadeOut = "fade_out"
+        case cutawayAudio = "cutaway_audio"
         case track, wide, muted, position, volume, captions, duration
         case stackOrder = "stack_order"
         case transIn = "trans_in"
@@ -642,6 +756,15 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         bumper = try container.decodeIfPresent(Bool.self, forKey: .bumper) ?? false
         bumperName = try container.decodeIfPresent(String.self, forKey: .bumperName)
         bumperMode = try container.decodeIfPresent(BumperMode.self, forKey: .bumperMode) ?? .overlap
+        // Absent keys mean an ordinary main clip: documents written before
+        // B-roll existed decode unchanged.
+        role = try container.decodeIfPresent(ClipRole.self, forKey: .role) ?? .main
+        coverAllAreas = try container.decodeIfPresent(Bool.self, forKey: .coverAllAreas) ?? false
+        cutawayAudio = try container.decodeIfPresent(CutawayAudio.self, forKey: .cutawayAudio) ?? .muted
+        fadeIn = max(0, try container.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0)
+        fadeOut = max(0, try container.decodeIfPresent(Double.self, forKey: .fadeOut) ?? 0)
+        let storedOrigin = try container.decodeIfPresent(String.self, forKey: .originKey) ?? ""
+        originKey = storedOrigin.isEmpty ? UUID().uuidString : storedOrigin
         sceneID = try container.decodeIfPresent(Int64.self, forKey: .sceneID)
         videoFile = try container.decodeIfPresent(String.self, forKey: .videoFile)
         sourceStart = try container.decodeIfPresent(Double.self, forKey: .sourceStart)
@@ -673,7 +796,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             // screen for 2 s of source).
             duration = max(0, end - start) / max(0.01, speed ?? 1)
         }
-        enforceBumperRules()
+        enforceCutawayRules()
     }
 
     /// Old saves use booleans for captions (true→bottom, false→none) —
@@ -694,6 +817,14 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         try container.encode(bumper, forKey: .bumper)
         try container.encodeIfPresent(bumperName, forKey: .bumperName)
         if bumper { try container.encode(bumperMode, forKey: .bumperMode) }
+        if role != .main { try container.encode(role, forKey: .role) }
+        try container.encode(originKey, forKey: .originKey)
+        if isCutaway {
+            try container.encode(coverAllAreas, forKey: .coverAllAreas)
+            try container.encode(cutawayAudio, forKey: .cutawayAudio)
+            if fadeIn > 0 { try container.encode(fadeIn, forKey: .fadeIn) }
+            if fadeOut > 0 { try container.encode(fadeOut, forKey: .fadeOut) }
+        }
         try container.encode("clip", forKey: .type)
         try container.encode(startTime, forKey: .startTime)
         try container.encode(track, forKey: .track)
@@ -734,6 +865,9 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
 
     static func == (lhs: TimelineClip, rhs: TimelineClip) -> Bool {
         lhs.uid == rhs.uid && lhs.bumper == rhs.bumper && lhs.bumperName == rhs.bumperName && lhs.bumperMode == rhs.bumperMode && lhs.sceneID == rhs.sceneID && lhs.videoFile == rhs.videoFile
+            && lhs.role == rhs.role && lhs.coverAllAreas == rhs.coverAllAreas
+            && lhs.cutawayAudio == rhs.cutawayAudio && lhs.originKey == rhs.originKey
+            && lhs.fadeIn == rhs.fadeIn && lhs.fadeOut == rhs.fadeOut
             && lhs.sourceStart == rhs.sourceStart && lhs.startTime == rhs.startTime
             && lhs.duration == rhs.duration && lhs.track == rhs.track && lhs.wide == rhs.wide
             && lhs.stackOrder == rhs.stackOrder && lhs.volume == rhs.volume && lhs.muted == rhs.muted

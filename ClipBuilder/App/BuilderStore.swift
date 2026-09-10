@@ -1,6 +1,79 @@
 import Foundation
 import Observation
 
+/// What the clip browser puts on the pasteboard when a scene is dragged
+/// onto a lane. Option-drag asks for B-roll instead of a main clip.
+nonisolated enum TimelineDropPayload {
+    static func scene(_ id: Int64, cutaway: Bool = false) -> String {
+        cutaway ? "scene:\(id):cutaway" : "scene:\(id)"
+    }
+
+    static func parse(_ payload: String) -> (sceneID: Int64, cutaway: Bool)? {
+        let parts = payload.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count >= 2, parts[0] == "scene", let id = Int64(parts[1]) else { return nil }
+        return (id, parts.count > 2 && parts[2] == "cutaway")
+    }
+}
+
+/// What happened when B-roll was added — the picker and the browser both
+/// say so out loud rather than doing nothing visible.
+nonisolated enum CutawayInsertion: Sendable, Equatable {
+    /// Added. `clampedTo` is set when the footage was shorter than asked.
+    case added(uid: UUID, clampedTo: Double?)
+    /// The track has no crop area at that time and cover-all was off.
+    case noArea(track: Int)
+    /// The window starts at or past the end of the footage.
+    case noSource
+
+    var uid: UUID? {
+        if case .added(let uid, _) = self { return uid }
+        return nil
+    }
+
+    /// A sentence for the picker's status line, or nil when all is well.
+    func message(at time: Double) -> String? {
+        switch self {
+        case .added(_, let clampedTo?):
+            String(format: "The footage was shorter than asked: added %.1f s.", clampedTo)
+        case .added:
+            nil
+        case .noArea(let track):
+            "Track \(track + 1) has no area at \(time.timecode). Pick another track, or turn on Cover all areas."
+        case .noSource:
+            "That footage has no usable range left at this window."
+        }
+    }
+}
+
+/// Where a cutaway's footage comes from: an analyzed scene, or a video file
+/// from the Library the picker windows by hand.
+nonisolated enum CutawaySource: Sendable {
+    case scene(SceneRecord)
+    case file(url: URL, duration: Double)
+
+    var url: URL {
+        switch self {
+        case .scene(let scene): scene.videoURL
+        case .file(let url, _): url
+        }
+    }
+
+    /// Where inside the file the source window may run.
+    var window: (start: Double, end: Double) {
+        switch self {
+        case .scene(let scene): (scene.startTime, scene.endTime)
+        case .file(_, let duration): (0, duration)
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .scene(let scene): scene.videoFilename
+        case .file(let url, _): url.deletingPathExtension().lastPathComponent
+        }
+    }
+}
+
 nonisolated enum TimelineSelection: Codable, Sendable, Equatable {
     case clip(UUID)
     case sound(UUID)
@@ -70,6 +143,15 @@ final class BuilderTimelineModel {
     private(set) var timelineID: Int64?
     private(set) var scenes: [SceneRecord] = []
     private var scenesByID: [Int64: SceneRecord] = [:]
+    /// Source paths the Library knows are Drive-backed. Such a file may not
+    /// be on disk yet and is fetched on demand, so the fast preview must not
+    /// mistake it for footage that has been deleted.
+    private(set) var driveBackedPaths: Set<String> = []
+
+    func updateDriveBackedPaths(_ paths: Set<String>) {
+        guard driveBackedPaths != paths else { return }
+        driveBackedPaths = paths
+    }
     private var saveTask: Task<Void, Never>?
     private var hasPendingAutosave = false
     @ObservationIgnored var onTimelineAutosave: ((Int64, TimelineDocument) -> Void)?
@@ -85,7 +167,31 @@ final class BuilderTimelineModel {
     private var lastUndoDate = Date.distantPast
     private static let undoCoalesceWindow: TimeInterval = 1.0
 
-    static let rowHeight: CGFloat = 56
+    /// One main-clip row. The B-roll strip band is `stripHeight` per row;
+    /// both live on the layout snapshot so every reader agrees.
+    /// A request to open the B-roll picker somewhere specific (the track
+    /// context menu). Nil means "at the playhead, on the focused track".
+    var brollRequest: BRollRequest?
+
+    nonisolated struct BRollRequest: Sendable, Equatable {
+        var time: Double
+        var track: Int
+    }
+
+    /// What the B-roll picker was last set to, so the next B opens where
+    /// the last one left off. Per document: cleared by `loadDocument`.
+    var lastBRollPick: BRollPick?
+
+    nonisolated struct BRollPick: Sendable, Equatable {
+        var sourceKey: String
+        var sourceStart: Double
+        var length: Double
+        var track: Int
+        var coverAll: Bool
+    }
+
+    static let rowHeight: CGFloat = TimelineLayoutSnapshot.rowHeight
+    static let stripHeight: CGFloat = TimelineLayoutSnapshot.stripHeight
     static let laneSpacing: CGFloat = 6
 
     // MARK: - Undo
@@ -152,6 +258,9 @@ final class BuilderTimelineModel {
         resetUndoHistory()
         self.profileName = profileName
         timelineID = nil
+        // Remembered B-roll picks belong to the document they were made in.
+        lastBRollPick = nil
+        brollRequest = nil
         // Scene ids are per-profile; the previous profile's rows must not
         // hydrate this profile's clips. The library refresh refills them.
         scenes = []
@@ -181,6 +290,8 @@ final class BuilderTimelineModel {
         resetUndoHistory()
         suppressAutosave = true
         timelineID = id
+        lastBRollPick = nil
+        brollRequest = nil
         document = newDocument
         document.migrateLegacyScreenCrops()
         document.normalizeCropBlocks()
@@ -200,6 +311,8 @@ final class BuilderTimelineModel {
         resetUndoHistory()
         suppressAutosave = true
         timelineID = nil
+        lastBRollPick = nil
+        brollRequest = nil
         document = TimelineDocument()
         document.renderSettings = defaultRenderSettings
         document.normalizeCropBlocks()
@@ -214,6 +327,9 @@ final class BuilderTimelineModel {
     func loadDocument(_ newDocument: TimelineDocument) {
         registerUndo("Replace Timeline")
         document = newDocument
+        // The B-roll picker's memory belongs to the document it was used on.
+        lastBRollPick = nil
+        brollRequest = nil
         document.migrateLegacyScreenCrops()
         selection = nil
         focusedTrack = nil
@@ -317,9 +433,9 @@ final class BuilderTimelineModel {
     }
 
     private func hydrateClips() {
-        // Bumper rules hold even in a project with no analyzed scenes yet.
+        // Bumper and B-roll rules hold even in a project with no analyzed
+        // scenes yet; only the scene-derived fields need the library.
         normalizeBumpers()
-        guard !scenesByID.isEmpty else { return }
         for index in document.videoTrack.indices {
             var clip = document.videoTrack[index]
             if clip.bumper {
@@ -327,12 +443,16 @@ final class BuilderTimelineModel {
                 document.videoTrack[index] = clip
                 continue
             }
+            clip.enforceCutawayRules()
+            document.videoTrack[index] = clip
             guard let sceneID = clip.sceneID, let scene = scenesByID[sceneID] else { continue }
             clip.sceneFullDuration = (scene.duration * 10).rounded() / 10
             if clip.videoFile == nil { clip.videoFile = scene.videoPath }
             if clip.sourceStart == nil { clip.sourceStart = scene.startTime }
             if clip.duration <= 0 { clip.duration = clip.sceneFullDuration ?? 0 }
             clip.wide = scene.wide
+            // The scene's shape must not undo a cover-all cutaway's framing.
+            clip.enforceCutawayRules()
             document.videoTrack[index] = clip
         }
         cachedTimelineLayout = nil
@@ -461,21 +581,31 @@ final class BuilderTimelineModel {
         document.hasArea(track: track, at: time)
     }
 
-    /// Map a vertical drag offset from one video lane to a target track index.
-    func trackIndex(fromTrack track: Int, verticalDelta: CGFloat) -> Int {
+    /// Map a vertical drag offset from one video lane to a target track
+    /// index. `blockOffset` is where the dragged block sits inside its own
+    /// lane (B-roll rides in the strip band above the main rows), so the
+    /// drag is measured from the block, not from the lane's middle.
+    func trackIndex(fromTrack track: Int, verticalDelta: CGFloat, blockOffset: CGFloat = 0) -> Int {
         guard document.trackCount > 1 else { return 0 }
         let layout = timelineLayout()
-        var centers: [CGFloat] = []
+        var tops: [CGFloat] = []
+        var heights: [CGFloat] = []
         var y: CGFloat = 0
         for index in 0..<document.trackCount {
-            let height = CGFloat(layout.videoTracks[index].rowCount) * Self.rowHeight
-            centers.append(y + height / 2)
+            let height = layout.videoTracks[index].laneHeight
+            tops.append(y)
+            heights.append(height)
             y += height + Self.laneSpacing
         }
-        let sourceIndex = min(max(0, track), centers.count - 1)
-        let target = centers[sourceIndex] + verticalDelta
-        let nearest = centers.enumerated().min { abs($0.element - target) < abs($1.element - target) }
-        return nearest?.offset ?? track
+        let sourceIndex = min(max(0, track), tops.count - 1)
+        let target = tops[sourceIndex] + blockOffset + verticalDelta
+        if let hit = (0..<tops.count).first(where: { target >= tops[$0] && target < tops[$0] + heights[$0] }) {
+            return hit
+        }
+        let nearest = (0..<tops.count).min {
+            abs(tops[$0] + heights[$0] / 2 - target) < abs(tops[$1] + heights[$1] / 2 - target)
+        }
+        return nearest ?? sourceIndex
     }
 
     // MARK: - Clip lookup
@@ -705,6 +835,144 @@ final class BuilderTimelineModel {
         documentDidChange()
     }
 
+    // MARK: - B-roll (cutaways)
+
+    /// How long a new cutaway should be at `time` on `track`: up to the next
+    /// main-clip cut ahead, clamped to 1–5 s, or 3 s when nothing is ahead.
+    func defaultCutawayDuration(at time: Double, track: Int) -> Double {
+        let cuts = document.mainClips(inTrack: track)
+            .flatMap { [$0.startTime, $0.startTime + $0.duration] }
+            .filter { $0 > time + 0.05 }
+            .sorted()
+        guard let next = cuts.first else { return 3 }
+        return min(5, max(1, Self.snap(next - time)))
+    }
+
+    /// The main-clip cuts on `track` inside a span — the picker draws these
+    /// as marks so a cutaway that straddles a cut is visible.
+    func mainCuts(inTrack track: Int, from start: Double, to end: Double) -> [Double] {
+        var seen: [Double] = []
+        for cut in document.mainClips(inTrack: track)
+            .flatMap({ [$0.startTime, $0.startTime + $0.duration] })
+            .filter({ $0 > start + 0.05 && $0 < end - 0.05 })
+            .sorted() where seen.last.map({ abs($0 - cut) > 0.01 }) ?? true {
+            // One clip's end and the next one's start are the same cut.
+            seen.append(cut)
+        }
+        return seen
+    }
+
+    /// Whether any main clip is playing under a span on `track` — B-roll
+    /// over nothing renders over black, which is worth flagging.
+    func hasMainClip(inTrack track: Int, from start: Double, to end: Double) -> Bool {
+        document.mainClips(inTrack: track).contains {
+            $0.startTime < end - 0.001 && start < $0.startTime + $0.duration - 0.001
+        }
+    }
+
+    /// Source seconds a cutaway source can give, from the Library rather
+    /// than the caller: a scene ends where the scene ends, a Library video
+    /// where the file does.
+    private func sourceLength(of source: CutawaySource) -> Double {
+        switch source {
+        case .scene(let scene):
+            return max(scene.endTime, scene.videoDuration)
+        case .file(_, let duration):
+            return duration
+        }
+    }
+
+    /// Add B-roll bound to time: it never packs, never moves its neighbours,
+    /// and is muted so the clip underneath keeps talking.
+    @discardableResult
+    func addCutaway(source: CutawaySource, at time: Double? = nil, track: Int = 0,
+                    duration: Double? = nil, sourceStart: Double? = nil,
+                    coverAll: Bool = false) -> CutawayInsertion {
+        let targetTrack = min(max(0, track), document.trackCount - 1)
+        let start = max(0, Self.snap(time ?? playhead))
+        guard coverAll || canPlace(track: targetTrack, at: start) else {
+            return .noArea(track: targetTrack)
+        }
+        var clip = TimelineClip()
+        switch source {
+        case .scene(let scene):
+            clip.sceneID = scene.id
+            clip.videoFile = scene.videoPath
+            clip.sourceStart = sourceStart ?? scene.startTime
+            clip.sceneFullDuration = (scene.duration * 10).rounded() / 10
+            clip.wide = scene.wide
+        case .file(let url, _):
+            clip.videoFile = url.path
+            clip.sourceStart = sourceStart ?? 0
+        }
+        clip.track = targetTrack
+        clip.startTime = start
+        // Never ask for more source than the file holds: clamp the window
+        // first, then round, so the rounding cannot push it past the end.
+        let sourceLimit = sourceLength(of: source)
+        let windowStart = max(0, clip.sourceStart ?? 0)
+        clip.sourceStart = windowStart
+        // A picked window is exact: only the fallback length is snapped to
+        // the timeline's half-second grid.
+        let wanted = duration ?? Self.snap(defaultCutawayDuration(at: start, track: targetTrack))
+        let available = max(0, sourceLimit - windowStart)
+        // A window at (or past) the end of the file has nothing to show:
+        // refuse it rather than insert a sliver the user did not ask for.
+        guard available > 0.2 else { return .noSource }
+        clip.duration = max(0.1, min(wanted, available))
+        // Say so when the ask could not be honoured in full.
+        let clampedTo = wanted - clip.duration > 0.05 ? clip.duration : nil
+        clip.sourceEnd = windowStart + clip.sourceSpan
+        clip.role = .cutaway
+        clip.coverAllAreas = coverAll
+        if !coverAll {
+            clip.screenCrop = document.cropBlock(at: start)?.layout.reference(forTrack: targetTrack)
+        }
+        clip.enforceCutawayRules()
+        registerUndo("Add B-roll")
+        document.videoTrack.append(clip)
+        selection = .clip(clip.uid)
+        documentDidChange()
+        return .added(uid: clip.uid, clampedTo: clampedTo)
+    }
+
+    /// Turn a clip into B-roll or back. Lossy by design: captions, Center
+    /// Stage and free crops are dropped on the way in and never restored,
+    /// and the track repacks in both directions.
+    func setClipRole(_ uid: UUID, role: ClipRole) {
+        guard let index = clipIndex(uid), !document.videoTrack[index].bumper,
+              document.videoTrack[index].role != role else { return }
+        registerUndo(role == .cutaway ? "Make B-roll" : "Make main clip")
+        document.videoTrack[index].role = role
+        if role == .main { document.videoTrack[index].coverAllAreas = false }
+        document.videoTrack[index].enforceCutawayRules()
+        resolveLayout(track: document.videoTrack[index].track)
+        documentDidChange()
+    }
+
+    func setCutawayAudio(_ uid: UUID, _ audio: CutawayAudio) {
+        guard let index = clipIndex(uid), document.videoTrack[index].isCutaway,
+              document.videoTrack[index].cutawayAudio != audio else { return }
+        registerUndo("Change B-roll Sound")
+        document.videoTrack[index].cutawayAudio = audio
+        document.videoTrack[index].enforceCutawayRules()
+        documentDidChange()
+    }
+
+    func setCutawayCoverAll(_ uid: UUID, _ coverAll: Bool) {
+        guard let index = clipIndex(uid), document.videoTrack[index].isCutaway,
+              document.videoTrack[index].coverAllAreas != coverAll else { return }
+        registerUndo("Change B-roll Area")
+        document.videoTrack[index].coverAllAreas = coverAll
+        if !coverAll {
+            document.videoTrack[index].screenCrop = document
+                .cropBlock(at: document.videoTrack[index].startTime)?
+                .layout.reference(forTrack: document.videoTrack[index].track)
+        }
+        document.videoTrack[index].enforceCutawayRules()
+        documentDidChange()
+    }
+
     func placeClip(_ uid: UUID, startTime: Double, track: Int) {
         guard let index = clipIndex(uid) else { return }
         if document.videoTrack[index].bumper {
@@ -717,10 +985,17 @@ final class BuilderTimelineModel {
         let oldTrack = document.videoTrack[index].track
         let newTrack = min(max(0, track), document.trackCount - 1)
         // A track without an area there cannot take the clip: keep it put.
-        guard canPlace(track: newTrack, at: Self.snap(startTime)) else { return }
-        registerUndo("Move Clip")
+        // A cover-all cutaway needs no area, so it may go anywhere.
+        let coverAll = document.videoTrack[index].isCutaway && document.videoTrack[index].coverAllAreas
+        guard coverAll || canPlace(track: newTrack, at: Self.snap(startTime)) else { return }
+        registerUndo(document.videoTrack[index].isCutaway ? "Move B-roll" : "Move Clip")
         document.videoTrack[index].startTime = Self.snap(startTime)
         document.videoTrack[index].track = newTrack
+        if document.videoTrack[index].isCutaway, !coverAll {
+            // B-roll takes the new track's area with it.
+            document.videoTrack[index].screenCrop = document.cropBlock(at: Self.snap(startTime))?
+                .layout.reference(forTrack: newTrack)
+        }
         resolveLayout(track: newTrack)
         if oldTrack != newTrack { resolveLayout(track: oldTrack) }
         documentDidChange()
@@ -798,6 +1073,9 @@ final class BuilderTimelineModel {
         registerUndo("Duplicate Clip")
         var copy = original
         copy.uid = UUID()
+        // A duplicate is a new clip, not a piece of the original: it gets
+        // its own origin identity so the draw order can separate them.
+        copy.originKey = UUID().uuidString
         copy.startTime = Self.snap(original.startTime + original.duration)
         if copy.bumper {
             copy.startTime = nonOverlappingBumperStart(copy.startTime, duration: copy.duration, excluding: nil)
@@ -819,7 +1097,7 @@ final class BuilderTimelineModel {
         registerUndo("Edit Clip", coalescing: "clip-\(uid)")
         let before = document.videoTrack[index]
         mutate(&document.videoTrack[index])
-        document.videoTrack[index].enforceBumperRules()
+        document.videoTrack[index].enforceCutawayRules()
         if before.bumper {
             let after = document.videoTrack[index]
             if abs(after.duration - before.duration) > 0.001 {
@@ -851,6 +1129,8 @@ final class BuilderTimelineModel {
         var left = source
         var right = left
         right.uid = UUID()
+        // An independent feed, not a piece of the left one.
+        right.originKey = UUID().uuidString
         left.track = 0
         right.track = 1
         left.screenCrop = ScreenCropStore.reference(layout: "50-50 Horizontal", area: "Top")
@@ -861,6 +1141,12 @@ final class BuilderTimelineModel {
         left.centerStage = false
         right.centerStage = false
         right.muted = true
+        // The copies may be B-roll: the role's own rules decide the mute
+        // flag and the framing, so the secondary feed's silence has to be
+        // expressed as its audio choice, not as a bare mute flag.
+        right.cutawayAudio = .muted
+        left.enforceCutawayRules()
+        right.enforceCutawayRules()
         document.videoTrack[index] = left
         document.videoTrack.append(right)
         document.trackCount = max(document.trackCount, 2)
@@ -887,7 +1173,8 @@ final class BuilderTimelineModel {
             .filter { $0.bumper && $0.bumperMode == .pause }
             .sorted { $0.startTime < $1.startTime }
         var cursor = 0.0
-        var pending = sorted.filter { !$0.bumper }.map(\.uid)
+        // B-roll is bound to time: packing neither moves it nor steps over it.
+        var pending = sorted.filter { !$0.bumper && !$0.isCutaway }.map(\.uid)
         var position = 0
         while position < pending.count {
             guard let index = clipIndex(pending[position]) else { position += 1; continue }
@@ -911,6 +1198,10 @@ final class BuilderTimelineModel {
                 tail.sourceStart = (tail.sourceStart ?? 0) + head * speed
                 tail.duration = duration - head
                 tail.transIn = nil
+                // Same policy as a gap split: the head keeps the dissolve
+                // in, the tail keeps the dissolve out.
+                tail.fadeIn = 0
+                document.videoTrack[index].fadeOut = 0
                 document.videoTrack[index].startTime = cursor
                 document.videoTrack[index].duration = head
                 document.videoTrack[index].sourceEnd = (document.videoTrack[index].sourceStart ?? 0) + head * speed

@@ -7,6 +7,7 @@ struct BuilderAddMenu: View {
 
     @Binding var showScenePicker: Bool
     @Binding var showImagePicker: Bool
+    @Binding var showBRollPicker: Bool
 
     var body: some View {
         Menu {
@@ -14,6 +15,13 @@ struct BuilderAddMenu: View {
                 showScenePicker = true
             }
             .disabled(store.scenes.isEmpty)
+
+            Button("B-roll…", systemImage: "rectangle.on.rectangle.angled") {
+                showBRollPicker = true
+            }
+            .keyboardShortcut("b", modifiers: [])
+            .disabled(store.scenes.isEmpty && store.videos.isEmpty)
+            .help("Cover this track's area from the playhead while the clip underneath keeps playing and talking (B)")
 
             Menu("Bumper", systemImage: "film.stack") {
                 if store.bumpers.isEmpty {

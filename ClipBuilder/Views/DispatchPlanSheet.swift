@@ -1768,6 +1768,10 @@ struct VideoTrimSlider: View {
     /// Draw a vertical tick every N seconds over the filmstrip (fine-grain
     /// windows use 0.5s); nil = no ticks.
     var tickInterval: Double? = nil
+    /// Absolute source times to mark on the strip (the B-roll picker marks
+    /// the cuts of the footage the window will cover). When non-empty these
+    /// replace the periodic ticks.
+    var markers: [Double] = []
     /// Draw a ruler of tick marks under the filmstrip every N seconds, with
     /// a taller mark on every second one; nil = no ruler.
     var rulerInterval: Double? = nil
@@ -1802,7 +1806,20 @@ struct VideoTrimSlider: View {
                 let endX = x(for: end, width: width)
                 ZStack(alignment: .topLeading) {
                     filmstrip(width: width)
-                    if let tickInterval, tickInterval > 0, duration > 0 {
+                    if !markers.isEmpty, duration > 0 {
+                        Path { path in
+                            for marker in markers {
+                                let fraction = (marker - timeOffset) / duration
+                                guard fraction > 0.001, fraction < 0.999 else { continue }
+                                let markerX = width * CGFloat(fraction)
+                                path.move(to: CGPoint(x: markerX, y: 0))
+                                path.addLine(to: CGPoint(x: markerX, y: stripHeight))
+                            }
+                        }
+                        .stroke(.cyan.opacity(0.9), style: StrokeStyle(lineWidth: 2, dash: [3, 2]))
+                        .allowsHitTesting(false)
+                        .help("A cut in the footage underneath")
+                    } else if let tickInterval, tickInterval > 0, duration > 0 {
                         Path { path in
                             var t = tickInterval
                             while t < duration - 0.01 {

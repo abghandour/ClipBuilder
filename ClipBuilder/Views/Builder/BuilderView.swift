@@ -11,6 +11,7 @@ struct BuilderView: View {
     @State private var showLog = false
     @State private var showPreview = false
     @State private var showScenePicker = false
+    @State private var showBRollPicker = false
     @State private var showImagePicker = false
     @State private var confirmClear = false
     @State private var showMediaSuggestions = false
@@ -155,6 +156,12 @@ struct BuilderView: View {
         .sheet(isPresented: $showScenePicker) {
             BuilderScenePickerSheet()
         }
+        .sheet(isPresented: $showBRollPicker) {
+            BuilderBRollPickerSheet()
+        }
+        .onChange(of: model.brollRequest) { _, request in
+            if request != nil { showBRollPicker = true }
+        }
         .sheet(isPresented: $showImagePicker) {
             ImagePickerSheet { urls in
                 for url in urls { model.addImage(path: url.path) }
@@ -176,7 +183,8 @@ struct BuilderView: View {
                 .foregroundStyle(.secondary)
 
             BuilderAddMenu(showScenePicker: $showScenePicker,
-                           showImagePicker: $showImagePicker)
+                           showImagePicker: $showImagePicker,
+                           showBRollPicker: $showBRollPicker)
 
             Button("Suggestions", systemImage: "sparkles") {
                 showMediaSuggestions = true
@@ -322,7 +330,7 @@ private struct CropStyleMenu: View {
                 }
             }
         } label: {
-            Label("Crop: \(target?.layout.displayName ?? "—")", systemImage: "crop")
+            Label("Screen: \(target?.layout.displayName ?? "—")", systemImage: "crop")
         }
         .disabled(target == nil)
         .help("Change the Screen Crop layout of the selected crop block (or the one at the playhead). Layouts come from Resources > Screen Crop.")

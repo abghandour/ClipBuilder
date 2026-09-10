@@ -125,6 +125,10 @@ nonisolated struct BumperPlanner {
                 tail.startTime = time + duration
                 tail.duration -= consumed
                 tail.transIn = nil
+                // One dissolve, not two: the head keeps the way in, the
+                // tail keeps the way out.
+                tail.fadeIn = 0
+                clip.fadeOut = 0
                 clip.duration = consumed
                 clip.sourceEnd = (clip.sourceStart ?? 0) + clip.sourceSpan
                 clip.transOut = nil

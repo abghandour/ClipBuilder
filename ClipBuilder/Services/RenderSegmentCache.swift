@@ -5,7 +5,9 @@ import Foundation
 /// Actor isolation keeps restore/touch/eviction atomic within this process.
 actor RenderSegmentCache {
     static let shared = RenderSegmentCache()
-    nonisolated static let rendererVersion = "multitrack-segment-v2"
+    /// Bumped whenever the filter graph changes shape: v3 added B-roll
+    /// (draw order, cover-all framing, alpha dissolves, the audio mix).
+    nonisolated static let rendererVersion = "multitrack-segment-v3"
     private let root: URL?
     private let byteLimit: Int64
 

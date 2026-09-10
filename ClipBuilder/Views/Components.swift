@@ -298,9 +298,18 @@ struct PlayerSheet: View {
     /// Stop playback here (e.g. a scene's end) instead of running on to the
     /// end of the source file. Playing again restarts at `startTime`.
     var endTime: Double?
+    /// When set, I and O mark in and out while watching and B adds that
+    /// source range as B-roll — no sheet, no trimming detour. Returns a
+    /// message when the range could not be added as asked.
+    var onMarkAsBRoll: ((_ start: Double, _ end: Double) -> String?)?
 
     @State private var player: AVPlayer?
     @State private var endObserver: NSObjectProtocol?
+    @State private var markIn: Double?
+    @State private var markOut: Double?
+    @State private var markProblem: String?
+
+    private var currentTime: Double { player?.currentTime().seconds ?? startTime }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -316,6 +325,45 @@ struct PlayerSheet: View {
 
             PlayerView(player: player)
                 .frame(minWidth: 420, minHeight: 560)
+
+            if onMarkAsBRoll != nil {
+                HStack(spacing: Theme.spaceM) {
+                    Text(markProblem ?? "I marks in · O marks out · B adds it as B-roll at the playhead")
+                        .font(.caption)
+                        .foregroundStyle(markProblem == nil ? AnyShapeStyle(.secondary)
+                                         : AnyShapeStyle(Color.orange))
+                    Spacer()
+                    if let markIn {
+                        Text("In \(markIn.timecode)")
+                            .font(.caption.monospacedDigit())
+                    }
+                    if let markOut {
+                        Text("Out \(markOut.timecode)")
+                            .font(.caption.monospacedDigit())
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.bottom, Theme.spaceS)
+            }
+        }
+        .onKeyPress(characters: CharacterSet(charactersIn: "iIoObB"), phases: .down) { press in
+            guard let onMarkAsBRoll else { return .ignored }
+            switch press.characters.lowercased() {
+            case "i":
+                markIn = currentTime
+            case "o":
+                markOut = currentTime
+            default:
+                let start = markIn ?? startTime
+                let end = markOut ?? max(start + 1, currentTime)
+                guard end > start + 0.1 else { return .handled }
+                if let problem = onMarkAsBRoll(start, end) {
+                    markProblem = problem
+                } else {
+                    dismiss()
+                }
+            }
+            return .handled
         }
         .modalCloseButton { dismiss() }
         .task(id: url) {

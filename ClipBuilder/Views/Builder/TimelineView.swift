@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// The multi-track timeline: time ruler, the cropping row, one video lane
 /// per crop area, a sound lane, and an overlay lane, all inside one
@@ -94,8 +95,7 @@ struct TimelineView: View {
                 .frame(height: Self.cropLaneHeight)
             ForEach(0..<model.document.trackCount, id: \.self) { track in
                 TrackHeader(track: track)
-                    .frame(height: CGFloat(layout.videoTracks[track].rowCount)
-                           * BuilderTimelineModel.rowHeight)
+                    .frame(height: layout.videoTracks[track].laneHeight)
             }
             laneHeader(title: "Sound", systemImage: "music.note")
                 .frame(height: Self.soundLaneHeight)
@@ -144,6 +144,13 @@ struct TrackHeader: View {
                     .font(.caption.bold())
                     .help("Click the header to highlight this track's crop area")
                 TrackAreaLabel(track: track, highlighted: highlighted)
+                let cutaways = model.document.cutaways(inTrack: track).count
+                if cutaways > 0 {
+                    Text("\(cutaways) B-roll")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.orange)
+                        .help("B-roll on this track covers its area for a while; it never moves the clips around it")
+                }
                 Spacer()
                 Button("Track Settings", systemImage: "gearshape") {
                     showSettings = true
@@ -355,6 +362,32 @@ struct PlayheadTimecode: View {
     }
 }
 
+/// Hands back the window a view is in. SwiftUI's context menu carries no
+/// event, so the lane converts `NSEvent.mouseLocation` through its OWN
+/// window rather than whichever window happens to be key.
+private struct WindowReader: NSViewRepresentable {
+    let onResolve: (NSWindow?) -> Void
+
+    final class Reader: NSView {
+        var onResolve: ((NSWindow?) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onResolve?(window)
+        }
+    }
+
+    func makeNSView(context: Context) -> Reader {
+        let view = Reader()
+        view.onResolve = onResolve
+        return view
+    }
+
+    func updateNSView(_ nsView: Reader, context: Context) {
+        nsView.onResolve = onResolve
+    }
+}
+
 // MARK: - Video lane
 
 /// One video track: a lane of absolutely positioned clip blocks that accepts
@@ -370,6 +403,11 @@ struct VideoTrackLane: View {
 
     @State private var isDropTarget = false
     @State private var interactingClips: Set<UUID> = []
+    @State private var hoverX: CGFloat = 0
+    /// The lane's frame in window coordinates, and the window it is in, so
+    /// a context click's real position can be turned back into a time.
+    @State private var laneFrame: CGRect = .zero
+    @State private var laneWindow: NSWindow?
 
     private func visibleClips(model: BuilderTimelineModel) -> [TimelineClip] {
         // Keep the full destination lane alive during scene drops, including
@@ -385,6 +423,19 @@ struct VideoTrackLane: View {
         }
     }
 
+    /// Where the pointer is right now, as a timeline time in this lane.
+    /// AppKit reports the mouse in screen coordinates; converting through
+    /// the window gives the same x SwiftUI's global space uses, and only x
+    /// maps to time.
+    private func contextClickTime(pointsPerSecond: Double) -> Double {
+        var x = hoverX
+        if let window = laneWindow, laneFrame != .zero {
+            let inWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+            x = inWindow.x - laneFrame.minX
+        }
+        return max(0, BuilderTimelineModel.snap(Double(x / pointsPerSecond)))
+    }
+
     var body: some View {
         let model = store.builder
         ZStack(alignment: .topLeading) {
@@ -393,6 +444,19 @@ struct VideoTrackLane: View {
             ForEach(visibleClips(model: model)) { clip in
                 TimelineClipBlock(clip: clip,
                                   row: layout.rows[clip.uid] ?? 0,
+                                  bandOffset: layout.mainRowsOffset,
+                                  onPlay: onPlayClip,
+                                  onInteractionChange: { id, active in
+                                      if active { interactingClips.insert(id) }
+                                      else { interactingClips.remove(id) }
+                                  })
+            }
+            // B-roll rides above the main rows in its own thin band and
+            // never takes part in packing.
+            ForEach(layout.cutaways) { clip in
+                TimelineClipBlock(clip: clip,
+                                  row: layout.cutawayRows[clip.uid] ?? 0,
+                                  stripBand: true,
                                   onPlay: onPlayClip,
                                   onInteractionChange: { id, active in
                                       if active { interactingClips.insert(id) }
@@ -400,19 +464,47 @@ struct VideoTrackLane: View {
                                   })
             }
         }
-        .frame(width: contentWidth,
-               height: CGFloat(layout.rowCount) * BuilderTimelineModel.rowHeight)
+        .frame(width: contentWidth, height: layout.laneHeight)
+        .background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { laneFrame = proxy.frame(in: .global) }
+                    .onChange(of: proxy.frame(in: .global)) { _, frame in laneFrame = frame }
+                    .background(WindowReader { laneWindow = $0 })
+            }
+        )
         .dropDestination(for: String.self) { items, location in
-            guard let payload = items.first, payload.hasPrefix("scene:"),
-                  let sceneID = Int64(payload.dropFirst(6)),
-                  let scene = model.scenes.first(where: { $0.id == sceneID }) else { return false }
+            guard let payload = items.first,
+                  let parsed = TimelineDropPayload.parse(payload),
+                  let scene = model.scenes.first(where: { $0.id == parsed.sceneID }) else { return false }
             let time = BuilderTimelineModel.snap(Double(location.x / model.pointsPerSecond))
-            // Only where the cropping row gives this track an area.
+            // Only where the Screen row gives this track an area.
             guard model.canPlace(track: track, at: time) else { return false }
-            model.addScene(scene, at: time, track: track)
+            if parsed.cutaway {
+                // Option-drag: B-roll with the default window.
+                _ = model.addCutaway(source: .scene(scene), at: time, track: track)
+            } else {
+                model.addScene(scene, at: time, track: track)
+            }
             return true
         } isTargeted: { targeted in
             isDropTarget = targeted
+        }
+        .onContinuousHover { phase in
+            // A fallback for the context menu when there is no window to
+            // ask (previews, tests): the last place the pointer was.
+            if case .active(let point) = phase { hoverX = point.x }
+        }
+        .contextMenu {
+            // This builder runs when the menu opens, while the pointer is
+            // still on the spot that was right-clicked, so the real event
+            // location can be read here (only x matters: it is what maps to
+            // a time, and the track comes from the lane itself).
+            let clickedTime = contextClickTime(pointsPerSecond: model.pointsPerSecond)
+            Button("Cover with B-roll…") {
+                model.brollRequest = BuilderTimelineModel.BRollRequest(time: clickedTime, track: track)
+            }
+            .help("Open the B-roll picker at \(clickedTime.timecode) on this track")
         }
     }
 }
@@ -422,6 +514,17 @@ struct TimelineClipBlock: View {
     @Environment(AppStore.self) private var store
     let clip: TimelineClip
     let row: Int
+    /// B-roll draws as a thinner strip above the track's main rows.
+    var stripBand: Bool = false
+    /// How far the main rows sit below the top of the lane (the strip band).
+    var bandOffset: CGFloat = 0
+
+    /// Where this block sits inside its lane — the strip band for B-roll,
+    /// below it for main clips. Drag geometry measures from here.
+    private var blockY: CGFloat {
+        stripBand ? CGFloat(row) * BuilderTimelineModel.stripHeight + 2
+                  : bandOffset + CGFloat(row) * BuilderTimelineModel.rowHeight + 3
+    }
 
     private struct PaceKey: Equatable {
         var videoID: Int64?
@@ -463,7 +566,8 @@ struct TimelineClipBlock: View {
         let pps = model.pointsPerSecond
         let isSelected = model.selection == .clip(clip.uid)
         let width = max(24, CGFloat(clip.duration) * pps + (isTrimming ? trimDelta : 0))
-        let blockHeight = BuilderTimelineModel.rowHeight - 6
+        let blockHeight = stripBand ? BuilderTimelineModel.stripHeight - 4
+            : BuilderTimelineModel.rowHeight - 6
         let clipName = clip.bumper ? "Bumper · " + store.bumperDisplayName(for: clip)
             : model.scene(for: clip)?.videoFilename ?? clip.videoFile ?? "Untitled"
         let accessibilityValue = "Track \(clip.track + 1), starts at \(clip.startTime.timecode), "
@@ -507,7 +611,23 @@ struct TimelineClipBlock: View {
                                 .foregroundStyle(.yellow).help("Bumper file is missing")
                         }
                     }
-                    if clip.wide && !clip.bumper {
+                    if clip.isCutaway {
+                        Text("B")
+                            .font(.system(size: 8, weight: .heavy))
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 4)
+                            .background(.orange, in: .capsule)
+                            .help("B-roll: it covers this track's area and never moves the clips around it")
+                        if clip.coverAllAreas {
+                            Text("all areas")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 3)
+                                .background(.orange.opacity(0.55), in: .capsule)
+                                .help("This B-roll covers the whole screen, not just this track's area")
+                        }
+                    }
+                    if clip.wide && !clip.bumper && !clip.isCutaway {
                         WideBadge(compact: true)
                     }
                     if clip.effectiveSpeed != 1 {
@@ -572,8 +692,10 @@ struct TimelineClipBlock: View {
         .contentShape(RoundedRectangle(cornerRadius: 5))
         .overlay {
             RoundedRectangle(cornerRadius: 5)
-                .strokeBorder((isSelected || isFocused) ? Color.accentColor : .white.opacity(0.15),
-                              lineWidth: (isSelected || isFocused) ? 2 : 1)
+                .strokeBorder((isSelected || isFocused) ? Color.accentColor
+                              : (clip.isCutaway ? Color.orange.opacity(0.9) : .white.opacity(0.15)),
+                              style: StrokeStyle(lineWidth: (isSelected || isFocused) ? 2 : 1,
+                                                 dash: clip.isCutaway ? [4, 3] : []))
         }
         .overlay(alignment: .trailing) {
             // Trim handle: drag the right edge to change the clip duration.
@@ -598,7 +720,7 @@ struct TimelineClipBlock: View {
                     })
         }
         .offset(x: CGFloat(clip.startTime) * pps + (isDragging ? dragOffset.width : 0),
-                y: CGFloat(row) * BuilderTimelineModel.rowHeight + 3 + (isDragging ? dragOffset.height : 0))
+                y: blockY + (isDragging ? dragOffset.height : 0))
         .opacity(isDragging ? 0.75 : 1)
         .zIndex(isDragging ? 10 : clip.startTime)
         .highPriorityGesture(TapGesture(count: 2).onEnded {
@@ -619,7 +741,8 @@ struct TimelineClipBlock: View {
                 let newStart = BuilderTimelineModel.snap(
                     clip.startTime + Double(value.translation.width / pps))
                 let newTrack = model.trackIndex(fromTrack: clip.track,
-                                                verticalDelta: value.translation.height)
+                                                verticalDelta: value.translation.height,
+                                                blockOffset: blockY)
                 model.selection = .clip(clip.uid)
                 model.placeClip(clip.uid, startTime: newStart, track: newTrack)
                 model.focusedTrack = model.clip(clip.uid)?.track ?? clip.track
@@ -629,6 +752,16 @@ struct TimelineClipBlock: View {
         .contextMenu {
             Button("Play") { onPlay(clip) }
             Button("Duplicate") { model.duplicateClip(clip.uid) }
+            if !clip.bumper {
+                Divider()
+                if clip.isCutaway {
+                    Button("Make Main Clip") { model.setClipRole(clip.uid, role: .main) }
+                        .help("Puts this clip back in the track's sequence, which repacks the track from the start. It keeps no captions, Center Stage or free crops.")
+                } else {
+                    Button("Make B-roll") { model.setClipRole(clip.uid, role: .cutaway) }
+                        .help("Turns this clip into B-roll pinned to its time: it drops captions, Center Stage and free crops, is muted, and the track repacks without it.")
+                }
+            }
             Divider()
             Button("Delete", role: .destructive) { model.removeClip(clip.uid) }
         }
@@ -678,7 +811,7 @@ struct TimelineClipBlock: View {
 
 // MARK: - Cropping row
 
-/// Header for the cropping row: the name, plus an Add menu listing the
+/// Header for the Screen row: the name, plus an Add menu listing the
 /// Screen Crop resources.
 struct CropLaneHeader: View {
     @Environment(AppStore.self) private var store
@@ -690,7 +823,7 @@ struct CropLaneHeader: View {
         HStack(spacing: 6) {
             Image(systemName: "crop")
                 .foregroundStyle(.secondary)
-            Text("Cropping")
+            Text("Screen")
                 .font(.caption)
             Spacer()
             // A plain button + popover, like the track settings gear: a

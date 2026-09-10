@@ -26,6 +26,26 @@ actor MultitrackRenderer {
         var wide: Bool
         var bumper: Bool = false
         var missingBumper: Bool = false
+        /// Ordinary footage or a cutaway (B-roll) drawn over its track.
+        var role: ClipRole = .main
+        /// Cutaways only: cover the whole canvas instead of the track's area.
+        var coverAllAreas: Bool = false
+        /// Scale to cover the whole frame (cover-all cutaways) instead of
+        /// an area mask or a slot band.
+        var fillCanvas: Bool = false
+        /// Timeline extent before crop splitting, and the document's
+        /// persisted origin identity. Together with the layer they are the
+        /// one draw-order key, unchanged by any split.
+        var originalStart: Double = 0
+        var originalEnd: Double = 0
+        var originKey: String = ""
+        /// Cutaway dissolves in seconds, measured from `originalStart` and
+        /// `originalEnd` so a split never restarts a fade.
+        var fadeIn: Double = 0
+        var fadeOut: Double = 0
+        /// Position in `document.videoTrack` — the last, total tie-break of
+        /// the draw order (array order survives save and load).
+        var documentIndex: Int = 0
         var volume: Int = 5
         var centerStage: Bool = false
         var muted: Bool
@@ -55,6 +75,12 @@ actor MultitrackRenderer {
         var cacheable = true
     }
 
+    /// One alpha dissolve inside a segment, in segment-local seconds.
+    nonisolated struct Fade: Sendable, Equatable {
+        var start: Double
+        var duration: Double
+    }
+
     nonisolated struct Segment: Sendable {
         var start: Double
         var end: Double
@@ -73,6 +99,23 @@ actor MultitrackRenderer {
         var layer: Int
         var position: String
         var muted: Bool
+        /// Ordinary footage or a cutaway — a cutaway's own sound takes the
+        /// volume gain, like a bumper's.
+        var role: ClipRole = .main
+        /// Scale to cover the whole frame, centred.
+        var fillCanvas: Bool = false
+        /// Order key beside `layer`: the clip's start before crop splitting
+        /// and its persisted identity.
+        var originalStart: Double = 0
+        var originKey: String = ""
+        /// Alpha dissolves for this segment, in segment-local seconds. A
+        /// start before 0 means the fade began in an earlier segment.
+        var fadeIn: Fade?
+        var fadeOut: Fade?
+        /// Position in `document.videoTrack`: the final tie-break.
+        var documentIndex: Int = 0
+        /// Index of the clip this placement came from in the segment.
+        var clipIndex: Int = 0
         /// Timeline start of the clip this placement came from. Clips that
         /// overlap on one track stack by start time — the later one on top.
         var startTime: Double
@@ -305,12 +348,18 @@ actor MultitrackRenderer {
         for (index, segment) in fullSegments.enumerated() {
             clipPaths.append(artifacts[index].url)
             guard clipPaths.count > 1 else { continue }
-            let incoming = segment.clips.first
-            let outgoing = fullSegments[index - 1].clips.first
-            let entry = incoming.flatMap { abs($0.startTime - segment.start) < 0.001 ? $0.transIn : nil }
-            let exit = outgoing.flatMap { abs($0.startTime + $0.duration - segment.start) < 0.001 ? $0.transOut : nil }
-            transitions.append(incoming?.bumper == true || outgoing?.bumper == true
-                ? entry ?? exit : incoming?.transIn)
+            // Cutaways never take part in a join: a boundary a cutaway
+            // introduced must not replay the main clip's transition, so
+            // the incoming and outgoing clips are the lowest-layer main
+            // clips and their ORIGINAL extent decides.
+            let incoming = Self.joinClip(in: segment.clips)
+            let outgoing = Self.joinClip(in: fullSegments[index - 1].clips)
+            let entry = incoming.flatMap { abs($0.originalStart - segment.start) < 0.001 ? $0.transIn : nil }
+            let exit = outgoing.flatMap { abs($0.originalEnd - segment.start) < 0.001 ? $0.transOut : nil }
+            // A join takes the incoming clip's transition in, else the
+            // outgoing clip's transition out — both gated on the clip's
+            // original extent, so a cutaway's boundary triggers neither.
+            transitions.append(entry ?? exit)
         }
 
         guard !clipPaths.isEmpty else {
@@ -583,8 +632,9 @@ actor MultitrackRenderer {
         let settings = document.trackSettings
         var resolved: [ResolvedClip] = []
 
-        for var clip in document.videoTrack {
-            clip.enforceBumperRules()
+        for (documentIndex, original) in document.videoTrack.enumerated() {
+            var clip = original
+            clip.enforceCutawayRules()
             var sourcePath: String?
             var videoID: Int64?
             var sourceStart = 0.0
@@ -628,6 +678,14 @@ actor MultitrackRenderer {
                                          track: track,
                                          wide: clip.wide,
                                          bumper: clip.bumper,
+                                         role: clip.role,
+                                         coverAllAreas: clip.isCutaway && clip.coverAllAreas,
+                                         originalStart: clip.startTime,
+                                         originalEnd: clip.startTime + duration,
+                                         originKey: clip.originKey,
+                                         fadeIn: clip.isCutaway ? clip.fadeIn : 0,
+                                         fadeOut: clip.isCutaway ? clip.fadeOut : 0,
+                                         documentIndex: documentIndex,
                                          volume: clip.volume,
                                          centerStage: clip.centerStage && clip.wide,
                                          muted: muted,
@@ -655,7 +713,17 @@ actor MultitrackRenderer {
     nonisolated static func applyCropBlocks(_ clips: [ResolvedClip],
                                             document: TimelineDocument) -> [ResolvedClip] {
         let blocks = document.cropBlocks.sorted { $0.startTime < $1.startTime }
-        guard !blocks.isEmpty else { return clips }
+        guard !blocks.isEmpty else {
+            // Legacy document without a Screen row: a cover-all cutaway
+            // still fills the canvas instead of taking a legacy crop.
+            return clips.map { clip in
+                guard clip.coverAllAreas else { return clip }
+                var piece = clip
+                piece.screenCrop = nil
+                piece.fillCanvas = true
+                return piece
+            }
+        }
         var pieces: [ResolvedClip] = []
         for clip in clips {
             if clip.bumper { pieces.append(clip); continue }
@@ -672,14 +740,22 @@ actor MultitrackRenderer {
                 guard pieceEnd - pieceStart >= 0.05 else { continue }
                 cursor = pieceEnd
                 let layout = block.layout
-                // Track without an area under this block: not rendered.
-                guard clip.track < layout.areaCount else { continue }
+                // Track without an area under this block: not rendered. A
+                // cover-all cutaway needs no area, so it survives anywhere.
+                guard clip.track < layout.areaCount || clip.coverAllAreas else { continue }
                 var piece = clip
                 let offset = pieceStart - clip.startTime
                 piece.startTime = pieceStart
                 piece.duration = pieceEnd - pieceStart
                 piece.sourceStart = clip.sourceStart + offset * clip.speed
-                piece.screenCrop = layout.reference(forTrack: clip.track)
+                if clip.coverAllAreas {
+                    // The whole canvas: no mask, scaled to fill.
+                    piece.screenCrop = nil
+                    piece.fillCanvas = true
+                } else {
+                    // A cutaway inherits its track's area like a main clip.
+                    piece.screenCrop = layout.reference(forTrack: clip.track)
+                }
                 piece.transIn = pieceStart > clip.startTime + 0.001 ? nil : clip.transIn
                 piece.transOut = pieceEnd < clipEnd - 0.001 ? nil : clip.transOut
                 if let path = clip.cameraPath, offset > 0.001 {
@@ -691,6 +767,174 @@ actor MultitrackRenderer {
             }
         }
         return pieces
+    }
+
+    /// Every clip in a segment as a placement, in the one draw order the
+    /// masks are keyed by. `compositeLayeredSegment` consumes this order
+    /// as given.
+    nonisolated static func placements(for segment: Segment) -> [Placement] {
+        var placements: [Placement] = []
+        for (clipIndex, clip) in segment.clips.enumerated() {
+            // Timeline offsets map into the source through the clip's speed
+            // — a 0.5× clip consumes half a source second per screen second.
+            let clipOffset = (segment.start - clip.startTime) * clip.speed
+            placements.append(Placement(sourcePath: clip.sourcePath,
+                                        sourceStart: clip.sourceStart + clipOffset,
+                                        sourceDur: segment.duration * clip.speed,
+                                        isWide: clip.wide,
+                                        bumper: clip.bumper, volume: clip.volume,
+                                        layer: Self.placementLayer(for: clip),
+                                        position: clip.effectivePosition,
+                                        muted: clip.muted,
+                                        role: clip.role,
+                                        fillCanvas: clip.fillCanvas,
+                                        originalStart: clip.originalStart,
+                                        originKey: clip.originKey,
+                                        fadeIn: Self.fade(into: segment, start: clip.originalStart,
+                                                          seconds: clip.fadeIn),
+                                        fadeOut: Self.fade(into: segment,
+                                                           start: clip.originalEnd - clip.fadeOut,
+                                                           seconds: clip.fadeOut),
+                                        documentIndex: clip.documentIndex,
+                                        clipIndex: clipIndex,
+                                        startTime: clip.startTime,
+                                        cropXFrac: clip.effectiveCropXFrac,
+                                        freeCrops: clip.freeCrops,
+                                        screenCrop: clip.screenCrop,
+                                        speed: clip.speed, staticAreaFilter: clip.staticAreaFilter))
+        }
+
+        return orderedPlacements(placements)
+    }
+
+    /// A dissolve that begins at absolute time `start` and runs `seconds`,
+    /// expressed in this segment's local time. Nil when the window falls
+    /// entirely outside the segment; a negative start means the fade began
+    /// in an earlier segment and continues through this one.
+    nonisolated static func fade(into segment: Segment, start: Double, seconds: Double) -> Fade? {
+        guard seconds > 0.001 else { return nil }
+        let local = start - segment.start
+        guard local < segment.duration - 0.001, local + seconds > 0.001 else { return nil }
+        return Fade(start: local, duration: seconds)
+    }
+
+    /// The dissolve step for one placement. It runs AFTER the mask: the
+    /// clip chain ends without alpha, and alphamerge is what introduces it,
+    /// so an alpha fade before that has nothing to fade.
+    nonisolated static func fadeFilters(for placement: Placement, index: Int,
+                                        masked: Bool) -> (filters: [String], label: String) {
+        let input = masked ? "vm\(index)" : "v\(index)"
+        var steps: [String] = []
+        steps.append(contentsOf: envelope(for: placement.fadeIn, kind: "in"))
+        steps.append(contentsOf: envelope(for: placement.fadeOut, kind: "out"))
+        guard !steps.isEmpty else { return ([], input) }
+        // Without a mask the frames have no alpha channel to fade.
+        if !masked { steps.insert("format=yuva420p", at: 0) }
+        let label = "vf\(index)"
+        return (["[\(input)]" + steps.joined(separator: ",") + "[\(label)]"], label)
+    }
+
+    /// One dissolve as filter steps. `fade`'s `st` cannot be negative and
+    /// the ramp always starts from transparent, so a dissolve that began in
+    /// an earlier segment is not restarted: the segment is padded by the
+    /// part that already happened, the WHOLE fade runs over that padded
+    /// timeline, and the padding is trimmed away again. The frames that
+    /// survive therefore carry the middle of the envelope, which is what
+    /// continuing a dissolve means.
+    private nonisolated static func envelope(for fade: Fade?, kind: String) -> [String] {
+        guard let fade else { return [] }
+        // A window that is already over contributes nothing.
+        guard fade.start + fade.duration > 0.001 else { return [] }
+        guard fade.start < -0.001 else {
+            // A start a hair below zero is still zero: `st=-0.000` is not
+            // something ffmpeg should ever be asked to parse.
+            return [String(format: "fade=t=%@:alpha=1:st=%.3f:d=%.3f",
+                           kind, max(0, fade.start), fade.duration)]
+        }
+        let lead = -fade.start
+        return [String(format: "tpad=start_duration=%.3f:start_mode=clone", lead),
+                String(format: "fade=t=%@:alpha=1:st=0.000:d=%.3f", kind, fade.duration),
+                String(format: "trim=start=%.3f", lead),
+                "setpts=PTS-STARTPTS"]
+    }
+
+    /// Screen-crop masks for an ordered placement list, keyed by the index
+    /// into that same list (a placement with free crops draws its own
+    /// rectangles and an unresolvable reference renders unmasked).
+    nonisolated static func maskFiles(for ordered: [Placement], in scratch: URL) -> [Int: URL] {
+        var masks: [Int: URL] = [:]
+        for (index, placement) in ordered.enumerated() where placement.freeCrops?.isEmpty != false {
+            masks[index] = ScreenCropStore.maskFile(reference: placement.screenCrop, in: scratch)
+        }
+        return masks
+    }
+
+    /// How the segment's audio streams become one. When a mixed-in cutaway
+    /// is part of the segment the mix runs with `normalize=0`: amix would
+    /// otherwise divide every input by their number, so adding the cutaway's
+    /// sound would duck the dialogue underneath it. The fast preview keeps
+    /// each source at its own gain, so the two agree. Segments without a
+    /// cutaway keep amix's default, exactly as before B-roll existed.
+    /// Whether the segment's mix has to run at unity gain: only when one of
+    /// the streams actually going into it belongs to a mixed-in cutaway. A
+    /// cutaway whose file carries no audio contributes nothing, so it must
+    /// not change how everything else is mixed.
+    nonisolated static func mixNeedsUnityGain(_ contributing: [Placement]) -> Bool {
+        contributing.contains { !$0.muted && $0.role == .cutaway }
+    }
+
+    nonisolated static func audioMixFilter(labels: [String],
+                                           cutawayAudio: Bool) -> (filters: [String], source: String) {
+        if labels.isEmpty {
+            return (["[1:a]asetpts=PTS-STARTPTS[asilent]"], "[asilent]")
+        }
+        if labels.count == 1 { return ([], labels[0]) }
+        // Only a mixed-in cutaway needs the un-normalized mix; every other
+        // segment keeps the levels it has had since before B-roll existed.
+        let normalize = cutawayAudio ? ":normalize=0" : ""
+        return ([labels.joined() + "amix=inputs=\(labels.count):duration=longest:"
+                 + "dropout_transition=0" + normalize + "[amix]"], "[amix]")
+    }
+
+    /// The volume filter a placement's audio takes in the mix: bumpers and
+    /// mixed-in cutaways honour the volume slider, ordinary clips do not.
+    nonisolated static func audioGainFilter(for placement: Placement) -> String {
+        guard placement.bumper || placement.role == .cutaway else { return "" }
+        return String(format: "volume=%.3f,", Double(min(5, max(0, placement.volume))) / 5)
+    }
+
+    /// The clip a segment join belongs to: the lowest-layer main clip (or
+    /// the bumper that owns the segment). Cutaways are never a join's
+    /// incoming or outgoing clip.
+    nonisolated static func joinClip(in clips: [ResolvedClip]) -> ResolvedClip? {
+        clips.filter { $0.bumper || $0.role != .cutaway }
+            .min { placementLayer(for: $0) < placementLayer(for: $1) }
+    }
+
+    /// Draw order for one resolved clip. Main clips on a track sit under
+    /// that track's cutaways; a cover-all cutaway sits above every track;
+    /// a bumper (which owns its segment outright anyway) sits above all.
+    nonisolated static func placementLayer(for clip: ResolvedClip) -> Int {
+        if clip.bumper { return TimelineDocument.maxTracks * 2 + 2 }
+        if clip.role == .cutaway {
+            return clip.coverAllAreas
+                ? TimelineDocument.maxTracks * 2 + 1
+                : clip.track * 2 + 1
+        }
+        return clip.track * 2
+    }
+
+    /// The one placement order: layer, then the clip's start before crop
+    /// splitting, then its persisted identity. `renderSegment` computes it
+    /// once, keys the masks by it, and `compositeLayeredSegment` consumes
+    /// both without sorting again.
+    nonisolated static func orderedPlacements(_ placements: [Placement]) -> [Placement] {
+        placements.enumerated().sorted {
+            ($0.element.layer, $0.element.originalStart, $0.element.originKey,
+             $0.element.documentIndex, $0.offset)
+                < ($1.element.layer, $1.element.originalStart, $1.element.originKey,
+                   $1.element.documentIndex, $1.offset)
+        }.map(\.element)
     }
 
     /// Port of _build_layered_segments: slice at every clip boundary so each
@@ -788,25 +1032,7 @@ actor MultitrackRenderer {
         }
 
         emit("Segment \(index + 1)/\(total): compositing \(segment.clips.count) clip(s)…")
-        var placements: [Placement] = []
-        for clip in segment.clips {
-            // Timeline offsets map into the source through the clip's speed
-            // — a 0.5× clip consumes half a source second per screen second.
-            let clipOffset = (segment.start - clip.startTime) * clip.speed
-            placements.append(Placement(sourcePath: clip.sourcePath,
-                                        sourceStart: clip.sourceStart + clipOffset,
-                                        sourceDur: segment.duration * clip.speed,
-                                        isWide: clip.wide,
-                                        bumper: clip.bumper, volume: clip.volume,
-                                        layer: clip.track,
-                                        position: clip.effectivePosition,
-                                        muted: clip.muted,
-                                        startTime: clip.startTime,
-                                        cropXFrac: clip.effectiveCropXFrac,
-                                        freeCrops: clip.freeCrops,
-                                        screenCrop: clip.screenCrop,
-                                        speed: clip.speed, staticAreaFilter: clip.staticAreaFilter))
-        }
+        let placements = Self.placements(for: segment)
 
         // Captions ride the composite's filter graph — no second encode pass.
         var captions: [CaptionOverlay] = []
@@ -844,16 +1070,17 @@ actor MultitrackRenderer {
         }
 
         let segmentPath = scratch.appendingPathComponent(String(format: "seg%03d_layered.mp4", index))
-        placements = placements.enumerated().sorted {
-            ($0.element.layer, $0.element.startTime, $0.offset) < ($1.element.layer, $1.element.startTime, $1.offset)
-        }.map(\.element)
-        var masks: [Int: URL] = [:]
-        for (index, placement) in placements.enumerated() where placement.freeCrops?.isEmpty != false {
-            masks[index] = ScreenCropStore.maskFile(reference: placement.screenCrop, in: scratch)
-        }
+        let masks = Self.maskFiles(for: placements, in: scratch)
         var keyClips = segment.clips
         for index in keyClips.indices {
             keyClips[index].sourcePath = keyClips[index].originalSourcePath ?? keyClips[index].sourcePath
+        }
+        // The origin identity is a document-side tie-breaker, not pixels:
+        // caching it would miss on every clip whose key differs. Its only
+        // effect on the output is the draw order, so store that instead.
+        for index in keyClips.indices { keyClips[index].documentIndex = 0 }
+        for (rank, placement) in placements.enumerated() where keyClips.indices.contains(placement.clipIndex) {
+            keyClips[placement.clipIndex].originKey = String(rank)
         }
         var keyCaptions = captions
         for index in keyCaptions.indices {
@@ -939,10 +1166,9 @@ actor MultitrackRenderer {
             return
         }
 
-        let ordered = placements.enumerated()
-            .sorted { ($0.element.layer, $0.element.startTime, $0.offset)
-                    < ($1.element.layer, $1.element.startTime, $1.offset) }
-            .map(\.element)
+        // Already in the one order `renderSegment` computed; the masks are
+        // keyed by index into exactly this list, so it must not be re-sorted.
+        let ordered = placements
 
         var arguments = ["-y",
                          "-f", "lavfi", "-i",
@@ -1004,6 +1230,17 @@ actor MultitrackRenderer {
                 continue
             }
 
+            if placement.fillCanvas {
+                // Cover-all cutaway: crop to fill the whole canvas, centred
+                // (scale up to cover, then take the middle of the frame).
+                filters.append(String(format: "[%d:v]%@," +
+                                      "scale=%d:%d:force_original_aspect_ratio=increase," +
+                                      "crop=%d:%d,setsar=1,fps=30[v%d]",
+                                      sourceIndex, pts, Self.width, Self.height,
+                                      Self.width, Self.height, index))
+                continue
+            }
+
             let wideCropped = placement.isWide && placement.cropXFrac != nil
             if wideCropped {
                 let fraction = max(0, min(1, placement.cropXFrac ?? 0.5))
@@ -1051,11 +1288,11 @@ actor MultitrackRenderer {
                 ? (Self.slotY[placement.position] ?? 0) : 0
             // A masked slot-band clip still lands in its band; the mask is
             // full-frame, so it's shifted by the band's offset.
-            if maskInputs[index] != nil {
-                overlaySteps.append(("vm\(index)", 0, y))
-            } else {
-                overlaySteps.append(("v\(index)", 0, y))
-            }
+            // Dissolves come after the mask, which is what creates alpha.
+            let fade = Self.fadeFilters(for: placement, index: index,
+                                        masked: maskInputs[index] != nil)
+            filters.append(contentsOf: fade.filters)
+            overlaySteps.append((fade.label, 0, y))
         }
         var previous = "[0:v]"
         for (stepIndex, step) in overlaySteps.enumerated() {
@@ -1083,26 +1320,23 @@ actor MultitrackRenderer {
 
         // Audio: mix unmuted clips that actually carry audio.
         var audioLabels: [String] = []
+        var contributing: [Placement] = []
         for (index, placement) in ordered.enumerated() {
             guard !placement.muted else { continue }
             guard await FFmpeg.hasAudioStream(URL(fileURLWithPath: placement.sourcePath)) else { continue }
+            contributing.append(placement)
             let tempo = placement.speed == 1 ? ""
                 : String(format: "atempo=%.4f,", min(2, max(0.5, placement.speed)))
-            let gain = placement.bumper ? String(format: "volume=%.3f,", Double(min(5, max(0, placement.volume))) / 5) : ""
+            // Bumpers and mixed-in cutaways honour the volume slider; a
+            // muted cutaway never gets here (it resolves to muted).
+            let gain = Self.audioGainFilter(for: placement)
             filters.append("[\(index + 2):a]\(tempo)\(gain)asetpts=PTS-STARTPTS[a\(index)]")
             audioLabels.append("[a\(index)]")
         }
-        let audioSource: String
-        if audioLabels.isEmpty {
-            filters.append("[1:a]asetpts=PTS-STARTPTS[asilent]")
-            audioSource = "[asilent]"
-        } else if audioLabels.count == 1 {
-            audioSource = audioLabels[0]
-        } else {
-            filters.append(audioLabels.joined() +
-                           "amix=inputs=\(audioLabels.count):duration=longest:dropout_transition=0[amix]")
-            audioSource = "[amix]"
-        }
+        let mix = Self.audioMixFilter(labels: audioLabels,
+                                      cutawayAudio: Self.mixNeedsUnityGain(contributing))
+        filters.append(contentsOf: mix.filters)
+        let audioSource = mix.source
 
         try await FFmpeg.run(arguments + [
             "-filter_complex", filters.joined(separator: ";"),

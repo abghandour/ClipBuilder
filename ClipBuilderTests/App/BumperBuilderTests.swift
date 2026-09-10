@@ -64,6 +64,74 @@ struct BumperBuilderTests {
         #expect(!model.document.isCoveredByBumper(footage))
     }
 
+    @Test("a pausing bumper splits a crossing cutaway and shifts a later one, once")
+    func pauseBumperMovesCutaways() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let model = BuilderTimelineModel()
+        func cutaway(start: Double, duration: Double) -> TimelineClip {
+            var clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: duration,
+                                             startTime: start)
+            clip.role = .cutaway
+            clip.enforceCutawayRules()
+            return clip
+        }
+        let crossing = cutaway(start: 3, duration: 3)
+        let later = cutaway(start: 7, duration: 1)
+        model.loadDocument(Fixtures.timelineDocument(clips: [
+            Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 12), crossing, later,
+        ]))
+        model.addBumper(BumperAsset(path: "/bumper.mp4", displayName: "CTA", duration: 2),
+                        at: 4, mode: .pause)
+
+        var cutaways = model.document.cutaways(inTrack: 0)
+        #expect(cutaways.count == 3, "the crossing B-roll is split in two")
+        #expect(cutaways.map(\.startTime) == [3, 6, 9])
+        #expect(cutaways.map(\.duration) == [1, 2, 1])
+        #expect(cutaways[1].sourceStart == 1, "the tail keeps source continuity")
+        #expect(cutaways[0].originKey == cutaways[1].originKey,
+                "both halves stay one clip for ordering")
+        #expect(cutaways[2].originKey == later.originKey)
+        #expect(cutaways.allSatisfy(\.isCutaway) && cutaways.allSatisfy(\.muted))
+
+        let bumper = try #require(model.document.videoTrack.first { $0.bumper })
+        model.removeClip(bumper.uid)
+        cutaways = model.document.cutaways(inTrack: 0)
+        #expect(cutaways.map(\.startTime) == [3, 4, 7], "the gap closes and nothing moved twice")
+        #expect(cutaways.map(\.duration) == [1, 2, 1])
+        #expect(cutaways[1].sourceStart == 1, "the two adjacent pieces still run on")
+    }
+
+    @Test("moving and resizing a pausing bumper leaves the cutaway consistent")
+    func pauseBumperEditsKeepCutawaysConsistent() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let model = BuilderTimelineModel()
+        var broll = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 2, startTime: 8)
+        broll.role = .cutaway
+        broll.enforceCutawayRules()
+        model.loadDocument(Fixtures.timelineDocument(clips: [
+            Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 12), broll,
+        ]))
+        model.addBumper(BumperAsset(path: "/bumper.mp4", displayName: "CTA", duration: 2),
+                        at: 4, mode: .pause)
+        #expect(model.document.cutaways(inTrack: 0).map(\.startTime) == [10])
+
+        let bumper = try #require(model.document.videoTrack.first { $0.bumper })
+        model.placeClip(bumper.uid, startTime: 6, track: 0)
+        #expect(model.document.cutaways(inTrack: 0).map(\.startTime) == [10],
+                "the drop point is read off the gapped timeline: one shift, not two")
+        model.trimClip(bumper.uid, duration: 4)
+        #expect(model.document.cutaways(inTrack: 0).map(\.startTime) == [10],
+                "the bumper file is only two seconds long, so nothing grew")
+        model.trimClip(bumper.uid, duration: 1)
+        #expect(model.document.cutaways(inTrack: 0).map(\.startTime) == [9],
+                "a shorter pause closes one second of the gap")
+        model.removeClip(bumper.uid)
+        #expect(model.document.cutaways(inTrack: 0).map(\.startTime) == [8],
+                "removing the bumper restores the original time exactly")
+    }
+
     @Test("sequential packing ignores bumpers entirely")
     func sequentialPackingIgnoresBumpers() throws {
         let scope = try DataFolderOverride()

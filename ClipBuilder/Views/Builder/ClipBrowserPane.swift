@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Scene browser for the Builder: find an analyzed scene, then drag it onto
 /// the timeline or add it at the playhead.
@@ -261,7 +262,15 @@ struct ClipBrowserPane: View {
             PlayerSheet(url: scene.videoURL,
                         title: "\(scene.videoFilename) \(scene.startTime.timecode)–\(scene.endTime.timecode)",
                         startTime: scene.startTime,
-                        endTime: scene.endTime)
+                        endTime: scene.endTime,
+                        onMarkAsBRoll: { start, end in
+                            let model = store.builder
+                            let outcome = model.addCutaway(source: .scene(scene), at: model.playhead,
+                                                           track: model.focusedTrack ?? 0,
+                                                           duration: end - start, sourceStart: start)
+                            // Silence would look like a broken key; say what happened.
+                            return outcome.message(at: model.playhead)
+                        })
         }
     }
 
@@ -310,7 +319,13 @@ struct BrowserSceneCard: View {
                 .overlay {
                     Color.clear
                         .contentShape(Rectangle())
-                        .draggable("scene:\(scene.id)")
+                        // The payload is an autoclosure: SwiftUI evaluates
+                        // it when the drag begins, so the Option key is read
+                        // at that moment and not when this view was built.
+                        .draggable({
+                            TimelineDropPayload.scene(
+                                scene.id, cutaway: NSEvent.modifierFlags.contains(.option))
+                        }())
                         .simultaneousGesture(TapGesture(count: 2).onEnded { onPlay() })
                         .padding(.vertical, 28)
                 }

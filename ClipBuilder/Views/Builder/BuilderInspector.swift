@@ -148,6 +148,48 @@ struct ClipInspector: View {
                     .foregroundStyle(.secondary)
             }
 
+            if clip.isCutaway {
+                InspectorSection("B-roll") {
+                    InspectorRow("Sound") {
+                        Picker("Sound", selection: Binding(
+                            get: { clip.cutawayAudio },
+                            set: { model.setCutawayAudio(clip.uid, $0) })) {
+                            ForEach(CutawayAudio.allCases) { choice in
+                                Text(choice.title).tag(choice)
+                            }
+                        }
+                        .labelsHidden()
+                        .help("Muted keeps only the clip underneath; Mixed in adds this footage's own sound on top of it")
+                    }
+                    if clip.cutawayAudio == .mixed {
+                        InspectorRow("Volume") {
+                            Picker("Volume", selection: binding(\.volume)) {
+                                ForEach(1...5, id: \.self) { level in
+                                    Text("\(level)").tag(level)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        }
+                    }
+                    InspectorRow("Area") {
+                        Toggle("Cover all areas", isOn: Binding(
+                            get: { clip.coverAllAreas },
+                            set: { model.setCutawayCoverAll(clip.uid, $0) }))
+                            .help("Fill the whole screen instead of this track's crop area")
+                    }
+                    InspectorRow("Dissolve in") {
+                        CutawayFadeField(clip: clip, isIn: true)
+                    }
+                    InspectorRow("Dissolve out") {
+                        CutawayFadeField(clip: clip, isIn: false)
+                    }
+                    Text("B-roll covers the picture and keeps its place in time. 0 seconds is a hard cut.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             // Trim against the raw video, right under the clip identity.
             InspectorSection("Trim") {
                 ClipTrimEditor(clip: clip)
@@ -902,6 +944,25 @@ struct AreaWindowEditor: View {
 
 /// A flat inspector section: a small uppercase title over its controls.
 /// No disclosure — everything is visible, in order of importance.
+/// Seconds of dissolve on a cutaway, committed as they change (0 = a cut).
+private struct CutawayFadeField: View {
+    @Environment(AppStore.self) private var store
+    let clip: TimelineClip
+    let isIn: Bool
+
+    var body: some View {
+        TextField("Seconds", value: Binding(
+            get: { isIn ? clip.fadeIn : clip.fadeOut },
+            set: { seconds in
+                store.builder.updateClip(clip.uid) { edited in
+                    if isIn { edited.fadeIn = max(0, seconds) } else { edited.fadeOut = max(0, seconds) }
+                }
+            }), format: .number.precision(.fractionLength(1)))
+            .textFieldStyle(.roundedBorder)
+            .frame(width: 70)
+    }
+}
+
 struct InspectorSection<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content

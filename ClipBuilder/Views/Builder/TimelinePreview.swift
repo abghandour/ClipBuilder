@@ -16,6 +16,21 @@ nonisolated struct PreviewSegment: Sendable {
     var volume: Double          // 0-1 gain for the clip's own audio
     var bumper: Bool = false
     var speed: Double = 1
+    /// Dialogue that is not the picture's own: the main clip playing under
+    /// a cutaway. Entirely independent of the picture — its own file,
+    /// offset, speed and gain, clamped to its own length. When set it takes
+    /// the dialogue track instead of the picture's audio.
+    var audio: AudioSource?
+    /// A mixed-in cutaway's own sound. It plays beside the dialogue, so it
+    /// gets a track of its own — two concurrent sounds never share one.
+    var cutawayAudio: AudioSource?
+
+    nonisolated struct AudioSource: Sendable, Equatable {
+        var url: URL
+        var sourceStart: Double
+        var volume: Double
+        var speed: Double = 1
+    }
 }
 
 nonisolated struct PreviewMusicBlock: Sendable {
@@ -105,8 +120,21 @@ nonisolated enum TimelinePreviewComposer {
         }
 
         let clipAudioParams = AVMutableAudioMixInputParameters(track: clipAudioTrack)
+        // Track B: a mixed-in cutaway's own sound, which plays at the same
+        // time as the dialogue on track A. Only created when some segment
+        // asks for it; the video instructions never reference it, so it is
+        // purely additive.
+        var extraAudioTrack: AVMutableCompositionTrack?
+        var extraAudioParams: AVMutableAudioMixInputParameters?
+        if segments.contains(where: { $0.cutawayAudio != nil }),
+           let track = composition.addMutableTrack(withMediaType: .audio,
+                                                   preferredTrackID: kCMPersistentTrackID_Invalid) {
+            extraAudioTrack = track
+            extraAudioParams = AVMutableAudioMixInputParameters(track: track)
+        }
         var videoCursor = CMTime.zero
         var audioCursor = CMTime.zero
+        var extraCursor = CMTime.zero
 
         for segment in segments {
             if segment.bumper && !FileManager.default.fileExists(atPath: segment.url.path) {
@@ -121,17 +149,19 @@ nonisolated enum TimelinePreviewComposer {
             let source = try await asset(for: segment.url)
             let sourceDuration = (try? await source.load(.duration).seconds) ?? segment.duration
             let clamped = min(segment.duration * segment.speed, max(0, sourceDuration - segment.sourceStart))
-            guard clamped > 0.01 else { continue }
+            // A picture that has run out of source still holds its place:
+            // the dialogue underneath a cutaway must keep playing.
+            let hasPicture = clamped > 0.01
             let start = time(segment.timelineStart)
-            let range = CMTimeRange(start: time(segment.sourceStart), duration: time(clamped))
-            let screenDuration = time(clamped / segment.speed)
+            let range = CMTimeRange(start: time(segment.sourceStart), duration: time(max(0.001, clamped)))
+            let screenDuration = hasPicture ? time(clamped / segment.speed) : time(segment.duration)
 
             // Composition tracks must stay contiguous — fill timeline gaps.
             if start > videoCursor {
                 videoTrack.insertEmptyTimeRange(CMTimeRange(start: videoCursor, end: start))
                 instruction(start: videoCursor, duration: start - videoCursor)
             }
-            if let sourceVideo = try await source.loadTracks(withMediaType: .video).first {
+            if hasPicture, let sourceVideo = try await source.loadTracks(withMediaType: .video).first {
                 try videoTrack.insertTimeRange(range, of: sourceVideo, at: start)
                 if fitsCanvas {
                     let natural = try await sourceVideo.load(.naturalSize)
@@ -148,27 +178,76 @@ nonisolated enum TimelinePreviewComposer {
                     videoTrack.preferredTransform = try await sourceVideo.load(.preferredTransform)
                 }
             } else {
-                videoTrack.insertEmptyTimeRange(CMTimeRange(start: start, duration: range.duration))
+                videoTrack.insertEmptyTimeRange(CMTimeRange(start: start, duration: screenDuration))
                 instruction(start: start, duration: screenDuration)
             }
-            videoTrack.scaleTimeRange(CMTimeRange(start: start, duration: range.duration), toDuration: screenDuration)
+            if hasPicture {
+                videoTrack.scaleTimeRange(CMTimeRange(start: start, duration: range.duration),
+                                          toDuration: screenDuration)
+            }
             videoCursor = start + screenDuration
 
             if start > audioCursor {
                 clipAudioTrack.insertEmptyTimeRange(CMTimeRange(start: audioCursor, end: start))
             }
-            if segment.volume > 0,
-               let sourceAudio = try? await source.loadTracks(withMediaType: .audio).first {
+            if let dialogue = segment.audio {
+                // The clip under a cutaway keeps talking: its own file, its
+                // own offset and speed, clamped against its own length.
+                let voiceAsset = try await asset(for: dialogue.url)
+                let voiceLength = (try? await voiceAsset.load(.duration).seconds) ?? segment.duration
+                let voiceClamped = min(segment.duration * dialogue.speed,
+                                       max(0, voiceLength - dialogue.sourceStart))
+                let voiceRange = CMTimeRange(start: time(dialogue.sourceStart), duration: time(voiceClamped))
+                let voiceScreen = time(voiceClamped / dialogue.speed)
+                if voiceClamped > 0.01, dialogue.volume > 0,
+                   let voice = try? await voiceAsset.loadTracks(withMediaType: .audio).first {
+                    try clipAudioTrack.insertTimeRange(voiceRange, of: voice, at: start)
+                    clipAudioParams.setVolume(Float(dialogue.volume), at: start)
+                    clipAudioTrack.scaleTimeRange(CMTimeRange(start: start, duration: voiceRange.duration),
+                                                  toDuration: voiceScreen)
+                    audioCursor = start + voiceScreen
+                } else {
+                    clipAudioTrack.insertEmptyTimeRange(CMTimeRange(start: start, duration: screenDuration))
+                    clipAudioParams.setVolume(0, at: start)
+                    audioCursor = start + screenDuration
+                }
+            } else if hasPicture, segment.volume > 0,
+                      let sourceAudio = try? await source.loadTracks(withMediaType: .audio).first {
                 try clipAudioTrack.insertTimeRange(range, of: sourceAudio, at: start)
+                clipAudioParams.setVolume(Float(segment.volume), at: start)
+                clipAudioTrack.scaleTimeRange(CMTimeRange(start: start, duration: range.duration),
+                                              toDuration: screenDuration)
+                audioCursor = start + screenDuration
             } else {
-                clipAudioTrack.insertEmptyTimeRange(CMTimeRange(start: start, duration: range.duration))
+                clipAudioTrack.insertEmptyTimeRange(CMTimeRange(start: start, duration: screenDuration))
+                clipAudioParams.setVolume(Float(hasPicture ? segment.volume : 0), at: start)
+                audioCursor = start + screenDuration
             }
-            clipAudioParams.setVolume(Float(segment.volume), at: start)
-            clipAudioTrack.scaleTimeRange(CMTimeRange(start: start, duration: range.duration), toDuration: screenDuration)
-            audioCursor = start + screenDuration
+
+            if let extraAudioTrack, let extraAudioParams, let extra = segment.cutawayAudio {
+                if start > extraCursor {
+                    extraAudioTrack.insertEmptyTimeRange(CMTimeRange(start: extraCursor, end: start))
+                }
+                // Clamped against ITS OWN file, never the picture's range.
+                let extraAsset = try await asset(for: extra.url)
+                let extraDuration = (try? await extraAsset.load(.duration).seconds) ?? segment.duration
+                let extraClamped = min(segment.duration * extra.speed,
+                                       max(0, extraDuration - extra.sourceStart))
+                if extraClamped > 0.01, extra.volume > 0,
+                   let extraSource = try? await extraAsset.loadTracks(withMediaType: .audio).first {
+                    let extraRange = CMTimeRange(start: time(extra.sourceStart), duration: time(extraClamped))
+                    try extraAudioTrack.insertTimeRange(extraRange, of: extraSource, at: start)
+                    extraAudioParams.setVolume(Float(extra.volume), at: start)
+                    let extraScreen = time(extraClamped / extra.speed)
+                    extraAudioTrack.scaleTimeRange(CMTimeRange(start: start, duration: extraRange.duration),
+                                                   toDuration: extraScreen)
+                    extraCursor = start + extraScreen
+                }
+            }
         }
 
         var mixParameters = [clipAudioParams]
+        if let extraAudioParams { mixParameters.append(extraAudioParams) }
         if !music.isEmpty,
            let musicTrack = composition.addMutableTrack(withMediaType: .audio,
                                                         preferredTrackID: kCMPersistentTrackID_Invalid) {
@@ -222,12 +301,40 @@ extension BuilderTimelineModel {
         // Max-heap by the same draw priority the old per-interval scan used.
         // Expired entries are removed lazily when they reach the root, so
         // every clip enters and leaves the heap at most once.
+        // The renderer's draw order (MultitrackRenderer.placementLayer):
+        // a bumper above everything, then a cover-all cutaway, then a
+        // track's cutaways above its main clips, then the higher track.
+        func layer(_ clip: TimelineClip) -> Int {
+            if clip.bumper { return TimelineDocument.maxTracks * 2 + 2 }
+            if clip.isCutaway {
+                return clip.coverAllAreas
+                    ? TimelineDocument.maxTracks * 2 + 1
+                    : clip.track * 2 + 1
+            }
+            return clip.track * 2
+        }
         func outranks(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
-            if lhs.clip.bumper != rhs.clip.bumper { return lhs.clip.bumper }
-            if lhs.clip.bumper, lhs.clip.startTime != rhs.clip.startTime { return lhs.clip.startTime > rhs.clip.startTime }
-            if lhs.clip.track != rhs.clip.track { return lhs.clip.track > rhs.clip.track }
+            let left = layer(lhs.clip), right = layer(rhs.clip)
+            if left != right { return left > right }
             if lhs.clip.startTime != rhs.clip.startTime { return lhs.clip.startTime > rhs.clip.startTime }
-            return lhs.index < rhs.index
+            if lhs.clip.originKey != rhs.clip.originKey { return lhs.clip.originKey > rhs.clip.originKey }
+            // Same as the renderer's last tie-break: later in the document
+            // means drawn later, which means on top.
+            return lhs.index > rhs.index
+        }
+        // Two segments only merge when the dialogue under them continues
+        // too — a cut in the underlying clip must survive one long cutaway.
+        func audioContinues(_ previous: PreviewSegment.AudioSource?,
+                            with next: PreviewSegment.AudioSource?,
+                            over duration: Double) -> Bool {
+            switch (previous, next) {
+            case (nil, nil): return true
+            case let (previous?, next?):
+                return previous.url == next.url && previous.volume == next.volume
+                    && previous.speed == next.speed
+                    && abs(previous.sourceStart + duration * previous.speed - next.sourceStart) < 0.001
+            default: return false
+            }
         }
 
         var heap: [Candidate] = []
@@ -284,23 +391,89 @@ extension BuilderTimelineModel {
             while let highest = heap.first, highest.end <= start + 0.001 {
                 removeHighest()
             }
-            guard let top = heap.first?.clip, let url = sourceURL(for: top) else { continue }
+            // The top clip decides the picture — unless its file is gone,
+            // in which case the next one down takes over so the dialogue
+            // under a cutaway is not lost with it.
+            guard let leader = heap.first?.clip else { continue }
+            // A clip whose file has been deleted cannot show a picture, so
+            // the clip below takes over and its dialogue is still heard.
+            // Two exceptions: a bumper owns its span outright even when its
+            // file is missing (the render shows black and stays silent),
+            // and Drive-backed footage is fetched on demand, so a file that
+            // is simply not local yet keeps its place.
+            func playable(_ clip: TimelineClip) -> URL? {
+                guard let url = sourceURL(for: clip) else { return nil }
+                if FileManager.default.fileExists(atPath: url.path) { return url }
+                return driveBackedPaths.contains(url.path) ? url : nil
+            }
+            var top = leader
+            var url = sourceURL(for: leader)
+            if !leader.bumper, playable(leader) == nil {
+                var best: Candidate?
+                for candidate in heap where candidate.end > start + 0.001
+                    && candidate.clip.startTime <= start + 0.001
+                    && !candidate.clip.bumper
+                    && playable(candidate.clip) != nil {
+                    if best == nil || outranks(candidate, best!) { best = candidate }
+                }
+                if let best, let fallback = playable(best.clip) {
+                    top = best.clip
+                    url = fallback
+                }
+            }
+            guard let url else { continue }
             let trackMuted = document.trackSettings[safe: top.track]?.muted ?? false
-            let gain = (top.muted || trackMuted) ? 0.0 : Double(top.volume) / 5.0
+            let ownGain = (top.muted || trackMuted) ? 0.0 : Double(top.volume) / 5.0
             let sourceStart = (top.sourceStart ?? 0) + (start - top.startTime) * top.effectiveSpeed
+
+            // B-roll only replaces the picture: the clip underneath keeps
+            // its sound, on an audio source of its own (its file, its
+            // offset, its speed — never derived from the picture's range).
+            // A mixed-in cutaway's own sound plays beside it, on track B.
+            var gain = ownGain
+            var audio: PreviewSegment.AudioSource?
+            var cutawayAudio: PreviewSegment.AudioSource?
+            if top.isCutaway {
+                gain = 0
+                if ownGain > 0 {
+                    cutawayAudio = PreviewSegment.AudioSource(url: url, sourceStart: sourceStart,
+                                                              volume: ownGain, speed: top.effectiveSpeed)
+                }
+                var best: Candidate?
+                for candidate in heap where candidate.end > start + 0.001 {
+                    let clip = candidate.clip
+                    guard !clip.bumper, clip.role == .main, clip.track == top.track,
+                          clip.startTime <= start + 0.001, !clip.muted,
+                          !(document.trackSettings[safe: clip.track]?.muted ?? false) else { continue }
+                    if best == nil || outranks(candidate, best!) { best = candidate }
+                }
+                if let best, let audioURL = sourceURL(for: best.clip) {
+                    audio = PreviewSegment.AudioSource(
+                        url: audioURL,
+                        sourceStart: (best.clip.sourceStart ?? 0)
+                            + (start - best.clip.startTime) * best.clip.effectiveSpeed,
+                        volume: Double(best.clip.volume) / 5.0,
+                        speed: best.clip.effectiveSpeed)
+                }
+            }
             if let lastIndex = segments.indices.last,
                segments[lastIndex].url == url,
                abs(segments[lastIndex].timelineStart + segments[lastIndex].duration - start) < 0.001,
                abs(segments[lastIndex].sourceStart + segments[lastIndex].duration * top.effectiveSpeed - sourceStart) < 0.001,
                segments[lastIndex].volume == gain,
-               segments[lastIndex].speed == top.effectiveSpeed, segments[lastIndex].bumper == top.bumper {
+               segments[lastIndex].speed == top.effectiveSpeed, segments[lastIndex].bumper == top.bumper,
+               audioContinues(segments[lastIndex].audio, with: audio,
+                              over: segments[lastIndex].duration),
+               audioContinues(segments[lastIndex].cutawayAudio, with: cutawayAudio,
+                              over: segments[lastIndex].duration) {
                 segments[lastIndex].duration += end - start
             } else {
                 segments.append(PreviewSegment(url: url,
                                                sourceStart: sourceStart,
                                                timelineStart: start,
                                                duration: end - start,
-                                               volume: gain, bumper: top.bumper, speed: top.effectiveSpeed))
+                                               volume: gain, bumper: top.bumper, speed: top.effectiveSpeed,
+                                               audio: audio, cutawayAudio: cutawayAudio))
             }
         }
 
@@ -383,6 +556,16 @@ struct TimelinePreviewSheet: View {
                 }
             }
             .frame(minWidth: 430, minHeight: 620)
+
+            if mode == .fast, store.builder.document.videoTrack.contains(where: \.isCutaway) {
+                Text("Fast preview shows one picture at a time, not B-roll inside its area. "
+                     + "It keeps the dialogue under B-roll. Check areas in Exact preview or the render.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, Theme.spaceL)
+                    .padding(.vertical, Theme.spaceS)
+            }
         }
         .modalCloseButton { dismiss() }
         .task {

@@ -1168,7 +1168,13 @@ final class AppStore {
         let events = Dictionary(grouping: snapshot.fightEvents, by: \.videoID)
         if fightResearch != research { fightResearch = research }
         if fightEvents != events { fightEvents = events }
-        if videos != snapshot.videos { videos = snapshot.videos }
+        if videos != snapshot.videos {
+            videos = snapshot.videos
+            // Drive-backed sources are fetched on demand: the fast preview
+            // keeps their picture instead of treating them as missing.
+            builder.updateDriveBackedPaths(Set(snapshot.videos.filter { $0.driveFileID != nil }
+                .map(\.path)))
+        }
         if scenes != snapshot.scenes {
             scenes = snapshot.scenes
             builder.updateScenes(snapshot.scenes)

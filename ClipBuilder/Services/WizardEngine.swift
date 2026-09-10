@@ -2816,6 +2816,8 @@ actor WizardEngine {
                 var left = timelineClip
                 var right = timelineClip
                 right.uid = UUID()
+                // An independent feed, not a piece of the left one.
+                right.originKey = UUID().uuidString
                 right.track = 1
                 right.muted = true
                 left.screenCrop = ScreenCropStore.reference(layout: "50-50 Horizontal", area: "Top")
@@ -3115,6 +3117,7 @@ actor WizardEngine {
                     normalized.transIn = clip.transIn
                     normalized.transOut = clip.transOut
                     normalized.captions = "none"
+                    normalized.originKey = clip.originKey
                     prepared.videoTrack.append(normalized)
                     sourceIndex += 1
                 }
