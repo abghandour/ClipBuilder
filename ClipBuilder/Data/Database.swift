@@ -639,7 +639,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 11
+    static let schemaVersion: Int64 = 12
 
     func reelTraits(kind: String, videoID: String, version: Int = ReelTraits.version) throws -> ReelTraits? {
         guard let text = try connection.query("SELECT traits_json FROM reel_traits WHERE video_kind = ? AND video_id = ? AND version = ?",

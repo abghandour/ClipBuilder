@@ -35,7 +35,9 @@ struct DatabaseTests {
         for (table, column) in [("videos", "video_type"), ("videos", "naming_provider"),
                                 ("videos", "podcast_layout"), ("videos", "podcast_seam_x"),
                                 ("scenes", "curated_provider"), ("scenes", "stack_choice"),
-                                ("video_notes", "provider"), ("fight_events", "model")] {
+                                ("video_notes", "provider"), ("fight_events", "model"),
+                                ("videos", "people_seconds"), ("videos", "speech_seconds"),
+                                ("transcripts", "seconds")] {
             #expect(try raw.columnNames(of: table).contains(column), "\(table).\(column) missing after migration")
         }
         // The migrated file is usable, not just stamped.
@@ -571,5 +573,34 @@ struct OnDevicePassTimingTests {
         let framing = try #require(roles.first { $0.role == "Framing" })
         #expect(framing.provenance.provider == AIProvenance.appleProvider)
         #expect(framing.provenance.duration == 2.5)
+    }
+}
+
+@Suite("Schema version gate")
+struct SchemaVersionGateTests {
+    /// A database stamped one version behind must gain the columns that the
+    /// newest migration adds. This is the 1.60 regression: columns were added
+    /// to migrate() without bumping schemaVersion, so stamped databases never
+    /// received them and every people/transcript save failed.
+    @Test func previousVersionGainsTimingColumns() async throws {
+        let temp = try TempDatabase()
+        let raw = try SQLiteConnection(path: temp.path.path)
+        for column in ["people_seconds", "speech_seconds"] {
+            try raw.execute("ALTER TABLE videos DROP COLUMN \(column)")
+        }
+        try raw.execute("ALTER TABLE transcripts DROP COLUMN seconds")
+        try raw.execute("PRAGMA user_version = \(Database.schemaVersion - 1)")
+        #expect(!(try raw.columnNames(of: "videos")).contains("people_seconds"))
+
+        let reopened = try Database(path: temp.path)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
+        #expect(try raw.columnNames(of: "videos").contains("people_seconds"))
+        #expect(try raw.columnNames(of: "videos").contains("speech_seconds"))
+        #expect(try raw.columnNames(of: "transcripts").contains("seconds"))
+        let videoID = try await reopened.registerVideo(hash: "h", filename: "a.mp4", path: "/tmp/a.mp4",
+                                                       duration: 1, width: 1, height: 1, wide: false)
+        try await reopened.replaceVideoPeople(videoID: videoID, entries: [],
+                                              provenance: AIProvenance(provider: "gemini", duration: 1))
+        #expect(try await reopened.video(id: videoID)?.peopleSeconds == 1)
     }
 }
