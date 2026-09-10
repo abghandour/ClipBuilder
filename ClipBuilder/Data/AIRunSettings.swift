@@ -38,6 +38,8 @@ nonisolated struct AnalysisRunSettings: Codable, Sendable, Equatable {
     var detectPeople = true
     var autoZoomUnframed = false
     var breakdownTags: [String] = []
+    /// Optional so runs saved before the setting existed still decode.
+    var smartSampling: Bool?
     var trimRange: [Double]?
     var notes: [AnalysisRunNote] = []
     var provider: String?
@@ -105,7 +107,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
             case .options:
                 return [
                     "sampleInterval", "includeTranscript", "language", "detectPeople",
-                    "autoZoomUnframed",
+                    "autoZoomUnframed", "smartSampling",
                     "breakdownTags", "trimRange", "videoPath",
                 ]
             }

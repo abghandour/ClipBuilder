@@ -158,8 +158,12 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     static let studioSections: [SidebarSection] = [.instagram, .instagramReports]
     /// Every resource library is its own row: one click, one screen, as the
     /// app always had it — a tab strip inside one screen hid them.
-    static let resourceSections: [SidebarSection] = [.music, .fonts, .images, .overlays, .effects, .screenCrops, .bumpers]
-    static let visibleSections = projectSections + studioSections + [.learned] + resourceSections
+    /// AI Lessons sits with the resources: like them it is profile-wide and
+    /// syncs with the Drive home (up when a nickname is set, down always).
+    static let resourceSections: [SidebarSection] = [
+        .music, .fonts, .images, .overlays, .effects, .screenCrops, .bumpers, .learned,
+    ]
+    static let visibleSections = projectSections + studioSections + resourceSections
 
     /// Project/studio shortcuts use ⌘1–⌘8; Bumpers uses the remaining ⌘9.
     private var shortcutDigit: Character? {
@@ -196,7 +200,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .people: return "People"
         case .timelines, .builder: return "Timelines"
         case .outputs, .library: return "Outputs"
-        case .learned: return "What Clip Builder has learned"
+        case .learned: return "AI Lessons"
         case .wizard: return "AI Wizard"
         case .instagram: return "Posts"
         case .instagramReports: return "Reports"

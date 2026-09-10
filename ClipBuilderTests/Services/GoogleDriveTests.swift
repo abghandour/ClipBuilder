@@ -105,7 +105,7 @@ struct GoogleDriveTests {
         let transport = FakeDriveTransport { _, _ in
             (
                 Data(
-                    #"{"access_token":"access","expires_in":3600,"scope":"https://www.googleapis.com/auth/drive.readonly"}"#
+                    #"{"access_token":"access","expires_in":3600,"scope":"https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file"}"#
                         .utf8), 200, [:]
             )
         }
@@ -229,7 +229,8 @@ struct GoogleDriveTests {
     func typedErrors() async throws {
         for (status, body, expected) in [
             (404, "", GoogleDriveError.notFound), (429, "", .quota),
-            (403, "insufficientPermissions", .reconnect), (503, "", .server(503)),
+            (403, "insufficientPermissions", .reconnect), (403, "insufficientFilePermissions", .forbidden),
+            (503, "", .server(503)),
         ] {
             let transport = FakeDriveTransport { request, _ in
                 if request.url?.path == "/token" { return (Self.token, 200, [:]) }

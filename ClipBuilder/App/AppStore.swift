@@ -1369,6 +1369,8 @@ final class AppStore {
             .split(separator: ",").map(String.init)
         UserDefaults.standard.removeObject(forKey: "analysis.requiredPeople")
         let sampleInterval: Double? = storedInterval > 0 ? storedInterval : nil
+        // Smart Sampling: phased analysis for long files, on unless switched off.
+        let smartSampling = UserDefaults.standard.object(forKey: "analysis.smartSampling") as? Bool ?? true
         let pastedNotes = AISettingsJSON.decode([AnalysisRunNote].self, UserDefaults.standard.string(forKey: "analysis.pastedNotes"))
         UserDefaults.standard.removeObject(forKey: "analysis.pastedNotes")
         let includeTranscript = UserDefaults.standard.bool(forKey: "analysis.includeTranscript")
@@ -1414,8 +1416,10 @@ final class AppStore {
                 do {
                     let transcriptFeatures = localClassification ? ((try? await database.fetchTranscriptFeatures(videoID: video.id)) ?? []) : []
                     let speechFraction = transcriptFeatures.isEmpty ? nil : transcriptFeatures.filter { $0.kind == .speech }.reduce(0) { $0 + $1.endTime - $1.startTime } / max(1, video.duration)
-                    let cuts = localClassification && video.type == nil && video.duration >= 300
-                        ? await cachedDetectors(for: video)?.cuts : nil
+                    let wantsCuts = (localClassification && video.type == nil && video.duration >= 300)
+                        || (smartSampling && SmartSampling.appliesTo(duration: video.duration, customInterval: sampleInterval,
+                                                                     trimmed: trimRange != nil, nativeVideo: false))
+                    let cuts = wantsCuts ? await cachedDetectors(for: video)?.cuts : nil
                     if video.type == nil, video.duration >= 300,
                        let type = try await analyzer.classifyLongRecording(
                         video: video, provider: provider, model: model, log: logSink(\.analysisLog),
@@ -1481,6 +1485,8 @@ final class AppStore {
                             breakdownTags: breakdownTags,
                             trimRange: trimRange,
                             sampleInterval: sampleInterval,
+                            smartSampling: smartSampling,
+                            cuts: cuts,
                             force: true,
                             log: logSink(\.analysisLog), progress: progress)
                         runID = result.runID
@@ -1492,6 +1498,7 @@ final class AppStore {
                             instructions: instructions, sampleInterval: sampleInterval ?? 0,
                             includeTranscript: includeTranscript || video.type == .podcast, language: video.type == .podcast ? "" : language,
                             detectPeople: detectPeople, autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTags,
+                            smartSampling: smartSampling,
                             trimRange: trimRange.map { [$0.start, $0.end] }, notes: notes.map { AnalysisRunNote(at: $0.atTime, note: $0.note) },
                             provider: provider, model: model, videoPath: video.path, sourcePeople: requiredPeopleKeys, sourceProfile: profile.profileName))
                     }

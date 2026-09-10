@@ -748,7 +748,7 @@ private struct AISettingsTab: View {
             }
 
             Section("Learning") {
-                Button("What Clip Builder has learned") { showingLearned = true }
+                Button("AI Lessons") { showingLearned = true }
                     .sheet(isPresented: $showingLearned) {
                         LearnedPreferencesView().frame(minWidth: 760, minHeight: 560)
                     }

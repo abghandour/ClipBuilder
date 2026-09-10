@@ -26,6 +26,7 @@ import Foundation
     ]
     static let analysisKeys: [String: String] = [
         "instructions": "analysis.instructions", "sampleInterval": "analysis.sampleInterval",
+        "smartSampling": "analysis.smartSampling",
         "includeTranscript": "analysis.includeTranscript",
         "autoZoomUnframed": "analysis.autoZoomUnframed", "detectPeople": "analysis.detectPeople",
         "language": "analysis.language",

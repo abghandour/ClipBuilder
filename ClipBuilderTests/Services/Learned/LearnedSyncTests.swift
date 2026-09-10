@@ -119,6 +119,35 @@ struct LearnedSyncTests {
         #expect(AssetSyncFixture.stagingPaths(in: fixture.directory.url).isEmpty)
     }
 
+    @Test func pullInstallsPeersWithoutNicknameOrUploads() async throws {
+        var peerProfile = BrandProfile(name: "Peer")
+        peerProfile.learnedSharing.deviceNickname = "Studio"
+        peerProfile.tasteRubric = "Peer action"
+        let peerBuild = try LearnedDocumentBuilder.build(profile: peerProfile, readFrame: { _ in Data() })
+        let peerData = try JSONEncoder().encode(LearnedRedaction.apply(peerBuild.document, publishing: true))
+        let peerFile = DriveFile(id: "peer-file", name: peerBuild.document.contributor + ".json", mimeType: "application/json",
+            size: String(peerData.count), md5Checksum: Insecure.MD5.hash(data: peerData).map { String(format: "%02x", $0) }.joined())
+        let fixture = try AssetSyncFixture { request, _ in
+            if request.url?.path.hasSuffix("/peer-file") == true {
+                if request.url?.query?.contains("alt=media") == true { return (peerData, 200, [:]) }
+                return try AssetSyncFixture.response(peerFile)
+            }
+            let query = URLComponents(url: try #require(request.url), resolvingAgainstBaseURL: false)?.queryItems?
+                .first { $0.name == "q" }?.value ?? ""
+            if query.contains("'home'") { return try AssetSyncFixture.page([AssetSyncFixture.folder("learned", "learned")]) }
+            if query.contains("'learned'") { return try AssetSyncFixture.page([peerFile]) }
+            return try AssetSyncFixture.page([])
+        }
+        await fixture.attach()
+        let local = BrandProfile(name: "Test")  // no device nickname
+        try await LearnedSync.pull(executor: fixture.executor(), profile: local, library: LearnedLibrary(root: fixture.directory.url))
+        #expect(LearnedLibrary(root: fixture.directory.url, profile: "Test").documents()
+            .contains { $0.contributor == peerBuild.document.contributor })
+        let requests = await fixture.transport.requests
+        let writes = requests.filter { ["POST", "PATCH", "PUT"].contains($0.httpMethod) && $0.url?.path != "/token" }
+        #expect(writes.isEmpty)
+    }
+
     @Test func unownedSameNameNeverOverwritten() async throws {
         var profile = BrandProfile(name: "Test")
         profile.learnedSharing.deviceNickname = "Studio"

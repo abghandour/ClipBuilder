@@ -122,7 +122,7 @@ struct ResourceExportSheet: View {
             do {
                 if categories.contains(.learned), let database = store.database {
                     guard !store.activeProfile.learnedSharing.deviceNickname.isEmpty else {
-                        throw AIError.notConfigured("Enter a device nickname on What Clip Builder has learned before exporting learned preferences.")
+                        throw AIError.notConfigured("Enter a device nickname on AI Lessons before exporting learned preferences.")
                     }
                     learned = [try await LearnedDocumentBuilder.build(profile: store.activeProfile, database: database, benchmarks: store.igBenchmarks)]
                 } else { learned = [] }

@@ -419,9 +419,10 @@ final class GoogleDriveTransfers {
         home.refresh(client: context.client, database: context.database, transfers: self, profile: profile,
             learnedStep: { runner in
                 let current = ProfileStore.load(name: profile) ?? context.profile
-                // No nickname yet: assets still refresh; publishing needs the user-entered identity.
+                // No nickname yet: others' lessons still come down; publishing needs the user-entered identity.
                 guard !current.learnedSharing.deviceNickname.isEmpty else {
-                    log("Learned preferences: enter a device nickname on the learning page to publish")
+                    try await LearnedSync.pull(executor: runner, profile: current)
+                    log("AI Lessons: downloaded shared lessons; enter a device nickname on AI Lessons to publish yours")
                     return
                 }
                 let wizard = WizardEngine(ai: AIService(config: SettingsStore.loadSettings().ai), render: RenderEngine())

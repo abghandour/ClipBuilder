@@ -77,6 +77,7 @@ struct DispatchPlanSheet: View {
     @AppStorage("analysis.instructions") private var instructions = ""
     @AppStorage("analysis.sampleInterval") private var sampleInterval = 0.0   // 0 = automatic
     @AppStorage("analysis.autoBreakdown") private var autoBreakdown = false
+    @AppStorage("analysis.smartSampling") private var smartSampling = true
     /// Comma-joined tags whose scenes get the breakdown pass — AppStorage
     /// can't hold a Set directly.
     @AppStorage("analysis.breakdownTags") private var breakdownTagsRaw = ""
@@ -173,6 +174,7 @@ struct DispatchPlanSheet: View {
             AnalysisRunSettings(instructions: instructions, sampleInterval: sampleInterval,
                 includeTranscript: includeTranscript, language: store.settings.transcribeLanguage, detectPeople: detectPeople,
                 autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTagsRaw.split(separator: ",").map(String.init),
+                smartSampling: smartSampling,
                 trimRange: [trimStart, trimEnd], notes: AISettingsJSON.decode([AnalysisRunNote].self, UserDefaults.standard.string(forKey: "analysis.pastedNotes")) ?? [], provider: analysisChoice.provider, model: analysisChoice.model,
                 videoPath: videos.count == 1 ? videos.first?.path : nil, sourcePeople: Array(selectedPeopleKeys), sourceProfile: store.activeProfile.profileName)
         }, set: { value in
@@ -181,6 +183,7 @@ struct DispatchPlanSheet: View {
             detectPeople = value.detectPeople
             autoZoomUnframed = value.autoZoomUnframed
             breakdownTagsRaw = value.breakdownTags.joined(separator: ","); autoBreakdown = !value.breakdownTags.isEmpty
+            if let smart = value.smartSampling { smartSampling = smart }
             if let range = value.trimRange, range.count == 2 { trimStart = range[0]; trimEnd = range[1] }
             else { trimStart = 0; trimEnd = videos.first?.duration ?? 0 }
             if let provider = value.provider { choices["analysis"] = "\(provider)|\(value.model ?? "")" }
@@ -590,6 +593,12 @@ struct DispatchPlanSheet: View {
                                 Text(choice.label).tag(choice.value)
                             }
                         }
+                        Toggle("Smart Sampling", isOn: $smartSampling)
+                            .help("Files over \(Int(SmartSampling.minDuration / 60)) minutes are mapped in \(Int(SmartSampling.windowSeconds / 60))-minute sections sampled every \(Int(SmartSampling.coarseInterval))s, then only the action gets a frame-by-frame pass. Podcasts and interviews skip the dense pass.")
+                        if smartSampling {
+                            Text("Long files: a quick map of every section first, then a close look only where the action is. Talk formats stop after the map.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                         Toggle("Break down tagged scenes into sub-scenes", isOn: $autoBreakdown)
                         if autoBreakdown {
                             breakdownTagRows
@@ -613,7 +622,7 @@ struct DispatchPlanSheet: View {
             .formStyle(.grouped)
             .frame(minHeight: CGFloat(operation.localStages.count + 2) * 44 + 60
                    + (operation == .analyze && showAdvancedAnalysisOptions
-                      ? (includeTranscript ? 176 : 88) + (autoBreakdown ? 160 : 0)
+                      ? (includeTranscript ? 176 : 88) + (autoBreakdown ? 160 : 0) + (smartSampling ? 72 : 44)
                       : 0))
 
             if operation == .analyze && showAdvancedAnalysisOptions {

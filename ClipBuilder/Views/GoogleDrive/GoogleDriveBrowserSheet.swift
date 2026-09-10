@@ -180,9 +180,14 @@ struct GoogleDriveBrowserSheet: View {
                 if nextPage != nil { Button("Load More") { Task { await load(append: true) } }.disabled(loading) }
                 Spacer()
                 if isFolderPicker {
+                    if let folder = currentFolder, !folder.canAddChildren {
+                        Text("View only").foregroundStyle(.secondary)
+                            .help("You can't add folders here. Ask the owner for edit access.")
+                    }
                     TextField("New folder name", text: $newFolder).frame(width: 180)
                     Button("Create Folder") { Task { await createFolder() } }.disabled(
-                        newFolder.trimmingCharacters(in: .whitespaces).isEmpty || loading || currentFolder == nil)
+                        newFolder.trimmingCharacters(in: .whitespaces).isEmpty || loading
+                            || currentFolder?.canAddChildren != true)
                 }
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(

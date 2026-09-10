@@ -8,7 +8,8 @@ actor GoogleDriveClient {
     private let chunkSize = 4 * 1024 * 1024  // multiple of Drive's 256 KiB upload unit
     private let downloadChunkSize = 16 * 1024 * 1024
     static let fields =
-        "id,name,mimeType,size,modifiedTime,thumbnailLink,webViewLink,shared,ownedByMe,md5Checksum,version"
+        "id,name,mimeType,size,modifiedTime,thumbnailLink,webViewLink,shared,ownedByMe,md5Checksum,version,"
+        + "capabilities/canAddChildren"
 
     init(auth: GoogleDriveAuth, profile: String, transport: any DriveTransport = URLSessionDriveTransport()) {
         self.auth = auth
@@ -330,7 +331,7 @@ actor GoogleDriveClient {
                 await auth.invalidate(profile: profile)
                 throw GoogleDriveError.reconnect
             }
-            throw GoogleDriveError.notFound
+            throw GoogleDriveError.forbidden
         case 404: throw GoogleDriveError.notFound
         case 429: throw GoogleDriveError.quota
         default: throw GoogleDriveError.server(response.statusCode)

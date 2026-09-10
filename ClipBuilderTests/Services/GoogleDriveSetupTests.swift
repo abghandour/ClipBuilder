@@ -9,7 +9,7 @@ struct GoogleDriveSetupTests {
     func friendlyErrors() {
         let errors: [GoogleDriveError] = [
             .accountMismatch(expected: "person@example.com"), .notConfigured, .reconnect,
-            .quota, .notFound, .offline, .cancelled, .invalidResponse, .conflict, .inUse,
+            .quota, .notFound, .forbidden, .offline, .cancelled, .invalidResponse, .conflict, .inUse,
             .server(500), .keychain(-1),
         ]
         for error in errors {
@@ -21,6 +21,31 @@ struct GoogleDriveSetupTests {
                 #expect(!text.contains(forbidden))
             }
         }
+    }
+
+    @Test("Folders report whether the user may add children; unknown means writable")
+    func folderCapabilities() throws {
+        let decoder = JSONDecoder()
+        let viewOnly = try decoder.decode(
+            DriveFile.self,
+            from: Data(
+                #"{"id":"a","name":"PAX Folder","mimeType":"application/vnd.google-apps.folder","capabilities":{"canAddChildren":false}}"#
+                    .utf8))
+        #expect(!viewOnly.canAddChildren)
+        let editable = try decoder.decode(
+            DriveFile.self, from: Data(#"{"id":"b","name":"Mine","mimeType":"application/vnd.google-apps.folder","capabilities":{"canAddChildren":true}}"#.utf8))
+        #expect(editable.canAddChildren)
+        let root = DriveFile(id: "root", name: "My Drive", mimeType: "application/vnd.google-apps.folder")
+        #expect(root.canAddChildren)
+        #expect(GoogleDriveClient.fields.contains("capabilities/canAddChildren"))
+    }
+
+    @Test("Sign-in requires full Drive access, not the read-only and app-file pair")
+    func fullDriveScope() {
+        #expect(GoogleDriveAuth.hasDriveScopes("openid email https://www.googleapis.com/auth/drive"))
+        #expect(
+            !GoogleDriveAuth.hasDriveScopes(
+                "https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file"))
     }
 
     @Test("The device Keychain override wins; clearing it restores bundled values")

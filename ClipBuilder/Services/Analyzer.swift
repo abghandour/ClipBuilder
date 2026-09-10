@@ -498,10 +498,11 @@ actor Analyzer {
     /// actions, using the same tag vocabulary and JSON shape as the main
     /// pass so the results merge straight into it.
     static func breakdownPrompt(domain: String, start: Double, end: Double,
-                                tags: [String: [String]]) -> String {
+                                tags: [String: [String]], instructions: String = "") -> String {
         String(format: """
         You are analyzing ONE continuous scene from a %@ video, running from %.1fs to %.1fs. \
         The attached frames are labeled with their absolute timestamps within that window.
+        %@
 
         Break this scene down into its individual actions. Each distinct exchange — a strike \
         combination, a takedown attempt, a scramble, a submission attempt, or any other \
@@ -519,7 +520,7 @@ actor Analyzer {
         - ALSO return a "sequences" entry per action range: same start/end, "narrative" (a 1-2 sentence beat-by-beat story of the action) and "score" (0-10 ENTERTAINMENT: escalation with a visible payoff scores high, isolated action low)
         - Return ONLY a JSON object of the form {"tags": {"tag-name": [{"start": 12.0, "end": 15.5}]}, "sequences": [{"start": 12.0, "end": 15.5, "narrative": "...", "score": 7.5}]} — no markdown fences, no explanation
         - If nothing distinct happens, return: {"tags": {}, "sequences": []}
-        """, domain, start, end, tagList(tags), start, end)
+        """, domain, start, end, instructionsBlock(instructions), tagList(tags), start, end)
     }
 
     /// One dense look at a single scene's window: up to 120 frames at ≥0.25s
@@ -527,6 +528,7 @@ actor Analyzer {
     /// individual actions inside it.
     private func breakdownScene(url: URL, window: (start: Double, end: Double),
                                 domain: String, tags: [String: [String]], allTags: Set<String>,
+                                instructions: String = "",
                                 provider: String?, model: String?,
                                 log: @escaping @Sendable (String) -> Void) async throws
         -> (tags: [String: [(start: Double, end: Double)]],
@@ -544,7 +546,7 @@ actor Analyzer {
         log(String(format: "Re-examining %.1f–%.1fs with %d dense frames…",
                    window.start, window.end, frames.count))
         let prompt = Self.breakdownPrompt(domain: domain, start: window.start, end: window.end,
-                                          tags: tags)
+                                          tags: tags, instructions: instructions)
         let response = try await callThinningFrames(prompt: prompt, auxiliary: [], sampled: frames,
                                                     model: model, provider: provider, log: log)
         guard let object = AIResponseParser.jsonObject(from: response.text),
@@ -573,6 +575,110 @@ actor Analyzer {
             sequences.append((start, end, narrative, score))
         }
         return (cleanTags, sequences)
+    }
+
+    // MARK: - Smart Sampling
+
+    /// One coarse window of the Smart Sampling map: tags, sequences and
+    /// moments inside it plus how busy the section is.
+    nonisolated struct WindowMap: Sendable {
+        var window: (start: Double, end: Double)
+        var tags: [String: [(start: Double, end: Double)]] = [:]
+        var sequences: [(start: Double, end: Double, narrative: String, score: Double)] = []
+        var moments: [(at: Double, note: String, dialog: String?)] = []
+        var activity = 0.0
+    }
+
+    /// Coarse-map prompt: the full pass's tag/sequence/moment shape for one
+    /// section, plus an activity score that decides whether the dense pass
+    /// looks here at all.
+    static func windowMapPrompt(domain: String, start: Double, end: Double,
+                                tags: [String: [String]], instructions: String) -> String {
+        String(format: """
+        You are analyzing ONE SECTION of a %@ video: from %.1fs to %.1fs of a longer recording. \
+        Frames are sampled about %.0f seconds apart and labeled with their absolute timestamps.
+        %@
+        Your job: map what happens in this section. For each tag that applies, give the TIME RANGES \
+        where it is present, and rate the section's physical ACTIVITY.
+
+        AVAILABLE TAGS (only use tags from this list):
+        %@
+        Return ONLY a JSON object of this exact shape:
+        {"activity": 0, "tags": {"tag_name": [{"start": 0.0, "end": 5.2}]}, "sequences": [{"start": 0.0, "end": 5.2, "narrative": "...", "score": 0}], "moments": [{"at": 3.5, "note": "...", "dialog": null}]}
+
+        RULES:
+        - "activity" is 0-10 for how much physical action the section holds: 0 = people sitting and talking, \
+          5 = drills or light movement, 8+ = live exchanges, sparring, or a bout in progress.
+        - All time ranges must be within %.1f to %.1f. Frames are sparse, so ranges may be approximate — \
+          a denser pass follows wherever there is action.
+        - Add a "sequences" entry (beat-by-beat narrative, 0-10 ENTERTAINMENT score) only for action ranges.
+        - Only include tags that actually appear in these frames.
+        - Return ONLY the JSON object, no markdown fences, no explanation.
+        """, domain, start, end, SmartSampling.coarseInterval, instructionsBlock(instructions),
+           tagList(tags), start, end)
+    }
+
+    nonisolated static func parseWindowMap(_ text: String, window: (start: Double, end: Double),
+                                           allTags: Set<String>) -> WindowMap {
+        var result = WindowMap(window: window)
+        guard let object = AIResponseParser.jsonObject(from: text) else { return result }
+        result.activity = min(10, max(0, (object["activity"] as? NSNumber)?.doubleValue ?? 0))
+        for (tag, value) in object["tags"] as? [String: Any] ?? [:] {
+            guard allTags.contains(tag), let ranges = value as? [[String: Any]] else { continue }
+            var clean: [(Double, Double)] = []
+            for range in ranges {
+                let start = max(window.start, ((range["start"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
+                let end = min(window.end, ((range["end"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
+                if end > start { clean.append((start, end)) }
+            }
+            if !clean.isEmpty { result.tags[tag] = clean }
+        }
+        for entry in object["sequences"] as? [[String: Any]] ?? [] {
+            let start = max(window.start, ((entry["start"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
+            let end = min(window.end, ((entry["end"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
+            let narrative = (entry["narrative"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard end > start, !narrative.isEmpty else { continue }
+            let score = min(10, max(0, (entry["score"] as? NSNumber)?.doubleValue ?? 5))
+            result.sequences.append((start, end, narrative, score))
+        }
+        for moment in object["moments"] as? [[String: Any]] ?? [] {
+            let at = ((moment["at"] as? NSNumber)?.doubleValue ?? -1).rounded(toPlaces: 1)
+            guard at >= window.start, at <= window.end else { continue }
+            result.moments.append((at, moment["note"] as? String ?? "", moment["dialog"] as? String))
+        }
+        return result
+    }
+
+    /// Smart Sampling phase 2: every coarse window in parallel. A failed
+    /// window logs and yields nothing; the classic pass already covered it.
+    private func coarseMapPass(url: URL, windows: [(start: Double, end: Double)], domain: String,
+                               tags: [String: [String]], allTags: Set<String>, instructions: String,
+                               provider: String?, model: String?,
+                               log: @escaping @Sendable (String) -> Void,
+                               progress: @escaping @Sendable (Double, String) -> Void) async throws -> [WindowMap] {
+        try await BoundedConcurrency.map(windows, limit: SmartSampling.coarseConcurrency) { index, window in
+            try Task.checkCancellation()
+            progress(0.3 + 0.25 * Double(index) / Double(max(1, windows.count)),
+                     "mapping section \(index + 1) of \(windows.count)")
+            let frames = await self.extractFrames(url: url, timestamps: SmartSampling.coarseTimestamps(window: window), log: log)
+            guard !frames.isEmpty else { return WindowMap(window: window) }
+            let prompt = Self.windowMapPrompt(domain: domain, start: window.start, end: window.end,
+                                              tags: tags, instructions: instructions)
+            do {
+                let response = try await self.callThinningFrames(prompt: prompt, auxiliary: [], sampled: frames,
+                                                                 model: model, provider: provider, log: log)
+                let map = Self.parseWindowMap(response.text, window: window, allTags: allTags)
+                log(String(format: "Smart Sampling: %.0f–%.0fs mapped — activity %.0f, %d tag(s)",
+                           window.start, window.end, map.activity, map.tags.count))
+                return map
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                log(String(format: "Smart Sampling: %.0f–%.0fs failed — %@", window.start, window.end,
+                           error.localizedDescription))
+                return WindowMap(window: window)
+            }
+        }
     }
 
     // MARK: - People-only pass
@@ -908,9 +1014,7 @@ actor Analyzer {
             log("\(video.filename): \(currentType?.label ?? "untyped") video — skipping the fight scoring pass (set the Type to Fight to score it)")
             return 0
         }
-        let fightTags: Set<String> = ["striking", "punching", "kicking", "grappling",
-                                      "takedown", "submission", "clinch", "sparring",
-                                      "knockdown", "ground-and-pound", "high-energy"]
+        let fightTags = SmartSampling.actionTags
         let targets = scenes
             .filter { $0.videoID == video.id && $0.tags.contains(where: fightTags.contains) }
             .sorted { $0.startTime < $1.startTime }
@@ -1184,6 +1288,8 @@ actor Analyzer {
                        centerStageCamera: String = "balanced",
                        trimRange: (start: Double, end: Double)? = nil,
                        sampleInterval: Double? = nil,
+                       smartSampling: Bool = false,
+                       cuts: [Double]? = nil,
                        force: Bool = false,
                        log: @escaping @Sendable (String) -> Void,
                        progress: @escaping @Sendable (Double, String) -> Void) async throws
@@ -1508,70 +1614,120 @@ actor Analyzer {
             let score = min(10, max(0, (entry["score"] as? NSNumber)?.doubleValue ?? 5))
             sequences.append((start, end, narrative, score))
         }
-        // Windows the breakdown split — their scenes become parents of the
-        // action scenes cut from inside them.
-        var brokenWindows: [(start: Double, end: Double)] = []
+        // Smart Sampling — the coarse map. Long files get 5-minute windows
+        // sampled every 15 s, in parallel, on top of the 30-frame pass above
+        // (which still owns people, the outcome and the video type).
+        var activity: [(window: (start: Double, end: Double), score: Double)] = []
+        let smart = smartSampling && !isIncremental
+            && SmartSampling.appliesTo(duration: duration, customInterval: sampleInterval,
+                                       trimmed: window != nil, nativeVideo: nativeVideo != nil)
+        if smart {
+            let coarse = SmartSampling.coarseWindows(duration: duration)
+            log("Smart Sampling: mapping \(coarse.count) section(s), one frame every \(Int(SmartSampling.coarseInterval))s…")
+            let maps = try await coarseMapPass(url: video.url, windows: coarse, domain: domain, tags: tags,
+                                               allTags: allTags, instructions: instructions,
+                                               provider: provider, model: model, log: log, progress: progress)
+            let before = cleanTags.values.reduce(0) { $0 + $1.count }
+            for map in maps {
+                cleanTags = SmartSampling.merge(existing: cleanTags, incoming: map.tags)
+                sequences.append(contentsOf: map.sequences)
+                cleanMoments.append(contentsOf: map.moments)
+                activity.append((map.window, map.activity))
+            }
+            let added = cleanTags.values.reduce(0) { $0 + $1.count } - before
+            log("Smart Sampling: \(added) range(s) added from the coarse map")
+        }
 
-        // Optional dense second pass: scenes carrying one of the chosen
-        // breakdown tags get re-examined frame-by-frame and split into their
-        // individual actions (combos, exchanges). The sub-ranges replace the
-        // coarse range before anything is saved, so the batch lands granular
-        // scenes — with people, portrait-fit, and crop suggestions applied
-        // per sub-scene like any other.
-        if !breakdownTags.isEmpty {
-            var windows: [(start: Double, end: Double)] = []
-            var seenWindows = Set<String>()
-            for (tag, ranges) in cleanTags where breakdownTags.contains(tag) {
-                for range in ranges where range.end - range.start >= Self.minBreakdownDuration {
-                    if seenWindows.insert("\(range.start)-\(range.end)").inserted {
-                        windows.append(range)
+        // Dense pass windows. Classic: the user's breakdown-tag scenes, one
+        // window each. Smart Sampling: those plus wherever the map or the
+        // tags show action, unioned and chunked so nothing is examined twice.
+        var manualWindows: [(start: Double, end: Double)] = []
+        var seenWindows = Set<String>()
+        for (tag, ranges) in cleanTags where breakdownTags.contains(tag) {
+            for range in ranges where range.end - range.start >= Self.minBreakdownDuration {
+                if seenWindows.insert("\(range.start)-\(range.end)").inserted {
+                    manualWindows.append(range)
+                }
+            }
+        }
+        // Coarse scenes that may become parents of dense sub-scenes.
+        var coarseParents = manualWindows
+        var windows = manualWindows
+        if smart {
+            // The stored type wins over this run's inference, as it does when saving.
+            let type = video.type ?? inferredType
+            if SmartSampling.skipsDensePass(type) {
+                log("Smart Sampling: \(type?.label ?? "talk") footage — "
+                    + (manualWindows.isEmpty ? "no dense pass needed" : "dense pass only for your breakdown tags"))
+            } else {
+                for (tag, ranges) in cleanTags where SmartSampling.actionTags.contains(tag) {
+                    for range in ranges where range.end - range.start >= Self.minBreakdownDuration
+                        && seenWindows.insert("\(range.start)-\(range.end)").inserted {
+                        coarseParents.append(range)
                     }
                 }
             }
-            windows.sort { $0.start < $1.start }
-            if !windows.isEmpty {
-                log("Breaking down \(windows.count) scene(s) tagged \(breakdownTags.joined(separator: ", "))…")
-            }
-            for (index, window) in windows.enumerated() {
+            windows = SmartSampling.denseWindows(tagRanges: cleanTags, activity: activity,
+                                                 cuts: cuts ?? [], type: type, manual: manualWindows)
+        }
+        windows.sort { $0.start < $1.start }
+        // Sub-ranges the dense pass adds; only these get linked under a parent.
+        var denseRanges = Set<String>()
+
+        // Dense second pass: each window is re-examined frame-by-frame and
+        // split into its individual actions (combos, exchanges). Windows run
+        // in parallel; their sub-ranges join the coarse ranges before anything
+        // is saved, so the batch lands granular scenes — with people,
+        // portrait-fit, and crop suggestions applied per sub-scene like any other.
+        if !windows.isEmpty {
+            log("Breaking down \(windows.count) window(s)"
+                + (breakdownTags.isEmpty ? "" : " tagged \(breakdownTags.joined(separator: ", "))") + "…")
+            typealias Breakdown = (tags: [String: [(start: Double, end: Double)]],
+                                   sequences: [(start: Double, end: Double, narrative: String, score: Double)])
+            let subs = try await BoundedConcurrency.map(windows, limit: SmartSampling.denseConcurrency) { index, window -> Breakdown in
                 try Task.checkCancellation()
                 progress(0.88 + 0.06 * Double(index) / Double(windows.count), "breaking down scenes")
                 do {
-                    let sub = try await breakdownScene(url: video.url, window: window,
-                                                       domain: domain, tags: tags, allTags: allTags,
-                                                       provider: provider, model: model, log: log)
-                    guard !sub.tags.isEmpty else {
-                        log(String(format: "No distinct actions found in %.1f–%.1fs — keeping the scene whole",
-                                   window.start, window.end))
-                        continue
-                    }
-                    // Hierarchical: the sequence scene is KEPT, its actions
-                    // land inside it and get linked as children after saving
-                    // — the planner can pick the whole story or its beats.
-                    brokenWindows.append(window)
-                    // People whose ranges overlap the window ride along onto
-                    // each overlapping sub-range, so sub-scenes keep their
-                    // people chips (and the wizard's people filter).
-                    let personTags = cleanTags.filter { $0.key.hasPrefix("person:") }
-                    var distinct = Set<String>()
-                    for (tag, ranges) in sub.tags {
-                        cleanTags[tag, default: []].append(contentsOf: ranges)
-                        for range in ranges {
-                            distinct.insert("\(range.start)-\(range.end)")
-                            for (personTag, personRanges) in personTags
-                                where personRanges.contains(where: { $0.start < range.end && range.start < $0.end }) {
-                                cleanTags[personTag, default: []].append((range.start, range.end))
-                            }
-                        }
-                    }
-                    sequences.append(contentsOf: sub.sequences)
-                    log(String(format: "Sequence %.1f–%.1fs kept, %d action scene(s) added inside it",
-                               window.start, window.end, distinct.count))
+                    return try await self.breakdownScene(url: video.url, window: window,
+                                                         domain: domain, tags: tags, allTags: allTags,
+                                                         instructions: instructions,
+                                                         provider: provider, model: model, log: log)
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
                     log(String(format: "Breakdown of %.1f–%.1fs failed — keeping the scene whole",
                                window.start, window.end))
+                    return ([:], [])
                 }
+            }
+            for (window, sub) in zip(windows, subs) {
+                guard !sub.tags.isEmpty else {
+                    log(String(format: "No distinct actions found in %.1f–%.1fs — keeping the scene whole",
+                               window.start, window.end))
+                    continue
+                }
+                // Hierarchical: the coarse scene is KEPT, its actions land
+                // inside it and get linked as children after saving — the
+                // planner can pick the whole story or its beats.
+                // People whose ranges overlap the window ride along onto
+                // each overlapping sub-range, so sub-scenes keep their
+                // people chips (and the wizard's people filter).
+                let personTags = cleanTags.filter { $0.key.hasPrefix("person:") }
+                var distinct = Set<String>()
+                for (tag, ranges) in sub.tags {
+                    cleanTags[tag, default: []].append(contentsOf: ranges)
+                    for range in ranges {
+                        distinct.insert("\(range.start)-\(range.end)")
+                        denseRanges.insert("\(range.start)-\(range.end)")
+                        for (personTag, personRanges) in personTags
+                            where personRanges.contains(where: { $0.start < range.end && range.start < $0.end }) {
+                            cleanTags[personTag, default: []].append((range.start, range.end))
+                        }
+                    }
+                }
+                sequences.append(contentsOf: sub.sequences)
+                log(String(format: "Window %.1f–%.1fs kept, %d action scene(s) added inside it",
+                           window.start, window.end, distinct.count))
             }
         }
 
@@ -1649,6 +1805,7 @@ actor Analyzer {
                                                     mode: "visual",
                                                     settings: AnalysisRunSettings(instructions: instructions, sampleInterval: sampleInterval ?? 0,
                                                         detectPeople: detectPeople, autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTags,
+                                                        smartSampling: smart,
                                                         trimRange: trimRange.map { [$0.start, $0.end] }, notes: noteSnapshot,
                                                         provider: provider, model: model, videoPath: video.path, sourceProfile: profile.profileName,
                                                         modelPrompts: AIRunCapture.current?.prompts ?? [:]),
@@ -1699,13 +1856,18 @@ actor Analyzer {
         if !sequences.isEmpty {
             log("Sequence stories: \(scored.count) scene(s) scored for entertainment")
         }
-        for window in brokenWindows {
-            guard let parentID = savedSceneID(start: window.start, end: window.end) else { continue }
-            for range in savedRanges
-                where range.id != parentID
-                    && range.start >= window.start - 0.05 && range.end <= window.end + 0.05
-                    && (range.end - range.start) < (window.end - window.start) - 0.05 {
-                try? await database.setSceneParent(range.id, parentID: parentID)
+        // Dense sub-scenes link under the coarse scene that contains them,
+        // whether the dense window was that scene itself or a chunk of it.
+        if !denseRanges.isEmpty {
+            for parent in coarseParents {
+                guard let parentID = savedSceneID(start: parent.start, end: parent.end) else { continue }
+                for range in savedRanges
+                    where range.id != parentID
+                        && denseRanges.contains("\(range.start)-\(range.end)")
+                        && range.start >= parent.start - 0.05 && range.end <= parent.end + 0.05
+                        && (range.end - range.start) < (parent.end - parent.start) - 0.05 {
+                    try? await database.setSceneParent(range.id, parentID: parentID)
+                }
             }
         }
 

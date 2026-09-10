@@ -2,7 +2,7 @@ import Foundation
 
 nonisolated enum GoogleDriveError: Error, LocalizedError, Equatable {
     case accountMismatch(expected: String)
-    case notConfigured, reconnect, quota, notFound, offline, cancelled
+    case notConfigured, reconnect, quota, notFound, forbidden, offline, cancelled
     case invalidResponse, conflict, inUse, cannotReplaceAsset
     case server(Int)
     case keychain(Int32)
@@ -21,6 +21,7 @@ nonisolated enum GoogleDriveError: Error, LocalizedError, Equatable {
         case .reconnect: "Please sign in to Google again to continue."
         case .quota: "Google Drive is out of space or busy. Try again later."
         case .notFound: "That file is no longer in Google Drive."
+        case .forbidden: "You don't have permission to change that in Google Drive. Ask its owner for edit access."
         case .offline: "You appear to be offline. We'll retry when you're back."
         case .cancelled: "Google sign-in was cancelled."
         case .invalidResponse: "Google Drive couldn't finish that request. Please try again."
@@ -46,10 +47,17 @@ nonisolated struct DriveFile: Codable, Identifiable, Hashable, Sendable {
     var md5Checksum: String?
     var version: String?
     var trashed: Bool?
+    var capabilities: DriveCapabilities?
     var isFolder: Bool { mimeType == "application/vnd.google-apps.folder" }
     var byteCount: Int64 { Int64(size ?? "") ?? 0 }
     var link: String { webViewLink ?? "https://drive.google.com/file/d/\(id)/view" }
     var isShared: Bool { shared == true || ownedByMe == false }
+    /// Unknown capabilities (root, shared-drive stubs) are treated as writable; the server decides.
+    var canAddChildren: Bool { capabilities?.canAddChildren != false }
+}
+
+nonisolated struct DriveCapabilities: Codable, Hashable, Sendable {
+    var canAddChildren: Bool?
 }
 
 nonisolated struct DrivePage: Decodable, Sendable {

@@ -12,13 +12,18 @@ struct AISettingsTests {
         let value = AnalysisRunSettings(
             instructions: "Find the finish", sampleInterval: 2,
             includeTranscript: true, language: "pt", detectPeople: false, autoZoomUnframed: true,
-            breakdownTags: ["action"], trimRange: [3, 45],
+            breakdownTags: ["action"], smartSampling: false, trimRange: [3, 45],
             notes: [.init(at: 8, note: "watch this")],
             provider: "claude", model: "chosen", videoPath: "/fixture.mp4", sourcePeople: ["a"],
             sourceProfile: "profile",
             modelPrompts: ["Tagging": .init(role: "Tagging", prompt: "Actual prompt")])
         #expect(
             AISettingsJSON.decode(AnalysisRunSettings.self, AISettingsJSON.encode(value)) == value)
+        #expect(AISettingsEnvelope.keys(.options, kind: .analysis).contains("smartSampling"))
+        // Rows saved before the field existed carry no key and must still decode.
+        let legacy = AISettingsJSON.decode(
+            AnalysisRunSettings.self, AISettingsJSON.encode(AnalysisRunSettings(instructions: "old")))
+        #expect(legacy?.smartSampling == nil && legacy?.instructions == "old")
     }
 
     @Test("Wizard settings preserve all options without derived benchmarks")

@@ -30,10 +30,9 @@ nonisolated enum DriveConnectionState: Equatable, Sendable {
 }
 
 actor GoogleDriveAuth {
-    static let scopes = [
-        "https://www.googleapis.com/auth/drive.readonly",
-        "https://www.googleapis.com/auth/drive.file", "openid", "email",
-    ]
+    /// Full Drive access: the asset library lives in folders the user or their team created,
+    /// and `drive.file` cannot write into anything this app did not create itself.
+    static let scopes = ["https://www.googleapis.com/auth/drive", "openid", "email"]
     private(set) var configuration: GoogleOAuthConfiguration
     private let configurationStore: GoogleDriveConfigurationStore?
     private let transport: any DriveTransport
@@ -169,7 +168,7 @@ actor GoogleDriveAuth {
 
     nonisolated static func hasDriveScopes(_ scope: String) -> Bool {
         let granted = Set(scope.split(separator: " ").map(String.init))
-        return Set(scopes.prefix(2)).isSubset(of: granted)
+        return granted.contains(scopes[0])
     }
     nonisolated static func challenge(_ verifier: String) -> String {
         Data(SHA256.hash(data: Data(verifier.utf8))).base64EncodedString()

@@ -115,6 +115,22 @@ struct BumperBuilderTests {
         #expect(!document.isCoveredByBumper(after) && document.isCoveredByBumper(overlapping))
     }
 
+    @Test("coverage never forms an inverted range for zero- or negative-duration clips under a bumper")
+    func coverageDegenerateClips() throws {
+        let bumper = try #require(BumperAsset(path: "/bumper.mp4", displayName: "CTA", duration: 2).clip(at: 4))
+        var empty = Fixtures.timelineClip(duration: 0)
+        empty.startTime = 5
+        var negative = Fixtures.timelineClip(duration: -3)
+        negative.startTime = 5
+        var negativeAcross = Fixtures.timelineClip(duration: -10)
+        negativeAcross.startTime = 20
+        let document = Fixtures.timelineDocument(clips: [bumper, empty, negative, negativeAcross])
+        #expect(document.bumperCoverage(of: empty).isEmpty)
+        #expect(document.bumperCoverage(of: negative).isEmpty, "a clip that ends before it starts is not covered")
+        #expect(document.bumperCoverage(of: negativeAcross).isEmpty)
+        #expect(!document.isCoveredByBumper(negative))
+    }
+
     @Test("time-span subtraction cuts, splits, and drops slivers")
     func spanSubtraction() {
         #expect(TimelineDocument.subtracting([4..<6], from: 0..<10) == [0..<4, 6..<10])

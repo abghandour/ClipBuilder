@@ -42,7 +42,7 @@ adjacent sidecars migrate on first use. No project data is uploaded.
 Clip Builder uses a Google OAuth **Desktop app** client with PKCE and a loopback
 redirect. Enable the Google Drive API in Google Cloud Console, configure the
 consent screen, and add the intended accounts as test users while in Testing
-mode. Request `drive.readonly`, `drive.file`, `openid`, and `email`.
+mode. Request `drive` (full access: the asset library lives in folders the app did not create), `openid`, and `email`.
 
 Keep `Configuration/GoogleDrive-Info.plist` unchanged with empty placeholders.
 For your local build:
@@ -95,7 +95,7 @@ the **test process** environment. Set these environment variables in the Xcode
 test scheme (or use the runner’s `TEST_RUNNER_` forwarding mechanism):
 
 - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`
-- `GOOGLE_OAUTH_REFRESH_TOKEN` — a current testing-mode token with both scopes
+- `GOOGLE_OAUTH_REFRESH_TOKEN` — a current testing-mode token with the `drive` scope
 - `GOOGLE_DRIVE_TEST_FOLDER_ID` — a disposable folder the account can write
 - `GOOGLE_DRIVE_TEST_VIDEO` — an absolute path to a small local video fixture
 

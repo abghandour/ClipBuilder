@@ -62,13 +62,34 @@ extension AssetSyncExecutor {
             try? FileManager.default.removeItem(at: checkpoint)
         }
         try library.install(document, frames: build.frames)
+        try await installPeers(peers, excluding: document.contributor, library: library, staging: staging)
+        LearnedCache.invalidate(profile: profile)
+    }
+
+    /// Download only: every contributor's document and frames from the home,
+    /// without publishing anything. Runs on each Refresh even before this Mac
+    /// has a device nickname, so lessons shared by others arrive regardless.
+    func pullLearned(excluding contributor: String, library: LearnedLibrary) async throws {
+        guard let learned = try await learnedFiles(in: journal.homeID)
+            .first(where: { $0.isFolder && $0.name == "learned" }) else { return }
+        let staging = FileManager.default.temporaryDirectory.appendingPathComponent(".import-learned-\(UUID())")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let peers = try await learnedFiles(in: learned.id)
+        try await installPeers(peers, excluding: contributor, library: library, staging: staging)
+        LearnedCache.invalidate(profile: profile)
+    }
+
+    private func installPeers(_ peers: [DriveFile], excluding contributor: String, library: LearnedLibrary,
+                              staging: URL) async throws {
+        let ownName = contributor + ".json"
         var downloadedNames: Set<String> = []
-        for peer in peers where !peer.isFolder && peer.name.hasSuffix(".json") && peer.name != documentName {
+        for peer in peers where !peer.isFolder && peer.name.hasSuffix(".json") && peer.name != ownName {
             guard downloadedNames.insert(peer.name).inserted else { continue }
             try Task.checkCancellation()
             let data = try await learnedDownload(peer, staging: staging)
             let other = try library.decode(data)
-            guard peer.name == other.contributor + ".json", other.contributor != document.contributor else {
+            guard peer.name == other.contributor + ".json", other.contributor != contributor else {
                 throw LearnedRedaction.Failure.invalidDocument
             }
             var frames: [String: Data] = [:]
@@ -87,7 +108,6 @@ extension AssetSyncExecutor {
             }
             try library.install(other, frames: frames)
         }
-        LearnedCache.invalidate(profile: profile)
     }
 
     func learnedFiles(in folder: String) async throws -> [DriveFile] {
@@ -116,12 +136,20 @@ extension AssetSyncExecutor {
 }
 
 @MainActor enum LearnedSync {
+    /// The download half of `run`, for Macs that cannot publish yet.
+    static func pull(executor: AssetSyncExecutor, profile: BrandProfile,
+                     library: LearnedLibrary = LearnedLibrary()) async throws {
+        var destination = library
+        destination.profile = profile.profileName
+        try await executor.pullLearned(excluding: LearnedPreferences.contributor(profile: profile), library: destination)
+    }
+
     static func run(executor: AssetSyncExecutor, profile: BrandProfile, database: Database,
                     library: LearnedLibrary = LearnedLibrary(), benchmarks: AccountBenchmarks? = nil,
                     log: (String) -> Void = { _ in }, config: AIConfig? = nil,
                     distill: () async throws -> Void) async throws {
         guard !profile.learnedSharing.deviceNickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw AIError.notConfigured("Open What Clip Builder has learned and enter a device nickname before publishing.")
+            throw AIError.notConfigured("Open AI Lessons and enter a device nickname before publishing.")
         }
         // Distillation needs a model; when it is unavailable the lessons already
         // on file still publish, and the fingerprint stays unrecorded so the
