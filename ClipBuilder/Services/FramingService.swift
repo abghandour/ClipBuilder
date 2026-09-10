@@ -88,6 +88,7 @@ nonisolated enum FramingService {
                 .filter { $0.atTime >= scene.startTime - 0.25 && $0.atTime <= scene.endTime + 0.25 }
 
             let path: SceneCameraPath?
+            let framingStarted = ContinuousClock.now
             if camera == staticCamera {
                 path = staticPath(scene: scene, samples: samples,
                                   hints: sceneHints, size: size)
@@ -105,7 +106,8 @@ nonisolated enum FramingService {
                 summary.skipped += 1
                 continue
             }
-            try? await database.setSceneCenterStagePath(scene.id, json: json)
+            try? await database.setSceneCenterStagePath(
+                scene.id, json: json, seconds: (ContinuousClock.now - framingStarted).seconds)
             summary.framed += 1
 
             if tagFramedPeople {

@@ -531,3 +531,45 @@ struct LearnedDatabaseMigrationTests {
         #expect(try await database.fetchLessons().first?.learnedID == lesson.learnedID)
     }
 }
+
+@Suite("On-device pass timing")
+struct OnDevicePassTimingTests {
+    @Test func transcriptPeopleAndFramingKeepTheirDurations() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let videoID = try await database.registerVideo(hash: "h", filename: "a.mp4", path: "/tmp/a.mp4",
+                                                       duration: 30, width: 1920, height: 1080, wide: true)
+        try await database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+                                              segments: [.init(start: 0, end: 2, text: "hi")],
+                                              provider: "apple", model: "SpeechTranscriber", seconds: 41.5)
+        try await database.replaceTranscripts(videoID: videoID, language: "pt", isTranslation: true,
+                                              segments: [.init(start: 0, end: 2, text: "oi")],
+                                              provider: "claude", model: "m", seconds: 3)
+        let rows = try await database.fetchTranscripts(videoID: videoID)
+        #expect(rows.first { !$0.isTranslation }?.provenance?.duration == 41.5)
+        #expect(rows.first { $0.isTranslation }?.seconds == 3)
+        // Only the original-language pass stamps the video.
+        var video = try #require(try await database.video(id: videoID))
+        #expect(video.speechSeconds == 41.5)
+
+        try await database.replaceVideoPeople(videoID: videoID, entries: [],
+                                              provenance: AIProvenance(provider: "gemini", model: "g", duration: 7.25))
+        video = try #require(try await database.video(id: videoID))
+        #expect(video.peopleProvenance?.duration == 7.25)
+        #expect(video.peopleProvenance?.durationLabel == "7.2 s")
+        // A later save without timing keeps the recorded number.
+        try await database.replaceVideoPeople(videoID: videoID, entries: [], provenance: nil)
+        #expect(try await database.video(id: videoID)?.peopleSeconds == 7.25)
+
+        let runID = try await database.saveAnalysis(videoID: videoID, runName: "run", instructions: "",
+                                                    sampleInterval: nil, notesJSON: nil,
+                                                    tagRanges: ["action": [(start: 1.0, end: 4.0)]], moments: [],
+                                                    analyzedTags: ["action"], provider: "claude", model: "m", mode: "visual")
+        let scene = try #require(try await database.fetchScenes(videoID: videoID).first { $0.runID == runID })
+        try await database.setSceneCenterStagePath(scene.id, json: "{}", seconds: 2.5)
+        let roles = AISettingsJSON.decode([AIRole].self, try await database.fetchScenes(sceneID: scene.id).first?.modelsJSON) ?? []
+        let framing = try #require(roles.first { $0.role == "Framing" })
+        #expect(framing.provenance.provider == AIProvenance.appleProvider)
+        #expect(framing.provenance.duration == 2.5)
+    }
+}

@@ -301,3 +301,30 @@ struct AISettingsTests {
         }
     }
 }
+
+@Suite("AI call duration")
+struct AIProvenanceDurationTests {
+    @Test("duration survives the role JSON and legacy rows decode without it")
+    func roundTrip() throws {
+        let timed = AIProvenance(provider: "claude", model: "m", task: "wizard", at: Date(), duration: 12.34)
+        let roles = [AIRole(role: "Plan", provenance: timed)]
+        let decoded = try #require(AISettingsJSON.decode([AIRole].self, AISettingsJSON.encode(roles)))
+        #expect(decoded.first?.provenance.duration == 12.34)
+        let legacy = try #require(AISettingsJSON.decode(
+            AIProvenance.self, #"{"provider":"claude","fellBack":false}"#))
+        #expect(legacy.duration == nil && legacy.durationLabel == nil)
+        #expect(AIResponse(text: "", provider: "claude", model: nil, task: "t", fellBack: false, duration: 3).provenance.duration == 3)
+        #expect(timed.tooltip().contains("Took: 12 s"))
+        #expect(!AIProvenance(provider: "claude").tooltip().contains("Took"))
+    }
+    @Test("labels read at a glance")
+    func labels() {
+        #expect(AIProvenance.durationLabel(0.84) == "0.8 s")
+        #expect(AIProvenance.durationLabel(12.6) == "13 s")
+        #expect(AIProvenance.durationLabel(125) == "2 min 05 s")
+        #expect(AIProvenance.durationLabel(3790) == "1 h 03 min")
+        #expect(AIProvenance.durationLabel(-1) == "0.0 s")
+        #expect(AIProvenance.local(technique: "dhash", duration: 0.2).duration == 0.2)
+        #expect(AIProvenance.appleSpeech(duration: 40).durationLabel == "40 s")
+    }
+}

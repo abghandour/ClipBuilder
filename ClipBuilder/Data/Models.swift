@@ -28,6 +28,9 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     /// The model that detected this video's people roster.
     var peopleProvider: String? = nil
     var peopleModel: String? = nil
+    /// Seconds the people pass and the speech pass took, when recorded.
+    var peopleSeconds: Double? = nil
+    var speechSeconds: Double? = nil
     /// The model that proposed the current filename; nil = named by hand.
     var namingProvider: String? = nil
     var namingModel: String? = nil
@@ -56,8 +59,10 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
 
     /// Who detected the people roster.
     var peopleProvenance: AIProvenance? {
-        AIProvenance(provider: peopleProvider, model: peopleModel,
-                     task: "people", sqliteDate: peopleDetectedAt)
+        var provenance = AIProvenance(provider: peopleProvider, model: peopleModel,
+                                      task: "people", sqliteDate: peopleDetectedAt)
+        provenance?.duration = peopleSeconds
+        return provenance
     }
 
     /// Who proposed the current filename (nil = renamed by hand or never).
@@ -497,10 +502,12 @@ nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable {
     var provider: String?
     var model: String?
     var technique: String? = nil
+    var seconds: Double? = nil
 
     var provenance: AIProvenance? {
         var provenance = AIProvenance(provider: provider, model: model, task: "transcribe")
         provenance?.technique = technique
+        provenance?.duration = seconds
         return provenance
     }
 }

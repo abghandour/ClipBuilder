@@ -262,9 +262,11 @@ extension WizardRunSettings {
 
 extension VideoRecord {
     nonisolated var transcriptionProvenance: AIProvenance? {
-        AIProvenance(
+        var provenance = AIProvenance(
             provider: speechAnalyzerProvider, model: speechAnalyzerModel, task: "transcription",
             sqliteDate: speechAnalyzedAt)
+        provenance?.duration = speechSeconds
+        return provenance
     }
 }
 

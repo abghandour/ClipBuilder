@@ -5181,6 +5181,7 @@ final class AppStore {
                 (time: min(max(0, hint.atTime - start), end - start),
                  crop: CGRect(x: hint.x, y: hint.y, width: hint.width, height: hint.height))
             }
+        let trackingStarted = ContinuousClock.now
         guard let result = try? await centerStage.cameraPath(
                 source: video.url, start: start, duration: end - start,
                 focusPortraits: portraits, avoidPortraits: avoidPortraits,
@@ -5190,7 +5191,8 @@ final class AppStore {
         let path = SceneCameraPath(camera: camera, keyframes: result.keyframes)
         if let data = try? JSONEncoder().encode(path),
            let json = String(data: data, encoding: .utf8) {
-            try? await database.setSceneCenterStagePath(sceneID, json: json)
+            try? await database.setSceneCenterStagePath(
+                sceneID, json: json, seconds: (ContinuousClock.now - trackingStarted).seconds)
         }
         await replaceScene(id: sceneID)
     }
@@ -5333,6 +5335,7 @@ final class AppStore {
                 // Static framings re-derive their rect (the edited hint wins
                 // verbatim) — the tracker would turn them into moving paths.
                 let path: SceneCameraPath?
+                let framingStarted = ContinuousClock.now
                 if stored.camera == FramingService.staticCamera {
                     path = await FramingService.staticScenePath(video: video, scene: scene,
                                                                 hints: hints)
@@ -5358,7 +5361,8 @@ final class AppStore {
                 guard let path,
                       let data = try? JSONEncoder().encode(path),
                       let json = String(data: data, encoding: .utf8) else { continue }
-                try? await database.setSceneCenterStagePath(scene.id, json: json)
+                try? await database.setSceneCenterStagePath(
+                    scene.id, json: json, seconds: (ContinuousClock.now - framingStarted).seconds)
                 if tagFramed {
                     await FramingService.retagFramedPeople(video: video, scene: scene,
                                                            path: path, database: database,

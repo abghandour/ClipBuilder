@@ -1976,6 +1976,7 @@ actor Analyzer {
                          crop: CGRect(x: hint.x, y: hint.y, width: hint.width, height: hint.height))
                     }
                 do {
+                    let trackingStarted = ContinuousClock.now
                     let result = try await centerStage.cameraPath(
                         source: video.url, start: range.start,
                         duration: range.end - range.start,
@@ -1990,7 +1991,8 @@ actor Analyzer {
                                                    keyframes: result.keyframes)
                         if let data = try? JSONEncoder().encode(path),
                            let json = String(data: data, encoding: .utf8) {
-                            try? await database.setSceneCenterStagePath(range.id, json: json)
+                            try? await database.setSceneCenterStagePath(
+                                range.id, json: json, seconds: (ContinuousClock.now - trackingStarted).seconds)
                             stored += 1
                         }
                     }

@@ -42,6 +42,10 @@ struct AIInfoSheet: View {
                                         ?? "Date not recorded"
                                 )
                                 .foregroundStyle(.secondary)
+                                if let took = item.provenance.durationLabel {
+                                    Text("Took \(took)").foregroundStyle(.secondary)
+                                        .help("Wall-clock time of the AI call, including any failover attempts.")
+                                }
                                 if let technique = item.provenance.technique {
                                     Text("Technique: \(technique)").foregroundStyle(.secondary)
                                 }

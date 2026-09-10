@@ -869,6 +869,13 @@ actor Database {
         if !videoColumns.contains("podcast_layout_confidence") {
             try connection.execute("ALTER TABLE videos ADD COLUMN podcast_layout_confidence REAL")
         }
+        // How long the on-device passes took, for the AI details sheet.
+        for column in ["speech_seconds", "people_seconds"] where !videoColumns.contains(column) {
+            try connection.execute("ALTER TABLE videos ADD COLUMN \(column) REAL")
+        }
+        if !(try connection.columnNames(of: "transcripts")).contains("seconds") {
+            try connection.execute("ALTER TABLE transcripts ADD COLUMN seconds REAL")
+        }
         if !sceneColumns.contains("favorite") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN favorite INTEGER DEFAULT 0")
         }
@@ -1584,10 +1591,12 @@ actor Database {
             try connection.execute("""
                 UPDATE videos SET people_detected_at = datetime('now'),
                     people_provider = COALESCE(?, people_provider),
-                    people_model = COALESCE(?, people_model)
+                    people_model = COALESCE(?, people_model),
+                    people_seconds = COALESCE(?, people_seconds)
                 WHERE id = ?
                 """, [provenance.map { SQLValue.text($0.provider) } ?? .null,
                       provenance?.model.map(SQLValue.text) ?? .null,
+                      provenance?.duration.map(SQLValue.real) ?? .null,
                       .integer(videoID)])
             try connection.execute("DELETE FROM video_people WHERE video_id = ?",
                                    [.integer(videoID)])
@@ -1767,6 +1776,8 @@ actor Database {
             peopleDetectedAt: row["people_detected_at"]?.stringValue,
             peopleProvider: row["people_provider"]?.stringValue,
             peopleModel: row["people_model"]?.stringValue,
+            peopleSeconds: row["people_seconds"]?.doubleValue,
+            speechSeconds: row["speech_seconds"]?.doubleValue,
             namingProvider: row["naming_provider"]?.stringValue,
             namingModel: row["naming_model"]?.stringValue,
             videoType: row["video_type"]?.stringValue,
@@ -2072,8 +2083,10 @@ actor Database {
 
     /// Center Stage camera path (SceneCameraPath JSON) recorded during
     /// analysis; the scene preview animates it and renders reuse it.
-    func setSceneCenterStagePath(_ sceneID: Int64, json: String?) throws {
-        try recordSceneRole(id: sceneID, role: "Framing", provenance: json == nil ? nil : .appleVision(task: "framing"))
+    /// `seconds` is how long the tracking pass took, when the caller timed it.
+    func setSceneCenterStagePath(_ sceneID: Int64, json: String?, seconds: TimeInterval? = nil) throws {
+        try recordSceneRole(id: sceneID, role: "Framing",
+                            provenance: json == nil ? nil : .appleVision(task: "framing", duration: seconds))
         try connection.execute("UPDATE scenes SET center_stage_path = ? WHERE id = ?",
                                [json.map(SQLValue.text) ?? .null, .integer(sceneID)])
     }
@@ -2397,24 +2410,32 @@ actor Database {
 
     // MARK: - Transcripts
 
+    /// `seconds` is how long the pass that produced these segments took; it
+    /// is stamped on every row and, for the original language, on the video.
     func replaceTranscripts(videoID: Int64, language: String, isTranslation: Bool,
-                            segments: [TranscriptSegment], provider: String?, model: String?, technique: String? = nil) throws {
+                            segments: [TranscriptSegment], provider: String?, model: String?, technique: String? = nil,
+                            seconds: TimeInterval? = nil) throws {
         // One transaction: long videos have thousands of segments, and the
         // delete + inserts must land atomically.
         try connection.transaction {
+            if !isTranslation, let seconds {
+                try connection.execute("UPDATE videos SET speech_seconds = ? WHERE id = ?",
+                                       [.real(seconds), .integer(videoID)])
+            }
             try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND language = ? AND is_translation = ?",
                                    [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0)])
             let encoder = JSONEncoder()
             for segment in segments {
                 let wordsJSON = segment.words.flatMap { try? encoder.encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
                 try connection.execute("""
-                    INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, words, provider, model, technique)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, words, provider, model, technique, seconds)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0),
                           .real(segment.start), .real(segment.end), .text(segment.text),
                           wordsJSON.map(SQLValue.text) ?? .null,
                           provider.map(SQLValue.text) ?? .null,
-                          model.map(SQLValue.text) ?? .null, technique.map(SQLValue.text) ?? .null])
+                          model.map(SQLValue.text) ?? .null, technique.map(SQLValue.text) ?? .null,
+                          seconds.map(SQLValue.real) ?? .null])
             }
         }
     }
@@ -2432,7 +2453,8 @@ actor Database {
                           originalText: $0["original_text"]?.stringValue,
                           wordsJSON: $0["words"]?.stringValue,
                           provider: $0["provider"]?.stringValue,
-                          model: $0["model"]?.stringValue, technique: $0["technique"]?.stringValue)
+                          model: $0["model"]?.stringValue, technique: $0["technique"]?.stringValue,
+                          seconds: $0["seconds"]?.doubleValue)
         }
     }
 

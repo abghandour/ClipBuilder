@@ -152,6 +152,9 @@ actor AIService {
               webAccess: Bool = false,
               log: (@Sendable (String) -> Void)? = nil) async throws -> AIResponse {
         let emit = log ?? { _ in }
+        // Timed from here so a failover's wasted attempt counts: this is the
+        // wait the user actually sat through.
+        let started = ContinuousClock.now
         // Verbose logging (the log panels' checkbox): show exactly what the
         // model receives, for every task.
         if UserDefaults.standard.bool(forKey: "log.verbose") {
@@ -194,7 +197,8 @@ actor AIService {
                 // anything produced after a failover.
                 let response = AIResponse(text: text, provider: candidate.provider,
                                   model: candidate.model ?? AICatalog.provider(candidate.provider)?.defaultModel,
-                                  task: task, fellBack: index > 0)
+                                  task: task, fellBack: index > 0,
+                                  duration: (ContinuousClock.now - started).seconds)
                 AIRunCapture.current?.append(response.provenance, prompt: prompt)
                 return response
             } catch let error as AIError {

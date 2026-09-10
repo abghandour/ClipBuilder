@@ -19,15 +19,20 @@ nonisolated struct AIProvenance: Codable, Sendable, Hashable {
     /// The dispatcher failed over from the configured choice to this one.
     var technique: String?
     var fellBack: Bool = false
+    /// Wall-clock seconds the call took as the user experienced it, failover
+    /// attempts included. Nil for rows recorded before timing existed.
+    var duration: TimeInterval?
 
     init(provider: String, model: String? = nil, task: String? = nil,
-         at: Date? = nil, fellBack: Bool = false, technique: String? = nil) {
+         at: Date? = nil, fellBack: Bool = false, technique: String? = nil,
+         duration: TimeInterval? = nil) {
         self.technique = technique
         self.provider = provider
         self.model = model
         self.task = task
         self.at = at
         self.fellBack = fellBack
+        self.duration = duration
     }
 
     /// Nil when nothing was recorded (a pre-provenance row, or a human act).
@@ -44,8 +49,8 @@ nonisolated struct AIProvenance: Codable, Sendable, Hashable {
 
     // MARK: - Local (non-LLM) engines
 
-    static func local(technique: String) -> AIProvenance {
-        AIProvenance(provider: "local", model: technique, at: Date(), technique: technique)
+    static func local(technique: String, duration: TimeInterval? = nil) -> AIProvenance {
+        AIProvenance(provider: "local", model: technique, at: Date(), technique: technique, duration: duration)
     }
 
     static let appleProvider = "apple"
@@ -53,13 +58,26 @@ nonisolated struct AIProvenance: Codable, Sendable, Hashable {
     static let visionModel = "Vision"
 
     /// On-device Apple SpeechAnalyzer/SpeechTranscriber.
-    static func appleSpeech(at: Date? = nil) -> AIProvenance {
-        AIProvenance(provider: appleProvider, model: speechModel, task: "transcribe", at: at)
+    static func appleSpeech(at: Date? = nil, duration: TimeInterval? = nil) -> AIProvenance {
+        AIProvenance(provider: appleProvider, model: speechModel, task: "transcribe", at: at, duration: duration)
     }
 
     /// On-device Apple Vision (people boxes, Center Stage tracking).
-    static func appleVision(task: String, at: Date? = nil) -> AIProvenance {
-        AIProvenance(provider: appleProvider, model: visionModel, task: task, at: at)
+    static func appleVision(task: String, at: Date? = nil, duration: TimeInterval? = nil) -> AIProvenance {
+        AIProvenance(provider: appleProvider, model: visionModel, task: task, at: at, duration: duration)
+    }
+
+    /// "0.8 s", "12 s", "2 min 05 s", "1 h 03 min" — for triage at a glance.
+    var durationLabel: String? {
+        duration.map(Self.durationLabel)
+    }
+    static func durationLabel(_ seconds: TimeInterval) -> String {
+        let seconds = max(0, seconds)
+        if seconds < 10 { return String(format: "%.1f s", seconds) }
+        if seconds < 60 { return "\(Int(seconds.rounded())) s" }
+        let whole = Int(seconds.rounded())
+        if whole < 3600 { return String(format: "%d min %02d s", whole / 60, whole % 60) }
+        return String(format: "%d h %02d min", whole / 3600, (whole % 3600) / 60)
     }
 
     // MARK: - Display
@@ -106,6 +124,7 @@ nonisolated struct AIProvenance: Codable, Sendable, Hashable {
         if let technique { lines.append("Technique: \(technique)") }
         if let taskLabel { lines.append("Task: \(taskLabel)") }
         if let at { lines.append("When: \(Self.dateFormatter.string(from: at))") }
+        if let durationLabel { lines.append("Took: \(durationLabel)") }
         if fellBack { lines.append("Ran as a fallback — the configured provider failed") }
         return lines.joined(separator: "\n")
     }
@@ -126,6 +145,13 @@ nonisolated struct AIProvenance: Codable, Sendable, Hashable {
         formatter.timeZone = TimeZone(identifier: "UTC")
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return formatter.date(from: text)
+    }
+}
+
+extension Duration {
+    /// Whole seconds plus the fractional part, for timing labels.
+    nonisolated var seconds: TimeInterval {
+        Double(components.seconds) + Double(components.attoseconds) / 1e18
     }
 }
 
@@ -179,9 +205,11 @@ nonisolated struct AIResponse: Sendable {
     var model: String?
     var task: String
     var fellBack: Bool
+    /// Seconds from the call's start to this answer, failovers included.
+    var duration: TimeInterval? = nil
 
     var provenance: AIProvenance {
-        AIProvenance(provider: provider, model: model, task: task, at: Date(), fellBack: fellBack)
+        AIProvenance(provider: provider, model: model, task: task, at: Date(), fellBack: fellBack, duration: duration)
     }
 }
 

@@ -31,6 +31,9 @@ struct FakeAIProviderTests {
         )
         #expect(response.provider == "claude")
         #expect(AIResponseParser.jsonObject(from: response.text)?["caption"] as? String == "Fixture caption")
+        // Every dispatched call is timed for the AI details sheet.
+        #expect((response.duration ?? -1) >= 0)
+        #expect(response.provenance.duration == response.duration)
     }
 
     @Test("visual analysis persists scenes and moments from the provider's reply")

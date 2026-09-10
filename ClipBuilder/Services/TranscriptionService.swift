@@ -189,11 +189,14 @@ actor TranscriptionService {
         }
 
         log("Preparing audio from \(video.filename)...")
+        // Timed from audio preparation: that is the wait the user sees.
+        let started = ContinuousClock.now
         let audioURL = try await NormalizedAudioCache.shared.audio(source: video.url)
 
         log("Transcribing \(video.filename) (\(supportedLocale.identifier))...")
         let segments = try await Self.runSpeechTranscriber(audioURL: audioURL, locale: supportedLocale).segments
-        log("Transcribed \(segments.count) segments")
+        let seconds = (ContinuousClock.now - started).seconds
+        log("Transcribed \(segments.count) segments in \(AIProvenance.durationLabel(seconds))")
 
         let cached = CachedTranscript(provider: Self.providerName, model: Self.modelName,
                                       language: languageTag, detectedLanguage: languageTag,
@@ -204,7 +207,8 @@ actor TranscriptionService {
 
         try await database.replaceTranscripts(videoID: video.id, language: languageTag,
                                               isTranslation: false, segments: segments,
-                                              provider: Self.providerName, model: Self.modelName)
+                                              provider: Self.providerName, model: Self.modelName,
+                                              seconds: seconds)
         do { try await enrich(segments, video: video, database: database) }
         catch { log("Transcript feature analysis failed: \(error)") }
         return segments
