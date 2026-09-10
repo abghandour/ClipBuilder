@@ -129,7 +129,7 @@
 <p class="subtitle">How to teach Clip Builder your taste, step by step — so every batch of reels gets closer to what you want</p>
 
 <h2>1. How Training Works</h2>
-<p>Clip Builder doesn't retrain an AI model on your Mac. Instead, every rating you give is saved in your profile's database and turned into <strong>written instructions the AI reads before planning each new reel</strong>. The loop looks like this:</p>
+<p>Clip Builder doesn't retrain the language model it talks to. Every rating you give is saved in your profile's database and turned into <strong>written instructions the AI reads before planning each new reel</strong>. The loop looks like this:</p>
 <ol>
     <li><span class="step-label">Generate</span> reels with the AI Wizard.</li>
     <li><span class="step-label">Rate</span> the results — thumbs up/down on whole reels, individual clips, and side-by-side variations.</li>
@@ -161,8 +161,8 @@
     <li>When the run finishes, the <span class="step-label">"Which variation is best?"</span> sheet appears with the variations side by side. Watch them, then click <span class="step-label">Pick This One</span> under the winner — or <span class="step-label">Skip — don't record a preference</span> if none stands out.</li>
 </ol>
 <figure>
-    <img src="help-wizard.png" alt="The AI Wizard tab with the variations stepper and Learned Lessons section">
-    <figcaption>The AI Wizard tab — output settings, AI Instructions, and the Learned Lessons rulebook.</figcaption>
+    <img src="help-wizard.png" alt="The AI Wizard tab with the variations stepper and AI Instructions">
+    <figcaption>The AI Wizard tab — output settings and per-run AI Instructions. The rulebook itself lives on the AI Lessons page.</figcaption>
 </figure>
 <p>Your pick is stored as an A/B preference: the wizard remembers <em>why</em> the winner's approach beat each loser's, and favors winning strategies in future runs.</p>
 <div class="note"><strong>Note:</strong> the wizard needs analyzed footage to work with. If the tab says "Analyze some videos first", run the <em>Analyze</em> tab on your Input folder before generating.</div>
@@ -188,18 +188,18 @@
 <h2>5. Step 3 — Distill Lessons into a Rulebook</h2>
 <p>After you've reviewed a handful of reels (three to five is a good start), compress that history into rules:</p>
 <ol>
-    <li>Open the <span class="step-label">AI Wizard</span> tab and find the <span class="step-label">Learned Lessons</span> section.</li>
-    <li>Click <span class="step-label">Distill Lessons from Reviews</span> (the ✨ button). The AI reads all your reviews, clip ratings, A/B picks, and notes, and writes at most <strong>10 short imperative rules</strong> — e.g. "Open with the highest-energy scene" or "Keep clips under 3 seconds".</li>
-    <li>Read the result. Each lesson shows the evidence it was based on; you can edit a lesson inline or delete it with the trash button.</li>
+    <li>Open <span class="step-label">AI Lessons</span> in the sidebar and expand the <span class="step-label">Lessons</span> card.</li>
+    <li>Click <span class="step-label">Distill rules from reviews</span> (the ✨ button). The AI reads all your reviews, clip ratings, A/B picks, and notes, and writes at most <strong>10 short imperative rules</strong> — e.g. "Open with the highest-energy scene" or "Keep clips under 3 seconds".</li>
+    <li>Read the result. Each rule shows the evidence it was based on and which model wrote it. The <span class="step-label">⋯</span> menu on a rule lets you <em>Rewrite</em>, <em>Pin</em>, <em>Dismiss</em> (hide it from the wizard, restorable from the <em>Dismissed</em> list under the card) or <em>Delete</em> it.</li>
 </ol>
-<p>These lessons are injected into every future wizard run as hard guidance. Distillation only happens when you click the button — it never runs on its own — so re-distill whenever you've accumulated a new batch of reviews.</p>
-<div class="note"><strong>Important:</strong> distilling <em>replaces</em> all unpinned lessons with a fresh set. Pin (📌) any rule that must survive before distilling again. The distiller looks for <em>recurring patterns</em>, so a one-off complaint usually won't become a lesson — if something matters, say it in multiple reviews, or add it yourself as a pinned rule (next section).</div>
+<p>These rules are injected into every future wizard run as hard guidance. Distillation runs when you click the button, and once more before <span class="step-label">Publish</span> in the sharing panel if reviews changed since the last distill — so re-distill whenever you've accumulated a new batch of reviews.</p>
+<div class="note"><strong>Important:</strong> distilling <em>replaces</em> all unpinned rules with a fresh set, including rules the Instagram performance pass wrote. Pin (📌) any rule that must survive before distilling again. The distiller looks for <em>recurring patterns</em>, so a one-off complaint usually won't become a rule — if something matters, say it in multiple reviews, or add it yourself as a pinned rule (next section).</div>
 
 <h2>6. Step 4 — Pin Rules and Add Your Own</h2>
 <p>Pinned lessons are permanent hard constraints — the wizard must follow them in every run, and distillation never touches them.</p>
 <ul>
-    <li>To protect a distilled lesson, click its <span class="step-label">📌 pin</span> toggle.</li>
-    <li>To write your own rule, type it into the <span class="step-label">"Add your own rule — saved as pinned"</span> field and click <span class="step-label">Add</span>. Phrase rules as short commands: <em>"Never use slow-motion openings"</em>, <em>"Always end on the brand logo scene"</em>.</li>
+    <li>To protect a distilled rule, choose <span class="step-label">Pin</span> from its ⋯ menu on the AI Lessons page.</li>
+    <li>To write your own rule, type it into the <span class="step-label">"Add a rule, saved as pinned"</span> field under the Lessons card and click <span class="step-label">Add</span>. Phrase rules as short commands: <em>"Never use slow-motion openings"</em>, <em>"Always end on the brand logo scene"</em>.</li>
 </ul>
 <div class="tip"><strong>Pinned rule or AI Instructions?</strong> The wizard tab's <em>AI Instructions</em> field is the highest-priority input, but it's a <strong>per-run</strong> override (e.g. "today, always open with a knockout"). For anything that should apply <em>every</em> run, use a pinned lesson instead.</div>
 
@@ -207,7 +207,13 @@
 <p>Every time you click <span class="step-label">Generate Reels</span>, the wizard automatically loads your training signals — there's nothing to enable:</p>
 <table>
     <tr><th>Signal</th><th>Where you create it</th><th>How the wizard uses it</th></tr>
-    <tr><td>Learned Lessons</td><td>Wizard tab → Distill / Add rule</td><td>All lessons applied every run; pinned rules are hard constraints</td></tr>
+    <tr><td>Lessons</td><td>AI Lessons → Distill / Add rule</td><td>Every run, minus dismissed rules; a newer shared copy of the same rule replaces yours, and local plus shared learning share a 12,000-character budget; pinned rules are hard constraints</td></tr>
+    <tr><td>Style</td><td>Settings → Taste → House Style; Profile → Brand Kit and Default Output</td><td>House style on every plan and in the reel critic; hook and layout only while <em>Learned editing defaults</em> is on; caption languages in captions</td></tr>
+    <tr><td>Taste</td><td>Settings → Taste, or Edit on the AI Lessons page</td><td>The rubric or category your run's taste preset picks, with example frames attached; the rubric in the critic; highlight tags in analysis</td></tr>
+    <tr><td>Vocabulary</td><td>Settings → Profile → Tag Schema and Brand Kit</td><td>Tags during analysis; pinned hashtags seed captions when they use local hashtags; listed to the wizard as learned vocabulary once a Google Drive home is set</td></tr>
+    <tr><td>Benchmarks</td><td>Instagram insights import</td><td>Planner targets, critic forecasts, performance rules, caption hashtag lift</td></tr>
+    <tr><td>People</td><td>Project → People</td><td>Names and descriptors in every plan; people in the reel become hashtag candidates when captions use local hashtags</td></tr>
+    <tr><td>Research</td><td>Fight Research sheet</td><td>Your research for the selected footage when fight research is on; research shared by other Macs arrives in the shared block; sentiment and angle in captions</td></tr>
     <tr><td>Reviews</td><td>Library → Review sheet</td><td>The 10 most recent reviews, including per-clip verdicts and reasons</td></tr>
     <tr><td>A/B picks</td><td>"Which variation is best?" sheet</td><td>The 10 most recent picks — "chose X over Y" with rationale; winning strategies are built on</td></tr>
     <tr><td>Notes</td><td>Review sheet → "Anything else?"</td><td>Your latest notes, quoted verbatim</td></tr>
@@ -215,17 +221,30 @@
 </table>
 <p>Because only the most <em>recent</em> reviews and picks are loaded in full, <strong>recency beats volume</strong>: if your taste changes, your newest ratings win over older ones. Older history isn't lost — it's what the Distill step compacts into lessons.</p>
 
-<h2>8. A Good Training Routine</h2>
+<h2>8. What the AI Knows — the AI Lessons Page</h2>
+<p><span class="step-label">AI Lessons</span> in the sidebar is the one place that shows everything above. Each card says what the section is for, which features read it (hover a chip for the exact condition), and where to change it — either an <span class="step-label">Edit…</span> action in the row's ⋯ menu or a link to the right Settings tab.</p>
+<figure>
+    <img src="help-lessons.png" alt="The AI Lessons page with section cards, Used-by chips, and the sharing panel" onerror="this.parentElement.hidden = true">
+    <figcaption>The AI Lessons page — one card per kind of learning, the trained models, and the sharing panel.</figcaption>
+</figure>
+<ul>
+    <li><span class="step-label">What the AI reads…</span> opens three views: the learning available to the wizard from this profile (with anything dropped by a merge and why), the exact prompt the wizard sent on its last plan for this profile with the images it attached, and the redacted document that leaves your Mac when you publish.</li>
+    <li>The checklist at the top tracks which sources feed the wizard yet, with a button to fix each gap.</li>
+    <li><span class="step-label">Trained models</span> are small on-device models trained from your own reels. Evaluate one, then switch it on; it runs only while <em>Prefer on-device processing</em> is on in Settings → AI.</li>
+    <li><span class="step-label">Sharing with other Macs</span> publishes your learning to a Google Drive home and pulls what other Macs published. The share switches only control what leaves this Mac; they never change what this Mac uses, though each feature still applies its own conditions above.</li>
+</ul>
+
+<h2>9. A Good Training Routine</h2>
 <ol>
     <li>After each <span class="step-label">Analyze</span> run, spend a few minutes grading and excluding scenes.</li>
     <li>Generate with <span class="step-label">2–3 variations</span> and always answer the comparison sheet.</li>
     <li><span class="step-label">Review every reel</span> you actually watch — ten seconds each, with reasons on every clip 👎.</li>
-    <li>After every 3–5 reviews, click <span class="step-label">Distill Lessons from Reviews</span>, then read, edit, and pin the results.</li>
+    <li>After every 3–5 reviews, click <span class="step-label">Distill rules from reviews</span> on the AI Lessons page, then read, edit, and pin the results.</li>
     <li>Keep the rulebook small and current — delete lessons that no longer apply. Ten sharp rules beat a long contradictory list.</li>
 </ol>
 <p>Within a few cycles, the wizard's first drafts should start looking like reels you'd have cut yourself.</p>
 
-<footer>Clip Builder — Training Guide · August 2026</footer>
+<footer>Clip Builder — Training Guide · September 2026</footer>
 
 </body>
 </html>

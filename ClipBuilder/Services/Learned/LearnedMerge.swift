@@ -32,26 +32,89 @@ nonisolated enum LearnedMerge {
     ]
     static let singleFields: Set<String> = ["houseStyle", "hookStyle", "layout", "pacing", "rubric"]
 
+    /// Why a line did not reach the prompt. Shown on the AI Lessons page.
+    enum Exclusion: String, Sendable, Hashable {
+        case overriddenByLocal, olderThanWinner, sameAgeAsWinner, contributorMuted, sectionNotShared, empty, overBudget
+
+        var label: String {
+            switch self {
+            case .overriddenByLocal: "Your own value wins for this field"
+            case .olderThanWinner: "An entry with the same identity is newer"
+            case .sameAgeAsWinner: "Same age as the kept entry; the first seen is kept"
+            case .contributorMuted: "Contributor muted on this Mac"
+            case .sectionNotShared: "The contributor does not share this section"
+            case .empty: "Nothing to say"
+            case .overBudget: "Over the 12,000-character budget shared by local and contributor learning"
+            }
+        }
+    }
+    struct Excluded: Sendable, Hashable, Identifiable {
+        var line: Line
+        var reason: Exclusion
+        var id: String { line.origin + "|" + line.id }
+    }
+    struct Report: Sendable {
+        var winners: [Line]
+        var excluded: [Excluded]
+    }
+
     static func merge(local: LearnedPreferences, contributors: [LearnedPreferences],
                       muted: Set<String> = [], characterLimit: Int = 12_000) -> [Line] {
+        mergeReport(local: local, contributors: contributors, muted: muted, characterLimit: characterLimit).winners
+    }
+
+    /// The merge with every dropped line and the reason it was dropped.
+    static func mergeReport(local: LearnedPreferences, contributors: [LearnedPreferences],
+                            muted: Set<String> = [], characterLimit: Int = 12_000) -> Report {
         var winners: [String: Line] = [:]
-        let documents = [(local, true)] + contributors.filter {
-            $0.contributor != local.contributor && !muted.contains($0.contributor)
-        }.sorted { $0.contributor < $1.contributor }.map { ($0, false) }
+        var excluded: [Excluded] = []
+        func line(_ item: LearnedPreferences.Item, _ section: LearnedPreferences.Section,
+                  _ document: LearnedPreferences, local: Bool) -> Line {
+            var attributed = item
+            if attributed.evidence.isEmpty { attributed.evidence = section.evidence }
+            return Line(section: section.kind, item: attributed, origin: document.contributor, local: local)
+        }
+        let others = contributors.filter { $0.contributor != local.contributor }.sorted { $0.contributor < $1.contributor }
+        for document in others where muted.contains(document.contributor) {
+            for section in document.sections {
+                for item in section.items {
+                    excluded.append(.init(line: line(item, section, document, local: false), reason: .contributorMuted))
+                }
+            }
+        }
+        let documents = [(local, true)] + others.filter { !muted.contains($0.contributor) }.map { ($0, false) }
         for (document, isLocal) in documents {
-            for section in document.sections where isLocal || section.enabled {
-                for item in section.items where !item.text.isEmpty || !item.numbers.isEmpty {
-                    var attributed = item
-                    if attributed.evidence.isEmpty { attributed.evidence = section.evidence }
-                    let line = Line(section: section.kind, item: attributed, origin: document.contributor, local: isLocal)
+            for section in document.sections {
+                guard isLocal || section.enabled else {
+                    for item in section.items {
+                        excluded.append(.init(line: line(item, section, document, local: false), reason: .sectionNotShared))
+                    }
+                    continue
+                }
+                for item in section.items {
+                    let candidate = line(item, section, document, local: isLocal)
+                    guard !item.text.isEmpty || !item.numbers.isEmpty else {
+                        excluded.append(.init(line: candidate, reason: .empty))
+                        continue
+                    }
                     let single = singleFields.contains(item.field) || (section.kind == .benchmarks && item.field == "summary")
                     let key = section.kind.rawValue + ":" + item.field + ":" + (single ? "single" : item.id)
                     if let previous = winners[key] {
-                        if single, previous.local { continue }
-                        if item.updatedAt < previous.item.updatedAt { continue }
-                        if item.updatedAt == previous.item.updatedAt { continue }
+                        if single, previous.local {
+                            excluded.append(.init(line: candidate, reason: .overriddenByLocal))
+                            continue
+                        }
+                        if item.updatedAt < previous.item.updatedAt {
+                            excluded.append(.init(line: candidate, reason: .olderThanWinner))
+                            continue
+                        }
+                        if item.updatedAt == previous.item.updatedAt {
+                            excluded.append(.init(line: candidate, reason: .sameAgeAsWinner))
+                            continue
+                        }
+                        excluded.append(.init(line: previous, reason: .olderThanWinner))
                     }
-                    winners[key] = line
+                    winners[key] = candidate
                 }
             }
         }
@@ -62,14 +125,18 @@ nonisolated enum LearnedMerge {
             return $0.id < $1.id
         }
         var remaining = max(0, characterLimit)
-        return ordered.compactMap { line in
+        var kept: [Line] = []
+        for line in ordered {
             let cost = line.text.count + 1
-            guard cost <= remaining else { return nil }
+            guard cost <= remaining else {
+                excluded.append(.init(line: line, reason: .overBudget))
+                continue
+            }
             remaining -= cost
-            return line
+            kept.append(line)
         }
+        return Report(winners: kept, excluded: excluded)
     }
-
     static func contributorBlock(_ lines: [Line]) -> String {
         let remote = lines.filter { !$0.local }
         guard !remote.isEmpty else { return "" }

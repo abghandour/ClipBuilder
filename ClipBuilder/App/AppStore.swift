@@ -3407,10 +3407,11 @@ final class AppStore {
         guard let database, !isDistillingLessons else { return }
         isDistillingLessons = true
         let wizard = wizard
+        let generation = profileGeneration
         Task {
             do {
                 let count = try await wizard.distillLessons(database: database, emit: logSink(\.wizardLog))
-                lessons = try await database.fetchLessons()
+                await refreshLessons(from: database, generation: generation)
                 appendLog(\.wizardLog, ["Distilled \(count) lesson(s) from your reviews"])
             } catch {
                 presentError("Lesson distillation failed", error)
@@ -3551,14 +3552,24 @@ final class AppStore {
         return paths
     }
 
+    /// Re-reads the rulebook; a result from a database the user has since
+    /// switched away from is dropped rather than shown under the new profile.
+    func refreshLessons(from database: Database? = nil, generation: Int? = nil) async {
+        let generation = generation ?? profileGeneration
+        guard let database = database ?? self.database else { return }
+        guard let rows = try? await database.fetchLessons(), generation == profileGeneration,
+              database === self.database else { return }
+        lessons = rows
+    }
     func addLesson(text: String) {
         guard let database else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let generation = profileGeneration
         Task {
             do {
                 try await database.addLesson(text: trimmed, pinned: true, evidence: "added by you")
-                lessons = try await database.fetchLessons()
+                await refreshLessons(from: database, generation: generation)
             } catch {
                 presentError("Could not save the lesson", error)
             }
@@ -3569,10 +3580,11 @@ final class AppStore {
         guard let database else { return }
         let newText = text ?? lesson.text
         let newPinned = pinned ?? lesson.pinned
+        let generation = profileGeneration
         Task {
             do {
                 try await database.updateLesson(id: lesson.id, text: newText, pinned: newPinned)
-                lessons = try await database.fetchLessons()
+                await refreshLessons(from: database, generation: generation)
             } catch {
                 presentError("Could not update the lesson", error)
             }
@@ -3581,9 +3593,11 @@ final class AppStore {
 
     func deleteLesson(_ lesson: WizardLesson) {
         guard let database else { return }
+        let generation = profileGeneration
         Task {
             do {
                 try await database.deleteLesson(id: lesson.id)
+                guard generation == profileGeneration else { return }
                 lessons.removeAll { $0.id == lesson.id }
             } catch {
                 presentError("Could not delete the lesson", error)

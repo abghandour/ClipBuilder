@@ -2036,10 +2036,25 @@ actor WizardEngine {
             emit("Attached \(frames.count) taste exemplar frame(s) to the plan call")
         }
 
+        // Every request is kept whole for the AI Lessons page; nothing else
+        // stores the full plan prompt. The record is written on every exit,
+        // including a thrown first request, so the page never shows a stale run.
+        var recorder = LastPlanRecorder(profile: profile.profileName)
+        func saveRecord() {
+            do { try recorder.save() } catch { emit("Could not save the plan prompt record: \(error.localizedDescription)") }
+        }
         func requestPlan(_ prompt: String) async throws -> (plan: WizardPlan?, response: String) {
-            let reply = try await ai.call(prompt: prompt, task: "wizard",
+            let attempt = recorder.begin(prompt: prompt, frames: frames.map(\.label))
+            let reply: AIResponse
+            do {
+                reply = try await ai.call(prompt: prompt, task: "wizard",
                                           frames: frames.isEmpty ? nil : frames,
                                           model: options.modelOverride, timeout: 300, log: emit)
+            } catch {
+                recorder.failed(attempt, error: error)
+                throw error
+            }
+            recorder.answered(attempt, provider: reply.provenance.provider, model: reply.provenance.model)
             let response = reply.text
             guard let rawPlan = AIResponseParser.jsonObject(from: response) else {
                 emit("The planner's response was not valid JSON — raw response:")
@@ -2054,7 +2069,13 @@ actor WizardEngine {
             return (plan, response)
         }
 
-        var (plan, response) = try await requestPlan(prompt)
+        var acceptedAttempt: Int? = 0
+        var (plan, response): (WizardPlan?, String)
+        do { (plan, response) = try await requestPlan(prompt) } catch {
+            recorder.accept(nil)
+            saveRecord()
+            throw error
+        }
         if plan == nil {
             emit("The planner returned JSON, but no usable clips survived validation — raw response:")
             emit("──── response ────\n\(String(response.prefix(2000)))\n──── end response ────")
@@ -2092,6 +2113,7 @@ actor WizardEngine {
                         emit("Re-plan accepted: \(retryReport.summary)")
                         plan = retryPlan
                         response = retry.response
+                        acceptedAttempt = 1
                     } else {
                         emit("Re-plan scored worse (\(retryReport.summary)) — keeping the first plan")
                     }
@@ -2102,6 +2124,8 @@ actor WizardEngine {
                 emit("Plan quality check: \(report.summary)")
             }
         }
+        recorder.accept(plan == nil ? nil : acceptedAttempt)
+        saveRecord()
 
         if let validated = plan {
             let titled = addAutomaticLowerThirds(validated, options: options,

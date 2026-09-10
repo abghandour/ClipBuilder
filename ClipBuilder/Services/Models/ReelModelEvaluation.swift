@@ -57,14 +57,36 @@ nonisolated struct ReelModelStore: Sendable {
       to: reports.appendingPathComponent(
         "\(report.item.rawValue)-\(Int(report.date.timeIntervalSince1970)).json"), options: .atomic)
   }
+  /// Why a model can or cannot run, independent of the user's switch. The
+  /// same checks gate `predictor`, so the AI Lessons page shows the truth.
+  enum Eligibility: Equatable, Sendable {
+    case eligible, notEvaluated, notPassed, needsLocalEvaluation, traitsOutdated, artifactChanged
+
+    var label: String {
+      switch self {
+      case .eligible: "Ready"
+      case .notEvaluated: "Not evaluated"
+      case .notPassed: "Did not pass"
+      case .needsLocalEvaluation: "Adopted, needs local evaluation"
+      case .traitsOutdated: "Evaluated with older traits, evaluate again"
+      case .artifactChanged: "Model file changed since evaluation, evaluate again"
+      }
+    }
+  }
+  func eligibility(_ item: ReelModelItem) -> Eligibility {
+    guard let report = report(item) else { return .notEvaluated }
+    guard report.passed else { return .notPassed }
+    guard report.localEvaluation else { return .needsLocalEvaluation }
+    guard report.traitsVersion == ReelTraits.version else { return .traitsOutdated }
+    guard report.artifactHash == (try? Self.hash(artifact(item, version: report.version))) else { return .artifactChanged }
+    return .eligible
+  }
   func predictor(
     item: ReelModelItem, config: AIConfig,
     trainer: any ReelModelTrainer
   ) throws -> (any ReelModelPredictor)? {
     guard item.isEnabled(config: config) else { return nil }
-    guard let report = report(item), report.passed, report.localEvaluation,
-      report.traitsVersion == ReelTraits.version,
-      report.artifactHash == (try Self.hash(artifact(item, version: report.version)))
+    guard let report = report(item), eligibility(item) == .eligible
     else { throw ReelModelError.notEvaluated }
     return try trainer.load(at: artifact(item, version: report.version), item: item)
   }

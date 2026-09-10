@@ -5,6 +5,7 @@ nonisolated enum LearnedDocumentBuilder {
         var document: LearnedPreferences
         /// Private staging input, NEVER encoded or displayed as published content.
         var frames: [String: Data]
+        var onboarding = LearnedOnboarding(done: [], reviewCount: 0)
     }
 
     @concurrent static func build(profile: BrandProfile, database: Database, benchmarks: AccountBenchmarks? = nil,
@@ -122,7 +123,9 @@ nonisolated enum LearnedDocumentBuilder {
             + [profile.sourceFolder, profile.outputFolder, profile.logoPath, benchmarks?.username ?? ""]
         let document = try LearnedRedaction.apply(.init(contributor: contributor, sections: sections), secrets: secrets)
         let referenced = Set(document.frameNames)
-        return Build(document: document, frames: frames.filter { referenced.contains($0.key) })
+        return Build(document: document, frames: frames.filter { referenced.contains($0.key) },
+                     onboarding: LearnedOnboarding.make(profile: profile, lessons: lessons, people: people,
+                                                        reviews: reviews, benchmarks: benchmarks))
     }
 
     /// Only approved narrative keys survive; source objects and arbitrary JSON never travel.

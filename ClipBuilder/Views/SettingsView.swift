@@ -748,13 +748,15 @@ private struct AISettingsTab: View {
             }
 
             Section("Learning") {
-                Button("AI Lessons") { showingLearned = true }
+                let count = LearnedLessonsSummary.activeCount(lessons: store.lessons, profile: store.activeProfile)
+                Text("Every Wizard plan reads \(count) active rule\(count == 1 ? "" : "s"), plus your style, taste, vocabulary and benchmarks. Review, edit and share all of it in AI Lessons.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Manage in AI Lessons") { showingLearned = true }
                     .sheet(isPresented: $showingLearned) {
                         LearnedPreferencesView().frame(minWidth: 760, minHeight: 560)
                     }
             }
-
-            WizardLearningSettingsSection()
 
             ForEach(AICatalog.providers, id: \.key) { provider in
                 Section(provider.label) {

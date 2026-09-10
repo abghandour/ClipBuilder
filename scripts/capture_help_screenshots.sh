@@ -16,6 +16,14 @@ RES_DIR="$REPO_ROOT/ClipBuilder/Resources"
 APP="$REPO_ROOT/build/Build/Products/Release/Clip Builder.app"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
 
+# A locked or asleep screen makes System Events and screencapture block
+# forever; bail out so release.sh ships the existing screenshots instead.
+SESSION_INFO="$(ioreg -n Root -d1 -a 2>/dev/null || true)"
+if [[ $SESSION_INFO == *'CGSSessionScreenIsLocked</key>'*'<true/>'* ]]; then
+    echo "==> Screen is locked — cannot drive the UI; keeping existing screenshots" >&2
+    exit 1
+fi
+
 echo "==> Building app for screenshot capture"
 # A running instance holds the binary and makes CodeSign fail — quit it first.
 pkill -x "Clip Builder" 2>/dev/null || true
@@ -76,6 +84,28 @@ capture_tab() {
 echo "==> Capturing tab screenshots"
 capture_tab help-scenes.png 2
 capture_tab help-wizard.png 4
+
+# AI Lessons has no ⌘-digit shortcut; it is the last row of the sidebar's
+# resources group, reached through the accessibility tree by its title.
+echo "==> Capturing AI Lessons"
+if osascript <<EOF 2>/dev/null | grep -q true
+tell application "Clip Builder" to activate
+tell application "System Events" to tell process "Clip Builder"
+    try
+        click (first static text of window 1 whose value is "AI Lessons")
+        delay 2
+        return exists (first static text of window 1 whose value is "What the AI reads…")
+    on error
+        return false
+    end try
+end tell
+EOF
+then
+    capture_window help-lessons.png
+else
+    echo "    ! could not open AI Lessons — keeping existing help-lessons.png" >&2
+    FAILED=1
+fi
 
 # The review sheet can't be reached reliably through the accessibility tree
 # (SwiftUI's AX snapshots are flaky), so relaunch with the LibraryView hook
