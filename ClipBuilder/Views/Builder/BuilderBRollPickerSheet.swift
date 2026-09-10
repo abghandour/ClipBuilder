@@ -9,15 +9,37 @@ struct BuilderBRollPickerSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
-    /// One choosable piece of footage: an analyzed scene or a Library video.
+    /// One choosable item: footage for a cutaway (an analyzed scene or a
+    /// Library video), or a suggested Library photo, which is added as an
+    /// image overlay rather than as B-roll.
     struct Source: Identifiable {
         var id: String
-        var source: CutawaySource
+        /// Footage for a cutaway; nil for a photo.
+        var source: CutawaySource?
+        /// A Library image's path; nil for footage.
+        var photoPath: String?
         var isBRoll: Bool
         var favorite: Bool
+        /// Why the Library suggested this for the spot being covered.
+        var reason: String?
         var name: String
         var detail: String
         var posterTime: Double
+
+        var isPhoto: Bool { photoPath != nil }
+    }
+
+    /// The clips a suggestion should be about: the main clips on `track`
+    /// playing at `time`, and nothing else. Suggestions are then about the
+    /// spot being covered rather than about the whole timeline.
+    nonisolated static func suggestionScope(document: TimelineDocument, track: Int,
+                                            at time: Double) -> TimelineDocument {
+        var scoped = TimelineDocument()
+        scoped.videoTrack = document.mainClips(inTrack: track).filter {
+            $0.startTime <= time + 0.001 && time < $0.startTime + $0.duration - 0.001
+        }
+        scoped.trackCount = 1
+        return scoped
     }
 
     /// The loupe's window, matching ClipTrimEditor's fine trim.
@@ -47,6 +69,14 @@ struct BuilderBRollPickerSheet: View {
     @State private var playerGeneration = 0
     @State private var loadTask: Task<Void, Never>?
     @State private var isPresented = true
+    /// Library image metadata, read once when the sheet opens: what the
+    /// photo suggestions are drawn from.
+    @State private var imageAssets: [LibraryAssetMetadata] = []
+    /// What the Library suggests for the spot being covered, recomputed
+    /// when the track or the start time changes.
+    @State private var suggested: [Source] = []
+    /// How long a suggested photo stays on screen.
+    @State private var photoLength: Double = 3
 
     /// Whether a selection change should reset the window. A change that
     /// only reports the restored selection must not.
@@ -74,8 +104,8 @@ struct BuilderBRollPickerSheet: View {
 
     private var allSources: [Source] {
         var items: [Source] = store.scenes.filter { !$0.excluded }.map { scene in
-            Source(id: "scene:\(scene.id)", source: .scene(scene), isBRoll: scene.isBRoll,
-                   favorite: scene.favorite,
+            Source(id: "scene:\(scene.id)", source: .scene(scene), photoPath: nil,
+                   isBRoll: scene.isBRoll, favorite: scene.favorite, reason: nil,
                    name: scene.videoFilename,
                    detail: scene.narrative ?? String(format: "%.1fs scene", scene.duration),
                    posterTime: (scene.startTime + scene.endTime) / 2)
@@ -84,16 +114,63 @@ struct BuilderBRollPickerSheet: View {
         for video in store.videos where !sceneVideos.contains(video.id) && video.duration > 0 {
             items.append(Source(id: "file:\(video.path)",
                                 source: .file(url: URL(fileURLWithPath: video.path), duration: video.duration),
-                                isBRoll: false, favorite: false, name: video.filename,
+                                photoPath: nil, isBRoll: false, favorite: false, reason: nil,
+                                name: video.filename,
                                 detail: String(format: "%.0fs in the Library", video.duration),
                                 posterTime: video.duration / 2))
         }
         return items
     }
 
+    /// The Library's suggestions for this spot, as pickable items. A B-roll
+    /// suggestion reuses the scene's own entry (same id, so selection, the
+    /// remembered pick, the "used" mark and Enter all behave as usual) with
+    /// the reason as its detail line; a photo becomes an item of its own.
+    private func makeSuggested() -> [Source] {
+        let scope = Self.suggestionScope(document: model.document, track: track, at: startTime)
+        guard !scope.videoTrack.isEmpty else { return [] }
+        let suggestions = MediaSuggestionService.suggestions(
+            document: scope, scenes: store.scenes, people: store.people, assets: imageAssets)
+        let footage = Dictionary(uniqueKeysWithValues: allSources.map { ($0.id, $0) })
+        var items: [Source] = []
+        var seen = Set<String>()
+        for suggestion in suggestions {
+            switch suggestion.kind {
+            case .bRoll:
+                guard let sceneID = suggestion.sceneID,
+                      var item = footage["scene:\(sceneID)"], seen.insert(item.id).inserted else { continue }
+                item.reason = suggestion.reason
+                item.detail = suggestion.reason
+                items.append(item)
+            case .photo:
+                guard let path = suggestion.path, seen.insert("photo:\(path)").inserted else { continue }
+                items.append(Source(id: "photo:\(path)", source: nil, photoPath: path,
+                                    isBRoll: false, favorite: false, reason: suggestion.reason,
+                                    name: (path as NSString).lastPathComponent,
+                                    detail: suggestion.reason, posterTime: 0))
+            }
+        }
+        return items
+    }
+
+    /// Whether the Suggested group is on screen: never while searching,
+    /// and never when the Library has nothing to suggest here.
+    private var showsSuggested: Bool {
+        !suggested.isEmpty && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Everything selectable, in the order it is drawn.
+    private var visibleSources: [Source] {
+        (showsSuggested ? suggested : []) + sources
+    }
+
     private var sources: [Source] {
+        let suggestedIDs = Set(showsSuggested ? suggested.map(\.id) : [])
         let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = allSources.filter { source in
+            // Nothing is listed twice: a suggested scene lives in the group
+            // above, under the same id.
+            if suggestedIDs.contains(source.id) { return false }
             if bRollOnly && !source.isBRoll { return false }
             if favoritesOnly && !source.favorite { return false }
             guard !needle.isEmpty else { return true }
@@ -109,7 +186,7 @@ struct BuilderBRollPickerSheet: View {
     /// The chosen source. `selectedID` is kept pointing at it, so the list
     /// highlight and the strip never disagree.
     private var selected: Source? {
-        sources.first { $0.id == selectedID }
+        visibleSources.first { $0.id == selectedID }
     }
 
     // MARK: - Window
@@ -117,10 +194,10 @@ struct BuilderBRollPickerSheet: View {
     private var length: Double { max(0.1, windowEnd - windowStart) }
 
     private var cuts: [Double] {
-        guard let selected else { return [] }
+        guard let footage = selected?.source else { return [] }
         return model.mainCuts(inTrack: track, from: startTime, to: startTime + length)
             .map { windowStart + ($0 - startTime) }
-            .filter { $0 > selected.source.window.start && $0 < selected.source.window.end }
+            .filter { $0 > footage.window.start && $0 < footage.window.end }
     }
 
     private var coversFootage: Bool {
@@ -128,7 +205,8 @@ struct BuilderBRollPickerSheet: View {
     }
 
     private func resetWindow(for source: Source, keepingLength: Double? = nil) {
-        let bounds = source.source.window
+        guard let footage = source.source else { return }
+        let bounds = footage.window
         let wanted = keepingLength
             ?? model.defaultCutawayDuration(at: startTime, track: track)
         let span = min(max(0.1, wanted), max(0.1, bounds.end - bounds.start))
@@ -159,13 +237,22 @@ struct BuilderBRollPickerSheet: View {
             isPresented = true
             restoreLastPick()
         }
+        .task {
+            // The Library's image metadata is what photo suggestions are
+            // made of; it is read once per opening.
+            guard let database = store.database else { return }
+            imageAssets = (try? await database.fetchAssetMetadata(kind: AssetKind.images.rawValue)) ?? []
+            suggested = makeSuggested()
+        }
+        .onChange(of: track) { _, _ in suggested = makeSuggested() }
+        .onChange(of: startTime) { _, _ in suggested = makeSuggested() }
         .onDisappear {
             isPresented = false
             loadTask?.cancel()
             loadTask = nil
             stopLooping()
         }
-        .onChange(of: sources.map(\.id)) { _, ids in
+        .onChange(of: visibleSources.map(\.id)) { _, ids in
             // Filtering away the selection must move it, not strand it.
             guard let selectedID, ids.contains(selectedID) else {
                 self.selectedID = ids.first
@@ -179,6 +266,11 @@ struct BuilderBRollPickerSheet: View {
             }
             pendingRestoreID = nil
             guard let selected else { return }
+            // A photo has no window to reset; its length stands on its own.
+            guard selected.source != nil else {
+                stopLooping()
+                return
+            }
             resetWindow(for: selected, keepingLength: length)
         }
         .onKeyPress(.upArrow) { cycleSource(-1); return .handled }
@@ -236,46 +328,119 @@ struct BuilderBRollPickerSheet: View {
                 Spacer()
             }
             .padding(.horizontal, Theme.spaceM)
-            List(sources, selection: $selectedID) { source in
-                HStack(spacing: Theme.spaceS) {
-                    VideoThumbnail(url: source.source.url, time: source.posterTime,
-                                   cornerRadius: 4)
-                        .frame(width: 44, height: 44)
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack(spacing: 4) {
-                            Text(source.name)
-                                .font(.caption.weight(.medium))
-                                .lineLimit(1)
-                            if source.isBRoll {
-                                Text("B")
-                                    .font(.system(size: 8, weight: .heavy))
-                                    .foregroundStyle(.black)
-                                    .padding(.horizontal, 3)
-                                    .background(.orange, in: .capsule)
-                            }
-                            if added.contains(source.id) {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .font(.system(size: 9))
-                                    .foregroundStyle(.green)
-                                    .help("Already added in this session")
-                            }
+            List(selection: $selectedID) {
+                if showsSuggested {
+                    Section("Suggested for this spot") {
+                        ForEach(suggested) { source in
+                            row(source).tag(source.id)
                         }
-                        Text(source.detail)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
                     }
                 }
-                .tag(source.id)
+                Section(showsSuggested ? "All footage" : "") {
+                    ForEach(sources) { source in
+                        row(source).tag(source.id)
+                    }
+                }
             }
             .listStyle(.sidebar)
         }
     }
 
+    /// One row of the source list: footage or a suggested photo.
+    @ViewBuilder
+    private func row(_ source: Source) -> some View {
+        HStack(spacing: Theme.spaceS) {
+            if let path = source.photoPath {
+                ImageThumbnail(url: URL(fileURLWithPath: path))
+                    .frame(width: 44, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            } else if let footage = source.source {
+                VideoThumbnail(url: footage.url, time: source.posterTime, cornerRadius: 4)
+                    .frame(width: 44, height: 44)
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(source.name)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                    if source.reason != nil {
+                        Text("Suggested")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 3)
+                            .background(.blue, in: .capsule)
+                    }
+                    if source.isPhoto {
+                        Image(systemName: "photo")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                            .help("A Library photo: it is added as an image overlay, not as B-roll")
+                    }
+                    if source.isBRoll {
+                        Text("B")
+                            .font(.system(size: 8, weight: .heavy))
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 3)
+                            .background(.orange, in: .capsule)
+                    }
+                    if added.contains(source.id) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.green)
+                            .help("Already added in this session")
+                    }
+                }
+                Text(source.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    /// A suggested photo: what it looks like and how long it stays up. It
+    /// has no source window, no track and no area — it is an overlay.
+    @ViewBuilder
+    private func photoDetail(_ source: Source, path: String) -> some View {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
+            ImageThumbnail(url: URL(fileURLWithPath: path))
+                .frame(maxWidth: .infinity, maxHeight: 260)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
+            if let reason = source.reason {
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: Theme.spaceM) {
+                Text("Length")
+                    .font(.caption)
+                TextField("Seconds", value: Binding(
+                    get: { photoLength },
+                    set: { photoLength = max(0.5, $0) }),
+                          format: .number.precision(.fractionLength(1)))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 70)
+                Spacer()
+            }
+            if let status {
+                Label(status, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Text("Added as an image overlay at \(startTime.timecode) — it covers the whole frame while it shows, and no clip moves.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(Theme.spaceL)
+    }
+
     @ViewBuilder
     private var detail: some View {
-        if let selected {
-            let bounds = selected.source.window
+        if let selected, let path = selected.photoPath {
+            photoDetail(selected, path: path)
+        } else if let selected, let footage = selected.source {
+            let bounds = footage.window
             let sourceSpan = max(0.1, bounds.end - bounds.start)
             VStack(alignment: .leading, spacing: Theme.spaceM) {
                 if let player {
@@ -290,7 +455,7 @@ struct BuilderBRollPickerSheet: View {
                     let span = min(Self.loupeSpan, sourceSpan)
                     let loupeStart = min(max(bounds.start, windowStart - (span - length) / 2),
                                          max(bounds.start, bounds.end - span))
-                    VideoTrimSlider(url: selected.source.url, duration: span,
+                    VideoTrimSlider(url: footage.url, duration: span,
                                     start: $windowStart, end: $windowEnd,
                                     timeOffset: loupeStart,
                                     markers: cuts,
@@ -301,7 +466,7 @@ struct BuilderBRollPickerSheet: View {
                         .help("Fine trim — a 10 second window around the selection")
                 }
                 LoupeCompanion(active: loupeShown) {
-                    VideoTrimSlider(url: selected.source.url,
+                    VideoTrimSlider(url: footage.url,
                                     duration: sourceSpan,
                                     start: $windowStart, end: $windowEnd,
                                     timeOffset: bounds.start,
@@ -369,7 +534,7 @@ struct BuilderBRollPickerSheet: View {
             Button("Add and Keep Going") { add(advance: true) }
                 .keyboardShortcut(.return, modifiers: .shift)
                 .disabled(selected == nil)
-            Button("Add B-roll") { add(advance: false) }
+            Button(selected?.isPhoto == true ? "Add Photo" : "Add B-roll") { add(advance: false) }
                 .keyboardShortcut(.defaultAction)
                 .disabled(selected == nil)
         }
@@ -386,17 +551,17 @@ struct BuilderBRollPickerSheet: View {
                 track = min(max(0, last.track), model.document.trackCount - 1)
             }
             coverAll = last.coverAll
-            if let match = sources.first(where: { $0.id == last.sourceKey }) {
+            if let match = visibleSources.first(where: { $0.id == last.sourceKey }),
+               let bounds = match.source?.window {
                 pendingRestoreID = match.id
                 selectedID = match.id
-                let bounds = match.source.window
                 windowStart = min(max(bounds.start, last.sourceStart), max(bounds.start, bounds.end - 0.2))
                 windowEnd = min(bounds.end, windowStart + max(0.2, last.length))
                 rebuildPlayer(for: match)
                 return
             }
         }
-        if let first = sources.first {
+        if let first = visibleSources.first {
             pendingRestoreID = first.id
             selectedID = first.id
             resetWindow(for: first)
@@ -404,16 +569,17 @@ struct BuilderBRollPickerSheet: View {
     }
 
     private func cycleSource(_ delta: Int) {
-        guard !sources.isEmpty else { return }
-        let current = sources.firstIndex { $0.id == selectedID } ?? 0
-        let next = min(max(0, current + delta), sources.count - 1)
-        selectedID = sources[next].id
+        let items = visibleSources
+        guard !items.isEmpty else { return }
+        let current = items.firstIndex { $0.id == selectedID } ?? 0
+        let next = min(max(0, current + delta), items.count - 1)
+        selectedID = items[next].id
     }
 
     /// Slide the window without changing its length, inside the source.
     private func nudge(by seconds: Double) {
-        guard let selected else { return }
-        let bounds = selected.source.window
+        guard let selected, let footage = selected.source else { return }
+        let bounds = footage.window
         let span = length
         let start = min(max(bounds.start, windowStart + seconds), max(bounds.start, bounds.end - span))
         windowStart = start
@@ -424,7 +590,12 @@ struct BuilderBRollPickerSheet: View {
     private func add(advance: Bool) {
         guard let selected else { return }
         let start = startTime
-        let outcome = model.addCutaway(source: selected.source, at: start, track: track,
+        if let path = selected.photoPath {
+            addPhoto(selected, path: path, at: start, advance: advance)
+            return
+        }
+        guard let footage = selected.source else { return }
+        let outcome = model.addCutaway(source: footage, at: start, track: track,
                                        duration: length, sourceStart: windowStart,
                                        coverAll: coverAll)
         status = outcome.message(at: start)
@@ -445,6 +616,21 @@ struct BuilderBRollPickerSheet: View {
         }
     }
 
+    /// A suggested photo becomes an image overlay, never a cutaway: it has
+    /// no track, no area and no source window.
+    private func addPhoto(_ source: Source, path: String, at start: Double, advance: Bool) {
+        let uid = model.addPhotoOverlay(path: path, at: start, length: photoLength)
+        status = nil
+        model.brollRequest = nil
+        added.insert(source.id)
+        if advance {
+            model.playhead = model.imageItem(uid)?.endTime ?? (start + photoLength)
+        } else {
+            stopLooping()
+            dismiss()
+        }
+    }
+
     private func cancel() {
         stopLooping()
         model.brollRequest = nil
@@ -454,7 +640,12 @@ struct BuilderBRollPickerSheet: View {
     // MARK: - Looping player
 
     private func rebuildPlayer(for source: Source) {
-        let url = source.source.url
+        guard let footage = source.source else {
+            // A photo has no player; a stale one must not keep running.
+            stopLooping()
+            return
+        }
+        let url = footage.url
         let created = player ?? AVPlayer()
         player = created
         playerURL = url

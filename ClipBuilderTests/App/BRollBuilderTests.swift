@@ -426,6 +426,79 @@ struct BRollBuilderTests {
         #expect(Picker.shouldResetWindow(newID: nil, pendingRestoreID: "scene:1"))
     }
 
+    // MARK: - Suggestions in the picker
+
+    @Test("suggestions are scoped to the main clips covering the spot")
+    func suggestionScopePicksTheCoveringClips() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        var covering = clip(start: 0, duration: 4)
+        covering.sceneID = 1
+        var later = clip(start: 4, duration: 4)
+        later.sceneID = 2
+        var otherTrack = clip(start: 0, duration: 4, track: 1)
+        otherTrack.sceneID = 3
+        var broll = cutaway(start: 0, duration: 4)
+        broll.sceneID = 4
+        let model = try model(clips: [covering, later, otherTrack, broll])
+
+        let scoped = BuilderBRollPickerSheet.suggestionScope(document: model.document,
+                                                             track: 0, at: 2)
+        #expect(scoped.videoTrack.map(\.sceneID) == [1],
+                "only the main clip playing there, not the B-roll or the other track")
+
+        // A spot in a gap has nothing to be about.
+        #expect(BuilderBRollPickerSheet.suggestionScope(document: model.document,
+                                                        track: 0, at: 20).videoTrack.isEmpty)
+        // The boundary belongs to the clip that starts there.
+        #expect(BuilderBRollPickerSheet.suggestionScope(document: model.document,
+                                                        track: 0, at: 4).videoTrack.map(\.sceneID) == [2])
+    }
+
+    @Test("a B-roll suggestion points at a scene the picker already lists")
+    func brollSuggestionResolvesToASceneSource() throws {
+        var onScreen = Fixtures.scene(id: 1)
+        onScreen.tags = ["walkout"]
+        var candidate = Fixtures.scene(id: 2)
+        candidate.tags = ["walkout", "b-roll"]
+        #expect(candidate.isBRoll)
+
+        var clip = Fixtures.timelineClip(sceneID: onScreen.id, duration: 4)
+        clip.startTime = 0
+        var document = Fixtures.timelineDocument(clips: [clip])
+        document.trackCount = 1
+        let scoped = BuilderBRollPickerSheet.suggestionScope(document: document, track: 0, at: 1)
+        let suggestions = MediaSuggestionService.suggestions(
+            document: scoped, scenes: [onScreen, candidate], people: [], assets: [])
+
+        let broll = try #require(suggestions.first { $0.kind == .bRoll })
+        #expect(broll.sceneID == candidate.id)
+        #expect("scene:\(try #require(broll.sceneID))" == "scene:2",
+                "the picker's own source id, so selection and Enter are unchanged")
+        #expect(broll.reason.contains("walkout"))
+    }
+
+    @Test("a suggested photo becomes an image overlay of the asked length, never a clip")
+    func photoSuggestionAddsAnOverlay() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let model = try model(clips: [clip(start: 0, duration: 10)])
+        let before = model.document.videoTrack.count
+
+        let uid = model.addPhotoOverlay(path: "/tmp/crowd.png", at: 2, length: 4)
+        let overlay = try #require(model.imageItem(uid))
+        #expect(overlay.path == "/tmp/crowd.png")
+        #expect(overlay.startTime == 2 && overlay.endTime == 6)
+        #expect(model.document.videoTrack.count == before, "no clip is added")
+        #expect(model.document.cutaways(inTrack: 0).isEmpty)
+        #expect(model.document.mainClips(inTrack: 0).map(\.startTime) == [0],
+                "and nothing on the timeline moves for it")
+
+        // Too short to see is clamped, not accepted.
+        let brief = model.addPhotoOverlay(path: "/tmp/crowd.png", at: 8, length: 0)
+        #expect(model.imageItem(brief)?.endTime == 8.5)
+    }
+
     // MARK: - Snapshot rows
 
     @Test("the strip band gets its own rows, and no rows at all without B-roll")

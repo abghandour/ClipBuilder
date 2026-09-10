@@ -295,6 +295,24 @@ trim gestures as a clip; moving never reflows neighbours.
    **Shift-Enter** adds, advances the playhead to the cutaway's end, and keeps
    the picker open for the next one. Escape cancels.
 
+**Suggested.** A group at the top of the source list, above the ordinary
+footage: what the Library suggests for the spot being covered.
+`MediaSuggestionService` runs against a scoped copy of the document holding
+only the main clips on the chosen track that play at the picker's start time
+(`BuilderBRollPickerSheet.suggestionScope`), so the suggestions are about that
+spot and not about the whole timeline; they are recomputed when the track or
+the start time changes. A B-roll suggestion reuses the scene's own entry
+(same `scene:<id>` id, so selection, the remembered pick, the "used" mark and
+Enter behave exactly as before) with the suggestion's reason as its detail
+line and a "Suggested" label; the entry is not repeated in the list below.
+A photo suggestion is an item of its own: the detail pane shows the image
+with a Length field (3 s by default) and no player, strips, track or
+cover-all controls, and Enter adds it as an image overlay at the start time
+(`addPhotoOverlay`) — never as a cutaway. The group is hidden while the
+search field has text and when there is nothing to suggest. This replaces the
+old "Suggestions" toolbar button and its sheet, which placed B-roll as an
+ordinary clip on Track I and pushed the timeline.
+
 The picker remembers the last source and window position per document.
 Source cards show a "B" badge when tagged and a small "used" mark once added.
 A cutaway added over a spot with no main clip under it shows a yellow badge.

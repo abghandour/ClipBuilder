@@ -14,7 +14,6 @@ struct BuilderView: View {
     @State private var showBRollPicker = false
     @State private var showImagePicker = false
     @State private var confirmClear = false
-    @State private var showMediaSuggestions = false
 
     var body: some View {
         let model = store.builder
@@ -167,7 +166,6 @@ struct BuilderView: View {
                 for url in urls { model.addImage(path: url.path) }
             }
         }
-        .sheet(isPresented: $showMediaSuggestions) { MediaSuggestionsSheet() }
         .onDeleteCommand {
             deleteSelection()
         }
@@ -185,11 +183,6 @@ struct BuilderView: View {
             BuilderAddMenu(showScenePicker: $showScenePicker,
                            showImagePicker: $showImagePicker,
                            showBRollPicker: $showBRollPicker)
-
-            Button("Suggestions", systemImage: "sparkles") {
-                showMediaSuggestions = true
-            }
-            .disabled(model.document.videoTrack.isEmpty)
 
             Divider().frame(height: 16)
 

@@ -1455,6 +1455,17 @@ final class BuilderTimelineModel {
         return item.uid
     }
 
+    /// A suggested Library photo, placed as an image overlay for a fixed
+    /// length. It is not B-roll: it has no track and no area, and nothing
+    /// on the timeline moves for it.
+    @discardableResult
+    func addPhotoOverlay(path: String, at time: Double? = nil, length: Double = 3) -> UUID {
+        let start = Self.snap(time ?? playhead)
+        let uid = addImage(path: path, at: start)
+        updateImage(uid) { $0.endTime = start + max(0.5, length) }
+        return uid
+    }
+
     func imageIndex(_ uid: UUID) -> Int? {
         document.imageOverlays.firstIndex { $0.uid == uid }
     }
