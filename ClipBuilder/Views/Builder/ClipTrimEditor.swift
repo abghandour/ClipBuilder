@@ -85,13 +85,18 @@ struct ClipTrimEditor: View {
                         }
                         .transition(.move(edge: .top).combined(with: .opacity))
                     }
-                    VideoTrimSlider(url: url, duration: videoDuration,
-                                    start: startBinding, end: endBinding,
-                                    pace: pace(start: 0, end: videoDuration),
-                                    rulerInterval: Self.coarseRulerInterval(videoDuration),
-                                    minimumSpan: 0.5,
-                                    onScrub: { pendingScrub = $0 },
-                                    onDragEnded: commitDraft)
+                    // With the loupe up, the full strip steps back: shorter and
+                    // narrower, centred, so the loupe reads as the control.
+                    LoupeCompanion(active: showLoupe) {
+                        VideoTrimSlider(url: url, duration: videoDuration,
+                                        start: startBinding, end: endBinding,
+                                        pace: pace(start: 0, end: videoDuration),
+                                        rulerInterval: Self.coarseRulerInterval(videoDuration),
+                                        minimumSpan: 0.5,
+                                        stripHeight: LoupeCompanionMetrics.stripHeight(44, loupeShown: showLoupe),
+                                        onScrub: { pendingScrub = $0 },
+                                        onDragEnded: commitDraft)
+                    }
                 }
                 .clipped()
                 if !fightEvents.isEmpty {
@@ -225,8 +230,12 @@ struct ClipTrimEditor: View {
             let width = proxy.size.width
             let height = proxy.size.height
             let safeDuration = max(videoDuration, 0.001)
-            let x0 = width * CGFloat(min(1, zoomWindowStart / safeDuration))
-            let x1 = width * CGFloat(min(1, (zoomWindowStart + span) / safeDuration))
+            // The full strip below is narrowed and centred while the loupe
+            // shows, so the funnel lands on the strip, not the container.
+            let x0 = LoupeCompanionMetrics.x(fraction: CGFloat(zoomWindowStart / safeDuration),
+                                             container: width, loupeShown: true)
+            let x1 = LoupeCompanionMetrics.x(fraction: CGFloat((zoomWindowStart + span) / safeDuration),
+                                             container: width, loupeShown: true)
             ZStack {
                 Path { path in
                     path.move(to: CGPoint(x: 0, y: 0))

@@ -1792,8 +1792,36 @@ struct VideoTrimSlider: View {
     /// Selection start + span captured when a middle drag begins.
     @State private var moveAnchor: (start: Double, span: Double)?
 
-    private static let handleWidth: CGFloat = 14
+    static let handleWidth: CGFloat = 14
     private static let thumbnailCount = 8
+
+    /// Where the selection frame and the two handles draw. The start handle
+    /// always sits to the left of the end handle: a selection narrower than
+    /// two handles (half a second on a three-minute strip is a pixel) is
+    /// shown as a two-handle-wide frame centred on it, clamped to the strip,
+    /// instead of the start handle spilling past the end handle.
+    nonisolated struct HandleLayout: Equatable {
+        var frameX: CGFloat
+        var frameWidth: CGFloat
+        var startHandleX: CGFloat
+        var endHandleX: CGFloat
+    }
+    nonisolated static func handleLayout(startX: CGFloat, endX: CGFloat, width: CGFloat) -> HandleLayout {
+        let minimum = handleWidth * 2
+        let lower = min(startX, endX)
+        let upper = max(startX, endX)
+        var frameWidth = max(upper - lower, minimum)
+        var frameX = lower
+        if upper - lower < minimum {
+            frameX = (lower + upper) / 2 - minimum / 2
+        }
+        if width > 0 {
+            frameWidth = min(frameWidth, max(width, minimum))
+            frameX = min(max(0, frameX), max(0, width - frameWidth))
+        }
+        return HandleLayout(frameX: frameX, frameWidth: frameWidth,
+                            startHandleX: frameX, endHandleX: frameX + frameWidth - handleWidth)
+    }
     /// Gestures measure in this fixed strip space — measuring in the moving
     /// handles' own space feeds the drag back into itself and jitters.
     private static let stripSpace = "videoTrimStrip"
@@ -1804,6 +1832,7 @@ struct VideoTrimSlider: View {
                 let width = proxy.size.width
                 let startX = x(for: start, width: width)
                 let endX = x(for: end, width: width)
+                let handles = Self.handleLayout(startX: startX, endX: endX, width: width)
                 ZStack(alignment: .topLeading) {
                     filmstrip(width: width)
                     if !markers.isEmpty, duration > 0 {
@@ -1843,17 +1872,16 @@ struct VideoTrimSlider: View {
                     // Selection frame.
                     RoundedRectangle(cornerRadius: 4)
                         .strokeBorder(.yellow, lineWidth: 3)
-                        .frame(width: max(endX - startX, Self.handleWidth * 2),
-                               height: stripHeight)
-                        .offset(x: startX)
+                        .frame(width: handles.frameWidth, height: stripHeight)
+                        .offset(x: handles.frameX)
                         .allowsHitTesting(false)
                     // Middle drag: slide the whole selection, span unchanged.
                     Rectangle()
                         .fill(.clear)
                         .contentShape(Rectangle())
-                        .frame(width: max(0, endX - startX - Self.handleWidth * 2),
+                        .frame(width: max(0, handles.frameWidth - Self.handleWidth * 2),
                                height: stripHeight)
-                        .offset(x: startX + Self.handleWidth)
+                        .offset(x: handles.frameX + Self.handleWidth)
                         .help("Drag to move the selection without changing its length")
                         .gesture(DragGesture(coordinateSpace: .named(Self.stripSpace))
                             .onChanged { value in
@@ -1872,7 +1900,7 @@ struct VideoTrimSlider: View {
                                 onDragEnded?()
                             })
                     handle(icon: "chevron.compact.left")
-                        .offset(x: startX)
+                        .offset(x: handles.startHandleX)
                         .gesture(DragGesture(minimumDistance: 0,
                                              coordinateSpace: .named(Self.stripSpace))
                             .onChanged { value in
@@ -1896,7 +1924,7 @@ struct VideoTrimSlider: View {
                             onDragEnded?()
                         }
                     handle(icon: "chevron.compact.right")
-                        .offset(x: endX - Self.handleWidth)
+                        .offset(x: handles.endHandleX)
                         .gesture(DragGesture(minimumDistance: 0,
                                              coordinateSpace: .named(Self.stripSpace))
                             .onChanged { value in

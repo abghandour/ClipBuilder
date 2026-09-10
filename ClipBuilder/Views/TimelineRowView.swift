@@ -46,19 +46,26 @@ struct TimelineRowView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 60)
 
-            Button(timeline.isWizard ? "Open in Builder" : "Open", action: onOpen)
-
-            Menu("Timeline Actions", systemImage: "ellipsis") {
+            // Every action visible, as icons with tooltips; no More menu.
+            HStack(spacing: Theme.spaceXS) {
+                Button(timeline.isWizard ? "Open in Builder" : "Open",
+                       systemImage: "arrow.up.forward.app", action: onOpen)
+                    .help(timeline.isWizard ? "Open this Wizard run in the Builder" : "Open in the Builder (or double-click the row)")
                 Button("Rename…", systemImage: "pencil", action: onRename)
                     .disabled(timeline.isWizard)
+                    .help(timeline.isWizard ? "Wizard runs keep their name" : "Rename this timeline")
                 Button("Duplicate", systemImage: "plus.square.on.square", action: onDuplicate)
-                Divider()
+                    .help("Duplicate this timeline")
                 Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
+                    .help("Delete this timeline")
             }
             .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .imageScale(.large)
         }
         .padding(.vertical, Theme.spaceS)
         .contentShape(.rect)
+        .onTapGesture(count: 2, perform: onOpen)
         .accessibilityElement(children: .combine)
         .accessibilityAction(named: "Open", onOpen)
     }

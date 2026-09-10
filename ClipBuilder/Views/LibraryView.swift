@@ -168,9 +168,15 @@ struct LibraryView: View {
             }
             .buttonStyle(.plain)
 
-            Text(video.filename)
-                .font(.callout.weight(.medium))
-                .lineLimit(1)
+            // Name on the left, the AI details button at the far right of
+            // the same line.
+            HStack(alignment: .firstTextBaseline, spacing: Theme.spaceS) {
+                Text(video.filename)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                AIInfoButton(output: video)
+            }
 
             if let generatedAt = video.generatedAt {
                 Text(generatedAt)
@@ -209,7 +215,6 @@ struct LibraryView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
-                AIInfoButton(output: video)
                 Menu("More", systemImage: "ellipsis") {
                     driveSelectionAction(video)
                     Button("Open in Builder", systemImage: "timeline.selection") {

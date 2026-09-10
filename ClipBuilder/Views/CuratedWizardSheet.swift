@@ -474,14 +474,17 @@ struct CuratedWizardSheet: View {
                         }
                         zoomConnector(videoDuration: scene.videoDuration)
                     }
-                    VideoTrimSlider(url: scene.videoURL, duration: scene.videoDuration,
-                                    start: $model.editStart, end: $model.editEnd,
-                                    pace: fightPace(for: scene, start: 0,
-                                                    end: scene.videoDuration),
-                                    rulerInterval: Self.coarseRulerInterval(scene.videoDuration)) { time in
-                        scrub(to: time)
+                    LoupeCompanion(active: zoomed) {
+                        VideoTrimSlider(url: scene.videoURL, duration: scene.videoDuration,
+                                        start: $model.editStart, end: $model.editEnd,
+                                        pace: fightPace(for: scene, start: 0,
+                                                        end: scene.videoDuration),
+                                        rulerInterval: Self.coarseRulerInterval(scene.videoDuration),
+                                        stripHeight: LoupeCompanionMetrics.stripHeight(44, loupeShown: zoomed)) { time in
+                            scrub(to: time)
+                        }
+                        .help("Clip range — drag to trim or extend into the source footage")
                     }
-                    .help("Clip range — drag to trim or extend into the source footage")
                 }
                 HStack {
                     Button("Reset to scene") {
@@ -541,8 +544,11 @@ struct CuratedWizardSheet: View {
             let height = proxy.size.height
             let span = min(10.0, videoDuration)
             let safeDuration = max(videoDuration, 0.001)
-            let x0 = width * CGFloat(min(1, zoomWindowStart / safeDuration))
-            let x1 = width * CGFloat(min(1, (zoomWindowStart + span) / safeDuration))
+            // The full strip below is narrowed and centred while zoomed.
+            let x0 = LoupeCompanionMetrics.x(fraction: CGFloat(zoomWindowStart / safeDuration),
+                                             container: width, loupeShown: true)
+            let x1 = LoupeCompanionMetrics.x(fraction: CGFloat((zoomWindowStart + span) / safeDuration),
+                                             container: width, loupeShown: true)
             ZStack {
                 Path { path in
                     path.move(to: CGPoint(x: 0, y: 0))

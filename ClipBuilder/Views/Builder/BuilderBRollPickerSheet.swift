@@ -285,7 +285,8 @@ struct BuilderBRollPickerSheet: View {
                 }
                 // Fine trim first, like ClipTrimEditor: a short window is
                 // hard to place on a strip that spans the whole source.
-                if sourceSpan > Self.loupeSpan + 0.5 {
+                let loupeShown = sourceSpan > Self.loupeSpan + 0.5
+                if loupeShown {
                     let span = min(Self.loupeSpan, sourceSpan)
                     let loupeStart = min(max(bounds.start, windowStart - (span - length) / 2),
                                          max(bounds.start, bounds.end - span))
@@ -299,14 +300,16 @@ struct BuilderBRollPickerSheet: View {
                                     onDragEnded: { rebuildPlayer(for: selected) })
                         .help("Fine trim — a 10 second window around the selection")
                 }
-                VideoTrimSlider(url: selected.source.url,
-                                duration: sourceSpan,
-                                start: $windowStart, end: $windowEnd,
-                                timeOffset: bounds.start,
-                                markers: cuts,
-                                minimumSpan: 0.2,
-                                stripHeight: 52,
-                                onDragEnded: { rebuildPlayer(for: selected) })
+                LoupeCompanion(active: loupeShown) {
+                    VideoTrimSlider(url: selected.source.url,
+                                    duration: sourceSpan,
+                                    start: $windowStart, end: $windowEnd,
+                                    timeOffset: bounds.start,
+                                    markers: cuts,
+                                    minimumSpan: 0.2,
+                                    stripHeight: LoupeCompanionMetrics.stripHeight(52, loupeShown: loupeShown),
+                                    onDragEnded: { rebuildPlayer(for: selected) })
+                }
                 HStack(spacing: Theme.spaceM) {
                     Text("Length")
                         .font(.caption)

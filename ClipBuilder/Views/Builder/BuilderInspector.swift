@@ -84,6 +84,7 @@ struct BuilderInspector: View {
 private let transitionChoices = ["cut"] + RenderEngine.actionTransitions + RenderEngine.transitions
 
 struct ClipInspector: View {
+    @State private var cropDragAnchor: Double?
     @Environment(AppStore.self) private var store
     let clip: TimelineClip
 
@@ -230,12 +231,9 @@ struct ClipInspector: View {
                                 set: { value in model.updateClip(clip.uid) { $0.cropXFrac = value ? 0.5 : nil } }))
                         }
                         if let crop = clip.cropXFrac {
-                            Slider(value: Binding(
-                                get: { crop },
-                                set: { value in model.updateClip(clip.uid) { $0.cropXFrac = value } }),
-                                in: 0...1)
-                                .accessibilityLabel("Wide clip crop position")
                             cropPreview(fraction: crop)
+                            Text("Drag the frame, or click where it should sit.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                         InspectorRow("Camera") {
                             Toggle(scene?.tags.contains("podcast") == true ? "Follow active speaker" : "Tracking reframe",
@@ -387,8 +385,26 @@ struct ClipInspector: View {
         }
     }
 
+    /// The crop position after a drag: the window's start fraction at the
+    /// drag's start plus the pointer travel as a share of the room the window
+    /// has to move, clamped to the frame.
+    nonisolated static func cropFraction(anchor: Double, translation: CGFloat,
+                                         previewWidth: CGFloat, windowWidth: CGFloat) -> Double {
+        let room = previewWidth - windowWidth
+        guard room > 0 else { return 0.5 }
+        return min(1, max(0, anchor + Double(translation / room)))
+    }
+    /// The crop position that centres the window on a click at `x`.
+    nonisolated static func cropFraction(centeredAt x: CGFloat, previewWidth: CGFloat,
+                                         windowWidth: CGFloat) -> Double {
+        let room = previewWidth - windowWidth
+        guard room > 0 else { return 0.5 }
+        return min(1, max(0, Double((x - windowWidth / 2) / room)))
+    }
+
     private func cropPreview(fraction: Double) -> some View {
         let model = store.builder
+        let uid = clip.uid
         return Group {
             if let url = model.sourceURL(for: clip) {
                 VideoThumbnail(url: url, time: clip.sourceStart ?? 0, cornerRadius: 4)
@@ -398,10 +414,41 @@ struct ClipInspector: View {
                     .overlay {
                         GeometryReader { geo in
                             let windowWidth = geo.size.height * 9 / 16
-                            RoundedRectangle(cornerRadius: 2)
-                                .strokeBorder(Color.accentColor, lineWidth: 2)
-                                .frame(width: windowWidth, height: geo.size.height)
-                                .offset(x: (geo.size.width - windowWidth) * fraction)
+                            ZStack(alignment: .topLeading) {
+                                // Click anywhere: the window jumps there.
+                                Color.clear
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { location in
+                                        let value = Self.cropFraction(centeredAt: location.x,
+                                                                      previewWidth: geo.size.width,
+                                                                      windowWidth: windowWidth)
+                                        model.updateClip(uid) { $0.cropXFrac = value }
+                                    }
+                                RoundedRectangle(cornerRadius: 2)
+                                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                                    .background(Color.accentColor.opacity(0.001))
+                                    .contentShape(Rectangle())
+                                    .frame(width: windowWidth, height: geo.size.height)
+                                    .offset(x: (geo.size.width - windowWidth) * fraction)
+                                    .gesture(DragGesture(minimumDistance: 1)
+                                        .onChanged { value in
+                                            let anchor = cropDragAnchor ?? fraction
+                                            cropDragAnchor = anchor
+                                            let next = Self.cropFraction(anchor: anchor,
+                                                                         translation: value.translation.width,
+                                                                         previewWidth: geo.size.width,
+                                                                         windowWidth: windowWidth)
+                                            model.updateClip(uid) { $0.cropXFrac = next }
+                                        }
+                                        .onEnded { _ in cropDragAnchor = nil })
+                                    .help("Drag to choose which part of the wide frame fills 9:16")
+                                    .accessibilityLabel("Wide clip crop position")
+                                    .accessibilityValue(String(format: "%.0f%%", fraction * 100))
+                                    .accessibilityAdjustableAction { direction in
+                                        let step = direction == .increment ? 0.05 : -0.05
+                                        model.updateClip(uid) { $0.cropXFrac = min(1, max(0, fraction + step)) }
+                                    }
+                            }
                         }
                     }
             }
