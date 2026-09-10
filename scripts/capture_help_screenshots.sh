@@ -1,9 +1,9 @@
 #!/bin/zsh
 # Refreshes the screenshots embedded in the in-app Training Guide
 # (ClipBuilder/Resources/help-*.png) by building the app, driving its UI,
-# and capturing window shots — so the shipped guide always matches the
-# current UI. Called by release.sh before the signed build; safe to run
-# standalone from anywhere.
+# and capturing window shots. Run it by hand when the guide's UI changed;
+# release.sh no longer calls it, so the shipped screenshots only change when
+# someone runs this and commits the PNGs.
 #
 # Needs Screen Recording + Accessibility permissions for the terminal
 # running it, and a profile with analyzed scenes (and ideally a few

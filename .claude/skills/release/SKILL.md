@@ -36,6 +36,10 @@ wait routinely takes 5–10 minutes.
    `NOTARY_PROFILE=ClipBuilderNotary`, Developer ID Application/Installer
    certificates in the keychain (team D7JTNCH58D), `gh` authenticated.
 
+The release does **not** capture Training Guide screenshots. When the guide's
+UI changed, run `scripts/capture_help_screenshots.sh` by hand (Mac unlocked, no
+other Clip Builder instance running) and commit the PNGs before releasing.
+
 ## After it finishes
 
 1. Verify: `gh release view v<version>` — pkg attached, tag correct.

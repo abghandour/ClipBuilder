@@ -58,14 +58,6 @@ echo "    MARKETING_VERSION $CURRENT -> $VERSION, build $BUILD -> $NEW_BUILD"
 step "Updating Getting Started guide version references"
 sed -i '' -E "s/ClipBuilder-[0-9.]+\.pkg/ClipBuilder-$VERSION.pkg/g; s/Clip Builder [0-9.]+ — Getting Started/Clip Builder $VERSION — Getting Started/g" "$GUIDE"
 
-# ----------------------------------------------- training guide screenshots
-step "Refreshing Training Guide screenshots"
-if "$REPO_ROOT/scripts/capture_help_screenshots.sh"; then
-    echo "    screenshots refreshed"
-else
-    echo "    ! capture incomplete — shipping the existing screenshots"
-fi
-
 # ------------------------------------------------------------- build + sign
 step "Building and notarizing pkg"
 "$REPO_ROOT/scripts/make_pkg.sh"
@@ -74,7 +66,7 @@ PKG="$DIST_DIR/ClipBuilder-$VERSION.pkg"
 
 # --------------------------------------------------------- commit + publish
 step "Committing, tagging v$VERSION, pushing"
-git -C "$REPO_ROOT" add "$PBXPROJ" "$GUIDE" "$REPO_ROOT/ClipBuilder/Resources"
+git -C "$REPO_ROOT" add "$PBXPROJ" "$GUIDE"
 git -C "$REPO_ROOT" commit -m "Release $VERSION (build $NEW_BUILD)"
 git -C "$REPO_ROOT" tag "v$VERSION"
 git -C "$REPO_ROOT" push origin HEAD "v$VERSION"
