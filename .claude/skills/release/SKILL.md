@@ -11,10 +11,10 @@ One command does the whole pipeline — do NOT reimplement its steps by hand:
 scripts/release.sh
 ```
 
-It bumps versions in `project.pbxproj`, updates + re-renders the Getting Started
-guide, builds/signs/notarizes/staples the pkg (`scripts/make_pkg.sh`), commits,
-tags `v<version>`, pushes, and creates the GitHub release with the pkg + PDF
-attached (`--generate-notes`). Run it from the repo root with a **long timeout
+It bumps versions in `project.pbxproj`, updates the version references in the
+Getting Started HTML guide (no PDF is generated), builds/signs/notarizes/staples
+the pkg (`scripts/make_pkg.sh`), commits, tags `v<version>`, pushes, and creates
+the GitHub release with the pkg attached (`--generate-notes`). Run it from the repo root with a **long timeout
 (600000 ms) or in the background** — the Xcode build plus Apple's notarization
 wait routinely takes 5–10 minutes.
 
@@ -35,13 +35,10 @@ wait routinely takes 5–10 minutes.
    they've changed): `DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer`,
    `NOTARY_PROFILE=ClipBuilderNotary`, Developer ID Application/Installer
    certificates in the keychain (team D7JTNCH58D), `gh` authenticated.
-4. Headless Chrome regenerates `docs/ClipBuilder-Getting-Started.pdf`; if
-   Chrome is missing the script warns and the PDF must be regenerated manually
-   before the release is complete.
 
 ## After it finishes
 
-1. Verify: `gh release view v<version>` — pkg and PDF attached, tag correct.
+1. Verify: `gh release view v<version>` — pkg attached, tag correct.
    (The script already ran `stapler staple` and a Gatekeeper `spctl` check.)
 2. **Replace the auto-generated notes with human ones.** Summarize what
    actually changed for a user of the app:
@@ -63,7 +60,7 @@ wait routinely takes 5–10 minutes.
   `xcrun notarytool history --keychain-profile ClipBuilderNotary`.
 - **Partial publish** (commit+tag pushed but release creation failed) → do NOT
   rerun the whole script (it would bump again); finish with
-  `gh release create v<version> dist/ClipBuilder-<version>.pkg docs/ClipBuilder-Getting-Started.pdf --title "Clip Builder <version>" --generate-notes`.
+  `gh release create v<version> dist/ClipBuilder-<version>.pkg --title "Clip Builder <version>" --generate-notes`.
 
 ## Never
 
