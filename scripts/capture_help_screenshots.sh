@@ -24,9 +24,16 @@ if [[ $SESSION_INFO == *'CGSSessionScreenIsLocked</key>'*'<true/>'* ]]; then
     exit 1
 fi
 
+# Never kill an instance we did not launch (the user's Xcode Debug build runs
+# against their real data); ship the existing screenshots instead.
+if pgrep -lf 'Clip Builder.app/Contents/MacOS/Clip Builder' 2>/dev/null | grep -v -F "$APP" | grep -q .; then
+    echo "==> Another Clip Builder instance is running (not the capture build) — keeping existing screenshots" >&2
+    exit 1
+fi
+
 echo "==> Building app for screenshot capture"
 # A running instance holds the binary and makes CodeSign fail — quit it first.
-pkill -x "Clip Builder" 2>/dev/null || true
+pkill -f -x "$APP/Contents/MacOS/Clip Builder" 2>/dev/null || true
 xcodebuild -project "$REPO_ROOT/Clip Builder.xcodeproj" \
     -scheme MyApp \
     -configuration Release \
@@ -36,7 +43,7 @@ xcodebuild -project "$REPO_ROOT/Clip Builder.xcodeproj" \
     build > /dev/null
 
 echo "==> Launching app"
-pkill -x "Clip Builder" 2>/dev/null || true
+pkill -f -x "$APP/Contents/MacOS/Clip Builder" 2>/dev/null || true
 sleep 1
 open "$APP"
 sleep 5
@@ -112,7 +119,7 @@ fi
 # that auto-opens the sheet for the newest reel. Nothing opens if the
 # library is empty — generate a reel first for a fresh shot.
 echo "==> Capturing review sheet"
-pkill -x "Clip Builder" 2>/dev/null || true
+pkill -f -x "$APP/Contents/MacOS/Clip Builder" 2>/dev/null || true
 sleep 1
 open "$APP" --args --auto-open-review
 sleep 5
@@ -132,7 +139,7 @@ else
     FAILED=1
 fi
 
-pkill -x "Clip Builder" 2>/dev/null || true
+pkill -f -x "$APP/Contents/MacOS/Clip Builder" 2>/dev/null || true
 if [[ $FAILED -ne 0 ]]; then
     echo "==> Done with warnings — some screenshots were not refreshed"
     exit 1
