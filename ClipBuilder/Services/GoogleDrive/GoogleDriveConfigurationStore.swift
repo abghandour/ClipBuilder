@@ -7,7 +7,8 @@ nonisolated struct GoogleDriveConfigurationStore: Sendable {
     private let account = "application"
 
     init(
-        keychain: any DriveCredentialStore = GoogleDriveKeychain(service: "com.clipbuilder.google-drive.configuration"),
+        keychain: any DriveCredentialStore = DriveCredentialStores.store(
+            service: "com.clipbuilder.google-drive.configuration"),
         bundled: GoogleOAuthConfiguration = .bundled
     ) {
         self.keychain = keychain

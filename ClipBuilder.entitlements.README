@@ -1,0 +1,16 @@
+Not wired into the project on purpose (September 10, 2026).
+
+Setting CODE_SIGN_ENTITLEMENTS = ClipBuilder.entitlements on the app target
+makes two builds that work today fail:
+
+  * scripts/test.sh (Debug, CODE_SIGN_IDENTITY=-):
+    "Clip Builder" has entitlements that require signing with a development
+    certificate.
+  * Release with automatic signing:
+    No profiles for 'com.mokotti-solutions.clipbuilder' were found.
+
+GoogleDriveKeychain already prefers the data-protection keychain and falls
+back to the legacy login-keychain item when the entitlement is missing
+(errSecMissingEntitlement), so wiring this file up later needs no code
+change — only a signing setup that carries the entitlement (manual
+Developer ID signing, verified by an actual notarized build).

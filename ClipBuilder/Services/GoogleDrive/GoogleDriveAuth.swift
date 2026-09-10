@@ -46,7 +46,7 @@ actor GoogleDriveAuth {
         configuration: GoogleOAuthConfiguration? = nil,
         configurationStore: GoogleDriveConfigurationStore = GoogleDriveConfigurationStore(),
         transport: any DriveTransport = URLSessionDriveTransport(),
-        credentials: any DriveCredentialStore = GoogleDriveKeychain()
+        credentials: any DriveCredentialStore = DriveCredentialStores.store()
     ) {
         self.configurationStore = configuration == nil ? configurationStore : nil
         self.configuration = configuration ?? ((try? configurationStore.resolved()) ?? .bundled)
