@@ -7,6 +7,8 @@ import Observation
 final class WizardSheetModel {
     enum Phase: Equatable { case idle, awaitingPrerequisites, running, preview, found, unrecognised, refused, applying, applied, discarded }
     var request = ""
+    private(set) var examples = BuilderRequestParser.supportedRequests(library: ScriptLibrarySnapshot())
+    private var prefillExamples = false
     var provider: BuilderAgentProvider = .local
     private(set) var agentEvents: [BuilderRunEvent] = []
     private(set) var agentSummary = ""
@@ -56,7 +58,10 @@ final class WizardSheetModel {
     init(store: AppStore, history: BuilderWizardHistory = BuilderWizardHistory(),
          loadLibrary: (@MainActor () async throws -> ScriptLibrarySnapshot)? = nil,
          prerequisites: BuilderPrerequisites? = nil,
-         agentExecutor: BuilderAgentRun.Executor? = nil) {
+         agentExecutor: BuilderAgentRun.Executor? = nil,
+         initialRequest: String = "", prefillExamples: Bool = false) {
+        request = initialRequest
+        self.prefillExamples = prefillExamples
         self.store = store
         self.agentExecutor = agentExecutor
         self.prerequisites = prerequisites ?? store.builderPrerequisites
@@ -70,6 +75,50 @@ final class WizardSheetModel {
         if let saved = BuilderAgentProvider(rawValue: store.settings.ai.tasks["builder_agent"] ?? ""),
            saved.disabledReason == nil { provider = saved }
         self.loadLibrary = loadLibrary ?? { try await BuilderWizardLibrary.snapshot(store: store) }
+    }
+
+    func refreshExamples() async {
+        do {
+            let library = try await loadLibrary()
+            guard !dismissed, identityMatches else { return }
+            examples = BuilderRequestParser.supportedRequests(library: library)
+            if prefillExamples, phase == .idle, !busy, request.isEmpty { request = Self.prefill(from: examples) }
+            prefillExamples = false
+        } catch {
+            // Generic examples remain useful when the Library cannot be read.
+            if !dismissed, identityMatches, prefillExamples, phase == .idle, !busy, request.isEmpty {
+                request = Self.prefill(from: examples)
+            }
+            prefillExamples = false
+        }
+    }
+
+    /// One runnable request, never a placeholder and never several lines: the
+    /// parser accepts a single request, so a multi-line prefill could only fail.
+    static func prefill(from examples: [String]) -> String {
+        examples.first { !$0.contains("<") } ?? ""
+    }
+
+    /// The picker creates exactly the same frozen preview as a local request.
+    /// It never executes Apply on behalf of the user.
+    func previewFoundAddition(_ found: BuilderWizardPickerRequest, sceneID: Int64,
+                              at: Double, track: Int, duration: Double,
+                              sourceStart: Double, coverAll: Bool) {
+        guard phase == .idle, !busy, !dismissed else { return }
+        request = found.request
+        runRequest = "Add found scene as B-roll: " + found.request
+        do {
+            try found.validate(store: store)
+            guard found.scenes.contains(where: { $0.id == sceneID }) else {
+                throw ScriptError.invalid("This scene was not in the find results.")
+            }
+            execute([.init(.addCutaway(scene: sceneID, at: at, track: track, duration: duration,
+                                      sourceStart: sourceStart, coverAll: coverAll))], library: found.context.library)
+        } catch {
+            failure = error as? ApplyFailure
+            reasons = [failureMessage ?? error.localizedDescription]
+            phase = .refused
+        }
     }
 
     var busy: Bool { isStarting || phase == .running || phase == .applying }
@@ -338,9 +387,11 @@ final class WizardSheetModel {
         execute(steps, library: context.library)
     }
 
-    func pickerRequest() -> BuilderTimelineModel.BRollRequest? {
-        guard phase == .found, identityMatches else { return nil }
-        return .init(time: store.builder.playhead, track: store.builder.focusedTrack ?? 0)
+    func pickerRequest() -> BuilderWizardPickerRequest? {
+        guard phase == .found, identityMatches, let context = findContext, let revision = findRevision else { return nil }
+        return .init(request: runRequest, scenes: results, context: context, revision: revision,
+                     profile: profile, timelineID: timelineID, database: database,
+                     time: store.builder.playhead, track: store.builder.focusedTrack ?? 0)
     }
 
     func apply() async {

@@ -4,10 +4,10 @@ struct BuilderWizardSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var model: WizardSheetModel
     @State private var confirmRevert = false
-    let openPicker: (BuilderTimelineModel.BRollRequest) -> Void
+    let openPicker: (BuilderWizardPickerRequest) -> Void
 
-    init(store: AppStore, openPicker: @escaping (BuilderTimelineModel.BRollRequest) -> Void) {
-        _model = State(initialValue: WizardSheetModel(store: store))
+    init(store: AppStore, model: WizardSheetModel? = nil, openPicker: @escaping (BuilderWizardPickerRequest) -> Void) {
+        _model = State(initialValue: model ?? WizardSheetModel(store: store))
         self.openPicker = openPicker
     }
 
@@ -16,7 +16,7 @@ struct BuilderWizardSheet: View {
             Text("Builder Wizard").font(.headline)
             Text("Preview an editing request, review every change, then Apply.")
                 .font(.caption).foregroundStyle(.secondary)
-            TextField("For example: remove clips with Alex", text: $model.request, axis: .vertical)
+            TextField("For example: " + (model.examples.first ?? "remove the selected clip"), text: $model.request, axis: .vertical)
                 .lineLimit(3...6)
                 .textFieldStyle(.roundedBorder)
                 .disabled(model.busy)
@@ -25,6 +25,15 @@ struct BuilderWizardSheet: View {
                 #else
                 .help("Enter one supported request using names and tags from this profile. Times are timeline positions.")
                 #endif
+            VStack(alignment: .leading, spacing: Theme.spaceS) {
+                Text("Try one request").font(.caption).foregroundStyle(.secondary)
+                ForEach(model.examples.prefix(4), id: \.self) { example in
+                    Button(example) { model.request = example }
+                        .buttonStyle(.link)
+                        .disabled(model.busy || model.phase == .awaitingPrerequisites)
+                        .help("Fill the request field with this example. Review it before running.")
+                }
+            }
             Picker("Provider", selection: $model.provider) {
                 ForEach(BuilderAgentProvider.allCases) { provider in
                     Text(provider.label).tag(provider).disabled(provider.disabledReason != nil)
@@ -53,7 +62,7 @@ struct BuilderWizardSheet: View {
                     .disabled(model.busy || model.request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .help("Run against a fresh timeline snapshot. ⌘Return. Replaces the previous preview.")
             }
-            Text("B-roll chooses the first matching scene by ID; omit track to use the focused track. ‘Cover all areas’ targets the selected B-roll clip.")
+            Text("B-roll chooses the first matching scene by ID; omit track to use the focused track. Clip numbers count visible clips on the track from left to right, including B-roll. ‘Cover all areas’ targets the selected B-roll clip.")
                 .font(.caption).foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.spaceM) {
@@ -65,7 +74,11 @@ struct BuilderWizardSheet: View {
                     }
                     if model.phase == .unrecognised || model.phase == .idle {
                         Text("Supported requests").font(.subheadline.weight(.semibold))
-                        ForEach(BuilderRequestParser.supportedRequests, id: \.self) { Text($0).font(.caption) }
+                        ForEach(model.examples, id: \.self) { example in
+                            Button(example) { model.request = example }
+                                .buttonStyle(.link)
+                                .help("Use this supported request with the current timeline.")
+                        }
                     }
                     if model.phase == .found {
                         BuilderWizardFindResults(model: model, openPicker: {
@@ -153,7 +166,7 @@ struct BuilderWizardSheet: View {
         .padding(Theme.spaceL)
         .frame(minWidth: 700, idealWidth: 780, minHeight: 620, idealHeight: 720)
         .interactiveDismissDisabled(model.phase == .applying)
-        .task { await model.refreshBeforeVersion() }
+        .task { await model.refreshExamples(); await model.refreshBeforeVersion() }
         .onChange(of: model.identityMatches) { _, matches in if !matches { close() } }
         .onDisappear { model.dismiss() }
         .confirmationDialog("Revert ‘\(model.beforeVersion?.request ?? "last Wizard run")’?", isPresented: $confirmRevert) {

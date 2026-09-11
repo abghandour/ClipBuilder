@@ -428,6 +428,27 @@ struct BRollBuilderTests {
 
     // MARK: - Suggestions in the picker
 
+    @Test("finds precede Library suggestions with the exact request and no duplicate IDs")
+    func findSuggestionsFirst() throws {
+        let request = "find scenes of Alex fixture"
+        let first = Fixtures.scene(id: 2)
+        let second = Fixtures.scene(id: 1)
+        let normal = BuilderBRollPickerSheet.Source(id: "scene:1", source: .scene(second), photoPath: nil,
+            isBRoll: true, favorite: false, reason: "Library reason", name: "Scene", detail: "Library reason", posterTime: 0)
+        let photo = BuilderBRollPickerSheet.Source(id: "photo:test", source: nil, photoPath: "/tmp/test.jpg",
+            isBRoll: false, favorite: false, reason: "Photo reason", name: "Photo", detail: "Photo reason", posterTime: 0)
+        let merged = BuilderBRollPickerSheet.prioritizingFind(scenes: [first, second, first], request: request,
+                                                            suggestions: [normal, photo, normal])
+        #expect(merged.map(\.id) == ["scene:2", "scene:1", "photo:test"])
+        #expect(merged.prefix(2).allSatisfy { $0.reason == request && $0.detail == request })
+        #expect(merged.last?.reason == "Photo reason")
+        let gap = BuilderBRollPickerSheet.prioritizingFind(scenes: [first], request: request, suggestions: [])
+        #expect(gap.map(\.id) == ["scene:2"])
+        let normalOnly = BuilderBRollPickerSheet.prioritizingFind(scenes: [], request: "", suggestions: [normal, photo])
+        #expect(normalOnly.map(\.id) == ["scene:1", "photo:test"])
+        #expect(normalOnly.first?.reason == "Library reason")
+    }
+
     @Test("suggestions are scoped to the main clips covering the spot")
     func suggestionScopePicksTheCoveringClips() throws {
         let scope = try DataFolderOverride()

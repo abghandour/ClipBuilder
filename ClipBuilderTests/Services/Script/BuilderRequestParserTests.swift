@@ -29,6 +29,51 @@ struct BuilderRequestParserTests {
         return steps
     }
 
+    @Test func fixtureExamplesUseActualVocabulary() throws {
+        let context = context()
+        let examples = BuilderRequestParser.supportedRequests(library: context.library)
+        #expect(Array(examples.prefix(4)) == ["remove clips with Alex Smith", "find scenes of Alex Smith fixture",
+            "cut silence longer than 1 s on track 1", "add b-roll of fixture at 12 s"])
+        for example in examples {
+            if case .unrecognised = BuilderRequestParser().parse(example, context: context) {
+                Issue.record("Fixture example failed to parse: \(example)")
+            }
+        }
+        let empty = BuilderRequestParser.supportedRequests(library: ScriptLibrarySnapshot())
+        #expect(empty[0] == "remove clips with <person>")
+        #expect(empty[1] == "find scenes of <person> <tag>")
+        #expect(empty[2] == "cut silence longer than 1 s on track 1")
+        #expect(empty[3] == "add b-roll of <tag> at 12 s")
+        var ambiguous = context.library
+        ambiguous.people.append(PersonRecord(id: 2, key: "other", name: "ALEX SMITH", descriptor: ""))
+        ambiguous.tags = ["fixture", "FIXTURE"]
+        #expect(BuilderRequestParser.supportedRequests(library: ambiguous)[0].contains("<person>"))
+        #expect(BuilderRequestParser.supportedRequests(library: ambiguous)[3].contains("<tag>"))
+        ambiguous.people = [PersonRecord(id: 3, key: "hidden", name: "Hidden Person", descriptor: "")]
+        ambiguous.people[0].hidden = true
+        #expect(BuilderRequestParser.supportedRequests(library: ambiguous)[0].contains("<person>"))
+    }
+
+    @Test func removeOrdinalUsesVisibleTrackAndTimelineOrder() throws {
+        var context = context()
+        let first = Fixtures.timelineClip(startTime: 1, track: 1)
+        var second = Fixtures.timelineClip(startTime: 4, track: 1)
+        second.role = .cutaway
+        context.document.trackCount = 2
+        var bumper = Fixtures.timelineClip(startTime: 0, track: 1)
+        bumper.bumper = true
+        context.document.videoTrack += [second, first, bumper]
+        #expect(try steps("remove clip 1 on track II", context) == [.init(.removeClip(clip: first.uid.uuidString))])
+        #expect(try steps("remove clip 2 on track 2", context) == [.init(.removeClip(clip: second.uid.uuidString))])
+        for text in ["remove clip 0 on track 1", "remove clip 3 on track 2", "remove clip 1 on track 3",
+                     "remove clip 9999999999999999999999999999 on track 1", "remove clip 1 on track 2 except b-roll",
+                     "remove the selected clip and mute it", "duplicate this clip twice"] {
+            guard case .unrecognised = BuilderRequestParser().parse(text, context: context) else {
+                Issue.record("Accepted invalid request: \(text)"); continue
+            }
+        }
+    }
+
     @Test(arguments: ["remove clips with Alex Smith", "remove all clips with Alex Smith",
                       "remove scenes with Alex Smith", "remove all scenes with Alex Smith"])
     func removePerson(_ request: String) throws {
@@ -65,6 +110,8 @@ struct BuilderRequestParserTests {
     @Test func selectionCommands() throws {
         let context = context()
         let id = try #require(context.selectedClipID).uuidString
+        #expect(try steps("remove the selected clip", context) == [.init(.removeClip(clip: id))])
+        #expect(try steps("duplicate this clip", context) == [.init(.duplicateClip(clip: id))])
         #expect(try steps("split this clip at 0:02", context) == [.init(.splitClip(clip: id, at: 2))])
         #expect(try steps("trim this clip to 2 s", context) == [.init(.trimClip(clip: id, duration: 2))])
         #expect(try steps("mute this clip", context) == [.init(.setClipMuted(clip: id, muted: true))])
@@ -86,7 +133,7 @@ struct BuilderRequestParserTests {
 
     @Test func noSelectionAndAmbiguity() {
         var context = context(); context.selectedClipID = nil
-        for text in ["mute this clip", "split this clip at 2s", "trim this clip to 2s", "cut silence in this clip", "cover all areas"] {
+        for text in ["remove the selected clip", "duplicate this clip", "mute this clip", "split this clip at 2s", "trim this clip to 2s", "cut silence in this clip", "cover all areas"] {
             guard case .unrecognised(let reasons) = BuilderRequestParser().parse(text, context: context) else {
                 Issue.record("Accepted missing selection"); continue
             }

@@ -26,6 +26,13 @@ struct ProposedCutsSheet: View {
                 Button("Cancel", action: dismiss.callAsFunction)
                 Button("Edit Accepted Cuts in Builder", action: editInBuilder)
                     .disabled(acceptedCount == 0)
+                Button("Fix with Wizard…", systemImage: "wand.and.stars") {
+                    store.openReviewedPlanInBuilder(approvedPlan(), request: request, fixWithWizard: true)
+                    dismiss()
+                }
+                .labelStyle(.iconOnly)
+                .disabled(acceptedCount == 0)
+                .help("Create a timeline from the accepted cuts and open Builder Wizard to preview fixes.")
                 Button("Render Accepted Cuts", action: render)
                     .buttonStyle(.borderedProminent)
                     .disabled(acceptedCount == 0)

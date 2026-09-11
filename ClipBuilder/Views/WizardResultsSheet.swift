@@ -154,6 +154,13 @@ struct WizardResultsSheet: View {
             }
             .frame(width: 210)
 
+            Button("Fix with Wizard…", systemImage: "wand.and.stars") {
+                store.openInBuilder(video, fixWithWizard: true)
+                dismiss()
+            }
+            .labelStyle(.iconOnly)
+            .controlSize(.small)
+            .help("Open this result as a new timeline and preview fixes with Builder Wizard. Apply stays manual.")
             AIInfoButton(output: video)
             Button {
                 if store.builder.document.videoTrack.isEmpty {

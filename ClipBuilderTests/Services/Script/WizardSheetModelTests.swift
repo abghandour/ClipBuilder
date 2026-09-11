@@ -252,7 +252,8 @@ struct WizardSheetModelTests {
         await model.run()
         #expect(model.phase == .found && model.results.map(\.id) == [1])
         #expect(model.session == nil && !model.canApply && model.diff == nil)
-        #expect(model.pickerRequest()?.time == store.builder.playhead)
+        store.builder.playhead = 1
+        #expect(model.pickerRequest()?.time == 1)
         #expect(store.builder.document == before)
         model.addAllAsBRoll()
         #expect(model.phase == .preview && model.canApply)
@@ -260,6 +261,123 @@ struct WizardSheetModelTests {
         #expect(store.builder.document == before)
         await model.discard()
     }
+    @Test func pickerAdditionUsesOneAtomicApplyAndRunRecord() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardSheetModelTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let undo = UndoManager(); undo.groupsByEvent = false
+        store.builder.undoManager = undo
+        let before = store.builder.document
+        let find = sheet(store, defaults: defaults)
+        find.request = "find scenes of Alex fixture"
+        await find.run()
+        let payload = try #require(find.pickerRequest())
+        find.dismiss() // The captured result survives the first sheet's lifetime.
+        let preview = sheet(store, defaults: defaults)
+        preview.previewFoundAddition(payload, sceneID: 1, at: 1, track: 0,
+                                     duration: 2, sourceStart: 3, coverAll: true)
+        #expect(preview.phase == .preview && preview.canApply)
+        let session = try #require(preview.session)
+        let cutaway = try #require(session.candidate?.videoTrack.first { $0.isCutaway })
+        #expect(cutaway.sourceStart == 3 && cutaway.duration == 2 && cutaway.startTime == 1)
+        #expect(cutaway.track == 0 && cutaway.coverAllAreas)
+        #expect(store.builder.document == before && !undo.canUndo)
+        let timelineID = try #require(store.builder.timelineID)
+        #expect(try await temp.database.fetchBuilderRuns(timelineID: timelineID).isEmpty)
+        await preview.apply()
+        #expect(preview.phase == .applied && store.builder.document != before)
+        let runs = try await temp.database.fetchBuilderRuns(timelineID: timelineID)
+        #expect(runs.count == 1)
+        #expect(runs.first?.runUUID == session.runUUID && runs.first?.status == .applied)
+        #expect(runs.first?.request == "Add found scene as B-roll: find scenes of Alex fixture")
+        #expect(runs.first?.provider == "local")
+        #expect(undo.canUndo)
+        undo.undo()
+        #expect(store.builder.document == before && !undo.canUndo && undo.canRedo)
+        // One undo restores the complete snapshot; another registration would
+        // leave canUndo true. Repeated Apply cannot create a second run.
+        await preview.apply()
+        #expect(try await temp.database.fetchBuilderRuns(timelineID: timelineID).count == 1)
+    }
+
+    @Test(arguments: ["revision", "timeline", "profile", "scene"])
+    func pickerRejectsStaleOrForeignFind(change: String) async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardSheetModelTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let find = sheet(store, defaults: defaults)
+        find.request = "find fixture"
+        await find.run()
+        let payload = try #require(find.pickerRequest())
+        switch change {
+        case "revision":
+            _ = store.builder.addText(at: 0)
+        case "timeline":
+            let task = try #require(store.createTimeline(named: "Other", document: store.builder.document))
+            await task.value
+        case "profile": store.builder.load(profileName: "OtherProfile")
+        default: break
+        }
+        let before = store.builder.document
+        let preview = sheet(store, defaults: defaults)
+        preview.previewFoundAddition(payload, sceneID: change == "scene" ? 999 : 1,
+                                     at: 0, track: 0, duration: 2, sourceStart: 2, coverAll: false)
+        #expect(preview.phase == .refused && !preview.canApply && preview.session == nil)
+        #expect(store.builder.document == before)
+        if change == "revision" { #expect(preview.failure == .staleRevision) }
+        if change == "timeline" || change == "profile" { #expect(preview.failure == .identityChanged) }
+    }
+
+    @Test func planningResultTargetsCreatedTimelineAndPrefillsExamples() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let originalID = store.builder.timelineID
+        var document = store.builder.document
+        document.videoTrack.append(Fixtures.timelineClip(startTime: 4))
+        let task = try #require(store.createTimeline(named: "Wizard Draft", document: document,
+                                                     isWizardPlan: true, fixWithWizard: true))
+        await task.value
+        let result = try #require(store.builderPlanResult)
+        #expect(result.openRequested && result.timelineID != originalID)
+        #expect(result.timelineID == store.builder.timelineID && result.matches(store: store))
+        var library = ScriptFixtures.library()
+        library.projectID = store.activeProjectID
+        library.people = [PersonRecord(id: 1, key: "sam", name: "Sam Rivera", descriptor: "")]
+        library.tags = ["training"]
+        let snapshot = library
+        let model = try #require(result.makeWizard(store: store, loadLibrary: { snapshot }))
+        await model.refreshExamples()
+        #expect(model.timelineID == result.timelineID && model.identityMatches)
+        // One runnable request, built from the real roster; placeholders never reach the field.
+        #expect(model.request == BuilderRequestParser.supportedRequests(library: snapshot).first)
+        #expect(model.request == "remove clips with Sam Rivera" && model.examples.contains { $0.contains("training") })
+        #expect(model.phase == .idle && model.session == nil && !model.canApply)
+        model.request = "remove the selected clip"
+        await model.refreshExamples()
+        #expect(model.request == "remove the selected clip")
+        let originalTimelineID = try #require(originalID)
+        let original = try #require(try await temp.database.fetchTimeline(id: originalTimelineID))
+        store.openTimelineRecord(original)
+        #expect(!result.matches(store: store) && result.makeWizard(store: store) == nil)
+        #expect(!model.identityMatches)
+    }
+
+    @Test func emptyLibraryPlanExamplesStayGenericAndDoNotRun() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let result = BuilderPlanResult(store: store)
+        let model = try #require(result.makeWizard(store: store, loadLibrary: { ScriptLibrarySnapshot() }))
+        await model.refreshExamples()
+        // Placeholders stay in the example list; the field gets a request that can run as-is.
+        #expect(model.examples.contains { $0.contains("<person>") && $0.contains("<tag>") })
+        #expect(model.request == "cut silence longer than 1 s on track 1" && !model.request.contains("<"))
+        #expect(model.phase == .idle && model.session == nil)
+    }
+
     @Test func dismissalDuringSnapshotCannotReviveRun() async throws {
         let temp = try TempDatabase()
         let store = try await makeStore(temp)

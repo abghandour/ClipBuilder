@@ -238,6 +238,7 @@ final class AppStore {
     /// True while a Builder pre-fill plan runs — drives the Builder's
     /// loading overlay.
     var isPlanningIntoBuilder = false
+    var builderPlanResult: BuilderPlanResult?
     var wizardLog: [String] = [] {
         didSet { updateDiagnosticStatus(wizardLog, previousCount: oldValue.count) }
     }
@@ -3689,28 +3690,35 @@ final class AppStore {
 
     // MARK: - Project timelines
 
+    @discardableResult
     func createTimeline(named name: String = "Untitled Timeline",
                         document: TimelineDocument? = nil,
-                        projectID requestedProjectID: Int64? = nil) {
-        guard let database, let projectID = requestedProjectID ?? activeProjectID else { return }
+                        projectID requestedProjectID: Int64? = nil,
+                        isWizardPlan: Bool = false, fixWithWizard: Bool = false) -> Task<Void, Never>? {
+        guard let database, let projectID = requestedProjectID ?? activeProjectID else { return nil }
         let document = document ?? {
             var value = TimelineDocument()
             value.renderSettings = activeProfile.defaultRenderSettings
             return value
         }()
         guard let data = try? JSONEncoder().encode(document),
-              let json = String(data: data, encoding: .utf8) else { return }
-        Task {
+              let json = String(data: data, encoding: .utf8) else { return nil }
+        let generation = profileGeneration
+        return Task {
             do {
                 let id = try await database.createTimeline(projectID: projectID,
                                                            name: name,
                                                            documentJSON: json)
-                projects = try await database.fetchProjects()
-                if activeProjectID == projectID {
-                    timelines = try await database.fetchTimelines(projectID: projectID)
-                    if let timeline = timelines.first(where: { $0.id == id }) {
-                        openTimelineRecord(timeline)
-                    }
+                let updatedProjects = try await database.fetchProjects()
+                guard self.database === database, profileGeneration == generation else { return }
+                projects = updatedProjects
+                guard activeProjectID == projectID else { return }
+                let updatedTimelines = try await database.fetchTimelines(projectID: projectID)
+                guard self.database === database, profileGeneration == generation, activeProjectID == projectID else { return }
+                timelines = updatedTimelines
+                if let timeline = timelines.first(where: { $0.id == id }) {
+                    openTimelineRecord(timeline)
+                    builderPlanResult = isWizardPlan ? BuilderPlanResult(store: self, openRequested: fixWithWizard) : nil
                 }
             } catch { presentError("Could not create the timeline", error) }
         }
@@ -4438,13 +4446,14 @@ final class AppStore {
 
     /// Continue a reviewed Wizard plan in the Builder, where owned photo and
     /// B-roll suggestions can be accepted before the final render.
-    func openReviewedPlanInBuilder(_ plan: WizardPlan, request: ProposedCutReviewRequest) {
+    func openReviewedPlanInBuilder(_ plan: WizardPlan, request: ProposedCutReviewRequest, fixWithWizard: Bool = false) {
         let document = WizardEngine.timelineDocument(
             from: plan, sceneMap: request.sceneMap,
             renderSettings: request.options.renderSettings,
             pacing: request.options.pacing
         )
-        createTimeline(named: "Reviewed Plan", document: document)
+        createTimeline(named: "Reviewed Plan", document: document, projectID: request.options.projectID,
+                       isWizardPlan: true, fixWithWizard: fixWithWizard)
         pendingCutReview = nil
     }
 
@@ -4452,7 +4461,7 @@ final class AppStore {
     /// Videos rendered before documents were persisted stored a flat legacy
     /// format — those get a best-effort conversion (clips, transitions,
     /// music; their burned-in overlays were never recorded).
-    func openInBuilder(_ video: GeneratedVideoRecord) {
+    func openInBuilder(_ video: GeneratedVideoRecord, fixWithWizard: Bool = false) {
         var document = video.timelineJSON.data(using: .utf8)
             .flatMap { try? JSONDecoder().decode(TimelineDocument.self, from: $0) }
         if document?.videoTrack.isEmpty != false {
@@ -4465,7 +4474,7 @@ final class AppStore {
             return
         }
         createTimeline(named: video.url.deletingPathExtension().lastPathComponent,
-                       document: document)
+                       document: document, isWizardPlan: true, fixWithWizard: fixWithWizard)
     }
 
     // MARK: - Wizard
@@ -5912,6 +5921,7 @@ final class AppStore {
         isPlanningIntoBuilder = true
         wizardLog = []
         selectedSection = .timelines
+        let generation = profileGeneration
         let profile = activeProfile
         let wizard = wizard
         wizardTask = Task {
@@ -5919,6 +5929,9 @@ final class AppStore {
             do {
                 let (plan, sceneMap) = try await wizard.plan(options: options, profile: profile,
                                                              database: database, emit: logSink(\.wizardLog))
+                guard self.database === database, generation == profileGeneration, !Task.isCancelled else {
+                    throw CancellationError()
+                }
                 let document = WizardEngine.timelineDocument(from: plan, sceneMap: sceneMap,
                                                              renderSettings: options.renderSettings,
                                                              pacing: options.pacing,
@@ -5927,7 +5940,7 @@ final class AppStore {
                     presentError("The plan produced no usable clips")
                 } else {
                     wizardLog.append("Opening \(document.videoTrack.count) clips in the Builder...")
-                    createTimeline(named: "Wizard Draft", document: document, projectID: projectID)
+                    createTimeline(named: "Wizard Draft", document: document, projectID: projectID, isWizardPlan: true)
                 }
             } catch is CancellationError {
                 wizardLog.append("Pre-fill cancelled")

@@ -13,7 +13,10 @@ struct BuilderView: View {
     @State private var showScenePicker = false
     @State private var showBRollPicker = false
     @State private var showWizard = false
-    @State private var wizardPickerRequest: BuilderTimelineModel.BRollRequest?
+    @State private var wizardPickerRequest: BuilderWizardPickerRequest?
+    @State private var pickerFind: BuilderWizardPickerRequest?
+    @State private var wizardModel: WizardSheetModel?
+    @State private var pendingPickerPreview: WizardSheetModel?
     @State private var showImagePicker = false
     @State private var confirmClear = false
     #if DEBUG
@@ -40,6 +43,20 @@ struct BuilderView: View {
 
                 Divider()
                 controlsBar
+                if let result = store.builderPlanResult, result.matches(store: store) {
+                    HStack {
+                        Text("Plan ready").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Fix with Wizard…", systemImage: "wand.and.stars") {
+                            wizardModel = result.makeWizard(store: store)
+                            showWizard = wizardModel != nil
+                        }
+                        .labelStyle(.iconOnly)
+                        .help("Fix with Wizard… Preview an editing request on this planned timeline, then Apply manually.")
+                    }
+                    .padding(.horizontal, Theme.spaceM)
+                    .padding(.bottom, Theme.spaceS)
+                }
                 Divider()
 
                 TimelineView(onPlayClip: { playingClip = $0 })
@@ -166,17 +183,33 @@ struct BuilderView: View {
         .sheet(isPresented: $showScenePicker) {
             BuilderScenePickerSheet()
         }
+        .onChange(of: store.builderPlanResult?.id, initial: true) { _, _ in
+            if let result = store.builderPlanResult, result.openRequested,
+               let preview = result.makeWizard(store: store) {
+                store.builderPlanResult?.openRequested = false
+                wizardModel = preview
+                showWizard = true
+            }
+        }
         .sheet(isPresented: $showWizard, onDismiss: {
             if let request = wizardPickerRequest {
                 wizardPickerRequest = nil
-                model.brollRequest = request
+                pickerFind = request
+                model.brollRequest = .init(time: request.time, track: request.track)
                 showBRollPicker = true
             }
         }) {
-            BuilderWizardSheet(store: store) { wizardPickerRequest = $0 }
+            BuilderWizardSheet(store: store, model: wizardModel) { wizardPickerRequest = $0 }
         }
-        .sheet(isPresented: $showBRollPicker) {
-            BuilderBRollPickerSheet()
+        .sheet(isPresented: $showBRollPicker, onDismiss: {
+            pickerFind = nil
+            if let preview = pendingPickerPreview {
+                pendingPickerPreview = nil
+                wizardModel = preview
+                showWizard = true
+            }
+        }) {
+            BuilderBRollPickerSheet(wizardFind: pickerFind) { pendingPickerPreview = $0 }
         }
         .onChange(of: model.brollRequest) { _, request in
             if request != nil { showBRollPicker = true }
@@ -207,7 +240,7 @@ struct BuilderView: View {
                            showImagePicker: $showImagePicker,
                            showBRollPicker: $showBRollPicker)
 
-            Button("Wizard", systemImage: "wand.and.stars") { showWizard = true }
+            Button("Wizard", systemImage: "wand.and.stars") { wizardModel = nil; showWizard = true }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
                 .disabled(store.openTimelineID == nil)
                 .help("Preview a local editing request, review changes, and apply. ⇧⌘W.")

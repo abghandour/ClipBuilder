@@ -11,8 +11,29 @@ struct BuilderRequestParser {
         "cut/remove silence [longer than N s] on track N / in this clip",
         "add b-roll of <tag> at <time> [on track N] [for N s]",
         "split this clip at <time>", "trim this clip to N s",
-        "mute/unmute this clip", "cover all areas"
+        "mute/unmute this clip", "cover all areas",
+        "remove clip N on track T", "remove the selected clip", "duplicate this clip"
     ]
+
+    /// Use only unique visible roster names and unambiguous profile tags.
+    /// Angle-bracket fallbacks deliberately invite replacement, never invented people.
+    static func supportedRequests(library: ScriptLibrarySnapshot) -> [String] {
+        let people = library.people.filter { !$0.hidden }
+        let name = people.first { person in
+            let key = normalized(person.name)
+            return !key.isEmpty && people.filter { normalized($0.name) == key }.count == 1
+        }?.name ?? "<person>"
+        let tags = Set(library.tags)
+        let tag = library.tags.first { tag in
+            let key = normalized(tag)
+            return !key.isEmpty && tags.filter { normalized($0) == key }.count == 1
+        } ?? "<tag>"
+        return ["remove clips with \(name)", "find scenes of \(name) \(tag)",
+                "cut silence longer than 1 s on track 1", "add b-roll of \(tag) at 12 s",
+                "remove clip 1 on track 1", "remove the selected clip", "duplicate this clip",
+                "split this clip at 2 s", "trim this clip to 2 s", "mute this clip",
+                "unmute this clip", "cover all areas", "remove clips tagged \(tag) on track 1"]
+    }
 
     func parse(_ request: String, context: ParserContext) -> BuilderProgram {
         guard request.utf8.count <= 4096 else { return .unrecognised(["Request exceeds 4 KiB."]) }
@@ -77,6 +98,25 @@ struct BuilderRequestParser {
                 // One insertion, deterministic lowest scene ID; the preview identifies it.
                 return .script([.init(.addCutaway(scene: scene.id, at: at, track: lane,
                                                   duration: duration, coverAll: false))])
+            }
+            if let g = match(#"remove clip ([1-9][0-9]*) on track (i|ii|iii|iv|v|vi|[1-6])"#, text) {
+                let lane = try track(g[1], context)
+                // Visible video clips, including B-roll, in timeline order.
+                let clips = context.document.videoTrack.enumerated().filter { $0.element.track == lane && !$0.element.bumper }
+                    .sorted { lhs, rhs in
+                        lhs.element.startTime == rhs.element.startTime
+                            ? lhs.offset < rhs.offset : lhs.element.startTime < rhs.element.startTime
+                    }
+                guard let ordinal = Int(g[0]), ordinal <= clips.count else {
+                    throw ScriptError.invalid("That clip number is not on this track.")
+                }
+                return .script([.init(.removeClip(clip: clips[ordinal - 1].element.uid.uuidString))])
+            }
+            if text == "remove the selected clip" {
+                return .script([.init(.removeClip(clip: try selection(context).uid.uuidString))])
+            }
+            if text == "duplicate this clip" {
+                return .script([.init(.duplicateClip(clip: try selection(context).uid.uuidString))])
             }
             if let g = match(#"split this clip at (.+)"#, text) {
                 return .script([.init(.splitClip(clip: try selection(context).uid.uuidString,

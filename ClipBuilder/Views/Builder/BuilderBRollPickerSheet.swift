@@ -8,6 +8,8 @@ import AVKit
 struct BuilderBRollPickerSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    var wizardFind: BuilderWizardPickerRequest? = nil
+    var previewFound: ((WizardSheetModel) -> Void)? = nil
 
     /// One choosable item: footage for a cutaway (an analyzed scene or a
     /// Library video), or a suggested Library photo, which is added as an
@@ -128,8 +130,7 @@ struct BuilderBRollPickerSheet: View {
     /// the reason as its detail line; a photo becomes an item of its own.
     private func makeSuggested() -> [Source] {
         let scope = Self.suggestionScope(document: model.document, track: track, at: startTime)
-        guard !scope.videoTrack.isEmpty else { return [] }
-        let suggestions = MediaSuggestionService.suggestions(
+        let suggestions = scope.videoTrack.isEmpty ? [] : MediaSuggestionService.suggestions(
             document: scope, scenes: store.scenes, people: store.people, assets: imageAssets)
         let footage = Dictionary(uniqueKeysWithValues: allSources.map { ($0.id, $0) })
         var items: [Source] = []
@@ -150,7 +151,25 @@ struct BuilderBRollPickerSheet: View {
                                     detail: suggestion.reason, posterTime: 0))
             }
         }
-        return items
+        return Self.prioritizingFind(scenes: wizardFind?.scenes ?? [], request: wizardFind?.request ?? "",
+                                     suggestions: items)
+    }
+
+    /// Keep the find's query order and reason, even in a gap with no normal
+    /// suggestions. IDs are shared with the Library list and search results.
+    static func prioritizingFind(scenes: [SceneRecord], request: String, suggestions: [Source]) -> [Source] {
+        var seen = Set<String>()
+        let found = scenes.map { scene in
+            Source(id: "scene:\(scene.id)", source: .scene(scene), photoPath: nil,
+                   isBRoll: scene.isBRoll, favorite: scene.favorite, reason: request,
+                   name: scene.videoFilename, detail: request,
+                   posterTime: (scene.startTime + scene.endTime) / 2)
+        }
+        return (found + suggestions).filter { seen.insert($0.id).inserted }
+    }
+
+    private var selectedFindScene: SceneRecord? {
+        wizardFind?.scenes.first { "scene:\($0.id)" == selectedID }
     }
 
     /// Whether the Suggested group is on screen: never while searching,
@@ -235,6 +254,7 @@ struct BuilderBRollPickerSheet: View {
         .modalCloseButton { cancel() }
         .onAppear {
             isPresented = true
+            if wizardFind != nil { suggested = makeSuggested() }
             restoreLastPick()
         }
         .task {
@@ -531,11 +551,14 @@ struct BuilderBRollPickerSheet: View {
                 .foregroundStyle(.secondary)
             Spacer()
             Button("Cancel") { cancel() }
+                .help("Close the picker without adding footage.")
             Button("Add and Keep Going") { add(advance: true) }
+                .help("Add the selected source and advance the playhead. Found scenes require a Wizard preview.")
                 .keyboardShortcut(.return, modifiers: .shift)
-                .disabled(selected == nil)
-            Button(selected?.isPhoto == true ? "Add Photo" : "Add B-roll") { add(advance: false) }
+                .disabled(selected == nil || selectedFindScene != nil)
+            Button(selectedFindScene != nil ? "Preview in Wizard…" : selected?.isPhoto == true ? "Add Photo" : "Add B-roll") { add(advance: false) }
                 .keyboardShortcut(.defaultAction)
+                .help(selectedFindScene != nil ? "Preview this found scene as an add-cutaway command, then Apply manually." : "Add the selected source at the chosen timeline position.")
                 .disabled(selected == nil)
         }
         .padding(Theme.spaceL)
@@ -546,7 +569,7 @@ struct BuilderBRollPickerSheet: View {
     private func restoreLastPick() {
         track = min(max(0, model.brollRequest?.track ?? model.focusedTrack ?? 0),
                     model.document.trackCount - 1)
-        if let last = model.lastBRollPick {
+        if wizardFind == nil, let last = model.lastBRollPick {
             if model.brollRequest == nil {
                 track = min(max(0, last.track), model.document.trackCount - 1)
             }
@@ -590,6 +613,17 @@ struct BuilderBRollPickerSheet: View {
     private func add(advance: Bool) {
         guard let selected else { return }
         let start = startTime
+        if let wizardFind, let scene = selectedFindScene {
+            guard let previewFound else { status = "Wizard preview is unavailable. Reopen the picker from Wizard."; return }
+            let preview = WizardSheetModel(store: store, loadLibrary: { wizardFind.context.library })
+            preview.previewFoundAddition(wizardFind, sceneID: scene.id, at: start, track: track,
+                                         duration: length, sourceStart: windowStart, coverAll: coverAll)
+            previewFound(preview)
+            stopLooping()
+            model.brollRequest = nil
+            dismiss()
+            return
+        }
         if let path = selected.photoPath {
             addPhoto(selected, path: path, at: start, advance: advance)
             return
