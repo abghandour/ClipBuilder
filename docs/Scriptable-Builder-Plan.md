@@ -410,6 +410,34 @@ References: [Claude MCP](https://code.claude.com/docs/en/mcp),
 [Gemini configuration](https://geminicli.com/docs/reference/configuration/),
 [Gemini policies](https://geminicli.com/docs/reference/policy-engine/).
 
+### Phase 1c spike results (September 11, 2026, reviewer-run)
+
+Harness: `spike/mcp-spike` (throwaway, SDK `modelcontextprotocol/swift-sdk`
+0.12.1 pinned, `StatelessHTTPServerTransport` behind a Network.framework
+listener, protocol 2025-06-18). Server on 127.0.0.1 with a per-run bearer
+token; requests without the token get 401, GET gets 405, Origin is checked.
+
+- **Claude 2.1.268: pass.** With `--tools "" --allowedTools "mcp__clipbuilder__*"
+  --mcp-config <file> --strict-mcp-config --permission-mode dontAsk` the
+  server log shows initialize, notifications/initialized, tools/list and the
+  three tools/call; the client output carries the results and no built-in
+  tool events. HTTP config form `{"type":"http","url":…,"headers":{"Authorization":…}}`
+  works.
+- **Codex 0.153.4: transport pass, confinement flag gap.** Initialize and
+  tools/list reached the server, but every tools/call failed client-side with
+  "MCP tool call requires approval, but approval policy is never": `-a never`
+  blocks MCP calls unless the server's tools are pre-approved. D4 must add the
+  per-server approval configuration (Codex config `mcp_servers.<name>`
+  tool-approval keys, to be confirmed against `codex --help`/docs in phase 3)
+  instead of relying on `-a never` alone. Codex's model backend also logged
+  websocket 307 redirects during the run (network), which did not affect the
+  MCP path.
+- **Gemini 0.53.1: not run.** The harness requires `GEMINI_API_KEY` in the
+  environment because `GEMINI_CLI_HOME` relocates OAuth lookup; none was set.
+  Remains unverified until a key is provisioned for the spike.
+- Port 8765 was occupied by an unrelated local Python server; the harness
+  should pick a random free port rather than a fixed one (phase 3 note).
+
 ## D5. Local fallback
 
 `BuilderRequestParser` handles a small grammar: remove matching clips, find

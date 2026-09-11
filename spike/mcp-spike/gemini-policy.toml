@@ -1,0 +1,12 @@
+# User-tier rules: specific allow wins over the catch-all deny by priority.
+# mcpName keeps a built-in tool with the same short name from matching.
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 900
+
+[[rule]]
+mcpName = "clipbuilder"
+toolName = ["ping_tool", "echo_tool", "timeline_stub"]
+decision = "allow"
+priority = 999

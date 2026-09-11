@@ -1,0 +1,5 @@
+.build/
+.swiftpm/
+.tmp/
+out/
+HANDOFF.md
