@@ -10,7 +10,7 @@ struct BuilderWizardFindResults: View {
             Text("Finds do not edit the timeline. Adding these results creates a new preview for Apply. The picker opens with its usual selection.")
                 .font(.caption).foregroundStyle(.secondary)
             if model.results.isEmpty { Text("No scenes match this request.").foregroundStyle(.secondary) }
-            HStack(spacing: Theme.spaceM) {
+            VStack(alignment: .leading, spacing: Theme.spaceS) {
                 Button("Add all as B-roll at playhead", action: model.addAllAsBRoll)
                     .disabled(model.results.isEmpty)
                     .help("Preview all results back-to-back as B-roll starting at the current playhead on the focused track.")
@@ -21,7 +21,7 @@ struct BuilderWizardFindResults: View {
                 ForEach(model.results) { scene in
                     HStack(spacing: Theme.spaceM) {
                         VideoThumbnail(url: URL(fileURLWithPath: scene.videoPath), time: scene.startTime, cornerRadius: 4)
-                            .frame(width: 96, height: 54)
+                            .frame(width: 64, height: 36)
                             .accessibilityLabel("Thumbnail for \(scene.videoFilename)")
                         VStack(alignment: .leading, spacing: Theme.spaceS) {
                             Text(scene.videoFilename).lineLimit(1)
@@ -32,5 +32,6 @@ struct BuilderWizardFindResults: View {
                 }
             }
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }

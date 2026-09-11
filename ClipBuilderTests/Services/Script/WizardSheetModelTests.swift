@@ -378,10 +378,10 @@ struct WizardSheetModelTests {
         #expect(model.phase == .idle && model.session == nil)
     }
 
-    @Test func hiddenPanelKeepsRunningModelAndPreviewSession() async throws {
+    @Test func scenesTabKeepsRunningWizardAndPreviewSession() async throws {
         let temp = try TempDatabase()
         let store = try await makeStore(temp)
-        let suite = "WizardPanelTests.\(UUID().uuidString)"
+        let suite = "WizardBrowserTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         var continuation: CheckedContinuation<ScriptLibrarySnapshot, Never>?
@@ -396,10 +396,10 @@ struct WizardSheetModelTests {
         model.request = "mute this clip"
         let running = Task { await model.run() }
         while continuation == nil { await Task.yield() }
-        // Only the view's visibility changes. Neither hide nor show dismisses the model.
-        var panelModel: WizardSheetModel? = model
-        panelModel = nil
-        #expect(panelModel == nil)
+        // Switching tabs removes the Wizard content, but does not dismiss its model.
+        var tabModel: WizardSheetModel? = model
+        tabModel = nil
+        #expect(tabModel == nil)
         #expect(store.builderWizard === model)
         #expect(model.phase == .running && model.busy)
         #expect(model.statusText == "Running — building your preview…")
@@ -408,10 +408,10 @@ struct WizardSheetModelTests {
         await running.value
         #expect(model.phase == .preview && model.canApply)
         let session = try #require(model.session)
-        panelModel = store.builderWizard
-        #expect(panelModel === model)
-        #expect(panelModel?.session === session)
-        #expect(panelModel?.phase == .preview)
+        tabModel = store.builderWizard
+        #expect(tabModel === model)
+        #expect(tabModel?.session === session)
+        #expect(tabModel?.phase == .preview)
         await model.discard()
         model.dismiss()
         #expect(store.builderWizard == nil)
@@ -420,7 +420,7 @@ struct WizardSheetModelTests {
     @Test func dismissedModelClearsOnlyItsOwnStoreReference() async throws {
         let temp = try TempDatabase()
         let store = try await makeStore(temp)
-        let suite = "WizardPanelTests.\(UUID().uuidString)"
+        let suite = "WizardBrowserTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let first = sheet(store, defaults: defaults)
@@ -438,7 +438,7 @@ struct WizardSheetModelTests {
     @Test func statusStripInputsFollowRunAndLogClearing() async throws {
         let temp = try TempDatabase()
         let store = try await makeStore(temp)
-        let suite = "WizardPanelTests.\(UUID().uuidString)"
+        let suite = "WizardBrowserTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let model = sheet(store, defaults: defaults)

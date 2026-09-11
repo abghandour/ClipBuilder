@@ -46,22 +46,29 @@ struct BuilderWizardResults: View {
             }
             if !model.agentEvents.isEmpty {
                 GroupBox("Tool outcomes") {
-                    Grid(alignment: .leading, horizontalSpacing: Theme.spaceS, verticalSpacing: Theme.spaceS) {
+                    VStack(alignment: .leading, spacing: Theme.spaceS) {
                         ForEach(model.agentEvents) { event in
-                            GridRow(alignment: .top) {
-                                Image(systemName: outcomeSymbol(event.outcome))
-                                    .foregroundStyle(outcomeColor(event.outcome))
-                                    .accessibilityLabel(event.outcome.rawValue)
-                                Text(event.toolName ?? "run").fontWeight(.medium)
+                            VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                                HStack(spacing: Theme.spaceXS) {
+                                    Image(systemName: outcomeSymbol(event.outcome))
+                                        .foregroundStyle(outcomeColor(event.outcome))
+                                        .accessibilityLabel(event.outcome.rawValue)
+                                    Text(event.toolName ?? "run")
+                                        .fontWeight(.medium)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .layoutPriority(1)
+                                    Spacer(minLength: 0)
+                                    Text("\(event.argumentBytes)/\(event.resultBytes) B · \(Int(event.duration * 1000)) ms")
+                                        .monospacedDigit().foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                        .help("\(event.argumentBytes) input bytes, \(event.resultBytes) output bytes. Request \(event.requestID ?? "none"). \(event.sanitizedArguments ?? "")")
+                                }
                                 Text(event.message ?? event.outcome.rawValue)
                                     .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .gridColumnAlignment(.leading)
-                                Text("\(event.argumentBytes)/\(event.resultBytes) B · \(Int(event.duration * 1000)) ms")
-                                    .monospaced().foregroundStyle(.secondary)
-                                    .fixedSize()
-                                    .gridColumnAlignment(.trailing)
-                                    .help("\(event.argumentBytes) input bytes, \(event.resultBytes) output bytes. Request \(event.requestID ?? "none"). \(event.sanitizedArguments ?? "")")
                             }
                         }
                     }
@@ -81,6 +88,7 @@ struct BuilderWizardResults: View {
                 }
             }
         }
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private func outcomeSymbol(_ outcome: BuilderRunEvent.Outcome) -> String {

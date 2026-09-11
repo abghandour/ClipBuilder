@@ -2,7 +2,7 @@ import SwiftUI
 
 struct BuilderWizardRequestHeader: View {
     @Bindable var model: WizardSheetModel
-    let hide: () -> Void
+    let availableWidth: CGFloat
     @State private var showHelp = false
 
     private let guidance = "B-roll chooses the first matching scene by ID; omit track to use the focused track. Clip numbers count visible clips on the track from left to right, including B-roll. ‘Cover all areas’ targets the selected B-roll clip."
@@ -10,7 +10,7 @@ struct BuilderWizardRequestHeader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
             TextField("For example: " + (model.examples.first ?? "remove the selected clip"), text: $model.request, axis: .vertical)
-                .lineLimit(1...2)
+                .lineLimit(2...4)
                 .textFieldStyle(.roundedBorder)
                 .disabled(model.busy || model.phase == .awaitingPrerequisites)
                 #if DEBUG
@@ -24,37 +24,44 @@ struct BuilderWizardRequestHeader: View {
                         Text(provider.label).tag(provider).disabled(provider.disabledReason != nil)
                     }
                 }
-                .frame(maxWidth: 180)
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
                 .disabled(model.busy || model.phase == .awaitingPrerequisites)
                 .onChange(of: model.provider) { _, _ in model.saveProviderPreference() }
                 .help("Local works without a provider. Claude uses only Builder tools. Codex and Gemini await confinement and credential validation.")
-                Menu("Recent Requests") {
-                    ForEach(model.history, id: \.self) { request in
-                        Button(request) { model.request = request }
-                            .help("Use this request again against the current timeline.")
-                    }
-                }
-                .fixedSize()
-                .disabled(model.history.isEmpty || model.busy || model.phase == .awaitingPrerequisites)
-                .help("The last ten distinct requests for this profile.")
                 Spacer(minLength: 0)
                 if model.phase == .running {
-                    Button("Cancel run", action: model.cancelRun)
-                        .help("Cancel and wait for active work to stop. No timeline changes are applied; saved Library work remains.")
+                    Button("Cancel", action: model.cancelRun)
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Cancel and wait for active work to stop. No timeline changes are applied; saved Library work remains. ⌘Return.")
+                } else {
+                    Button(model.failure == .staleRevision ? "Run again" : "Run", action: model.beginRun)
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(model.busy || model.request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .help("Run against a fresh timeline snapshot. ⌘Return. Replaces the previous preview.")
                 }
-                Button(model.failure == .staleRevision ? "Run again" : "Run", action: model.beginRun)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(model.busy || model.request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Run against a fresh timeline snapshot. ⌘Return. Replaces the previous preview.")
-                Button("Hide Wizard panel", systemImage: "xmark.circle", action: hide)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("Hide the Wizard panel. Any active run continues. ⇧⌘W shows it again.")
             }
-            HStack(alignment: .top, spacing: Theme.spaceS) {
+            VStack(alignment: .leading, spacing: Theme.spaceXS) {
                 HStack(spacing: Theme.spaceXS) {
                     Text("Try:").font(.caption).foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    Menu {
+                        ForEach(model.history, id: \.self) { request in
+                            Button(request) { model.request = request }
+                                .help("Use this request again against the current timeline.")
+                        }
+                    } label: {
+                        Label("Recent Requests", systemImage: "clock.arrow.circlepath")
+                    }
+                    .labelStyle(.iconOnly)
+                    .menuIndicator(.hidden)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(model.history.isEmpty || model.busy || model.phase == .awaitingPrerequisites)
+                    .help("Recent Requests: the last ten distinct requests for this profile.")
                     Button("Supported requests", systemImage: "questionmark.circle") { showHelp.toggle() }
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
@@ -81,7 +88,10 @@ struct BuilderWizardRequestHeader: View {
                 FlowLayout(spacing: Theme.spaceS) {
                     ForEach(model.examples.prefix(4), id: \.self) { example in
                         Button { model.request = example } label: {
-                            Text(example).lineLimit(1).truncationMode(.tail).frame(maxWidth: 190)
+                            Text(example)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .frame(maxWidth: max(0, availableWidth - 24), alignment: .leading)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)

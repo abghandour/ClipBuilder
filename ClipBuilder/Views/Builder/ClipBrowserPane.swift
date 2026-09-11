@@ -6,6 +6,11 @@ import AppKit
 struct ClipBrowserPane: View {
     @Environment(AppStore.self) private var store
 
+    @Binding var selectedTab: String
+    let wizardModel: WizardSheetModel?
+    let discardWizard: () -> Void
+    let openWizardPicker: (BuilderWizardPickerRequest) -> Void
+
     @State private var searchText = ""
     @State private var tagFilter: String?
     @State private var favoritesOnly = false
@@ -142,6 +147,33 @@ struct ClipBrowserPane: View {
     }
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("Browser", selection: $selectedTab) {
+                Text("Scenes").tag("scenes")
+                Text("Wizard").tag("wizard")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .help("Browse scenes or edit this timeline with the Wizard. ⇧⌘W opens Wizard.")
+            .padding(Theme.spaceS)
+            Divider()
+            if selectedTab == "wizard" {
+                if let wizardModel {
+                    BuilderWizardPanel(model: wizardModel, discard: discardWizard,
+                                       openPicker: openWizardPicker)
+                } else {
+                    Text("Open a timeline to use the Wizard.")
+                        .foregroundStyle(.secondary)
+                        .padding(Theme.spaceM)
+                }
+            } else {
+                scenesContent
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var scenesContent: some View {
         VStack(spacing: 0) {
             VStack(spacing: Theme.spaceS) {
                 HStack(spacing: Theme.spaceS) {
