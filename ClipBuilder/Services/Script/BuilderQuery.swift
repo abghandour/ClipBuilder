@@ -92,17 +92,29 @@ nonisolated struct ClipQueryRow: Codable, Sendable, Equatable {
     var unknown: [String]
     var details: ScriptValue
 
-    init(_ clip: TimelineClip, scene: SceneRecord?) {
+    init(_ clip: TimelineClip, scene: SceneRecord?, library: ScriptLibrarySnapshot = .init()) {
+        let inferred = scene == nil ? library.inferredScene(for: clip) : nil
+        let metadataScene = scene ?? inferred
+        let roster = library.rosterPeople(for: clip, scene: scene)
         id = clip.uid.uuidString; self.scene = clip.sceneID; track = clip.track
         role = clip.role; bumper = clip.bumper; start = clip.startTime; duration = clip.duration
         sourceStart = clip.sourceStart
         sourceEnd = clip.sourceStart.map { $0 + clip.sourceSpan }
-        speed = clip.effectiveSpeed; tags = scene?.tags.sorted() ?? []
-        people = tags.filter { $0.hasPrefix("person:") }.map { String($0.dropFirst(7)) }
-        score = scene?.score
+        speed = clip.effectiveSpeed; tags = metadataScene?.tags.sorted() ?? []
+        people = tags.filter { $0.lowercased().hasPrefix("person:") }.map { String($0.dropFirst(7)) }
+        let scenePeople = Set(people.map { $0.lowercased() })
+        let derived = roster.filter { !scenePeople.contains($0.key.lowercased()) }
+        people = Array(Set(people + derived.map(\.key))).sorted()
+        score = metadataScene?.score
         details = ScriptValue.stored(clip)
         unknown = []
-        if scene == nil { unknown.append("scene") }
+        if metadataScene == nil { unknown.append("scene") }
+        if inferred != nil { unknown.append("scene inferred from source overlap") }
+        if !derived.isEmpty {
+            unknown.append(scene == nil
+                ? "people derived from the video roster; clip has no scene link"
+                : "people derived from the video roster")
+        }
         if score == nil { unknown.append("score") }
         if sourceStart == nil { unknown.append("source_range") }
     }
@@ -217,12 +229,12 @@ extension BuilderQuery {
         switch kind {
         case .timeline, .clips:
             let rows = model.document.videoTrack.filter {
-                kind == .timeline || (filter ?? ClipFilter()).matches($0, scene: model.scene(for: $0))
+                kind == .timeline || (filter ?? ClipFilter()).matches($0, scene: model.scene(for: $0), library: library)
             }.sorted {
                 if $0.startTime != $1.startTime { return $0.startTime < $1.startTime }
                 if $0.track != $1.track { return $0.track < $1.track }
                 return $0.uid.uuidString < $1.uid.uuidString
-            }.map { ClipQueryRow($0, scene: model.scene(for: $0)) }
+            }.map { ClipQueryRow($0, scene: model.scene(for: $0), library: library) }
             result.clips = page(rows)
             if kind == .timeline, offset == 0 {
                 var document = model.document

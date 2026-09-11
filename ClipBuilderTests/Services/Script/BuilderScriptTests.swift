@@ -282,3 +282,27 @@ struct BuilderScriptTests {
     }
 
 }
+
+extension BuilderScriptTests {
+    @Test func removeAljoFromRosterOnlyEvidence() throws {
+        let aljo = Fixtures.timelineClip(sceneID: nil, sourceStart: 2, duration: 2)
+        let other = Fixtures.timelineClip(sceneID: nil, sourceStart: 6, duration: 2, startTime: 2)
+        let model = ScriptFixtures.model(clips: [aljo, other])
+        var library = ScriptFixtures.library()
+        library.scenes = []
+        library.people = [.init(id: 1, key: "aljo_key", name: "Aljo", descriptor: "")]
+        library.videoPeople = [1: [.init(key: "aljo_key", name: "Aljo", ranges: [.init(start: 2, end: 4)])]]
+        let context = ParserContext(library: library, model: model)
+        guard case .script(let steps) = BuilderRequestParser().parse("remove clips with Aljo", context: context) else {
+            Issue.record("Expected a remove-clips script")
+            return
+        }
+        var filter = ClipFilter(); filter.people = ["aljo_key"]
+        #expect(steps == [.init(.removeClips(filter: filter))])
+        let session = BuilderScriptSession(live: model, library: library)
+        defer { session.discard() }
+        #expect(session.run(steps).completed)
+        #expect(session.workingDocument.videoTrack.map(\.uid) == [other.uid])
+        #expect(model.document.videoTrack.map(\.uid) == [aljo.uid, other.uid])
+    }
+}

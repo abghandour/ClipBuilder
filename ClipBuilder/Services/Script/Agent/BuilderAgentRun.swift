@@ -61,7 +61,9 @@ final class BuilderAgentRun {
             let configuration = try BuilderAgentLaunch.make(provider: provider, request: prompt, model: provenance.model,
                 endpoint: endpoint.url, token: endpoint.token, parentEnvironment: parentEnvironment)
             launch = configuration
-            let (messages, continuation) = AsyncThrowingStream<BuilderAgentMessage, any Error>.makeStream(bufferingPolicy: .bufferingOldest(64))
+            // Total bytes are bounded by ProcessRunner.runAgent maximumOutputBytes
+            // and the parser's per-line limit; partial-message bursts must not drop events.
+            let (messages, continuation) = AsyncThrowingStream<BuilderAgentMessage, any Error>.makeStream(bufferingPolicy: .unbounded)
             let stream = BuilderAgentStream(provider: provider, continuation: continuation)
             let limits = endpoint.tools.budget.limits
             let executor = executor
@@ -91,13 +93,13 @@ final class BuilderAgentRun {
                         while let newline = progressLine.firstIndex(of: "\n") {
                             let line = String(progressLine[..<newline])
                             progressLine.removeSubrange(...newline)
-                            let safe = redactor.text(line)
+                            let safe = redactor.text(line, limit: 16 * 1024)
                             try endpoint.tools.budget.chargeLog(safe.utf8.count)
                             onProgress?(safe)
                         }
                     case .final(let text):
                         if !progressLine.isEmpty {
-                            let safe = redactor.text(progressLine)
+                            let safe = redactor.text(progressLine, limit: 16 * 1024)
                             try endpoint.tools.budget.chargeLog(safe.utf8.count)
                             onProgress?(safe)
                             progressLine = ""

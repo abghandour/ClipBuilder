@@ -16,6 +16,7 @@ nonisolated struct BuilderAgentParser: Sendable {
     private var pending = Data()
     private var terminal = false
     private var providerText = ""
+    private var sawClaudeTextDelta = false
     private var validatedInventory = false
 
     init(provider: BuilderAgentProvider, maximumLineBytes: Int = 256 * 1024) {
@@ -69,18 +70,23 @@ nonisolated struct BuilderAgentParser: Sendable {
             return messages
         case "stream_event":
             let event = value["event"] as? [String: Any] ?? [:]
-            if let delta = event["delta"] as? [String: Any], let text = delta["text"] as? String { return [.progress(text)] }
+            if let delta = event["delta"] as? [String: Any], let text = delta["text"] as? String {
+                sawClaudeTextDelta = true
+                return [.progress(text)]
+            }
             if let block = event["content_block"] as? [String: Any], block["type"] as? String == "tool_use" {
                 return [try observed(block["name"] as? String)]
             }
             return []
         case "assistant":
             let message = value["message"] as? [String: Any] ?? [:]
-            return try (message["content"] as? [[String: Any]] ?? []).compactMap { block in
+            defer { sawClaudeTextDelta = false }
+            let messages: [BuilderAgentMessage] = try (message["content"] as? [[String: Any]] ?? []).compactMap { block in
                 if block["type"] as? String == "tool_use" { return try observed(block["name"] as? String) }
-                if let text = block["text"] as? String { return .progress(text) }
+                if !sawClaudeTextDelta, let text = block["text"] as? String { return .progress(text) }
                 return nil
             }
+            return messages + [.progress("\n")]
         case "result":
             terminal = true
             if value["is_error"] as? Bool == true || value["subtype"] as? String != "success" {
@@ -164,9 +170,9 @@ nonisolated final class BuilderAgentStream: @unchecked Sendable {
     private func yield(_ messages: [BuilderAgentMessage]) throws {
         for message in messages {
             switch continuation.yield(message) {
-            case .enqueued: break
-            case .dropped, .terminated: throw ScriptError.invalid("Agent event consumer exceeded its bounded buffer or stopped.")
-            @unknown default: throw ScriptError.invalid("Agent event stream unavailable.")
+            case .enqueued, .dropped: break
+            case .terminated: throw ScriptError.invalid("Agent event consumer stopped.")
+            @unknown default: break
             }
         }
     }

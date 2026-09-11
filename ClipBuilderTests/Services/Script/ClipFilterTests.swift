@@ -152,3 +152,75 @@ struct ClipFilterTests {
                       text: "one two", originalText: nil, wordsJSON: words, provider: nil, model: nil)
     }
 }
+
+extension ClipFilterTests {
+    @Test func rosterRangeFallbackAndCaseInsensitiveNames() throws {
+        let clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 2, duration: 4, speed: 0.5)
+        var library = ScriptFixtures.library()
+        library.scenes = []
+        library.videoPeople = [1: [.init(key: "aljo_key", name: "Aljo", ranges: [.init(start: 3, end: 5)])]]
+        var filter = ClipFilter()
+        for name in ["ALJO_KEY", "aLjO"] {
+            filter.people = [name]
+            #expect(filter.matches(clip, scene: nil, library: library))
+        }
+        let model = ScriptFixtures.model(clips: [clip])
+        var query = BuilderQuery(.clips); query.filter = filter
+        let result = try query.execute(model: model, library: library, resolve: { _ in clip.uid })
+        let row = try #require(result.clips.first)
+        #expect(row.people == ["aljo_key"])
+        #expect(row.unknown.contains("people derived from the video roster; clip has no scene link"))
+        // Source span ends at 4 despite the four-second screen duration.
+        library.videoPeople[1] = [.init(key: "aljo_key", name: "Aljo", ranges: [.init(start: 4, end: 6)])]
+        #expect(!filter.matches(clip, scene: nil, library: library))
+        #expect(ClipQueryRow(clip, scene: nil, library: library).people.isEmpty)
+        library.videoPeople[1] = [.init(key: "aljo_key", name: "Aljo", ranges: [])]
+        #expect(filter.matches(clip, scene: nil, library: library))
+        var missingScene = clip; missingScene.sceneID = 999
+        #expect(filter.matches(missingScene, scene: nil, library: library))
+        var linked = Fixtures.scene(); linked.tags = ["person:aljo_key"]
+        let linkedClip = Fixtures.timelineClip()
+        filter.people = ["ALJO_KEY"]
+        library.videoPeople = [:]
+        #expect(filter.matches(linkedClip, scene: linked, library: library))
+        #expect(ClipQueryRow(linkedClip, scene: linked, library: library)
+            == ClipQueryRow(linkedClip, scene: linked))
+    }
+
+    @Test func sceneInferenceRequiresUniqueHalfSpanOverlapAndDoesNotMutate() {
+        let clip = Fixtures.timelineClip(sceneID: nil)
+        var library = ScriptFixtures.library()
+        library.scenes = [Fixtures.scene(start: 4, end: 8)]
+        let row = ClipQueryRow(clip, scene: nil, library: library)
+        #expect(row.tags == ["fixture"] && row.score == 8)
+        #expect(row.unknown.contains("scene inferred from source overlap"))
+        #expect(row.scene == nil && clip.sceneID == nil)
+        library.scenes.append(Fixtures.scene(id: 2))
+        #expect(ClipQueryRow(clip, scene: nil, library: library).score == nil)
+        library.scenes = [Fixtures.scene(start: 4.01, end: 8)]
+        #expect(ClipQueryRow(clip, scene: nil, library: library).score == nil)
+    }
+}
+
+extension ClipFilterTests {
+    @Test func snapshotLoadsAndRefreshesPersistedRosterRanges() async throws {
+        let temp = try TempDatabase()
+        let video = try await temp.seedVideo(sceneCount: 0)
+        try await temp.database.upsertPerson(key: "aljo_key", descriptor: "fixture")
+        let people = try await temp.database.fetchPeople()
+        let person = try #require(people.first { $0.key == "aljo_key" })
+        try await temp.database.renamePerson(id: person.id, name: "Aljo")
+        try await temp.database.replaceVideoPeople(videoID: video,
+            entries: [(person.id, 2, nil, #"[{"start":2,"end":4}]"#)])
+        let snapshot = try await ScriptLibrarySnapshot().refreshed(database: temp.database)
+        #expect(snapshot.videoPeople[video] == [.init(key: "aljo_key", name: "Aljo", ranges: [.init(start: 2, end: 4)])])
+        #expect(snapshot.videosWithPeople.contains(video))
+        try await temp.database.replaceVideoPeople(videoID: video, entries: [(person.id, 2, nil, nil)])
+        let wholeVideo = try await snapshot.refreshed(database: temp.database)
+        #expect(wholeVideo.videoPeople[video]?.first?.ranges == [])
+        try await temp.database.replaceVideoPeople(videoID: video, entries: [])
+        let empty = try await wholeVideo.refreshed(database: temp.database)
+        #expect(empty.videoPeople[video] == [])
+        #expect(!empty.videosWithPeople.contains(video))
+    }
+}

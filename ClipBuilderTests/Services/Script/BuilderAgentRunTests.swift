@@ -91,7 +91,8 @@ struct BuilderAgentRunTests {
         #expect(capture.count == 1)
         #expect(run.terminalError != nil && session.state == .failed)
         #expect(run.endpoint.token.isEmpty)
-        #expect(!FileManager.default.fileExists(atPath: try #require(capture.root).path))
+        let capturedRoot = try #require(capture.root)
+        #expect(!FileManager.default.fileExists(atPath: capturedRoot.path))
         session.discard()
     }
 
@@ -225,5 +226,70 @@ extension BuilderAgentRunTests {
         #expect(bounded.toolCalls == 128 && bounded.affectedItems == 10_000 && bounded.wallSeconds == 180)
         #expect(bounded.argumentBytes == 256 * 1024 && bounded.resultBytes == 1024 * 1024)
         #expect(bounded.loggedBytes == 1024 * 1024 && bounded.outputBytes == 16 * 1024 * 1024)
+    }
+}
+
+extension BuilderAgentRunTests {
+    @Test func claudeAssistantEchoAndTurnBoundaries() throws {
+        var parser = BuilderAgentParser(provider: .claude)
+        let json = #"""
+        {"type":"system","tools":["mcp__clipbuilder__query"]}
+        {"type":"stream_event","event":{"delta":{"text":"I'll start "}}}
+        {"type":"stream_event","event":{"delta":{"text":"by resolving…"}}}
+        {"type":"assistant","message":{"content":[{"type":"text","text":"I'll start by resolving…"},{"type":"tool_use","name":"mcp__clipbuilder__query"}]}}
+        {"type":"assistant","message":{"content":[{"type":"text","text":"Without partial messages."}]}}
+        {"type":"result","subtype":"success","result":"done"}
+        """#
+        let messages = try parser.feed(Data((json + "\n").utf8)) + parser.finish()
+        let progress = messages.compactMap { message -> String? in
+            if case .progress(let text) = message { return text }
+            return nil
+        }.joined()
+        #expect(progress == "I'll start by resolving…\nWithout partial messages.\n")
+        #expect(messages.contains(.toolObserved("mcp__clipbuilder__query")))
+    }
+
+    @Test func fakeCLIBurstPreservesAll500Deltas() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("fake-claude")
+        let script = #"""
+        #!/bin/sh
+        printf '%s\n' '{"type":"system","tools":[]}'
+        i=0
+        while [ "$i" -lt 500 ]; do
+            printf '{"type":"stream_event","event":{"delta":{"text":"delta-%s|"}}}\n' "$i"
+            i=$((i+1))
+        done
+        printf '%s\n' '{"type":"result","subtype":"success","result":"done"}'
+        """#
+        try script.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let session = ScriptFixtures.session()
+        defer { session.discard() }
+        let run = BuilderAgentRun(provider: .claude, model: nil,
+            tools: BuilderTools(session: session, budget: BuilderRunBudget(.init())))
+        var progress: [String] = []
+        run.onProgress = { progress.append($0) }
+        await run.run(request: "burst", executable: executable, parentEnvironment: ["PATH": "/bin:/usr/bin"])
+        #expect(run.terminalError == nil)
+        #expect(run.finalResponse == "done")
+        #expect(progress.dropFirst().joined() == (0..<500).map { "delta-\($0)|" }.joined())
+    }
+
+    @Test func undrainedStreamPreservesBurst() async throws {
+        let (messages, continuation) = AsyncThrowingStream<BuilderAgentMessage, any Error>.makeStream(bufferingPolicy: .unbounded)
+        let stream = BuilderAgentStream(provider: .claude, continuation: continuation)
+        let delta = #"{"type":"stream_event","event":{"delta":{"text":"x"}}}"# + "\n"
+        try stream.consume(Data((#"{"type":"system","tools":[]}"# + "\n"
+            + String(repeating: delta, count: 500)
+            + #"{"type":"result","subtype":"success","result":"done"}"# + "\n").utf8))
+        try stream.finish()
+        var progress = ""
+        for try await message in messages {
+            if case .progress(let text) = message { progress += text }
+        }
+        #expect(progress == String(repeating: "x", count: 500))
     }
 }

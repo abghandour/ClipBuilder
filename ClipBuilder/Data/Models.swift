@@ -300,6 +300,13 @@ nonisolated struct VideoNote: Identifiable, Sendable, Hashable {
 /// Coordinates are normalized (0–1) in display space, top-left origin.
 /// One person the people-only pass found in a specific video, with the
 /// portrait box its roster avatar is cropped from.
+/// People-pass evidence in source seconds. Empty ranges mean present somewhere in the video.
+nonisolated struct VideoPersonRanges: Sendable, Equatable {
+    var key: String
+    var name: String
+    var ranges: [ScriptTimeRange]
+}
+
 nonisolated struct VideoPersonRecord: Identifiable, Sendable, Hashable {
     var videoID: Int64
     var personID: Int64

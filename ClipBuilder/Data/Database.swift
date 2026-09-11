@@ -1764,6 +1764,21 @@ actor Database {
 
     // MARK: - Video people (people-only pass roster)
 
+    func fetchVideoPeopleRanges(videoID: Int64) throws -> [VideoPersonRanges] {
+        try connection.query("""
+            SELECT p.key, p.name, vp.ranges_json
+            FROM video_people vp JOIN people p ON p.id = vp.person_id
+            WHERE vp.video_id = ? ORDER BY p.key
+            """, [.integer(videoID)]).map { row in
+            // Corrupt evidence must not silently become whole-video presence.
+            let ranges = try row["ranges_json"]?.stringValue.map {
+                try JSONDecoder().decode([ScriptTimeRange].self, from: Data($0.utf8))
+            } ?? []
+            return VideoPersonRanges(key: row["key"]?.stringValue ?? "",
+                                     name: row["name"]?.stringValue ?? "", ranges: ranges)
+        }
+    }
+
     func fetchVideoPeople(videoID: Int64) throws -> [VideoPersonRecord] {
         try connection.query("""
             SELECT vp.*, p.key AS person_key, p.name AS person_name,

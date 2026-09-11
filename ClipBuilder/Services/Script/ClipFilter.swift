@@ -24,7 +24,7 @@ nonisolated struct ScriptTimeRange: Codable, Sendable, Equatable {
     }
 }
 
-/// Person matches describe scene tags, not continuous on-screen presence.
+/// Person matches use scene tags or overlapping video-roster evidence.
 nonisolated struct ClipFilter: Codable, Sendable, Equatable {
     var track: Int? = nil
     var role: ClipRole? = nil
@@ -65,13 +65,22 @@ nonisolated struct ClipFilter: Codable, Sendable, Equatable {
         }
     }
 
-    func matches(_ clip: TimelineClip, scene: SceneRecord?) -> Bool {
+    func matches(_ clip: TimelineClip, scene: SceneRecord?, library: ScriptLibrarySnapshot = .init()) -> Bool {
         guard includeBumpers || !clip.bumper,
               track == nil || track == clip.track, role == nil || role == clip.role,
               between?.overlaps(start: clip.startTime, end: clip.startTime + clip.duration) ?? true else { return false }
         let sceneTags = Set(scene?.tags ?? [])
+        let roster = library.rosterPeople(for: clip, scene: scene)
+        let scenePeople = Set(sceneTags.filter { $0.lowercased().hasPrefix("person:") }
+            .map { String($0.dropFirst(7)).lowercased() })
+        let matchesPeople = people.allSatisfy { requested in
+            scenePeople.contains(requested.lowercased()) || roster.contains {
+                $0.key.caseInsensitiveCompare(requested) == .orderedSame
+                    || $0.name.caseInsensitiveCompare(requested) == .orderedSame
+            }
+        }
         guard Set(tags).isSubset(of: sceneTags),
-              Set(people.map { "person:\($0)" }).isSubset(of: sceneTags),
+              matchesPeople,
               anyTags.isEmpty || !sceneTags.isDisjoint(with: anyTags) else { return false }
         if let threshold = sceneScoreBelow {
             guard let score = scene?.score, score.isFinite, score < threshold else { return false }

@@ -212,7 +212,7 @@ final class ScriptRunner {
         case .removeClips(let filter):
             try filter.validate()
             if let value = filter.track { try track(value) }
-            let ids = model.document.videoTrack.filter { filter.matches($0, scene: model.scene(for: $0)) }.map(\.uid)
+            let ids = model.document.videoTrack.filter { filter.matches($0, scene: model.scene(for: $0), library: library) }.map(\.uid)
             try charge(ids.count)
             for uid in ids { model.removeClip(uid) }
             actual = .object(["removed": .array(ids.map { .string($0.uuidString) })])
