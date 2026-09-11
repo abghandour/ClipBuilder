@@ -145,7 +145,22 @@ final class BuilderTimelineModel {
         cachedTimelineLayout = nil
     }
 
-    var document = TimelineDocument()
+    /// Monotonic for this model's lifetime, including direct binding edits,
+    /// hydration, loads and exact undo/redo. Persisted in timelines.document_revision.
+    private(set) var revision = 0
+    private(set) var persistedRevision = 0
+
+    func acknowledgePersistedRevision(_ revision: Int) { persistedRevision = revision }
+    private var installingExactSnapshot = false
+    var document = TimelineDocument() {
+        didSet {
+            if !installingExactSnapshot {
+                revision += 1
+                cachedTimelineLayout = nil
+            }
+        }
+    }
+    private(set) var scriptRunStatus: (uuid: String, status: BuilderRunStatus)?
     var selection: TimelineSelection? {
         didSet { notifyUIStateChange() }
     }
@@ -255,6 +270,102 @@ final class BuilderTimelineModel {
         documentDidChange()
     }
 
+    /// Normalize only on the transient copy, before the preview is frozen.
+    func normalizeScriptCandidate() {
+        precondition(mode == .transient)
+        normalizeBumpers()
+        for index in document.videoTrack.indices {
+            document.videoTrack[index].enforceBumperRules()
+            document.videoTrack[index].enforceCutawayRules()
+        }
+        document.normalizeCropBlocks()
+    }
+
+    func validateScriptSnapshot(candidate: BuilderScriptSnapshot, baseline: TimelineDocument,
+                                baselineRevision: Int, requiresUndo: Bool = true) -> ApplyFailure? {
+        guard mode == .persistent, timelineID == candidate.timelineID,
+              profileName == candidate.profileName else { return .identityChanged }
+        guard revision == baselineRevision, ScriptValue.stored(document) == ScriptValue.stored(baseline) else { return .staleRevision }
+        guard !requiresUndo || undoManager != nil else { return .missingUndoManager }
+        guard ScriptValue.stored(candidate.document) == ScriptValue.stored(candidate.preview) else { return .candidateChanged }
+        return nil
+    }
+
+    /// The coordinator must durably commit before calling this synchronous API.
+    /// No normalization, hydration, or per-command undo is allowed here.
+    func applyScriptSnapshot(candidate: BuilderScriptSnapshot, baseline: TimelineDocument,
+                             baselineRevision: Int, actionName: String) -> Result<Int, ApplyFailure> {
+        if let failure = validateScriptSnapshot(candidate: candidate, baseline: baseline,
+                                                baselineRevision: baselineRevision) {
+            return .failure(failure)
+        }
+        guard ScriptValue.stored(candidate.document) != ScriptValue.stored(baseline) else {
+            return .failure(.notApplicable)
+        }
+        installScriptSnapshot(candidate, actionName: "Wizard: \(actionName)", status: .applied)
+        return .success(revision)
+    }
+
+    /// Revert shares the exact installation primitive but does not require a window.
+    func applyRevertSnapshot(candidate: BuilderScriptSnapshot, baseline: TimelineDocument,
+                             baselineRevision: Int) -> Result<Int, ApplyFailure> {
+        if let failure = validateScriptSnapshot(candidate: candidate, baseline: baseline,
+                                                baselineRevision: baselineRevision, requiresUndo: false) {
+            return .failure(failure)
+        }
+        installScriptSnapshot(candidate, actionName: "Revert Wizard run", status: .reverted)
+        return .success(revision)
+    }
+
+    private func installScriptSnapshot(_ candidate: BuilderScriptSnapshot, actionName: String,
+                                       status: BuilderRunStatus) {
+        registerExactUndo(document, inverse: candidate.document, actionName: actionName,
+                          status: (candidate.runUUID, status == .applied ? .reverted : .applied),
+                          inverseStatus: (candidate.runUUID, status))
+        scriptRunStatus = (candidate.runUUID, status)
+        restoreExact(candidate.document)
+        // This value was committed already. Later edits/undo still use the installed callbacks.
+        cancelPendingAutosave()
+    }
+
+    private func registerExactUndo(_ snapshot: TimelineDocument, inverse: TimelineDocument,
+                                   actionName: String, status: (uuid: String, status: BuilderRunStatus),
+                                   inverseStatus: (uuid: String, status: BuilderRunStatus)) {
+        guard let undoManager else { return }
+        let needsGroup = undoManager.groupingLevel == 0
+        if needsGroup { undoManager.beginUndoGrouping() }
+        defer { if needsGroup { undoManager.endUndoGrouping() } }
+        undoManager.registerUndo(withTarget: self) { model in
+            MainActor.assumeIsolated {
+                // Capture both sides at installation: Library hydration can
+                // change the live value before undo without adding an undo step.
+                model.registerExactUndo(inverse, inverse: snapshot, actionName: actionName,
+                                        status: inverseStatus, inverseStatus: status)
+                model.scriptRunStatus = status
+                model.restoreExact(snapshot)
+                if let id = model.timelineID { model.onTimelineAutosave?(id, model.document) }
+            }
+        }
+        undoManager.setActionName(actionName)
+    }
+
+    /// Restore the actual value, including runtime IDs and hydrated metadata.
+    /// Unlike restore(), changed Library rows never participate in undo/redo.
+    private func restoreExact(_ snapshot: TimelineDocument) {
+        let wasSuppressed = suppressAutosave
+        suppressAutosave = true
+        defer { suppressAutosave = wasSuppressed }
+        installingExactSnapshot = true
+        document = snapshot
+        installingExactSnapshot = false
+        revision += 1
+        cachedTimelineLayout = nil
+        lastUndoKey = nil
+        if let selection, !contains(selection) { self.selection = nil }
+        if let focusedTrack, !(0..<document.trackCount).contains(focusedTrack) { self.focusedTrack = nil }
+        playhead = min(max(0, playhead), totalDuration)
+    }
+
     private func contains(_ selection: TimelineSelection) -> Bool {
         switch selection {
         case .clip(let uid): return document.videoTrack.contains { $0.uid == uid }
@@ -271,6 +382,7 @@ final class BuilderTimelineModel {
         // inspector text fields' own undo stack.
         if mode == .persistent { undoManager?.removeAllActions(withTarget: self) }
         lastUndoKey = nil
+        scriptRunStatus = nil
     }
 
     // MARK: - Load / persistence
@@ -306,11 +418,14 @@ final class BuilderTimelineModel {
     /// Open one database-backed project timeline without creating an undo
     /// step or writing it back before the user changes anything.
     func loadTimeline(id: Int64, document newDocument: TimelineDocument,
+                      revision persistedRevision: Int = 0,
                       playhead: Double = 0, zoom: Double = 60,
                       selection: TimelineSelection? = nil, focusedTrack: Int? = nil) {
         flushPendingAutosave()
         resetUndoHistory()
         suppressAutosave = true
+        self.persistedRevision = persistedRevision
+        revision = max(revision, persistedRevision)
         timelineID = id
         lastBRollPick = nil
         brollRequest = nil
@@ -372,6 +487,7 @@ final class BuilderTimelineModel {
         focusedTrack = nil
         playhead = 0
         if timelineID == nil, mode == .persistent {
+            cancelPendingAutosave()
             BuilderStateStore.clear(profileName: profileName)
         } else {
             documentDidChange()
@@ -455,6 +571,7 @@ final class BuilderTimelineModel {
     }
 
     private func hydrateClips() {
+        revision += 1
         // Bumper and B-roll rules hold even in a project with no analyzed
         // scenes yet; only the scene-derived fields need the library.
         normalizeBumpers()
@@ -481,11 +598,15 @@ final class BuilderTimelineModel {
     }
 
     private func documentDidChange() {
+        revision += 1
         // The cropping row always tiles the content; the track count follows it.
         document.normalizeCropBlocks()
         cachedTimelineLayout = nil
+        scheduleDocumentAutosave()
+    }
+
+    private func scheduleDocumentAutosave() {
         guard mode == .persistent, !suppressAutosave else { return }
-        let snapshot = document
         let name = profileName
         let id = timelineID
         let autosave = onTimelineAutosave
@@ -495,6 +616,7 @@ final class BuilderTimelineModel {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
             hasPendingAutosave = false
+            let snapshot = document
             if let id, let autosave {
                 autosave(id, snapshot)
                 return

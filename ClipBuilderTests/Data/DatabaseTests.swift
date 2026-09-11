@@ -578,6 +578,22 @@ struct OnDevicePassTimingTests {
 
 @Suite("Schema version gate")
 struct SchemaVersionGateTests {
+    @Test func version12GainsBuilderRunTables() throws {
+        let temp = try TempDatabase()
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("DROP TABLE timeline_wizard_before")
+        try raw.execute("DROP TABLE builder_runs")
+        try raw.execute("ALTER TABLE timelines DROP COLUMN document_revision")
+        try raw.execute("PRAGMA user_version = 12")
+        let reopened = try Database(path: temp.path)
+        _ = reopened
+        #expect(Database.schemaVersion == 13)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 13)
+        #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
+        #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))
+        #expect(try raw.columnNames(of: "timelines").contains("document_revision"))
+    }
+
     /// A database stamped one version behind must gain the columns that the
     /// newest migration adds. This is the 1.60 regression: columns were added
     /// to migrate() without bumping schemaVersion, so stamped databases never

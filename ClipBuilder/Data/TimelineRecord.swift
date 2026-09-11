@@ -14,6 +14,7 @@ nonisolated struct TimelineRecord: Identifiable, Sendable, Hashable {
     /// Where the editor was when this timeline was last open (JSON of
     /// `TimelineViewState`); nil for a timeline never opened.
     var viewStateJSON: String?
+    var documentRevision: Int = 0
 
     var isWizard: Bool { kind == "wizard" }
 

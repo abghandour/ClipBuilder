@@ -3705,7 +3705,7 @@ final class AppStore {
         } else {
             view = TimelineViewState()
         }
-        builder.loadTimeline(id: timeline.id, document: document,
+        builder.loadTimeline(id: timeline.id, document: document, revision: timeline.documentRevision,
                              playhead: view.playhead, zoom: view.zoom,
                              selection: view.selection,
                              focusedTrack: view.focusedTrack)
@@ -3810,6 +3810,9 @@ final class AppStore {
     }
     private struct TimelineSaveSnapshot {
         let version: UInt64
+        let revision: Int
+        let runUUID: String?
+        let runStatus: BuilderRunStatus?
         let document: TimelineDocument
         let thumbnailVideoID: Int64?
     }
@@ -3827,7 +3830,8 @@ final class AppStore {
         let key = TimelineSaveKey(database: ObjectIdentifier(database), id: id)
         timelineSaveVersion += 1
         pendingTimelineSaves[key] = TimelineSaveSnapshot(
-            version: timelineSaveVersion, document: document,
+            version: timelineSaveVersion, revision: builder.revision,
+            runUUID: builder.scriptRunStatus?.uuid, runStatus: builder.scriptRunStatus?.status, document: document,
             thumbnailVideoID: document.videoTrack.first?.sceneID
                 .flatMap { sceneID in scenes.first(where: { $0.id == sceneID })?.videoID })
         guard timelineSaveTasks[key] == nil else { return }
@@ -3839,8 +3843,13 @@ final class AppStore {
                 do {
                     let json = try await Self.encodeTimeline(snapshot.document)
                     if let newer = pendingTimelineSaves[key], newer.version > snapshot.version { continue }
-                    try await database.saveTimeline(id: id, documentJSON: json,
-                                                    thumbnailVideoID: snapshot.thumbnailVideoID)
+                    try await database.saveTimelineRevision(id: id, documentJSON: json, revision: snapshot.revision,
+                                                           thumbnailVideoID: snapshot.thumbnailVideoID,
+                                                           runUUID: snapshot.runUUID, status: snapshot.runStatus)
+                    timelineSaveFailures[key] = nil
+                    if self.database === database, builder.timelineID == id {
+                        builder.acknowledgePersistedRevision(snapshot.revision)
+                    }
                     let row = try await database.fetchTimeline(id: id)
                     guard self.database === database, let row,
                           activeProjectID == row.projectID,
@@ -3851,9 +3860,167 @@ final class AppStore {
                         if $0.editedAt != $1.editedAt { return ($0.editedAt ?? "") > ($1.editedAt ?? "") }
                         return $0.id > $1.id
                     }
-                } catch { presentError("Could not save the timeline", error) }
+                } catch {
+                    timelineSaveFailures[key] = .persistence(String(describing: error))
+                    presentError("Could not save the timeline", error)
+                }
             }
         }
+    }
+
+    @ObservationIgnored private var wizardCommitInProgress = false
+    @ObservationIgnored private var wizardBeforeSnapshots: [TimelineSaveKey: (uuid: String, document: TimelineDocument)] = [:]
+    @ObservationIgnored private var timelineSaveFailures: [TimelineSaveKey: ApplyFailure] = [:]
+
+    /// Drains the same queue used by autosave, then commits and installs without
+    /// suspension on MainActor. The non-suspending section is the edit/switch/
+    /// hydration gate; no UI or Library callback can interleave with it.
+    func applyWizardRun(session: BuilderScriptSession, request: String,
+                        provenance: AIProvenance) async -> Result<Int, ApplyFailure> {
+        guard !wizardCommitInProgress else { return .failure(.commitInProgress) }
+        guard let database, let id = session.timelineID,
+              builder.timelineID == id, builder.profileName == session.profileName,
+              activeProjectID == session.projectID else { return .failure(.identityChanged) }
+        if session.state == .failed || session.state == .discarded {
+            do {
+                try await recordWizardRun(session: session, request: request, provenance: provenance,
+                                          status: session.state == .failed ? .failed : .discarded)
+            } catch { return .failure(.persistence(String(describing: error))) }
+            return .failure(.notApplicable)
+        }
+        guard session.state == .completed, let candidate = session.frozenCandidate,
+              !session.diff().isEmpty else { return .failure(.notApplicable) }
+        wizardCommitInProgress = true
+        defer { wizardCommitInProgress = false }
+        let generation = profileGeneration
+        do { try await drainTimelineSaves(database: database, id: id) }
+        catch let failure as ApplyFailure { return .failure(failure) }
+        catch { return .failure(.persistence(String(describing: error))) }
+        guard self.database === database, generation == profileGeneration,
+              activeProjectID == session.projectID else { return .failure(.identityChanged) }
+        if let failure = builder.validateScriptSnapshot(candidate: candidate, baseline: session.baseline,
+                                                        baselineRevision: session.baselineRevision) {
+            return .failure(failure)
+        }
+        let manager = builder.undoManager
+        defer { withExtendedLifetime(manager) {} }
+        // No await from validation through durable commit and live installation.
+        do {
+            let revision = builder.revision + 1
+            let before = builder.document
+            let run = makeBuilderRun(session: session, request: request, provenance: provenance,
+                                     status: .applied, appliedRevision: revision)
+            let beforeRow = WizardBeforeRecord(timelineID: id, runUUID: session.runUUID, request: request,
+                                                documentJSON: try wizardDocumentJSON(before), appliedRevision: revision)
+            let json = try wizardDocumentJSON(candidate.document)
+            try database.commitWizardSnapshot(timelineID: id, documentJSON: json,
+                                               expectedRevision: builder.persistedRevision, revision: revision,
+                                               thumbnailVideoID: wizardThumbnail(candidate.document),
+                                               run: run, before: beforeRow)
+            let result = builder.applyScriptSnapshot(candidate: candidate, baseline: before,
+                                                     baselineRevision: session.baselineRevision, actionName: request)
+            wizardBeforeSnapshots[TimelineSaveKey(database: ObjectIdentifier(database), id: id)] = (session.runUUID, before)
+            builder.acknowledgePersistedRevision(revision)
+            updateCommittedTimeline(id: id, json: json, revision: revision)
+            return result
+        } catch let failure as ApplyFailure { return .failure(failure) }
+        catch { return .failure(.persistence(String(describing: error))) }
+    }
+
+    /// Restores ordinary timeline JSON (runtime clip IDs regenerate and Library
+    /// metadata is hydrated once before freezing). A successful Revert deletes
+    /// the before-version row; it is not repeatable. Undo does not recreate it.
+    func revertLastWizardRun(timelineID: Int64) async -> Result<Int, ApplyFailure> {
+        guard !wizardCommitInProgress else { return .failure(.commitInProgress) }
+        guard let database, builder.timelineID == timelineID else { return .failure(.identityChanged) }
+        wizardCommitInProgress = true
+        defer { wizardCommitInProgress = false }
+        let generation = profileGeneration
+        let profile = builder.profileName
+        let revision = builder.revision
+        let baseline = builder.document
+        do {
+            guard let before = try await database.fetchWizardBefore(timelineID: timelineID) else {
+                return .failure(.missingBeforeVersion)
+            }
+            try await drainTimelineSaves(database: database, id: timelineID)
+            guard self.database === database, generation == profileGeneration,
+                  builder.timelineID == timelineID, builder.profileName == profile else {
+                return .failure(.identityChanged)
+            }
+            // Ordinary reopening hydration, confined to a transient model.
+            let working = BuilderTimelineModel(mode: .transient)
+            working.seed(document: try before.document(), scenes: [])
+            working.updateScenes(builder.scenes)
+            let key = TimelineSaveKey(database: ObjectIdentifier(database), id: timelineID)
+            let cached = wizardBeforeSnapshots[key]
+            let restored = cached?.uuid == before.runUUID ? cached?.document ?? working.document : working.document
+            let candidate = BuilderScriptSnapshot(document: restored, timelineID: timelineID,
+                                                   profileName: profile, runUUID: before.runUUID)
+            if let failure = builder.validateScriptSnapshot(candidate: candidate, baseline: baseline,
+                                                            baselineRevision: revision, requiresUndo: false) {
+                return .failure(failure)
+            }
+            let manager = builder.undoManager
+            defer { withExtendedLifetime(manager) {} }
+            let json = try wizardDocumentJSON(candidate.document)
+            try database.commitWizardSnapshot(timelineID: timelineID, documentJSON: json,
+                                               expectedRevision: builder.persistedRevision, revision: revision + 1,
+                                               thumbnailVideoID: wizardThumbnail(candidate.document),
+                                               run: nil, before: nil, revertingRunUUID: before.runUUID)
+            let result = builder.applyRevertSnapshot(candidate: candidate, baseline: baseline,
+                                                     baselineRevision: revision)
+            wizardBeforeSnapshots[key] = nil
+            builder.acknowledgePersistedRevision(revision + 1)
+            updateCommittedTimeline(id: timelineID, json: json, revision: revision + 1)
+            return result
+        } catch let failure as ApplyFailure { return .failure(failure) }
+        catch { return .failure(.persistence(String(describing: error))) }
+    }
+
+    /// Records terminal non-applied outcomes without changing the before-version.
+    func recordWizardRun(session: BuilderScriptSession, request: String, provenance: AIProvenance,
+                         status: BuilderRunStatus) async throws {
+        guard [.completed, .failed, .discarded].contains(status) else { throw ApplyFailure.notApplicable }
+        guard let database, session.timelineID == builder.timelineID,
+              session.profileName == builder.profileName, session.projectID == activeProjectID else {
+            throw ApplyFailure.identityChanged
+        }
+        try await database.recordBuilderRun(makeBuilderRun(session: session, request: request,
+                                                           provenance: provenance, status: status))
+    }
+
+    private func makeBuilderRun(session: BuilderScriptSession, request: String, provenance: AIProvenance,
+                                status: BuilderRunStatus, appliedRevision: Int? = nil) -> BuilderRunRecord {
+        BuilderRunRecord(runUUID: session.runUUID, timelineID: session.timelineID ?? 0, request: request,
+                         provider: provenance.provider, model: provenance.model, durationSeconds: provenance.duration,
+                         status: status, baselineRevision: session.baselineRevision, appliedRevision: appliedRevision)
+    }
+
+    private func drainTimelineSaves(database: Database, id: Int64) async throws {
+        let key = TimelineSaveKey(database: ObjectIdentifier(database), id: id)
+        if self.database === database, builder.timelineID == id { builder.flushPendingAutosave() }
+        while let task = timelineSaveTasks[key] {
+            await task.value
+            // Edits may have arrived during the drain; preserve them before refusing stale Apply.
+            if self.database === database, builder.timelineID == id { builder.flushPendingAutosave() }
+        }
+        if let failure = timelineSaveFailures[key] { throw failure }
+    }
+
+    private func wizardDocumentJSON(_ document: TimelineDocument) throws -> String {
+        String(decoding: try JSONEncoder().encode(document), as: UTF8.self)
+    }
+
+    private func wizardThumbnail(_ document: TimelineDocument) -> Int64? {
+        document.videoTrack.first?.sceneID.flatMap { id in scenes.first { $0.id == id }?.videoID }
+    }
+
+    private func updateCommittedTimeline(id: Int64, json: String, revision: Int) {
+        guard let index = timelines.firstIndex(where: { $0.id == id }) else { return }
+        timelines[index].documentJSON = json
+        timelines[index].documentRevision = revision
+        timelines[index].thumbnailVideoID = wizardThumbnail(builder.document)
     }
 
     private func recordWizardTimelines(_ videos: [GeneratedVideoRecord], projectID: Int64,

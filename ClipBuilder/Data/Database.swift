@@ -639,7 +639,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 12
+    static let schemaVersion: Int64 = 13
 
     func reelTraits(kind: String, videoID: String, version: Int = ReelTraits.version) throws -> ReelTraits? {
         guard let text = try connection.query("SELECT traits_json FROM reel_traits WHERE video_kind = ? AND video_id = ? AND version = ?",
@@ -815,6 +815,24 @@ actor Database {
     /// identical across both apps. One `PRAGMA table_info` per table replaces
     /// the per-column probe statements.
     private static func migrate(_ connection: SQLiteConnection) throws {
+        if try !connection.columnNames(of: "timelines").contains("document_revision") {
+            try connection.execute("ALTER TABLE timelines ADD COLUMN document_revision INTEGER NOT NULL DEFAULT 0")
+        }
+        try connection.executeScript("""
+            CREATE TABLE IF NOT EXISTS builder_runs (
+                run_uuid TEXT PRIMARY KEY,
+                timeline_id INTEGER NOT NULL REFERENCES timelines(id) ON DELETE CASCADE,
+                request TEXT, created_at TEXT, provider TEXT, model TEXT, duration_seconds REAL,
+                status TEXT CHECK(status IN ('completed', 'applied', 'failed', 'discarded', 'reverted')),
+                baseline_revision INTEGER, applied_revision INTEGER, summary TEXT,
+                library_effects_json TEXT, events_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_builder_runs_timeline ON builder_runs(timeline_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS timeline_wizard_before (
+                timeline_id INTEGER PRIMARY KEY REFERENCES timelines(id) ON DELETE CASCADE,
+                run_uuid TEXT, request TEXT, created_at TEXT, document_json TEXT, applied_revision INTEGER
+            );
+            """)
         try connection.execute("""
             CREATE TABLE IF NOT EXISTS video_detectors (
                 video_id INTEGER PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
@@ -1300,15 +1318,102 @@ actor Database {
         if let name {
             try connection.execute("""
                 UPDATE timelines SET name = ?, document_json = ?, thumbnail_video_id = ?,
-                                     edited_at = datetime('now') WHERE id = ?
+                                     edited_at = datetime('now'), document_revision = document_revision + 1 WHERE id = ?
                 """, [.text(name), .text(documentJSON),
                       thumbnailVideoID.map(SQLValue.integer) ?? .null, .integer(id)])
         } else {
             try connection.execute("""
                 UPDATE timelines SET document_json = ?, thumbnail_video_id = ?,
-                                     edited_at = datetime('now') WHERE id = ?
+                                     edited_at = datetime('now'), document_revision = document_revision + 1 WHERE id = ?
                 """, [.text(documentJSON), thumbnailVideoID.map(SQLValue.integer) ?? .null,
                       .integer(id)])
+        }
+    }
+
+    func recordBuilderRun(_ run: BuilderRunRecord) throws {
+        try connection.transaction {
+            try BuilderRunPersistence.record(run, on: connection)
+            try BuilderRunPersistence.retainRuns(timelineID: run.timelineID, on: connection)
+        }
+    }
+
+    func updateBuilderRunStatus(runUUID: String, status: BuilderRunStatus) throws {
+        try connection.execute("UPDATE builder_runs SET status = ? WHERE run_uuid = ?",
+                               [.text(status.rawValue), .text(runUUID)])
+    }
+
+    func fetchBuilderRuns(timelineID: Int64, limit: Int = 50) throws -> [BuilderRunRecord] {
+        try connection.query("""
+            SELECT * FROM builder_runs WHERE timeline_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?
+            """, [.integer(timelineID), .integer(Int64(max(0, min(50, limit))))]).map(BuilderRunPersistence.run)
+    }
+
+    func saveWizardBefore(_ before: WizardBeforeRecord) throws {
+        try BuilderRunPersistence.saveBefore(before, on: connection)
+    }
+
+    func fetchWizardBefore(timelineID: Int64) throws -> WizardBeforeRecord? {
+        try connection.query("SELECT * FROM timeline_wizard_before WHERE timeline_id = ?",
+                             [.integer(timelineID)]).first.map(BuilderRunPersistence.before)
+    }
+
+    func deleteWizardBefore(timelineID: Int64) throws {
+        try connection.execute("DELETE FROM timeline_wizard_before WHERE timeline_id = ?", [.integer(timelineID)])
+    }
+
+    /// Ordinary autosave and snapshot undo/redo share the same actor write and status transaction.
+    func saveTimelineRevision(id: Int64, documentJSON: String, revision: Int,
+                              thumbnailVideoID: Int64?, runUUID: String?, status: BuilderRunStatus?) throws {
+        // The synchronous Wizard connection can hold the writer lock too.
+        try connection.execute("PRAGMA busy_timeout=5000")
+        try connection.transaction {
+            // An equal revision may belong to a winning Wizard commit, so a
+            // queued autosave must advance it rather than overwrite it.
+            try connection.execute("""
+                UPDATE timelines SET document_json = ?, document_revision = ?, thumbnail_video_id = ?,
+                    edited_at = datetime('now') WHERE id = ? AND document_revision < ?
+                """, [.text(documentJSON), .integer(Int64(revision)),
+                      thumbnailVideoID.map(SQLValue.integer) ?? .null, .integer(id), .integer(Int64(revision))])
+            guard try connection.query("SELECT changes() AS count").first?["count"]?.intValue == 1 else {
+                throw ApplyFailure.staleRevision
+            }
+            if let runUUID, let status { try updateBuilderRunStatus(runUUID: runUUID, status: status) }
+        }
+    }
+
+    /// Called only after AppStore drains this timeline's serialized save queue.
+    /// The private connection permits commit + live installation without an actor
+    /// suspension. SQLite's immediate transaction and revision CAS arbitrate other writers.
+    nonisolated func commitWizardSnapshot(timelineID: Int64, documentJSON: String,
+                                          expectedRevision: Int, revision: Int, thumbnailVideoID: Int64?,
+                                          run: BuilderRunRecord?, before: WizardBeforeRecord?,
+                                          revertingRunUUID: String? = nil) throws {
+        let db = try SQLiteConnection(path: path.path)
+        try db.execute("PRAGMA busy_timeout=5000")
+        try db.execute("PRAGMA foreign_keys=ON")
+        // transaction() begins IMMEDIATE, acquiring the writer lock before CAS.
+        try db.transaction {
+            try db.execute("""
+                UPDATE timelines SET document_json = ?, document_revision = ?, thumbnail_video_id = ?,
+                    edited_at = datetime('now') WHERE id = ? AND document_revision = ?
+                """, [.text(documentJSON), .integer(Int64(revision)),
+                      thumbnailVideoID.map(SQLValue.integer) ?? .null,
+                      .integer(timelineID), .integer(Int64(expectedRevision))])
+            guard try db.query("SELECT changes() AS count").first?["count"]?.intValue == 1 else {
+                throw ApplyFailure.staleRevision
+            }
+            if let run { try BuilderRunPersistence.record(run, on: db) }
+            if let before { try BuilderRunPersistence.saveBefore(before, on: db) }
+            if let revertingRunUUID {
+                try db.execute("DELETE FROM timeline_wizard_before WHERE timeline_id = ? AND run_uuid = ?",
+                               [.integer(timelineID), .text(revertingRunUUID)])
+                guard try db.query("SELECT changes() AS count").first?["count"]?.intValue == 1 else {
+                    throw ApplyFailure.missingBeforeVersion
+                }
+                try db.execute("UPDATE builder_runs SET status = 'reverted' WHERE run_uuid = ?",
+                               [.text(revertingRunUUID)])
+            }
+            try BuilderRunPersistence.retainRuns(timelineID: timelineID, on: db)
         }
     }
 
@@ -1364,7 +1469,8 @@ actor Database {
             sourceRunID: row["source_run_id"]?.stringValue,
             thumbnailVideoID: row["thumbnail_video_id"]?.intValue,
             thumbnailPath: row["thumbnail_path"]?.stringValue,
-            viewStateJSON: row["view_state_json"]?.stringValue
+            viewStateJSON: row["view_state_json"]?.stringValue,
+            documentRevision: Int(row["document_revision"]?.intValue ?? 0)
         )
     }
 

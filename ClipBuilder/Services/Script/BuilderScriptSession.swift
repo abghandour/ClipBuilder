@@ -1,10 +1,13 @@
 import Foundation
 
-/// One atomic preview, with no live subscriptions, persistence or Apply API.
+/// One atomic preview, with no live subscriptions or persistence hooks.
 /// Successful lists accumulate until freeze; any refusal aborts the session.
 @MainActor
 final class BuilderScriptSession {
     enum State { case ready, completed, failed, discarded }
+    let runUUID = UUID().uuidString
+    let baselineRevision: Int
+    private(set) var frozenCandidate: BuilderScriptSnapshot?
     let timelineID: Int64?
     let profileName: String
     let projectID: Int64?
@@ -17,6 +20,7 @@ final class BuilderScriptSession {
     private var frozenDiff: TimelineDiff?
 
     init(live: BuilderTimelineModel, library: ScriptLibrarySnapshot) {
+        baselineRevision = live.revision
         timelineID = live.timelineID
         profileName = live.profileName
         projectID = library.projectID
@@ -74,8 +78,13 @@ final class BuilderScriptSession {
     @discardableResult
     func freeze() -> TimelineDiff {
         guard state == .ready else { return diff() }
+        library.withLayouts { working?.normalizeScriptCandidate() }
         frozenDiff = diff()
         candidate = working?.document
+        if let candidate {
+            frozenCandidate = BuilderScriptSnapshot(document: candidate, timelineID: timelineID,
+                                                    profileName: profileName, runUUID: runUUID)
+        }
         working?.cancelPendingAutosave()
         working = nil
         state = .completed
@@ -86,6 +95,7 @@ final class BuilderScriptSession {
         working?.cancelPendingAutosave()
         working = nil
         candidate = nil
+        frozenCandidate = nil
         frozenDiff = nil
         result = nil
         state = .discarded
@@ -96,6 +106,7 @@ final class BuilderScriptSession {
         working?.cancelPendingAutosave()
         working = nil
         candidate = nil
+        frozenCandidate = nil
         state = .failed
         let result = BuilderScriptResult(outcomes: [.refused(code: "invalid_script", reason: reason)],
                                          completed: false, hasDocumentChanges: false)
