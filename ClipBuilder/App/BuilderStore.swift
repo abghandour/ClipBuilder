@@ -147,6 +147,7 @@ final class BuilderTimelineModel {
 
     /// Monotonic for this model's lifetime, including direct binding edits,
     /// hydration, loads and exact undo/redo. Persisted in timelines.document_revision.
+    let scriptLibraryHydration = BuilderLibraryHydration()
     private(set) var revision = 0
     private(set) var persistedRevision = 0
 

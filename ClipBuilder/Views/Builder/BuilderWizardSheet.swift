@@ -20,7 +20,11 @@ struct BuilderWizardSheet: View {
                 .lineLimit(3...6)
                 .textFieldStyle(.roundedBorder)
                 .disabled(model.busy)
+                #if DEBUG
+                .help("Enter one supported request using names and tags from this profile. Times are timeline positions. Debug builds also accept JSON arrays of script steps.")
+                #else
                 .help("Enter one supported request using names and tags from this profile. Times are timeline positions.")
+                #endif
             HStack(spacing: Theme.spaceM) {
                 Menu("Recent Requests") {
                     ForEach(model.history, id: \.self) { request in
@@ -32,6 +36,10 @@ struct BuilderWizardSheet: View {
                 .help("The last ten distinct requests for this profile.")
                 Spacer()
                 if model.busy { ProgressView().controlSize(.small) }
+                if model.phase == .running {
+                    Button("Cancel run", action: model.cancelRun)
+                        .help("Cancel and wait for active work to stop. No timeline changes are applied; saved Library work remains.")
+                }
                 Button(model.failure == .staleRevision ? "Run again" : "Run", action: model.beginRun)
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(model.busy || model.request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -57,6 +65,21 @@ struct BuilderWizardSheet: View {
                             openPicker(request)
                             dismiss()
                         })
+                    }
+                    if model.phase == .awaitingPrerequisites {
+                        Text("Confirm Library work").font(.subheadline.weight(.semibold))
+                        ForEach(model.prerequisiteDisclosures, id: \.self) { Text($0).textSelection(.enabled) }
+                        Text("Library changes are saved immediately and survive a failed run, Discard, Undo and Revert. Timeline changes still require Apply.")
+                            .font(.caption)
+                        Button("Confirm Library work", action: model.beginConfirmedPrerequisites)
+                            .help("Run the disclosed prerequisites once for this program, then preview its timeline edits.")
+                    }
+                    if !model.persistentEffects.isEmpty {
+                        Text("Persistent Library effects").font(.subheadline.weight(.semibold))
+                        Text("Already saved. Discard, Undo and Revert keep these changes.").font(.caption)
+                        ForEach(Array(model.persistentEffects.enumerated()), id: \.offset) { _, effect in
+                            Text("Video \(effect.videoID): \(effect.summary)").textSelection(.enabled)
+                        }
                     }
                     if let diff = model.diff {
                         Text("Timeline changes").font(.subheadline.weight(.semibold))
@@ -94,7 +117,7 @@ struct BuilderWizardSheet: View {
                 Button(model.phase == .applied ? "Close" : "Discard") { close() }
                     .keyboardShortcut(.cancelAction)
                     .disabled(model.phase == .applying)
-                    .help("Close and discard any unapplied preview. Escape.")
+                    .help("Close and discard any unapplied preview; saved Library work remains. Escape.")
                 if model.failure == .commitInProgress {
                     Button("Retry Apply") { Task { await model.retryApply() } }
                         .help("Retry committing the same preview after the other commit finishes.")

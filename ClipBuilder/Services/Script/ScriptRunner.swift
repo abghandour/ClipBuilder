@@ -17,8 +17,8 @@ nonisolated struct BuilderScriptResult: Codable, Sendable, Equatable {
     var hasDocumentChanges: Bool
 }
 
-/// No suspension points in phase 1a: each list completes on MainActor before
-/// another call can enter. Future prerequisite adapters need an admission queue.
+/// Synchronous mutations only. BuilderScriptSession owns async admission and
+/// executes disclosed prerequisites before admitting the mutation list.
 @MainActor
 final class ScriptRunner {
     nonisolated static let maximumBytes = 256 * 1024
@@ -201,6 +201,8 @@ final class ScriptRunner {
                        + before.textOverlays.count + before.imageOverlays.count
                        + before.overlayBlocks.count + before.cropBlocks.count))
         switch command {
+        case .ensureTranscript, .ensurePeople, .ensureAnalysis:
+            return .refused(code: "prerequisite_required", reason: "Ensure requires the asynchronous session gate and Library disclosure confirmation.")
         case .removeClip(let reference):
             model.removeClip(try clip(reference).uid)
         case .removeClips(let filter):

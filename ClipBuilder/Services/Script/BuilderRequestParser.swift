@@ -44,6 +44,26 @@ struct BuilderRequestParser {
                     let index = try track(String(g[1].dropFirst(3)), context)
                     clips = context.document.videoTrack.filter { $0.track == index && !$0.bumper }
                 }
+                guard clips.count <= ScriptRunner.maximumSteps else {
+                    throw ScriptError.invalid("Too many clips; narrow the request.")
+                }
+                var missing = Set<Int64>()
+                for clip in clips {
+                    guard !clip.bumper, clip.sourceStart != nil else {
+                        throw ScriptError.invalid("Silence cuts require a non-bumper clip with source timing.")
+                    }
+                    let videoID = context.library.scenes.first { $0.id == clip.sceneID }?.videoID
+                        ?? context.library.videos.first { $0.path == clip.videoFile }?.id
+                    guard let videoID, context.library.videos.contains(where: { $0.id == videoID }) else {
+                        throw ScriptError.invalid("Video is missing or outside this project.")
+                    }
+                    if !context.library.transcripts.contains(where: { $0.videoID == videoID && !$0.isTranslation }) {
+                        missing.insert(videoID)
+                    }
+                }
+                if !missing.isEmpty {
+                    return .deferred(prerequisites: missing.sorted().map { .init(.ensureTranscript(video: $0)) })
+                }
                 return .script(try BuilderSilenceExpansion.steps(clips: clips, threshold: threshold, context: context))
             }
             if let g = match(#"add b-roll of (.+?) at (.+?)(?: on (?:track )?(i|ii|iii|iv|v|vi|[1-6]))?(?: for ([0-9]+(?:\.[0-9]+)?)\s*s)?"#, text) {

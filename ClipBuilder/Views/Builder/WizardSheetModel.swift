@@ -5,7 +5,7 @@ import Observation
 /// request edits cannot relabel the frozen run or change its provenance.
 @MainActor @Observable
 final class WizardSheetModel {
-    enum Phase: Equatable { case idle, running, preview, found, unrecognised, refused, applying, applied, discarded }
+    enum Phase: Equatable { case idle, awaitingPrerequisites, running, preview, found, unrecognised, refused, applying, applied, discarded }
     var request = ""
     private(set) var phase: Phase = .idle
     private(set) var history: [String] = []
@@ -20,12 +20,19 @@ final class WizardSheetModel {
     private(set) var runRequest = ""
     private(set) var duration: Double = 0
     private var isStarting = false
+    private(set) var prerequisiteDisclosures: [String] = []
+    private(set) var persistentEffects: [PrerequisiteEffect] = []
+    @ObservationIgnored private var pendingSteps: [BuilderScriptStep]?
+
+    @ObservationIgnored private var reparseAfterPrerequisites = false
+
     let profile: String
     let timelineID: Int64?
     let projectID: Int64?
 
     @ObservationIgnored private let store: AppStore
     @ObservationIgnored private let database: Database?
+    @ObservationIgnored private let prerequisites: BuilderPrerequisites
     @ObservationIgnored private let historyStore: BuilderWizardHistory
     @ObservationIgnored private let loadLibrary: @MainActor () async throws -> ScriptLibrarySnapshot
     @ObservationIgnored private var task: Task<Void, Never>?
@@ -35,8 +42,10 @@ final class WizardSheetModel {
     @ObservationIgnored private var findRevision: Int?
 
     init(store: AppStore, history: BuilderWizardHistory = BuilderWizardHistory(),
-         loadLibrary: (@MainActor () async throws -> ScriptLibrarySnapshot)? = nil) {
+         loadLibrary: (@MainActor () async throws -> ScriptLibrarySnapshot)? = nil,
+         prerequisites: BuilderPrerequisites? = nil) {
         self.store = store
+        self.prerequisites = prerequisites ?? store.builderPrerequisites
         database = store.database
         historyStore = history
         profile = store.builder.profileName
@@ -68,7 +77,7 @@ final class WizardSheetModel {
 
     func beginRun() { task = Task { await run() } }
 
-    func run() async {
+    func run(program suppliedProgram: BuilderProgram? = nil) async {
         guard !busy, !dismissed else { return }
         isStarting = true
         defer { isStarting = false }
@@ -83,6 +92,7 @@ final class WizardSheetModel {
         phase = .running
         log = ["Collecting the current Library snapshot…"]
         reasons = []; failure = nil; diff = nil; diffLines = []; results = []; findContext = nil
+        pendingSteps = nil; reparseAfterPrerequisites = false; prerequisiteDisclosures = []; persistentEffects = []
         let started = Date.now
         do {
             let library = try await loadLibrary()
@@ -92,7 +102,16 @@ final class WizardSheetModel {
             guard revision == store.builder.revision else { throw ApplyFailure.staleRevision }
             let context = ParserContext(library: library, model: store.builder)
             let parseStarted = Date.now
-            let program = BuilderRequestParser().parse(runRequest, context: context)
+            let program: BuilderProgram
+            if let suppliedProgram { program = suppliedProgram }
+            else {
+                #if DEBUG
+                if runRequest.hasPrefix("[") { program = .script(try ScriptRunner.decode(Data(runRequest.utf8))) }
+                else { program = BuilderRequestParser().parse(runRequest, context: context) }
+                #else
+                program = BuilderRequestParser().parse(runRequest, context: context)
+                #endif
+            }
             appendLog("Parser finished in \(milliseconds(since: parseStarted)).")
             switch program {
             case .unrecognised(let reasons):
@@ -106,9 +125,14 @@ final class WizardSheetModel {
                 findRevision = revision
                 phase = .found
                 appendLog("Recognised find: \(results.count) scenes. No timeline changes applied.")
+            case .deferred(let steps):
+                reparseAfterPrerequisites = true
+                awaitPrerequisites(steps, library: library)
             case .script(let steps):
                 appendLog("Fully recognised local script: \(steps.count) commands.")
-                execute(steps, library: library)
+                if steps.contains(where: { $0.command.prerequisite != nil }) {
+                    awaitPrerequisites(steps, library: library)
+                } else { execute(steps, library: library) }
             }
             duration = Date.now.timeIntervalSince(started)
             appendLog("Run finished in \(milliseconds(since: started)).")
@@ -121,6 +145,18 @@ final class WizardSheetModel {
             phase = .refused
             appendLog(failureMessage ?? error.localizedDescription)
         }
+    }
+
+    private func awaitPrerequisites(_ steps: [BuilderScriptStep], library: ScriptLibrarySnapshot) {
+        // Hold this exact baseline and request through confirmation.
+        session = BuilderScriptSession(live: store.builder, library: library,
+                                       hydration: store.builderLibraryHydration)
+        pendingSteps = steps
+        prerequisiteDisclosures = Array(Set(steps.compactMap { step in
+            step.command.prerequisite.map { "Video \($0.video): \($0.kind.disclosure)" }
+        })).sorted()
+        phase = .awaitingPrerequisites
+        appendLog("Waiting for Library work confirmation. No prerequisites have started.")
     }
 
     private func find(_ filter: SceneFilter, context: ParserContext) throws -> [SceneRecord] {
@@ -144,7 +180,7 @@ final class WizardSheetModel {
     }
 
     private func execute(_ steps: [BuilderScriptStep], library: ScriptLibrarySnapshot) {
-        let session = BuilderScriptSession(live: store.builder, library: library)
+        let session = BuilderScriptSession(live: store.builder, library: library, hydration: store.builderLibraryHydration)
         self.session = session
         let result = session.run(steps) { [self] index, outcome, elapsed in
             let command = String(describing: steps[index].command)
@@ -161,6 +197,68 @@ final class WizardSheetModel {
         diffLines = BuilderWizardDiff.lines(session: session, steps: steps)
         phase = result.completed ? .preview : .refused
         if !result.completed { appendLog("Run refused. No timeline changes applied.") }
+    }
+
+    func beginConfirmedPrerequisites() { task = Task { await confirmPrerequisites() } }
+
+    /// One explicit confirmation covers this frozen program only. Library work
+    /// is saved immediately, independently of manual timeline Apply.
+    func confirmPrerequisites() async {
+        guard phase == .awaitingPrerequisites, !dismissed,
+              let steps = pendingSteps, let session else { return }
+        pendingSteps = nil
+        phase = .running
+        let token = generation
+        let started = Date.now
+        let library = session.library
+        let language = store.settings.transcribeLanguage
+        let profileGeneration = store.profileGeneration
+        var result = await session.run(steps, prerequisites: prerequisites, confirmed: true,
+            refreshLibrary: { [database] in
+                guard let database else { throw ApplyFailure.identityChanged }
+                return try await library.refreshed(database: database, language: language)
+            }, identityMatches: { [self] in identityMatches && !dismissed && token == generation },
+            onPrerequisite: { [self] kind, video, report in
+                persistentEffects += report.effects
+                appendLog("\(kind.rawValue), video \(video): \(report.outcome.summary)")
+                if !report.effects.isEmpty { appendLog("Library work already saved. Discard, Undo and Revert will keep it.") }
+            }, onOutcome: { [self] index, outcome, elapsed in
+                appendLog("\(index + 1). \(String(describing: outcome)) (\(Int(elapsed * 1000)) ms)")
+            })
+        var executedSteps = steps
+        var reparseReasons: [String] = []
+        if result.completed, reparseAfterPrerequisites, !dismissed, token == generation {
+            let context = ParserContext(library: session.library, model: store.builder)
+            switch BuilderRequestParser().parse(runRequest, context: context) {
+            case .script(let mutations):
+                executedSteps += mutations
+                result = session.run(mutations) { [self] index, outcome, elapsed in
+                    appendLog("\(steps.count + index + 1). \(String(describing: outcome)) (\(Int(elapsed * 1000)) ms)")
+                }
+            case .unrecognised(let reasons): reparseReasons = reasons
+            case .find: reparseReasons = ["The refreshed request produced a find instead of timeline edits."]
+            case .deferred: reparseReasons = ["Silence evidence is still unavailable after Library work. No timeline changes applied."]
+            }
+        }
+        reparseAfterPrerequisites = false
+        duration += Date.now.timeIntervalSince(started)
+        // Refresh published Library lists through the hydration gate without
+        // refreshAll's implicit error sheet. Even cancellation must account for
+        // work saved before the service drained.
+        if identityMatches, let database {
+            do {
+                let snapshot = try await database.fetchLibrarySnapshot(projectID: projectID)
+                if identityMatches { store.applyLibrarySnapshot(snapshot, generation: profileGeneration) }
+            } catch { appendLog("Library work finished; refreshing the Library failed: \(error)") }
+        }
+        guard !dismissed, token == generation else { return }
+        diff = session.freeze()
+        diffLines = BuilderWizardDiff.lines(session: session, steps: executedSteps)
+        phase = result.completed && reparseReasons.isEmpty ? .preview : .refused
+        if phase == .refused {
+            reasons = reparseReasons + result.outcomes.compactMap { if case .refused(_, let reason) = $0 { reason } else { nil } }
+            appendLog("No timeline changes applied." + (persistentEffects.isEmpty ? "" : " Library work already saved remains."))
+        }
     }
 
     func addAllAsBRoll() {
@@ -219,19 +317,31 @@ final class WizardSheetModel {
                                       request: runRequest, provider: "local", durationSeconds: duration,
                                       status: .discarded, baselineRevision: session.baselineRevision)
         session.discard()
+        pendingSteps = nil
         phase = .discarded
+        appendLog("No timeline changes applied." + (persistentEffects.isEmpty ? "" : " Library work already saved remains."))
         do {
             if let database, session.timelineID != nil { try await database.recordBuilderRun(record) }
         } catch { failure = .persistence(error.localizedDescription); appendLog(failureMessage ?? "Could not record discard.") }
     }
 
+    func cancelRun() {
+        guard phase == .running else { return }
+        task?.cancel()
+        appendLog("Cancelling and waiting for Library work to stop…")
+    }
+
     func dismiss() {
         dismissed = true
         generation += 1
-        task?.cancel()
+        let draining = task
+        draining?.cancel()
         task = nil
         if phase == .running { phase = .discarded }
-        Task { await discard() }
+        Task {
+            await draining?.value
+            await discard()
+        }
     }
 
     func refreshBeforeVersion() async {

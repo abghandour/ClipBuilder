@@ -23,8 +23,13 @@ actor TranscriptionService {
     static let modelName = "SpeechTranscriber"
 
     private let cacheDirectory: URL
+    private let capturedPodcastSettings: PodcastSettings?
+    private let strictEnrichment: Bool
 
-    init(cacheDirectory: URL = SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true)) {
+    init(cacheDirectory: URL = SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
+         podcastSettings: PodcastSettings? = nil, strictEnrichment: Bool = false) {
+        capturedPodcastSettings = podcastSettings
+        self.strictEnrichment = strictEnrichment
         self.cacheDirectory = cacheDirectory
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
     }
@@ -62,11 +67,15 @@ actor TranscriptionService {
     private func restore(_ cached: CachedTranscript, video: VideoRecord, database: Database,
                          log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
         log("Using cached transcript for \(video.filename)")
+        try Task.checkCancellation()
         try await database.replaceTranscripts(videoID: video.id, language: cached.detectedLanguage,
                                               isTranslation: false, segments: cached.segments,
                                               provider: Self.providerName, model: Self.modelName)
         do { try await enrich(cached.segments, video: video, database: database) }
-        catch { log("Transcript feature analysis failed: \(error)") }
+        catch {
+            if strictEnrichment { throw error }
+            log("Transcript feature analysis failed: \(error)")
+        }
         return cached.segments
     }
 
@@ -205,12 +214,16 @@ actor TranscriptionService {
             try? data.write(to: cacheURL)
         }
 
+        try Task.checkCancellation()
         try await database.replaceTranscripts(videoID: video.id, language: languageTag,
                                               isTranslation: false, segments: segments,
                                               provider: Self.providerName, model: Self.modelName,
                                               seconds: seconds)
         do { try await enrich(segments, video: video, database: database) }
-        catch { log("Transcript feature analysis failed: \(error)") }
+        catch {
+            if strictEnrichment { throw error }
+            log("Transcript feature analysis failed: \(error)")
+        }
         return segments
     }
 
@@ -219,7 +232,7 @@ actor TranscriptionService {
         let people = try await database.fetchVideoPeople(videoID: video.id)
         let scenes = try await database.fetchScenes(includeExcluded: true)
             .filter { $0.videoID == video.id }
-        let settings = SettingsStore.loadSettings().podcast
+        let settings = capturedPodcastSettings ?? SettingsStore.loadSettings().podcast
         let analysis = TranscriptFeatureAnalyzer.analyze(
             segments: segments, videoID: video.id,
             speakerKeys: people.map(\.key), mediaDuration: video.duration,
@@ -227,6 +240,7 @@ actor TranscriptionService {
                 scenes: scenes, personKeys: people.map(\.key)),
             deadAirThreshold: settings.deadAirSeconds,
             fillerRunThreshold: settings.fillerRunSeconds)
+        try Task.checkCancellation()
         try await database.replaceTranscriptFeatures(videoID: video.id,
                                                      features: analysis.features,
                                                      proposals: analysis.proposals)

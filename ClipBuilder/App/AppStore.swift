@@ -391,6 +391,20 @@ final class AppStore {
     let ai: AIService
     let thumbnails = ThumbnailService()
     let renderEngine = RenderEngine()
+    var builderLibraryHydration: BuilderLibraryHydration { builder.scriptLibraryHydration }
+    private var scriptPrerequisites: BuilderPrerequisites?
+
+    /// Shared across Wizard sessions for per-kind/video in-flight deduplication.
+    var builderPrerequisites: BuilderPrerequisites {
+        if let scriptPrerequisites { return scriptPrerequisites }
+        let adapters = BuilderPrerequisites { [weak self] in
+            guard let self else { return nil }
+            return self.captureBuilderPrerequisites()
+        }
+        scriptPrerequisites = adapters
+        return adapters
+    }
+
     let transcription = TranscriptionService()
     private let analyzer: Analyzer
     private let podcastAnalysis: PodcastAnalysisService
@@ -614,6 +628,7 @@ final class AppStore {
         flushActiveProjectState()
         activeProfile = profile
         SettingsStore.saveActiveProfileName(name)
+        scriptPrerequisites?.cancelAll()
         profileGeneration &+= 1
         videos = []
         scenes = []
@@ -1168,16 +1183,15 @@ final class AppStore {
         let events = Dictionary(grouping: snapshot.fightEvents, by: \.videoID)
         if fightResearch != research { fightResearch = research }
         if fightEvents != events { fightEvents = events }
-        if videos != snapshot.videos {
-            videos = snapshot.videos
-            // Drive-backed sources are fetched on demand: the fast preview
-            // keeps their picture instead of treating them as missing.
-            builder.updateDriveBackedPaths(Set(snapshot.videos.filter { $0.driveFileID != nil }
-                .map(\.path)))
-        }
-        if scenes != snapshot.scenes {
-            scenes = snapshot.scenes
-            builder.updateScenes(snapshot.scenes)
+        if videos != snapshot.videos { videos = snapshot.videos }
+        if scenes != snapshot.scenes { scenes = snapshot.scenes }
+        // Published Library lists can refresh while an open script retains its
+        // fixed document baseline. Only the latest ordinary hydration is queued.
+        let paths = Set(snapshot.videos.filter { $0.driveFileID != nil }.map(\.path))
+        builderLibraryHydration.refresh { [weak self] in
+            guard let self, generation == self.profileGeneration else { return }
+            if self.builder.driveBackedPaths != paths { self.builder.updateDriveBackedPaths(paths) }
+            if self.builder.scenes != snapshot.scenes { self.builder.updateScenes(snapshot.scenes) }
         }
         if analysisRuns != snapshot.analysisRuns { analysisRuns = snapshot.analysisRuns }
         if people != snapshot.people { people = snapshot.people }
@@ -3139,6 +3153,68 @@ final class AppStore {
                 presentError("Could not save the video type", error)
             }
         }
+    }
+
+    /// No UI wrappers, one-shot defaults, rename review, or error sheets. Every
+    /// service below is bound to the captured DB and immutable settings.
+    private func captureBuilderPrerequisites() -> BuilderPrerequisiteContext? {
+        guard let database else { return nil }
+        let profile = activeProfile
+        let project = activeProjectID
+        let generation = profileGeneration
+        let settings = settings
+        let ai = AIService(config: settings.ai)
+        let analyzer = Analyzer(ai: ai)
+        let transcription = TranscriptionService(
+            cacheDirectory: SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
+            podcastSettings: settings.podcast, strictEnrichment: true)
+        let podcast = PodcastAnalysisService(ai: ai)
+        return BuilderPrerequisiteContext(database: database, profile: profile, projectID: project,
+            language: settings.transcribeLanguage, isCurrent: { [weak self] in
+                guard let self else { return false }
+                return self.database === database && self.profileGeneration == generation
+                    && self.activeProjectID == project
+            }, perform: { kind, video in
+                try Task.checkCancellation()
+                switch kind {
+                case .transcript:
+                    _ = try await transcription.transcribeForVideo(video: video, database: database,
+                        languageCode: settings.transcribeLanguage, force: false, log: { _ in })
+                case .people:
+                    _ = try await analyzer.detectPeopleOnly(video: video, profile: profile,
+                        database: database, log: { _ in })
+                case .analysis:
+                    var video = video
+                    if video.type == nil, video.duration >= 300,
+                       let type = try await analyzer.classifyLongRecording(video: video, provider: nil, model: nil, log: { _ in }) {
+                        try Task.checkCancellation()
+                        video.videoType = type.rawValue
+                        try await database.setVideoType(id: video.id, type: type.rawValue)
+                    }
+                    let name = "Builder prerequisite: " + video.filename
+                    if video.type == .podcast {
+                        _ = try await podcast.analyze(video: video, profile: profile, database: database,
+                            runName: name, provider: nil, model: nil, languageCode: settings.transcribeLanguage,
+                            analyzer: analyzer, transcription: transcription,
+                            highlightThreshold: settings.podcast.highlightThreshold,
+                            holdSeconds: settings.podcast.speakerHoldSeconds, log: { _ in }, progress: { _, _ in },
+                            useLocal: OnDevicePolicy.isEnabled(item: "podcast-exchanges", config: settings.ai),
+                            capturedSettings: settings.podcast)
+                    } else {
+                        let people = try await database.fetchPeople()
+                        let markers = try await database.personMarkers(videoID: video.id)
+                        let notes = try await database.videoNotes(videoID: video.id)
+                        try Task.checkCancellation()
+                        _ = try await analyzer.analyzeVisual(video: video, profile: profile, database: database,
+                            runName: name, notes: notes, knownPeople: people, personMarkers: markers,
+                            // The ensure gate already ruled out a successful
+                            // result. A partial failed batch must not trigger the
+                            // analyzer's incremental all-tags-present no-op.
+                            detectPeople: true, smartSampling: true, force: true,
+                            log: { _ in }, progress: { _, _ in })
+                    }
+                }
+            })
     }
 
     func transcribe(video: VideoRecord, force: Bool = false) {

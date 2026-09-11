@@ -867,14 +867,17 @@ actor Analyzer {
         }
 
         for entry in entries {
+            try Task.checkCancellation()
             try await database.upsertPerson(key: entry.key, descriptor: entry.descriptor)
         }
         for (person, corrected) in corrections {
+            try Task.checkCancellation()
             try await database.renamePerson(id: person.id, name: corrected)
             log("Fixed spelling: \"\(person.name)\" → \"\(corrected)\"")
         }
         let idsByKey = Dictionary(uniqueKeysWithValues:
             ((try? await database.fetchPeople()) ?? []).map { ($0.key, $0.id) })
+        try Task.checkCancellation()
         try await database.replaceVideoPeople(videoID: video.id, entries: entries.compactMap { entry in
             idsByKey[entry.key].map { ($0, entry.portraitAt, entry.portraitJSON, entry.rangesJSON) }
         }, provenance: response.provenance)
@@ -1792,6 +1795,7 @@ actor Analyzer {
             .map { AnalysisRunNote(at: $0.atTime, note: $0.note) }
         let notesJSON = (try? JSONEncoder().encode(noteSnapshot))
             .flatMap { String(data: $0, encoding: .utf8) }
+        try Task.checkCancellation()
         let runID = try await database.saveAnalysis(videoID: video.id,
                                                     runName: runName,
                                                     instructions: instructions,

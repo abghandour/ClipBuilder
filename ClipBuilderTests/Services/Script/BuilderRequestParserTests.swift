@@ -15,6 +15,12 @@ struct BuilderRequestParserTests {
         return ParserContext(library: library, model: model)
     }
 
+    private func transcript(video: Int64 = 1) -> TranscriptRow {
+        TranscriptRow(id: video, videoID: video, language: "en", isTranslation: false,
+                      startTime: 2, endTime: 6, text: "fixture", originalText: nil,
+                      wordsJSON: nil, provider: "fake", model: "fake")
+    }
+
     private func steps(_ text: String, _ context: ParserContext) throws -> [BuilderScriptStep] {
         guard case .script(let steps) = BuilderRequestParser().parse(text, context: context) else {
             Issue.record("Expected script for \(text)")
@@ -97,6 +103,7 @@ struct BuilderRequestParserTests {
                       "cut silence on track 1", "remove silence longer than 0.3 s on track I"])
     func silenceExpansion(_ request: String) throws {
         var context = context()
+        context.library.transcripts = [transcript()]
         context.library.features = [TranscriptFeatureSegment(id: 1, videoID: 1, startTime: 3, endTime: 4,
                                                                text: "", speakerKey: nil, energy: 0, kind: .silence)]
         let id = try #require(context.selectedClipID).uuidString
@@ -114,9 +121,32 @@ struct BuilderRequestParserTests {
         #expect(session.candidate?.videoTrack.map(\.sourceStart) == [2, 4])
     }
 
-    @Test func missingSilenceEvidence() {
-        guard case .unrecognised(let reasons) = BuilderRequestParser().parse("cut silence in this clip", context: context()) else {
-            Issue.record("Missing evidence was accepted"); return
+    @Test func missingTranscriptDefersDistinctVideosInOrder() throws {
+        var context = context()
+        let parser = BuilderRequestParser()
+        #expect(parser.parse("cut silence in this clip", context: context)
+                == .deferred(prerequisites: [.init(.ensureTranscript(video: 1))]))
+        var secondVideo = Fixtures.video(); secondVideo.id = 2; secondVideo.path = "/tmp/second.mp4"
+        context.library.videos.append(secondVideo)
+        var secondClip = Fixtures.timelineClip(sceneID: nil, startTime: 4)
+        secondClip.videoFile = secondVideo.path
+        context.document.videoTrack.insert(secondClip, at: 0)
+        context.document.videoTrack.append(Fixtures.timelineClip(startTime: 8))
+        #expect(parser.parse("cut silence on track 1", context: context)
+                == .deferred(prerequisites: [.init(.ensureTranscript(video: 1)), .init(.ensureTranscript(video: 2))]))
+        context.library.transcripts = [transcript(video: 2)]
+        #expect(parser.parse("cut silence on track 1", context: context)
+                == .deferred(prerequisites: [.init(.ensureTranscript(video: 1))]))
+        for request in ["cut silence on track 1 except the first", "don't cut silence on track 1",
+                        "cut silence on track 1 and mute it", "cut silence on track 6"] {
+            guard case .unrecognised = parser.parse(request, context: context) else {
+                Issue.record("Deferred a request without full recognition: \(request)"); continue
+            }
+        }
+        context = self.context()
+        context.library.transcripts = [transcript()]
+        guard case .unrecognised(let reasons) = parser.parse("cut silence in this clip", context: context) else {
+            Issue.record("Untimed rows must not imply silence"); return
         }
         #expect(reasons.contains { $0.contains("evidence is unavailable") })
     }
@@ -142,6 +172,7 @@ struct BuilderRequestParserTests {
         let model = ScriptFixtures.model(clips: [clip])
         model.selection = .clip(clip.uid)
         var library = ScriptFixtures.library()
+        library.transcripts = [transcript()]
         library.features = [TranscriptFeatureSegment(id: 1, videoID: 1, startTime: 2, endTime: 4,
                                                      text: "", speakerKey: nil, energy: 0, kind: .silence)]
         var context = ParserContext(library: library, model: model)

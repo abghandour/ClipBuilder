@@ -23,7 +23,8 @@ actor PodcastAnalysisService {
                  analyzer: Analyzer, transcription: TranscriptionService,
                  highlightThreshold: Double, holdSeconds: Double,
                  log: @escaping @Sendable (String) -> Void,
-                 progress: @escaping @Sendable (Double, String) -> Void, useLocal: Bool = false) async throws -> Result {
+                 progress: @escaping @Sendable (Double, String) -> Void, useLocal: Bool = false,
+                 capturedSettings: PodcastSettings? = nil) async throws -> Result {
         progress(0.03, "transcribing podcast")
         let segments = try await transcription.transcribePodcast(
             video: video, database: database, languageCode: languageCode, log: log)
@@ -54,7 +55,7 @@ actor PodcastAnalysisService {
             audioTurns: turns, picture: visual.talkers, layout: visual.layout,
             roster: roster, minimumHold: holdSeconds)
         try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
-        let podcastSettings = SettingsStore.loadSettings().podcast
+        let podcastSettings = capturedSettings ?? SettingsStore.loadSettings().podcast
         let enrichment = TranscriptFeatureAnalyzer.analyze(
             segments: segments, videoID: video.id,
             speakerKeys: Array(Set(resolved.compactMap(\.personKey))).sorted(),

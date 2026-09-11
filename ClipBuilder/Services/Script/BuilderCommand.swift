@@ -3,6 +3,9 @@ import Foundation
 /// A closed command vocabulary keeps file paths and invented source metadata
 /// out of scripts. References are session UUIDs or "$name" bindings.
 nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
+    case ensureTranscript(video: Int64)
+    case ensurePeople(video: Int64)
+    case ensureAnalysis(video: Int64)
     case removeClip(clip: String)
     case removeClips(filter: ClipFilter)
     case splitClip(clip: String, at: Double, precision: TimelinePrecision? = nil)
@@ -29,10 +32,28 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     case setPlayhead(at: Double)
     case query(query: BuilderQuery)
 
+    var prerequisite: (kind: BuilderPrerequisiteKind, video: Int64)? {
+        switch self {
+        case .ensureTranscript(let video): (.transcript, video)
+        case .ensurePeople(let video): (.people, video)
+        case .ensureAnalysis(let video): (.analysis, video)
+        default: nil
+        }
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: ScriptKey.self)
         let op = try c.decode(String.self, forKey: ScriptKey("op"))
         switch op {
+        case "ensure_transcript", "ensure_people", "ensure_analysis":
+            try c.only(["op", "video"])
+            let video = try c.decode(Int64.self, forKey: ScriptKey("video"))
+            guard video > 0 else { throw ScriptError.invalid("Video ID must be positive.") }
+            switch op {
+            case "ensure_transcript": self = .ensureTranscript(video: video)
+            case "ensure_people": self = .ensurePeople(video: video)
+            default: self = .ensureAnalysis(video: video)
+            }
         case "remove_clip":
             try c.only(["op", "clip"])
             self = .removeClip(clip: try c.decode(String.self, forKey: ScriptKey("clip")))
@@ -159,6 +180,15 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: ScriptKey.self)
         switch self {
+        case let .ensureTranscript(video):
+            try c.encode("ensure_transcript", forKey: ScriptKey("op"))
+            try c.encode(video, forKey: ScriptKey("video"))
+        case let .ensurePeople(video):
+            try c.encode("ensure_people", forKey: ScriptKey("op"))
+            try c.encode(video, forKey: ScriptKey("video"))
+        case let .ensureAnalysis(video):
+            try c.encode("ensure_analysis", forKey: ScriptKey("op"))
+            try c.encode(video, forKey: ScriptKey("video"))
         case let .removeClip(clip):
             try c.encode("remove_clip", forKey: ScriptKey("op"))
             try c.encode(clip, forKey: ScriptKey("clip"))

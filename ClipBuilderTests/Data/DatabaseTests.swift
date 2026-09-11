@@ -578,6 +578,17 @@ struct OnDevicePassTimingTests {
 
 @Suite("Schema version gate")
 struct SchemaVersionGateTests {
+    @Test func version13GainsPrerequisiteReceipts() throws {
+        let temp = try TempDatabase()
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("DROP TABLE builder_prerequisites")
+        try raw.execute("PRAGMA user_version = 13")
+        let reopened = try Database(path: temp.path)
+        _ = reopened
+        #expect(try raw.columnNames(of: "builder_prerequisites").contains("outcome_json"))
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 14)
+    }
+
     @Test func version12GainsBuilderRunTables() throws {
         let temp = try TempDatabase()
         let raw = try SQLiteConnection(path: temp.path.path)
@@ -587,8 +598,8 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 13)
-        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 13)
+        #expect(Database.schemaVersion == 14)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 14)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))
         #expect(try raw.columnNames(of: "timelines").contains("document_revision"))

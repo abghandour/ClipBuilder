@@ -30,6 +30,120 @@ struct WizardSheetModelTests {
         return WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults), loadLibrary: { snapshot })
     }
 
+    // Like BuilderPrerequisitesTests.Harness, capture only the temporary DB
+    // and inject service work. No DataFolderOverride survives an await.
+    @Test(arguments: [false, true])
+    func deferredSilenceSavesEffectsBeforePreviewOrFailure(failAfterSaving: Bool) async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let project = try #require(store.activeProjectID)
+        let video = try await temp.database.registerVideo(hash: UUID().uuidString, filename: "fixture.mp4",
+            path: "/tmp/fixture.mp4", duration: 10, width: 100, height: 100, wide: false)
+        try await temp.database.assignVideos([video], to: project)
+        let suite = "WizardSheetModelTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let profile = Fixtures.brand(name: "WizardSheetModelTests")
+        var calls = 0
+        let prerequisites = BuilderPrerequisites {
+            BuilderPrerequisiteContext(database: temp.database, profile: profile, projectID: project,
+                language: "en", isCurrent: { true }, perform: { kind, row in
+                    #expect(kind == .transcript && row.id == video)
+                    calls += 1
+                    try await temp.database.replaceTranscripts(videoID: row.id, language: "en", isTranslation: false,
+                        segments: [.init(start: 2, end: 6, text: "fixture", words: nil)], provider: "fake", model: "fake")
+                    if failAfterSaving { throw ScriptError.invalid("fake failure after transcript save") }
+                    try await temp.database.replaceTranscriptFeatures(videoID: row.id,
+                        features: [.init(id: 0, videoID: row.id, startTime: 3, endTime: 4,
+                                         text: "", speakerKey: nil, energy: 0, kind: .silence)], proposals: [])
+                })
+        }
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { try await ScriptLibrarySnapshot(projectID: project).refreshed(database: temp.database, language: "en") },
+            prerequisites: prerequisites)
+        let before = store.builder.document
+        #expect(model.phase == .idle)
+        model.request = "cut silence on track 1"
+        await model.run()
+        #expect(model.phase == .awaitingPrerequisites && !model.canApply)
+        #expect(!model.prerequisiteDisclosures.isEmpty && model.persistentEffects.isEmpty && calls == 0)
+        #expect(store.builder.document == before)
+        let session = try #require(model.session)
+        model.request = "mute this clip" // Confirmation retains the original request.
+        await model.confirmPrerequisites()
+        #expect(model.session === session && calls == 1)
+        #expect(store.builder.document == before)
+        #expect(model.persistentEffects.contains { $0.videoID == video && $0.scope.hasPrefix("Transcripts [") && $0.afterCount == 1 })
+        #expect(try await temp.database.fetchTranscripts(videoID: video).count == 1)
+        if failAfterSaving {
+            #expect(model.phase == .refused && !model.canApply)
+            #expect(model.reasons.contains { $0.contains("fake failure after transcript save") })
+        } else {
+            #expect(model.phase == .preview && model.canApply && model.diff?.isEmpty == false)
+            #expect(session.candidate?.videoTrack.count == 2)
+            #expect(session.candidate?.videoTrack.map(\.sourceStart) == [2, 4])
+            #expect(!session.library.transcripts.isEmpty && !session.library.features.isEmpty)
+        }
+        let effects = model.persistentEffects
+        await model.discard()
+        #expect(model.phase == .discarded && model.persistentEffects == effects)
+        #expect(try await temp.database.fetchTranscripts(videoID: video).count == 1)
+    }
+
+    @Test func deferredSilenceWithoutNewEvidenceRefusesOnce() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let project = try #require(store.activeProjectID)
+        let video = try await temp.database.registerVideo(hash: UUID().uuidString, filename: "fixture.mp4",
+            path: "/tmp/fixture.mp4", duration: 10, width: 100, height: 100, wide: false)
+        try await temp.database.assignVideos([video], to: project)
+        let suite = "WizardSheetModelTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let profile = Fixtures.brand(name: "WizardSheetModelTests")
+        var calls = 0
+        let prerequisites = BuilderPrerequisites {
+            BuilderPrerequisiteContext(database: temp.database, profile: profile, projectID: project,
+                language: "en", isCurrent: { true }, perform: { _, _ in calls += 1 })
+        }
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { try await ScriptLibrarySnapshot(projectID: project).refreshed(database: temp.database, language: "en") },
+            prerequisites: prerequisites)
+        let before = store.builder.document
+        model.request = "cut silence on track 1"
+        await model.run()
+        #expect(model.phase == .awaitingPrerequisites)
+        await model.confirmPrerequisites()
+        #expect(model.phase == .refused && !model.canApply && calls == 1)
+        #expect(model.reasons.contains { $0.contains("still unavailable") })
+        #expect(!model.persistentEffects.isEmpty && store.builder.document == before)
+        await model.confirmPrerequisites()
+        #expect(calls == 1 && model.phase == .refused)
+        await model.discard()
+    }
+
+    @Test func rawJSONRequiresDebugBuild() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardSheetModelTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = sheet(store, defaults: defaults)
+        let before = store.builder.document
+        let clip = try #require(before.videoTrack.first)
+        model.request = String(decoding: try JSONEncoder().encode([
+            BuilderScriptStep(.setClipMuted(clip: clip.uid.uuidString, muted: true))
+        ]), as: UTF8.self)
+        await model.run()
+        #if DEBUG
+        #expect(model.phase == .preview && model.canApply)
+        #else
+        #expect(model.phase == .unrecognised && model.session == nil && !model.canApply)
+        #endif
+        #expect(store.builder.document == before)
+        await model.discard()
+    }
+
     @Test func runDiffApplyAndRevert() async throws {
         let temp = try TempDatabase()
         let store = try await makeStore(temp)

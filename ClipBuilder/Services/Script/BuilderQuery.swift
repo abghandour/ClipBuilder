@@ -145,6 +145,9 @@ nonisolated struct CapabilityQueryRow: Codable, Sendable, Equatable {
     var people: State
     var analysis: State
     var unknown: [String] = []
+    var transcriptOutcome: PrerequisiteOutcome? = nil
+    var peopleOutcome: PrerequisiteOutcome? = nil
+    var analysisOutcome: PrerequisiteOutcome? = nil
 }
 
 nonisolated struct LayoutQueryRow: Codable, Sendable, Equatable {
@@ -238,16 +241,22 @@ extension BuilderQuery {
         case .capabilities:
             result.capabilities = page(library.videos.sorted { $0.id < $1.id }.map { video in
                 CapabilityQueryRow(video: video.id,
-                    transcript: library.transcripts.contains { $0.videoID == video.id && !$0.isTranslation }
+                    transcript: library.prerequisiteOutcomes[video.id]?[.transcript] == .completedEmpty ? .completedEmpty
+                        : library.transcripts.contains { $0.videoID == video.id && !$0.isTranslation }
                         ? .completedWithData : video.speechSeconds == nil ? .unknown : .completedEmpty,
-                    people: video.peopleDetectedAt == nil ? .unavailable
+                    people: library.prerequisiteOutcomes[video.id]?[.people] == .completedEmpty ? .completedEmpty
+                        : video.peopleDetectedAt == nil ? .unavailable
                         : library.videosWithPeople.contains(video.id)
                             ? .completedWithData : .completedEmpty,
-                    analysis: library.scenes.contains { $0.videoID == video.id }
+                    analysis: library.prerequisiteOutcomes[video.id]?[.analysis] == .completedEmpty ? .completedEmpty
+                        : library.scenes.contains { $0.videoID == video.id }
                         ? .completedWithData : video.visualAnalyzedAt == nil ? .unavailable : .completedEmpty,
-                    unknown: video.speechSeconds == nil
+                    unknown: library.prerequisiteOutcomes[video.id]?[.transcript] == nil && video.speechSeconds == nil
                         && !library.transcripts.contains(where: { $0.videoID == video.id && !$0.isTranslation })
-                        ? ["No transcript rows or completion duration marker; legacy completed-empty cannot be distinguished."] : [])
+                        ? ["No transcript rows or completion duration marker; legacy completed-empty cannot be distinguished."] : [],
+                    transcriptOutcome: library.prerequisiteOutcomes[video.id]?[.transcript],
+                    peopleOutcome: library.prerequisiteOutcomes[video.id]?[.people],
+                    analysisOutcome: library.prerequisiteOutcomes[video.id]?[.analysis])
             })
         case .transcript, .silences:
             var targetClip: TimelineClip?

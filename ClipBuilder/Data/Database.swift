@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// One `Database` per brand profile, mirroring db.py: same file layout
 /// (`<data>/profiles_db/<Profile>.db`), same schema, same lazy column
@@ -24,6 +25,14 @@ actor Database {
         podcast_layout TEXT,
         podcast_seam_x REAL,
         podcast_layout_confidence REAL
+    );
+
+    CREATE TABLE IF NOT EXISTS builder_prerequisites (
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        outcome_json TEXT NOT NULL,
+        PRIMARY KEY (video_id, kind)
     );
 
     CREATE TABLE IF NOT EXISTS analysis_runs (
@@ -639,7 +648,96 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 13
+    static let schemaVersion: Int64 = 14
+
+    // MARK: - Script prerequisites (Library state, outside timeline snapshots)
+
+    func savePrerequisiteResult(kind: BuilderPrerequisiteKind, videoID: Int64,
+                                signature: String, outcome: PrerequisiteOutcome) throws {
+        let json = String(decoding: try JSONEncoder().encode(outcome), as: UTF8.self)
+        try connection.execute("""
+            INSERT INTO builder_prerequisites (video_id, kind, signature, outcome_json) VALUES (?, ?, ?, ?)
+            ON CONFLICT(video_id, kind) DO UPDATE SET signature = excluded.signature, outcome_json = excluded.outcome_json
+            """, [.integer(videoID), .text(kind.rawValue), .text(signature), .text(json)])
+    }
+
+    func prerequisiteResult(kind: BuilderPrerequisiteKind, video: VideoRecord,
+                            signature: String, language: String) throws -> PrerequisiteOutcome? {
+        if let json = try connection.query("""
+            SELECT outcome_json FROM builder_prerequisites WHERE video_id = ? AND kind = ? AND signature = ?
+            """, [.integer(video.id), .text(kind.rawValue), .text(signature)]).first?["outcome_json"]?.stringValue {
+            let outcome = try JSONDecoder().decode(PrerequisiteOutcome.self, from: Data(json.utf8))
+            guard outcome.isComplete else { return nil }
+            let hasData = try prerequisiteHasData(kind: kind, videoID: video.id, language: language)
+            if outcome == .completedEmpty {
+                return hasData ? .completedWithData(dataVersion: "legacy:\(video.hash)") : outcome
+            }
+            return hasData ? outcome : nil
+        }
+        // Legacy successful data is sufficient. People provenance and completed
+        // analysis batches also prove successful empty results; missing rows alone
+        // never prove completion for a transcript.
+        let hasData = try prerequisiteHasData(kind: kind, videoID: video.id, language: language)
+        switch kind {
+        case .transcript:
+            if hasData { return .completedWithData(dataVersion: "transcript:\(video.hash):\(language)") }
+        case .people:
+            if let stamp = video.peopleDetectedAt {
+                return hasData ? .completedWithData(dataVersion: "people:\(stamp)") : .completedEmpty
+            }
+        case .analysis:
+            if let run = try connection.query("SELECT id FROM analysis_runs WHERE video_id = ? ORDER BY id DESC LIMIT 1",
+                                               [.integer(video.id)]).first?["id"]?.intValue,
+               video.visualAnalyzedAt != nil {
+                return hasData ? .completedWithData(dataVersion: "analysis:\(run)") : .completedEmpty
+            }
+        }
+        return nil
+    }
+
+    func prerequisiteHasData(kind: BuilderPrerequisiteKind, videoID: Int64, language: String) throws -> Bool {
+        switch kind {
+        case .transcript:
+            let tag = Locale(identifier: language).language.languageCode?.identifier ?? language
+            return try fetchTranscripts(videoID: videoID).contains {
+                !$0.isTranslation && (language.isEmpty || $0.language == tag)
+            }
+        case .people: return try !fetchVideoPeople(videoID: videoID).isEmpty
+        case .analysis:
+            return try !connection.query("SELECT id FROM scenes WHERE video_id = ? LIMIT 1", [.integer(videoID)]).isEmpty
+        }
+    }
+
+    /// Reads all potentially affected Library tables in one actor turn. The
+    /// fixed SQL list cannot be supplied by a script. Each language/translation
+    /// scope is separate so the report states exactly which rows changed.
+    func prerequisiteInventory(videoID: Int64) throws -> PrerequisiteInventory {
+        var inventory = PrerequisiteInventory()
+        nonisolated func fingerprints(_ rows: [SQLRow]) -> [String] {
+            rows.map { row in
+                let value = row.keys.sorted().map { key in
+                    "\(key)=\(String(describing: row[key]))"
+                }.joined(separator: "\n")
+                return SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+            }.sorted()
+        }
+        let transcripts = try connection.query("SELECT * FROM transcripts WHERE video_id = ?", [.integer(videoID)])
+        let groups = Dictionary(grouping: transcripts) { row in
+            "Transcripts [\(row["language"]?.stringValue ?? ""), translation=\(row["is_translation"]?.boolValue ?? false)]"
+        }
+        for (scope, rows) in groups { inventory.rows[scope] = fingerprints(rows) }
+        for (table, label) in [("transcript_features", "Transcript features"), ("edit_proposals", "Edit proposals"),
+                               ("video_people", "Video roster"), ("analysis_runs", "Analysis batches"),
+                               ("scenes", "Scenes"), ("speaker_turns", "Speaker turns"), ("topic_ranges", "Topics"),
+                               ("moments", "Moments"), ("analyzed_tags", "Analyzed tags"), ("fight_outcomes", "Fight outcomes"),
+                               ("builder_prerequisites", "Completion receipts")] {
+            inventory.rows[label] = fingerprints(try connection.query("SELECT * FROM \(table) WHERE video_id = ?", [.integer(videoID)]))
+        }
+        inventory.rows["Shared identities"] = fingerprints(try connection.query("SELECT * FROM people"))
+        inventory.rows["Video classification and provenance"] = fingerprints(try connection.query("SELECT * FROM videos WHERE id = ?", [.integer(videoID)]))
+        inventory.rows["Scene tags"] = fingerprints(try connection.query("SELECT * FROM scene_tags WHERE scene_id IN (SELECT id FROM scenes WHERE video_id = ?)", [.integer(videoID)]))
+        return inventory
+    }
 
     func reelTraits(kind: String, videoID: String, version: Int = ReelTraits.version) throws -> ReelTraits? {
         guard let text = try connection.query("SELECT traits_json FROM reel_traits WHERE video_kind = ? AND video_id = ? AND version = ?",
