@@ -97,6 +97,19 @@ there where needed. Locations below are in `ClipBuilder/App/BuilderStore.swift`.
 
 | op | fields | model path |
 |---|---|---|
+| `set_bumper_mode` | clip, mode (overlap / pause); bumper only | `setBumperMode` |
+| `set_crop_block_duration` | block, duration (0.5...86400) | `resizeCropBlock` |
+| `split_crop_block` | at (0...86400); covering block and two ≥0.5s pieces required | `splitCropBlock` |
+| `remove_sound` | sound | `removeSound` |
+| `add_overlay` | template, at?, duration? (0.5...86400), person?; query `templates` for names; person key/display name only for Lower Third | `addOverlayBlock`, `updateOverlayBlock` |
+| `set_image_geometry` | overlay, x?, y?, width?, opacity?; at least one; x/y/opacity 0...1, width 0.05...1 | `updateImage` |
+| `set_overlay_position` | overlay (text/image), x/y (0...1); fractions override text preset | `updateText` / `updateImage` |
+| `set_text_style` | overlay, style (nonempty closed patch; see below) | `updateText` |
+| `set_clip_volume` | clip, volume (integer 1...5); bumpers and B-roll only (the exporter ignores main-clip volume) | `updateClip` |
+| `set_clip_position` | clip, position (top / center / bottom / null); wide Full Screen only, null restores track default | `updateClip` |
+| `set_clip_crop` | clip, fraction (0...1 / null); wide Full Screen only, null clears clip crop | `updateClip` |
+| `split_zoom_feeds` | clip, left, right; wide clip in Full Screen on track 0, captured source aspect, 50-50 Horizontal required, refuses existing partner | `splitZoomFeeds` |
+| `clear_timeline` | no parameters; charges all lane items, resets document | `clear` |
 | `set_sound_volume` | sound, volume (integer 1...5) | `updateSound` |
 | `set_sound_range` / `move_sound` | sound, start, duration / sound, at | `updateSound`; timeline seconds |
 | `set_text` / `set_text_position` | overlay, text / overlay, position (top/center/bottom) | `updateText`; position clears x/y overrides |
@@ -206,6 +219,7 @@ All results have deterministic ordering, limits and pagination where needed.
 | `silences` | classified silence or thresholded gaps in available word timings; evidence and precision included |
 | `tags` | profile vocabulary plus supported synthetic tags |
 | `layouts` | snapshotted Screen Crop layouts and areas |
+| `templates` | name, kind (`template` / `lower_third`), duration; saved overlay snapshot plus built-in Lower Third |
 | `capabilities` | pass state per video, including completion with no data |
 
 Use `Database.swift:2443` for word JSON, not `:2463`; features/proposals come
@@ -616,3 +630,28 @@ must distinguish “no timeline changes applied” from Library work already sav
 3. **Route `builder_agent` like other tasks, restricted to validated adapters.**
    Claude-first rollout is practical, not a permanent default or sandbox claim.
    Strict MCP configuration alone does not confine native tools (D4).
+
+### Builder screen command parity
+
+`set_text_style.style` accepts only `fontsize` (integer 8...400), `fontcolor`,
+`fontfamily`, `bold`, `italic`, `bgcolor`, `box_opacity` (0...1), `box_radius`
+(finite ≥0), `opacity` (0...1), `stroke_color`, `stroke_width_em` (0...1),
+`shadow_opacity` (0...1), `highlight_color`, `design` (`hero` / `tag` / null), `kicker`, `accent_color`.
+Omitted fields stay unchanged. Explicit null clears `bgcolor`, `box_radius`,
+`stroke_color`, `highlight_color`, `design`, `kicker`, and `accent_color`.
+Colors follow the renderer: white/black/red/yellow, #RGB/#RRGGBB or 0x hex
+(the renderer reads the first six digits of longer hex values). Unknown fields,
+wrong types, nonfinite numbers and out-of-range values are refused.
+`set_text_position` clears free x/y placement; `set_overlay_position` sets it.
+Crop edits retain store normalization: adjacent Full Screen blocks merge immediately,
+so splitting a Full Screen stretch may be unchanged. Named crop blocks retain splits.
+
+Timeline and clips results expose clip bumperMode, volume, position, cropFraction,
+and muted. On the first page they also expose sound rows (id/name/volume/start/duration)
+and text, image and overlay-block rows. Text includes preset and fractional placement,
+fontsize, fontcolor, bold, italic and design; images include name, x/y, width and opacity.
+`get_document_summary` uses the same compact lane rows without asset paths; text is
+bounded to 1000 characters. Saved templates and the Lower Third logo are captured at
+session creation, with no live template lookup during execution. The built-in name
+Lower Third is reserved. Duplicate case-insensitive template/person names are refused.
+No MCP tools or agent tool permissions are added.

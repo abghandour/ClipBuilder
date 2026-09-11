@@ -18,6 +18,40 @@ nonisolated struct ScriptLibrarySnapshot: Sendable {
     var bumpers: [String: BumperAsset] = [:]
     var sounds: [String: String] = [:]
     var images: [String: String] = [:]
+    var templates: [OverlayTemplate] = []
+    var logoPath: String? = nil
+
+    var templateRows: [TemplateQueryRow] {
+        [TemplateQueryRow(name: "Lower Third", kind: "lower_third",
+                          duration: LowerThirdOverlay.composition(name: "NAME", role: "ROLE / TITLE", logoPath: logoPath).duration)]
+            + templates.filter { $0.name.caseInsensitiveCompare("Lower Third") != .orderedSame }
+                .sorted { $0.name < $1.name }
+                .map { TemplateQueryRow(name: $0.name, kind: "template", duration: max(1, ($0.composition.duration * 10).rounded() / 10)) }
+    }
+
+    func overlay(named name: String, person reference: String?) throws -> OverlayTemplate {
+        if name.caseInsensitiveCompare("Lower Third") == .orderedSame {
+            if let reference {
+                let eligible = people.filter { !$0.hidden && !$0.name.isEmpty }
+                let keyed = eligible.filter { $0.key.caseInsensitiveCompare(reference) == .orderedSame }
+                let matches = keyed.isEmpty ? eligible.filter { $0.displayName.caseInsensitiveCompare(reference) == .orderedSame } : keyed
+                guard matches.count == 1, let person = matches.first else {
+                    throw BuilderCommandFailure.invalid("Person is missing or ambiguous in the roster.")
+                }
+                return OverlayTemplate(name: "Lower Third — \(person.displayName)",
+                    composition: LowerThirdOverlay.composition(name: person.displayName,
+                        role: person.descriptor.isEmpty ? "Guest" : person.descriptor, logoPath: logoPath))
+            }
+            return OverlayTemplate(name: "Lower Third", composition: LowerThirdOverlay.composition(
+                name: "NAME", role: "ROLE / TITLE", logoPath: logoPath))
+        }
+        guard reference == nil else { throw BuilderCommandFailure.invalid("person is only valid for Lower Third.") }
+        let matches = templates.filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        guard matches.count == 1, let template = matches.first else {
+            throw BuilderCommandFailure.invalid("Template is missing or ambiguous in the snapshot.")
+        }
+        return template
+    }
 
     /// Explicit Library refresh preserves resource identities captured at session
     /// creation. It never subscribes to AppStore or hydrates the live document.

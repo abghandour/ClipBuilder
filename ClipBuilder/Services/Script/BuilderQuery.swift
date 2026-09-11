@@ -3,7 +3,7 @@ import Foundation
 /// Each query has its own admissible fields; pagination bounds model context.
 nonisolated struct BuilderQuery: Codable, Sendable, Equatable {
     enum Kind: String, Codable, Sendable, CaseIterable {
-        case timeline, clips, scenes, people, transcript, silences, tags, layouts, capabilities
+        case timeline, clips, scenes, people, transcript, silences, tags, layouts, templates, capabilities
     }
     var kind: Kind
     var offset = 0
@@ -90,6 +90,11 @@ nonisolated struct ClipQueryRow: Codable, Sendable, Equatable {
     var people: [String]
     var score: Double?
     var unknown: [String]
+    var bumperMode: BumperMode?
+    var volume: Int
+    var position: String?
+    var cropFraction: Double?
+    var muted: Bool
     var details: ScriptValue
 
     init(_ clip: TimelineClip, scene: SceneRecord?, library: ScriptLibrarySnapshot = .init()) {
@@ -106,6 +111,8 @@ nonisolated struct ClipQueryRow: Codable, Sendable, Equatable {
         let derived = roster.filter { !scenePeople.contains($0.key.lowercased()) }
         people = Array(Set(people + derived.map(\.key))).sorted()
         score = metadataScene?.score
+        bumperMode = clip.bumper ? clip.bumperMode : nil
+        volume = clip.volume; position = clip.position; cropFraction = clip.cropXFrac; muted = clip.muted
         details = ScriptValue.stored(clip)
         unknown = []
         if metadataScene == nil { unknown.append("scene") }
@@ -172,6 +179,12 @@ nonisolated struct CapabilityQueryRow: Codable, Sendable, Equatable {
     var analysisOutcome: PrerequisiteOutcome? = nil
 }
 
+nonisolated struct TemplateQueryRow: Codable, Sendable, Equatable {
+    var name: String
+    var kind: String
+    var duration: Double
+}
+
 nonisolated struct LayoutQueryRow: Codable, Sendable, Equatable {
     var id: String
     var areas: [ScreenCropArea]
@@ -190,6 +203,9 @@ nonisolated struct BuilderQueryResult: Codable, Sendable, Equatable {
     var silences: [SilenceQueryRow] = []
     var tags: [String] = []
     var layouts: [LayoutQueryRow] = []
+    var templates: [TemplateQueryRow] = []
+    var sounds: [BuilderDocumentSummary.Row] = []
+    var overlays: [BuilderDocumentSummary.Row] = []
     var capabilities: [CapabilityQueryRow] = []
     var timeline: ScriptValue? = nil
     var unknown: [String] = []
@@ -237,11 +253,25 @@ extension BuilderQuery {
             }.map { ClipQueryRow($0, scene: model.scene(for: $0), library: library) }
             result.clips = page(rows)
             if kind == .timeline, offset == 0 {
+                // Lane rows ride on the first timeline page, capped by the page
+                // limit so a busy timeline never pushes the result past the
+                // size ceiling; get_document_summary pages through the rest.
+                let lanes = BuilderDocumentSummary.allRows(document: model.document)
+                let sounds = lanes.filter { $0.lane == "sound" }
+                let overlays = lanes.filter { ["text", "image", "overlay"].contains($0.lane) }
+                let cap = max(1, limit)
+                result.sounds = Array(sounds.prefix(cap))
+                result.overlays = Array(overlays.prefix(cap))
                 var document = model.document
                 document.videoTrack = []
-                result.timeline = .object(["lanes": ScriptValue.stored(document),
-                                           "duration": .number(model.totalDuration),
-                                           "playhead": .number(model.playhead)])
+                var timeline: [String: ScriptValue] = ["lanes": ScriptValue.stored(document),
+                                                       "duration": .number(model.totalDuration),
+                                                       "playhead": .number(model.playhead)]
+                if sounds.count > cap || overlays.count > cap {
+                    timeline["laneRowsTruncated"] = .bool(true)
+                    timeline["laneRowsHint"] = .string("Use get_document_summary with offset/limit for every sound and overlay row.")
+                }
+                result.timeline = .object(timeline)
             }
         case .scenes:
             let rows = BuilderSceneSearch.ranked(sceneFilter ?? SceneFilter(), library: library).map(\.scene).map { SceneQueryRow(id: $0.id, video: $0.videoID, start: $0.startTime, end: $0.endTime,
@@ -254,6 +284,8 @@ extension BuilderQuery {
         case .tags:
             result.tags = page(Array(Set(library.tags + library.scenes.flatMap(\.tags)
                 + library.people.map(\.tag) + ["b-roll", "highlight"])).sorted())
+        case .templates:
+            result.templates = page(library.templateRows)
         case .layouts:
             result.layouts = page([LayoutQueryRow(id: CropLayoutRef.fullScreenName, areas: [])]
                 + library.layouts.sorted { $0.name < $1.name }.map { LayoutQueryRow(id: $0.name, areas: $0.areasInTrackOrder) })

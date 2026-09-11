@@ -3,6 +3,14 @@ import Foundation
 
 @MainActor
 extension ScriptRunner {
+    private func requireWideFraming(_ clip: TimelineClip, model: BuilderTimelineModel) throws {
+        guard !clip.bumper, clip.wide,
+              model.area(forTrack: clip.track, at: clip.startTime) == nil,
+              !model.document.isOrphaned(clip) else {
+            throw BuilderCommandFailure.invalid("Position and crop require a wide clip in Full Screen.")
+        }
+    }
+
     func executeExpansion(_ command: BuilderCommand, model: BuilderTimelineModel,
                           library: ScriptLibrarySnapshot) throws {
         func id(_ reference: String) throws -> UUID {
@@ -29,6 +37,87 @@ extension ScriptRunner {
             throw BuilderCommandFailure.invalid(reason)
         }
         switch command {
+        case .setBumperMode(let reference, let mode):
+            let item = try clip(reference)
+            guard item.bumper else { throw BuilderCommandFailure.invalid("Bumper mode requires a bumper.") }
+            if item.bumperMode != mode { model.setBumperMode(item.uid, mode: mode) }
+        case .setCropBlockDuration(let reference, let duration):
+            let uid = try id(reference)
+            guard let item = model.cropBlock(uid) else { throw BuilderCommandFailure.unknownID }
+            guard item.startTime + duration <= 86400 else { throw BuilderCommandFailure.bounds("Crop exceeds one day.") }
+            if item.duration != duration { model.resizeCropBlock(uid, duration: duration) }
+        case .splitCropBlock(let at):
+            let snapped = BuilderTimelineModel.snap(at)
+            guard let item = model.document.cropBlock(at: snapped) else {
+                throw BuilderCommandFailure.invalid("No crop block covers the split time.")
+            }
+            guard snapped > item.startTime + 0.499, snapped < item.endTime - 0.499 else {
+                throw BuilderCommandFailure.bounds("Both crop pieces must last at least 0.5 seconds.")
+            }
+            model.splitCropBlock(at: at)
+        case .removeSound(let reference): model.removeSound(try sound(reference).uid)
+        case .setImageGeometry(let reference, let x, let y, let width, let opacity):
+            let uid = try id(reference)
+            guard let item = model.imageItem(uid) else { throw BuilderCommandFailure.unknownID }
+            var updated = item
+            if let x { updated.xFrac = x }
+            if let y { updated.yFrac = y }
+            if let width { updated.wFrac = width }
+            if let opacity { updated.opacity = opacity }
+            if updated != item { model.updateImage(uid) { $0 = updated } }
+        case .setOverlayPosition(let reference, let x, let y):
+            let uid = try id(reference)
+            if let item = model.textItem(uid) {
+                if item.xFrac != x || item.yFrac != y { model.updateText(uid) { $0.xFrac = x; $0.yFrac = y } }
+            } else if let item = model.imageItem(uid) {
+                if item.xFrac != x || item.yFrac != y { model.updateImage(uid) { $0.xFrac = x; $0.yFrac = y } }
+            } else { throw BuilderCommandFailure.unknownID }
+        case .setTextStyle(let reference, let style):
+            let uid = try id(reference)
+            guard let item = model.textItem(uid) else { throw BuilderCommandFailure.unknownID }
+            let updated = try style.applying(to: item)
+            if updated != item { model.updateText(uid) { $0 = updated } }
+        case .setClipVolume(let reference, let volume):
+            let item = try clip(reference)
+            // The exporter honours the volume slider only for bumpers and mixed-in
+            // B-roll; a main clip's slider is a preview-only control, so applying
+            // it would report a change the rendered file never shows.
+            guard item.bumper || item.role == .cutaway else {
+                throw BuilderCommandFailure.invalid("Clip volume applies to bumpers and B-roll only; mute main clips with set_clip_muted or set_track_muted.")
+            }
+            if item.volume != volume { model.updateClip(item.uid) { $0.volume = volume } }
+        case .setClipPosition(let reference, let position):
+            let item = try clip(reference)
+            try requireWideFraming(item, model: model)
+            if item.position != position { model.updateClip(item.uid) { $0.position = position } }
+        case .setClipCrop(let reference, let fraction):
+            let item = try clip(reference)
+            try requireWideFraming(item, model: model)
+            if item.cropXFrac != fraction { model.updateClip(item.uid) { $0.cropXFrac = fraction } }
+        case .splitZoomFeeds(let reference, let left, let right):
+            let item = try clip(reference)
+            try requireWideFraming(item, model: model)
+            // The store pins the source to track 0 and the new feed to track 1;
+            // refusing elsewhere keeps a clip from being silently relocated.
+            guard item.track == 0 else {
+                throw BuilderCommandFailure.invalid("Split zoom feeds requires the clip on track 0.")
+            }
+            guard library.layouts.contains(where: { $0.name == "50-50 Horizontal" && !$0.areas.isEmpty }) else {
+                throw BuilderCommandFailure.invalid("Split feeds require a wide clip and the 50-50 Horizontal layout.")
+            }
+            guard !model.document.videoTrack.contains(where: {
+                $0.uid != item.uid && ($0.track == 1 || (item.track == 1 && $0.track == 0)) && $0.sceneID == item.sceneID
+                    && abs($0.startTime - item.startTime) < 0.01
+                    && abs(($0.sourceStart ?? 0) - (item.sourceStart ?? 0)) < 0.01
+                    && abs(($0.sourceEnd ?? 0) - (item.sourceEnd ?? 0)) < 0.01
+            }) else { throw BuilderCommandFailure.invalid("Clip already has a split partner.") }
+            let videoID = library.videoID(for: item, scene: nil)
+            guard let video = library.videos.first(where: { $0.id == videoID }), video.width > 0 else {
+                throw BuilderCommandFailure.invalid("Split feeds require captured source dimensions.")
+            }
+            model.splitZoomFeeds(item.uid, leftName: left, rightName: right,
+                                 sourceAspect: Double(video.width) / Double(max(1, video.height)))
+        case .clearTimeline: model.clear()
         case .setSoundVolume(let reference, let volume):
             let item = try sound(reference)
             if item.volume != volume { model.updateSound(item.uid) { $0.volume = volume } }

@@ -154,7 +154,7 @@ nonisolated enum ScreenCropStore {
 
     static func layout(named name: String?) -> ScreenCropLayout? {
         guard let name, !name.isEmpty else { return nil }
-        return all().first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        return (ScriptLayoutScope.layouts ?? all()).first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
     static var directory: URL {

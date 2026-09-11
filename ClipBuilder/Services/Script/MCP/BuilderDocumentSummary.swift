@@ -3,13 +3,29 @@ import Foundation
 /// All document lanes, paginated together. Intentionally excludes paths,
 /// transcript text, resource contents and application settings.
 nonisolated struct BuilderDocumentSummary: Codable, Sendable {
-    struct Row: Codable, Sendable {
+    struct Row: Codable, Sendable, Equatable {
         var id: String
         var lane: String
         var track: Int?
         var start: Double
         var duration: Double
         var scene: Int64? = nil
+        var name: String? = nil
+        var bumperMode: BumperMode? = nil
+        var volume: Int? = nil
+        var position: String? = nil
+        var cropFraction: Double? = nil
+        var muted: Bool? = nil
+        var text: String? = nil
+        var x: Double? = nil
+        var y: Double? = nil
+        var width: Double? = nil
+        var opacity: Double? = nil
+        var fontsize: Int? = nil
+        var fontcolor: String? = nil
+        var bold: Bool? = nil
+        var italic: Bool? = nil
+        var design: String? = nil
     }
     var duration: Double
     var tracks: Int
@@ -19,15 +35,7 @@ nonisolated struct BuilderDocumentSummary: Codable, Sendable {
 
     init(document: TimelineDocument, offset: Int, limit: Int) throws {
         guard offset >= 0, (1...200).contains(limit) else { throw ScriptError.invalid("Invalid summary page.") }
-        var rows = document.videoTrack.map {
-            Row(id: $0.uid.uuidString, lane: "video", track: $0.track, start: $0.startTime, duration: $0.duration, scene: $0.sceneID)
-        }
-        rows += document.soundTrack.map { Row(id: $0.uid.uuidString, lane: "sound", start: $0.startTime, duration: $0.duration) }
-        rows += document.cropBlocks.map { Row(id: $0.uid.uuidString, lane: "crop", start: $0.startTime, duration: $0.duration) }
-        rows += document.overlayBlocks.map { Row(id: $0.uid.uuidString, lane: "overlay", start: $0.startTime, duration: $0.duration) }
-        rows += document.textOverlays.map { Row(id: $0.uid.uuidString, lane: "text", start: $0.startTime, duration: $0.duration) }
-        rows += document.imageOverlays.map { Row(id: $0.uid.uuidString, lane: "image", start: $0.startTime, duration: $0.duration) }
-        rows.sort { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
+        let rows = Self.allRows(document: document)
         self.duration = document.contentEnd
         tracks = document.trackCount
         total = rows.count
@@ -37,4 +45,35 @@ nonisolated struct BuilderDocumentSummary: Codable, Sendable {
         nextOffset = end < rows.count ? end : nil
         self.rows = Array(rows[start..<end])
     }
+
+    static func allRows(document: TimelineDocument) -> [Row] {
+        var rows = document.videoTrack.map {
+            Row(id: $0.uid.uuidString, lane: "video", track: $0.track, start: $0.startTime, duration: $0.duration,
+                scene: $0.sceneID, bumperMode: $0.bumper ? $0.bumperMode : nil, volume: $0.volume,
+                position: $0.position, cropFraction: $0.cropXFrac, muted: $0.muted)
+        }
+        rows += document.soundTrack.map {
+            Row(id: $0.uid.uuidString, lane: "sound", start: $0.startTime, duration: $0.duration,
+                name: $0.name, volume: $0.volume)
+        }
+        rows += document.cropBlocks.map {
+            Row(id: $0.uid.uuidString, lane: "crop", start: $0.startTime, duration: $0.duration)
+        }
+        rows += document.overlayBlocks.map {
+            Row(id: $0.uid.uuidString, lane: "overlay", start: $0.startTime, duration: $0.duration, name: $0.name)
+        }
+        rows += document.textOverlays.map {
+            Row(id: $0.uid.uuidString, lane: "text", start: $0.startTime, duration: $0.duration,
+                position: $0.position, text: String($0.text.prefix(1000)), x: $0.xFrac, y: $0.yFrac,
+                opacity: $0.opacity, fontsize: $0.fontsize, fontcolor: $0.fontcolor,
+                bold: $0.bold, italic: $0.italic, design: $0.design)
+        }
+        rows += document.imageOverlays.map {
+            Row(id: $0.uid.uuidString, lane: "image", start: $0.startTime, duration: $0.duration,
+                name: $0.displayName, x: $0.xFrac, y: $0.yFrac, width: $0.wFrac, opacity: $0.opacity)
+        }
+        rows.sort { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
+        return rows
+    }
+
 }

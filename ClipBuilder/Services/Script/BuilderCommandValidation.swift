@@ -28,7 +28,30 @@ nonisolated extension BuilderCommand {
             try number(start + duration, 0...86400)
         }
         switch self {
-        case .setSoundVolume(_, let volume):
+        case .setCropBlockDuration(_, let duration): try number(duration, 0.5...86400)
+        case .splitCropBlock(let at): try number(at, 0...86400)
+        case .addOverlay(_, let at, let duration, _):
+            if let at { try number(at, 0...86400) }
+            if let duration { try number(duration, 0.5...86400) }
+            if let at, let duration { try range(at, duration) }
+        case .setImageGeometry(_, let x, let y, let width, let opacity):
+            guard x != nil || y != nil || width != nil || opacity != nil else {
+                throw BuilderCommandFailure.invalid("Image geometry needs at least one field.")
+            }
+            for value in [x, y, opacity].compactMap({ $0 }) { try number(value, 0...1) }
+            if let width { try number(width, 0.05...1) }
+        case .setOverlayPosition(_, let x, let y):
+            try number(x, 0...1); try number(y, 0...1)
+        case .setTextStyle(_, let style): try style.validate()
+        case .setClipPosition(_, let position):
+            if let position { try choice(position, ["top", "center", "bottom"]) }
+        case .setClipCrop(_, let fraction):
+            if let fraction { try number(fraction, 0...1) }
+        case .splitZoomFeeds(_, let left, let right):
+            guard left.utf8.count <= 1000, right.utf8.count <= 1000 else {
+                throw BuilderCommandFailure.invalid("Feed names exceed 1000 bytes.")
+            }
+        case .setSoundVolume(_, let volume), .setClipVolume(_, let volume):
             try number(Double(volume), 1...5)
         case .setSoundRange(_, let start, let duration), .setOverlayRange(_, let start, let duration):
             try range(start, duration)

@@ -87,3 +87,116 @@ struct BuilderExpansionDiffTests {
         #expect(lines.contains("Output") && lines.contains("Pacing"))
     }
 }
+
+extension BuilderExpansionDiffTests {
+    @Test func gapFieldsHaveIndividualDiffPaths() {
+        let before = ScriptFixtures.gapModel().document
+        let clip = "document.videoTrack.\(before.videoTrack[0].uid)."
+        let bumper = "document.videoTrack.\(before.videoTrack[1].uid)."
+        let text = "document.textOverlays.\(before.textOverlays[0].uid)."
+        let image = "document.imageOverlays.\(before.imageOverlays[0].uid)."
+        let edits: [(String, (inout TimelineDocument) -> Void)] = [
+            (bumper + "bumperMode", { $0.videoTrack[1].bumperMode = .pause }),
+            (clip + "volume", { $0.videoTrack[0].volume = 1 }),
+            (clip + "position", { $0.videoTrack[0].position = "top" }),
+            (clip + "cropXFrac", { $0.videoTrack[0].cropXFrac = 0.1 }),
+            (clip + "muted", { $0.videoTrack[0].muted = true }),
+            (image + "xFrac", { $0.imageOverlays[0].xFrac = 0.1 }),
+            (image + "yFrac", { $0.imageOverlays[0].yFrac = 0.2 }),
+            (image + "wFrac", { $0.imageOverlays[0].wFrac = 0.4 }),
+            (image + "opacity", { $0.imageOverlays[0].opacity = 0.5 }),
+            (text + "fontsize", { $0.textOverlays[0].fontsize = 60 }),
+            (text + "fontcolor", { $0.textOverlays[0].fontcolor = "red" }),
+            (text + "fontfamily", { $0.textOverlays[0].fontfamily = "Arial" }),
+            (text + "bold", { $0.textOverlays[0].bold = true }),
+            (text + "italic", { $0.textOverlays[0].italic = true }),
+            (text + "bgcolor", { $0.textOverlays[0].bgcolor = "black" }),
+            (text + "boxOpacity", { $0.textOverlays[0].boxOpacity = 0.2 }),
+            (text + "boxRadius", { $0.textOverlays[0].boxRadius = 12 }),
+            (text + "opacity", { $0.textOverlays[0].opacity = 0.5 }),
+            (text + "strokeColor", { $0.textOverlays[0].strokeColor = "red" }),
+            (text + "strokeWidthEm", { $0.textOverlays[0].strokeWidthEm = 0.2 }),
+            (text + "shadowOpacity", { $0.textOverlays[0].shadowOpacity = 0.3 }),
+            (text + "highlightColor", { $0.textOverlays[0].highlightColor = "yellow" }),
+            (text + "design", { $0.textOverlays[0].design = "hero" }),
+            (text + "kicker", { $0.textOverlays[0].kicker = "Label" }),
+            (text + "accentColor", { $0.textOverlays[0].accentColor = "red" })
+        ]
+        for (path, edit) in edits {
+            var after = before
+            edit(&after)
+            let diff = TimelineDiff(before: before, after: after)
+            #expect(diff.changes.contains { $0.path == path })
+        }
+    }
+
+    @Test func queryAndSummaryExposeCompactLaneState() throws {
+        let model = ScriptFixtures.gapModel()
+        model.document.videoTrack[0].volume = 2
+        model.document.videoTrack[0].position = "top"
+        model.document.videoTrack[0].cropXFrac = 0.2
+        model.document.videoTrack[0].muted = true
+        model.document.textOverlays[0].xFrac = 0.3
+        model.document.textOverlays[0].yFrac = 0.4
+        model.document.textOverlays[0].bold = true
+        model.document.textOverlays[0].italic = true
+        model.document.textOverlays[0].design = "hero"
+        model.document.imageOverlays[0].opacity = 0.6
+        let library = ScriptFixtures.gapLibrary()
+        for kind in [BuilderQuery.Kind.timeline, .clips] {
+            let result = try BuilderQuery(kind).execute(model: model, library: library, resolve: { _ in throw ScriptError.invalid("unused") })
+            let clip = try #require(result.clips.first { !$0.bumper })
+            #expect(clip.volume == 2 && clip.position == "top" && clip.cropFraction == 0.2 && clip.muted)
+            // The clips query hides bumpers unless include_bumpers is set.
+            if kind == .timeline {
+                #expect(result.clips.first { $0.bumper }?.bumperMode == .overlap)
+            } else {
+                #expect(!result.clips.contains { $0.bumper })
+            }
+            // Lane rows ride on the first timeline page only.
+            guard kind == .timeline else {
+                #expect(result.sounds.isEmpty && result.overlays.isEmpty)
+                continue
+            }
+            #expect(result.sounds.first?.name == "fixture.mp3" && result.sounds.first?.volume == 3)
+            #expect(result.overlays.count == 3)
+            let text = try #require(result.overlays.first { $0.lane == "text" })
+            #expect(text.text == "Before" && text.x == 0.3 && text.y == 0.4)
+            #expect(text.fontsize == 42 && text.bold == true && text.italic == true && text.design == "hero")
+            let image = try #require(result.overlays.first { $0.lane == "image" })
+            #expect(image.name == "photo" && image.width == 0.3 && image.opacity == 0.6)
+        }
+        let summary = try BuilderDocumentSummary(document: model.document, offset: 0, limit: 200)
+        #expect(summary.rows.count == 7)
+        let sound = try #require(summary.rows.first { $0.lane == "sound" })
+        #expect(sound.name == "fixture.mp3" && sound.duration == 10)
+        let json = String(decoding: try JSONEncoder().encode(summary), as: UTF8.self)
+        #expect(!json.contains("/tmp/") && !json.contains("path"))
+        #expect(json.contains("bumperMode") && json.contains("fontsize") && json.contains("cropFraction"))
+        // A busy timeline caps lane rows at the page limit and says so.
+        model.document.textOverlays = (0..<5).map { TextOverlayItem(text: "T\($0)") }
+        let capped = try BuilderQuery(.timeline, limit: 2).execute(model: model, library: library, resolve: { _ in throw ScriptError.invalid("unused") })
+        #expect(capped.overlays.count == 2)
+        if case .object(let timeline)? = capped.timeline {
+            #expect(timeline["laneRowsTruncated"] == .bool(true))
+        } else {
+            Issue.record("timeline object missing")
+        }
+    }
+
+    @Test func templatesQueryListsSnapshotAndBuiltinWithPagination() throws {
+        let model = ScriptFixtures.gapModel()
+        let library = ScriptFixtures.gapLibrary()
+        let query = try JSONDecoder().decode(BuilderQuery.self, from: Data(#"{"kind":"templates","limit":1}"#.utf8))
+        let result = try query.execute(model: model, library: library, resolve: { _ in throw ScriptError.invalid("unused") })
+        #expect(result.total == 2 && result.nextOffset == 1)
+        #expect(result.templates == [TemplateQueryRow(name: "Lower Third", kind: "lower_third", duration: 4)])
+        let next = try BuilderQuery(.templates, offset: 1, limit: 1).execute(model: model, library: library,
+            resolve: { _ in throw ScriptError.invalid("unused") })
+        #expect(next.templates == [TemplateQueryRow(name: "Title Card", kind: "template", duration: 5)])
+        #expect(next.nextOffset == nil)
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(BuilderQuery.self, from: Data(#"{"kind":"templates","filter":{}}"#.utf8))
+        }
+    }
+}

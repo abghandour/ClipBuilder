@@ -212,3 +212,144 @@ struct BuilderExpansionTests {
         #expect(model.document.textOverlays.last?.text == "Bound")
     }
 }
+
+extension BuilderExpansionTests {
+    @Test func everyBuilderGapCommandChangesStateAndReportsDiff() throws {
+        let expectedPaths = ["bumperMode", "duration", "cropBlocks", "soundTrack", "overlayBlocks",
+                             "wFrac", "xFrac", "fontsize", "volume", "position", "cropXFrac", "videoTrack", "videoTrack"]
+        for index in 0..<13 {
+            let model = ScriptFixtures.gapModel()
+            if index == 1 || index == 2 {
+                model.document.cropBlocks[0].layout = CropLayoutRef(name: "50-50 Horizontal")
+            }
+            let command = ScriptFixtures.gapCommands(model)[index]
+            let before = model.document
+            let outcomes = ScriptRunner().run([.init(command)], model: model, library: ScriptFixtures.gapLibrary())
+            guard case .applied = outcomes.first else { Issue.record("Expected apply for \(command): \(outcomes)"); continue }
+            let diff = TimelineDiff(before: before, after: model.document)
+            #expect(diff.changes.contains { $0.path.contains(expectedPaths[index]) })
+            switch index {
+            case 0: #expect(model.document.videoTrack.first { $0.bumper }?.bumperMode == .pause)
+            case 1: #expect(model.document.cropBlocks.first { $0.uid == before.cropBlocks[0].uid }?.duration == 8)
+            case 2: #expect(model.document.cropBlocks.contains { $0.startTime == 2 && $0.duration == 8 })
+            case 3: #expect(model.document.soundTrack.isEmpty)
+            case 4:
+                #expect(model.document.overlayBlocks.last?.name == "Title Card")
+                #expect(model.document.overlayBlocks.last?.duration == 4)
+            case 5: #expect(model.document.imageOverlays[0].wFrac == 0.4 && model.document.imageOverlays[0].opacity == 0.6)
+            case 6: #expect(model.document.textOverlays[0].xFrac == 0.2 && model.document.textOverlays[0].yFrac == 0.3)
+            case 7: #expect(model.document.textOverlays[0].fontsize == 60 && model.document.textOverlays[0].bold)
+            case 8: #expect(model.document.videoTrack.first { $0.bumper }?.volume == 2)
+            case 9: #expect(model.document.videoTrack[0].position == "top")
+            case 10: #expect(model.document.videoTrack[0].cropXFrac == 0.3)
+            case 11:
+                let feed = try #require(model.document.videoTrack.first { $0.track == 1 })
+                #expect(feed.muted && feed.areaWindow != nil)
+                #expect(model.document.trackSettings[0].label == "Left" && model.document.trackSettings[1].label == "Right")
+            default:
+                #expect(model.document.videoTrack.isEmpty && model.document.soundTrack.isEmpty)
+                #expect(model.document.textOverlays.isEmpty && model.document.imageOverlays.isEmpty && model.document.overlayBlocks.isEmpty)
+            }
+        }
+    }
+
+    @Test func gapRefusalsLeaveDocumentUntouched() {
+        let model = ScriptFixtures.gapModel()
+        model.document.videoTrack[0].wide = false
+        let clip = model.document.videoTrack[0].uid.uuidString
+        let bumper = model.document.videoTrack[1].uid.uuidString
+        let commands: [BuilderCommand] = [
+            .setBumperMode(clip: clip, mode: .pause), .setClipPosition(clip: clip, position: "top"),
+            .setClipCrop(clip: clip, fraction: 0.5), .setClipVolume(clip: clip, volume: 2),
+            .setTextStyle(overlay: model.document.textOverlays[0].uid.uuidString, style: .init(["design": .string("modern")])),
+            .addOverlay(template: "Missing"), .splitCropBlock(at: 20), .splitCropBlock(at: 0.2),
+            .removeSound(sound: UUID().uuidString), .addOverlay(template: "Lower Third", person: "Missing"),
+            .addOverlay(template: "Title Card", person: "alex")
+        ]
+        let before = ScriptValue.stored(model.document)
+        for command in commands {
+            let result = ScriptRunner().run([.init(command)], model: model, library: ScriptFixtures.gapLibrary())
+            #expect(result.contains { $0.isRefused })
+            #expect(ScriptValue.stored(model.document) == before)
+        }
+        model.document.videoTrack[0].wide = true
+        var library = ScriptFixtures.gapLibrary()
+        library.layouts = []
+        let split = BuilderCommand.splitZoomFeeds(clip: clip, left: "L", right: "R")
+        #expect(ScriptRunner().run([.init(split)], model: model, library: library).contains { $0.isRefused })
+        library = ScriptFixtures.gapLibrary()
+        // Off track 0 the store would relocate the clip; refuse instead.
+        model.document.videoTrack[0].track = 1
+        #expect(ScriptRunner().run([.init(split)], model: model, library: library).contains { $0.isRefused })
+        model.document.videoTrack[0].track = 0
+        #expect(!ScriptRunner().run([.init(split)], model: model, library: library).contains { $0.isRefused })
+        let splitState = ScriptValue.stored(model.document)
+        #expect(ScriptRunner().run([.init(split)], model: model, library: library).contains { $0.isRefused })
+        #expect(ScriptValue.stored(model.document) == splitState)
+    }
+
+    @Test func lowerThirdAndSavedTemplateBindingsUseSnapshot() throws {
+        let model = ScriptFixtures.gapModel()
+        let library = ScriptFixtures.gapLibrary()
+        let steps: [BuilderScriptStep] = [
+            .init(.addOverlay(template: "Lower Third", at: 0), bind: "blank"),
+            .init(.setOverlayRange(overlay: "$blank", at: 1, duration: 2)),
+            .init(.addOverlay(template: "Lower Third", person: "alex")),
+            .init(.addOverlay(template: "Lower Third", person: "Alex Smith")),
+            .init(.addOverlay(template: "Title Card"), bind: "saved"),
+            .init(.setOverlayRange(overlay: "$saved", at: 2, duration: 6))
+        ]
+        #expect(!ScriptRunner().run(steps, model: model, library: library).contains { $0.isRefused })
+        let blocks = Array(model.document.overlayBlocks.dropFirst())
+        #expect(blocks.count == 4)
+        let blank = LowerThirdOverlay.composition(name: "NAME", role: "ROLE / TITLE", logoPath: library.logoPath)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let blankData = try encoder.encode(blank)
+        #expect(try encoder.encode(blocks[0].composition) == blankData)
+        #expect(blocks[0].composition.texts.map(\.text) == ["NAME", "ROLE / TITLE"])
+        #expect(blocks[0].composition.images.first?.path == library.logoPath)
+        // Composition item IDs are runtime identities, so compare semantic values below.
+        #expect(blocks[1].name == "Lower Third — Alex Smith")
+        #expect(blocks[1].composition.texts.map(\.text) == ["Alex Smith", "Host"])
+        #expect(blocks[2].composition.texts.map(\.text) == blocks[1].composition.texts.map(\.text))
+        #expect(blocks[3].composition == library.templates[0].composition)
+        #expect(blocks[3].startTime == 2 && blocks[3].duration == 6)
+    }
+
+    @Test func nullableOverridesAndStylePatchPreserveOtherFields() throws {
+        let model = ScriptFixtures.gapModel()
+        model.document.videoTrack[0].position = "top"
+        model.document.videoTrack[0].cropXFrac = 0.2
+        let clip = model.document.videoTrack[0].uid.uuidString
+        let text = model.document.textOverlays[0].uid.uuidString
+        let image = model.document.imageOverlays[0].uid.uuidString
+        let style: BuilderTextStylePatch = .init([
+            "fontsize": .number(80), "fontcolor": .string("#abc"), "fontfamily": .string("Arial"),
+            "bold": .bool(true), "italic": .bool(true), "bgcolor": .string("black"),
+            "box_opacity": .number(0.2), "box_radius": .number(12), "opacity": .number(0.8),
+            "stroke_color": .string("red"), "stroke_width_em": .number(0.1), "shadow_opacity": .number(0.3),
+            "highlight_color": .string("yellow"), "design": .string("hero"), "kicker": .string("Hello"),
+            "accent_color": .string("0x123456")
+        ])
+        #expect(try JSONDecoder().decode(BuilderTextStylePatch.self, from: JSONEncoder().encode(style)) == style)
+        let steps: [BuilderScriptStep] = [
+            .init(.setClipPosition(clip: clip, position: nil)), .init(.setClipCrop(clip: clip, fraction: nil)),
+            .init(.setTextStyle(overlay: text, style: style)),
+            .init(.setOverlayPosition(overlay: image, x: 0, y: 1))
+        ]
+        #expect(!ScriptRunner().run(steps, model: model, library: ScriptFixtures.gapLibrary()).contains { $0.isRefused })
+        #expect(model.document.videoTrack[0].position == nil && model.document.videoTrack[0].cropXFrac == nil)
+        #expect(model.document.imageOverlays[0].xFrac == 0 && model.document.imageOverlays[0].yFrac == 1)
+        let styled = model.document.textOverlays[0]
+        #expect(styled.fontsize == 80 && styled.fontcolor == "#abc" && styled.fontfamily == "Arial")
+        #expect(styled.bold && styled.italic && styled.design == "hero" && styled.kicker == "Hello")
+        #expect(styled.text == "Before" && styled.startTime == 0 && styled.endTime == 3)
+        let clear = BuilderTextStylePatch(Dictionary(uniqueKeysWithValues: BuilderTextStylePatch.nullableFields.map { ($0, ScriptValue.null) }))
+        #expect(!ScriptRunner().run([.init(.setTextStyle(overlay: text, style: clear))], model: model, library: ScriptFixtures.gapLibrary()).contains { $0.isRefused })
+        let cleared = model.document.textOverlays[0]
+        #expect(cleared.bgcolor == nil && cleared.boxRadius == nil && cleared.strokeColor == nil)
+        #expect(cleared.highlightColor == nil && cleared.design == nil && cleared.kicker == nil && cleared.accentColor == nil)
+        #expect(cleared.fontsize == 80 && cleared.bold && cleared.opacity == 0.8)
+    }
+}

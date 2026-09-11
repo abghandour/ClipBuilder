@@ -32,6 +32,20 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     case setPlayhead(at: Double)
     case query(query: BuilderQuery)
 
+    case setBumperMode(clip: String, mode: BumperMode)
+    case setCropBlockDuration(block: String, duration: Double)
+    case splitCropBlock(at: Double)
+    case removeSound(sound: String)
+    case addOverlay(template: String, at: Double? = nil, duration: Double? = nil, person: String? = nil)
+    case setImageGeometry(overlay: String, x: Double? = nil, y: Double? = nil, width: Double? = nil, opacity: Double? = nil)
+    case setOverlayPosition(overlay: String, x: Double, y: Double)
+    case setTextStyle(overlay: String, style: BuilderTextStylePatch)
+    case setClipVolume(clip: String, volume: Int)
+    case setClipPosition(clip: String, position: String?)
+    case setClipCrop(clip: String, fraction: Double?)
+    case splitZoomFeeds(clip: String, left: String, right: String)
+    case clearTimeline
+
     case setSoundVolume(sound: String, volume: Int)
     case setSoundRange(sound: String, start: Double, duration: Double)
     case moveSound(sound: String, at: Double)
@@ -193,6 +207,64 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
         case "query":
             try c.only(["op", "query"])
             self = .query(query: try c.decode(BuilderQuery.self, forKey: ScriptKey("query")))
+        case "set_bumper_mode":
+            try c.only(["op", "clip", "mode"])
+            self = .setBumperMode(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                mode: try c.decode(BumperMode.self, forKey: ScriptKey("mode")))
+        case "set_crop_block_duration":
+            try c.only(["op", "block", "duration"])
+            self = .setCropBlockDuration(block: try c.decode(String.self, forKey: ScriptKey("block")),
+                duration: try c.decode(Double.self, forKey: ScriptKey("duration")))
+        case "split_crop_block":
+            try c.only(["op", "at"])
+            self = .splitCropBlock(at: try c.decode(Double.self, forKey: ScriptKey("at")))
+        case "remove_sound":
+            try c.only(["op", "sound"])
+            self = .removeSound(sound: try c.decode(String.self, forKey: ScriptKey("sound")))
+        case "add_overlay":
+            try c.only(["op", "template", "at", "duration", "person"])
+            self = .addOverlay(template: try c.decode(String.self, forKey: ScriptKey("template")),
+                at: try c.decodeIfPresent(Double.self, forKey: ScriptKey("at")),
+                duration: try c.decodeIfPresent(Double.self, forKey: ScriptKey("duration")),
+                person: try c.decodeIfPresent(String.self, forKey: ScriptKey("person")))
+        case "set_image_geometry":
+            try c.only(["op", "overlay", "x", "y", "width", "opacity"])
+            self = .setImageGeometry(overlay: try c.decode(String.self, forKey: ScriptKey("overlay")),
+                x: try c.decodeIfPresent(Double.self, forKey: ScriptKey("x")),
+                y: try c.decodeIfPresent(Double.self, forKey: ScriptKey("y")),
+                width: try c.decodeIfPresent(Double.self, forKey: ScriptKey("width")),
+                opacity: try c.decodeIfPresent(Double.self, forKey: ScriptKey("opacity")))
+        case "set_overlay_position":
+            try c.only(["op", "overlay", "x", "y"])
+            self = .setOverlayPosition(overlay: try c.decode(String.self, forKey: ScriptKey("overlay")),
+                x: try c.decode(Double.self, forKey: ScriptKey("x")),
+                y: try c.decode(Double.self, forKey: ScriptKey("y")))
+        case "set_text_style":
+            try c.only(["op", "overlay", "style"])
+            self = .setTextStyle(overlay: try c.decode(String.self, forKey: ScriptKey("overlay")),
+                style: try c.decode(BuilderTextStylePatch.self, forKey: ScriptKey("style")))
+        case "set_clip_volume":
+            try c.only(["op", "clip", "volume"])
+            self = .setClipVolume(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                volume: try c.decode(Int.self, forKey: ScriptKey("volume")))
+        case "set_clip_position":
+            try c.only(["op", "clip", "position"])
+            guard c.contains(ScriptKey("position")) else { throw BuilderCommandFailure.invalid("Missing position; use null to clear.") }
+            self = .setClipPosition(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                position: try c.decodeIfPresent(String.self, forKey: ScriptKey("position")))
+        case "set_clip_crop":
+            try c.only(["op", "clip", "fraction"])
+            guard c.contains(ScriptKey("fraction")) else { throw BuilderCommandFailure.invalid("Missing fraction; use null to clear.") }
+            self = .setClipCrop(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                fraction: try c.decodeIfPresent(Double.self, forKey: ScriptKey("fraction")))
+        case "split_zoom_feeds":
+            try c.only(["op", "clip", "left", "right"])
+            self = .splitZoomFeeds(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                left: try c.decode(String.self, forKey: ScriptKey("left")),
+                right: try c.decode(String.self, forKey: ScriptKey("right")))
+        case "clear_timeline":
+            try c.only(["op"])
+            self = .clearTimeline
         case "set_sound_volume":
             try c.only(["op", "sound", "volume"])
             self = .setSoundVolume(sound: try c.decode(String.self, forKey: ScriptKey("sound")),
@@ -284,6 +356,61 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: ScriptKey.self)
         switch self {
+        case let .setBumperMode(clip, mode):
+            try c.encode("set_bumper_mode", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(mode, forKey: ScriptKey("mode"))
+        case let .setCropBlockDuration(block, duration):
+            try c.encode("set_crop_block_duration", forKey: ScriptKey("op"))
+            try c.encode(block, forKey: ScriptKey("block"))
+            try c.encode(duration, forKey: ScriptKey("duration"))
+        case let .splitCropBlock(at):
+            try c.encode("split_crop_block", forKey: ScriptKey("op"))
+            try c.encode(at, forKey: ScriptKey("at"))
+        case let .removeSound(sound):
+            try c.encode("remove_sound", forKey: ScriptKey("op"))
+            try c.encode(sound, forKey: ScriptKey("sound"))
+        case let .addOverlay(template, at, duration, person):
+            try c.encode("add_overlay", forKey: ScriptKey("op"))
+            try c.encode(template, forKey: ScriptKey("template"))
+            try c.encodeIfPresent(at, forKey: ScriptKey("at"))
+            try c.encodeIfPresent(duration, forKey: ScriptKey("duration"))
+            try c.encodeIfPresent(person, forKey: ScriptKey("person"))
+        case let .setImageGeometry(overlay, x, y, width, opacity):
+            try c.encode("set_image_geometry", forKey: ScriptKey("op"))
+            try c.encode(overlay, forKey: ScriptKey("overlay"))
+            try c.encodeIfPresent(x, forKey: ScriptKey("x"))
+            try c.encodeIfPresent(y, forKey: ScriptKey("y"))
+            try c.encodeIfPresent(width, forKey: ScriptKey("width"))
+            try c.encodeIfPresent(opacity, forKey: ScriptKey("opacity"))
+        case let .setOverlayPosition(overlay, x, y):
+            try c.encode("set_overlay_position", forKey: ScriptKey("op"))
+            try c.encode(overlay, forKey: ScriptKey("overlay"))
+            try c.encode(x, forKey: ScriptKey("x"))
+            try c.encode(y, forKey: ScriptKey("y"))
+        case let .setTextStyle(overlay, style):
+            try c.encode("set_text_style", forKey: ScriptKey("op"))
+            try c.encode(overlay, forKey: ScriptKey("overlay"))
+            try c.encode(style, forKey: ScriptKey("style"))
+        case let .setClipVolume(clip, volume):
+            try c.encode("set_clip_volume", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(volume, forKey: ScriptKey("volume"))
+        case let .setClipPosition(clip, position):
+            try c.encode("set_clip_position", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(position, forKey: ScriptKey("position"))
+        case let .setClipCrop(clip, fraction):
+            try c.encode("set_clip_crop", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(fraction, forKey: ScriptKey("fraction"))
+        case let .splitZoomFeeds(clip, left, right):
+            try c.encode("split_zoom_feeds", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(left, forKey: ScriptKey("left"))
+            try c.encode(right, forKey: ScriptKey("right"))
+        case .clearTimeline:
+            try c.encode("clear_timeline", forKey: ScriptKey("op"))
         case let .setSoundVolume(sound, volume):
             try c.encode("set_sound_volume", forKey: ScriptKey("op"))
             try c.encode(sound, forKey: ScriptKey("sound"))

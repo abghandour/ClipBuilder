@@ -130,7 +130,7 @@ final class ScriptRunner {
     private static func canBind(_ command: BuilderCommand) -> Bool {
         switch command {
         case .splitClip, .duplicateClip, .addScene, .addCutaway, .addCropBlock,
-             .addBumper, .addSound, .addText, .addImage: true
+             .addBumper, .addSound, .addText, .addImage, .addOverlay, .splitCropBlock, .splitZoomFeeds: true
         default: false
         }
     }
@@ -339,6 +339,22 @@ final class ScriptRunner {
                 throw ScriptError.invalid("Store refused the sound insertion.")
             }
             created["sound"] = item.uid.uuidString; actual = ScriptValue.stored(item)
+        case .addOverlay(let template, let at, let duration, let person):
+            let resource = try library.overlay(named: template, person: person)
+            let start = BuilderTimelineModel.snap(at ?? model.playhead)
+            let length = duration ?? max(1, (resource.composition.duration * 10).rounded() / 10)
+            try time(start)
+            guard length.isFinite, (0.5...86400).contains(length), start + length <= 86400 else {
+                throw BuilderCommandFailure.bounds("Overlay range exceeds one day.")
+            }
+            let old = Set(before.overlayBlocks.map(\.uid))
+            model.addOverlayBlock(name: resource.name, composition: resource.composition, at: start)
+            guard let item = model.document.overlayBlocks.first(where: { !old.contains($0.uid) }) else {
+                throw BuilderCommandFailure.invalid("Template has no overlay content.")
+            }
+            if let duration { model.updateOverlayBlock(item.uid) { $0.duration = duration } }
+            created["overlay"] = item.uid.uuidString
+            actual = ScriptValue.stored(model.overlayBlock(item.uid))
         case .addText(let at, let text):
             try time(at ?? model.playhead)
             guard text.utf8.count <= 16000 else { throw ScriptError.invalid("Text exceeds 16 KiB.") }
@@ -362,7 +378,18 @@ final class ScriptRunner {
             model.playhead = at
             return .applied(actualValues: .object(["at": .number(at)]), createdIDs: [:], warnings: [])
         case .query: break
-        default: try executeExpansion(command, model: model, library: library)
+        default:
+            try executeExpansion(command, model: model, library: library)
+            if case .splitCropBlock = command {
+                let old = Set(before.cropBlocks.map(\.uid))
+                if let item = model.document.cropBlocks.first(where: { !old.contains($0.uid) }) {
+                    created["block"] = item.uid.uuidString
+                    actual = ScriptValue.stored(item)
+                }
+            }
+            if case .splitZoomFeeds = command {
+                target = try addedClip(); created["clip"] = target?.uuidString
+            }
         }
         let diff = TimelineDiff(before: before, after: model.document)
         guard !diff.isEmpty else { return .unchanged(reason: "Requested state already holds.") }

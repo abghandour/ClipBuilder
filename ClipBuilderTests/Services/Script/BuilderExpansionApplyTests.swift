@@ -62,3 +62,46 @@ struct BuilderExpansionApplyTests {
         #expect(ScriptValue.stored(model.document) == ScriptValue.stored(applied))
     }
 }
+
+extension BuilderExpansionApplyTests {
+    @Test func everyGapCommandAppliesAtomically() throws {
+        for index in 0..<13 {
+            let model = ScriptFixtures.gapModel(persistent: true)
+            if index == 1 || index == 2 { model.document.cropBlocks[0].layout = CropLayoutRef(name: "50-50 Horizontal") }
+            let before = ScriptValue.stored(model.document)
+            let command = ScriptFixtures.gapCommands(model)[index]
+            let failed = BuilderScriptSession(live: model, library: ScriptFixtures.gapLibrary())
+            #expect(!failed.run([.init(command), .init(.removeSound(sound: UUID().uuidString))]).completed)
+            failed.freeze()
+            #expect(failed.frozenCandidate == nil)
+            #expect(ScriptValue.stored(model.document) == before)
+            failed.discard()
+
+            let session = BuilderScriptSession(live: model, library: ScriptFixtures.gapLibrary())
+            #expect(session.run([.init(command)]).completed)
+            session.freeze()
+            let candidate = try #require(session.frozenCandidate)
+            #expect(ScriptValue.stored(model.document) == before)
+            let undo = UndoManager()
+            undo.groupsByEvent = false
+            model.undoManager = undo
+            _ = try model.applyScriptSnapshot(candidate: candidate, baseline: session.baseline,
+                baselineRevision: session.baselineRevision, actionName: "Builder gap").get()
+            #expect(ScriptValue.stored(model.document) == ScriptValue.stored(candidate.document))
+            #expect(undo.canUndo)
+            undo.undo()
+            #expect(ScriptValue.stored(model.document) == before)
+            #expect(!undo.canUndo)
+            session.discard()
+        }
+    }
+
+    @Test func clearTimelineChargesEveryLane() {
+        let model = ScriptFixtures.gapModel()
+        model.document.soundTrack = (0..<ScriptRunner.maximumAffectedItems).map { _ in SoundItem(name: "sound") }
+        let before = ScriptValue.stored(model.document)
+        let result = ScriptRunner().run([.init(.clearTimeline)], model: model, library: ScriptFixtures.gapLibrary())
+        #expect(result.contains { $0.isRefused })
+        #expect(ScriptValue.stored(model.document) == before)
+    }
+}

@@ -103,3 +103,81 @@ struct BuilderExpansionSchemaTests {
         session.discard()
     }
 }
+
+extension BuilderExpansionSchemaTests {
+    @Test func builderGapCommandsRoundTripAndRefuseUnknownFields() throws {
+        for command in ScriptFixtures.gapCommands(ScriptFixtures.gapModel()) {
+            let data = try JSONEncoder().encode(command)
+            #expect(try JSONDecoder().decode(BuilderCommand.self, from: data) == command)
+            var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            object["unexpected"] = true
+            let extra = try JSONSerialization.data(withJSONObject: object)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(BuilderCommand.self, from: extra) }
+        }
+        for command in [BuilderCommand.setClipPosition(clip: "x", position: nil), .setClipCrop(clip: "x", fraction: nil)] {
+            let data = try JSONEncoder().encode(command)
+            #expect(try JSONDecoder().decode(BuilderCommand.self, from: data) == command)
+            var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            object.removeValue(forKey: "position"); object.removeValue(forKey: "fraction")
+            let missing = try JSONSerialization.data(withJSONObject: object)
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(BuilderCommand.self, from: missing) }
+        }
+    }
+
+    @Test func builderGapSchemasAdvertiseAllCommands() throws {
+        let session = ScriptFixtures.session()
+        defer { session.discard() }
+        let tools = BuilderTools(session: session, budget: BuilderRunBudget(.init()))
+        let tool = try #require(tools.definitions.first { $0.name == "run_script" })
+        let variants = try #require(tool.inputSchema.objectValue?["properties"]?.objectValue?["steps"]?
+            .objectValue?["items"]?.objectValue?["properties"]?.objectValue?["command"]?.objectValue?["oneOf"]?.arrayValue)
+        for command in ScriptFixtures.gapCommands(ScriptFixtures.gapModel()) {
+            let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(command)) as? [String: Any])
+            let op = try #require(object["op"] as? String)
+            let variant = try #require(variants.first { $0.objectValue?["properties"]?.objectValue?["op"]?.objectValue?["const"]?.stringValue == op })
+            #expect(variant.objectValue?["additionalProperties"] == .bool(false))
+            let properties = try #require(variant.objectValue?["properties"]?.objectValue)
+            #expect(Set(object.keys).isSubset(of: Set(properties.keys)))
+        }
+    }
+
+    @Test func builderGapInvalidValuesRefuse() {
+        let payloads = [
+            #"{"op":"set_bumper_mode","clip":"x","mode":"invalid"}"#,
+            #"{"op":"set_crop_block_duration","block":"x","duration":0.49}"#,
+            #"{"op":"set_crop_block_duration","block":"x","duration":86401}"#,
+            #"{"op":"split_crop_block","at":-1}"#,
+            #"{"op":"remove_sound"}"#,
+            #"{"op":"add_overlay","template":"Lower Third","duration":0}"#,
+            #"{"op":"add_overlay","template":"Lower Third","at":86400,"duration":1}"#,
+            #"{"op":"set_image_geometry","overlay":"x"}"#,
+            #"{"op":"set_image_geometry","overlay":"x","width":0.049}"#,
+            #"{"op":"set_image_geometry","overlay":"x","opacity":1.1}"#,
+            #"{"op":"set_overlay_position","overlay":"x","x":-1,"y":0}"#,
+            #"{"op":"set_text_style","overlay":"x","style":{}}"#,
+            #"{"op":"set_text_style","overlay":"x","style":{"unknown":1}}"#,
+            #"{"op":"set_text_style","overlay":"x","style":{"fontsize":7}}"#,
+            #"{"op":"set_text_style","overlay":"x","style":{"fontsize":400.5}}"#,
+            #"{"op":"set_text_style","overlay":"x","style":{"fontcolor":"blue"}}"#,
+            ##"{"op":"set_text_style","overlay":"x","style":{"bgcolor":"#xyz"}}"##,
+            #"{"op":"set_text_style","overlay":"x","style":{"fontcolor":null}}"#,
+            #"{"op":"set_text_style","overlay":"x","style":{"bold":1}}"#,
+            #"{"op":"set_text_style","overlay":"x","style":{"box_radius":-1}}"#,
+            #"{"op":"set_text_style","overlay":"x","style":{"stroke_width_em":1.1}}"#,
+            #"{"op":"set_clip_volume","clip":"x","volume":0}"#,
+            #"{"op":"set_clip_volume","clip":"x","volume":6}"#,
+            #"{"op":"set_clip_position","clip":"x","position":"left"}"#,
+            #"{"op":"set_clip_crop","clip":"x","fraction":1.01}"#,
+            #"{"op":"split_zoom_feeds","clip":"x","left":"Left"}"#,
+            #"{"op":"clear_timeline","at":0}"#
+        ]
+        for json in payloads {
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(BuilderCommand.self, from: Data(json.utf8)) }
+        }
+        for command in [BuilderCommand.splitCropBlock(at: .nan),
+                        .setImageGeometry(overlay: "x", x: .infinity),
+                        .setTextStyle(overlay: "x", style: .init(["box_radius": .number(.infinity)]))] {
+            #expect(throws: (any Error).self) { try command.validateExpansion() }
+        }
+    }
+}

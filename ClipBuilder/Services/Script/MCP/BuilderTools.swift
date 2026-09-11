@@ -198,6 +198,7 @@ final class BuilderTools {
                 description = "Observed silence for a video or clip UUID, with optional source-time range and gap threshold in seconds."
             case .timeline: description = "Working timeline overview; pagination only."
             case .tags: description = "Known Library tags; pagination only."
+            case .templates: description = "Snapshotted overlay templates and built-in Lower Third; pagination only."
             case .layouts: description = "Available crop layouts; pagination only."
             case .capabilities: description = "Captured prerequisite availability by video; pagination only."
             }
@@ -212,12 +213,27 @@ final class BuilderTools {
         let number: Value = .object(["type": .string("number"), "minimum": .int(0)])
         let bool: Value = .object(["type": .string("boolean")])
         var fields: [String: Value] = [:]
-        for key in ["clip", "block", "layout", "bumper", "sound", "text", "image", "overlay"] { fields[key] = string }
+        for key in ["clip", "block", "layout", "bumper", "sound", "text", "image", "overlay", "template", "person", "left", "right"] { fields[key] = string }
         for key in ["at", "start", "end", "duration", "source_start", "length"] { fields[key] = number }
         for key in ["track", "scene", "video"] { fields[key] = integer }
         for key in ["cover_all", "muted", "sequential"] { fields[key] = bool }
-        for key in ["speed", "fade_in", "fade_out", "x", "y", "width", "height"] { fields[key] = number }
+        for key in ["speed", "fade_in", "fade_out", "x", "y", "width", "height", "opacity"] { fields[key] = number }
         for key in ["position", "captions", "trans_in", "trans_out"] { fields[key] = string }
+        var styleFields: [String: Value] = [:]
+        for key in ["fontcolor", "fontfamily", "bgcolor", "stroke_color", "highlight_color", "design", "kicker", "accent_color"] {
+            styleFields[key] = .object(["type": BuilderTextStylePatch.nullableFields.contains(key)
+                ? .array([.string("string"), .string("null")]) : .string("string")])
+        }
+        for key in ["box_opacity", "opacity", "stroke_width_em", "shadow_opacity"] {
+            styleFields[key] = .object(["type": .string("number"), "minimum": .int(0), "maximum": .int(1)])
+        }
+        styleFields["fontsize"] = .object(["type": .string("integer"), "minimum": .int(8), "maximum": .int(400)])
+        styleFields["box_radius"] = .object(["type": .array([.string("number"), .string("null")]), "minimum": .int(0)])
+        styleFields["bold"] = bool; styleFields["italic"] = bool
+        if case .object(var patch) = object(styleFields) {
+            patch["minProperties"] = .int(1)
+            fields["style"] = .object(patch)
+        }
         fields["enabled"] = bool
         fields["volume"] = .object(["type": .string("integer"), "minimum": .int(1), "maximum": .int(5)])
         fields["fraction"] = .object(["type": .array([.string("number"), .string("null")]), "minimum": .int(0), "maximum": .int(1)])
@@ -239,6 +255,19 @@ final class BuilderTools {
         fields["filter"] = clipFilterSchema; fields["query"] = querySchema
         // Each operation has exactly the fields accepted by BuilderCommand.
         let variants: [(String, [String], [String])] = [
+            ("set_bumper_mode", ["clip", "mode"], ["clip", "mode"]),
+            ("set_crop_block_duration", ["block", "duration"], ["block", "duration"]),
+            ("split_crop_block", ["at"], ["at"]),
+            ("remove_sound", ["sound"], ["sound"]),
+            ("add_overlay", ["template", "at", "duration", "person"], ["template"]),
+            ("set_image_geometry", ["overlay", "x", "y", "width", "opacity"], ["overlay"]),
+            ("set_overlay_position", ["overlay", "x", "y"], ["overlay", "x", "y"]),
+            ("set_text_style", ["overlay", "style"], ["overlay", "style"]),
+            ("set_clip_volume", ["clip", "volume"], ["clip", "volume"]),
+            ("set_clip_position", ["clip", "position"], ["clip", "position"]),
+            ("set_clip_crop", ["clip", "fraction"], ["clip", "fraction"]),
+            ("split_zoom_feeds", ["clip", "left", "right"], ["clip", "left", "right"]),
+            ("clear_timeline", [], []),
             ("set_sound_volume", ["sound", "volume"], ["sound", "volume"]),
             ("set_sound_range", ["sound", "start", "duration"], ["sound", "start", "duration"]),
             ("move_sound", ["sound", "at"], ["sound", "at"]),
@@ -289,6 +318,15 @@ final class BuilderTools {
             func bounded(_ low: Double, _ high: Double) -> Value {
                 .object(["type": .string("number"), "minimum": .double(low), "maximum": .double(high)])
             }
+            if op == "set_clip_position" {
+                properties["position"] = .object(["enum": .array([.string("top"), .string("center"), .string("bottom"), .null])])
+            }
+            if ["set_image_geometry", "set_overlay_position"].contains(op) {
+                for key in ["x", "y", "opacity"] where allowed.contains(key) { properties[key] = bounded(0, 1) }
+                if allowed.contains("width") { properties["width"] = bounded(0.05, 1) }
+            }
+            if ["set_crop_block_duration", "add_overlay"].contains(op) { properties["duration"] = bounded(0.5, 86400) }
+            if ["split_crop_block", "add_overlay"].contains(op) { properties["at"] = bounded(0, 86400) }
             if op == "set_clip_speed" { properties["speed"] = bounded(0.5, 2) }
             if op == "set_clip_captions" { properties["captions"] = choices(TimelineClip.captionChoices) }
             if op == "set_track_captions" { properties["captions"] = choices(TrackSettings.captionChoices) }
@@ -306,8 +344,21 @@ final class BuilderTools {
                 properties["duration"] = bounded(0.5, 86400)
             }
             properties["op"] = .object(["const": .string(op)])
-            let schema = object(properties, required: ["op"] + required)
+            var schema = object(properties, required: ["op"] + required)
+            if op == "set_image_geometry", case .object(var object) = schema {
+                object["anyOf"] = .array(["x", "y", "width", "opacity"].map {
+                    .object(["required": .array([.string($0)])])
+                })
+                schema = .object(object)
+            }
             let limitations = [
+                "add_overlay": "Use a name from query kind templates. Lower Third accepts an optional roster person key/display name; otherwise creates NAME / ROLE / TITLE. Saved templates use their captured composition.",
+                "set_text_style": "Nonempty patch. design is hero, tag or null. Null clears bgcolor, box_radius, stroke_color, highlight_color, design, kicker, accent_color. Colors accept white, black, red, yellow or renderer-compatible #/0x hex.",
+                "set_clip_position": "Wide Full Screen clips only; null restores the track default.",
+                "set_clip_crop": "Wide Full Screen clips only; null clears the clip crop.",
+                "split_zoom_feeds": "Requires a wide Full Screen clip on track 0, captured source dimensions and the 50-50 Horizontal layout; refuses an existing split partner.",
+                "set_clip_volume": "Bumpers and B-roll only: the exporter ignores main-clip volume. Mute main clips with set_clip_muted or set_track_muted.",
+                "clear_timeline": "Clear every timeline lane and reset settings; all existing lane items count toward the edit budget.",
                 "set_overlay_transitions": "Text/image transitions only; overlay blocks retain their composition transitions.",
                 "set_clip_area_window": "Requires a crop area and captured source dimensions; preserve the current window aspect ratio (or the default area aspect). Width must be at least 0.1.",
                 "set_clip_fades": "B-roll only; each fade is at most half the clip duration.",

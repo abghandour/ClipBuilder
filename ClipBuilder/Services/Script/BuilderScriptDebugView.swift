@@ -60,6 +60,8 @@ struct BuilderScriptDebugView: View {
             library.scenes = store.scenes
             library.people = store.people
             library.layouts = ScreenCropStore.all()
+            library.templates = OverlayTemplateStore.list()
+            library.logoPath = store.activeProfile.logoPath
             library.tags = store.activeProfile.tagSchema.values.flatMap { $0 }
             for (index, bumper) in store.bumpers.enumerated() { library.bumpers["bumper:\(index)"] = bumper }
             for (index, sound) in AssetStore.allFiles(of: .music).enumerated() { library.sounds["sound:\(index)"] = sound.name }
