@@ -1,7 +1,10 @@
 import Foundation
 @testable import Clip_Builder
 
-/// Serial tests use this scope so production profile and settings data is never touched.
+/// Synchronous tests use this scope when they need an empty data folder.
+/// Never await while holding it: the override is process-global and suite
+/// serialization does not isolate it from other suites. Async tests use the
+/// scratch test-host data folder plus their own TempDatabase/TempDirectory.
 /// The override lives only in this process: writing the persisted default would
 /// leave the user's app pointed at a temporary folder if the run were killed.
 final class DataFolderOverride {

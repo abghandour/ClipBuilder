@@ -43,7 +43,8 @@ final class BuilderScriptSession {
     }
 
     @discardableResult
-    func run(_ steps: [BuilderScriptStep]) -> BuilderScriptResult {
+    func run(_ steps: [BuilderScriptStep],
+             onOutcome: ((Int, CommandOutcome, Double) -> Void)? = nil) -> BuilderScriptResult {
         guard state == .ready, let working else { return closedResult() }
         // The whole-list size limit also applies to programmatic callers.
         do {
@@ -51,7 +52,7 @@ final class BuilderScriptSession {
             guard encoded.count <= ScriptRunner.maximumBytes else { return fail("Script exceeds 256 KiB.") }
         } catch { return fail(error.localizedDescription) }
         let runner = ScriptRunner()
-        let outcomes = runner.run(steps, model: working, library: library)
+        let outcomes = runner.run(steps, model: working, library: library, onOutcome: onOutcome)
         let completed = !outcomes.contains(where: \.isRefused)
         candidate = completed ? working.document : nil
         if !completed {

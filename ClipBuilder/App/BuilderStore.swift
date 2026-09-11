@@ -251,6 +251,12 @@ final class BuilderTimelineModel {
     private func registerUndoStep(_ actionName: String) {
         guard mode == .persistent, let undoManager else { return }
         let snapshot = document
+        // An undo manager that does not group by event (tests, scripted
+        // hosts) raises NSInternalInconsistencyException when a step is
+        // registered outside a group; AppKit turns that into a hung process.
+        let needsGroup = !undoManager.groupsByEvent && undoManager.groupingLevel == 0
+        if needsGroup { undoManager.beginUndoGrouping() }
+        defer { if needsGroup { undoManager.endUndoGrouping() } }
         undoManager.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated {
                 model.registerUndoStep(actionName)   // becomes the redo step

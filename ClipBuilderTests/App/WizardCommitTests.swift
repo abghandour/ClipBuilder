@@ -3,7 +3,7 @@ import Testing
 @testable import Clip_Builder
 
 @MainActor
-@Suite("Wizard commit coordinator", .serialized)
+@Suite("Wizard commit coordinator")
 struct WizardCommitTests {
     private func makeStore(_ temp: TempDatabase) async throws -> AppStore {
         let profile = Fixtures.brand(name: "WizardCommitTests")
@@ -34,8 +34,6 @@ struct WizardCommitTests {
 
     @Test("Apply writes timeline/run/before together and Revert restores one undoable snapshot")
     func applyAndRevert() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)
@@ -72,8 +70,6 @@ struct WizardCommitTests {
 
     @Test("Failure on the final SQL write leaves live state, revision and existing undo untouched")
     func failedCommit() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)
@@ -106,8 +102,6 @@ struct WizardCommitTests {
 
     @Test("Failed and discarded outcomes preserve the previous before-version")
     func terminalOutcomes() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)
@@ -128,8 +122,6 @@ struct WizardCommitTests {
 
     @Test("Speech precision survives durable apply and Revert after reopening with no undo manager")
     func speechReopenRevert() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)
@@ -164,8 +156,6 @@ struct WizardCommitTests {
 
     @Test("Database revision conflict and no manager refuse without live mutation")
     func conflicts() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)

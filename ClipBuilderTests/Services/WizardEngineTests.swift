@@ -115,11 +115,9 @@ struct WizardEngineTests {
     }
 }
 
-@Suite(.serialized)
+@Suite
 struct LearnedWizardPromptTests {
     @Test func offPathIsByteIdenticalAndContributorOnlyAppendsItsLines() async throws {
-        let data = try DataFolderOverride()
-        defer { _ = data }
         let engine = WizardEngine(ai: AIService(config: AppSettings().ai), render: RenderEngine())
         var profile = BrandProfile(name: "Test")
         profile.houseStyle = "Local house style"
@@ -153,8 +151,6 @@ struct LearnedWizardPromptTests {
 
 extension LearnedWizardPromptTests {
     @Test func importedFramesCarryContributorLabels() async throws {
-        let data = try DataFolderOverride()
-        defer { _ = data }
         let temp = try TempDirectory()
         let library = LearnedLibrary(root: temp.url)
         var contributor = BrandProfile(name: "Team")

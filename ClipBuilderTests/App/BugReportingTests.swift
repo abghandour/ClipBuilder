@@ -45,8 +45,6 @@ struct BugReportingTests {
 
     @Test("snapshot follows real project selection and project rename")
     func projectContext() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let target = try await temp.database.createProject(profileName: "One", name: "Other")

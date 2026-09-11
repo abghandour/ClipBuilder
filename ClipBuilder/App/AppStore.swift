@@ -3930,7 +3930,7 @@ final class AppStore {
     /// Restores ordinary timeline JSON (runtime clip IDs regenerate and Library
     /// metadata is hydrated once before freezing). A successful Revert deletes
     /// the before-version row; it is not repeatable. Undo does not recreate it.
-    func revertLastWizardRun(timelineID: Int64) async -> Result<Int, ApplyFailure> {
+    func revertLastWizardRun(timelineID: Int64, expectedRunUUID: String? = nil) async -> Result<Int, ApplyFailure> {
         guard !wizardCommitInProgress else { return .failure(.commitInProgress) }
         guard let database, builder.timelineID == timelineID else { return .failure(.identityChanged) }
         wizardCommitInProgress = true
@@ -3943,6 +3943,7 @@ final class AppStore {
             guard let before = try await database.fetchWizardBefore(timelineID: timelineID) else {
                 return .failure(.missingBeforeVersion)
             }
+            if let expectedRunUUID, before.runUUID != expectedRunUUID { return .failure(.staleRevision) }
             try await drainTimelineSaves(database: database, id: timelineID)
             guard self.database === database, generation == profileGeneration,
                   builder.timelineID == timelineID, builder.profileName == profile else {

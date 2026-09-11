@@ -45,9 +45,17 @@ struct ClipBuilderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MainWindowView()
-                .environment(store)
-                .onAppear { terminationDelegate.store = store }
+            if BugReporting.isTestHost {
+                // The unit-test host only needs a process; the full window
+                // tree has crashed under the test runner (SwiftUI executor
+                // checks during hit-testing and alert bindings) and every
+                // such crash is offered to the user as a real app crash.
+                Text("Clip Builder test host").padding()
+            } else {
+                MainWindowView()
+                    .environment(store)
+                    .onAppear { terminationDelegate.store = store }
+            }
         }
         .defaultSize(width: 1200, height: 780)
         .commands {
@@ -407,7 +415,7 @@ struct MainWindowView: View {
 
     private func checkForCrashesWhenReady() {
         guard appeared, !checkedForCrashes, store.currentError == nil,
-              BugReporting.isConfigured else { return }
+              BugReporting.isConfigured, !BugReporting.isTestHost else { return }
         checkedForCrashes = true
         BugReporter.checkForCrashesAndPrompt()
     }

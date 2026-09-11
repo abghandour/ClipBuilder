@@ -38,8 +38,6 @@ struct FakeAIProviderTests {
 
     @Test("visual analysis persists scenes and moments from the provider's reply")
     func analysisPersists() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         let source = try await FixtureVideo.make(in: temp.directory.url, wide: true)
         let videoID = try await temp.database.registerVideo(
@@ -67,8 +65,6 @@ struct FakeAIProviderTests {
 
     @Test("wizard planning turns the provider's reply into a validated plan over real scenes")
     func planFromScenes() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         let source = try await FixtureVideo.make(in: temp.directory.url, wide: true)
         let videoID = try await temp.database.registerVideo(

@@ -48,10 +48,8 @@ struct RenderEngineTests {
 
     @Test("concatenation with every transition keeps the summed length minus the overlap it consumes")
     func concatenateWithEveryTransition() async throws {
-        // Crossfade length comes from the (overridden, default) settings.
-        let scope = try DataFolderOverride()
-        _ = scope
-        let xfadeDuration = TransitionSettings().xfadeDuration
+        // Match the settings used by concatenate in the scratch test host.
+        let xfadeDuration = SettingsStore.loadSettings().transitions.xfadeDuration
         let temp = try TempDirectory(prefix: "ClipBuilderRenderTest")
         let source = try await FixtureVideo.make(in: temp.url, wide: false)
         let render = RenderEngine()

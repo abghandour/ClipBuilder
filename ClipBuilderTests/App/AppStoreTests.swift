@@ -111,8 +111,6 @@ struct AppStoreTests {
 
     @Test("regression: switching projects does not invalidate the profile generation")
     func projectSwitchKeepsProfileGeneration() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let other = try await temp.database.createProject(profileName: "One", name: "Other")
@@ -136,8 +134,6 @@ struct AppStoreTests {
 
     @Test("regression: a project with a job in flight cannot be deleted")
     func busyProjectCannotBeDeleted() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let busy = try await temp.database.createProject(profileName: "One", name: "Busy")
@@ -158,8 +154,6 @@ struct AppStoreTests {
 
     @Test("timelines switch and cycle within the project; wizard rows are skipped")
     func timelineSwitching() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let homeID = try #require(try await temp.database.homeProjectID(profileName: "One"))
@@ -215,8 +209,6 @@ struct AppStoreTests {
 
     @Test("launch restores the most recently opened project and its UI state")
     func restoresLastProject() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let projectID = try await temp.database.createProject(profileName: "One", name: "Last Project")
@@ -252,8 +244,6 @@ struct AppStoreTests {
 
     @Test("launch falls back to Home after the last project is deleted")
     func deletedLastProjectFallsBackHome() async throws {
-        let scope = try DataFolderOverride()
-        _ = scope
         let temp = try TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let homeID = try #require(try await temp.database.homeProjectID(profileName: "One"))

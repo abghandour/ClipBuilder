@@ -3,11 +3,9 @@ import Testing
 
 @testable import Clip_Builder
 
-@Suite(.serialized) @MainActor
+@Suite @MainActor
 struct AssetSyncExecutorTests {
     @Test func foldersBothWaysAndExactNames() async throws {
-        let data = try DataFolderOverride()
-        defer { _ = data }
         let fixture = try AssetSyncFixture { request, _ in
             if request.httpMethod == "POST" {
                 let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]

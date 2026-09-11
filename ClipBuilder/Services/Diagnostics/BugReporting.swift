@@ -9,6 +9,18 @@ enum BugReporting {
     private(set) static var logDirectory: URL?
     static let unavailableMessage = "Bug reporting is not configured in this build"
 
+    /// True when this process is the unit-test host. The host runs the same
+    /// bundle from a temporary path, so its crashes land in the user's
+    /// DiagnosticReports under the app's name and would otherwise be offered
+    /// as "the app quit unexpectedly" on the next launch of either process.
+    nonisolated static var isTestHost: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+            || environment["XCTestSessionIdentifier"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }
+
     /// The override permits missing-key tests without configuring the process-wide kit.
     static func configureIfPossible(store: AppStore, info: [String: Any]? = nil) {
         startFieldDiagnostics()
@@ -39,7 +51,7 @@ enum BugReporting {
         var config = BugReporterConfig(
             appID: "clipbuilder", ingestKey: key, endpoint: url, logDirectory: directory,
             identity: .optional, attachmentSources: [.files, .drop],
-            captureScreenshotByDefault: true, pickUpCrashes: true
+            captureScreenshotByDefault: true, pickUpCrashes: !isTestHost
         )
         config.contextProvider = { snapshot.read().fields }
         config.redaction = config.redaction.appending([

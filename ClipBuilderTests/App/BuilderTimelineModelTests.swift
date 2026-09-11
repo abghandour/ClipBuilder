@@ -137,14 +137,15 @@ struct BuilderTimelineModelTests {
     }
 
     @Test("regression: clear cancels a pending autosave")
-    func clearCancelsPendingAutosave() async throws {
+    func clearCancelsPendingAutosave() throws {
         let scope = try DataFolderOverride()
         _ = scope
         let model = BuilderTimelineModel()
         model.load(profileName: "Clear")
         model.addScene(Fixtures.scene())
         model.clear()
-        try await Task.sleep(for: .milliseconds(650))
+        // Force any pending save without yielding while the global override is held.
+        model.flushPendingAutosave()
         #expect(BuilderStateStore.load(profileName: "Clear") == nil)
         #expect(model.document.videoTrack.isEmpty)
     }

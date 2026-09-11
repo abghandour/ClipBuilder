@@ -14,6 +14,8 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
                     track: Int, duration: Double? = nil, sourceStart: Double? = nil, coverAll: Bool)
     case setClipRole(clip: String, role: ClipRole)
     case setCutawayAudio(clip: String, audio: CutawayAudio)
+    case setClipMuted(clip: String, muted: Bool)
+    case setCutawayCoverAll(clip: String, coverAll: Bool)
     case duplicateClip(clip: String)
     case setTrackSequential(track: Int, sequential: Bool)
     case addCropBlock(layout: String, at: Double? = nil, duration: Double? = nil)
@@ -88,6 +90,14 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             self = .setCutawayAudio(
                 clip: try c.decode(String.self, forKey: ScriptKey("clip")),
                 audio: try c.decode(CutawayAudio.self, forKey: ScriptKey("audio")))
+        case "set_clip_muted":
+            try c.only(["op", "clip", "muted"])
+            self = .setClipMuted(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                                 muted: try c.decode(Bool.self, forKey: ScriptKey("muted")))
+        case "set_cutaway_cover_all":
+            try c.only(["op", "clip", "cover_all"])
+            self = .setCutawayCoverAll(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                                       coverAll: try c.decode(Bool.self, forKey: ScriptKey("cover_all")))
         case "duplicate_clip":
             try c.only(["op", "clip"])
             self = .duplicateClip(clip: try c.decode(String.self, forKey: ScriptKey("clip")))
@@ -198,6 +208,14 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             try c.encode("set_cutaway_audio", forKey: ScriptKey("op"))
             try c.encode(clip, forKey: ScriptKey("clip"))
             try c.encode(audio, forKey: ScriptKey("audio"))
+        case let .setClipMuted(clip, muted):
+            try c.encode("set_clip_muted", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(muted, forKey: ScriptKey("muted"))
+        case let .setCutawayCoverAll(clip, coverAll):
+            try c.encode("set_cutaway_cover_all", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(coverAll, forKey: ScriptKey("cover_all"))
         case let .duplicateClip(clip):
             try c.encode("duplicate_clip", forKey: ScriptKey("op"))
             try c.encode(clip, forKey: ScriptKey("clip"))

@@ -6,7 +6,7 @@ import Testing
 @Suite("Builder script sessions", .serialized)
 struct BuilderScriptSessionTests {
     @Test("Transient lifetime never writes, calls UI/autosave hooks, or registers undo")
-    func zeroWrites() async throws {
+    func zeroWrites() throws {
         let scope = try DataFolderOverride()
         let model = ScriptFixtures.model()
         let undo = UndoManager()
@@ -24,7 +24,7 @@ struct BuilderScriptSessionTests {
         model.closeTimeline()
         model.load(profileName: "Scratch")
         model.addText()
-        try await Task.sleep(for: .milliseconds(600))
+        // Flush synchronously: the process-global override must never span an await.
         model.flushPendingAutosave()
         #expect(callbacks == 0 && !undo.canUndo)
         let files = try FileManager.default.contentsOfDirectory(at: scope.directory.url, includingPropertiesForKeys: nil)

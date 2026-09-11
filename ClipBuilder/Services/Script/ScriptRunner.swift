@@ -38,7 +38,8 @@ final class ScriptRunner {
     }
 
     func run(_ steps: [BuilderScriptStep], model: BuilderTimelineModel,
-             library: ScriptLibrarySnapshot) -> [CommandOutcome] {
+             library: ScriptLibrarySnapshot,
+             onOutcome: ((Int, CommandOutcome, Double) -> Void)? = nil) -> [CommandOutcome] {
         guard model.mode == .transient else {
             return [.refused(code: "live_model", reason: "Scripts require a transient model.")]
         }
@@ -55,7 +56,14 @@ final class ScriptRunner {
         var outcomes: [CommandOutcome] = []
         var resultBytes = 0
         let started = ContinuousClock.now
-        for step in steps {
+        for (index, step) in steps.enumerated() {
+            let stepStart = Date.now
+            let outcomeCount = outcomes.count
+            defer {
+                if outcomes.count > outcomeCount, let outcome = outcomes.last {
+                    onOutcome?(index, outcome, Date.now.timeIntervalSince(stepStart))
+                }
+            }
             if started.duration(to: .now) >= .seconds(10) {
                 outcomes.append(.refused(code: "timeout", reason: "Preview exceeded ten seconds.")); break
             }
@@ -273,6 +281,17 @@ final class ScriptRunner {
             let value = try clip(reference)
             guard value.isCutaway else { throw ScriptError.invalid("Audio choice requires a cutaway.") }
             model.setCutawayAudio(value.uid, audio)
+        case .setClipMuted(let reference, let muted):
+            let value = try clip(reference)
+            if value.isCutaway {
+                model.setCutawayAudio(value.uid, muted ? .muted : .mixed)
+            } else {
+                model.updateClip(value.uid) { $0.muted = muted }
+            }
+        case .setCutawayCoverAll(let reference, let coverAll):
+            let value = try clip(reference)
+            guard value.isCutaway else { throw ScriptError.invalid("Cover all areas requires a selected B-roll clip.") }
+            model.setCutawayCoverAll(value.uid, coverAll)
         case .duplicateClip(let reference):
             model.duplicateClip(try clip(reference).uid)
             target = try addedClip(); created["clip"] = target?.uuidString

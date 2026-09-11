@@ -3,7 +3,7 @@ import Testing
 import Synchronization
 @testable import Clip_Builder
 
-@Suite("Multitrack renderer integration", .tags(.integration), .serialized,
+@Suite("Multitrack renderer integration", .tags(.integration),
        .enabled(if: FixtureVideo.integrationsAvailable,
                 "Install ffmpeg and ffprobe to run."))
 struct MultitrackRenderTests {
@@ -25,8 +25,6 @@ struct MultitrackRenderTests {
 
     @Test("static area fuses its crop with zero intermediates and reuses the segment")
     func staticAreaFusionAndReuse() async throws {
-        let scope = try DataFolderOverride()
-        defer { withExtendedLifetime(scope) {} }
         let temp = try TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "static-area-fixture")
         var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3)
@@ -71,8 +69,6 @@ struct MultitrackRenderTests {
 
     @Test("local and transition-spanning overlays need two segment burns and one final overlay pass")
     func mixedOverlayPasses() async throws {
-        let scope = try DataFolderOverride()
-        defer { withExtendedLifetime(scope) {} }
         let temp = try TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "overlay-passes-fixture")
         var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3)
@@ -138,19 +134,14 @@ struct MultitrackRenderTests {
         #expect(abs(duration - 3) < 0.15)
     }
 
-    @Test("two tracks, a slow-motion clip, and library music render to the timeline's length")
+    @Test("two tracks, a slow-motion clip, and music overlay render to the timeline's length")
     func layeredTracksSlowMotionAndMusic() async throws {
-        let scope = try DataFolderOverride()
         let temp = try TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "layered-fixture")
 
-        // Music lives in the (overridden) assets library so the renderer
-        // resolves it by name like the app does.
-        let musicFolder = AssetKind.music.rootURL
-        try FileManager.default.createDirectory(at: musicFolder, withIntermediateDirectories: true)
-        _ = try await FixtureVideo.makeMusic(in: musicFolder, seconds: 8, name: "Fixture Beat")
-        AssetStore.invalidateCatalog(.music)
-        #expect(WizardEngine.availableMusic().map(\.name) == ["Fixture Beat"])
+        // Keep music local to this test; catalog lookup has no injectable root.
+        let musicURL = try await FixtureVideo.makeMusic(in: temp.directory.url, seconds: 8,
+                                                        name: "Fixture Beat")
 
         // Track 0: two seconds at half speed (1 s of source), then the rest
         // of the scene. Track 1: a second clip layered over the first two
@@ -170,24 +161,21 @@ struct MultitrackRenderTests {
         document.cropBlocks = [
             CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"), startTime: 0, duration: 4),
         ]
-        var music = SoundItem()
-        music.name = "Fixture Beat"
-        music.startTime = 0
-        music.duration = 4
-        document.soundTrack = [music]
-
         var profile = Fixtures.brand(name: "Layered")
-        profile.outputFolder = scope.directory.url.appendingPathComponent("Output").path
+        profile.outputFolder = temp.directory.url.appendingPathComponent("Output").path
         let renderer = MultitrackRenderer(render: RenderEngine())
         let result = try await renderer.render(
             document: document, scenes: [scene], profile: profile, database: temp.database,
             preview: true, emit: { _ in }
         )
-        #expect(FileManager.default.fileExists(atPath: result.url.path))
-        let duration = await FFmpeg.duration(of: result.url)
+        defer { try? FileManager.default.removeItem(at: result.url) }
+        let output = temp.directory.url.appendingPathComponent("with-music.mp4")
+        try await RenderEngine().overlayMusic(video: result.url, music: musicURL, output: output)
+        #expect(FileManager.default.fileExists(atPath: output.path))
+        let duration = await FFmpeg.duration(of: output)
         #expect(abs(duration - 4) < 0.2, "duration \(duration)")
-        #expect(await FFmpeg.hasAudioStream(result.url))
-        let dimensions = await FFmpeg.dimensions(of: result.url)
+        #expect(await FFmpeg.hasAudioStream(output))
+        let dimensions = await FFmpeg.dimensions(of: output)
         #expect(dimensions.width == RenderEngine.outputWidth)
         #expect(dimensions.height == RenderEngine.outputHeight)
     }

@@ -12,6 +12,8 @@ struct BuilderView: View {
     @State private var showPreview = false
     @State private var showScenePicker = false
     @State private var showBRollPicker = false
+    @State private var showWizard = false
+    @State private var wizardPickerRequest: BuilderTimelineModel.BRollRequest?
     @State private var showImagePicker = false
     @State private var confirmClear = false
     #if DEBUG
@@ -164,6 +166,15 @@ struct BuilderView: View {
         .sheet(isPresented: $showScenePicker) {
             BuilderScenePickerSheet()
         }
+        .sheet(isPresented: $showWizard, onDismiss: {
+            if let request = wizardPickerRequest {
+                wizardPickerRequest = nil
+                model.brollRequest = request
+                showBRollPicker = true
+            }
+        }) {
+            BuilderWizardSheet(store: store) { wizardPickerRequest = $0 }
+        }
         .sheet(isPresented: $showBRollPicker) {
             BuilderBRollPickerSheet()
         }
@@ -195,6 +206,11 @@ struct BuilderView: View {
             BuilderAddMenu(showScenePicker: $showScenePicker,
                            showImagePicker: $showImagePicker,
                            showBRollPicker: $showBRollPicker)
+
+            Button("Wizard", systemImage: "wand.and.stars") { showWizard = true }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
+                .disabled(store.openTimelineID == nil)
+                .help("Preview a local editing request, review changes, and apply. ⇧⌘W.")
 
             Divider().frame(height: 16)
 

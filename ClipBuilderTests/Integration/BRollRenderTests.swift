@@ -5,7 +5,7 @@ import Testing
 /// What the pipeline actually produces for B-roll: the picture inside the
 /// area, the dialogue underneath, and the dissolve in between. These render
 /// short real files, so they only run where ffmpeg is installed.
-@Suite("B-roll rendering integration", .tags(.integration), .serialized,
+@Suite("B-roll rendering integration", .tags(.integration),
        .enabled(if: FixtureVideo.integrationsAvailable,
                 "Install ffmpeg and ffprobe to run."))
 struct BRollRenderTests {
@@ -93,8 +93,6 @@ struct BRollRenderTests {
 
     @Test("a muted cutaway keeps the dialogue; a mixed one adds to it")
     func audioLevels() async throws {
-        let scope = try DataFolderOverride()
-        defer { withExtendedLifetime(scope) {} }
         let temp = try TempDatabase()
         let main = try await FixtureVideo.make(in: temp.directory.url)
         let silent = try await redSource(in: temp.directory.url, tone: false)
@@ -117,8 +115,6 @@ struct BRollRenderTests {
 
     @Test("the cutaway fills its area and leaves the rest of the frame alone")
     func areaPixels() async throws {
-        let scope = try DataFolderOverride()
-        defer { withExtendedLifetime(scope) {} }
         let temp = try TempDatabase()
         let main = try await FixtureVideo.make(in: temp.directory.url)
         let broll = try await redSource(in: temp.directory.url, tone: false)
@@ -137,8 +133,6 @@ struct BRollRenderTests {
 
     @Test("a dissolving cutaway is part way in halfway through the fade")
     func dissolveFrames() async throws {
-        let scope = try DataFolderOverride()
-        defer { withExtendedLifetime(scope) {} }
         let temp = try TempDatabase()
         let main = try await FixtureVideo.make(in: temp.directory.url)
         let broll = try await redSource(in: temp.directory.url, tone: false)
