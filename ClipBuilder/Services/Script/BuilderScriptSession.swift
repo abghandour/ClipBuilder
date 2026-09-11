@@ -203,6 +203,23 @@ final class BuilderScriptSession {
         hydration.end(runUUID)
     }
 
+    /// Read-only access to the same transient model used by scripts.
+    func query(_ query: BuilderQuery) throws -> BuilderQueryResult {
+        guard state == .ready, !runningPrerequisites, let working else {
+            throw ScriptError.invalid("Session no longer accepts queries.")
+        }
+        return try library.withLayouts {
+            try query.execute(model: working, library: library) { reference in
+                guard let id = UUID(uuidString: reference) else {
+                    throw ScriptError.invalid("Resolve an existing session UUID first.")
+                }
+                return id
+            }
+        }
+    }
+
+    var workingDocument: TimelineDocument { working?.document ?? candidate ?? baseline }
+
     func diff() -> TimelineDiff {
         library.withLayouts {
             frozenDiff ?? TimelineDiff(before: baseline, after: working?.document ?? baseline)
@@ -238,7 +255,8 @@ final class BuilderScriptSession {
         if !runningPrerequisites { endHydration() }
     }
 
-    private func fail(_ reason: String) -> BuilderScriptResult {
+    func fail(_ reason: String) -> BuilderScriptResult {
+        guard state != .completed, state != .discarded else { return closedResult() }
         frozenDiff = diff()
         working?.cancelPendingAutosave()
         working = nil

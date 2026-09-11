@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		000000000000000000000401 /* BugReporterKit in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000403 /* BugReporterKit */; };
+		000000000000000000000411 /* MCP in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000413 /* MCP */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +58,7 @@
 			isa = PBXFrameworksBuildPhase;
 			files = (
 				000000000000000000000401 /* BugReporterKit in Frameworks */,
+				000000000000000000000411 /* MCP in Frameworks */,
 			);
 		};
 		000000000000000130000001 /* Frameworks */ = {
@@ -112,6 +114,7 @@
 			name = "Clip Builder";
 			packageProductDependencies = (
 				000000000000000000000403 /* BugReporterKit */,
+				000000000000000000000413 /* MCP */,
 			);
 			productName = MyApp;
 			productReference = 000000000000000000000120 /* Clip Builder.app */;
@@ -193,6 +196,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				000000000000000000000402 /* XCLocalSwiftPackageReference "../VerticalCorn" */,
+				000000000000000000000412 /* XCRemoteSwiftPackageReference "swift-sdk" */,
 			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
@@ -582,10 +586,26 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		000000000000000000000412 /* XCRemoteSwiftPackageReference "swift-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/modelcontextprotocol/swift-sdk";
+			requirement = {
+				kind = exactVersion;
+				version = 0.12.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		000000000000000000000403 /* BugReporterKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BugReporterKit;
+		};
+		000000000000000000000413 /* MCP */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 000000000000000000000412 /* XCRemoteSwiftPackageReference "swift-sdk" */;
+			productName = MCP;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

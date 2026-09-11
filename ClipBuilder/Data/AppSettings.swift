@@ -3,6 +3,7 @@ import Foundation
 /// App-level (profile-independent) settings — mirrors data/app_settings.json
 /// from the Python app: analysis mode, transcription provider, AI routing.
 nonisolated struct AppSettings: Codable, Sendable {
+    var builderAgent = BuilderAgentLimits()
     var analysisMode: String = "visual"          // visual | speech
     var transcribeProvider: String = "apple"     // apple (SpeechAnalyzer) — cloud providers can be added later
     var transcribeModel: String = ""
@@ -15,6 +16,7 @@ nonisolated struct AppSettings: Codable, Sendable {
     var podcast: PodcastSettings = PodcastSettings()
 
     enum CodingKeys: String, CodingKey {
+        case builderAgent = "builder_agent"
         case analysisMode = "analysis_mode"
         case transcribeProvider = "transcribe_provider"
         case transcribeModel = "transcribe_model"
@@ -31,6 +33,7 @@ nonisolated struct AppSettings: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        builderAgent = try container.decodeIfPresent(BuilderAgentLimits.self, forKey: .builderAgent) ?? BuilderAgentLimits()
         analysisMode = try container.decodeIfPresent(String.self, forKey: .analysisMode) ?? "visual"
         let provider = try container.decodeIfPresent(String.self, forKey: .transcribeProvider) ?? "apple"
         // Python's local provider is faster-whisper; this app transcribes with
@@ -197,6 +200,7 @@ nonisolated enum AICatalog {
     static let tasks = ["analysis", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay", "naming", "curate", "search", "soundbites", "cover", "dedupe", "trim", "gap", "onboard"]
 
     static let taskLabels: [String: String] = [
+        "builder_agent": "Builder editing",
         "analysis": "Video analysis",
         "wizard": "Reel planning",
         "critique": "Reel critique",

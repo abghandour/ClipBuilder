@@ -313,3 +313,73 @@ struct WizardSheetModelTests {
     }
 
 }
+
+extension WizardSheetModelTests {
+    @Test(arguments: [false, true])
+    func agentRoutingFreezesAndPersistsEventsThroughTerminalAction(apply: Bool) async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        store.settings.ai.tasks["builder_agent"] = "claude"
+        store.settings.ai.taskModels["builder_agent"] = "fixture-model"
+        store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)
+        let suite = "WizardAgentTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var library = ScriptFixtures.library()
+        library.projectID = store.activeProjectID
+        let snapshot = library
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { snapshot }, agentExecutor: { _, launch, _, consume in
+                let data = try Data(contentsOf: launch.root.appendingPathComponent("mcp.json"))
+                let config = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let servers = config?["mcpServers"] as? [String: Any]
+                let server = servers?["clipbuilder"] as? [String: Any]
+                let headers = server?["headers"] as? [String: String]
+                let urlString = try #require(server?["url"] as? String)
+                let url = try #require(URL(string: urlString))
+                let authorization = try #require(headers?["Authorization"])
+                let bodies = [
+                    #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fake-cli","version":"1"}}}"#,
+                    #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                    #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"query":{"kind":"clips"}}}}"#,
+                    #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[{"command":{"op":"add_text","text":"fixture"}}]}}}"#
+                ]
+                try consume(Data((#"{"type":"system","tools":["mcp__clipbuilder__query","mcp__clipbuilder__run_script"]}"# + "\n").utf8))
+                for body in bodies {
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "POST"; request.httpBody = Data(body.utf8)
+                    request.setValue(authorization, forHTTPHeaderField: "Authorization")
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.setValue("application/json", forHTTPHeaderField: "Accept")
+                    request.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
+                    let (_, response) = try await URLSession.shared.data(for: request)
+                    #expect([200, 202].contains(try #require(response as? HTTPURLResponse).statusCode))
+                }
+                try consume(Data((#"{"type":"result","subtype":"success","result":"Added the fixture text."}"# + "\n").utf8))
+                return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
+            })
+        #expect(model.provider == .claude)
+        let before = store.builder.document
+        model.request = "add some fixture text using the agent"
+        await model.run()
+        #expect(model.phase == .preview && model.canApply)
+        #expect(store.builder.document == before)
+        #expect(model.agentEvents.map(\.sequence) == [1, 2, 3])
+        #expect(model.agentEvents.compactMap(\.toolName) == ["query", "run_script"])
+        let id = try #require(store.builder.timelineID)
+        let saved = try #require(try await temp.database.fetchBuilderRuns(timelineID: id).first)
+        #expect(saved.provider == "claude" && saved.model == "fixture-model" && saved.durationSeconds != nil)
+        #expect(saved.status == .completed && saved.eventsJSON.contains("run_script"))
+        let undo = UndoManager(); undo.groupsByEvent = false
+        store.builder.undoManager = undo
+        if apply { await model.apply() } else { await model.discard() }
+        let finished = try #require(try await temp.database.fetchBuilderRuns(timelineID: id).first)
+        #expect(finished.status == (apply ? .applied : .discarded) && finished.eventsJSON == saved.eventsJSON)
+        #expect(finished.provider == "claude")
+        if apply {
+            #expect(model.phase == .applied && store.builder.document != before && undo.canUndo)
+            undo.undo()
+            #expect(store.builder.document == before)
+        } else { #expect(store.builder.document == before) }
+    }
+}

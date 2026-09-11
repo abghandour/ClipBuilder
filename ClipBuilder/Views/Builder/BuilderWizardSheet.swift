@@ -14,7 +14,7 @@ struct BuilderWizardSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Builder Wizard").font(.headline)
-            Text("Preview a local editing request, review every change, then Apply.")
+            Text("Preview an editing request, review every change, then Apply.")
                 .font(.caption).foregroundStyle(.secondary)
             TextField("For example: remove clips with Alex", text: $model.request, axis: .vertical)
                 .lineLimit(3...6)
@@ -25,6 +25,14 @@ struct BuilderWizardSheet: View {
                 #else
                 .help("Enter one supported request using names and tags from this profile. Times are timeline positions.")
                 #endif
+            Picker("Provider", selection: $model.provider) {
+                ForEach(BuilderAgentProvider.allCases) { provider in
+                    Text(provider.label).tag(provider).disabled(provider.disabledReason != nil)
+                }
+            }
+            .disabled(model.busy || model.phase == .awaitingPrerequisites)
+            .onChange(of: model.provider) { _, _ in model.saveProviderPreference() }
+            .help("Local works without a provider. Claude uses only Builder tools. Codex and Gemini await confinement and credential validation.")
             HStack(spacing: Theme.spaceM) {
                 Menu("Recent Requests") {
                     ForEach(model.history, id: \.self) { request in
@@ -94,6 +102,19 @@ struct BuilderWizardSheet: View {
                             }
                         }
                         .help("Inspect all document changes, including indirect layout, framing, and lane changes.")
+                    }
+                    if !model.agentEvents.isEmpty {
+                        Text("Tool outcomes").font(.subheadline.weight(.semibold))
+                        ForEach(model.agentEvents) { event in
+                            Text("\(event.sequence). \(event.toolName ?? "run") · \(event.outcome.rawValue) · \(event.argumentBytes) B in / \(event.resultBytes) B out · \(Int(event.duration * 1000)) ms")
+                                .font(.caption).monospacedDigit().textSelection(.enabled)
+                                .help("Request \(event.requestID ?? "none"). \(event.sanitizedArguments ?? "")")
+                        }
+                    }
+                    if !model.agentSummary.isEmpty {
+                        Text("Agent explanation").font(.subheadline.weight(.semibold))
+                        Text(model.agentSummary).textSelection(.enabled)
+                        Text("This explanation is not evidence of success. Review tool outcomes and the diff.").font(.caption)
                     }
                     if !model.log.isEmpty {
                         Divider()

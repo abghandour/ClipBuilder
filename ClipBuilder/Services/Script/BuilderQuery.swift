@@ -177,7 +177,7 @@ nonisolated struct BuilderQueryResult: Codable, Sendable, Equatable {
 extension BuilderQuery {
     func execute(model: BuilderTimelineModel, library: ScriptLibrarySnapshot,
                  resolve: (String) throws -> UUID) throws -> BuilderQueryResult {
-        guard offset >= 0, (1...200).contains(limit), threshold.isFinite, threshold >= 0.05,
+        guard offset >= 0, offset <= 1_000_000, (1...200).contains(limit), threshold.isFinite, threshold >= 0.05,
               threshold <= 60 else { throw ScriptError.invalid("Invalid query limits or silence threshold.") }
         guard (filter == nil || kind == .clips), (sceneFilter == nil || kind == .scenes),
               (!includeHidden || kind == .people),

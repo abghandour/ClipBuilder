@@ -7,6 +7,17 @@ import Observation
 final class WizardSheetModel {
     enum Phase: Equatable { case idle, awaitingPrerequisites, running, preview, found, unrecognised, refused, applying, applied, discarded }
     var request = ""
+    var provider: BuilderAgentProvider = .local
+    private(set) var agentEvents: [BuilderRunEvent] = []
+    private(set) var agentSummary = ""
+    @ObservationIgnored private var agentRun: BuilderAgentRun?
+    @ObservationIgnored private var pendingAgent = false
+    @ObservationIgnored private var runProvider: BuilderAgentProvider = .local
+    @ObservationIgnored private var runModel: String?
+    @ObservationIgnored private var runBinary: String?
+    @ObservationIgnored private var runLimits = BuilderAgentLimits()
+    @ObservationIgnored private var agentProvenance: AIProvenance?
+    @ObservationIgnored private var agentAuditSaved = false
     private(set) var phase: Phase = .idle
     private(set) var history: [String] = []
     private(set) var log: [String] = []
@@ -33,6 +44,7 @@ final class WizardSheetModel {
     @ObservationIgnored private let store: AppStore
     @ObservationIgnored private let database: Database?
     @ObservationIgnored private let prerequisites: BuilderPrerequisites
+    @ObservationIgnored private let agentExecutor: BuilderAgentRun.Executor?
     @ObservationIgnored private let historyStore: BuilderWizardHistory
     @ObservationIgnored private let loadLibrary: @MainActor () async throws -> ScriptLibrarySnapshot
     @ObservationIgnored private var task: Task<Void, Never>?
@@ -43,8 +55,10 @@ final class WizardSheetModel {
 
     init(store: AppStore, history: BuilderWizardHistory = BuilderWizardHistory(),
          loadLibrary: (@MainActor () async throws -> ScriptLibrarySnapshot)? = nil,
-         prerequisites: BuilderPrerequisites? = nil) {
+         prerequisites: BuilderPrerequisites? = nil,
+         agentExecutor: BuilderAgentRun.Executor? = nil) {
         self.store = store
+        self.agentExecutor = agentExecutor
         self.prerequisites = prerequisites ?? store.builderPrerequisites
         database = store.database
         historyStore = history
@@ -52,6 +66,9 @@ final class WizardSheetModel {
         timelineID = store.builder.timelineID
         projectID = store.activeProjectID
         self.history = history.requests(profile: profile)
+        // The saved provider choice is honoured only while that provider is enabled.
+        if let saved = BuilderAgentProvider(rawValue: store.settings.ai.tasks["builder_agent"] ?? ""),
+           saved.disabledReason == nil { provider = saved }
         self.loadLibrary = loadLibrary ?? { try await BuilderWizardLibrary.snapshot(store: store) }
     }
 
@@ -75,7 +92,16 @@ final class WizardSheetModel {
         }
     }
 
-    func beginRun() { task = Task { await run() } }
+    func saveProviderPreference() {
+        guard !busy, phase != .awaitingPrerequisites, provider.disabledReason == nil else { return }
+        store.settings.ai.tasks["builder_agent"] = provider.rawValue
+        store.saveSettings()
+    }
+
+    func beginRun() {
+        guard task == nil, !busy else { return }
+        task = Task { await run(); task = nil }
+    }
 
     func run(program suppliedProgram: BuilderProgram? = nil) async {
         guard !busy, !dismissed else { return }
@@ -86,6 +112,11 @@ final class WizardSheetModel {
         generation += 1
         let token = generation
         let revision = store.builder.revision
+        runProvider = provider
+        let configuredAgent = store.settings.ai.providers[runProvider.rawValue]
+        runModel = store.settings.ai.taskModels["builder_agent"] ?? configuredAgent?.model
+        runBinary = configuredAgent?.bin
+        runLimits = store.settings.builderAgent
         runRequest = request.trimmingCharacters(in: .whitespacesAndNewlines)
         historyStore.add(runRequest, profile: profile)
         history = historyStore.requests(profile: profile)
@@ -93,6 +124,7 @@ final class WizardSheetModel {
         log = ["Collecting the current Library snapshot…"]
         reasons = []; failure = nil; diff = nil; diffLines = []; results = []; findContext = nil
         pendingSteps = nil; reparseAfterPrerequisites = false; prerequisiteDisclosures = []; persistentEffects = []
+        agentEvents = []; agentSummary = ""; agentProvenance = nil; agentAuditSaved = false; pendingAgent = false
         let started = Date.now
         do {
             let library = try await loadLibrary()
@@ -111,6 +143,23 @@ final class WizardSheetModel {
                 #else
                 program = BuilderRequestParser().parse(runRequest, context: context)
                 #endif
+            }
+            if runProvider != .local, suppliedProgram == nil {
+                if let reason = runProvider.disabledReason { throw ScriptError.invalid(reason) }
+                let disclosed: [BuilderScriptStep]
+                switch program {
+                case .deferred(let steps), .script(let steps): disclosed = steps.filter { $0.command.prerequisite != nil }
+                default: disclosed = []
+                }
+                if disclosed.isEmpty {
+                    let session = BuilderScriptSession(live: store.builder, library: library, hydration: store.builderLibraryHydration)
+                    self.session = session
+                    await executeAgent(session: session, confirmed: [], token: token)
+                } else {
+                    pendingAgent = true
+                    awaitPrerequisites(disclosed, library: library)
+                }
+                return
             }
             appendLog("Parser finished in \(milliseconds(since: parseStarted)).")
             switch program {
@@ -199,7 +248,10 @@ final class WizardSheetModel {
         if !result.completed { appendLog("Run refused. No timeline changes applied.") }
     }
 
-    func beginConfirmedPrerequisites() { task = Task { await confirmPrerequisites() } }
+    func beginConfirmedPrerequisites() {
+        guard task == nil else { return }
+        task = Task { await confirmPrerequisites(); task = nil }
+    }
 
     /// One explicit confirmation covers this frozen program only. Library work
     /// is saved immediately, independently of manual timeline Apply.
@@ -208,6 +260,11 @@ final class WizardSheetModel {
               let steps = pendingSteps, let session else { return }
         pendingSteps = nil
         phase = .running
+        if pendingAgent {
+            pendingAgent = false
+            await executeAgent(session: session, confirmed: steps.map(\.command), token: generation)
+            return
+        }
         let token = generation
         let started = Date.now
         let library = session.library
@@ -314,26 +371,31 @@ final class WizardSheetModel {
         // The captured database/timeline remain the audit owner after a switch.
         // Clear preview synchronously before suspension, but retain its immutable identity.
         let record = BuilderRunRecord(runUUID: session.runUUID, timelineID: session.timelineID ?? 0,
-                                      request: runRequest, provider: "local", durationSeconds: duration,
+                                      request: runRequest, provider: provenance.provider, model: provenance.model, durationSeconds: duration,
                                       status: .discarded, baselineRevision: session.baselineRevision)
+        let alreadyFailed = agentAuditSaved && session.state == .failed
+        agentRun?.cancel()
         session.discard()
         pendingSteps = nil
         phase = .discarded
         appendLog("No timeline changes applied." + (persistentEffects.isEmpty ? "" : " Library work already saved remains."))
         do {
-            if let database, session.timelineID != nil { try await database.recordBuilderRun(record) }
+            if let database, session.timelineID != nil, !alreadyFailed { try await database.recordBuilderRun(record) }
         } catch { failure = .persistence(error.localizedDescription); appendLog(failureMessage ?? "Could not record discard.") }
     }
 
     func cancelRun() {
         guard phase == .running else { return }
+        agentRun?.cancel()
         task?.cancel()
         appendLog("Cancelling and waiting for Library work to stop…")
     }
 
     func dismiss() {
+        guard !dismissed else { return }
         dismissed = true
         generation += 1
+        agentRun?.cancel()
         let draining = task
         draining?.cancel()
         task = nil
@@ -368,8 +430,77 @@ final class WizardSheetModel {
         }
     }
 
+    private func executeAgent(session: BuilderScriptSession, confirmed: [BuilderCommand], token: Int) async {
+        let budget = BuilderRunBudget(runLimits)
+        let library = session.library
+        let language = store.settings.transcribeLanguage
+        let profileGeneration = store.profileGeneration
+        let tools = BuilderTools(session: session, budget: budget, confirmedPrerequisites: confirmed,
+            ensure: { [self] steps in
+                await session.run(steps, prerequisites: prerequisites, confirmed: true,
+                    refreshLibrary: { [database] in
+                        guard let database else { throw ApplyFailure.identityChanged }
+                        return try await library.refreshed(database: database, language: language)
+                    }, identityMatches: { [self] in identityMatches && !dismissed && token == generation },
+                    onPrerequisite: { [self] _, _, report in
+                        persistentEffects += report.effects
+                    })
+            })
+        let run: BuilderAgentRun
+        if let agentExecutor { run = BuilderAgentRun(provider: runProvider, model: runModel, tools: tools, executor: agentExecutor) }
+        else { run = BuilderAgentRun(provider: runProvider, model: runModel, tools: tools) }
+        agentRun = run
+        run.endpoint.onEvent = { [weak self] event in
+            guard let self, !self.dismissed, token == self.generation else { return }
+            self.agentEvents.append(event)
+        }
+        run.onProgress = { [weak self] text in
+            guard let self, !self.dismissed, token == self.generation else { return }
+            self.appendLog(text)
+        }
+        if let executable = ProcessRunner.locate(runBinary ?? runProvider.rawValue) {
+            await run.run(request: runRequest, executable: executable,
+                          parentEnvironment: ProcessRunner.subprocessEnvironment(overrides: nil))
+        } else {
+            run.failBeforeLaunch("The selected agent CLI is not installed.")
+        }
+        agentProvenance = run.provenance
+        duration = run.provenance.duration ?? 0
+        agentSummary = run.finalResponse
+        persistentEffects = session.prerequisiteEffects
+        // Preserve captured database ownership even after the user switches timelines.
+        do {
+            if let database, let timelineID = session.timelineID {
+                let record = BuilderRunRecord(runUUID: session.runUUID, timelineID: timelineID, request: runRequest,
+                    createdAt: (run.provenance.at ?? .now).ISO8601Format(), provider: run.provenance.provider, model: run.provenance.model, durationSeconds: duration,
+                    status: session.state == .completed ? .completed : .failed, baselineRevision: session.baselineRevision,
+                    summary: run.finalResponse,
+                    libraryEffectsJSON: String(decoding: try JSONEncoder().encode(session.prerequisiteEffects), as: UTF8.self),
+                    eventsJSON: String(decoding: try JSONEncoder().encode(run.endpoint.events), as: UTF8.self))
+                try await database.recordBuilderRun(record)
+                agentAuditSaved = true
+            }
+        } catch { failure = .persistence(error.localizedDescription) }
+        agentRun = nil
+        if identityMatches, let database, !persistentEffects.isEmpty {
+            do {
+                let snapshot = try await database.fetchLibrarySnapshot(projectID: projectID)
+                if identityMatches { store.applyLibrarySnapshot(snapshot, generation: profileGeneration) }
+            } catch { appendLog("Saved Library work could not be refreshed.") }
+        }
+        guard !dismissed, token == generation else { return }
+        diff = session.diff()
+        diffLines = BuilderWizardDiff.lines(session: session, steps: tools.executedSteps)
+        phase = session.state == .completed && failure == nil ? .preview : .refused
+        if let error = run.terminalError { reasons = [error] }
+        else if session.state == .failed {
+            reasons = session.result?.outcomes.compactMap { if case .refused(_, let reason) = $0 { reason } else { nil } } ?? []
+        }
+        appendLog("Agent stopped. Review the structured outcomes and complete diff before Apply.")
+    }
+
     private var provenance: AIProvenance {
-        AIProvenance(provider: "local", technique: "builder-request-parser", duration: duration)
+        agentProvenance ?? AIProvenance(provider: "local", technique: "builder-request-parser", duration: duration)
     }
     private func appendLog(_ line: String) {
         // Cap individual metadata as well as total retained UI log bytes.
