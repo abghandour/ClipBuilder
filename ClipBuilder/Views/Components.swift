@@ -231,12 +231,18 @@ struct PersonFaceAvatar: View {
     /// Every detected face, largest first, as normalized bounding boxes
     /// (bottom-left origin, Vision convention). The avatar picker offers
     /// each one as a candidate crop.
-    @concurrent
+    ///
+    /// Uses Vision's async request API: the legacy `VNImageRequestHandler`
+    /// call blocks its thread while waiting on Vision's own queue, and when a
+    /// roster of avatars loads at once that parks every cooperative-pool
+    /// thread, so no other async work in the app (video previews included)
+    /// can run until Vision returns.
     nonisolated static func detectFaces(in data: Data) async -> [CGRect] {
-        let request = VNDetectFaceRectanglesRequest()
-        try? VNImageRequestHandler(data: data).perform([request])
-        return (request.results ?? [])
-            .map(\.boundingBox)
+        let request = DetectFaceRectanglesRequest()
+        guard let observations = try? await request.perform(on: data) else { return [] }
+        return observations
+            .map { CGRect(x: $0.boundingBox.origin.x, y: $0.boundingBox.origin.y,
+                          width: $0.boundingBox.width, height: $0.boundingBox.height) }
             .sorted { $0.width > $1.width }
     }
 
