@@ -98,9 +98,7 @@ nonisolated enum ProcessRunner {
                     let process = Process()
                     process.executableURL = executable
                     process.arguments = arguments
-                    if let environment {
-                        process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
-                    }
+                    process.environment = subprocessEnvironment(overrides: environment)
 
                     let stdoutPipe = Pipe()
                     let stderrPipe = Pipe()
@@ -199,6 +197,54 @@ nonisolated enum ProcessRunner {
             }
         }
     }
+
+    /// The app's own environment with the login shell's PATH in front. A
+    /// GUI app inherits launchd's minimal PATH, so a Node-based CLI found
+    /// through the login shell (nvm, npm prefix) would launch and then die
+    /// with "env: node: No such file or directory" because its shebang
+    /// can't find node. Overrides win over both.
+    static func subprocessEnvironment(overrides: [String: String]?) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        if let loginPATH = loginShellPATH {
+            environment["PATH"] = mergedPATH(login: loginPATH, current: environment["PATH"])
+        }
+        if let overrides {
+            environment.merge(overrides) { _, new in new }
+        }
+        return environment
+    }
+
+    /// Login PATH first, then whatever the app already had that the login
+    /// shell doesn't list — nothing the app relied on disappears.
+    static func mergedPATH(login: String, current: String?) -> String {
+        var seen = Set<String>()
+        var parts: [String] = []
+        for part in (login + ":" + (current ?? "")).split(separator: ":").map(String.init)
+            where !part.isEmpty && seen.insert(part).inserted {
+            parts.append(part)
+        }
+        return parts.joined(separator: ":")
+    }
+
+    /// PATH as the user's Terminal sees it, read once from a login shell
+    /// (sourcing dotfiles is slow, so never per call). nil when the shell
+    /// can't answer, in which case subprocesses keep the app's PATH.
+    static let loginShellPATH: String? = {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", "printf %s \"$PATH\""]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let path = String(data: data, encoding: .utf8)?
+                  .trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty else { return nil }
+        return path
+    }()
 
     /// SIGTERM with a SIGKILL escalation if it's ignored (ffmpeg mid-encode).
     private static func terminate(_ process: Process) {

@@ -593,11 +593,26 @@ final class AppStore {
     /// Queue an alert for a failed operation; user-initiated cancellations
     /// are not errors and are dropped.
     func presentError(_ context: String, _ error: Error) {
-        let details = "\(error.userMessage)\n\(String(reflecting: error))"
-        diagnosticLogSink("error", "\(context): \(details)")
+        let appError = AppError.failure(context: context, error: error)
+        diagnosticLogSink("error", "\(context): \(appError.details)")
         guard !(error is CancellationError) else { return }
-        errorQueue.append(AppError(message: "\(context): \(error.userMessage)",
-                                   context: context, details: details))
+        errorQueue.append(appError)
+    }
+
+    /// Open the provider CLI's sign-in in Terminal (from the error alert
+    /// or Settings → AI). The CLI runs its own browser flow; the app just
+    /// gets the user there.
+    func openProviderSignIn(_ key: String) {
+        let label = AICatalog.provider(key)?.label ?? key
+        Task {
+            let binary = await ai.binaryURL(forProvider: key)
+            do {
+                try ProviderAuth.openSignInTerminal(provider: key, binary: binary)
+                appendLog(\.analysisLog, ["Opened \(label) sign-in in Terminal — finish there, then retry"])
+            } catch {
+                presentError("Couldn't open \(label) sign-in", error)
+            }
+        }
     }
 
     func dismissCurrentError() {

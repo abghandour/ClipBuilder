@@ -10,10 +10,19 @@ nonisolated enum AIError: Error, CustomStringConvertible {
     /// The provider answered, but the reply couldn't be used (not JSON, or
     /// validation left nothing) — the message says what to check.
     case unusableResponse(String)
+    /// The CLI's sign-in is missing or stale. `provider` is the catalog key
+    /// so the alert can offer to open that CLI's login; `detail` is what
+    /// the CLI actually said.
+    case notAuthenticated(provider: String, detail: String)
 
     var description: String {
         switch self {
         case .notConfigured(let message): return message
+        case .notAuthenticated(let provider, let detail):
+            let label = AICatalog.provider(provider)?.label ?? provider
+            let said = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "\(label) is not signed in. Use Sign In to open its login in Terminal."
+                + (said.isEmpty ? "" : " The CLI said: \(said)")
         case .quotaExhausted(let message): return "Quota exhausted: \(message)"
         case .emptyResponse(let provider): return "\(provider) returned an empty response"
         case .promptTooLong(let provider): return "\(provider): the prompt is too long for the model"
@@ -62,6 +71,24 @@ actor AIService {
             || lowered.contains("context length") || lowered.contains("too many tokens")
             || lowered.contains("request too large") || lowered.contains("input is too long")
             || lowered.contains("exceeds the maximum")
+    }
+
+    /// An auth-looking CLI failure becomes `.notAuthenticated` only when the
+    /// CLI's own status check agrees (or can't answer). A CLI that says it
+    /// is signed in had some other problem, which the caller logs and
+    /// handles like any other error. The raw text is always logged so a
+    /// bug report shows what the CLI really said.
+    private static func authFailure(provider key: String, binary: URL, raw: String,
+                                    log: @Sendable (String) -> Void) async -> AIError? {
+        guard ProviderAuth.isAuthFailure(raw) else { return nil }
+        let label = AICatalog.provider(key)?.label ?? key
+        let detail = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(300))
+        log("\(label) CLI error: \(detail)")
+        if await ProviderAuth.status(provider: key, binary: binary) == .signedIn {
+            log("\(label) says it is signed in — treating this as a request failure, not a sign-in problem")
+            return nil
+        }
+        return .notAuthenticated(provider: key, detail: detail)
     }
 
     // MARK: - Resolution
@@ -126,6 +153,12 @@ actor AIService {
         let configured = config.providers[provider.key]?.bin
         let name = configured?.isEmpty == false ? configured! : provider.bin
         return ProcessRunner.locate(name)
+    }
+
+    /// The located CLI for a provider key, honoring the Settings override.
+    func binaryURL(forProvider key: String) -> URL? {
+        guard let provider = AICatalog.provider(key) else { return nil }
+        return binaryURL(for: provider)
     }
 
     func isProviderAvailable(_ key: String) -> Bool {
@@ -342,9 +375,9 @@ actor AIService {
                 if Self.isPromptTooLong(errorMessage) {
                     throw AIError.promptTooLong("Claude")
                 }
-                let lowered = errorMessage.lowercased()
-                if lowered.contains("auth") || lowered.contains("login") || lowered.contains("api key") {
-                    throw AIError.notConfigured("Claude CLI not authenticated. Run 'claude' in Terminal to sign in.")
+                if let failure = await Self.authFailure(provider: "claude", binary: binary,
+                                                        raw: errorMessage, log: log) {
+                    throw failure
                 }
                 log("Claude CLI error: \(errorMessage.prefix(200))")
                 if attempt < maxRetries {
@@ -389,10 +422,9 @@ actor AIService {
                 if Self.isPromptTooLong(cliError) {
                     throw AIError.promptTooLong("Claude")
                 }
-                let lowered = cliError.lowercased()
-                if lowered.contains("not logged in") || lowered.contains("login")
-                    || lowered.contains("auth") || lowered.contains("api key") {
-                    throw AIError.notConfigured("Claude CLI not authenticated. Run 'claude' in Terminal and sign in with /login.")
+                if let failure = await Self.authFailure(provider: "claude", binary: binary,
+                                                        raw: cliError, log: log) {
+                    throw failure
                 }
                 log("Claude CLI error: \(cliError.prefix(200))")
                 if attempt < maxRetries {
@@ -459,9 +491,8 @@ actor AIService {
             let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
             if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
             if Self.isPromptTooLong(error) { throw AIError.promptTooLong("Gemini") }
-            let lowered = error.lowercased()
-            if lowered.contains("auth") || lowered.contains("login") || lowered.contains("api key") {
-                throw AIError.notConfigured("Gemini CLI not authenticated. Run 'gemini auth' in Terminal.")
+            if let failure = await Self.authFailure(provider: "gemini", binary: binary, raw: error, log: log) {
+                throw failure
             }
             log("Gemini CLI error: \(error)")
             throw AIError.emptyResponse("Gemini")
@@ -491,9 +522,8 @@ actor AIService {
         if result.exitCode != 0 {
             let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
             if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
-            let lowered = error.lowercased()
-            if lowered.contains("auth") || lowered.contains("login") || lowered.contains("api key") {
-                throw AIError.notConfigured("Codex CLI not authenticated. Run 'codex login' in Terminal.")
+            if let failure = await Self.authFailure(provider: "codex", binary: binary, raw: error, log: log) {
+                throw failure
             }
             log("Codex CLI error: \(error)")
             throw AIError.emptyResponse("Codex")
@@ -521,9 +551,8 @@ actor AIService {
             let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
             if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
             if Self.isPromptTooLong(error) { throw AIError.promptTooLong("Qwen") }
-            let lowered = error.lowercased()
-            if lowered.contains("auth") || lowered.contains("login") || lowered.contains("api key") {
-                throw AIError.notConfigured("Qwen Code CLI not authenticated. Run 'qwen' in Terminal to sign in.")
+            if let failure = await Self.authFailure(provider: "qwen", binary: binary, raw: error, log: log) {
+                throw failure
             }
             log("Qwen Code CLI error: \(error)")
             throw AIError.emptyResponse("Qwen")
@@ -554,9 +583,8 @@ actor AIService {
             let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
             if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
             if Self.isPromptTooLong(error) { throw AIError.promptTooLong("Kimi") }
-            let lowered = error.lowercased()
-            if lowered.contains("auth") || lowered.contains("login") || lowered.contains("api key") {
-                throw AIError.notConfigured("Kimi CLI not authenticated. Run 'kimi' in Terminal and sign in with /login.")
+            if let failure = await Self.authFailure(provider: "kimi", binary: binary, raw: error, log: log) {
+                throw failure
             }
             log("Kimi CLI error: \(error)")
             throw AIError.emptyResponse("Kimi")

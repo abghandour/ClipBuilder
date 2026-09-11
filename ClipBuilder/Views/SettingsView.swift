@@ -794,6 +794,7 @@ private struct AvailabilityRow: View {
     @Environment(AppStore.self) private var store
     let providerKey: String
     @State private var available: Bool?
+    @State private var signIn: ProviderAuth.State?
 
     private var isInstalling: Bool { store.installingProviderCLIs.contains(providerKey) }
 
@@ -803,7 +804,24 @@ private struct AvailabilityRow: View {
             case .none:
                 ProgressView().controlSize(.small)
             case .some(true):
-                Text("Installed").foregroundStyle(.green)
+                HStack(spacing: 8) {
+                    switch signIn {
+                    case .none:
+                        Text("Installed").foregroundStyle(.green)
+                        ProgressView().controlSize(.small)
+                    case .signedIn:
+                        Text("Installed, signed in").foregroundStyle(.green)
+                    case .signedOut:
+                        Text("Installed, not signed in").foregroundStyle(.orange)
+                    case .unknown:
+                        Text("Installed").foregroundStyle(.green)
+                    }
+                    if signIn == .signedOut || signIn == .unknown {
+                        Button("Sign In…") { store.openProviderSignIn(providerKey) }
+                            .controlSize(.small)
+                            .help("Opens this CLI's sign-in in Terminal. Come back here once it finishes.")
+                    }
+                }
             case .some(false):
                 HStack(spacing: 8) {
                     Text("Not found").foregroundStyle(.red)
@@ -821,11 +839,19 @@ private struct AvailabilityRow: View {
             }
         }
         .task(id: providerKey) {
-            available = await store.ai.isProviderAvailable(providerKey)
+            await refresh()
         }
         .onChange(of: isInstalling) { _, installing in
             guard !installing else { return }
-            Task { available = await store.ai.isProviderAvailable(providerKey) }
+            Task { await refresh() }
         }
+    }
+
+    private func refresh() async {
+        signIn = nil
+        let binary = await store.ai.binaryURL(forProvider: providerKey)
+        available = binary != nil
+        guard binary != nil else { return }
+        signIn = await ProviderAuth.status(provider: providerKey, binary: binary)
     }
 }

@@ -338,6 +338,11 @@ struct MainWindowView: View {
             set: { if !$0 { store.dismissCurrentError() } }
         ), presenting: store.currentError) { error in
             Button("OK", role: .cancel) {}
+            if let provider = error.signInProvider {
+                Button("Sign In to \(AICatalog.provider(provider)?.label ?? provider)…") {
+                    store.openProviderSignIn(provider)
+                }
+            }
             Button("Copy Details") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(error.message, forType: .string)

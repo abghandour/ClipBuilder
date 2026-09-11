@@ -7,6 +7,22 @@ nonisolated struct AppError: Identifiable, Equatable, Sendable {
     var message: String
     var context: String = "Error"
     var details: String = ""
+    /// Set when the failure was a CLI sign-in problem: the alert offers a
+    /// Sign In button that opens this provider's login in Terminal.
+    var signInProvider: String? = nil
+
+    /// The alert for a failed operation. Details carry the reflected error
+    /// for bug reports, but not when it would only repeat the message.
+    static func failure(context: String, error: Error) -> AppError {
+        let message = error.userMessage
+        let reflected = String(reflecting: error)
+        let details = reflected == message ? message : "\(message)\n\(reflected)"
+        var appError = AppError(message: "\(context): \(message)", context: context, details: details)
+        if case .notAuthenticated(let provider, _)? = error as? AIError {
+            appError.signInProvider = provider
+        }
+        return appError
+    }
 }
 
 nonisolated extension Error {
