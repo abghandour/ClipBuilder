@@ -14,7 +14,7 @@ struct ProviderStatusRow: View {
     }
 
     var body: some View {
-        HStack(spacing: model.items.count > 5 ? Theme.spaceXS : Theme.spaceS) {
+        HStack(spacing: model.items.count > 5 ? Theme.spaceS : Theme.spaceL) {
             ForEach(model.items) { item in
                 if item.canSignIn {
                     Button {
@@ -52,12 +52,13 @@ struct ProviderStatusRow: View {
     }
 
     private func indicator(_ item: ProviderStatusItem) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: item.symbol)
-                .foregroundStyle(.secondary)
+        // Status light first, then the provider mark.
+        HStack(spacing: 4) {
             Circle()
                 .fill(item.color)
                 .frame(width: 6, height: 6)
+            Image(systemName: item.symbol)
+                .foregroundStyle(.secondary)
         }
         .contentShape(.rect)
     }

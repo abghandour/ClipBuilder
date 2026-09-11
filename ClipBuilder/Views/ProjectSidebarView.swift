@@ -109,7 +109,6 @@ struct ProjectSidebarView: View {
             }
             .listStyle(.sidebar)
 
-            ProjectActivitySummary()
             ProviderStatusRow()
         }
         .padding(.horizontal, Theme.spaceS)
@@ -128,92 +127,3 @@ struct ProjectSidebarView: View {
     }
 }
 
-private struct ProjectActivitySummary: View {
-    @Environment(AppStore.self) private var store
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spaceXS) {
-            HStack(spacing: Theme.spaceS) {
-                Circle()
-                    .fill(isIdle ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Theme.createTint))
-                    .frame(width: 8, height: 8)
-                    .accessibilityLabel(isIdle ? "Idle" : "Busy")
-                Text("Activity")
-                Spacer(minLength: 0)
-            }
-
-            DriveActivityRows()
-            if isIdle {
-                Text("Idle")
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, 18)
-            } else {
-                ForEach(activities) { activity in
-                    HStack(spacing: Theme.spaceS) {
-                        ProgressView()
-                            .controlSize(.mini)
-                        Text(activity.project)
-                            .bold()
-                        Text("· \(activity.detail)")
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    .help("\(activity.project): \(activity.detail)")
-                }
-            }
-        }
-        .font(.caption)
-        .padding(.horizontal, Theme.spaceM)
-        .padding(.vertical, Theme.spaceS)
-        .frame(minHeight: 34)
-        .accessibilityElement(children: .combine)
-        .onChange(of: store.googleDrive.revision) { store.refreshAll() }
-    }
-
-    private var isIdle: Bool {
-        activities.isEmpty && store.googleDrive.jobs.allSatisfy { $0.status == .complete }
-    }
-
-    private var activities: [ProjectActivity] {
-        var rows: [ProjectActivity] = []
-        if store.isBuilderRendering {
-            rows.append(
-                ProjectActivity(
-                    id: "builder",
-                    project: store.builderRenderProjectName ?? "Project",
-                    detail: "Rendering timeline"
-                ))
-        }
-        if store.isAnalyzing {
-            rows.append(
-                ProjectActivity(
-                    id: "analysis",
-                    project: store.analysisProjectName ?? "Project",
-                    detail: store.analysisStage.isEmpty ? "Analyzing" : store.analysisStage
-                ))
-        }
-        if store.isPipelineRunning {
-            rows.append(
-                ProjectActivity(
-                    id: "pipeline",
-                    project: store.pipelineProjectName ?? "Project",
-                    detail: store.pipelineStage.isEmpty ? "Running pipeline" : store.pipelineStage
-                ))
-        }
-        if store.isWizardRunning, let status = store.wizardStatus {
-            rows.append(
-                ProjectActivity(
-                    id: "wizard",
-                    project: store.wizardProjectName ?? "Project",
-                    detail: status.stage
-                ))
-        }
-        return rows
-    }
-}
-
-private struct ProjectActivity: Identifiable {
-    let id: String
-    let project: String
-    let detail: String
-}

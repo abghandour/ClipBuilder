@@ -305,6 +305,7 @@ struct MainWindowView: View {
         // that follows the user across screens; click for the full log.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
+                ActivityStatusInset()
                 PipelineStatusInset()
                 WizardStatusInset()
             }
