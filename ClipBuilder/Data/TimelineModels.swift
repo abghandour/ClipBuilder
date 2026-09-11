@@ -495,7 +495,11 @@ nonisolated struct CropLayoutRef: Sendable, Hashable {
     /// The resource layout, or nil when it was deleted (a missing layout
     /// behaves like Full Screen so the timeline still renders).
     var resolved: ScreenCropLayout? {
-        isFullScreen ? nil : ScreenCropStore.layout(named: name)
+        if isFullScreen { return nil }
+        if let layouts = ScriptLayoutScope.layouts {
+            return layouts.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        }
+        return ScreenCropStore.layout(named: name)
     }
 
     /// Areas in track order: left-to-right, then top-to-bottom.
@@ -603,6 +607,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     var bumperMode: BumperMode = .overlap
     /// Main footage or a cutaway (B-roll). Absent in older documents.
     var role: ClipRole = .main
+    /// Persist precise packing semantics across Apply, reload and duplication.
+    var precision: TimelinePrecision = .ordinary
     /// Cutaways only: cover the whole canvas instead of the track's area.
     var coverAllAreas: Bool = false
     /// Cutaways only: whether the cutaway's own sound joins the mix.
@@ -731,7 +737,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case startTime = "start_time"
         case bumper, bumperName
         case bumperMode = "bumper_mode"
-        case role
+        case role, precision
         case coverAllAreas = "cover_all"
         case originKey = "origin"
         case fadeIn = "fade_in"
@@ -759,6 +765,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         // Absent keys mean an ordinary main clip: documents written before
         // B-roll existed decode unchanged.
         role = try container.decodeIfPresent(ClipRole.self, forKey: .role) ?? .main
+        precision = try container.decodeIfPresent(TimelinePrecision.self, forKey: .precision) ?? .ordinary
         coverAllAreas = try container.decodeIfPresent(Bool.self, forKey: .coverAllAreas) ?? false
         cutawayAudio = try container.decodeIfPresent(CutawayAudio.self, forKey: .cutawayAudio) ?? .muted
         fadeIn = max(0, try container.decodeIfPresent(Double.self, forKey: .fadeIn) ?? 0)
@@ -818,6 +825,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         try container.encodeIfPresent(bumperName, forKey: .bumperName)
         if bumper { try container.encode(bumperMode, forKey: .bumperMode) }
         if role != .main { try container.encode(role, forKey: .role) }
+        if precision == .speech { try container.encode(precision, forKey: .precision) }
         try container.encode(originKey, forKey: .originKey)
         if isCutaway {
             try container.encode(coverAllAreas, forKey: .coverAllAreas)
@@ -865,7 +873,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
 
     static func == (lhs: TimelineClip, rhs: TimelineClip) -> Bool {
         lhs.uid == rhs.uid && lhs.bumper == rhs.bumper && lhs.bumperName == rhs.bumperName && lhs.bumperMode == rhs.bumperMode && lhs.sceneID == rhs.sceneID && lhs.videoFile == rhs.videoFile
-            && lhs.role == rhs.role && lhs.coverAllAreas == rhs.coverAllAreas
+            && lhs.role == rhs.role && lhs.precision == rhs.precision && lhs.coverAllAreas == rhs.coverAllAreas
             && lhs.cutawayAudio == rhs.cutawayAudio && lhs.originKey == rhs.originKey
             && lhs.fadeIn == rhs.fadeIn && lhs.fadeOut == rhs.fadeOut
             && lhs.sourceStart == rhs.sourceStart && lhs.startTime == rhs.startTime

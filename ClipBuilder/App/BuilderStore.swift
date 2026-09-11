@@ -123,6 +123,28 @@ enum OverlayLaneEntry: Identifiable {
 /// testable. Autosaves per profile after each mutation (debounced).
 @Observable
 final class BuilderTimelineModel {
+    nonisolated enum Mode: Sendable { case persistent, transient }
+    let mode: Mode
+
+    init(mode: Mode = .persistent) { self.mode = mode }
+
+    /// Seed by value after populating the lookup cache: hydration must not
+    /// change the captured document or its runtime identities.
+    func seed(document: TimelineDocument, scenes: [SceneRecord],
+              driveBackedPaths: Set<String> = [], selection: TimelineSelection? = nil,
+              playhead: Double = 0, focusedTrack: Int? = nil, zoom: CGFloat = 60) {
+        precondition(mode == .transient)
+        cancelPendingAutosave()
+        updateScenes(scenes)
+        self.document = document
+        updateDriveBackedPaths(driveBackedPaths)
+        self.selection = selection
+        self.playhead = playhead
+        self.focusedTrack = focusedTrack
+        pointsPerSecond = zoom
+        cachedTimelineLayout = nil
+    }
+
     var document = TimelineDocument()
     var selection: TimelineSelection? {
         didSet { notifyUIStateChange() }
@@ -212,7 +234,7 @@ final class BuilderTimelineModel {
     }
 
     private func registerUndoStep(_ actionName: String) {
-        guard let undoManager else { return }
+        guard mode == .persistent, let undoManager else { return }
         let snapshot = document
         undoManager.registerUndo(withTarget: self) { model in
             MainActor.assumeIsolated {
@@ -247,7 +269,7 @@ final class BuilderTimelineModel {
     private func resetUndoHistory() {
         // Only this model's steps: the window's manager also carries the
         // inspector text fields' own undo stack.
-        undoManager?.removeAllActions(withTarget: self)
+        if mode == .persistent { undoManager?.removeAllActions(withTarget: self) }
         lastUndoKey = nil
     }
 
@@ -266,7 +288,7 @@ final class BuilderTimelineModel {
         scenes = []
         scenesByID = [:]
         suppressAutosave = true
-        if let saved = BuilderStateStore.load(profileName: profileName) {
+        if mode == .persistent, let saved = BuilderStateStore.load(profileName: profileName) {
             document = saved
         } else {
             document = TimelineDocument()
@@ -349,7 +371,7 @@ final class BuilderTimelineModel {
         selection = nil
         focusedTrack = nil
         playhead = 0
-        if timelineID == nil {
+        if timelineID == nil, mode == .persistent {
             BuilderStateStore.clear(profileName: profileName)
         } else {
             documentDidChange()
@@ -462,7 +484,7 @@ final class BuilderTimelineModel {
         // The cropping row always tiles the content; the track count follows it.
         document.normalizeCropBlocks()
         cachedTimelineLayout = nil
-        guard !suppressAutosave else { return }
+        guard mode == .persistent, !suppressAutosave else { return }
         let snapshot = document
         let name = profileName
         let id = timelineID
@@ -486,7 +508,7 @@ final class BuilderTimelineModel {
     }
 
     private func notifyUIStateChange() {
-        guard !suppressAutosave else { return }
+        guard mode == .persistent, !suppressAutosave else { return }
         onUIStateChange?()
     }
 
@@ -502,6 +524,7 @@ final class BuilderTimelineModel {
     /// window during project switches and app termination instead of silently
     /// dropping the user's final edit.
     func flushPendingAutosave() {
+        guard mode == .persistent else { cancelPendingAutosave(); return }
         guard hasPendingAutosave else {
             saveTask?.cancel()
             saveTask = nil
@@ -1001,20 +1024,36 @@ final class BuilderTimelineModel {
         documentDidChange()
     }
 
-    func trimClip(_ uid: UUID, duration: Double) {
-        guard let index = clipIndex(uid) else { return }
+    /// An app-resolved ceiling permits raw-file edits without trusting a script
+    /// for media metadata. Existing UI callers retain their original policy.
+    @discardableResult
+    func trimClip(_ uid: UUID, duration: Double, precision: TimelinePrecision = .ordinary,
+                  sourceDuration: Double? = nil) -> Result<Void, ClipEditFailure> {
+        if precision == .speech {
+            guard let clip = clip(uid) else { return .failure(.notFound) }
+            guard !clip.bumper else { return .failure(.bumper) }
+            guard duration.isFinite, duration >= 0,
+                  let start = clip.sourceStart, start.isFinite else { return .failure(.outOfBounds) }
+            let rounded = precision.rounded(duration)
+            guard rounded >= precision.minimumDuration else { return .failure(.tooShort) }
+            return setClipSourceRange(uid, start: start, end: start + rounded * clip.effectiveSpeed,
+                                      precision: precision, sourceDuration: sourceDuration)
+        }
+        guard let index = clipIndex(uid) else { return .failure(.notFound) }
         if document.videoTrack[index].bumper {
             registerUndo("Trim Bumper")
             resizeBumper(at: index, duration: duration)
             documentDidChange()
-            return
+            return .success(())
         }
         registerUndo("Trim Clip")
         var clip = document.videoTrack[index]
         // The ceiling is measured in source seconds; the clip's duration is
         // screen time, so scale by the playback speed before clamping.
         var maxDuration = Double.greatestFiniteMagnitude
-        if let scene = scene(for: clip) {
+        if let sourceDuration {
+            maxDuration = max(0.05, (sourceDuration - (clip.sourceStart ?? 0)) / clip.effectiveSpeed)
+        } else if let scene = scene(for: clip) {
             maxDuration = max(0.5, (scene.videoDuration - (clip.sourceStart ?? scene.startTime)) / clip.effectiveSpeed)
         } else if let start = clip.sourceStart, let end = clip.sourceEnd {
             maxDuration = max(0.5, (end - start) / clip.effectiveSpeed)
@@ -1023,35 +1062,110 @@ final class BuilderTimelineModel {
         document.videoTrack[index] = clip
         resolveLayout(track: clip.track)
         documentDidChange()
+        return .success(())
     }
 
     /// Set the clip's source range in absolute source seconds. The screen
     /// duration follows through the playback speed; the timeline start
     /// stays put (sequential tracks repack after it).
-    func setClipSourceRange(_ uid: UUID, start: Double, end: Double) {
-        guard let index = clipIndex(uid) else { return }
+    @discardableResult
+    func setClipSourceRange(_ uid: UUID, start: Double, end: Double,
+                            precision: TimelinePrecision = .ordinary,
+                            sourceDuration: Double? = nil) -> Result<Void, ClipEditFailure> {
+        if precision == .speech {
+            guard let index = clipIndex(uid) else { return .failure(.notFound) }
+            var clip = document.videoTrack[index]
+            guard !clip.bumper else { return .failure(.bumper) }
+            guard start.isFinite, end.isFinite, start >= 0, end > start,
+                  clip.effectiveSpeed.isFinite, clip.effectiveSpeed > 0 else { return .failure(.outOfBounds) }
+            let start = precision.rounded(start), end = precision.rounded(end)
+            guard let ceiling = sourceDuration ?? scene(for: clip)?.videoDuration ?? clip.sourceEnd,
+                  ceiling.isFinite, start >= 0, start <= ceiling, end <= ceiling else { return .failure(.outOfBounds) }
+            let duration = (end - start) / clip.effectiveSpeed
+            guard duration.isFinite else { return .failure(.outOfBounds) }
+            guard duration >= precision.minimumDuration - 1e-9 else { return .failure(.tooShort) }
+            guard clip.sourceStart != start || clip.sourceEnd != end || clip.duration != duration
+                || clip.precision != .speech else { return .success(()) }
+            registerUndo("Trim Clip", coalescing: "trim-\(uid)")
+            clip.sourceStart = start
+            clip.sourceEnd = end
+            clip.duration = duration
+            clip.precision = .speech
+            document.videoTrack[index] = clip
+            resolveLayout(track: clip.track)
+            documentDidChange()
+            return .success(())
+        }
+        guard let index = clipIndex(uid) else { return .failure(.notFound) }
         var clip = document.videoTrack[index]
         var ceiling = Double.greatestFiniteMagnitude
-        if let scene = scene(for: clip) { ceiling = scene.videoDuration }
+        if let sourceDuration { ceiling = sourceDuration }
+        else if let scene = scene(for: clip) { ceiling = scene.videoDuration }
         let newStart = max(0, min(start, ceiling - 0.5))
         let newEnd = max(newStart + 0.5, min(end, ceiling))
         let duration = ((newEnd - newStart) / clip.effectiveSpeed * 10).rounded() / 10
-        guard abs((clip.sourceStart ?? -1) - newStart) > 0.001 || abs(clip.duration - duration) > 0.001 else { return }
+        guard abs((clip.sourceStart ?? -1) - newStart) > 0.001 || abs(clip.duration - duration) > 0.001 else { return .success(()) }
         if clip.bumper {
             registerUndo("Trim Bumper", coalescing: "trim-\(uid)")
             document.videoTrack[index].sourceStart = newStart
             document.videoTrack[index].sourceEnd = newEnd
             resizeBumper(at: index, duration: max(0.5, duration))
             documentDidChange()
-            return
+            return .success(())
         }
         registerUndo("Trim Clip", coalescing: "trim-\(uid)")
         clip.sourceStart = newStart
         clip.sourceEnd = newEnd
         clip.duration = max(0.5, duration)
+        if sourceDuration != nil {
+            clip.duration = min(clip.duration, (ceiling - newStart) / clip.effectiveSpeed)
+        }
         document.videoTrack[index] = clip
         resolveLayout(track: clip.track)
         documentDidChange()
+        return .success(())
+    }
+
+    /// A cut preserves source continuity and identity without opening a gap.
+    @discardableResult
+    func splitClip(_ uid: UUID, at time: Double,
+                   precision: TimelinePrecision = .ordinary,
+                   sourceDuration: Double? = nil) -> Result<ClipSplitResult, ClipEditFailure> {
+        guard let index = clipIndex(uid) else { return .failure(.notFound) }
+        let original = document.videoTrack[index]
+        guard !original.bumper else { return .failure(.bumper) }
+        let at = precision.rounded(time)
+        let sourceStart = original.sourceStart ?? scene(for: original)?.startTime
+        let ceiling = sourceDuration ?? scene(for: original)?.videoDuration ?? original.sourceEnd
+        guard time.isFinite, at.isFinite, original.startTime.isFinite, original.duration.isFinite,
+              original.effectiveSpeed.isFinite, original.effectiveSpeed > 0,
+              let sourceStart, sourceStart.isFinite, sourceStart >= 0,
+              let ceiling, ceiling.isFinite,
+              sourceStart + original.sourceSpan <= ceiling + 1e-9,
+              at > original.startTime, at < original.startTime + original.duration else {
+            return .failure(.outOfBounds)
+        }
+        guard at - original.startTime >= precision.minimumDuration - 1e-9,
+              original.startTime + original.duration - at >= precision.minimumDuration - 1e-9 else {
+            return .failure(.tooShort)
+        }
+        // Resolve a missing start on a value copy; never substitute the media
+        // ceiling for the clip's stored trim end, even temporarily.
+        var source = original
+        source.sourceStart = sourceStart
+        if precision == .speech { source.precision = .speech }
+        guard let pieces = TimelineSplit.pieces(source, at: at, minimum: precision.minimumDuration, ceiling: ceiling),
+              let cut = pieces.tail.sourceStart, let end = pieces.tail.sourceEnd else {
+            return .failure(.outOfBounds)
+        }
+        registerUndo("Split Clip")
+        document.videoTrack[index] = pieces.head
+        document.videoTrack.insert(pieces.tail, at: index + 1)
+        resolveLayout(track: source.track)
+        documentDidChange()
+        return .success(ClipSplitResult(head: pieces.head.uid, tail: pieces.tail.uid,
+                                       at: clip(pieces.tail.uid)?.startTime ?? at,
+                                       sourceStart: sourceStart, sourceCut: cut, sourceEnd: end))
     }
 
     func removeClip(_ uid: UUID) {
@@ -1188,26 +1302,25 @@ final class BuilderTimelineModel {
                 $0.startTime > cursor + 0.001 && $0.startTime < cursor + duration - 0.001
             }) {
                 let head = pause.startTime - cursor
-                if head < 0.5 {
+                if head < document.videoTrack[index].precision.minimumDuration {
                     cursor = pause.startTime + pause.duration
                     continue
                 }
-                var tail = document.videoTrack[index]
-                let speed = tail.effectiveSpeed
-                tail.uid = UUID()
-                tail.sourceStart = (tail.sourceStart ?? 0) + head * speed
-                tail.duration = duration - head
-                tail.transIn = nil
-                // Same policy as a gap split: the head keeps the dissolve
-                // in, the tail keeps the dissolve out.
-                tail.fadeIn = 0
-                document.videoTrack[index].fadeOut = 0
-                document.videoTrack[index].startTime = cursor
-                document.videoTrack[index].duration = head
-                document.videoTrack[index].sourceEnd = (document.videoTrack[index].sourceStart ?? 0) + head * speed
-                document.videoTrack[index].transOut = nil
-                document.videoTrack.append(tail)
-                pending.insert(tail.uid, at: position + 1)
+                var source = document.videoTrack[index]
+                source.startTime = cursor
+                // Legacy file clips may not carry an explicit end; packing
+                // already knows the played window and supplies it to the math.
+                source.sourceStart = source.sourceStart ?? 0
+                let ceiling = max(source.sourceEnd ?? 0,
+                                  (source.sourceStart ?? 0) + duration * source.effectiveSpeed)
+                guard let pieces = TimelineSplit.pieces(source, at: pause.startTime,
+                                                       minimum: source.precision == .speech ? 0.05 : 0.001, ceiling: ceiling) else {
+                    cursor = pause.startTime + pause.duration
+                    continue
+                }
+                document.videoTrack[index] = pieces.head
+                document.videoTrack.append(pieces.tail)
+                pending.insert(pieces.tail.uid, at: position + 1)
                 cursor = pause.startTime + pause.duration
                 position += 1
                 continue

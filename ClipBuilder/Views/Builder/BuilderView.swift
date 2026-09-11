@@ -14,6 +14,9 @@ struct BuilderView: View {
     @State private var showBRollPicker = false
     @State private var showImagePicker = false
     @State private var confirmClear = false
+    #if DEBUG
+    @State private var showScriptPreview = false
+    #endif
 
     var body: some View {
         let model = store.builder
@@ -81,6 +84,12 @@ struct BuilderView: View {
                         }
                     }
                     Divider()
+                    #if DEBUG
+                    Button("Preview JSON Script…", systemImage: "curlybraces") {
+                        showScriptPreview = true
+                    }
+                    .help("Run a JSON script in an isolated session and inspect its diff.")
+                    #endif
                     Button("All Timelines…", systemImage: "list.bullet") {
                         store.closeTimeline()
                     }
@@ -166,6 +175,9 @@ struct BuilderView: View {
                 for url in urls { model.addImage(path: url.path) }
             }
         }
+        #if DEBUG
+        .sheet(isPresented: $showScriptPreview) { BuilderScriptDebugView() }
+        #endif
         .onDeleteCommand {
             deleteSelection()
         }
