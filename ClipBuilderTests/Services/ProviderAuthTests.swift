@@ -6,6 +6,10 @@ import Testing
 struct ProviderAuthTests {
     @Test("auth failures are recognized by the phrases the CLIs print")
     func authFailurePhrases() {
+        #expect(ProviderAuth.isAuthFailure("Failed to authenticate: OAuth session expired and could not be refreshed"))
+        for phrase in ["failed to authenticate", "session expired", "error authenticating", "could not be refreshed"] {
+            #expect(ProviderAuth.isAuthFailure(phrase))
+        }
         #expect(ProviderAuth.isAuthFailure("Not logged in · Please run /login"))
         #expect(ProviderAuth.isAuthFailure("OAuth token has expired. Please obtain a new token."))
         #expect(ProviderAuth.isAuthFailure("Error: Invalid API key · Fix external API key"))

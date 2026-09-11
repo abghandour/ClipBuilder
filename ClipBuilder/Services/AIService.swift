@@ -41,6 +41,8 @@ nonisolated struct AIFrame: Sendable {
 /// locally installed `claude` (stream-json protocol), `gemini`, `codex`,
 /// `qwen`, and `kimi` CLIs so it reuses whatever auth the user already has.
 actor AIService {
+    private var unavailableProviders = Set<String>()
+    private var loggedUnavailableProviders = Set<String>()
     var config: AIConfig
 
     init(config: AIConfig) {
@@ -61,6 +63,18 @@ actor AIService {
     private static func isQuotaError(_ text: String) -> Bool {
         let lowered = text.lowercased()
         return quotaMarkers.contains { lowered.contains($0) }
+    }
+
+    static func isProviderUnavailable(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        return ["ineligibletiererror", "no longer supported", "migrate to the antigravity"]
+            .contains { lowered.contains($0) }
+    }
+
+    static func firstCLIErrorLine(_ text: String) -> String {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty && !$0.hasPrefix("at ") } ?? "Unknown CLI error"
     }
 
     /// The provider rejected the request as exceeding its input limit —
@@ -123,7 +137,8 @@ actor AIService {
     /// provider, restricted to installed CLIs, and to image-capable
     /// providers when frames ride along. Drives dispatch and failover.
     func dispatchCandidates(task: String, providerOverride: String? = nil,
-                            model: String? = nil, needsImages: Bool = false)
+                            model: String? = nil, needsImages: Bool = false,
+                            log: (@Sendable (String) -> Void)? = nil)
         -> [(provider: String, model: String?)] {
         var raw: [(String, String?)] = []
         if let providerOverride, !providerOverride.isEmpty {
@@ -142,6 +157,12 @@ actor AIService {
         for (key, model) in raw {
             guard !seen.contains(key), let provider = AICatalog.provider(key) else { continue }
             seen.insert(key)
+            if unavailableProviders.contains(key) {
+                if let log, loggedUnavailableProviders.insert(key).inserted {
+                    log("Skipping \(provider.label): unavailable for this account")
+                }
+                continue
+            }
             if needsImages && !provider.supportsImages { continue }
             guard binaryURL(for: provider) != nil else { continue }
             result.append((key, model))
@@ -162,7 +183,7 @@ actor AIService {
     }
 
     func isProviderAvailable(_ key: String) -> Bool {
-        guard let provider = AICatalog.provider(key) else { return false }
+        guard !unavailableProviders.contains(key), let provider = AICatalog.provider(key) else { return false }
         return binaryURL(for: provider) != nil
     }
 
@@ -182,6 +203,7 @@ actor AIService {
               model: String? = nil,
               provider providerOverride: String? = nil,
               timeout: TimeInterval = 300,
+              timeoutForFrameCount: (@Sendable (Int) -> TimeInterval)? = nil,
               webAccess: Bool = false,
               log: (@Sendable (String) -> Void)? = nil) async throws -> AIResponse {
         let emit = log ?? { _ in }
@@ -195,7 +217,7 @@ actor AIService {
             emit("──── prompt (\(AICatalog.taskLabels[task] ?? task)\(frameNote)) ────\n\(prompt)\n──── end prompt ────")
         }
         let candidates = dispatchCandidates(task: task, providerOverride: providerOverride,
-                                            model: model, needsImages: frames?.isEmpty == false || video != nil)
+                                            model: model, needsImages: frames?.isEmpty == false || video != nil, log: emit)
         guard !candidates.isEmpty else {
             throw AIError.notConfigured(
                 "No AI provider available for \(AICatalog.taskLabels[task] ?? task). Install the claude, gemini, codex, qwen, or kimi CLI, or check Settings → AI.")
@@ -224,7 +246,9 @@ actor AIService {
                 }
                 let text = try await callProvider(key: candidate.provider, model: candidate.model,
                                                   prompt: prompt, frames: candidateFrames, video: candidateVideo,
-                                                  timeout: timeout, webAccess: webAccess, emit: emit)
+                                                  timeout: candidateVideo == nil
+                                                    ? (timeoutForFrameCount?(candidateFrames?.count ?? 0) ?? timeout) : timeout,
+                                                  webAccess: webAccess, emit: emit)
                 // The candidate that answered is the provenance — a
                 // prediction made before the call would misattribute
                 // anything produced after a failover.
@@ -241,6 +265,12 @@ actor AIService {
                 emit("\(label) failed: \(error)")
             } catch {
                 if error is CancellationError || video == nil { throw error }
+                // A timed-out still fallback must reach Analyzer for thinning,
+                // even when this dispatch began as a native-video request.
+                if candidate.provider == "claude",
+                   let processError = error as? ProcessRunnerError, case .timedOut = processError {
+                    throw processError
+                }
                 lastError = error
                 emit("\(candidate.provider) native-video request failed: \(error)")
             }
@@ -357,6 +387,9 @@ actor AIService {
                                                      environment: environment)
             } catch {
                 if error is CancellationError { throw error }
+                if let processError = error as? ProcessRunnerError, case .timedOut = processError {
+                    throw processError
+                }
                 if attempt < maxRetries {
                     log("Attempt failed (\(error)), retrying (\(attempt + 1)/\(maxRetries))...")
                     try await Task.sleep(for: .seconds(5))
@@ -488,10 +521,17 @@ actor AIService {
         preparation = nil
         let result = try await runRequest(executable: binary, arguments: arguments, timeout: timeout)
         if result.exitCode != 0 {
-            let error = String(result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400))
-            if Self.isQuotaError(error) { throw AIError.quotaExhausted(String(error.prefix(200))) }
-            if Self.isPromptTooLong(error) { throw AIError.promptTooLong("Gemini") }
-            if let failure = await Self.authFailure(provider: "gemini", binary: binary, raw: error, log: log) {
+            let rawError = result.stderrText + "\n" + result.stdoutText
+            let error = Self.firstCLIErrorLine(rawError)
+            if Self.isProviderUnavailable(rawError) {
+                unavailableProviders.insert("gemini")
+                log("Gemini CLI error: \(error)")
+                throw AIError.notConfigured(
+                    "Gemini CLI is no longer available for this account (Google: \(error)). Choose another analysis provider in Settings → AI.")
+            }
+            if Self.isQuotaError(rawError) { throw AIError.quotaExhausted(String(error.prefix(200))) }
+            if Self.isPromptTooLong(rawError) { throw AIError.promptTooLong("Gemini") }
+            if let failure = await Self.authFailure(provider: "gemini", binary: binary, raw: rawError, log: log) {
                 throw failure
             }
             log("Gemini CLI error: \(error)")

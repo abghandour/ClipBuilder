@@ -17,6 +17,55 @@ struct AnalyzerStaticTests {
         #expect((dense.last ?? 0) > 300)
     }
 
+    @Test("model budget uses rounded image tokens and both request limits")
+    func frameBudget() {
+        let wideTokens = Analyzer.estimatedImageTokens(width: 1536, height: 864)
+        #expect(wideTokens == 1770)
+        #expect(Analyzer.estimatedImageTokens(width: 864, height: 1536) == wideTokens)
+        #expect(Analyzer.estimatedImageTokens(width: 1, height: 1) == 1)
+        let dense = Analyzer.budgetedFrameIndices(tokens: Array(repeating: wideTokens, count: 112))
+        #expect(dense.count == 84)
+        #expect(dense.first == 0 && dense.last == 111)
+        #expect(dense.count * wideTokens <= 150_000)
+        let stretched = Analyzer.frameTimestamps(start: 0, end: 223, interval: 2, frameLimit: dense.count)
+        #expect((83...84).contains(stretched.count))
+        #expect((stretched.last ?? 0) > 219)
+        let step = stretched[1] - stretched[0]
+        #expect(step > 2)
+        #expect(zip(stretched, stretched.dropFirst()).allSatisfy { abs(($0.1 - $0.0) - step) < 0.000_001 })
+        #expect(Analyzer.budgetedFrameIndices(tokens: Array(repeating: 100, count: 120)).count == 100)
+        #expect(Analyzer.budgetedFrameIndices(tokens: Array(repeating: 1500, count: 100)).count == 100)
+        #expect(Analyzer.budgetedFrameIndices(tokens: Array(repeating: 1501, count: 100)).count == 99)
+    }
+
+    @Test("analysis timeouts increase only above thirty sampled frames")
+    func analysisTimeouts() {
+        #expect(Analyzer.analysisTimeout(sampledFrameCount: 0) == 300)
+        #expect(Analyzer.analysisTimeout(sampledFrameCount: 16) == 300)
+        #expect(Analyzer.analysisTimeout(sampledFrameCount: 30) == 300)
+        #expect(Analyzer.analysisTimeout(sampledFrameCount: 31) == 600)
+        #expect(Analyzer.analysisTimeout(sampledFrameCount: 84) == 600)
+    }
+
+    @Test("model budget reserves references and preserves automatic grids")
+    func referenceBudget() {
+        let automatic = Analyzer.frameTimestamps(duration: 223)
+        #expect(automatic.count <= 30)
+        #expect(Analyzer.budgetedFrameIndices(tokens: Array(repeating: 1770, count: automatic.count))
+            == Array(automatic.indices))
+        #expect(Analyzer.budgetedFrameIndices(tokens: Array(repeating: 1770, count: 100),
+                                              referenceTokens: [1770, 1770]).count == 82)
+        #expect(Analyzer.budgetedFrameIndices(tokens: Array(repeating: 100, count: 100),
+                                              referenceTokens: [100, 100]).count == 98)
+        #expect(Analyzer.budgetedFrameIndices(tokens: [1], referenceTokens: [150_000]).isEmpty)
+        #expect(Analyzer.budgetedFrameIndices(tokens: [150_001]).isEmpty)
+        #expect(Analyzer.budgetedFrameIndices(tokens: []).isEmpty)
+        let mixed = [100, 40_000, 100, 80_000, 100, 40_000, 100]
+        let indices = Analyzer.budgetedFrameIndices(tokens: mixed)
+        #expect(indices.reduce(0) { $0 + mixed[$1] } <= 150_000)
+        #expect(indices.first == 0 && indices.last == 6)
+    }
+
     @Test("filename cleanup only accepts a spelling correction")
     func filenameSuggestion() {
         #expect(Analyzer.sanitizedFilenameSuggestion("Jon Jones", currentFilename: "Jonn Jones.mp4") == "Jon Jones")

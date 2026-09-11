@@ -27,6 +27,7 @@ nonisolated enum ProviderAuth {
         "invalid api key", "invalid_api_key", "api key not found", "missing api key",
         "authentication_error", "authentication failed", "authentication required",
         "unauthorized",
+        "failed to authenticate", "session expired", "error authenticating", "could not be refreshed",
         "oauth token", "token has expired", "token expired", "invalid_grant",
         "credentials not found", "no credentials", "login required",
     ]

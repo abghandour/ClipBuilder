@@ -69,7 +69,47 @@ actor Analyzer {
     // MARK: - Frame sampling
 
     /// A user-chosen interval may sample denser than the automatic mode.
-    static let maxCustomFrames = 120
+    static let maxCustomFrames = 100
+    static let maxImageTokens = 150_000
+
+    static func analysisTimeout(sampledFrameCount: Int) -> TimeInterval {
+        sampledFrameCount > 30 ? 600 : 300
+    }
+
+    static func estimatedImageTokens(width: Int, height: Int) -> Int {
+        Int(ceil(Double(width) * Double(height) / 750))
+    }
+
+    /// Evenly retain the largest grid that fits, reserving every reference.
+    static func budgetedFrameIndices(tokens: [Int], referenceTokens: [Int] = []) -> [Int] {
+        let allowance = maxImageTokens - referenceTokens.reduce(0, +)
+        let cap = min(tokens.count, maxCustomFrames - referenceTokens.count)
+        guard allowance >= 0, cap > 0 else { return [] }
+        for count in stride(from: cap, through: 1, by: -1) {
+            let indices = count == 1 ? [tokens.count / 2] : (0..<count).map {
+                Int((Double($0) * Double(tokens.count - 1) / Double(count - 1)).rounded())
+            }
+            if indices.reduce(0, { $0 + tokens[$1] }) <= allowance { return indices }
+        }
+        return []
+    }
+
+    private static func imageTokens(_ frame: AIFrame) -> Int {
+        guard let bitmap = NSBitmapImageRep(data: frame.jpeg) else {
+            // Unknown dimensions must not silently bypass the request budget.
+            return maxImageTokens + 1
+        }
+        return estimatedImageTokens(width: bitmap.pixelsWide, height: bitmap.pixelsHigh)
+    }
+
+    private static func fitModelBudget(_ frames: [AIFrame], auxiliary: [AIFrame] = []) throws -> [AIFrame] {
+        let references = auxiliary.map { imageTokens($0) }
+        guard references.count <= maxCustomFrames, references.reduce(0, +) <= maxImageTokens else {
+            throw AIError.unusableResponse("Reference images exceed the model's image budget. Reduce the number or size of references.")
+        }
+        return budgetedFrameIndices(tokens: frames.map { imageTokens($0) }, referenceTokens: references)
+            .map { frames[$0] }
+    }
 
     /// Scenes shorter than this aren't worth a breakdown pass — they're
     /// already about one action long.
@@ -77,7 +117,7 @@ actor Analyzer {
 
     /// Variable-interval sampling matching analyzer.py: 1s (≤10s),
     /// 2s (≤60s), 3s (>60s); from 0.5s to duration−0.3s; max 30 frames.
-    /// A non-nil `interval` overrides the automatic choice, capped at 120
+    /// A non-nil `interval` overrides the automatic choice, capped at 100
     /// frames — when the requested density exceeds the cap, the interval is
     /// stretched so the frames still cover the WHOLE video evenly instead of
     /// only its first seconds.
@@ -87,12 +127,12 @@ actor Analyzer {
 
     /// Windowed variant: samples only [start, end] (a trim range).
     static func frameTimestamps(start: Double, end: Double,
-                                interval custom: Double? = nil) -> [Double] {
+                                interval custom: Double? = nil, frameLimit: Int = maxCustomFrames) -> [Double] {
         let windowSpan = end - start
         var interval = custom ?? (windowSpan <= 10 ? 1.0 : (windowSpan <= 60 ? 2.0 : 3.0))
-        let cap = custom == nil ? maxFrames : maxCustomFrames
+        let cap = custom == nil ? maxFrames : max(1, min(maxCustomFrames, frameLimit))
         let span = max(0, windowSpan - 0.8)
-        if span / max(0.2, interval) >= Double(cap) {
+        if cap > 1, span / max(0.2, interval) >= Double(cap) {
             interval = span / Double(cap - 1)
         }
         var timestamps: [Double] = []
@@ -110,16 +150,26 @@ actor Analyzer {
     private func extractFrames(url: URL, start: Double, end: Double, interval: Double?,
                                log: @Sendable (String) -> Void) async -> [AIFrame] {
         let timestamps = Self.frameTimestamps(start: start, end: end, interval: interval)
+        var frames = await extractFrames(url: url, timestamps: timestamps, log: log)
         if let interval {
+            // Once the fitted JPEGs reveal the actual token cost, resample
+            // at the new interval rather than leaving holes in the old grid.
+            if !frames.isEmpty, frames.count < timestamps.count {
+                let stretched = Self.frameTimestamps(start: start, end: end, interval: interval,
+                                                     frameLimit: frames.count)
+                frames = await extractFrames(url: url, timestamps: stretched, log: log)
+            }
             let wanted = Int(((end - start - 0.8) / max(0.2, interval)).rounded(.up))
-            if wanted > timestamps.count, timestamps.count > 1 {
-                log(String(format: "Sampling every %.1fs exceeds the %d-frame budget — stretched to every %.1fs across the whole video",
-                           interval, timestamps.count, timestamps[1] - timestamps[0]))
+            if wanted > frames.count, frames.count > 1 {
+                let first = frames.first.flatMap { Double($0.label.dropLast()) } ?? start + 0.5
+                let last = frames.last.flatMap { Double($0.label.dropLast()) } ?? end - 0.3
+                log(String(format: "Sampling every %.1f s exceeds the model's image budget — stretched to every %.1f s (%d frames)",
+                           interval, (last - first) / Double(frames.count - 1), frames.count))
             } else {
-                log(String(format: "Sampling every %.1fs (%d frames)", interval, timestamps.count))
+                log(String(format: "Sampling every %.1fs (%d frames)", interval, frames.count))
             }
         }
-        return await extractFrames(url: url, timestamps: timestamps, log: log)
+        return frames
     }
 
     /// Run an analysis-task AI call, halving the sampled frame grid and
@@ -129,10 +179,12 @@ actor Analyzer {
     private func callThinningFrames(prompt: String, auxiliary: [AIFrame], sampled: [AIFrame],
                                     video: URL? = nil, lazySampled: AnalysisFrameSource? = nil,
                                     model: String?, provider: String?,
+                                    progress: (@Sendable (Int) -> Void)? = nil,
                                     log: @escaping @Sendable (String) -> Void) async throws -> AIResponse {
         let auxiliary = try await AnalysisImageBudget.fitReferences(auxiliary, log: log)
         let referenceBytes = auxiliary.reduce(0) { $0 + $1.jpeg.count }
         var frames = await AnalysisImageBudget.fit(sampled, reservingBytes: referenceBytes, log: log)
+        frames = try Self.fitModelBudget(frames, auxiliary: auxiliary)
         try Task.checkCancellation()
         guard sampled.isEmpty || !frames.isEmpty else {
             throw AIError.unusableResponse("No sampled frame fits within the analysis image budget alongside the reference images.")
@@ -142,29 +194,48 @@ actor Analyzer {
         if let lazySampled {
             fallbackFrames = {
                 let sampled = try await lazySampled.frames()
-                let fitted = await AnalysisImageBudget.fit(sampled, reservingBytes: referenceBytes, log: log)
+                let byteFitted = await AnalysisImageBudget.fit(sampled, reservingBytes: referenceBytes, log: log)
+                let fitted = try Self.fitModelBudget(byteFitted, auxiliary: auxiliary)
                 try Task.checkCancellation()
                 guard !fitted.isEmpty else {
                     throw AIError.unusableResponse("No fallback still fits within the analysis image budget.")
                 }
+                progress?(fitted.count)
                 return auxiliary + fitted
             }
         } else {
             fallbackFrames = nil
         }
         while true {
+            if currentVideo == nil { progress?(frames.count) }
             do {
                 return try await ai.call(prompt: prompt, task: "analysis",
                                          frames: auxiliary + frames, video: currentVideo,
                                          fallbackFrames: currentVideo == nil ? nil : fallbackFrames,
                                          model: model, provider: provider,
-                                         timeout: 300, log: log)
+                                         timeout: Self.analysisTimeout(sampledFrameCount: frames.count),
+                                         timeoutForFrameCount: { count in
+                                             Self.analysisTimeout(sampledFrameCount: count - auxiliary.count)
+                                         }, log: log)
+            } catch let error as ProcessRunnerError {
+                guard case .timedOut = error else { throw error }
+                if currentVideo != nil, let lazySampled {
+                    currentVideo = nil
+                    let fitted = await AnalysisImageBudget.fit(try await lazySampled.frames(),
+                                                               reservingBytes: referenceBytes, log: log)
+                    frames = try Self.fitModelBudget(fitted, auxiliary: auxiliary)
+                }
+                guard frames.count > 16 else { throw error }
+                let previousCount = frames.count
+                frames = frames.enumerated().filter { $0.offset.isMultiple(of: 2) }.map(\.element)
+                log("Timed out with \(previousCount) frames — retrying with \(frames.count) frames")
             } catch let error as AIError {
                 guard case .promptTooLong = error else { throw error }
                 if currentVideo != nil, let lazySampled {
                     currentVideo = nil
                     frames = await AnalysisImageBudget.fit(try await lazySampled.frames(),
                                                           reservingBytes: referenceBytes, log: log)
+                    frames = try Self.fitModelBudget(frames, auxiliary: auxiliary)
                     guard !frames.isEmpty else { throw error }
                     log("Native request too long — retrying with \(frames.count) still frames")
                     continue
@@ -200,7 +271,8 @@ actor Analyzer {
         let frames = zip(timestamps, jpegFrames).compactMap { timestamp, jpeg in
             jpeg.map { AIFrame(jpeg: $0, label: String(format: "%.1fs", timestamp)) }
         }
-        return await AnalysisImageBudget.fit(frames, log: log)
+        let fitted = await AnalysisImageBudget.fit(frames, log: log)
+        return (try? Self.fitModelBudget(fitted)) ?? []
     }
 
     // MARK: - Prompts (verbatim from analyzer.py)
@@ -1506,7 +1578,8 @@ actor Analyzer {
             auxiliary: referenceFrames + markerFrames + ignoreFrames + tasteFrames,
             sampled: frames,
             video: nativeVideo, lazySampled: nativeVideo == nil ? nil : frameSource,
-            model: model, provider: provider, log: log)
+            model: model, provider: provider,
+            progress: { count in progress(0.25, "tagging (\(count) frames)") }, log: log)
         guard let object = AIResponseParser.jsonObject(from: response.text) else {
             throw AIError.emptyResponse("analysis (unparseable JSON)")
         }

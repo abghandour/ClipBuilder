@@ -26,7 +26,7 @@ passes whenever a user had breakdown tags on.
   list, now `SmartSampling.actionTags`), windows the model scored ≥ 7, and
   windows whose ffmpeg cut rate is ≥ 12 per minute. Candidates merge when
   ≤ 2 s apart and split into equal chunks of ≤ 60 s so each stays in the
-  120-frame budget at ≥ 0.5 s spacing. Podcast and interview footage never
+  100-frame budget (the model image limit) at ≥ 0.5 s spacing. Podcast and interview footage never
   enters the dense pass. The dense pass reuses `breakdownScene` and runs
   three windows at a time; the user's own breakdown tags go through the
   same parallel path.
