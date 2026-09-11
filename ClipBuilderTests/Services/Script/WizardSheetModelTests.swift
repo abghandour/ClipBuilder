@@ -632,3 +632,142 @@ extension WizardSheetModelTests {
         } else { #expect(store.builder.document == before) }
     }
 }
+
+extension WizardSheetModelTests {
+    @Test func localAssistedFindExplainsUnresolvedWithoutAgent() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardFindTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var library = ScriptFixtures.library(); library.projectID = store.activeProjectID
+        let snapshot = library
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { snapshot }, agentExecutor: { _, _, _, _ in
+                Issue.record("Local assisted find must not launch an agent")
+                return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
+            })
+        model.provider = .local
+        model.request = "find scenes with anjo"
+        let before = store.builder.document
+        await model.run()
+        #expect(model.phase == .refused)
+        #expect(model.statusText == "Could not resolve: 'anjo'; choose Claude to let the assistant search")
+        #expect(model.session == nil && model.agentEvents.isEmpty && model.results.isEmpty)
+        #expect(store.builder.document == before)
+    }
+
+    @Test(arguments: [false, true])
+    func assistedFindRequiresStructuredReport(report: Bool) async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)
+        let suite = "WizardFindTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var library = ScriptFixtures.library(); library.projectID = store.activeProjectID
+        library.scenes = (1...12).map { id in
+            var scene = Fixtures.scene(); scene.id = Int64(id); return scene
+        }
+        let snapshot = library
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { snapshot }, agentExecutor: { _, launch, _, consume in
+                #expect(launch.arguments.contains(BuilderAgentPrompt.findRules))
+                let data = try Data(contentsOf: launch.root.appendingPathComponent("mcp.json"))
+                let decoded = try JSONSerialization.jsonObject(with: data)
+                let config = try #require(decoded as? [String: Any])
+                let servers = try #require(config["mcpServers"] as? [String: Any])
+                let server = try #require(servers["clipbuilder"] as? [String: Any])
+                let headers = try #require(server["headers"] as? [String: String])
+                let urlString = try #require(server["url"] as? String)
+                let url = try #require(URL(string: urlString))
+                let authorization = try #require(headers["Authorization"])
+                // Claude discloses its confined inventory before any tool call; find mode has no run_script.
+                try consume(Data((#"{"type":"system","tools":["mcp__clipbuilder__query","mcp__clipbuilder__get_document_summary","mcp__clipbuilder__report_scenes"]}"# + "\n").utf8))
+                var bodies: [[String: Any]] = [
+                    ["jsonrpc": "2.0", "id": 1, "method": "initialize", "params": [
+                        "protocolVersion": "2025-06-18", "capabilities": [:],
+                        "clientInfo": ["name": "fake-find", "version": "1"]]],
+                    ["jsonrpc": "2.0", "method": "notifications/initialized"],
+                    ["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": [
+                        "name": "query", "arguments": ["query": ["kind": "scenes"]]]]
+                ]
+                if report {
+                    let scenes: [[String: Any]] = (3...12).reversed().map { ["id": $0, "reason": "Reason for scene \($0)"] }
+                    bodies.append(["jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": [
+                        "name": "report_scenes", "arguments": ["scenes": scenes, "summary": "Ten matching scenes"]]])
+                }
+                for body in bodies {
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                    request.setValue(authorization, forHTTPHeaderField: "Authorization")
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.setValue("application/json", forHTTPHeaderField: "Accept")
+                    request.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
+                    let (data, response) = try await URLSession.shared.data(for: request)
+                    let http = try #require(response as? HTTPURLResponse)
+                    #expect([200, 202].contains(http.statusCode))
+                    #expect(!String(decoding: data, as: UTF8.self).contains("\"isError\":true"))
+                }
+                try consume(Data((#"{"type":"result","subtype":"success","result":"Prose must never become the search answer"}"# + "\n").utf8))
+                return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
+            })
+        model.provider = .claude
+        let before = store.builder.document
+        model.request = "find scenes with anjo"
+        await model.run()
+        #expect(store.builder.document == before && !model.canApply && model.diff == nil)
+        let timelineID = try #require(store.builder.timelineID)
+        let runs = try await temp.database.fetchBuilderRuns(timelineID: timelineID)
+        let run = try #require(runs.first)
+        #expect(try await temp.database.fetchWizardBefore(timelineID: timelineID) == nil)
+        if report {
+            #expect(model.phase == .found && model.results.count == 10)
+            #expect(model.results.map(\.id) == Array(stride(from: Int64(12), through: 3, by: -1)))
+            #expect(model.results.map { model.resultReasons[$0.id] } == (3...12).reversed().map { "Reason for scene \($0)" })
+            #expect(model.agentSummary == "Ten matching scenes")
+            #expect(run.status == .completed && run.summary == "Ten matching scenes")
+            #expect(model.session == nil)
+            let picker = try #require(model.pickerRequest(sceneID: 12))
+            #expect(picker.scenes.map(\.id) == [12])
+            store.builder.playhead = 1
+            model.addAsBRoll(sceneID: 12)
+            #expect(model.phase == .preview && model.canApply)
+            let candidate = try #require(model.session?.candidate)
+            let additions = candidate.videoTrack.filter { $0.isCutaway }
+            #expect(additions.count == 1 && additions.first?.sceneID == 12 && additions.first?.startTime == 1)
+            #expect(store.builder.document == before)
+            await model.discard()
+            let afterDiscard = try await temp.database.fetchBuilderRuns(timelineID: timelineID)
+            #expect(afterDiscard.contains { $0.runUUID == run.runUUID && $0.status == .completed })
+        } else {
+            #expect(model.phase == .refused && model.results.isEmpty)
+            #expect(model.statusText.contains("did not call report_scenes"))
+            #expect(run.status == .failed && model.agentSummary.isEmpty)
+        }
+    }
+
+    @Test func recognizedFindStaysLocalWithClaudeSelectedAndCapsResults() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardFindTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var library = ScriptFixtures.library(); library.projectID = store.activeProjectID
+        library.scenes = (1...12).map { id in
+            var scene = Fixtures.scene(); scene.id = Int64(id)
+            scene.narrative = "comeback"; scene.score = Double(id); return scene
+        }
+        let snapshot = library
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { snapshot }, agentExecutor: { _, _, _, _ in
+                Issue.record("Recognized find must stay local")
+                return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
+            })
+        model.provider = .claude; model.request = "search scenes for comeback"
+        await model.run()
+        #expect(model.phase == .found && model.results.count == 10)
+        #expect(model.results.map(\.id) == Array(stride(from: Int64(12), through: 3, by: -1)))
+        #expect(model.agentEvents.isEmpty && model.session == nil)
+    }
+}

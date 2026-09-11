@@ -244,10 +244,7 @@ extension BuilderQuery {
                                            "playhead": .number(model.playhead)])
             }
         case .scenes:
-            let rows = library.scenes.filter { (sceneFilter ?? SceneFilter()).matches($0) }.sorted {
-                if $0.score != $1.score { return ($0.score ?? -.infinity) > ($1.score ?? -.infinity) }
-                return $0.id < $1.id
-            }.map { SceneQueryRow(id: $0.id, video: $0.videoID, start: $0.startTime, end: $0.endTime,
+            let rows = BuilderSceneSearch.ranked(sceneFilter ?? SceneFilter(), library: library).map(\.scene).map { SceneQueryRow(id: $0.id, video: $0.videoID, start: $0.startTime, end: $0.endTime,
                                  score: $0.score, text: $0.narrative.map { String($0.prefix(1000)) },
                                  tags: $0.tags.sorted(), excluded: $0.excluded) }
             result.scenes = page(rows)

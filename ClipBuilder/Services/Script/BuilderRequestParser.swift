@@ -1,7 +1,7 @@
 import Foundation
 
-/// Closed, anchored grammar. No stop-word stripping, fuzzy entities, residual
-/// word allowance, model calls, or prerequisite service work.
+/// Anchored edit grammar; scene searches resolve Library vocabulary and text
+/// locally before requesting read-only assistance for unresolved terms.
 @MainActor
 struct BuilderRequestParser {
     static let supportedRequests = [
@@ -55,8 +55,12 @@ struct BuilderRequestParser {
                 if !g[1].isEmpty { filter.track = try track(g[1], context) }
                 return .script([.init(.removeClips(filter: filter))])
             }
-            if let g = match(#"find (?:scenes of )?(.+)"#, text) {
-                return .find(try findFilter(g[0], context), presentation: request)
+            for pattern in [#"find (?:me )?scenes (?:with|of|where|showing) (.+)"#,
+                            #"search scenes for (.+)"#, #"show me (.+) scenes"#,
+                            #"scenes with (.+)"#, #"find (.+)"#] {
+                if let g = match(pattern, text) {
+                    return BuilderSceneSearch.resolve(g[0], request: request, library: context.library)
+                }
             }
             if let g = match(#"(?:cut|remove) silence(?: longer than ([0-9]+(?:\.[0-9]+)?)\s*s)? (on (?:track )?(?:i|ii|iii|iv|v|vi|[1-6])|in this clip)"#, text) {
                 let threshold = g[0].isEmpty ? 0.3 : try seconds(g[0])
@@ -190,28 +194,6 @@ struct BuilderRequestParser {
             throw ScriptError.invalid("Unknown or ambiguous profile tag, or unconsumed words: \(value).")
         }
         return found
-    }
-
-    private func findFilter(_ value: String, _ context: ParserContext) throws -> SceneFilter {
-        var candidates: [SceneFilter] = []
-        if let resolved = try? tag(value, context) {
-            var filter = SceneFilter(); filter.tags = [resolved]; candidates.append(filter)
-        }
-        for name in Set(context.library.people.filter { !$0.hidden }.map { Self.normalized($0.name) }) {
-            guard value == name || value.hasPrefix(name + " ") else { continue }
-            let key = try person(name, context)
-            let rest = value == name ? "" : String(value.dropFirst(name.count + 1))
-            var filter = SceneFilter(); filter.people = [key]
-            if !rest.isEmpty {
-                guard let resolved = try? tag(rest, context) else { continue }
-                filter.tags = [resolved]
-            }
-            candidates.append(filter)
-        }
-        guard candidates.count == 1, let filter = candidates.first else {
-            throw ScriptError.invalid("Find needs an unambiguous roster name and/or profile tag with no extra words.")
-        }
-        return filter
     }
 
     private func track(_ value: String, _ context: ParserContext) throws -> Int {

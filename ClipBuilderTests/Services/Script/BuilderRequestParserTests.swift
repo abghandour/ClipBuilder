@@ -121,7 +121,7 @@ struct BuilderRequestParserTests {
     }
 
     @Test(arguments: ["remove clips with Alex Smith except the first", "remove clips with Alex Smith and add titles",
-                      "remove clips tagged not fixture", "find Alex Smith fixture please", "find nobody fixture",
+                      "remove clips tagged not fixture",
                       "don't remove clips with Alex Smith", "remove clips tagged unknown", "remove clips tagged fixture on track 9",
                       "mute this clip and trim it", "cover all areas except II", "split this clip at 0:99",
                       "add b-roll of fixture at 12s without audio", "trim this clip to -2 s"])
@@ -242,13 +242,76 @@ struct BuilderRequestParserTests {
         var filter = SceneFilter(); filter.tags = ["wide shot"]
         #expect(BuilderRequestParser().parse("find wide shot", context: context) == .find(filter, presentation: "find wide shot"))
         context.library.scenes[0].tags.append("scene-only-tag")
-        guard case .unrecognised = BuilderRequestParser().parse("find scene-only-tag", context: context) else {
-            Issue.record("Resolved a tag outside the profile vocabulary"); return
-        }
+        var sceneTag = SceneFilter(); sceneTag.tags = ["scene-only-tag"]
+        #expect(BuilderRequestParser().parse("find scene-only-tag", context: context)
+            == .find(sceneTag, presentation: "find scene-only-tag"))
         context.library.people[0].hidden = true
-        guard case .unrecognised = BuilderRequestParser().parse("find Alex Smith", context: context) else {
+        guard case .assistedFind = BuilderRequestParser().parse("find Alex Smith", context: context) else {
             Issue.record("Resolved a hidden roster entry"); return
         }
     }
 
+
+    @Test(arguments: ["find scenes with Alex Smith and punching", "find me scenes of ALEX_KEY punching",
+                      "find scenes where Alex Smith punching", "find scenes showing Alex Smith punching",
+                      "search scenes for Alex Smith punching", "show me Alex Smith punching scenes",
+                      "scenes with Alex Smith punching"])
+    func naturalFindPhrasings(_ request: String) throws {
+        var context = context()
+        context.library.tags += ["punches"]
+        context.library.scenes[0].tags += ["PUNCH"]
+        guard case .find(let filter, _) = BuilderRequestParser().parse(request, context: context) else {
+            Issue.record("Expected local find"); return
+        }
+        #expect(filter.people == ["alex_key"])
+        #expect(filter.tags.count == 1)
+        #expect(BuilderSceneSearch.ranked(filter, library: context.library).map(\.scene.id) == [1])
+    }
+
+    @Test func freeTextFindRanksAndLimits() throws {
+        var context = context()
+        context.library.scenes = (1...12).map { id in
+            var scene = Fixtures.scene(); scene.id = Int64(id)
+            scene.narrative = id == 12 ? "volcano" : "volcanoes"
+            scene.score = Double(id)
+            return scene
+        }
+        let request = "search scenes for volcano"
+        guard case .find(let filter, _) = BuilderRequestParser().parse(request, context: context) else {
+            Issue.record("Expected text find"); return
+        }
+        #expect(filter.text == "volcano")
+        #expect(BuilderSceneSearch.limit == 10)
+        let matches = Array(BuilderSceneSearch.ranked(filter, library: context.library).prefix(BuilderSceneSearch.limit))
+        #expect(matches.map(\.scene.id) == Array(stride(from: Int64(12), through: 3, by: -1)))
+        #expect(matches.first?.reason.contains("narrative: volcano") == true)
+        // Exact text beats a prefix hit even when scene score is lower.
+        context.library.scenes[11].score = 0
+        #expect(BuilderSceneSearch.ranked(filter, library: context.library).first?.scene.id == 12)
+    }
+
+    @Test func transcriptHitsAndUnresolvedWords() throws {
+        var context = context()
+        var row = transcript(); row.text = "A surprising comeback"
+        context.library.transcripts = [row]
+        let request = "scenes with comeback"
+        guard case .find(let filter, _) = BuilderRequestParser().parse(request, context: context) else {
+            Issue.record("Expected transcript find"); return
+        }
+        #expect(BuilderSceneSearch.ranked(filter, library: context.library).first?.reason.contains("transcript:") == true)
+        #expect(BuilderRequestParser().parse("find me scenes with anjo", context: context)
+            == .assistedFind(request: "find me scenes with anjo", unresolved: ["anjo"]))
+        #expect(BuilderRequestParser().parse("find Alex Smith fixture mystery", context: context)
+            == .assistedFind(request: "find Alex Smith fixture mystery", unresolved: ["mystery"]))
+    }
+
+    @Test func personTagsAndUniqueFuzzyNames() throws {
+        let context = context()
+        for request in ["scenes with person:alex_key", "scenes with Alex Smith", "scenes with alex_ke"] {
+            guard case .find(let filter, _) = BuilderRequestParser().parse(request, context: context) else {
+                Issue.record("Expected find for \(request)"); continue
+            }
+            #expect(BuilderSceneSearch.ranked(filter, library: context.library).map(\.scene.id) == [1])
+        }
+    }
 }

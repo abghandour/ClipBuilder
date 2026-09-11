@@ -13,6 +13,8 @@ final class BuilderScriptSession {
     let projectID: Int64?
     let baseline: TimelineDocument
     private(set) var library: ScriptLibrarySnapshot
+    private(set) var sceneReport: BuilderSceneReport?
+
     private(set) var prerequisiteEffects: [PrerequisiteEffect] = []
     private(set) var prerequisiteReports: [PrerequisiteReport] = []
     private var runningPrerequisites = false
@@ -47,6 +49,31 @@ final class BuilderScriptSession {
 
     isolated deinit {
         if hydrationOpen { hydration.end(runUUID) }
+    }
+
+    func reportScenes(_ report: BuilderSceneReport) throws {
+        guard state == .ready, sceneReport == nil else {
+            throw ScriptError.invalid("report_scenes must be called exactly once on an open session.")
+        }
+        guard report.scenes.count <= BuilderSceneSearch.limit else {
+            throw ScriptError.invalid("report_scenes accepts at most 10 scenes.")
+        }
+        guard !report.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              report.summary.count <= 2000 else {
+            throw ScriptError.invalid("Report summary must contain 1–2,000 characters.")
+        }
+        let ids = Set(library.scenes.map(\.id))
+        guard Set(report.scenes.map(\.id)).count == report.scenes.count else {
+            throw ScriptError.invalid("Report scene IDs must be distinct.")
+        }
+        for scene in report.scenes {
+            guard ids.contains(scene.id) else { throw ScriptError.invalid("Unknown scene ID: \(scene.id).") }
+            guard !scene.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  scene.reason.count <= 500, !scene.reason.contains(where: \.isNewline) else {
+                throw ScriptError.invalid("Each scene reason must be one line of 1–500 characters.")
+            }
+        }
+        sceneReport = report
     }
 
     @discardableResult
@@ -233,7 +260,7 @@ final class BuilderScriptSession {
     @discardableResult
     func freeze() -> TimelineDiff {
         guard state == .ready, !runningPrerequisites else { return diff() }
-        library.withLayouts { working?.normalizeScriptCandidate() }
+        if sceneReport == nil { library.withLayouts { working?.normalizeScriptCandidate() } }
         frozenDiff = diff()
         candidate = working?.document
         if let candidate {

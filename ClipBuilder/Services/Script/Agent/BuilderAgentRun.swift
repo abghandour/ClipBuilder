@@ -55,11 +55,11 @@ final class BuilderAgentRun {
                 $0.key.contains("KEY") || $0.key.contains("TOKEN") || $0.key.contains("SECRET")
             }.map(\.value))
             let prompt = BuilderAgentPrompt.request(request, model: provenance.model,
-                disclosures: endpoint.tools.confirmedPrerequisites.compactMap { command in
+                mode: endpoint.tools.mode, disclosures: endpoint.tools.confirmedPrerequisites.compactMap { command in
                     command.prerequisite.map { "Video \($0.video): \($0.kind.disclosure)" }
                 })
             let configuration = try BuilderAgentLaunch.make(provider: provider, request: prompt, model: provenance.model,
-                endpoint: endpoint.url, token: endpoint.token, parentEnvironment: parentEnvironment)
+                endpoint: endpoint.url, token: endpoint.token, parentEnvironment: parentEnvironment, mode: endpoint.tools.mode)
             launch = configuration
             // Total bytes are bounded by ProcessRunner.runAgent maximumOutputBytes
             // and the parser's per-line limit; partial-message bursts must not drop events.
@@ -136,6 +136,9 @@ final class BuilderAgentRun {
         await watchdog.value
         if exceededDeadline { terminalError = "Agent wall-time budget exhausted. No timeline changes applied." }
         provenance.duration = Date.now.timeIntervalSince(started)
+        if terminalError == nil, endpoint.tools.mode == .find, endpoint.tools.session.sceneReport == nil {
+            terminalError = "The assistant did not call report_scenes. No search results were reported."
+        }
         if let terminalError { _ = endpoint.tools.session.fail(terminalError) }
         endpoint.finishEvent(outcome: terminalError == nil ? .completed : .failed,
                              message: terminalError, duration: provenance.duration ?? 0)

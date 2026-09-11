@@ -249,3 +249,56 @@ extension MCPServerTests {
         session.discard()
     }
 }
+
+extension MCPServerTests {
+    @Test func findModeListsOnlySearchToolsAndRefusesScript() async throws {
+        let session = ScriptFixtures.session()
+        let tools = BuilderTools(session: session, budget: BuilderRunBudget(.init()), mode: .find,
+            confirmedPrerequisites: [.ensureTranscript(video: 1)], ensure: { _ in
+                Issue.record("Find must not run prerequisites")
+                return .init(outcomes: [], completed: false, hasDocumentChanges: false)
+            })
+        let server = BuilderMCPServer(tools: tools)
+        try await server.start()
+        do {
+            let (data, _) = try await post(server, #"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#)
+            let decoded = try JSONSerialization.jsonObject(with: data)
+            let json = try #require(decoded as? [String: Any])
+            let result = try #require(json["result"] as? [String: Any])
+            let definitions = try #require(result["tools"] as? [[String: Any]])
+            #expect(definitions.compactMap { $0["name"] as? String } == ["query", "get_document_summary", "report_scenes"])
+            let before = session.workingDocument
+            let (refused, _) = try await post(server, #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[]}}}"#)
+            #expect(String(decoding: refused, as: UTF8.self).contains("Unknown or unavailable tool"))
+            #expect(session.workingDocument == before)
+            await server.shutdown()
+        } catch { await server.shutdown(); throw error }
+        session.discard()
+    }
+
+    @Test func sceneReportsValidateIDsCountReasonsAndSingleAnswer() async throws {
+        let session = ScriptFixtures.session()
+        let tools = BuilderTools(session: session, budget: BuilderRunBudget(.init()), mode: .find)
+        let before = session.workingDocument
+        let valid: Value = .object(["id": .int(1), "reason": .string("A clear matching scene")])
+        let badReports: [[String: Value]] = [
+            ["scenes": .array([.object(["id": .int(99999), "reason": .string("Unknown")])]), "summary": .string("Matches")],
+            ["scenes": .array(Array(repeating: valid, count: 11)), "summary": .string("Too many")],
+            ["scenes": .array([.object(["id": .int(1), "reason": .string(String(repeating: "x", count: 501))])]), "summary": .string("Too long")],
+            ["scenes": .array([valid, valid]), "summary": .string("Duplicate")]
+        ]
+        for arguments in badReports {
+            await #expect(throws: (any Error).self) { try await tools.call(name: "report_scenes", arguments: arguments) }
+            #expect(session.sceneReport == nil && session.state == .ready)
+        }
+        _ = try await tools.call(name: "report_scenes", arguments: ["scenes": .array([valid]), "summary": .string("One match")])
+        #expect(session.sceneReport?.scenes.map(\.id) == [1])
+        #expect(session.workingDocument == before)
+        await #expect(throws: (any Error).self) {
+            try await tools.call(name: "report_scenes", arguments: ["scenes": .array([]), "summary": .string("Replacement")])
+        }
+        let diff = session.freeze()
+        #expect(diff.isEmpty && session.candidate == before)
+        session.discard()
+    }
+}

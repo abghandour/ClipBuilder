@@ -3,6 +3,8 @@ import MCP
 
 @MainActor
 final class BuilderTools {
+    nonisolated enum Mode: Sendable { case edit, find }
+    let mode: Mode
     let session: BuilderScriptSession
     let budget: BuilderRunBudget
     let confirmedPrerequisites: [BuilderCommand]
@@ -11,9 +13,10 @@ final class BuilderTools {
     private var ensureCount = 0
     private(set) var executedSteps: [BuilderScriptStep] = []
 
-    init(session: BuilderScriptSession, budget: BuilderRunBudget,
+    init(session: BuilderScriptSession, budget: BuilderRunBudget, mode: Mode = .edit,
          confirmedPrerequisites: [BuilderCommand] = [],
          ensure: (@MainActor ([BuilderScriptStep]) async -> BuilderScriptResult)? = nil) {
+        self.mode = mode
         self.session = session
         self.budget = budget
         self.confirmedPrerequisites = confirmedPrerequisites
@@ -32,6 +35,17 @@ final class BuilderTools {
             Tool(name: "get_document_summary", description: "Compact paginated rows of the working timeline; no paths or settings.",
                  inputSchema: Self.object(["offset": Self.integer, "limit": .object(["type": .string("integer"), "minimum": .int(1), "maximum": .int(200)])]))
         ]
+        if mode == .find {
+            tools.removeAll { $0.name == "run_script" }
+            let reason: Value = .object(["type": .string("string"), "minLength": .int(1), "maxLength": .int(500)])
+            tools.append(Tool(name: "report_scenes", description: "Submit the final search answer once: at most ten existing scene IDs in ranked order, each with a one-line reason. Prose is not an answer.",
+                inputSchema: Self.object([
+                    "scenes": .object(["type": .string("array"), "maxItems": .int(10),
+                        "items": Self.object(["id": Self.integer, "reason": reason], required: ["id", "reason"])]),
+                    "summary": .object(["type": .string("string"), "minLength": .int(1), "maxLength": .int(2000)])
+                ], required: ["scenes", "summary"])))
+            return tools
+        }
         for name in ["ensure_transcript", "ensure_people", "ensure_analysis"] {
             if confirmedPrerequisites.contains(where: { Self.name($0) == name }), ensure != nil {
                 tools.append(Tool(name: name, description: "Run only the exact video prerequisite disclosed and confirmed before this run. Saved Library effects survive Discard, Undo and Revert.",
@@ -46,8 +60,21 @@ final class BuilderTools {
         guard session.state == .ready else { throw ScriptError.invalid("Session is closed.") }
         let bytes = try JSONEncoder().encode(arguments)
         guard bytes.count <= budget.limits.argumentBytes else { throw BuilderBudgetExceeded(reason: "Arguments too large.") }
+        guard definitions.contains(where: { $0.name == name }) else {
+            throw ScriptError.invalid("Unknown or unavailable tool.")
+        }
         let steps: [BuilderScriptStep]
         switch name {
+        case "report_scenes":
+            try enforceBudget { try budget.admit(arguments: bytes.count, affected: 0) }
+            guard Set(arguments.keys) == ["scenes", "summary"],
+                  let sceneValue = arguments["scenes"], case .array(let scenes) = sceneValue,
+                  scenes.allSatisfy({ $0.objectValue.map { Set($0.keys) == ["id", "reason"] } ?? false }) else {
+                throw ScriptError.invalid("Expected scenes [{id, reason}] and summary.")
+            }
+            let report = try JSONDecoder().decode(BuilderSceneReport.self, from: bytes)
+            try session.reportScenes(report)
+            return try encode(report)
         case "query":
             try enforceBudget { try budget.admit(arguments: bytes.count, affected: 0) }
             guard arguments.count == 1, let value = arguments["query"] else { throw ScriptError.invalid("Expected query.") }
@@ -97,7 +124,7 @@ final class BuilderTools {
     }
 
     static func isReadOnly(_ name: String) -> Bool {
-        name == "query" || name == "get_document_summary"
+        name == "query" || name == "get_document_summary" || name == "report_scenes"
     }
 
     /// Budget checks throw BuilderBudgetExceeded; the endpoint ends the run on

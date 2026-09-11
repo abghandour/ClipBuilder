@@ -5,5 +5,6 @@ nonisolated enum BuilderProgram: Sendable, Equatable {
     case deferred(prerequisites: [BuilderScriptStep])
     case script([BuilderScriptStep])
     case find(SceneFilter, presentation: String)
+    case assistedFind(request: String, unresolved: [String])
     case unrecognised([String])
 }

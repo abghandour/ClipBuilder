@@ -2,7 +2,6 @@ import SwiftUI
 
 struct BuilderWizardRequestHeader: View {
     @Bindable var model: WizardSheetModel
-    let availableWidth: CGFloat
     @State private var showHelp = false
 
     private let guidance = "B-roll chooses the first matching scene by ID; omit track to use the focused track. Clip numbers count visible clips on the track from left to right, including B-roll. ‘Cover all areas’ targets the selected B-roll clip."
@@ -18,7 +17,7 @@ struct BuilderWizardRequestHeader: View {
                 #else
                 .help("Enter an editing request. Times are timeline positions. Review the preview before applying.")
                 #endif
-            HStack(spacing: Theme.spaceS) {
+            HStack(spacing: Theme.spaceXS) {
                 Picker("Provider", selection: $model.provider) {
                     ForEach(BuilderAgentProvider.allCases) { provider in
                         Text(provider.label).tag(provider).disabled(provider.disabledReason != nil)
@@ -31,6 +30,41 @@ struct BuilderWizardRequestHeader: View {
                 .onChange(of: model.provider) { _, _ in model.saveProviderPreference() }
                 .help("Local works without a provider. Claude uses only Builder tools. Codex and Gemini await confinement and credential validation.")
                 Spacer(minLength: 0)
+                Menu {
+                    ForEach(model.history, id: \.self) { request in
+                        Button(request) { model.request = request }
+                            .help("Use this request again against the current timeline.")
+                    }
+                } label: {
+                    Label("Recent Requests", systemImage: "clock.arrow.circlepath")
+                }
+                .labelStyle(.iconOnly)
+                .menuIndicator(.hidden)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(model.history.isEmpty || model.busy || model.phase == .awaitingPrerequisites)
+                .help("Recent Requests: the last ten distinct requests for this profile.")
+                Button("Supported requests", systemImage: "questionmark.circle") { showHelp.toggle() }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("See all supported examples and how B-roll, tracks, and clip numbers work.")
+                    .popover(isPresented: $showHelp) {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: Theme.spaceM) {
+                                Text("Supported requests").font(.headline)
+                                Text(guidance).font(.callout).textSelection(.enabled)
+                                ForEach(model.examples, id: \.self) { example in
+                                    Button(example) { model.request = example; showHelp = false }
+                                        .buttonStyle(.link)
+                                        .disabled(model.busy || model.phase == .awaitingPrerequisites)
+                                        .help("Fill the request field with: \(example)")
+                                }
+                            }
+                            .padding(Theme.spaceL)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(width: 480, height: 360)
+                    }
                 if model.phase == .running {
                     Button("Cancel", action: model.cancelRun)
                         .buttonStyle(.borderedProminent)
@@ -42,62 +76,6 @@ struct BuilderWizardRequestHeader: View {
                         .keyboardShortcut(.return, modifiers: .command)
                         .disabled(model.busy || model.request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         .help("Run against a fresh timeline snapshot. ⌘Return. Replaces the previous preview.")
-                }
-            }
-            VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                HStack(spacing: Theme.spaceXS) {
-                    Text("Try:").font(.caption).foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
-                    Menu {
-                        ForEach(model.history, id: \.self) { request in
-                            Button(request) { model.request = request }
-                                .help("Use this request again against the current timeline.")
-                        }
-                    } label: {
-                        Label("Recent Requests", systemImage: "clock.arrow.circlepath")
-                    }
-                    .labelStyle(.iconOnly)
-                    .menuIndicator(.hidden)
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .disabled(model.history.isEmpty || model.busy || model.phase == .awaitingPrerequisites)
-                    .help("Recent Requests: the last ten distinct requests for this profile.")
-                    Button("Supported requests", systemImage: "questionmark.circle") { showHelp.toggle() }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .help("See all supported examples and how B-roll, tracks, and clip numbers work.")
-                        .popover(isPresented: $showHelp) {
-                            ScrollView {
-                                VStack(alignment: .leading, spacing: Theme.spaceM) {
-                                    Text("Supported requests").font(.headline)
-                                    Text(guidance).font(.callout).textSelection(.enabled)
-                                    ForEach(model.examples, id: \.self) { example in
-                                        Button(example) { model.request = example; showHelp = false }
-                                            .buttonStyle(.link)
-                                            .disabled(model.busy || model.phase == .awaitingPrerequisites)
-                                            .help("Fill the request field with: \(example)")
-                                    }
-                                }
-                                .padding(Theme.spaceL)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .frame(width: 480, height: 360)
-                        }
-                }
-                .padding(.top, Theme.spaceXS)
-                FlowLayout(spacing: Theme.spaceS) {
-                    ForEach(model.examples.prefix(4), id: \.self) { example in
-                        Button { model.request = example } label: {
-                            Text(example)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .frame(maxWidth: max(0, availableWidth - 24), alignment: .leading)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(model.busy || model.phase == .awaitingPrerequisites)
-                        .help("Fill the request field with: \(example)")
-                    }
                 }
             }
         }

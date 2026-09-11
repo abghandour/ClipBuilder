@@ -28,6 +28,8 @@ final class WizardSheetModel {
     private(set) var diff: TimelineDiff?
     private(set) var diffLines: [String] = []
     private(set) var results: [SceneRecord] = []
+    private(set) var resultReasons: [Int64: String] = [:]
+    @ObservationIgnored private var finding = false
     private(set) var beforeVersion: WizardBeforeRecord?
     private(set) var session: BuilderScriptSession?
     private(set) var runRequest = ""
@@ -154,7 +156,7 @@ final class WizardSheetModel {
         switch phase {
         case .idle: return "Describe the edit you want to preview."
         case .awaitingPrerequisites: return "Confirm Library work before running."
-        case .running: return "Running — building your preview…"
+        case .running: return finding ? "Searching the Library…" : "Running — building your preview…"
         case .preview: return "Ready to apply — \(diff?.changes.count ?? 0) changes"
         case .found: return "Found \(results.count) matching scenes"
         case .unrecognised: return reasons.first ?? "Request not recognised. Try a supported request."
@@ -227,7 +229,7 @@ final class WizardSheetModel {
         history = historyStore.requests(profile: profile)
         phase = .running
         log = ["Collecting the current Library snapshot…"]
-        reasons = []; failure = nil; diff = nil; diffLines = []; results = []; findContext = nil
+        reasons = []; failure = nil; diff = nil; diffLines = []; results = []; resultReasons = [:]; findContext = nil; finding = false
         pendingSteps = nil; reparseAfterPrerequisites = false; prerequisiteDisclosures = []; persistentEffects = []
         agentEvents = []; agentSummary = ""; agentProvenance = nil; agentAuditSaved = false; pendingAgent = false
         let started = Date.now
@@ -249,7 +251,14 @@ final class WizardSheetModel {
                 program = BuilderRequestParser().parse(runRequest, context: context)
                 #endif
             }
-            if runProvider != .local, suppliedProgram == nil {
+            // Recognised finds always stay local, regardless of the provider picker.
+            // Assisted finds take their own read-only agent path below.
+            let isFind: Bool
+            switch program {
+            case .find, .assistedFind: isFind = true
+            default: isFind = false
+            }
+            if runProvider != .local, suppliedProgram == nil, !isFind {
                 if let reason = runProvider.disabledReason { throw ScriptError.invalid(reason) }
                 let disclosed: [BuilderScriptStep]
                 switch program {
@@ -272,9 +281,25 @@ final class WizardSheetModel {
                 self.reasons = reasons
                 phase = .unrecognised
                 appendLog("No full recognition. No timeline changes applied.")
+            case .assistedFind(let request, let unresolved):
+                finding = true
+                guard runProvider != .local else {
+                    reasons = ["Could not resolve: " + unresolved.map { "'" + $0 + "'" }.joined(separator: ", ")
+                        + "; choose Claude to let the assistant search"]
+                    phase = .refused
+                    appendLog(reasons[0])
+                    return
+                }
+                runRequest = request
+                findContext = context
+                findRevision = revision
+                let session = BuilderScriptSession(live: store.builder, library: library, hydration: store.builderLibraryHydration)
+                self.session = session
+                await executeAgent(session: session, confirmed: [], token: token, mode: .find)
             case .find(let filter, _):
-                // Page through the actual query surface; never interpret a find as a script.
-                results = try find(filter, context: context)
+                let matches = Array(BuilderSceneSearch.ranked(filter, library: library).prefix(BuilderSceneSearch.limit))
+                results = matches.map(\.scene)
+                resultReasons = Dictionary(matches.map { ($0.scene.id, $0.reason) }, uniquingKeysWith: { first, _ in first })
                 findContext = context
                 findRevision = revision
                 phase = .found
@@ -311,26 +336,6 @@ final class WizardSheetModel {
         })).sorted()
         phase = .awaitingPrerequisites
         appendLog("Waiting for Library work confirmation. No prerequisites have started.")
-    }
-
-    private func find(_ filter: SceneFilter, context: ParserContext) throws -> [SceneRecord] {
-        var ids: [Int64] = []
-        var offset = 0
-        repeat {
-            var query = BuilderQuery(.scenes, offset: offset, limit: 200)
-            query.sceneFilter = filter
-            let page = try query.execute(model: store.builder, library: context.library) { _ in
-                throw ScriptError.invalid("Find does not resolve clip IDs.")
-            }
-            ids += page.scenes.map(\.id)
-            guard ids.count <= ScriptRunner.maximumAffectedItems else {
-                throw ScriptError.invalid("Find exceeds 2,000 scenes. Narrow the request.")
-            }
-            guard let next = page.nextOffset else { break }
-            offset = next
-        } while true
-        let byID = Dictionary(context.library.scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return ids.compactMap { byID[$0] }
     }
 
     private func execute(_ steps: [BuilderScriptStep], library: ScriptLibrarySnapshot) {
@@ -398,7 +403,7 @@ final class WizardSheetModel {
                     appendLog("\(steps.count + index + 1). \(String(describing: outcome)) (\(Int(elapsed * 1000)) ms)")
                 }
             case .unrecognised(let reasons): reparseReasons = reasons
-            case .find: reparseReasons = ["The refreshed request produced a find instead of timeline edits."]
+            case .find, .assistedFind: reparseReasons = ["The refreshed request produced a find instead of timeline edits."]
             case .deferred: reparseReasons = ["Silence evidence is still unavailable after Library work. No timeline changes applied."]
             }
         }
@@ -423,7 +428,14 @@ final class WizardSheetModel {
         }
     }
 
-    func addAllAsBRoll() {
+    func addAllAsBRoll() { previewBRoll(results) }
+
+    func addAsBRoll(sceneID: Int64) {
+        guard let scene = results.first(where: { $0.id == sceneID }) else { return }
+        previewBRoll([scene])
+    }
+
+    private func previewBRoll(_ scenes: [SceneRecord]) {
         guard phase == .found, let context = findContext, identityMatches else { failure = .identityChanged; return }
         guard findRevision == store.builder.revision,
               TimelineDiff(before: context.document, after: store.builder.document).isEmpty else { failure = .staleRevision; return }
@@ -435,7 +447,12 @@ final class WizardSheetModel {
         // Explicit user action starts a new mutation preview; always requires Apply.
         runRequest = "Add find results as B-roll: " + runRequest
         var at = store.builder.playhead
-        let steps = results.map { scene in
+        // Search was already audited. This explicit edit has local provenance
+        // and a fresh session/run UUID, just like a deterministic addition.
+        agentProvenance = nil
+        agentAuditSaved = false
+        finding = false
+        let steps = scenes.map { scene in
             defer { at += scene.duration }
             return BuilderScriptStep(.addCutaway(scene: scene.id, at: at, track: store.builder.focusedTrack ?? 0,
                                                  duration: scene.duration, coverAll: false))
@@ -443,9 +460,11 @@ final class WizardSheetModel {
         execute(steps, library: context.library)
     }
 
-    func pickerRequest() -> BuilderWizardPickerRequest? {
+    func pickerRequest(sceneID: Int64? = nil) -> BuilderWizardPickerRequest? {
         guard phase == .found, identityMatches, let context = findContext, let revision = findRevision else { return nil }
-        return .init(request: runRequest, scenes: results, context: context, revision: revision,
+        let scenes = sceneID.map { id in results.filter { $0.id == id } } ?? results
+        guard !scenes.isEmpty else { return nil }
+        return .init(request: runRequest, scenes: scenes, context: context, revision: revision,
                      profile: profile, timelineID: timelineID, database: database,
                      time: store.builder.playhead, track: store.builder.focusedTrack ?? 0)
     }
@@ -480,7 +499,7 @@ final class WizardSheetModel {
         let record = BuilderRunRecord(runUUID: session.runUUID, timelineID: session.timelineID ?? 0,
                                       request: runRequest, provider: provenance.provider, model: provenance.model, durationSeconds: duration,
                                       status: .discarded, baselineRevision: session.baselineRevision)
-        let alreadyFailed = agentAuditSaved && session.state == .failed
+        let alreadyFailed = agentAuditSaved && (session.state == .failed || finding)
         agentRun?.cancel()
         session.discard()
         pendingSteps = nil
@@ -540,12 +559,12 @@ final class WizardSheetModel {
         }
     }
 
-    private func executeAgent(session: BuilderScriptSession, confirmed: [BuilderCommand], token: Int) async {
+    private func executeAgent(session: BuilderScriptSession, confirmed: [BuilderCommand], token: Int, mode: BuilderTools.Mode = .edit) async {
         let budget = BuilderRunBudget(runLimits)
         let library = session.library
         let language = store.settings.transcribeLanguage
         let profileGeneration = store.profileGeneration
-        let tools = BuilderTools(session: session, budget: budget, confirmedPrerequisites: confirmed,
+        let tools = BuilderTools(session: session, budget: budget, mode: mode, confirmedPrerequisites: confirmed,
             ensure: { [self] steps in
                 await session.run(steps, prerequisites: prerequisites, confirmed: true,
                     refreshLibrary: { [database] in
@@ -576,7 +595,7 @@ final class WizardSheetModel {
         }
         agentProvenance = run.provenance
         duration = run.provenance.duration ?? 0
-        agentSummary = run.finalResponse
+        agentSummary = mode == .find ? (session.sceneReport?.summary ?? "") : run.finalResponse
         persistentEffects = session.prerequisiteEffects
         // Preserve captured database ownership even after the user switches timelines.
         do {
@@ -584,7 +603,7 @@ final class WizardSheetModel {
                 let record = BuilderRunRecord(runUUID: session.runUUID, timelineID: timelineID, request: runRequest,
                     createdAt: (run.provenance.at ?? .now).ISO8601Format(), provider: run.provenance.provider, model: run.provenance.model, durationSeconds: duration,
                     status: session.state == .completed ? .completed : .failed, baselineRevision: session.baselineRevision,
-                    summary: run.finalResponse,
+                    summary: agentSummary,
                     libraryEffectsJSON: String(decoding: try JSONEncoder().encode(session.prerequisiteEffects), as: UTF8.self),
                     eventsJSON: String(decoding: try JSONEncoder().encode(run.endpoint.events), as: UTF8.self))
                 try await database.recordBuilderRun(record)
@@ -619,7 +638,23 @@ final class WizardSheetModel {
             reasons = []
             for reason in ordered where !reason.isEmpty && !reasons.contains(reason) { reasons.append(reason) }
         }
-        appendLog("Agent stopped. Review the structured outcomes and complete diff before Apply.")
+        if mode == .find {
+            if phase != .refused, let report = session.sceneReport {
+                let byID = Dictionary(session.library.scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                let entries = Array(report.scenes.prefix(BuilderSceneSearch.limit))
+                results = entries.compactMap { byID[$0.id] }
+                resultReasons = Dictionary(entries.map { ($0.id, $0.reason) }, uniquingKeysWith: { first, _ in first })
+                phase = .found
+            }
+            diff = nil; diffLines = []
+            // A completed search has no Apply/discard transaction. Release its
+            // hydration hold after auditing; later additions create a new session.
+            if self.session === session { self.session = nil }
+            session.discard()
+            appendLog("Search finished. No timeline changes applied.")
+        } else {
+            appendLog("Agent stopped. Review the structured outcomes and complete diff before Apply.")
+        }
     }
 
     private var provenance: AIProvenance {

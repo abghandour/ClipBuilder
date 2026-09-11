@@ -7,15 +7,15 @@ struct BuilderWizardPanel: View {
     let openPicker: (BuilderWizardPickerRequest) -> Void
 
     var body: some View {
-        GeometryReader { geometry in
+        GeometryReader { _ in
             VStack(alignment: .leading, spacing: Theme.spaceS) {
-                BuilderWizardRequestHeader(model: model, availableWidth: geometry.size.width - 2 * Theme.spaceS)
+                BuilderWizardRequestHeader(model: model)
                 BuilderWizardStatusBanner(model: model)
                 ScrollView {
                     VStack(alignment: .leading, spacing: Theme.spaceM) {
                         if model.phase == .found {
-                            BuilderWizardFindResults(model: model, openPicker: {
-                                guard let request = model.pickerRequest() else { return }
+                            BuilderWizardFindResults(model: model, openPicker: { sceneID in
+                                guard let request = model.pickerRequest(sceneID: sceneID) else { return }
                                 openPicker(request)
                             })
                         }
