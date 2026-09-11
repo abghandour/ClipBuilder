@@ -110,6 +110,7 @@ struct ProjectSidebarView: View {
             .listStyle(.sidebar)
 
             ProjectActivitySummary()
+            ProviderStatusRow()
         }
         .padding(.horizontal, Theme.spaceS)
         .padding(.top, Theme.spaceS)
@@ -133,14 +134,16 @@ private struct ProjectActivitySummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceXS) {
             HStack(spacing: Theme.spaceS) {
-                Image(systemName: activities.isEmpty ? "chevron.right" : "chevron.down")
-                    .foregroundStyle(.secondary)
+                Circle()
+                    .fill(isIdle ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Theme.createTint))
+                    .frame(width: 8, height: 8)
+                    .accessibilityLabel(isIdle ? "Idle" : "Busy")
                 Text("Activity")
                 Spacer(minLength: 0)
             }
 
             DriveActivityRows()
-            if activities.isEmpty && store.googleDrive.jobs.allSatisfy({ $0.status == .complete }) {
+            if isIdle {
                 Text("Idle")
                     .foregroundStyle(.tertiary)
                     .padding(.leading, 18)
@@ -165,6 +168,10 @@ private struct ProjectActivitySummary: View {
         .frame(minHeight: 34)
         .accessibilityElement(children: .combine)
         .onChange(of: store.googleDrive.revision) { store.refreshAll() }
+    }
+
+    private var isIdle: Bool {
+        activities.isEmpty && store.googleDrive.jobs.allSatisfy { $0.status == .complete }
     }
 
     private var activities: [ProjectActivity] {

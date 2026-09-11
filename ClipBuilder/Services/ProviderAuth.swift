@@ -42,18 +42,18 @@ nonisolated enum ProviderAuth {
     /// Ask the CLI itself. Claude and Codex have status commands; Gemini
     /// and Qwen keep an OAuth credential file we can look for; Kimi offers
     /// neither. Never throws — an unreadable answer is `.unknown`.
-    static func status(provider key: String, binary: URL?) async -> State {
+    static func status(provider key: String, binary: URL?, timeout: TimeInterval = 20) async -> State {
         switch key {
         case "claude":
             guard let binary else { return .unknown }
             guard let result = try? await ProcessRunner.run(
-                executable: binary, arguments: ["auth", "status"], timeout: 20) else { return .unknown }
+                executable: binary, arguments: ["auth", "status"], timeout: timeout) else { return .unknown }
             return parseClaudeStatus(stdout: result.stdoutText, stderr: result.stderrText,
                                      exitCode: result.exitCode)
         case "codex":
             guard let binary else { return .unknown }
             guard let result = try? await ProcessRunner.run(
-                executable: binary, arguments: ["login", "status"], timeout: 20) else { return .unknown }
+                executable: binary, arguments: ["login", "status"], timeout: timeout) else { return .unknown }
             return parseCodexStatus(stdout: result.stdoutText, stderr: result.stderrText,
                                     exitCode: result.exitCode)
         case "gemini":
