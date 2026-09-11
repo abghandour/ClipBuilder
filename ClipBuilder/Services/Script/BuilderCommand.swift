@@ -32,6 +32,26 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     case setPlayhead(at: Double)
     case query(query: BuilderQuery)
 
+    case setSoundVolume(sound: String, volume: Int)
+    case setSoundRange(sound: String, start: Double, duration: Double)
+    case moveSound(sound: String, at: Double)
+    case setText(overlay: String, text: String)
+    case setTextPosition(overlay: String, position: String)
+    case setOverlayRange(overlay: String, at: Double, duration: Double)
+    case setOverlayTransitions(overlay: String, transIn: String, transOut: String)
+    case setClipSpeed(clip: String, speed: Double)
+    case setClipFades(clip: String, fadeIn: Double, fadeOut: Double)
+    case setClipCaptions(clip: String, captions: String)
+    case setClipTransitions(clip: String, transIn: String, transOut: String)
+    case setClipCenterStage(clip: String, enabled: Bool)
+    case setClipAreaWindow(clip: String, x: Double, y: Double, width: Double, height: Double)
+    case setTrackCaptions(track: Int, captions: String)
+    case setTrackMuted(track: Int, muted: Bool)
+    case setTrackPosition(track: Int, position: String)
+    case setTrackCrop(track: Int, fraction: Double?)
+    case setRenderSettings(settings: BuilderRenderSettingsPatch)
+    case setPacing(pacing: BuilderPacing)
+
     var prerequisite: (kind: BuilderPrerequisiteKind, video: Int64)? {
         switch self {
         case .ensureTranscript(let video): (.transcript, video)
@@ -173,13 +193,179 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
         case "query":
             try c.only(["op", "query"])
             self = .query(query: try c.decode(BuilderQuery.self, forKey: ScriptKey("query")))
+        case "set_sound_volume":
+            try c.only(["op", "sound", "volume"])
+            self = .setSoundVolume(sound: try c.decode(String.self, forKey: ScriptKey("sound")),
+                volume: try c.decode(Int.self, forKey: ScriptKey("volume")))
+        case "set_sound_range":
+            try c.only(["op", "sound", "start", "duration"])
+            self = .setSoundRange(sound: try c.decode(String.self, forKey: ScriptKey("sound")),
+                start: try c.decode(Double.self, forKey: ScriptKey("start")),
+                duration: try c.decode(Double.self, forKey: ScriptKey("duration")))
+        case "move_sound":
+            try c.only(["op", "sound", "at"])
+            self = .moveSound(sound: try c.decode(String.self, forKey: ScriptKey("sound")),
+                at: try c.decode(Double.self, forKey: ScriptKey("at")))
+        case "set_text":
+            try c.only(["op", "overlay", "text"])
+            self = .setText(overlay: try c.decode(String.self, forKey: ScriptKey("overlay")),
+                text: try c.decode(String.self, forKey: ScriptKey("text")))
+        case "set_text_position":
+            try c.only(["op", "overlay", "position"])
+            self = .setTextPosition(overlay: try c.decode(String.self, forKey: ScriptKey("overlay")),
+                position: try c.decode(String.self, forKey: ScriptKey("position")))
+        case "set_overlay_range":
+            try c.only(["op", "overlay", "at", "duration"])
+            self = .setOverlayRange(overlay: try c.decode(String.self, forKey: ScriptKey("overlay")),
+                at: try c.decode(Double.self, forKey: ScriptKey("at")),
+                duration: try c.decode(Double.self, forKey: ScriptKey("duration")))
+        case "set_overlay_transitions":
+            try c.only(["op", "overlay", "trans_in", "trans_out"])
+            self = .setOverlayTransitions(overlay: try c.decode(String.self, forKey: ScriptKey("overlay")),
+                transIn: try c.decode(String.self, forKey: ScriptKey("trans_in")),
+                transOut: try c.decode(String.self, forKey: ScriptKey("trans_out")))
+        case "set_clip_speed":
+            try c.only(["op", "clip", "speed"])
+            self = .setClipSpeed(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                speed: try c.decode(Double.self, forKey: ScriptKey("speed")))
+        case "set_clip_fades":
+            try c.only(["op", "clip", "fade_in", "fade_out"])
+            self = .setClipFades(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                fadeIn: try c.decode(Double.self, forKey: ScriptKey("fade_in")),
+                fadeOut: try c.decode(Double.self, forKey: ScriptKey("fade_out")))
+        case "set_clip_captions":
+            try c.only(["op", "clip", "captions"])
+            self = .setClipCaptions(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                captions: try c.decode(String.self, forKey: ScriptKey("captions")))
+        case "set_clip_transitions":
+            try c.only(["op", "clip", "trans_in", "trans_out"])
+            self = .setClipTransitions(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                transIn: try c.decode(String.self, forKey: ScriptKey("trans_in")),
+                transOut: try c.decode(String.self, forKey: ScriptKey("trans_out")))
+        case "set_clip_center_stage":
+            try c.only(["op", "clip", "enabled"])
+            self = .setClipCenterStage(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                enabled: try c.decode(Bool.self, forKey: ScriptKey("enabled")))
+        case "set_clip_area_window":
+            try c.only(["op", "clip", "x", "y", "width", "height"])
+            self = .setClipAreaWindow(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                x: try c.decode(Double.self, forKey: ScriptKey("x")),
+                y: try c.decode(Double.self, forKey: ScriptKey("y")),
+                width: try c.decode(Double.self, forKey: ScriptKey("width")),
+                height: try c.decode(Double.self, forKey: ScriptKey("height")))
+        case "set_track_captions":
+            try c.only(["op", "track", "captions"])
+            self = .setTrackCaptions(track: try c.decode(Int.self, forKey: ScriptKey("track")),
+                captions: try c.decode(String.self, forKey: ScriptKey("captions")))
+        case "set_track_muted":
+            try c.only(["op", "track", "muted"])
+            self = .setTrackMuted(track: try c.decode(Int.self, forKey: ScriptKey("track")),
+                muted: try c.decode(Bool.self, forKey: ScriptKey("muted")))
+        case "set_track_position":
+            try c.only(["op", "track", "position"])
+            self = .setTrackPosition(track: try c.decode(Int.self, forKey: ScriptKey("track")),
+                position: try c.decode(String.self, forKey: ScriptKey("position")))
+        case "set_track_crop":
+            try c.only(["op", "track", "fraction"])
+            guard c.contains(ScriptKey("fraction")) else { throw BuilderCommandFailure.invalid("Missing fraction; use null to clear crop.") }
+            self = .setTrackCrop(track: try c.decode(Int.self, forKey: ScriptKey("track")),
+                fraction: try c.decodeIfPresent(Double.self, forKey: ScriptKey("fraction")))
+        case "set_render_settings":
+            try c.only(["op", "settings"])
+            self = .setRenderSettings(settings: try c.decode(BuilderRenderSettingsPatch.self, forKey: ScriptKey("settings")))
+        case "set_pacing":
+            try c.only(["op", "pacing"])
+            self = .setPacing(pacing: try c.decode(BuilderPacing.self, forKey: ScriptKey("pacing")))
         default: throw ScriptError.invalid("Unknown operation: \(op)")
         }
+        try validateExpansion()
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: ScriptKey.self)
         switch self {
+        case let .setSoundVolume(sound, volume):
+            try c.encode("set_sound_volume", forKey: ScriptKey("op"))
+            try c.encode(sound, forKey: ScriptKey("sound"))
+            try c.encode(volume, forKey: ScriptKey("volume"))
+        case let .setSoundRange(sound, start, duration):
+            try c.encode("set_sound_range", forKey: ScriptKey("op"))
+            try c.encode(sound, forKey: ScriptKey("sound"))
+            try c.encode(start, forKey: ScriptKey("start"))
+            try c.encode(duration, forKey: ScriptKey("duration"))
+        case let .moveSound(sound, at):
+            try c.encode("move_sound", forKey: ScriptKey("op"))
+            try c.encode(sound, forKey: ScriptKey("sound"))
+            try c.encode(at, forKey: ScriptKey("at"))
+        case let .setText(overlay, text):
+            try c.encode("set_text", forKey: ScriptKey("op"))
+            try c.encode(overlay, forKey: ScriptKey("overlay"))
+            try c.encode(text, forKey: ScriptKey("text"))
+        case let .setTextPosition(overlay, position):
+            try c.encode("set_text_position", forKey: ScriptKey("op"))
+            try c.encode(overlay, forKey: ScriptKey("overlay"))
+            try c.encode(position, forKey: ScriptKey("position"))
+        case let .setOverlayRange(overlay, at, duration):
+            try c.encode("set_overlay_range", forKey: ScriptKey("op"))
+            try c.encode(overlay, forKey: ScriptKey("overlay"))
+            try c.encode(at, forKey: ScriptKey("at"))
+            try c.encode(duration, forKey: ScriptKey("duration"))
+        case let .setOverlayTransitions(overlay, transIn, transOut):
+            try c.encode("set_overlay_transitions", forKey: ScriptKey("op"))
+            try c.encode(overlay, forKey: ScriptKey("overlay"))
+            try c.encode(transIn, forKey: ScriptKey("trans_in"))
+            try c.encode(transOut, forKey: ScriptKey("trans_out"))
+        case let .setClipSpeed(clip, speed):
+            try c.encode("set_clip_speed", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(speed, forKey: ScriptKey("speed"))
+        case let .setClipFades(clip, fadeIn, fadeOut):
+            try c.encode("set_clip_fades", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(fadeIn, forKey: ScriptKey("fade_in"))
+            try c.encode(fadeOut, forKey: ScriptKey("fade_out"))
+        case let .setClipCaptions(clip, captions):
+            try c.encode("set_clip_captions", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(captions, forKey: ScriptKey("captions"))
+        case let .setClipTransitions(clip, transIn, transOut):
+            try c.encode("set_clip_transitions", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(transIn, forKey: ScriptKey("trans_in"))
+            try c.encode(transOut, forKey: ScriptKey("trans_out"))
+        case let .setClipCenterStage(clip, enabled):
+            try c.encode("set_clip_center_stage", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(enabled, forKey: ScriptKey("enabled"))
+        case let .setClipAreaWindow(clip, x, y, width, height):
+            try c.encode("set_clip_area_window", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(x, forKey: ScriptKey("x"))
+            try c.encode(y, forKey: ScriptKey("y"))
+            try c.encode(width, forKey: ScriptKey("width"))
+            try c.encode(height, forKey: ScriptKey("height"))
+        case let .setTrackCaptions(track, captions):
+            try c.encode("set_track_captions", forKey: ScriptKey("op"))
+            try c.encode(track, forKey: ScriptKey("track"))
+            try c.encode(captions, forKey: ScriptKey("captions"))
+        case let .setTrackMuted(track, muted):
+            try c.encode("set_track_muted", forKey: ScriptKey("op"))
+            try c.encode(track, forKey: ScriptKey("track"))
+            try c.encode(muted, forKey: ScriptKey("muted"))
+        case let .setTrackPosition(track, position):
+            try c.encode("set_track_position", forKey: ScriptKey("op"))
+            try c.encode(track, forKey: ScriptKey("track"))
+            try c.encode(position, forKey: ScriptKey("position"))
+        case let .setTrackCrop(track, fraction):
+            try c.encode("set_track_crop", forKey: ScriptKey("op"))
+            try c.encode(track, forKey: ScriptKey("track"))
+            try c.encode(fraction, forKey: ScriptKey("fraction"))
+        case let .setRenderSettings(settings):
+            try c.encode("set_render_settings", forKey: ScriptKey("op"))
+            try c.encode(settings, forKey: ScriptKey("settings"))
+        case let .setPacing(pacing):
+            try c.encode("set_pacing", forKey: ScriptKey("op"))
+            try c.encode(pacing, forKey: ScriptKey("pacing"))
         case let .ensureTranscript(video):
             try c.encode("ensure_transcript", forKey: ScriptKey("op"))
             try c.encode(video, forKey: ScriptKey("video"))

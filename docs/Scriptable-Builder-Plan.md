@@ -1,6 +1,6 @@
 # Scriptable Builder: a command surface the app, tests and AI agents drive
 
-Status: revision 2 (September 10, 2026): rewritten by Codex after its own review; reviewed by Claude with three amendments (phase 1 split into 1a/1b/1c, ordinary JSON for the persisted before-version, schema-version bump called out). Phase 1a is being implemented.
+Status: September 11, 2026: phases 1a–4 committed through aefff33; phase 5 implemented for the existing editable model surface, pending full build/test. See Scriptable-Builder-Phase5.md for exact limits and validation.
 Scope: the D1 command/query surface, an isolated preview session, atomic
 snapshot undo and persisted Revert, an MCP endpoint, and a Builder Wizard
 sheet. Rendering and planning-Wizard internals remain out of scope.
@@ -92,6 +92,42 @@ there where needed. Locations below are in `ClipBuilder/App/BuilderStore.swift`.
 | `add_image` | image, at?, length | `addPhotoOverlay` :1462 |
 | `remove_overlay` | overlay | `removeText` :1437 / `removeImage` :1487 / `removeOverlayBlock` :1411 |
 | `set_playhead` | at | session playhead :133; not a document edit |
+
+### Phase 5 additions
+
+| op | fields | model path |
+|---|---|---|
+| `set_sound_volume` | sound, volume (integer 1...5) | `updateSound` |
+| `set_sound_range` / `move_sound` | sound, start, duration / sound, at | `updateSound`; timeline seconds |
+| `set_text` / `set_text_position` | overlay, text / overlay, position (top/center/bottom) | `updateText`; position clears x/y overrides |
+| `set_overlay_range` | overlay, at, duration | `updateText`, `updateImage`, `updateOverlayBlock` |
+| `set_overlay_transitions` | overlay, trans_in, trans_out | text/image only; `TextOverlayItem.transitionChoices` |
+| `set_clip_speed` | clip, speed (0.5...2) | `updateClip`; inspector rounding, source overflow refusal |
+| `set_clip_fades` | clip, fade_in, fade_out | B-roll only; each ≤ half duration |
+| `set_clip_captions` | clip, captions (inherit/none/top/middle/bottom) | `updateClip`; B-roll/bumpers only accept none |
+| `set_clip_transitions` | clip, trans_in, trans_out | cut + canonical RenderEngine action/standard names |
+| `set_clip_center_stage` | clip, enabled | wide main Full Screen clips |
+| `set_clip_area_window` | clip, x, y, width, height | assigned area; bounded fractions, width ≥ 0.1, preserves proportions |
+| `set_track_captions` / `set_track_muted` | track, captions / track, muted | `updateTrackSettings` |
+| `set_track_position` / `set_track_crop` | track, position / track, fraction (null clears) | Full Screen track defaults |
+| `set_render_settings` | settings {preset?, custom_width?, custom_height?, quality?, custom_crf?} | whitelisted patch through `setRenderSettings` |
+| `set_pacing` | pacing {cadence, curve} | existing CutCadence/PaceCurve cases through `setPacing` |
+
+`set_sound_fades` is not part of the surface because SoundItem has no fade fields.
+`set_track_volume` is not part of the surface because TrackSettings has no volume field.
+`set_clip_screen_crop` is not part of the surface because the underlying model has no editable per-clip screen-crop fields; legacy screenCrop state is migrated to the cropping row, so use `set_crop_layout`.
+
+Overlay blocks have no
+block-level transitions. No ineffective storage fields or render behavior were
+invented. Track labels are retained/diffed but have no editing UI in this scope.
+
+New numeric inputs are finite; range edits require duration ≥ 0.5 and end ≤
+one day. Render custom dimensions are even integers 240...7680; CRF is 10...35.
+Unknown keys are refused at every new object boundary. Document-dependent
+eligibility and IDs are validated before mutation. Track fields now have
+individual diff paths; render/pacing and all indirect changes are reflected.
+Local phrases add selected-clip speed/captions, unique music volume, track
+captions/mute, with full recognition. Track-volume phrases remain unsupported.
 
 ### Validation and execution
 
@@ -520,7 +556,9 @@ must distinguish “no timeline changes applied” from Library work already sav
    Wizard post-plan fixes through the same surface.
 5. **Explicit surface expansion:** sound/overlay editing, speed, captions,
    transitions, framing, track and render settings, each with typed validation,
-   complete diff coverage and atomic-run tests. No initial UI-parity claim.
+   complete diff coverage and atomic-run tests. Implemented against the existing
+   editable model, excluding the unsupported operations described above. Full Xcode validation remains
+   pending. No initial UI-parity claim.
 
 ## Tests
 

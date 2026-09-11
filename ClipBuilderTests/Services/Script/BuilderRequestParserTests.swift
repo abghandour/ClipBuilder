@@ -7,6 +7,7 @@ import Testing
 struct BuilderRequestParserTests {
     private func context() -> ParserContext {
         let model = ScriptFixtures.model()
+        model.document.soundTrack = [SoundItem(name: "fixture.mp3")]
         model.selection = .clip(model.document.videoTrack[0].uid)
         var library = ScriptFixtures.library()
         library.tags = ["fixture", "wide shot"]

@@ -23,8 +23,33 @@ enum BuilderWizardDiff {
                              + clips.map { name($0, library: session.library) }.joined(separator: ", "))
             }
         }
+        for change in diff.changes where change.kind == .changed {
+            let parts = change.path.split(separator: ".").map(String.init)
+            guard parts.count >= 3 else { continue }
+            let lane = parts[1]
+            let labels = ["videoTrack": "Clip", "soundTrack": "Music", "textOverlays": "Text",
+                          "imageOverlays": "Image", "overlayBlocks": "Overlay", "trackSettings": "Track",
+                          "renderSettings": "Output", "pacing": "Pacing"]
+            guard let label = labels[lane] else { continue }
+            let fieldStart = ["renderSettings", "pacing"].contains(lane) ? 2 : 3
+            let field = parts.dropFirst(fieldStart).joined(separator: ".")
+            guard !field.isEmpty else { continue }
+            let target: String
+            if lane == "trackSettings", let index = Int(parts[2]) { target = "Track \(index + 1)" }
+            else if fieldStart == 3 { target = label + " " + String(parts[2].prefix(8)) }
+            else { target = label }
+            lines.append("\(target) · \(readable(field)): \(value(change.before)) → \(value(change.after))")
+        }
         lines.append("Duration \(diff.beforeDuration.timecode) → \(diff.afterDuration.timecode)")
         return lines
+    }
+
+    private static func readable(_ field: String) -> String {
+        let names = ["fadeIn": "fade in", "fadeOut": "fade out", "transIn": "transition in",
+                     "transOut": "transition out", "startTime": "start", "endTime": "end",
+                     "centerStage": "tracking", "defaultPosition": "position", "defaultCropXFrac": "crop",
+                     "customWidth": "custom width", "customHeight": "custom height", "customCRF": "custom CRF"]
+        return names[field] ?? field
     }
 
     private static func name(_ clip: TimelineClip, library: ScriptLibrarySnapshot) -> String {

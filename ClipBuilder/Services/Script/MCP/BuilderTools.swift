@@ -150,6 +150,22 @@ final class BuilderTools {
         for key in ["at", "start", "end", "duration", "source_start", "length"] { fields[key] = number }
         for key in ["track", "scene", "video"] { fields[key] = integer }
         for key in ["cover_all", "muted", "sequential"] { fields[key] = bool }
+        for key in ["speed", "fade_in", "fade_out", "x", "y", "width", "height"] { fields[key] = number }
+        for key in ["position", "captions", "trans_in", "trans_out"] { fields[key] = string }
+        fields["enabled"] = bool
+        fields["volume"] = .object(["type": .string("integer"), "minimum": .int(1), "maximum": .int(5)])
+        fields["fraction"] = .object(["type": .array([.string("number"), .string("null")]), "minimum": .int(0), "maximum": .int(1)])
+        fields["settings"] = object([
+            "preset": .object(["enum": .array(RenderPreset.allCases.map { .string($0.rawValue) })]),
+            "quality": .object(["enum": .array(EncodeQuality.allCases.map { .string($0.rawValue) })]),
+            "custom_width": .object(["type": .string("integer"), "minimum": .int(240), "maximum": .int(7680), "multipleOf": .int(2)]),
+            "custom_height": .object(["type": .string("integer"), "minimum": .int(240), "maximum": .int(7680), "multipleOf": .int(2)]),
+            "custom_crf": .object(["type": .string("integer"), "minimum": .int(10), "maximum": .int(35)])
+        ])
+        fields["pacing"] = object([
+            "cadence": .object(["enum": .array(CutCadence.allCases.map { .string($0.rawValue) })]),
+            "curve": .object(["enum": .array(PaceCurve.allCases.map { .string($0.rawValue) })])
+        ], required: ["cadence", "curve"])
         fields["precision"] = .object(["enum": .array([.string("ordinary"), .string("speech")])])
         fields["role"] = .object(["enum": .array(ClipRole.allCases.map { .string($0.rawValue) })])
         fields["audio"] = .object(["enum": .array(CutawayAudio.allCases.map { .string($0.rawValue) })])
@@ -157,6 +173,25 @@ final class BuilderTools {
         fields["filter"] = clipFilterSchema; fields["query"] = querySchema
         // Each operation has exactly the fields accepted by BuilderCommand.
         let variants: [(String, [String], [String])] = [
+            ("set_sound_volume", ["sound", "volume"], ["sound", "volume"]),
+            ("set_sound_range", ["sound", "start", "duration"], ["sound", "start", "duration"]),
+            ("move_sound", ["sound", "at"], ["sound", "at"]),
+            ("set_text", ["overlay", "text"], ["overlay", "text"]),
+            ("set_text_position", ["overlay", "position"], ["overlay", "position"]),
+            ("set_overlay_range", ["overlay", "at", "duration"], ["overlay", "at", "duration"]),
+            ("set_overlay_transitions", ["overlay", "trans_in", "trans_out"], ["overlay", "trans_in", "trans_out"]),
+            ("set_clip_speed", ["clip", "speed"], ["clip", "speed"]),
+            ("set_clip_fades", ["clip", "fade_in", "fade_out"], ["clip", "fade_in", "fade_out"]),
+            ("set_clip_captions", ["clip", "captions"], ["clip", "captions"]),
+            ("set_clip_transitions", ["clip", "trans_in", "trans_out"], ["clip", "trans_in", "trans_out"]),
+            ("set_clip_center_stage", ["clip", "enabled"], ["clip", "enabled"]),
+            ("set_clip_area_window", ["clip", "x", "y", "width", "height"], ["clip", "x", "y", "width", "height"]),
+            ("set_track_captions", ["track", "captions"], ["track", "captions"]),
+            ("set_track_muted", ["track", "muted"], ["track", "muted"]),
+            ("set_track_position", ["track", "position"], ["track", "position"]),
+            ("set_track_crop", ["track", "fraction"], ["track", "fraction"]),
+            ("set_render_settings", ["settings"], ["settings"]),
+            ("set_pacing", ["pacing"], ["pacing"]),
             ("remove_clip", ["clip"], ["clip"]),
             ("remove_clips", ["filter"], ["filter"]),
             ("split_clip", ["clip", "at", "precision"], ["clip", "at"]),
@@ -184,8 +219,39 @@ final class BuilderTools {
         ]
         return .object(["oneOf": .array(variants.map { op, allowed, required in
             var properties = fields.filter { allowed.contains($0.key) }
+            func choices(_ values: [String]) -> Value { .object(["enum": .array(values.map(Value.string))]) }
+            func bounded(_ low: Double, _ high: Double) -> Value {
+                .object(["type": .string("number"), "minimum": .double(low), "maximum": .double(high)])
+            }
+            if op == "set_clip_speed" { properties["speed"] = bounded(0.5, 2) }
+            if op == "set_clip_captions" { properties["captions"] = choices(TimelineClip.captionChoices) }
+            if op == "set_track_captions" { properties["captions"] = choices(TrackSettings.captionChoices) }
+            if op == "set_text_position" || op == "set_track_position" {
+                properties["position"] = choices(["top", "center", "bottom"])
+            }
+            if op == "set_clip_transitions" || op == "set_overlay_transitions" {
+                let names = op == "set_clip_transitions" ? ["cut"] + RenderEngine.allTransitions : TextOverlayItem.transitionChoices
+                properties["trans_in"] = choices(names); properties["trans_out"] = choices(names)
+            }
+            if op == "set_clip_area_window" {
+                for key in ["x", "y", "width", "height"] { properties[key] = bounded(0, 1) }
+            }
+            if op == "set_sound_range" || op == "set_overlay_range" {
+                properties["duration"] = bounded(0.5, 86400)
+            }
             properties["op"] = .object(["const": .string(op)])
-            return object(properties, required: ["op"] + required)
+            let schema = object(properties, required: ["op"] + required)
+            let limitations = [
+                "set_overlay_transitions": "Text/image transitions only; overlay blocks retain their composition transitions.",
+                "set_clip_area_window": "Requires a crop area and captured source dimensions; preserve the current window aspect ratio (or the default area aspect). Width must be at least 0.1.",
+                "set_clip_fades": "B-roll only; each fade is at most half the clip duration.",
+                "set_clip_speed": "Preserves source start and rounds screen duration to 0.1 seconds like the inspector. Refuses source overflow."
+            ]
+            if let description = limitations[op], case .object(var fields) = schema {
+                fields["description"] = .string(description)
+                return .object(fields)
+            }
+            return schema
         })])
     }
 

@@ -118,6 +118,10 @@ nonisolated struct TimelineDiff: Codable, Sendable, Equatable {
             fields[key] = .object(keyed)
             fields[key + ".order"] = .array(order)
         }
+        if case .array(let tracks) = fields["trackSettings"] {
+            fields["trackSettings"] = .object(Dictionary(uniqueKeysWithValues:
+                tracks.enumerated().map { (String($0.offset), $0.element) }))
+        }
         fields["duration"] = .number(document.contentEnd)
         return .object(fields)
     }

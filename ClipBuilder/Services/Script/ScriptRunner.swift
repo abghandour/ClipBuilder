@@ -80,6 +80,7 @@ final class ScriptRunner {
                 }
                 // Encoding also rejects nonfinite programmatic commands; the
                 // strict decoder validates fields for callers bypassing JSON.
+                try step.command.validateExpansion()
                 let encoded = try JSONEncoder().encode(step.command)
                 guard encoded.count <= Self.maximumBytes else { throw ScriptError.invalid("Command too large.") }
                 _ = try JSONDecoder().decode(BuilderCommand.self, from: encoded)
@@ -104,6 +105,9 @@ final class ScriptRunner {
                 }
                 outcomes.append(outcome)
                 if outcome.isRefused { break }
+            } catch let failure as BuilderCommandFailure {
+                outcomes.append(.refused(code: failure.code, reason: failure.reason))
+                break
             } catch let failure as ClipEditFailure {
                 outcomes.append(.refused(code: failure.rawValue, reason: failure.reason))
                 break
@@ -131,7 +135,7 @@ final class ScriptRunner {
         }
     }
 
-    private func resolve(_ reference: String) throws -> UUID {
+    func resolve(_ reference: String) throws -> UUID {
         if reference.hasPrefix("$"), let uid = bindings[String(reference.dropFirst())] { return uid }
         if let uid = UUID(uuidString: reference) { return uid }
         throw ScriptError.invalid("Unknown session ID or binding: \(reference)")
@@ -358,6 +362,7 @@ final class ScriptRunner {
             model.playhead = at
             return .applied(actualValues: .object(["at": .number(at)]), createdIDs: [:], warnings: [])
         case .query: break
+        default: try executeExpansion(command, model: model, library: library)
         }
         let diff = TimelineDiff(before: before, after: model.document)
         guard !diff.isEmpty else { return .unchanged(reason: "Requested state already holds.") }

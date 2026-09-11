@@ -12,6 +12,8 @@ struct BuilderRequestParser {
         "add b-roll of <tag> at <time> [on track N] [for N s]",
         "split this clip at <time>", "trim this clip to N s",
         "mute/unmute this clip", "cover all areas",
+        "set this clip speed to N x", "captions off for this clip", "set music volume to V",
+        "set track N captions to none/top/middle/bottom", "mute/unmute track N",
         "remove clip N on track T", "remove the selected clip", "duplicate this clip"
     ]
 
@@ -30,6 +32,8 @@ struct BuilderRequestParser {
         } ?? "<tag>"
         return ["remove clips with \(name)", "find scenes of \(name) \(tag)",
                 "cut silence longer than 1 s on track 1", "add b-roll of \(tag) at 12 s",
+                "set this clip speed to 1.5x", "captions off for this clip", "set music volume to 2",
+                "set track 1 captions to bottom", "mute track 1",
                 "remove clip 1 on track 1", "remove the selected clip", "duplicate this clip",
                 "split this clip at 2 s", "trim this clip to 2 s", "mute this clip",
                 "unmute this clip", "cover all areas", "remove clips tagged \(tag) on track 1"]
@@ -114,6 +118,28 @@ struct BuilderRequestParser {
             }
             if text == "remove the selected clip" {
                 return .script([.init(.removeClip(clip: try selection(context).uid.uuidString))])
+            }
+            if let g = match(#"set this clip speed to ([0-9]+(?:\.[0-9]+)?)\s*x"#, text) {
+                let speed = try seconds(g[0])
+                let command = BuilderCommand.setClipSpeed(clip: try selection(context).uid.uuidString, speed: speed)
+                try command.validateExpansion()
+                return .script([.init(command)])
+            }
+            if text == "captions off for this clip" {
+                return .script([.init(.setClipCaptions(clip: try selection(context).uid.uuidString, captions: "none"))])
+            }
+            if let g = match(#"set music volume to ([1-5])"#, text) {
+                guard context.document.soundTrack.count == 1, let sound = context.document.soundTrack.first,
+                      let volume = Int(g[0]) else {
+                    throw ScriptError.invalid("Music volume requires exactly one sound block.")
+                }
+                return .script([.init(.setSoundVolume(sound: sound.uid.uuidString, volume: volume))])
+            }
+            if let g = match(#"set track (i|ii|iii|iv|v|vi|[1-6]) captions to (none|top|middle|bottom)"#, text) {
+                return .script([.init(.setTrackCaptions(track: try track(g[0], context), captions: g[1]))])
+            }
+            if let g = match(#"(mute|unmute) track (i|ii|iii|iv|v|vi|[1-6])"#, text) {
+                return .script([.init(.setTrackMuted(track: try track(g[1], context), muted: g[0] == "mute"))])
             }
             if text == "duplicate this clip" {
                 return .script([.init(.duplicateClip(clip: try selection(context).uid.uuidString))])

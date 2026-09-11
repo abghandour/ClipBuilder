@@ -53,6 +53,7 @@ final class BuilderScriptSession {
     func run(json: Data) -> BuilderScriptResult {
         guard state == .ready, !runningPrerequisites else { return closedResult() }
         do { return run(try ScriptRunner.decode(json)) }
+        catch let error as BuilderCommandFailure { return fail(error.reason, code: error.code) }
         catch { return fail(error.localizedDescription) }
     }
 
@@ -62,9 +63,11 @@ final class BuilderScriptSession {
         guard state == .ready, !runningPrerequisites, let working else { return closedResult() }
         // The whole-list size limit also applies to programmatic callers.
         do {
+            for step in steps { try step.command.validateExpansion() }
             let encoded = try JSONEncoder().encode(steps)
             guard encoded.count <= ScriptRunner.maximumBytes else { return fail("Script exceeds 256 KiB.") }
-        } catch { return fail(error.localizedDescription) }
+        } catch let error as BuilderCommandFailure { return fail(error.reason, code: error.code) }
+        catch { return fail(error.localizedDescription) }
         let runner = ScriptRunner()
         let outcomes = runner.run(steps, model: working, library: library, onOutcome: onOutcome)
         let completed = !outcomes.contains(where: \.isRefused)
@@ -255,7 +258,7 @@ final class BuilderScriptSession {
         if !runningPrerequisites { endHydration() }
     }
 
-    func fail(_ reason: String) -> BuilderScriptResult {
+    func fail(_ reason: String, code: String = "invalid_script") -> BuilderScriptResult {
         guard state != .completed, state != .discarded else { return closedResult() }
         frozenDiff = diff()
         working?.cancelPendingAutosave()
@@ -263,7 +266,7 @@ final class BuilderScriptSession {
         candidate = nil
         frozenCandidate = nil
         state = .failed
-        let result = BuilderScriptResult(outcomes: [.refused(code: "invalid_script", reason: reason)],
+        let result = BuilderScriptResult(outcomes: [.refused(code: code, reason: reason)],
                                          completed: false, hasDocumentChanges: false)
         self.result = result
         return result
