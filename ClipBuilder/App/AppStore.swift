@@ -239,6 +239,8 @@ final class AppStore {
     /// loading overlay.
     var isPlanningIntoBuilder = false
     var builderPlanResult: BuilderPlanResult?
+    /// The live inline Wizard also supplies the window-wide status and log.
+    var builderWizard: WizardSheetModel?
     var wizardLog: [String] = [] {
         didSet { updateDiagnosticStatus(wizardLog, previousCount: oldValue.count) }
     }

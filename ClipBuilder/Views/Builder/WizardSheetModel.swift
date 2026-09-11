@@ -43,7 +43,8 @@ final class WizardSheetModel {
     let timelineID: Int64?
     let projectID: Int64?
 
-    @ObservationIgnored private let store: AppStore
+    // AppStore owns the live model; avoid retaining that owner back.
+    @ObservationIgnored private unowned let store: AppStore
     @ObservationIgnored private let database: Database?
     @ObservationIgnored private let prerequisites: BuilderPrerequisites
     @ObservationIgnored private let agentExecutor: BuilderAgentRun.Executor?
@@ -74,7 +75,10 @@ final class WizardSheetModel {
         // The saved provider choice is honoured only while that provider is enabled.
         if let saved = BuilderAgentProvider(rawValue: store.settings.ai.tasks["builder_agent"] ?? ""),
            saved.disabledReason == nil { provider = saved }
-        self.loadLibrary = loadLibrary ?? { try await BuilderWizardLibrary.snapshot(store: store) }
+        self.loadLibrary = loadLibrary ?? { [weak store] in
+            guard let store else { throw ApplyFailure.identityChanged }
+            return try await BuilderWizardLibrary.snapshot(store: store)
+        }
     }
 
     func refreshExamples() async {
@@ -122,6 +126,8 @@ final class WizardSheetModel {
     }
 
     var busy: Bool { isStarting || phase == .running || phase == .applying }
+    var latestLogLine: String? { log.last }
+    var hasStatus: Bool { phase != .idle || !log.isEmpty }
     var canApply: Bool { phase == .preview && failure == nil && session?.state == .completed && diff?.isEmpty == false }
     var identityMatches: Bool {
         store.builder.timelineID == timelineID && store.builder.profileName == profile
@@ -493,6 +499,7 @@ final class WizardSheetModel {
     }
 
     func dismiss() {
+        if store.builderWizard === self { store.builderWizard = nil }
         guard !dismissed else { return }
         dismissed = true
         generation += 1
@@ -501,7 +508,9 @@ final class WizardSheetModel {
         draining?.cancel()
         task = nil
         if phase == .running { phase = .discarded }
-        Task {
+        Task { [self, store] in
+            // A dismissed model may outlive its window while work drains.
+            defer { withExtendedLifetime(store) {} }
             await draining?.value
             await discard()
         }

@@ -1,19 +1,15 @@
 import SwiftUI
 
-struct BuilderWizardSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @State private var model: WizardSheetModel
+struct BuilderWizardPanel: View {
+    let model: WizardSheetModel
+    let hide: () -> Void
+    let discard: () -> Void
     @State private var confirmRevert = false
     let openPicker: (BuilderWizardPickerRequest) -> Void
 
-    init(store: AppStore, model: WizardSheetModel? = nil, openPicker: @escaping (BuilderWizardPickerRequest) -> Void) {
-        _model = State(initialValue: model ?? WizardSheetModel(store: store))
-        self.openPicker = openPicker
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spaceM) {
-            BuilderWizardRequestHeader(model: model)
+        VStack(alignment: .leading, spacing: Theme.spaceS) {
+            BuilderWizardRequestHeader(model: model, hide: hide)
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.spaceM) {
                     BuilderWizardStatusBanner(model: model)
@@ -21,7 +17,6 @@ struct BuilderWizardSheet: View {
                         BuilderWizardFindResults(model: model, openPicker: {
                             guard let request = model.pickerRequest() else { return }
                             openPicker(request)
-                            dismiss()
                         })
                     }
                     BuilderWizardResults(model: model)
@@ -30,17 +25,16 @@ struct BuilderWizardSheet: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
-            HStack(spacing: Theme.spaceM) {
+            HStack(spacing: Theme.spaceS) {
+                Spacer()
                 if model.beforeVersion != nil {
                     Button("Revert last run") { confirmRevert = true }
                         .disabled(model.busy)
                         .help("Restore the saved timeline from before the last applied Wizard run, including removing later manual edits.")
                 }
-                Spacer()
-                Button(model.phase == .applied ? "Close" : "Discard") { close() }
-                    .keyboardShortcut(.cancelAction)
+                Button("Discard", action: discard)
                     .disabled(model.phase == .applying)
-                    .help("Close and discard any unapplied preview; saved Library work remains. Escape.")
+                    .help("Discard the preview and close the panel; saved Library work remains.")
                 if model.failure == .commitInProgress {
                     Button("Retry Apply") { Task { await model.retryApply() } }
                         .buttonStyle(.borderedProminent)
@@ -53,12 +47,8 @@ struct BuilderWizardSheet: View {
                 }
             }
         }
-        .padding(Theme.spaceL)
-        .frame(minWidth: 700, idealWidth: 780, minHeight: 620, idealHeight: 720)
-        .interactiveDismissDisabled(model.phase == .applying)
-        .task { await model.refreshExamples(); await model.refreshBeforeVersion() }
-        .onChange(of: model.identityMatches) { _, matches in if !matches { close() } }
-        .onDisappear { model.dismiss() }
+        .controlSize(.small)
+        .padding(Theme.spaceS)
         .confirmationDialog("Revert ‘\(model.beforeVersion?.request ?? "last Wizard run")’?", isPresented: $confirmRevert) {
             Button("Revert last run", role: .destructive) { Task { await model.revert() } }
                 .help("Restore the saved before-version and remove later manual edits.")
@@ -68,6 +58,4 @@ struct BuilderWizardSheet: View {
             Text("Restores the timeline saved before this request. All later manual edits will be lost. Saved duration: \((try? model.beforeVersion?.document().contentEnd.timecode) ?? "unavailable").")
         }
     }
-
-    private func close() { model.dismiss(); dismiss() }
 }

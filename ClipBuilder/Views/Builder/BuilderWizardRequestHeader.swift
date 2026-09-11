@@ -2,15 +2,15 @@ import SwiftUI
 
 struct BuilderWizardRequestHeader: View {
     @Bindable var model: WizardSheetModel
+    let hide: () -> Void
     @State private var showHelp = false
 
     private let guidance = "B-roll chooses the first matching scene by ID; omit track to use the focused track. Clip numbers count visible clips on the track from left to right, including B-roll. ‘Cover all areas’ targets the selected B-roll clip."
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
-            Text("Builder Wizard").font(.headline)
             TextField("For example: " + (model.examples.first ?? "remove the selected clip"), text: $model.request, axis: .vertical)
-                .lineLimit(3...6)
+                .lineLimit(1...2)
                 .textFieldStyle(.roundedBorder)
                 .disabled(model.busy || model.phase == .awaitingPrerequisites)
                 #if DEBUG
@@ -18,13 +18,13 @@ struct BuilderWizardRequestHeader: View {
                 #else
                 .help("Enter an editing request. Times are timeline positions. Review the preview before applying.")
                 #endif
-            HStack(spacing: Theme.spaceM) {
+            HStack(spacing: Theme.spaceS) {
                 Picker("Provider", selection: $model.provider) {
                     ForEach(BuilderAgentProvider.allCases) { provider in
                         Text(provider.label).tag(provider).disabled(provider.disabledReason != nil)
                     }
                 }
-                .fixedSize()
+                .frame(maxWidth: 180)
                 .disabled(model.busy || model.phase == .awaitingPrerequisites)
                 .onChange(of: model.provider) { _, _ in model.saveProviderPreference() }
                 .help("Local works without a provider. Claude uses only Builder tools. Codex and Gemini await confinement and credential validation.")
@@ -37,7 +37,7 @@ struct BuilderWizardRequestHeader: View {
                 .fixedSize()
                 .disabled(model.history.isEmpty || model.busy || model.phase == .awaitingPrerequisites)
                 .help("The last ten distinct requests for this profile.")
-                Spacer()
+                Spacer(minLength: 0)
                 if model.phase == .running {
                     Button("Cancel run", action: model.cancelRun)
                         .help("Cancel and wait for active work to stop. No timeline changes are applied; saved Library work remains.")
@@ -47,6 +47,10 @@ struct BuilderWizardRequestHeader: View {
                     .keyboardShortcut(.return, modifiers: .command)
                     .disabled(model.busy || model.request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .help("Run against a fresh timeline snapshot. ⌘Return. Replaces the previous preview.")
+                Button("Hide Wizard panel", systemImage: "xmark.circle", action: hide)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Hide the Wizard panel. Any active run continues. ⇧⌘W shows it again.")
             }
             HStack(alignment: .top, spacing: Theme.spaceS) {
                 HStack(spacing: Theme.spaceXS) {
@@ -77,7 +81,7 @@ struct BuilderWizardRequestHeader: View {
                 FlowLayout(spacing: Theme.spaceS) {
                     ForEach(model.examples.prefix(4), id: \.self) { example in
                         Button { model.request = example } label: {
-                            Text(example).lineLimit(1).frame(maxWidth: 260)
+                            Text(example).lineLimit(1).truncationMode(.tail).frame(maxWidth: 190)
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)

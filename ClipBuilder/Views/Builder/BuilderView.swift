@@ -12,8 +12,8 @@ struct BuilderView: View {
     @State private var showPreview = false
     @State private var showScenePicker = false
     @State private var showBRollPicker = false
-    @State private var showWizard = false
-    @State private var wizardPickerRequest: BuilderWizardPickerRequest?
+    @AppStorage("builder.wizardPanelVisible") private var wizardPanelVisible = false
+    @State private var showWizardPanel = false
     @State private var pickerFind: BuilderWizardPickerRequest?
     @State private var wizardModel: WizardSheetModel?
     @State private var pendingPickerPreview: WizardSheetModel?
@@ -29,42 +29,52 @@ struct BuilderView: View {
             ClipBrowserPane()
                 .rememberedPaneWidth("pane.builder.browser", min: 250, initial: 300, max: 420)
                 .frame(maxHeight: .infinity, alignment: .top)
-            VStack(spacing: 0) {
-                HSplitView {
-                    BuilderWorkspacePreview(onOpenPreview: { showPreview = true },
-                                            onAddClip: { showScenePicker = true })
-                        .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
-                        .layoutPriority(1)
-                    BuilderInspector()
-                        .rememberedPaneWidth("pane.builder.inspector", min: 240, initial: 310, max: 460)
-                        .frame(maxHeight: .infinity)
-                }
-                .frame(maxHeight: .infinity)
-
-                Divider()
-                controlsBar
-                if let result = store.builderPlanResult, result.matches(store: store) {
-                    HStack {
-                        Text("Plan ready").font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Fix with Wizard…", systemImage: "wand.and.stars") {
-                            wizardModel = result.makeWizard(store: store)
-                            showWizard = wizardModel != nil
-                        }
-                        .labelStyle(.iconOnly)
-                        .help("Fix with Wizard… Preview an editing request on this planned timeline, then Apply manually.")
+            GeometryReader { geometry in
+                VStack(spacing: 0) {
+                    HSplitView {
+                        BuilderWorkspacePreview(onOpenPreview: { showPreview = true },
+                                                onAddClip: { showScenePicker = true })
+                            .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                            .layoutPriority(1)
+                        BuilderInspector()
+                            .rememberedPaneWidth("pane.builder.inspector", min: 240, initial: 310, max: 460)
+                            .frame(maxHeight: .infinity)
                     }
-                    .padding(.horizontal, Theme.spaceM)
-                    .padding(.bottom, Theme.spaceS)
-                }
-                Divider()
+                    .frame(maxHeight: .infinity)
 
-                TimelineView(onPlayClip: { playingClip = $0 })
-                    .frame(minHeight: 200, idealHeight: 260, maxHeight: 340)
-
-                if showLog || store.isBuilderRendering || store.isBuilderPreviewRendering {
                     Divider()
-                    logDrawer
+                    if showWizardPanel, let wizardModel {
+                        BuilderWizardPanel(model: wizardModel, hide: { setWizardPanelVisible(false) },
+                                           discard: discardWizard, openPicker: openWizardPicker)
+                            // Reserve the timeline and monitor space before growing results.
+                            .frame(height: min(260, max(180, geometry.size.height - 480
+                                - (renderLogVisible ? 130 : 0))))
+                        Divider()
+                    }
+                    controlsBar
+                    if let result = store.builderPlanResult, result.matches(store: store) {
+                        HStack {
+                            Text("Plan ready").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Fix with Wizard…", systemImage: "wand.and.stars") {
+                                if let preview = result.makeWizard(store: store) { showWizard(preview) }
+                            }
+                            .labelStyle(.iconOnly)
+                            .help("Fix with Wizard… Preview an editing request on this planned timeline, then Apply manually.")
+                        }
+                        .padding(.horizontal, Theme.spaceM)
+                        .padding(.bottom, Theme.spaceS)
+                    }
+                    Divider()
+
+                    TimelineView(onPlayClip: { playingClip = $0 })
+                        .frame(minHeight: 200, idealHeight: 260, maxHeight: showWizardPanel ? 260 : 340)
+                        .layoutPriority(2)
+
+                    if renderLogVisible {
+                        Divider()
+                        logDrawer
+                    }
                 }
             }
             .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
@@ -167,7 +177,23 @@ struct BuilderView: View {
         } message: {
             Text("Removes every clip, music block, and text overlay. You can undo this with ⌘Z.")
         }
-        .onAppear { model.undoManager = undoManager }
+        .onAppear {
+            model.undoManager = undoManager
+            wizardModel = store.builderWizard
+            setWizardPanelVisible(wizardPanelVisible)
+        }
+        .onChange(of: wizardModel?.identityMatches) { _, matches in
+            if matches == false, wizardModel?.identityMatches == false {
+                wizardModel?.dismiss()
+                wizardModel = nil
+                if showWizardPanel { ensureWizard() }
+            }
+        }
+        .task(id: wizardModel.map { ObjectIdentifier($0) }) {
+            guard let wizardModel else { return }
+            await wizardModel.refreshExamples()
+            await wizardModel.refreshBeforeVersion()
+        }
         .onChange(of: undoManager) { _, manager in
             model.undoManager = manager
         }
@@ -187,26 +213,14 @@ struct BuilderView: View {
             if let result = store.builderPlanResult, result.openRequested,
                let preview = result.makeWizard(store: store) {
                 store.builderPlanResult?.openRequested = false
-                wizardModel = preview
-                showWizard = true
+                showWizard(preview)
             }
-        }
-        .sheet(isPresented: $showWizard, onDismiss: {
-            if let request = wizardPickerRequest {
-                wizardPickerRequest = nil
-                pickerFind = request
-                model.brollRequest = .init(time: request.time, track: request.track)
-                showBRollPicker = true
-            }
-        }) {
-            BuilderWizardSheet(store: store, model: wizardModel) { wizardPickerRequest = $0 }
         }
         .sheet(isPresented: $showBRollPicker, onDismiss: {
             pickerFind = nil
             if let preview = pendingPickerPreview {
                 pendingPickerPreview = nil
-                wizardModel = preview
-                showWizard = true
+                showWizard(preview)
             }
         }) {
             BuilderBRollPickerSheet(wizardFind: pickerFind) { pendingPickerPreview = $0 }
@@ -227,6 +241,45 @@ struct BuilderView: View {
         }
     }
 
+    private var renderLogVisible: Bool {
+        showLog || store.isBuilderRendering || store.isBuilderPreviewRendering
+    }
+
+    private func setWizardPanelVisible(_ visible: Bool) {
+        showWizardPanel = visible
+        wizardPanelVisible = visible
+        if visible { ensureWizard() }
+    }
+
+    private func ensureWizard() {
+        if let wizardModel, wizardModel.identityMatches { return }
+        wizardModel?.dismiss()
+        wizardModel = nil
+        guard store.openTimelineID != nil else { return }
+        let model = WizardSheetModel(store: store)
+        wizardModel = model
+        store.builderWizard = model
+    }
+
+    private func showWizard(_ model: WizardSheetModel) {
+        if wizardModel !== model { wizardModel?.dismiss() }
+        wizardModel = model
+        store.builderWizard = model
+        setWizardPanelVisible(true)
+    }
+
+    private func discardWizard() {
+        wizardModel?.dismiss()
+        wizardModel = nil
+        setWizardPanelVisible(false)
+    }
+
+    private func openWizardPicker(_ request: BuilderWizardPickerRequest) {
+        pickerFind = request
+        store.builder.brollRequest = .init(time: request.time, track: request.track)
+        showBRollPicker = true
+    }
+
     // MARK: - Controls bar
 
     private var controlsBar: some View {
@@ -240,10 +293,10 @@ struct BuilderView: View {
                            showImagePicker: $showImagePicker,
                            showBRollPicker: $showBRollPicker)
 
-            Button("Wizard", systemImage: "wand.and.stars") { wizardModel = nil; showWizard = true }
+            Button("Wizard", systemImage: "wand.and.stars") { setWizardPanelVisible(!showWizardPanel) }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
                 .disabled(store.openTimelineID == nil)
-                .help("Preview a local editing request, review changes, and apply. ⇧⌘W.")
+                .help("Show or hide the Wizard panel. ⇧⌘W.")
 
             Divider().frame(height: 16)
 

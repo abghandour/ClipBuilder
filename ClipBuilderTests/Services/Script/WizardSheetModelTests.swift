@@ -274,7 +274,7 @@ struct WizardSheetModelTests {
         find.request = "find scenes of Alex fixture"
         await find.run()
         let payload = try #require(find.pickerRequest())
-        find.dismiss() // The captured result survives the first sheet's lifetime.
+        find.dismiss() // The captured find survives replacement of the inline model.
         let preview = sheet(store, defaults: defaults)
         preview.previewFoundAddition(payload, sceneID: 1, at: 1, track: 0,
                                      duration: 2, sourceStart: 3, coverAll: true)
@@ -376,6 +376,88 @@ struct WizardSheetModelTests {
         #expect(model.examples.contains { $0.contains("<person>") && $0.contains("<tag>") })
         #expect(model.request == "cut silence longer than 1 s on track 1" && !model.request.contains("<"))
         #expect(model.phase == .idle && model.session == nil)
+    }
+
+    @Test func hiddenPanelKeepsRunningModelAndPreviewSession() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardPanelTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var continuation: CheckedContinuation<ScriptLibrarySnapshot, Never>?
+        var library = ScriptFixtures.library()
+        library.projectID = store.activeProjectID
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults), loadLibrary: {
+            await withCheckedContinuation { continuation = $0 }
+        })
+        store.builderWizard = model
+        let clip = try #require(store.builder.document.videoTrack.first)
+        store.builder.selection = .clip(clip.uid)
+        model.request = "mute this clip"
+        let running = Task { await model.run() }
+        while continuation == nil { await Task.yield() }
+        // Only the view's visibility changes. Neither hide nor show dismisses the model.
+        var panelModel: WizardSheetModel? = model
+        panelModel = nil
+        #expect(panelModel == nil)
+        #expect(store.builderWizard === model)
+        #expect(model.phase == .running && model.busy)
+        #expect(model.statusText == "Running — building your preview…")
+        #expect(model.latestLogLine == "Collecting the current Library snapshot…")
+        continuation?.resume(returning: library)
+        await running.value
+        #expect(model.phase == .preview && model.canApply)
+        let session = try #require(model.session)
+        panelModel = store.builderWizard
+        #expect(panelModel === model)
+        #expect(panelModel?.session === session)
+        #expect(panelModel?.phase == .preview)
+        await model.discard()
+        model.dismiss()
+        #expect(store.builderWizard == nil)
+    }
+
+    @Test func dismissedModelClearsOnlyItsOwnStoreReference() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardPanelTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = sheet(store, defaults: defaults)
+        store.builderWizard = first
+        first.dismiss()
+        #expect(store.builderWizard == nil)
+        let replacement = sheet(store, defaults: defaults)
+        store.builderWizard = replacement
+        first.dismiss()
+        #expect(store.builderWizard === replacement)
+        replacement.dismiss()
+        #expect(store.builderWizard == nil)
+    }
+
+    @Test func statusStripInputsFollowRunAndLogClearing() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardPanelTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = sheet(store, defaults: defaults)
+        store.builderWizard = model
+        #expect(!model.hasStatus && model.latestLogLine == nil && !model.busy)
+        #expect(model.statusText == "Describe the edit you want to preview.")
+        model.request = "find scenes of Alex fixture"
+        await model.run()
+        #expect(model.hasStatus && !model.busy)
+        #expect(model.statusText == "Found 1 matching scenes")
+        let latest = try #require(model.latestLogLine)
+        #expect(latest == model.log.last)
+        #expect(latest.hasPrefix("Run finished in "))
+        model.clearLog()
+        #expect(model.latestLogLine == nil && model.log.isEmpty)
+        #expect(model.hasStatus && model.phase == .found)
+        #expect(store.builderWizard === model)
+        model.dismiss()
+        #expect(store.builderWizard == nil)
     }
 
     @Test func dismissalDuringSnapshotCannotReviveRun() async throws {

@@ -304,7 +304,10 @@ struct MainWindowView: View {
         // The Analyze Wizard's fire-and-forget progress: a window-wide strip
         // that follows the user across screens; click for the full log.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            PipelineStatusInset()
+            VStack(spacing: 0) {
+                PipelineStatusInset()
+                WizardStatusInset()
+            }
         }
         .sheet(isPresented: $store.showPipelineLog) {
             PipelineLogSheet()

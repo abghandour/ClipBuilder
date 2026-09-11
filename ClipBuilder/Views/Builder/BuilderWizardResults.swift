@@ -80,48 +80,7 @@ struct BuilderWizardResults: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            GroupBox {
-                VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                    if model.log.isEmpty {
-                        Text("No log entries.").foregroundStyle(.secondary)
-                    } else {
-                        ForEach(Array(model.log.enumerated()), id: \.offset) { _, line in
-                            Text(line).monospacedDigit().textSelection(.enabled)
-                        }
-                    }
-                }
-                .font(.caption)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } label: {
-                HStack {
-                    Text("Run log")
-                    Spacer()
-                    Menu("Log", systemImage: "doc.on.clipboard") {
-                        Button("Copy Log") { copy(.log) }
-                            .disabled(model.log.isEmpty)
-                            .help("Copy the visible run log as plain text.")
-                        Button("Copy Tool Outcomes") { copy(.toolOutcomes) }
-                            .disabled(model.agentEvents.isEmpty)
-                            .help("Copy structured tool outcomes, reasons, byte counts, and durations.")
-                        Button("Copy Everything") { copy(.everything) }
-                            .keyboardShortcut("c", modifiers: [.command, .shift])
-                            .help("Copy the request, status, timeline changes, Library work, outcomes, explanation, and log. ⌘⇧C.")
-                        Divider()
-                        Button("Clear Log", action: model.clearLog)
-                            .disabled(model.log.isEmpty)
-                            .help("Clear only the visible log. Tool outcomes, timeline changes, and saved run records remain.")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help("Copy run details or clear the visible log.")
-                }
-            }
         }
-    }
-
-    private func copy(_ kind: WizardSheetModel.CopyKind) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(model.copyText(kind: kind), forType: .string)
     }
 
     private func outcomeSymbol(_ outcome: BuilderRunEvent.Outcome) -> String {
