@@ -39,6 +39,13 @@ nonisolated struct BuilderAgentLimits: Codable, Sendable, Equatable {
     }
 }
 
+/// Budget exhaustion is terminal for the run even when the refused call was a
+/// read-only query: the endpoint distinguishes it from a retryable refusal.
+nonisolated struct BuilderBudgetExceeded: Error, LocalizedError, Sendable {
+    let reason: String
+    var errorDescription: String? { reason }
+}
+
 @MainActor
 final class BuilderRunBudget {
     let limits: BuilderAgentLimits
@@ -51,7 +58,7 @@ final class BuilderRunBudget {
 
     func checkTime() throws {
         guard started.duration(to: .now) < .seconds(limits.wallSeconds) else {
-            throw ScriptError.invalid("Agent wall-time budget exhausted.")
+            throw BuilderBudgetExceeded(reason: "Agent wall-time budget exhausted.")
         }
         try Task.checkCancellation()
     }
@@ -61,7 +68,7 @@ final class BuilderRunBudget {
         guard calls < limits.toolCalls, arguments <= limits.argumentBytes,
               affected <= limits.affectedItems - items,
               logged <= limits.loggedBytes else {
-            throw ScriptError.invalid("Agent call, item, payload or log budget exhausted.")
+            throw BuilderBudgetExceeded(reason: "Agent call, item, payload or log budget exhausted.")
         }
         calls += 1
         items += affected
@@ -69,7 +76,7 @@ final class BuilderRunBudget {
 
     func chargeLog(_ bytes: Int) throws {
         guard bytes <= limits.loggedBytes - logged else {
-            throw ScriptError.invalid("Agent log budget exhausted.")
+            throw BuilderBudgetExceeded(reason: "Agent log budget exhausted.")
         }
         logged += bytes
     }

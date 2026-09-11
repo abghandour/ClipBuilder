@@ -57,6 +57,55 @@ struct MCPServerTests {
         } catch { await client.disconnect(); await server.shutdown(); throw error }
     }
 
+    @Test(arguments: [
+        #"{"name":"query","arguments":{"query":{"kind":"scenes","filter":{"people":["aljo"]}}}}"#,
+        #"{"name":"query","arguments":{"query":{"kind":"clips","offset":1000001}}}"#,
+        #"{"name":"query","arguments":{"query":{"kind":"clips","limit":0}}}"#,
+        #"{"name":"query","arguments":{"query":{"kind":"transcript","video":999999}}}"#,
+        #"{"name":"get_document_summary","arguments":{"unknown":true}}"#,
+        #"{"name":"get_document_summary","arguments":{"offset":1000001}}"#,
+        #"{"name":"get_document_summary","arguments":{"limit":0}}"#
+    ])
+    func readOnlyRefusalAllowsCorrectedQueryAndScript(params: String) async throws {
+        let server = try await endpoint()
+        do {
+            let bad = try await post(server, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":" + params + "}")
+            let decoded = try JSONSerialization.jsonObject(with: bad.0)
+            let badJSON = try #require(decoded as? [String: Any])
+            let badResult = try #require(badJSON["result"] as? [String: Any])
+            #expect(badResult["isError"] as? Bool == true)
+            #expect(server.tools.session.state == .ready)
+            let reason = try #require(server.events.first?.message)
+            #expect(!reason.isEmpty)
+            let contents = try #require(badResult["content"] as? [[String: Any]])
+            let content = try #require(contents.first?["text"] as? String)
+            #expect(content.contains(reason))
+            _ = try await post(server, #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"query":{"kind":"clips"}}}}"#)
+            _ = try await post(server, #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[{"command":{"op":"add_text","text":"recovered"}}]}}}"#)
+            #expect(server.events.map(\.outcome) == [.refused, .completed, .completed])
+            #expect(server.tools.session.state == .ready)
+            await server.shutdown()
+            let diff = server.tools.session.freeze()
+            #expect(server.tools.session.state == .completed && !diff.isEmpty)
+            #expect(server.tools.session.candidate?.textOverlays.count == 1)
+        } catch { await server.shutdown(); throw error }
+    }
+
+    @Test func refusedQueriesStillExhaustCallBudget() async throws {
+        var limits = BuilderAgentLimits(); limits.toolCalls = 1
+        let session = ScriptFixtures.session()
+        let server = BuilderMCPServer(tools: BuilderTools(session: session, budget: BuilderRunBudget(limits)))
+        try await server.start()
+        do {
+            _ = try await post(server, #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query","arguments":{}}}"#)
+            #expect(session.state == .ready)
+            _ = try await post(server, #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"query":{"kind":"clips"}}}}"#)
+            #expect(session.state == .failed)
+            #expect(server.events.last?.message?.contains("budget exhausted") == true)
+            await server.shutdown()
+        } catch { await server.shutdown(); throw error }
+    }
+
     @Test func httpGuardsNotificationsProtocolAndFraming() async throws {
         let server = try await endpoint()
         do {

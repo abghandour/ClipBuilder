@@ -85,12 +85,22 @@ final class BuilderMCPServer {
         var detail: String?
         do {
             data = try await task.value
-            if tools.session.state == .failed { outcome = .refused }
+            if tools.session.state == .failed {
+                outcome = .refused
+                let result = try? JSONDecoder().decode(BuilderScriptResult.self, from: data)
+                detail = result?.outcomes.compactMap {
+                    if case .refused(_, let reason) = $0 { reason } else { nil }
+                }.joined(separator: "; ")
+            }
         } catch {
             outcome = error is CancellationError ? .cancelled : .refused
             let reason = redactor.text(error.localizedDescription)
             detail = reason
-            _ = tools.session.fail(reason)
+            // Read-only argument/validation errors are retryable. Budget failures
+            // already fail the session in BuilderTools, regardless of tool kind.
+            if !BuilderTools.isReadOnly(name) || error is CancellationError || error is BuilderBudgetExceeded {
+                _ = tools.session.fail(reason)
+            }
             data = (try? JSONEncoder().encode(CommandOutcome.refused(code: outcome.rawValue, reason: reason))) ?? Data()
         }
         active = nil
@@ -158,9 +168,15 @@ final class BuilderMCPServer {
         guard request.path == "/mcp" else { return .error(statusCode: 404, .invalidRequest("Not Found")) }
         guard request.method == "POST" else { return await transport.handleRequest(request) }
         guard let body = request.body, body.count <= 1_048_576 else { return .error(statusCode: 413, .invalidRequest("Body limit")) }
-        guard let rpc = try? JSONDecoder().decode([String: Value].self, from: body),
-              rpc["jsonrpc"]?.stringValue == "2.0", let method = rpc["method"]?.stringValue else {
-            return .error(statusCode: 400, .invalidRequest("Expected one JSON-RPC 2.0 message"))
+        let decoded: [String: Value]?
+        do { decoded = try JSONDecoder().decode([String: Value].self, from: body) }
+        catch {
+            // The prefix of the client's own body helps diagnose framing faults; tokens never appear in bodies.
+            let head = String(decoding: body.prefix(120), as: UTF8.self)
+            return .error(statusCode: 400, .invalidRequest("Expected one JSON-RPC 2.0 message: \(error.localizedDescription) [\(body.count) bytes: \(head)]"))
+        }
+        guard let rpc = decoded, rpc["jsonrpc"]?.stringValue == "2.0", let method = rpc["method"]?.stringValue else {
+            return .error(statusCode: 400, .invalidRequest("Expected one JSON-RPC 2.0 message (jsonrpc/method missing)"))
         }
         if let params = rpc["params"], case .object = params {} else if rpc["params"] != nil {
             return .error(statusCode: 400, .invalidRequest("params must be an object"))

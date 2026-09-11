@@ -141,6 +141,56 @@ final class WizardSheetModel {
         }
     }
 
+    enum CopyKind { case log, toolOutcomes, everything }
+
+    var statusText: String {
+        if let failureMessage { return failureMessage }
+        switch phase {
+        case .idle: return "Describe the edit you want to preview."
+        case .awaitingPrerequisites: return "Confirm Library work before running."
+        case .running: return "Running — building your preview…"
+        case .preview: return "Ready to apply — \(diff?.changes.count ?? 0) changes"
+        case .found: return "Found \(results.count) matching scenes"
+        case .unrecognised: return reasons.first ?? "Request not recognised. Try a supported request."
+        case .refused: return reasons.first ?? "Run refused. No timeline changes applied."
+        case .applying: return "Applying timeline changes…"
+        case .applied: return "Changes applied"
+        case .discarded: return "Preview discarded"
+        }
+    }
+
+    var explanationText: AttributedString {
+        (try? AttributedString(markdown: agentSummary,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(agentSummary)
+    }
+
+    /// Pure export; clipboard access belongs to the view. Use the captured request
+    /// so editing the field cannot relabel the results of the previous run.
+    func copyText(kind: CopyKind) -> String {
+        let outcomes = agentEvents.map { event in
+            "\(event.sequence). \(event.toolName ?? "run") · \(event.outcome.rawValue)"
+                + (event.message.map { " · " + $0 } ?? "")
+                + " · \(event.argumentBytes) B in / \(event.resultBytes) B out · \(Int(event.duration * 1000)) ms"
+        }.joined(separator: "\n")
+        switch kind {
+        case .log: return log.joined(separator: "\n")
+        case .toolOutcomes: return outcomes
+        case .everything:
+            return [
+                "Request\n" + (runRequest.isEmpty ? request : runRequest),
+                "Status\n" + ([statusText] + reasons.filter { $0 != statusText }).joined(separator: "\n"),
+                "Timeline changes\n" + diffLines.joined(separator: "\n"),
+                "Library work\n" + (prerequisiteDisclosures + persistentEffects.map { "Video \($0.videoID): \($0.summary)" }).joined(separator: "\n"),
+                "Tool outcomes\n" + outcomes,
+                "Agent explanation\n" + String(explanationText.characters),
+                "Run log\n" + log.joined(separator: "\n")
+            ].joined(separator: "\n\n")
+        }
+    }
+
+    /// Clear only the bounded presentation log; audit events and saved runs survive.
+    func clearLog() { log.removeAll() }
+
     func saveProviderPreference() {
         guard !busy, phase != .awaitingPrerequisites, provider.disabledReason == nil else { return }
         store.settings.ai.tasks["builder_agent"] = provider.rawValue
@@ -543,9 +593,22 @@ final class WizardSheetModel {
         diff = session.diff()
         diffLines = BuilderWizardDiff.lines(session: session, steps: tools.executedSteps)
         phase = session.state == .completed && failure == nil ? .preview : .refused
-        if let error = run.terminalError { reasons = [error] }
-        else if session.state == .failed {
-            reasons = session.result?.outcomes.compactMap { if case .refused(_, let reason) = $0 { reason } else { nil } } ?? []
+        if phase == .refused {
+            // The terminal error can be generic; put the actual tool refusals first.
+            let refusedEvents = agentEvents.filter { $0.toolName != nil && $0.outcome != .completed }
+            // A corrected query may precede a fatal mutation refusal. Lead with
+            // the mutation's reason so the banner describes what ended the run.
+            let terminalTools = refusedEvents.filter { !BuilderTools.isReadOnly($0.toolName ?? "") }
+            let readOnlyTools = refusedEvents.filter { BuilderTools.isReadOnly($0.toolName ?? "") }
+            let toolReasons: [String] = (terminalTools + readOnlyTools).compactMap { $0.message }
+            let sessionReasons: [String] = session.result?.outcomes.compactMap { outcome -> String? in
+                if case .refused(_, let reason) = outcome { return reason }
+                return nil
+            } ?? []
+            let terminal: [String] = run.terminalError.map { [$0] } ?? []
+            let ordered: [String] = toolReasons + sessionReasons + terminal
+            reasons = []
+            for reason in ordered where !reason.isEmpty && !reasons.contains(reason) { reasons.append(reason) }
         }
         appendLog("Agent stopped. Review the structured outcomes and complete diff before Apply.")
     }

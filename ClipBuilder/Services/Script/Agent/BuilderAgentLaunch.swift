@@ -93,6 +93,7 @@ nonisolated enum BuilderAgentPrompt {
     Query first, resolve existing IDs, and use returned UUIDs. Never invent source metadata or paths.
     The model is a timeline with video clips, tracks, source ranges, crops, overlays and Library snapshots.
     query accepts {query:{kind,offset,limit,...}}; get_document_summary returns compact clip rows.
+    A refused query keeps the session open: correct its arguments and retry; a refused run_script ends the run.
     run_script accepts {steps:[{command:{op,...},bind?:name}]}; bindings are local to that list.
     Only explicitly disclosed and confirmed video prerequisites may run, before document mutations.
     Library effects persist through failure and Discard. Apply and Revert belong exclusively to the user.

@@ -32,7 +32,17 @@ nonisolated struct BuilderQuery: Codable, Sendable, Equatable {
         case .silences: fields.formUnion(["video", "range", "clip", "threshold"])
         default: break
         }
-        try c.only(fields)
+        let unknown = Set(c.allKeys.map(\.stringValue)).subtracting(fields)
+        if !unknown.isEmpty {
+            var reason = "Unknown fields for kind \(kind.rawValue): \(unknown.sorted().joined(separator: ", ")). Valid fields: \(fields.sorted().joined(separator: ", "))."
+            if unknown.contains("filter") {
+                reason += " filter is only valid for kind clips; use sceneFilter for scenes."
+            }
+            if unknown.contains("sceneFilter") {
+                reason += " sceneFilter is only valid for kind scenes; use filter for clips."
+            }
+            throw ScriptError.invalid(reason)
+        }
         offset = try c.decodeIfPresent(Int.self, forKey: ScriptKey("offset")) ?? 0
         limit = try c.decodeIfPresent(Int.self, forKey: ScriptKey("limit")) ?? 50
         filter = try c.decodeIfPresent(ClipFilter.self, forKey: ScriptKey("filter"))

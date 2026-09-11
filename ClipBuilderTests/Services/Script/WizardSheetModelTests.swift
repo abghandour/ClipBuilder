@@ -257,7 +257,7 @@ struct WizardSheetModelTests {
         #expect(store.builder.document == before)
         model.addAllAsBRoll()
         #expect(model.phase == .preview && model.canApply)
-        #expect(model.session?.candidate?.videoTrack.contains(where: \.isCutaway) == true)
+        #expect(model.session?.candidate?.videoTrack.contains { $0.isCutaway } == true)
         #expect(store.builder.document == before)
         await model.discard()
     }
@@ -433,8 +433,10 @@ struct WizardSheetModelTests {
 }
 
 extension WizardSheetModelTests {
-    @Test(arguments: [false, true])
-    func agentRoutingFreezesAndPersistsEventsThroughTerminalAction(apply: Bool) async throws {
+    @Test(arguments: ["apply", "discard", "refuse"])
+    func agentRoutingFreezesAndPersistsEventsThroughTerminalAction(action: String) async throws {
+        let apply = action == "apply"
+        let refuseScript = action == "refuse"
         let temp = try TempDatabase()
         let store = try await makeStore(temp)
         store.settings.ai.tasks["builder_agent"] = "claude"
@@ -456,12 +458,16 @@ extension WizardSheetModelTests {
                 let urlString = try #require(server?["url"] as? String)
                 let url = try #require(URL(string: urlString))
                 let authorization = try #require(headers?["Authorization"])
-                let bodies = [
+                var bodies = [
                     #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fake-cli","version":"1"}}}"#,
                     #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                    #"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"query","arguments":{"query":{"kind":"scenes","filter":{"people":["aljo"]}}}}}"#,
                     #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"query":{"kind":"clips"}}}}"#,
                     #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[{"command":{"op":"add_text","text":"fixture"}}]}}}"#
                 ]
+                if refuseScript {
+                    bodies[bodies.count - 1] = #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[{"command":{"op":"remove_clip","clip":"invented"}}]}}}"#
+                }
                 try consume(Data((#"{"type":"system","tools":["mcp__clipbuilder__query","mcp__clipbuilder__run_script"]}"# + "\n").utf8))
                 for body in bodies {
                     var request = URLRequest(url: url)
@@ -470,24 +476,67 @@ extension WizardSheetModelTests {
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     request.setValue("application/json", forHTTPHeaderField: "Accept")
                     request.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
-                    let (_, response) = try await URLSession.shared.data(for: request)
-                    #expect([200, 202].contains(try #require(response as? HTTPURLResponse).statusCode))
+                    let (responseData, response) = try await URLSession.shared.data(for: request)
+                    let httpResponse = try #require(response as? HTTPURLResponse)
+                    #expect([200, 202].contains(httpResponse.statusCode),
+                            "\(httpResponse.statusCode) for \(body.prefix(80)): \(String(decoding: responseData, as: UTF8.self))")
                 }
-                try consume(Data((#"{"type":"result","subtype":"success","result":"Added the fixture text."}"# + "\n").utf8))
+                try consume(Data((#"{"type":"result","subtype":"success","result":"Added **fixture** text with `add_text`."}"# + "\n").utf8))
                 return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
             })
         #expect(model.provider == .claude)
         let before = store.builder.document
         model.request = "add some fixture text using the agent"
         await model.run()
+        if refuseScript {
+            #expect(model.phase == .refused && !model.canApply)
+            let event = try #require(model.agentEvents.first { $0.toolName == "run_script" })
+            let reason = try #require(event.message)
+            #expect(event.outcome == .refused && !reason.isEmpty)
+            #expect(model.reasons.contains(reason))
+            #expect(model.statusText == reason)
+            #expect(model.copyText(kind: .toolOutcomes).contains(reason))
+            #expect(model.copyText(kind: .everything).contains("Status\n" + reason))
+            #expect(store.builder.document == before)
+            await model.discard()
+            return
+        }
         #expect(model.phase == .preview && model.canApply)
         #expect(store.builder.document == before)
-        #expect(model.agentEvents.map(\.sequence) == [1, 2, 3])
-        #expect(model.agentEvents.compactMap(\.toolName) == ["query", "run_script"])
+        #expect(model.agentEvents.map(\.sequence) == [1, 2, 3, 4])
+        #expect(model.agentEvents.compactMap(\.toolName) == ["query", "query", "run_script"])
         let id = try #require(store.builder.timelineID)
         let saved = try #require(try await temp.database.fetchBuilderRuns(timelineID: id).first)
         #expect(saved.provider == "claude" && saved.model == "fixture-model" && saved.durationSeconds != nil)
         #expect(saved.status == .completed && saved.eventsJSON.contains("run_script"))
+        // A corrected read-only refusal remains auditable without blocking Apply.
+        #expect(model.agentEvents.map(\.outcome) == [.refused, .completed, .completed, .completed])
+        #expect(model.reasons.isEmpty)
+        let events = model.agentEvents
+        let diff = model.diff
+        let lines = model.diffLines
+        let log = model.log
+        #expect(!log.isEmpty)
+        #expect(model.copyText(kind: .log) == log.joined(separator: "\n"))
+        let outcomes = model.copyText(kind: .toolOutcomes)
+        #expect(outcomes.contains("query · refused") && outcomes.contains("run_script · completed"))
+        #expect(outcomes.contains("filter is only valid for kind clips"))
+        #expect(outcomes.contains(" B in / ") && outcomes.contains(" B out · ") && outcomes.contains(" ms"))
+        model.request = "a different, unrun request"
+        let everything = model.copyText(kind: .everything)
+        #expect(everything.contains("Request\nadd some fixture text using the agent"))
+        #expect(!everything.contains(model.request))
+        #expect(everything.contains("Status\nReady to apply — "))
+        #expect(everything.contains("Timeline changes\n" + lines.joined(separator: "\n")))
+        #expect(everything.contains("Tool outcomes\n" + outcomes))
+        #expect(everything.contains("Agent explanation\nAdded fixture text with add_text."))
+        #expect(everything.contains("Run log\n" + log.joined(separator: "\n")))
+        model.clearLog()
+        #expect(model.log.isEmpty && model.copyText(kind: .log).isEmpty)
+        #expect(model.agentEvents == events && model.diff == diff && model.diffLines == lines)
+        #expect(model.canApply && model.copyText(kind: .toolOutcomes) == outcomes)
+        let afterClear = try #require(try await temp.database.fetchBuilderRuns(timelineID: id).first)
+        #expect(afterClear == saved)
         let undo = UndoManager(); undo.groupsByEvent = false
         store.builder.undoManager = undo
         if apply { await model.apply() } else { await model.discard() }
