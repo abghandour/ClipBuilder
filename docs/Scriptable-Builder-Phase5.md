@@ -51,6 +51,8 @@ absent operations take the unknown-operation decode path before budget admission
 
 ## Validation, diff and atomicity
 
+> Refusal semantics below are superseded by the recoverable-edit rule (462e7d4); see [revision 2](Builder-Scripting-Plan.md#d3-execution-model).
+
 Every new op has an explicit codec case, exact top-level field whitelist, schema
 variant and value validation shared by JSON and direct Swift callers. Numeric
 validation precedes serialization so NaN/infinity get `out_of_bounds` refusals.

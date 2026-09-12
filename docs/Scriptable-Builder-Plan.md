@@ -148,6 +148,8 @@ captions/mute, with full recognition. Track-volume phrases remain unsupported.
 
 ### Validation and execution
 
+> Refusal semantics below are superseded by the recoverable-edit rule (462e7d4); see [revision 2](Builder-Scripting-Plan.md#d3-execution-model).
+
 - Reject unknown fields/enums, nonfinite times, invalid ranges/tracks,
   out-of-scope or missing IDs, unavailable assets and excessive payloads.
   Resolve media bounds from the Library; file-only source-range edits currently
