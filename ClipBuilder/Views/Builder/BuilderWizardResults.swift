@@ -87,7 +87,7 @@ struct BuilderWizardResults: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            if !model.agentSummary.isEmpty {
+            if !model.agentSummary.isEmpty && model.phase != .awaitingReply {
                 GroupBox("Agent explanation") {
                     VStack(alignment: .leading, spacing: Theme.spaceS) {
                         Text(model.explanationText).textSelection(.enabled)

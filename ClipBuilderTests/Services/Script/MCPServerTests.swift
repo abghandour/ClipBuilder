@@ -40,7 +40,7 @@ struct MCPServerTests {
             let initialized = try await client.connect(transport: transport)
             #expect(initialized.protocolVersion == "2025-06-18")
             let list = try await client.listTools()
-            #expect(Set(list.tools.map(\.name)) == ["query", "run_script", "get_document_summary"])
+            #expect(Set(list.tools.map(\.name)) == ["ask_user", "query", "run_script", "get_document_summary"])
             for tool in list.tools {
                 #expect(tool.inputSchema.objectValue?["additionalProperties"] == .bool(false))
             }
@@ -276,7 +276,7 @@ extension MCPServerTests {
             let json = try #require(decoded as? [String: Any])
             let result = try #require(json["result"] as? [String: Any])
             let definitions = try #require(result["tools"] as? [[String: Any]])
-            #expect(definitions.compactMap { $0["name"] as? String } == ["query", "get_document_summary", "report_scenes"])
+            #expect(definitions.compactMap { $0["name"] as? String } == ["ask_user", "query", "get_document_summary", "report_scenes"])
             let before = session.workingDocument
             let (refused, _) = try await post(server, #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[]}}}"#)
             #expect(String(decoding: refused, as: UTF8.self).contains("Unknown or unavailable tool"))
@@ -402,7 +402,7 @@ extension MCPServerTests {
         do {
             _ = try await client.connect(transport: transport)
             let list = try await client.listTools()
-            #expect(list.tools.map { $0.name } == ["query", "get_document_summary", "script_reference", "submit_script"])
+            #expect(list.tools.map { $0.name } == ["ask_user", "query", "get_document_summary", "script_reference", "submit_script"])
             let response = try await client.callTool(name: "script_reference", arguments: [:])
             #expect(response.isError != true)
             let text = response.content.compactMap { content -> String? in
@@ -462,5 +462,25 @@ extension MCPServerTests {
         #expect(result.isError == true && coordinator.stopping)
         #expect(session.authoredScript == nil && tools.submissionAttempts == 0)
         session.discard()
+    }
+}
+
+extension MCPServerTests {
+    @Test func clarificationPausesToolsWithoutApplyingOrFreezing() async throws {
+        let server = try await endpoint()
+        defer { Task { await server.shutdown() } }
+        let tools = server.tools
+        let baseline = tools.session.workingDocument
+        await #expect(throws: (any Error).self) {
+            try await tools.call(name: "ask_user", arguments: ["question": .string("  ")])
+        }
+        #expect(tools.clarificationQuestion == nil)
+        _ = try await tools.call(name: "ask_user", arguments: ["question": .string("Which track?")])
+        #expect(tools.clarificationQuestion == "Which track?")
+        await #expect(throws: (any Error).self) {
+            try await tools.call(name: "get_document_summary", arguments: [:])
+        }
+        #expect(tools.session.state == .ready && tools.session.workingDocument == baseline)
+        #expect(BuilderTools.isReadOnly("ask_user"))
     }
 }

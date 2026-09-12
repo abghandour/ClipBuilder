@@ -145,7 +145,7 @@ nonisolated struct BuilderAgentParser: Sendable {
     }
     private static func allowedTool(_ name: String) -> Bool {
         // Every tool the endpoint can ever advertise, in edit, find or author mode.
-        ["query", "run_script", "get_document_summary", "report_scenes", "script_reference", "submit_script",
+        ["ask_user", "query", "run_script", "get_document_summary", "report_scenes", "script_reference", "submit_script",
          "ensure_transcript", "ensure_people", "ensure_analysis"]
             .contains { name == "mcp__clipbuilder__" + $0 }
     }

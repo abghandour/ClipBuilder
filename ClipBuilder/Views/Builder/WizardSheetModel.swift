@@ -5,7 +5,7 @@ import Observation
 /// request edits cannot relabel the frozen run or change its provenance.
 @MainActor @Observable
 final class WizardSheetModel {
-    enum Phase: Equatable { case idle, awaitingPrerequisites, running, preview, found, completed, unrecognised, refused, applying, applied, discarded }
+    enum Phase: Equatable { case idle, awaitingReply, awaitingPrerequisites, running, preview, found, completed, unrecognised, refused, applying, applied, discarded }
     let scriptLibrary: ScriptLibraryModel
     private(set) var replayExport = ScriptReplayExport(reason: "Complete a run to save its replay.")
     private(set) var verifyingReplay = false
@@ -13,6 +13,13 @@ final class WizardSheetModel {
     @ObservationIgnored private var replayTask: Task<Void, Never>?
     @ObservationIgnored private var activeScriptID: UUID?
     var request = ""
+    var reply = "" { didSet { replyError = nil } }
+    private(set) var replyError: String?
+    private(set) var clarificationQuestion: String?
+    private(set) var conversation = BuilderConversation()
+    @ObservationIgnored private var continuationMode: BuilderTools.Mode = .edit
+    @ObservationIgnored private var continuationPrerequisites: [BuilderCommand] = []
+    @ObservationIgnored private var conversationSteps: [BuilderScriptStep] = []
     private(set) var examples = BuilderRequestParser.supportedRequests(library: ScriptLibrarySnapshot())
     private var prefillExamples = false
     var provider: BuilderAgentProvider = .local
@@ -244,9 +251,10 @@ final class WizardSheetModel {
         if let failureMessage { return failureMessage }
         switch phase {
         case .idle: return "Describe the edit you want to preview."
+        case .awaitingReply: return "Needs your answer"
         case .awaitingPrerequisites: return "Confirm Library work before running."
         case .running: return authoring ? "Writing a script…" : finding ? "Searching the Library…" : "Running — building your preview…"
-        case .preview: return "Ready to apply — \(diff?.changes.count ?? 0) changes"
+        case .preview: return diff?.isEmpty != false ? "No timeline changes proposed" : "Ready to apply — \(diff?.changes.count ?? 0) changes"
         case .completed: return "Script ready — review it in the editor, then Save or Run."
         case .found: return "Found \(results.count) matching scenes"
         case .unrecognised: return reasons.first ?? "Request not recognised. Try a supported request."
@@ -276,6 +284,7 @@ final class WizardSheetModel {
         case .everything:
             return [
                 "Request\n" + (runRequest.isEmpty ? request : runRequest),
+                "Conversation\n" + conversation.turns.map { "Assistant: \($0.question)\nYou: \($0.answer)" }.joined(separator: "\n\n"),
                 "Status\n" + ([statusText] + reasons.filter { $0 != statusText }).joined(separator: "\n"),
                 "Timeline changes\n" + diffLines.joined(separator: "\n"),
                 "Library work\n" + (prerequisiteDisclosures + persistentEffects.map { "Video \($0.videoID): \($0.summary)" }).joined(separator: "\n"),
@@ -454,6 +463,49 @@ final class WizardSheetModel {
         task = Task { await run(mode: .author); task = nil }
     }
 
+    var replyValidationMessage: String? {
+        guard phase == .awaitingReply else { return nil }
+        if !identityMatches { return "The timeline or profile changed. Start a new request on the open timeline." }
+        if session?.identityIsCurrent != true { return "The timeline changed while waiting. Start a new request to use the latest edits." }
+        if conversation.turns.count >= BuilderConversation.maximumTurns { return "This conversation has reached eight replies. Start a new request." }
+        if reply.utf8.count > BuilderConversation.maximumReplyBytes { return "Keep your reply under 4096 bytes." }
+        return replyError
+    }
+
+    var canContinueReply: Bool {
+        phase == .awaitingReply && !busy && replyValidationMessage == nil
+            && !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func beginReply() {
+        guard task == nil, canContinueReply else { return }
+        task = Task { await continueReply(); task = nil }
+    }
+
+    func continueReply() async {
+        guard phase == .awaitingReply, !busy, !dismissed,
+              let session, let question = clarificationQuestion else { return }
+        guard identityMatches, session.identityIsCurrent else {
+            replyError = "The timeline changed while waiting. Start a new request."; return
+        }
+        do { try conversation.append(question: question, answer: reply) }
+        catch { replyError = error.localizedDescription; return }
+        reply = ""; replyError = nil; clarificationQuestion = nil
+        phase = .running
+        appendLog("Continuing with your reply…")
+        await executeAgent(session: session, confirmed: continuationPrerequisites,
+                           token: generation, mode: continuationMode)
+    }
+
+    func newConversation() {
+        guard task == nil, !busy else { return }
+        task = Task {
+            await discard()
+            request = ""; phase = .idle; failure = nil; reasons = []
+            task = nil
+        }
+    }
+
     func beginRun() {
         guard task == nil, !busy else { return }
         task = Task { await run(); task = nil }
@@ -475,6 +527,8 @@ final class WizardSheetModel {
         runModel = agentModel ?? store.settings.ai.taskModels["builder_agent"] ?? configuredAgent?.model
         runBinary = configuredAgent?.bin
         runLimits = store.settings.builderAgent
+        duration = 0
+        conversation = BuilderConversation(); conversationSteps = []; clarificationQuestion = nil; reply = ""; replyError = nil
         runRequest = request.trimmingCharacters(in: .whitespacesAndNewlines)
         historyStore.add(runRequest, profile: profile)
         history = historyStore.requests(profile: profile)
@@ -656,7 +710,7 @@ final class WizardSheetModel {
             refreshLibrary: { [database] in
                 guard let database else { throw ApplyFailure.identityChanged }
                 return try await library.refreshed(database: database, language: language)
-            }, identityMatches: { [self] in identityMatches && !dismissed && token == generation },
+            }, identityMatches: { [self] in identityMatches && !dismissed && token == self.generation },
             onPrerequisite: { [self] kind, video, report in
                 persistentEffects += report.effects
                 appendLog("\(kind.rawValue), video \(video): \(report.outcome.summary)")
@@ -769,6 +823,7 @@ final class WizardSheetModel {
 
     func discard() async {
         guard phase != .applying else { return }
+        clarificationQuestion = nil; reply = ""; replyError = nil; conversation = BuilderConversation(); conversationSteps = []
         guard let session else { return }
         self.session = nil
         // The captured database/timeline remain the audit owner after a switch.
@@ -856,7 +911,7 @@ final class WizardSheetModel {
                     refreshLibrary: { [database] in
                         guard let database else { throw ApplyFailure.identityChanged }
                         return try await library.refreshed(database: database, language: language)
-                    }, identityMatches: { [self] in identityMatches && !dismissed && token == generation },
+                    }, identityMatches: { [self] in identityMatches && !dismissed && token == self.generation },
                     onPrerequisite: { [self] _, _, report in
                         persistentEffects += report.effects
                     })
@@ -868,6 +923,8 @@ final class WizardSheetModel {
         run.endpoint.coordinator.identityMatches = { [self] in identityMatches && !dismissed && token == generation }
         run.endpoint.onEvent = { [weak self] event in
             guard let self, !self.dismissed, token == self.generation else { return }
+            var event = event
+            event.sequence = self.agentEvents.count + 1
             self.agentEvents.append(event)
         }
         run.onProgress = { [weak self] text in
@@ -875,15 +932,33 @@ final class WizardSheetModel {
             self.appendLog(text)
         }
         if let executable = ProcessRunner.locate(runBinary ?? runProvider.rawValue) {
-            await run.run(request: runRequest, executable: executable,
+            await run.run(request: conversation.prompt(request: runRequest), executable: executable,
                           parentEnvironment: ProcessRunner.subprocessEnvironment(overrides: nil))
         } else {
             run.failBeforeLaunch("The selected agent CLI is not installed.")
         }
         agentProvenance = run.provenance
-        duration = run.provenance.duration ?? 0
+        duration += run.provenance.duration ?? 0
+        conversationSteps += tools.executedSteps
         agentSummary = mode == .find ? (session.sceneReport?.summary ?? "") : run.finalResponse
         persistentEffects = session.prerequisiteEffects
+        if let question = run.clarificationQuestion, !dismissed, token == generation,
+           identityMatches, session.identityIsCurrent {
+            clarificationQuestion = question
+            continuationMode = mode
+            // Library prerequisites cannot be repeated after preview mutations.
+            continuationPrerequisites = conversationSteps.contains(where: {
+                if case .query = $0.command { return false }
+                return $0.command.prerequisite == nil
+            }) ? [] : confirmed
+            replyError = nil
+            diff = session.diff()
+            diffLines = BuilderWizardDiff.lines(session: session, steps: conversationSteps)
+            phase = .awaitingReply
+            agentRun = nil
+            appendLog("Needs your answer: " + question)
+            return
+        }
         // Preserve captured database ownership even after the user switches timelines.
         do {
             if mode != .author, let database, let timelineID = session.timelineID {
@@ -892,7 +967,7 @@ final class WizardSheetModel {
                     status: session.state == .completed ? .completed : .failed, baselineRevision: session.baselineRevision,
                     summary: agentSummary,
                     libraryEffectsJSON: String(decoding: try JSONEncoder().encode(session.prerequisiteEffects), as: UTF8.self),
-                    eventsJSON: String(decoding: try JSONEncoder().encode(run.endpoint.events), as: UTF8.self))
+                    eventsJSON: String(decoding: try JSONEncoder().encode(agentEvents), as: UTF8.self))
                 try await database.recordBuilderRun(record)
                 agentAuditSaved = true
             }
@@ -906,7 +981,7 @@ final class WizardSheetModel {
         }
         guard !dismissed, token == generation else { return }
         diff = session.diff()
-        diffLines = BuilderWizardDiff.lines(session: session, steps: tools.executedSteps)
+        diffLines = BuilderWizardDiff.lines(session: session, steps: conversationSteps)
         phase = session.state == .completed && failure == nil ? .preview : .refused
         if phase == .preview, mode != .author { retainReplay(session) }
         if phase == .refused {

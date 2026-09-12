@@ -11,7 +11,7 @@ struct BuilderWizardRequestHeader: View {
             TextField("For example: " + (model.examples.first ?? "remove the selected clip"), text: $model.request, axis: .vertical)
                 .lineLimit(2...4)
                 .textFieldStyle(.roundedBorder)
-                .disabled(model.busy || model.phase == .awaitingPrerequisites)
+                .disabled(model.busy || (model.phase == .awaitingPrerequisites || model.phase == .awaitingReply))
                 #if DEBUG
                 .help("Enter an editing request. Times are timeline positions. Debug builds also accept JSON arrays of script steps.")
                 #else
@@ -26,7 +26,7 @@ struct BuilderWizardRequestHeader: View {
                 .pickerStyle(.menu)
                 .labelsHidden()
                 .fixedSize()
-                .disabled(model.busy || model.phase == .awaitingPrerequisites)
+                .disabled(model.busy || (model.phase == .awaitingPrerequisites || model.phase == .awaitingReply))
                 .onChange(of: model.provider) { _, _ in model.saveProviderPreference() }
                 .help("Local works without a provider. Claude uses only Builder tools. Codex and Gemini await confinement and credential validation.")
                 if model.provider != .local {
@@ -39,7 +39,7 @@ struct BuilderWizardRequestHeader: View {
                     .pickerStyle(.menu)
                     .labelsHidden()
                     .fixedSize()
-                    .disabled(model.busy || model.phase == .awaitingPrerequisites)
+                    .disabled(model.busy || (model.phase == .awaitingPrerequisites || model.phase == .awaitingReply))
                     .onChange(of: model.agentModel) { _, _ in model.saveModelPreference() }
                     .help("The model this provider runs for Builder edits. Default uses the provider's model from Settings → AI.")
                 }
@@ -64,7 +64,7 @@ struct BuilderWizardRequestHeader: View {
                 .menuIndicator(.hidden)
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .disabled((model.history.isEmpty && model.scriptLibrary.recentScripts.isEmpty) || model.busy || model.phase == .awaitingPrerequisites || !model.identityMatches)
+                .disabled((model.history.isEmpty && model.scriptLibrary.recentScripts.isEmpty) || model.busy || (model.phase == .awaitingPrerequisites || model.phase == .awaitingReply) || !model.identityMatches)
                 .help("Recent Requests: the last ten distinct requests and five run scripts for this profile.")
                 Button("Supported requests", systemImage: "questionmark.circle") { showHelp.toggle() }
                     .labelStyle(.iconOnly)
@@ -78,7 +78,7 @@ struct BuilderWizardRequestHeader: View {
                                 ForEach(model.examples, id: \.self) { example in
                                     Button(example) { model.request = example; showHelp = false }
                                         .buttonStyle(.link)
-                                        .disabled(model.busy || model.phase == .awaitingPrerequisites)
+                                        .disabled(model.busy || (model.phase == .awaitingPrerequisites || model.phase == .awaitingReply))
                                         .help("Fill the request field with: \(example)")
                                 }
                             }
@@ -92,7 +92,7 @@ struct BuilderWizardRequestHeader: View {
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.return, modifiers: .command)
                         .help("Cancel and wait for active work to stop. No timeline changes are applied; saved Library work remains. ⌘Return.")
-                } else {
+                } else if model.phase != .awaitingReply {
                     Button(model.failure == .staleRevision ? "Run again" : "Run", action: model.beginRun)
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.return, modifiers: .command)

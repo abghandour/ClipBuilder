@@ -9,6 +9,7 @@ final class BuilderAgentRun {
     private(set) var provenance: AIProvenance
     private(set) var finalResponse = ""
     private(set) var terminalError: String?
+    private(set) var clarificationQuestion: String?
     var onProgress: (@MainActor (String) -> Void)?
     private var process: Task<ProcessResult, any Error>?
     private let executor: Executor
@@ -137,10 +138,10 @@ final class BuilderAgentRun {
         await watchdog.value
         if exceededDeadline { terminalError = "Agent wall-time budget exhausted. No timeline changes applied." }
         provenance.duration = Date.now.timeIntervalSince(started)
-        if terminalError == nil, endpoint.tools.mode == .find, endpoint.tools.session.sceneReport == nil {
+        if terminalError == nil, endpoint.tools.clarificationQuestion == nil, endpoint.tools.mode == .find, endpoint.tools.session.sceneReport == nil {
             terminalError = "The assistant did not call report_scenes. No search results were reported."
         }
-        if terminalError == nil, endpoint.tools.mode == .author, endpoint.tools.session.authoredScript == nil {
+        if terminalError == nil, endpoint.tools.clarificationQuestion == nil, endpoint.tools.mode == .author, endpoint.tools.session.authoredScript == nil {
             terminalError = "The assistant did not submit an accepted script."
         }
         if terminalError == nil,
@@ -150,6 +151,12 @@ final class BuilderAgentRun {
         if let terminalError { _ = endpoint.tools.session.fail(terminalError) }
         endpoint.finishEvent(outcome: terminalError == nil ? .completed : .failed,
                              message: terminalError, duration: provenance.duration ?? 0)
+        // The child and endpoint are fully drained. A reply gets a fresh endpoint
+        // around this same isolated working session; no live timeline edit occurs.
+        if terminalError == nil, let question = endpoint.tools.clarificationQuestion {
+            clarificationQuestion = redactor.text(question, limit: 4096)
+            return
+        }
         // No HTTP handler or child callback can mutate after this point.
         if endpoint.tools.mode == .author { endpoint.tools.session.completeAuthoring() }
         else { _ = endpoint.tools.session.freeze() }

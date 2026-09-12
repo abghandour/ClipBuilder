@@ -949,3 +949,120 @@ extension WizardSheetModelTests {
         model.dismiss()
     }
 }
+
+private actor WizardReplyTestCounter {
+    private var count = 0
+    func next() -> Int { defer { count += 1 }; return count }
+    func value() -> Int { count }
+}
+
+extension WizardSheetModelTests {
+    @Test(arguments: ["continue", "stale", "discard"])
+    func inlineRepliesKeepContextAndPreview(action: String) async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        store.settings.ai.tasks["builder_agent"] = "claude"
+        store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)
+        let suite = "WizardReplyTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var library = ScriptFixtures.library()
+        library.projectID = store.activeProjectID
+        let snapshot = library
+        let counter = WizardReplyTestCounter()
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { snapshot }, agentExecutor: { _, launch, _, consume in
+                let turn = await counter.next()
+                let prompt = launch.arguments.joined(separator: " ")
+                #expect(prompt.contains("Make a caption"))
+                if turn > 0 { #expect(prompt.contains("Use white") && prompt.contains("Which color?")) }
+                if turn > 1 { #expect(prompt.contains("At the top") && prompt.contains("Where?")) }
+                let data = try Data(contentsOf: launch.root.appendingPathComponent("mcp.json"))
+                let config = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+                let servers = config?["mcpServers"] as? [String: Any]
+                let server = servers?["clipbuilder"] as? [String: Any]
+                let headers = server?["headers"] as? [String: String]
+                let urlString = try #require(server?["url"] as? String)
+                let url = try #require(URL(string: urlString))
+                let authorization = try #require(headers?["Authorization"])
+                var bodies = [
+                    #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"fake-cli","version":"1"}}}"#,
+                    #"{"jsonrpc":"2.0","method":"notifications/initialized"}"#
+                ]
+                if turn == 0 {
+                    bodies += [
+                        #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[{"command":{"op":"add_text","text":"First turn"}}]}}}"#,
+                        #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ask_user","arguments":{"question":"Which color?"}}}"#
+                    ]
+                } else if turn == 1 {
+                    bodies.append(#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ask_user","arguments":{"question":"Where?"}}}"#)
+                } else {
+                    bodies.append(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[{"command":{"op":"add_text","text":"Final turn"}}]}}}"#)
+                }
+                try consume(Data((#"{"type":"system","tools":["mcp__clipbuilder__query","mcp__clipbuilder__run_script","mcp__clipbuilder__ask_user"]}"# + "\n").utf8))
+                for body in bodies {
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "POST"; request.httpBody = Data(body.utf8)
+                    request.setValue(authorization, forHTTPHeaderField: "Authorization")
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+                    request.setValue(BuilderMCPServer.wireVersion, forHTTPHeaderField: "MCP-Protocol-Version")
+                    let (data, response) = try await URLSession.shared.data(for: request)
+                    let httpResponse = try #require(response as? HTTPURLResponse)
+                    #expect([200, 202].contains(httpResponse.statusCode))
+                    #expect(!String(decoding: data, as: UTF8.self).contains("\"isError\":true"))
+                }
+                try consume(Data((#"{"type":"result","subtype":"success","result":"Review the caption preview."}"# + "\n").utf8))
+                return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
+            })
+        model.request = "Make a caption"
+        let baseline = store.builder.document
+        await model.run()
+        #expect(model.phase == .awaitingReply && model.statusText == "Needs your answer")
+        #expect(!model.canApply && store.builder.document == baseline)
+        let session = try #require(model.session)
+        #expect(session.state == .ready && session.workingDocument.textOverlays.count == baseline.textOverlays.count + 1)
+        model.reply = "   "
+        #expect(!model.canContinueReply)
+        model.reply = "Use white"
+        if action == "discard" {
+            await model.discard()
+            #expect(model.clarificationQuestion == nil && model.conversation.turns.isEmpty && model.session == nil)
+        } else if action == "stale" {
+            _ = store.builder.addText()
+            #expect(!model.canContinueReply && model.replyValidationMessage != nil)
+            await model.continueReply()
+            #expect(await counter.value() == 1)
+            #expect(model.reply == "Use white")
+            await model.discard()
+        } else {
+            #expect(model.canContinueReply)
+            await model.continueReply()
+            #expect(model.session === session && model.phase == .awaitingReply)
+            #expect(model.conversation.turns.count == 1 && model.reply.isEmpty)
+            model.reply = "At the top"
+            await model.continueReply()
+            #expect(model.session === session && model.phase == .preview && model.canApply)
+            #expect(model.conversation.turns.count == 2)
+            #expect(session.candidate?.textOverlays.count == baseline.textOverlays.count + 2)
+            #expect(store.builder.document == baseline)
+            let undo = UndoManager(); undo.groupsByEvent = false; store.builder.undoManager = undo
+            #expect(Set(model.agentEvents.map(\.id)).count == model.agentEvents.count)
+            await model.apply()
+            #expect(model.phase == .applied)
+            #expect(store.builder.document.textOverlays.count == baseline.textOverlays.count + 2)
+        }
+    }
+
+    @Test func conversationRejectsEmptyOversizedAndExcessReplies() throws {
+        var conversation = BuilderConversation()
+        #expect(throws: (any Error).self) { try conversation.append(question: "Q", answer: " \n") }
+        #expect(throws: (any Error).self) { try conversation.append(question: "Q", answer: String(repeating: "x", count: 4097)) }
+        for index in 0..<BuilderConversation.maximumTurns {
+            try conversation.append(question: "Q\(index)", answer: "A\(index)")
+        }
+        #expect(throws: (any Error).self) { try conversation.append(question: "Q", answer: "A") }
+        #expect(conversation.turns.count == BuilderConversation.maximumTurns)
+        #expect(conversation.prompt(request: "Original").contains("Original"))
+    }
+}

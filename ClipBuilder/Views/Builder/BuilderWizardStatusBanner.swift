@@ -9,7 +9,7 @@ struct BuilderWizardStatusBanner: View {
         case .refused, .unrecognised: return .red
         case .preview, .applied, .found, .completed: return .green
         case .discarded, .idle: return .secondary
-        case .awaitingPrerequisites: return .orange
+        case .awaitingPrerequisites, .awaitingReply: return .orange
         case .running, .applying: return .accentColor
         }
     }
@@ -22,6 +22,7 @@ struct BuilderWizardStatusBanner: View {
         case .applied: return "checkmark.seal"
         case .discarded: return "xmark.circle"
         case .running, .applying: return "clock"
+        case .awaitingReply: return "questionmark.bubble"
         case .idle: return "info.circle"
         }
     }

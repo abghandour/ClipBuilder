@@ -11,6 +11,8 @@ struct TimelineView: View {
     let onPlayClip: (TimelineClip) -> Void
     @State private var verticalScrollPosition = ScrollPosition()
     @State private var horizontalScrollPosition = ScrollPosition()
+    @State private var tracksScrollPosition = ScrollPosition()
+    @State private var scrollbarPosition = ScrollPosition()
     @State private var visibleRect: CGRect?
 
     private struct HorizontalViewport: Equatable {
@@ -23,55 +25,60 @@ struct TimelineView: View {
     private static let soundLaneHeight: CGFloat = 40
     private static let textLaneHeight: CGFloat = 40
     private static let headerWidth: CGFloat = 148
+    private static let scrollbarHeight: CGFloat = 14
 
     var body: some View {
         let model = store.builder
         let contentWidth = max(800, CGFloat(model.totalDuration + 15) * model.pointsPerSecond)
         let layout = model.timelineLayout()
 
+        // Three bands share one horizontal offset: the pinned ruler + Screen
+        // row on top, the vertically scrolling tracks in the middle, and a
+        // pinned horizontal scrollbar at the bottom. Only the top band and
+        // the scrollbar own a horizontal ScrollView; the tracks band follows
+        // their offset so it never shows a second scrollbar.
         GeometryReader { viewport in
             let viewportRect = visibleRect ?? CGRect(
                 x: store.timelineScrollX, y: 0,
                 width: max(1, viewport.size.width - Self.headerWidth), height: 0)
-            ScrollView(.vertical) {
-                HStack(alignment: .top, spacing: 0) {
-                    headerColumn(model: model, layout: layout)
-                        .frame(width: Self.headerWidth)
-                    ScrollView(.horizontal) {
-                        VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
-                            TimeRuler(contentWidth: contentWidth)
-                                .frame(width: contentWidth, height: Self.rulerHeight)
-                                .background(TimelineTrackStyle.ruler, in: TimelineTrackStyle.laneShape)
-                            CropLane(contentWidth: contentWidth, height: Self.cropLaneHeight)
-                            ForEach(0..<model.document.trackCount, id: \.self) { track in
-                                VideoTrackLane(track: track, layout: layout.videoTracks[track],
-                                               contentWidth: contentWidth,
-                                               visibleRect: viewportRect,
-                                               cullClips: model.document.videoTrack.count >= 40,
-                                               onPlayClip: onPlayClip)
+            VStack(spacing: 0) {
+                pinnedTop(model: model, contentWidth: contentWidth)
+                Divider()
+                ScrollView(.vertical) {
+                    HStack(alignment: .top, spacing: 0) {
+                        trackHeaders(model: model, layout: layout)
+                            .frame(width: Self.headerWidth)
+                        ScrollView(.horizontal) {
+                            VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
+                                ForEach(0..<model.document.trackCount, id: \.self) { track in
+                                    VideoTrackLane(track: track, layout: layout.videoTracks[track],
+                                                   contentWidth: contentWidth,
+                                                   visibleRect: viewportRect,
+                                                   cullClips: model.document.videoTrack.count >= 40,
+                                                   onPlayClip: onPlayClip)
+                                }
+                                SoundLane(contentWidth: contentWidth, height: Self.soundLaneHeight)
+                                OverlayLane(layout: layout, contentWidth: contentWidth)
                             }
-                            SoundLane(contentWidth: contentWidth, height: Self.soundLaneHeight)
-                            OverlayLane(layout: layout, contentWidth: contentWidth)
+                            .padding(.top, BuilderTimelineModel.laneSpacing)
+                            .overlay(alignment: .topLeading) {
+                                PlayheadLine()
+                            }
+                            .padding(.bottom, 8)
                         }
-                        .overlay(alignment: .topLeading) {
-                            PlayheadLine()
-                        }
-                        .padding(.bottom, 8)
-                    }
-                    .scrollPosition($horizontalScrollPosition)
-                    .onScrollGeometryChange(for: HorizontalViewport.self) { geometry in
-                        HorizontalViewport(rect: geometry.visibleRect, offset: Double(geometry.contentOffset.x))
-                    } action: { _, viewport in
-                        visibleRect = viewport.rect
-                        store.timelineScrollX = max(0, viewport.offset)
+                        .scrollIndicators(.hidden)
+                        .scrollDisabled(true)
+                        .scrollPosition($tracksScrollPosition)
                     }
                 }
-            }
-            .scrollPosition($verticalScrollPosition)
-            .onScrollGeometryChange(for: Double.self) { geometry in
-                Double(geometry.contentOffset.y)
-            } action: { _, offset in
-                store.timelineScrollY = max(0, offset)
+                .scrollPosition($verticalScrollPosition)
+                .onScrollGeometryChange(for: Double.self) { geometry in
+                    Double(geometry.contentOffset.y)
+                } action: { _, offset in
+                    store.timelineScrollY = max(0, offset)
+                }
+                Divider()
+                scrollbar(contentWidth: contentWidth)
             }
             .onAppear(perform: restoreScrollPosition)
             .onChange(of: store.openTimelineID) { restoreScrollPosition() }
@@ -80,22 +87,80 @@ struct TimelineView: View {
         }
     }
 
+    /// Ruler and Screen row: always visible, and the band that owns the
+    /// horizontal scroll (trackpad swipes here move every band).
+    private func pinnedTop(model: BuilderTimelineModel, contentWidth: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
+                PlayheadTimecode()
+                    .frame(height: Self.rulerHeight)
+                    .padding(.leading, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(TimelineTrackStyle.ruler, in: TimelineTrackStyle.headerShape)
+                CropLaneHeader()
+                    .frame(height: Self.cropLaneHeight)
+            }
+            .frame(width: Self.headerWidth)
+            ScrollView(.horizontal) {
+                VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
+                    TimeRuler(contentWidth: contentWidth)
+                        .frame(width: contentWidth, height: Self.rulerHeight)
+                        .background(TimelineTrackStyle.ruler, in: TimelineTrackStyle.laneShape)
+                    CropLane(contentWidth: contentWidth, height: Self.cropLaneHeight)
+                }
+                .overlay(alignment: .topLeading) {
+                    PlayheadLine()
+                }
+            }
+            .scrollIndicators(.hidden)
+            .scrollPosition($horizontalScrollPosition)
+            .onScrollGeometryChange(for: HorizontalViewport.self) { geometry in
+                HorizontalViewport(rect: geometry.visibleRect, offset: Double(geometry.contentOffset.x))
+            } action: { _, viewport in
+                visibleRect = viewport.rect
+                let x = max(0, viewport.offset)
+                store.timelineScrollX = x
+                tracksScrollPosition.scrollTo(x: x)
+                scrollbarPosition.scrollTo(x: x)
+            }
+        }
+        .frame(height: Self.rulerHeight + BuilderTimelineModel.laneSpacing + Self.cropLaneHeight)
+    }
+
+    /// A horizontal scroller that is only ever as tall as its indicator,
+    /// pinned under the tracks so the scrollbar never leaves the screen.
+    private func scrollbar(contentWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: Self.headerWidth)
+            ScrollView(.horizontal) {
+                Color.clear.frame(width: contentWidth, height: 1)
+            }
+            .scrollIndicators(.visible)
+            .scrollPosition($scrollbarPosition)
+            .onScrollGeometryChange(for: Double.self) { geometry in
+                Double(geometry.contentOffset.x)
+            } action: { _, offset in
+                // Dragging the indicator drives the pinned band, which
+                // fans the offset out to the tracks.
+                let x = max(0, offset)
+                if abs(x - store.timelineScrollX) > 0.5 { horizontalScrollPosition.scrollTo(x: x) }
+            }
+        }
+        .frame(height: Self.scrollbarHeight)
+    }
+
     private func restoreScrollPosition() {
         visibleRect = nil
         horizontalScrollPosition.scrollTo(x: store.timelineScrollX)
+        tracksScrollPosition.scrollTo(x: store.timelineScrollX)
+        scrollbarPosition.scrollTo(x: store.timelineScrollX)
         verticalScrollPosition.scrollTo(y: store.timelineScrollY)
     }
 
+    /// Pinned headers for the scrolling band: one per video track, then Sound and Overlays.
     @ViewBuilder
-    private func headerColumn(model: BuilderTimelineModel, layout: TimelineLayoutSnapshot) -> some View {
+    private func trackHeaders(model: BuilderTimelineModel, layout: TimelineLayoutSnapshot) -> some View {
         VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
-            PlayheadTimecode()
-                .frame(height: Self.rulerHeight)
-                .padding(.leading, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(TimelineTrackStyle.ruler, in: TimelineTrackStyle.headerShape)
-            CropLaneHeader()
-                .frame(height: Self.cropLaneHeight)
             ForEach(0..<model.document.trackCount, id: \.self) { track in
                 TrackHeader(track: track)
                     .frame(height: layout.videoTracks[track].laneHeight)
@@ -106,6 +171,7 @@ struct TimelineView: View {
                 .frame(height: CGFloat(layout.overlayRowCount)
                        * BuilderTimelineModel.overlayRowHeight)
         }
+        .padding(.top, BuilderTimelineModel.laneSpacing)
     }
 
     private func laneHeader(title: String, systemImage: String, shade: Color) -> some View {

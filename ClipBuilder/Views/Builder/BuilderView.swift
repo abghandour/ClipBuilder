@@ -29,7 +29,9 @@ struct BuilderView: View {
                             discardWizard: discardWizard, openWizardPicker: openWizardPicker)
                 .rememberedPaneWidth("pane.builder.browser", min: 250, initial: 300, max: 480)
                 .frame(maxHeight: .infinity, alignment: .top)
-            VStack(spacing: 0) {
+            // Preview/inspector above, timeline below, with a draggable
+            // divider between them; the timeline's height is remembered.
+            VSplitView {
                 HSplitView {
                     BuilderWorkspacePreview(onOpenPreview: { showPreview = true },
                                             onAddClip: { showScenePicker = true })
@@ -39,9 +41,9 @@ struct BuilderView: View {
                         .rememberedPaneWidth("pane.builder.inspector", min: 240, initial: 310, max: 460)
                         .frame(maxHeight: .infinity)
                 }
-                .frame(maxHeight: .infinity)
+                .frame(minHeight: 220, maxHeight: .infinity)
 
-                Divider()
+                VStack(spacing: 0) {
                 controlsBar
                 if let result = store.builderPlanResult, result.matches(store: store) {
                     HStack {
@@ -59,9 +61,9 @@ struct BuilderView: View {
                 Divider()
 
                 TimelineView(onPlayClip: { playingClip = $0 })
-                    .frame(minHeight: 200, idealHeight: 260, maxHeight: 340)
-                    .layoutPriority(2)
-
+                    .frame(maxHeight: .infinity)
+                }
+                .rememberedPaneHeight("pane.builder.timeline", min: 180, initial: 300)
             }
             .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
         }
