@@ -46,12 +46,20 @@ struct MCPServerTests {
             }
             let summary = try await client.callTool(name: "get_document_summary", arguments: [:])
             #expect(summary.isError != true)
+            let before = server.tools.session.workingDocument
             let bad = try await client.callTool(name: "run_script", arguments: ["steps": .array([
+                .object(["command": .object(["op": .string("add_text"), "text": .string("rolled back")])]),
                 .object(["command": .object(["op": .string("remove_clip"), "clip": .string("invented")])])
             ])])
             #expect(bad.isError == true)
-            #expect(server.tools.session.state == .failed)
-            #expect(server.events.map(\.outcome) == [.completed, .refused])
+            #expect(server.tools.session.state == .ready)
+            #expect(server.tools.session.workingDocument == before)
+            let good = try await client.callTool(name: "run_script", arguments: ["steps": .array([
+                .object(["command": .object(["op": .string("add_text"), "text": .string("recovered")])])
+            ])])
+            #expect(good.isError != true)
+            #expect(server.tools.session.workingDocument.textOverlays.map { $0.text } == ["recovered"])
+            #expect(server.events.map(\.outcome) == [.completed, .refused, .completed])
             await client.disconnect()
             await server.shutdown()
         } catch { await client.disconnect(); await server.shutdown(); throw error }
@@ -302,5 +310,74 @@ extension MCPServerTests {
         let diff = session.freeze()
         #expect(diff.isEmpty && session.candidate == before)
         session.discard()
+    }
+}
+
+extension MCPServerTests {
+    @Test func summaryIncludesSelectionPlayheadFocusLabelsAndStableIDs() async throws {
+        let live = ScriptFixtures.model()
+        live.document.trackCount = 2
+        let id = live.document.videoTrack[0].uid
+        live.selection = .clip(id)
+        live.playhead = 1.25
+        live.focusedTrack = 1
+        let session = BuilderScriptSession(live: live, library: ScriptFixtures.library())
+        defer { session.discard() }
+        let tools = BuilderTools(session: session, budget: BuilderRunBudget(.init()))
+        let data = try await tools.call(name: "get_document_summary", arguments: [:])
+        let summary = try JSONDecoder().decode(BuilderDocumentSummary.self, from: data)
+        #expect(summary.selection == .object(["kind": .string("clip"), "id": .string(id.uuidString)]))
+        #expect(summary.playhead == 1.25 && summary.focusedTrack == .number(1))
+        #expect(summary.trackLabels.map { $0.index } == [0, 1])
+        #expect(summary.trackLabels.map { $0.label } == ["I", "II"])
+        #expect(summary.rows.contains { $0.id == id.uuidString && $0.track == 0 })
+        let empty = try BuilderDocumentSummary(document: session.workingDocument, offset: 0, limit: 10)
+        #expect(empty.selection == .null && empty.focusedTrack == .null)
+        let json = try JSONDecoder().decode(ScriptValue.self, from: JSONEncoder().encode(empty))
+        guard case .object(let fields) = json else { Issue.record("Expected object"); return }
+        #expect(fields["selection"] == .null)
+        let definition = try #require(tools.definitions.first { $0.name == "run_script" })
+        let schema = String(decoding: try JSONEncoder().encode(definition.inputSchema), as: UTF8.self)
+        #expect(schema.contains("split_clip_evenly") && schema.contains("parts"))
+    }
+
+    @Test func malformedScriptsRemainRetryableButConsumeCallBudget() async throws {
+        var limits = BuilderAgentLimits(); limits.toolCalls = 1
+        let session = ScriptFixtures.session()
+        let server = BuilderMCPServer(tools: BuilderTools(session: session, budget: BuilderRunBudget(limits)))
+        try await server.start()
+        do {
+            _ = try await post(server, #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[{"command":{"op":"split_clip_evenly","clip":"id","parts":13}}]}}}"#)
+            #expect(session.state == .ready)
+            _ = try await post(server, #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[{"command":{"op":"add_text","text":"over budget"}}]}}}"#)
+            #expect(session.state == .failed)
+            await server.shutdown()
+        } catch { await server.shutdown(); throw error }
+    }
+}
+
+extension MCPServerTests {
+    @Test func refusedMiddleToolListKeepsEarlierEditsAndOnlyCompletedDiffSteps() async throws {
+        let session = ScriptFixtures.session()
+        defer { session.discard() }
+        let tools = BuilderTools(session: session, budget: BuilderRunBudget(.init()))
+        func call(_ steps: [BuilderScriptStep]) async throws -> BuilderScriptResult {
+            let value = try JSONDecoder().decode(Value.self, from: JSONEncoder().encode(steps))
+            let data = try await tools.call(name: "run_script", arguments: ["steps": value])
+            return try JSONDecoder().decode(BuilderScriptResult.self, from: data)
+        }
+        let firstSteps = [BuilderScriptStep(.addText(text: "keep"), bind: "title")]
+        let first = try await call(firstSteps)
+        let before = session.workingDocument
+        let clip = before.videoTrack[0].uid.uuidString
+        let refused = try await call([.init(.splitClipEvenly(clip: clip, parts: 2)),
+                                      .init(.removeClip(clip: "invented"))])
+        #expect(!refused.completed && session.state == .ready)
+        #expect(session.workingDocument == before && session.result == first)
+        #expect(tools.executedSteps == firstSteps)
+        let next = try await call([.init(.setText(overlay: "$title", text: "kept and edited"))])
+        #expect(next.completed)
+        #expect(session.workingDocument.textOverlays.map { $0.text } == ["kept and edited"])
+        #expect(!BuilderWizardDiff.lines(session: session, steps: tools.executedSteps).contains { $0.hasPrefix("Split ") })
     }
 }

@@ -253,6 +253,48 @@ extension BuilderExpansionTests {
         }
     }
 
+    @Test func selectedReferenceResolvesTheTimelineSelection() throws {
+        let model = ScriptFixtures.gapModel()
+        let clip = model.document.videoTrack[0]
+        model.selection = .clip(clip.uid)
+        let library = ScriptFixtures.gapLibrary()
+        let outcomes = ScriptRunner().run([.init(.splitClipEvenly(clip: "selected", parts: 2))], model: model, library: library)
+        guard case .applied(_, let created, _) = outcomes.first else {
+            Issue.record("Expected apply, got \(outcomes)"); return
+        }
+        #expect(created["piece1"] == clip.uid.uuidString)
+        #expect(model.document.videoTrack.filter { !$0.bumper }.count == 2)
+        // A sound selection resolves for sound commands too.
+        model.selection = .sound(model.document.soundTrack[0].uid)
+        #expect(!ScriptRunner().run([.init(.setSoundVolume(sound: "selected", volume: 2))], model: model, library: library).contains { $0.isRefused })
+        #expect(model.document.soundTrack[0].volume == 2)
+        // Nothing selected: refused with guidance, document untouched.
+        model.selection = nil
+        let before = ScriptValue.stored(model.document)
+        let refused = ScriptRunner().run([.init(.removeClip(clip: "selected"))], model: model, library: library)
+        #expect(refused.contains { $0.isRefused })
+        #expect(ScriptValue.stored(model.document) == before)
+    }
+
+    @Test func timelineQueryReportsSelectionAndFocusedTrack() throws {
+        let model = ScriptFixtures.gapModel()
+        let clip = model.document.videoTrack[0]
+        model.selection = .clip(clip.uid)
+        model.focusedTrack = 1
+        let result = try BuilderQuery(.timeline).execute(model: model, library: ScriptFixtures.gapLibrary(),
+                                                         resolve: { _ in throw ScriptError.invalid("unused") })
+        guard case .object(let timeline)? = result.timeline else { Issue.record("timeline object missing"); return }
+        #expect(timeline["selection"] == .object(["kind": .string("clip"), "id": .string(clip.uid.uuidString)]))
+        #expect(timeline["focusedTrack"] == .number(1))
+        model.selection = nil
+        model.focusedTrack = nil
+        let cleared = try BuilderQuery(.timeline).execute(model: model, library: ScriptFixtures.gapLibrary(),
+                                                          resolve: { _ in throw ScriptError.invalid("unused") })
+        if case .object(let timeline)? = cleared.timeline {
+            #expect(timeline["selection"] == .null && timeline["focusedTrack"] == .null)
+        }
+    }
+
     @Test func gapRefusalsLeaveDocumentUntouched() {
         let model = ScriptFixtures.gapModel()
         model.document.videoTrack[0].wide = false
@@ -351,5 +393,63 @@ extension BuilderExpansionTests {
         #expect(cleared.bgcolor == nil && cleared.boxRadius == nil && cleared.strokeColor == nil)
         #expect(cleared.highlightColor == nil && cleared.design == nil && cleared.kicker == nil && cleared.accentColor == nil)
         #expect(cleared.fontsize == 80 && cleared.bold && cleared.opacity == 0.8)
+    }
+}
+
+extension BuilderExpansionTests {
+    @Test(arguments: [1.0, 2.0])
+    func evenlySplitsSixPiecesWithCompleteDiffAndSourceContinuity(speed: Double) throws {
+        let original = Fixtures.timelineClip(sourceStart: 0, duration: 27.8, speed: speed)
+        let model = ScriptFixtures.model(clips: [original])
+        var library = ScriptFixtures.library()
+        library.videos[0].duration = 100
+        library.scenes[0].videoDuration = 100
+        let session = BuilderScriptSession(live: model, library: library)
+        defer { session.discard() }
+        let command = BuilderCommand.splitClipEvenly(clip: original.uid.uuidString, parts: 6)
+        let encoded = try JSONEncoder().encode(command)
+        #expect(try JSONDecoder().decode(BuilderCommand.self, from: encoded) == command)
+        let result = session.run([.init(command, bind: "pieces")])
+        #expect(result.completed)
+        let pieces = session.workingDocument.videoTrack.sorted { $0.startTime < $1.startTime }
+        #expect(pieces.count == 6)
+        let durations = pieces.map { $0.duration }
+        let shortest = try #require(durations.min())
+        let longest = try #require(durations.max())
+        #expect(longest - shortest <= 0.05 + 1e-9)
+        #expect(abs(durations.reduce(0, +) - 27.8) < 1e-9)
+        #expect(pieces.first?.uid == original.uid)
+        #expect(pieces.allSatisfy { $0.track == original.track && $0.originKey == original.originKey && $0.precision == .speech })
+        for (head, tail) in zip(pieces, pieces.dropFirst()) {
+            #expect(abs(head.startTime + head.duration - tail.startTime) < 1e-9)
+            let end = try #require(head.sourceEnd)
+            let start = try #require(tail.sourceStart)
+            #expect(abs(end - start) < 1e-9)
+        }
+        let outcome = try #require(result.outcomes.first)
+        #expect(Set(outcome.createdIDs.keys) == Set((1...6).map { "piece\($0)" }))
+        guard case .applied(let actual, _, _) = outcome else { Issue.record("Expected applied"); return }
+        #expect(actual == .object(["durations": .array(durations.map { .number($0) })]))
+        let summary = BuilderWizardDiff.lines(session: session, steps: [.init(command)])
+        #expect(summary.contains("Split 1 clips"))
+        let changes = session.diff().changes
+        #expect(changes.contains { $0.path.contains("duration") })
+        for piece in pieces.dropFirst() {
+            #expect(changes.contains { $0.kind == .added && $0.path.contains(piece.uid.uuidString) })
+        }
+    }
+
+    @Test func evenSplitRefusesInvalidCountsAndSliversAtomically() throws {
+        for (parts, duration, precision) in [(13, 4.0, TimelinePrecision.speech), (6, 0.25, .speech), (6, 2.5, .ordinary)] {
+            let session = ScriptFixtures.session(clips: [Fixtures.timelineClip(duration: duration)])
+            let before = session.workingDocument
+            let result = session.run([.init(.splitClipEvenly(clip: before.videoTrack[0].uid.uuidString,
+                                                          parts: parts, precision: precision))], recoverRefusals: true)
+            #expect(!result.completed && session.state == .ready)
+            #expect(session.workingDocument == before && !result.hasDocumentChanges)
+            session.discard()
+        }
+        let invalid = Data(#"{"op":"split_clip_evenly","clip":"id","parts":13}"#.utf8)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(BuilderCommand.self, from: invalid) }
     }
 }

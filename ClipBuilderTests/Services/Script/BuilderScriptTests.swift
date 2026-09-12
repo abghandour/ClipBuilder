@@ -208,10 +208,13 @@ struct BuilderScriptTests {
 
     @Test("Duplicate bindings and binding an idempotent query refuse")
     func bindingValidation() {
+        // Rebinding a name replaces it: $x now names the second text.
         let session = ScriptFixtures.session()
-        #expect(!session.run([.init(.addText(text: "One"), bind: "x"),
-                              .init(.addText(text: "Two"), bind: "x")]).completed)
-        #expect(session.candidate == nil)
+        let result = session.run([.init(.addText(text: "One"), bind: "x"),
+                                  .init(.addText(text: "Two"), bind: "x"),
+                                  .init(.setText(overlay: "$x", text: "Second"))])
+        #expect(result.completed)
+        #expect(session.candidate?.textOverlays.map(\.text) == ["One", "Second"])
         #expect(!ScriptFixtures.session().run([.init(.query(query: BuilderQuery(.clips)), bind: "x")]).completed)
     }
 

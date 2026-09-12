@@ -660,9 +660,13 @@ final class WizardSheetModel {
     private var provenance: AIProvenance {
         agentProvenance ?? AIProvenance(provider: "local", technique: "builder-request-parser", duration: duration)
     }
-    private func appendLog(_ line: String) {
+    func appendLog(_ line: String) {
+        guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        store.recordUnifiedLog(channel: "wizard", text: line)
         // Cap individual metadata as well as total retained UI log bytes.
-        log.append(String(line.prefix(2000)))
+        log += line.components(separatedBy: .newlines)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .map { String($0.prefix(2000)) }
         while log.reduce(0, { $0 + $1.utf8.count }) > 64 * 1024 { log.removeFirst() }
     }
     private func milliseconds(since start: Date) -> String { "\(Int(Date.now.timeIntervalSince(start) * 1000)) ms" }

@@ -293,3 +293,42 @@ extension BuilderAgentRunTests {
         #expect(progress == String(repeating: "x", count: 500))
     }
 }
+
+extension BuilderAgentRunTests {
+    @Test func assistantTurnSeparatorsFlushWithoutBlankProgress() async throws {
+        let session = ScriptFixtures.session()
+        defer { session.discard() }
+        let run = BuilderAgentRun(provider: .claude, model: nil,
+            tools: BuilderTools(session: session, budget: BuilderRunBudget(.init())),
+            executor: { _, _, _, consume in
+                let lines = [
+                    #"{"type":"system","tools":["mcp__clipbuilder__query"]}"#,
+                    #"{"type":"assistant","message":{"content":[{"type":"text","text":"first"}]}}"#,
+                    #"{"type":"assistant","message":{"content":[]}}"#,
+                    #"{"type":"assistant","message":{"content":[{"type":"text","text":"   "}]}}"#,
+                    #"{"type":"assistant","message":{"content":[{"type":"text","text":"second"}]}}"#,
+                    #"{"type":"result","subtype":"success","result":"done"}"#
+                ]
+                try consume(Data((lines.joined(separator: "\n") + "\n").utf8))
+                return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
+            })
+        var progress: [String] = []
+        run.onProgress = { progress.append($0) }
+        await run.run(request: "test", executable: URL(fileURLWithPath: "/bin/false"), parentEnvironment: ["PATH": "/bin"])
+        #expect(run.terminalError == nil)
+        #expect(Array(progress.dropFirst()) == ["first", "second"])
+        #expect(progress.allSatisfy { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+    }
+
+    @Test func promptsExplainTimelineContextAndRecoverableEdits() {
+        for prompt in [BuilderAgentPrompt.rules, BuilderAgentPrompt.findRules] {
+            #expect(prompt.contains("Track I is index 0"))
+            #expect(prompt.contains("get_document_summary.selection"))
+        }
+        let prompt = BuilderAgentPrompt.rules
+        #expect(prompt.contains("bindings persist across calls"))
+        #expect(prompt.contains("'speech' for 0.05 s cuts"))
+        #expect(prompt.contains("'ordinary' snaps to 0.5 s"))
+        #expect(prompt.contains("session stays open: fix the arguments and retry"))
+    }
+}

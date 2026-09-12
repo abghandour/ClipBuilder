@@ -1,7 +1,7 @@
 import Foundation
 
 /// One atomic preview, with no live subscriptions or persistence hooks.
-/// Successful lists accumulate until freeze; any refusal aborts the session.
+/// Successful lists accumulate until freeze; agent lists may recover from refusal.
 @MainActor
 final class BuilderScriptSession {
     enum State { case ready, completed, failed, discarded }
@@ -25,6 +25,7 @@ final class BuilderScriptSession {
     private(set) var state: State = .ready
     private(set) var candidate: TimelineDocument?
     private(set) var result: BuilderScriptResult?
+    private let runner = ScriptRunner()
     private var working: BuilderTimelineModel?
     private var frozenDiff: TimelineDiff?
 
@@ -85,19 +86,41 @@ final class BuilderScriptSession {
     }
 
     @discardableResult
-    func run(_ steps: [BuilderScriptStep],
+    func run(_ steps: [BuilderScriptStep], recoverRefusals: Bool = false,
              onOutcome: ((Int, CommandOutcome, Double) -> Void)? = nil) -> BuilderScriptResult {
         guard state == .ready, !runningPrerequisites, let working else { return closedResult() }
+        guard !Task.isCancelled else { return fail("Run cancelled.", code: "cancelled") }
+        // Agent runs edit a preview the user can see; if the live timeline
+        // moved underneath them the run ends now instead of at Apply. Local
+        // scripts keep working on their fixed baseline and let Apply decide.
+        if recoverRefusals {
+            guard live.timelineID == timelineID, live.profileName == profileName else {
+                return fail("Timeline identity changed.")
+            }
+            guard live.revision == baselineRevision else { return fail("Timeline revision changed.") }
+        }
+        func refuse(_ reason: String, code: String = "invalid_script") -> BuilderScriptResult {
+            if !recoverRefusals { return fail(reason, code: code) }
+            return BuilderScriptResult(outcomes: [.refused(code: code, reason: reason)],
+                                       completed: false, hasDocumentChanges: !diff().isEmpty)
+        }
         // The whole-list size limit also applies to programmatic callers.
         do {
             for step in steps { try step.command.validateExpansion() }
             let encoded = try JSONEncoder().encode(steps)
             guard encoded.count <= ScriptRunner.maximumBytes else { return fail("Script exceeds 256 KiB.") }
-        } catch let error as BuilderCommandFailure { return fail(error.reason, code: error.code) }
-        catch { return fail(error.localizedDescription) }
-        let runner = ScriptRunner()
+        } catch let error as BuilderCommandFailure { return refuse(error.reason, code: error.code) }
+        catch { return refuse(error.localizedDescription) }
         let outcomes = runner.run(steps, model: working, library: library, onOutcome: onOutcome)
         let completed = !outcomes.contains(where: \.isRefused)
+        let terminal = outcomes.contains {
+            if case .refused(let code, _) = $0 { return ["limit", "timeout", "cancelled"].contains(code) }
+            return false
+        }
+        if !completed, recoverRefusals, !terminal {
+            candidate = working.document
+            return BuilderScriptResult(outcomes: outcomes, completed: false, hasDocumentChanges: !diff().isEmpty)
+        }
         candidate = completed ? working.document : nil
         if !completed {
             frozenDiff = library.withLayouts {
@@ -247,6 +270,10 @@ final class BuilderScriptSession {
             }
         }
     }
+
+    var workingSelection: TimelineSelection? { working?.selection }
+    var workingPlayhead: Double { working?.playhead ?? 0 }
+    var workingFocusedTrack: Int? { working?.focusedTrack }
 
     var workingDocument: TimelineDocument { working?.document ?? candidate ?? baseline }
 

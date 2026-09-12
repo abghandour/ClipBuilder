@@ -27,7 +27,6 @@ final class ScriptRunner {
     nonisolated static let maximumResultBytes = 1024 * 1024
     private(set) var diagnosticDocument: TimelineDocument?
     private var bindings: [String: UUID] = [:]
-    private var boundNames: Set<String> = []
     private var affectedItems = 0
 
     nonisolated static func decode(_ data: Data) throws -> [BuilderScriptStep] {
@@ -43,16 +42,18 @@ final class ScriptRunner {
         guard model.mode == .transient else {
             return [.refused(code: "live_model", reason: "Scripts require a transient model.")]
         }
+        diagnosticDocument = nil
         guard steps.count <= Self.maximumSteps else {
             return [.refused(code: "limit", reason: "Too many steps.")]
         }
-        diagnosticDocument = nil
         let baseline = model.document
         let selection = model.selection
+        currentSelection = selection
         let playhead = model.playhead
         let focusedTrack = model.focusedTrack
         let zoom = model.pointsPerSecond
-        bindings = [:]; boundNames = []; affectedItems = 0
+        let savedBindings = bindings
+        affectedItems = 0
         var outcomes: [CommandOutcome] = []
         var resultBytes = 0
         let started = ContinuousClock.now
@@ -74,8 +75,8 @@ final class ScriptRunner {
                 if let name = step.bind {
                     guard !name.isEmpty, name.count <= 64,
                           name.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }),
-                          !boundNames.contains(name), Self.canBind(step.command) else {
-                        throw ScriptError.invalid("Binding must be unique and name an ID-producing command.")
+                          Self.canBind(step.command) else {
+                        throw ScriptError.invalid("Binding must name an ID-producing command and contain only ASCII letters, digits or underscores.")
                     }
                 }
                 // Encoding also rejects nonfinite programmatic commands; the
@@ -91,17 +92,17 @@ final class ScriptRunner {
                     guard !outcome.createdIDs.isEmpty else {
                         throw ScriptError.invalid("The requested item merged away and has no bindable ID.")
                     }
-                    boundNames.insert(name)
+                    bindings = bindings.filter { $0.key != name && !$0.key.hasPrefix(name + ".") }
                     for (key, value) in outcome.createdIDs {
                         if let uid = UUID(uuidString: value) { bindings[name + "." + key] = uid }
                     }
                     let preferred = outcome.createdIDs["tail"] ?? outcome.createdIDs["clip"]
-                        ?? outcome.createdIDs["overlay"] ?? outcome.createdIDs["block"] ?? outcome.createdIDs["sound"]
+                        ?? outcome.createdIDs["piece1"] ?? outcome.createdIDs["overlay"] ?? outcome.createdIDs["block"] ?? outcome.createdIDs["sound"]
                     if let preferred, let uid = UUID(uuidString: preferred) { bindings[name] = uid }
                 }
                 resultBytes += try JSONEncoder().encode(outcome).count
                 guard resultBytes <= Self.maximumResultBytes else {
-                    throw ScriptError.invalid("Run results exceed 1 MiB; use smaller queries or fewer steps.")
+                    throw BuilderCommandFailure(code: "limit", reason: "Run results exceed 1 MiB; use smaller queries or fewer steps.")
                 }
                 outcomes.append(outcome)
                 if outcome.isRefused { break }
@@ -117,6 +118,7 @@ final class ScriptRunner {
             }
         }
         if outcomes.contains(where: \.isRefused) {
+            bindings = savedBindings
             diagnosticDocument = model.document
             library.withLayouts {
                 model.seed(document: baseline, scenes: model.scenes,
@@ -129,16 +131,31 @@ final class ScriptRunner {
 
     private static func canBind(_ command: BuilderCommand) -> Bool {
         switch command {
-        case .splitClip, .duplicateClip, .addScene, .addCutaway, .addCropBlock,
+        case .splitClipEvenly, .splitClip, .duplicateClip, .addScene, .addCutaway, .addCropBlock,
              .addBumper, .addSound, .addText, .addImage, .addOverlay, .splitCropBlock, .splitZoomFeeds: true
         default: false
         }
     }
 
+    /// The timeline selection at the start of the current run, so a script
+    /// can say "selected" instead of looking the ID up first.
+    private(set) var currentSelection: TimelineSelection?
+
     func resolve(_ reference: String) throws -> UUID {
         if reference.hasPrefix("$"), let uid = bindings[String(reference.dropFirst())] { return uid }
         if let uid = UUID(uuidString: reference) { return uid }
-        throw ScriptError.invalid("Unknown session ID or binding: \(reference)")
+        if reference == "selected" || reference == "$selected" {
+            guard let selected = currentSelection else {
+                throw BuilderCommandFailure(code: "unknown_id", reason: "Nothing is selected in the timeline; pass an ID from query or get_document_summary.")
+            }
+            return selected.uid
+        }
+        // Unknown targets keep the unknown_id code so callers can tell a bad
+        // reference from a malformed command; the reason carries the guidance.
+        if reference.contains("{{") || reference.hasPrefix("${") || (!reference.hasPrefix("$") && reference.contains(".")) {
+            throw BuilderCommandFailure(code: "unknown_id", reason: "Bindings are written $name and persist across calls in this session; created IDs are also returned as UUIDs in createdIDs. Defined bindings: \(bindings.keys.sorted().map { "$" + $0 }.joined(separator: ", ")).")
+        }
+        throw BuilderCommandFailure(code: "unknown_id", reason: "Unknown session ID or binding: \(reference)")
     }
 
     private func execute(_ command: BuilderCommand, model: BuilderTimelineModel,
@@ -183,7 +200,7 @@ final class ScriptRunner {
             }
         }
         @MainActor func charge(_ count: Int) throws {
-            guard affectedItems + count <= Self.maximumAffectedItems else { throw ScriptError.invalid("Affected-item limit exceeded.") }
+            guard affectedItems + count <= Self.maximumAffectedItems else { throw BuilderCommandFailure(code: "limit", reason: "Affected-item limit exceeded.") }
             affectedItems += count
         }
         @MainActor func addedClip() throws -> UUID {
@@ -196,7 +213,7 @@ final class ScriptRunner {
         if case .query(let query) = command {
             let result = try query.execute(model: model, library: library, resolve: resolve)
             let data = try JSONEncoder().encode(result)
-            guard data.count <= Self.maximumBytes else { throw ScriptError.invalid("Query result too large; request a smaller page.") }
+            guard data.count <= Self.maximumBytes else { throw BuilderCommandFailure(code: "limit", reason: "Query result too large; request a smaller page.") }
             return .applied(actualValues: try JSONDecoder().decode(ScriptValue.self, from: data), createdIDs: [:], warnings: [])
         }
         // Packing and pause gaps can touch every lane; reserve their worst
@@ -225,6 +242,12 @@ final class ScriptRunner {
                                             sourceDuration: ceiling).get()
             created = ["head": split.head.uuidString, "tail": split.tail.uuidString]
             actual = ScriptValue.stored(split)
+        case .splitClipEvenly(let reference, let parts, let policy):
+            try charge(parts)
+            let pieces = try splitEvenly(reference, parts: parts, precision: policy ?? .speech,
+                                         model: model, library: library)
+            created = Dictionary(uniqueKeysWithValues: pieces.enumerated().map { ("piece\($0.offset + 1)", $0.element.uid.uuidString) })
+            actual = .object(["durations": .array(pieces.map { .number($0.duration) })])
         case .trimClip(let reference, let duration, let policy):
             guard duration.isFinite, (0...86400).contains(duration) else { throw ClipEditFailure.outOfBounds }
             let value = try clip(reference)

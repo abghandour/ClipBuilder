@@ -34,7 +34,7 @@ final class AppStore {
         didSet {
             updateBugReportContext()
             if oldValue.profileName != activeProfile.profileName {
-                diagnosticLogSink("app", "Profile switched: \(activeProfile.profileName)")
+                logEvent("app", "Profile switched: \(activeProfile.profileName)")
             }
         }
     }
@@ -48,7 +48,7 @@ final class AppStore {
         didSet {
             updateBugReportContext()
             if oldValue != activeProjectID {
-                diagnosticLogSink("app", "Project switched: \(activeProject?.name ?? "none")")
+                logEvent("app", "Project switched: \(activeProject?.name ?? "none")")
             }
         }
     }
@@ -524,6 +524,34 @@ final class AppStore {
 
     @ObservationIgnored let bugReportContext = BugReportContextSnapshot()
     @ObservationIgnored var diagnosticLogSink: (String, String) -> Void = { BugReporter.log($0, $1) }
+
+    /// Every log line the app produces, newest last, for the status bar's
+    /// log drawer: analysis, pipeline, wizard, builder, Instagram, app and
+    /// error channels all land here as well as in the diagnostic file.
+    private(set) var unifiedLog: [AppLogLine] = []
+    static let unifiedLogLimit = 1000
+    @ObservationIgnored private var unifiedLogSequence = 0
+
+    func recordUnifiedLog(channel: String, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        for line in trimmed.components(separatedBy: .newlines) where !line.trimmingCharacters(in: .whitespaces).isEmpty {
+            unifiedLogSequence += 1
+            unifiedLog.append(AppLogLine(id: unifiedLogSequence, time: Date(), channel: channel,
+                                         text: String(line.prefix(2000))))
+        }
+        if unifiedLog.count > Self.unifiedLogLimit {
+            unifiedLog.removeFirst(unifiedLog.count - Self.unifiedLogLimit)
+        }
+    }
+
+    func clearUnifiedLog() { unifiedLog.removeAll() }
+
+    /// Record one line for the status bar and the diagnostic file.
+    func logEvent(_ channel: String, _ line: String) {
+        recordUnifiedLog(channel: channel, text: line)
+        diagnosticLogSink(channel, line)
+    }
     @ObservationIgnored var diagnosticsDataFolder = "" { didSet { updateBugReportContext() } }
     @ObservationIgnored var diagnosticsFFmpegVersion: String? { didSet { updateBugReportContext() } }
     @ObservationIgnored private var diagnosticStatus: [String] = []
@@ -579,16 +607,16 @@ final class AppStore {
         guard running != previously else { return }
         if running {
             diagnosticStarts[name] = .now
-            diagnosticLogSink(channel, "\(name) start")
+            logEvent(channel, "\(name) start")
         } else if let start = diagnosticStarts.removeValue(forKey: name) {
-            diagnosticLogSink(channel, "\(name) end; duration=\(start.duration(to: .now))")
+            logEvent(channel, "\(name) end; duration=\(start.duration(to: .now))")
         }
     }
 
     // MARK: - Errors
 
     func presentError(_ message: String) {
-        diagnosticLogSink("error", message)
+        logEvent("error", message)
         errorQueue.append(AppError(message: message, context: message, details: message))
     }
 
@@ -596,7 +624,7 @@ final class AppStore {
     /// are not errors and are dropped.
     func presentError(_ context: String, _ error: Error) {
         let appError = AppError.failure(context: context, error: error)
-        diagnosticLogSink("error", "\(context): \(appError.details)")
+        logEvent("error", "\(context): \(appError.details)")
         guard !(error is CancellationError) else { return }
         errorQueue.append(appError)
     }
@@ -1128,7 +1156,7 @@ final class AppStore {
     /// Append lines to a log in one write, trimming to the cap.
     func appendLog(_ keyPath: ReferenceWritableKeyPath<AppStore, [String]>, _ lines: [String]) {
         if let channel = BugReporting.logChannel(for: keyPath) {
-            for line in lines { diagnosticLogSink(channel, line) }
+            for line in lines { logEvent(channel, line) }
         }
         if diagnosticsFFmpegVersion == nil {
             for line in lines where line.contains("ffmpeg version ") {

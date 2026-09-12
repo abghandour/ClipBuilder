@@ -27,13 +27,41 @@ nonisolated struct BuilderDocumentSummary: Codable, Sendable {
         var italic: Bool? = nil
         var design: String? = nil
     }
+    struct Selection: Codable, Sendable, Equatable {
+        var kind: String
+        var id: String
+    }
+    struct Track: Codable, Sendable, Equatable {
+        var index: Int
+        var label: String
+    }
+    var selection: ScriptValue
+    var playhead: Double
+    var focusedTrack: ScriptValue
+    var trackLabels: [Track]
     var duration: Double
     var tracks: Int
     var total: Int
     var nextOffset: Int?
     var rows: [Row]
 
-    init(document: TimelineDocument, offset: Int, limit: Int) throws {
+    init(document: TimelineDocument, offset: Int, limit: Int,
+         selection: TimelineSelection? = nil, playhead: Double = 0, focusedTrack: Int? = nil) throws {
+        let selected: Selection?
+        switch selection {
+        case .clip(let id): selected = Selection(kind: "clip", id: id.uuidString)
+        case .sound(let id): selected = Selection(kind: "sound", id: id.uuidString)
+        case .text(let id): selected = Selection(kind: "text", id: id.uuidString)
+        case .image(let id): selected = Selection(kind: "image", id: id.uuidString)
+        case .overlay(let id): selected = Selection(kind: "overlay", id: id.uuidString)
+        case .crop(let id): selected = Selection(kind: "crop", id: id.uuidString)
+        case nil: selected = nil
+        }
+        self.selection = selected.map { .object(["kind": .string($0.kind), "id": .string($0.id)]) } ?? .null
+        self.playhead = playhead
+        self.focusedTrack = focusedTrack.map { .number(Double($0)) } ?? .null
+        let labels = ["I", "II", "III", "IV", "V", "VI"]
+        trackLabels = (0..<document.trackCount).map { Track(index: $0, label: labels[$0]) }
         guard offset >= 0, (1...200).contains(limit) else { throw ScriptError.invalid("Invalid summary page.") }
         let rows = Self.allRows(document: document)
         self.duration = document.contentEnd

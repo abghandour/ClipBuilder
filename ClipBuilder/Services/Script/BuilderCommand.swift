@@ -8,6 +8,7 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     case ensureAnalysis(video: Int64)
     case removeClip(clip: String)
     case removeClips(filter: ClipFilter)
+    case splitClipEvenly(clip: String, parts: Int, precision: TimelinePrecision? = nil)
     case splitClip(clip: String, at: Double, precision: TimelinePrecision? = nil)
     case trimClip(clip: String, duration: Double, precision: TimelinePrecision? = nil)
     case setSourceRange(clip: String, start: Double, end: Double, precision: TimelinePrecision? = nil)
@@ -94,6 +95,12 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
         case "remove_clips":
             try c.only(["op", "filter"])
             self = .removeClips(filter: try c.decode(ClipFilter.self, forKey: ScriptKey("filter")))
+        case "split_clip_evenly":
+            try c.only(["op", "clip", "parts", "precision"])
+            self = .splitClipEvenly(
+                clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                parts: try c.decode(Int.self, forKey: ScriptKey("parts")),
+                precision: try c.decodeIfPresent(TimelinePrecision.self, forKey: ScriptKey("precision")))
         case "split_clip":
             try c.only(["op", "clip", "at", "precision"])
             self = .splitClip(
@@ -508,6 +515,11 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
         case let .removeClips(filter):
             try c.encode("remove_clips", forKey: ScriptKey("op"))
             try c.encode(filter, forKey: ScriptKey("filter"))
+        case let .splitClipEvenly(clip, parts, precision):
+            try c.encode("split_clip_evenly", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(parts, forKey: ScriptKey("parts"))
+            try c.encodeIfPresent(precision, forKey: ScriptKey("precision"))
         case let .splitClip(clip, at, precision):
             try c.encode("split_clip", forKey: ScriptKey("op"))
             try c.encode(clip, forKey: ScriptKey("clip"))

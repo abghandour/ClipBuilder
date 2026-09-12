@@ -39,6 +39,9 @@ struct BuilderRequestParser {
                 "unmute this clip", "cover all areas", "remove clips tagged \(tag) on track 1"]
     }
 
+    /// "this clip", "the selected scene", "the current clip": the timeline selection.
+    static let selectedClip = #"(?:this|the selected|the current|selected|the) (?:clip|scene|video)"#
+
     func parse(_ request: String, context: ParserContext) -> BuilderProgram {
         guard request.utf8.count <= 4096 else { return .unrecognised(["Request exceeds 4 KiB."]) }
         let text = Self.normalized(request)
@@ -120,8 +123,11 @@ struct BuilderRequestParser {
                 }
                 return .script([.init(.removeClip(clip: clips[ordinal - 1].element.uid.uuidString))])
             }
-            if text == "remove the selected clip" {
+            if match(#"(?:remove|delete) \#(Self.selectedClip)"#, text) != nil {
                 return .script([.init(.removeClip(clip: try selection(context).uid.uuidString))])
+            }
+            if let g = match(#"(?:remove|delete) (?:this|the selected|the current|selected|the) (sound|music|text|image|overlay|crop block)"#, text) {
+                return .script([.init(try removeSelectedElement(g[0], context))])
             }
             if let g = match(#"set this clip speed to ([0-9]+(?:\.[0-9]+)?)\s*x"#, text) {
                 let speed = try seconds(g[0])
@@ -145,20 +151,27 @@ struct BuilderRequestParser {
             if let g = match(#"(mute|unmute) track (i|ii|iii|iv|v|vi|[1-6])"#, text) {
                 return .script([.init(.setTrackMuted(track: try track(g[1], context), muted: g[0] == "mute"))])
             }
-            if text == "duplicate this clip" {
+            if match(#"duplicate \#(Self.selectedClip)"#, text) != nil {
                 return .script([.init(.duplicateClip(clip: try selection(context).uid.uuidString))])
             }
-            if let g = match(#"split this clip at (.+)"#, text) {
+            // "split the selected scene in 4 separate ones", "split this clip into 6 equal parts".
+            if let g = match(#"split \#(Self.selectedClip) (?:in|into) ([0-9]+)(?: (?:equal|separate|different|new|even|smaller))*(?: (?:parts|pieces|scenes|clips|ones|segments|sections))?(?: of (?:equal|the same) (?:size|sizes|length|lengths|duration|durations))?"#, text) {
+                guard let parts = Int(g[0]), (2...12).contains(parts) else {
+                    throw ScriptError.invalid("Parts must be between 2 and 12.")
+                }
+                return .script([.init(.splitClipEvenly(clip: try selection(context).uid.uuidString, parts: parts))])
+            }
+            if let g = match(#"split \#(Self.selectedClip) at (.+)"#, text) {
                 return .script([.init(.splitClip(clip: try selection(context).uid.uuidString,
                                                 at: try time(g[0], context)))])
             }
-            if let g = match(#"trim this clip to ([0-9]+(?:\.[0-9]+)?)\s*s"#, text) {
+            if let g = match(#"trim \#(Self.selectedClip) to ([0-9]+(?:\.[0-9]+)?)\s*s"#, text) {
                 return .script([.init(.trimClip(clip: try selection(context).uid.uuidString,
                                                duration: try seconds(g[0])))])
             }
-            if text == "mute this clip" || text == "unmute this clip" {
+            if let g = match(#"(mute|unmute) \#(Self.selectedClip)"#, text) {
                 return .script([.init(.setClipMuted(clip: try selection(context).uid.uuidString,
-                                                   muted: text == "mute this clip"))])
+                                                   muted: g[0] == "mute"))])
             }
             if text == "cover all areas" {
                 return .script([.init(.setCutawayCoverAll(clip: try selection(context).uid.uuidString, coverAll: true))])
@@ -223,6 +236,20 @@ struct BuilderRequestParser {
         }
         if let g = match(#"([0-9]+(?:\.[0-9]+)?)\s*s"#, text), let result = Double(g[0]), result <= 86400 { return result }
         throw ScriptError.invalid("Use a timeline time such as 0:12, 12s, or at the playhead; extra words are not supported.")
+    }
+
+    /// Remove whatever non-clip element is selected, when it matches the kind named.
+    private func removeSelectedElement(_ kind: String, _ context: ParserContext) throws -> BuilderCommand {
+        let wanted: Set<String> = kind == "music" ? ["sound"] : kind == "crop block" ? ["crop"] : [kind]
+        guard let selection = context.selection, wanted.contains(selection.kind) else {
+            throw ScriptError.invalid("Select the \(kind) in the timeline first.")
+        }
+        switch selection {
+        case .sound(let id): return .removeSound(sound: id.uuidString)
+        case .text(let id), .image(let id), .overlay(let id): return .removeOverlay(overlay: id.uuidString)
+        case .crop(let id): return .removeCropBlock(block: id.uuidString)
+        case .clip(let id): return .removeClip(clip: id.uuidString)
+        }
     }
 
     private func selection(_ context: ParserContext) throws -> TimelineClip {

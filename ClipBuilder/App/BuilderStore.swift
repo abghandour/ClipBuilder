@@ -81,6 +81,24 @@ nonisolated enum TimelineSelection: Codable, Sendable, Equatable {
     case image(UUID)
     case overlay(UUID)
     case crop(UUID)
+
+    var uid: UUID {
+        switch self {
+        case .clip(let id), .sound(let id), .text(let id), .image(let id), .overlay(let id), .crop(let id): id
+        }
+    }
+
+    /// The lane name the script surface uses for this kind of item.
+    var kind: String {
+        switch self {
+        case .clip: "clip"
+        case .sound: "sound"
+        case .text: "text"
+        case .image: "image"
+        case .overlay: "overlay"
+        case .crop: "crop"
+        }
+    }
 }
 
 /// One item in the unified overlay lane — texts, images, and overlay blocks

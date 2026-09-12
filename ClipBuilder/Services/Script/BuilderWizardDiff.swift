@@ -13,7 +13,12 @@ enum BuilderWizardDiff {
             if !removed.isEmpty {
                 lines.append("Removed \(removed.count) clips: " + removed.map { name($0, library: session.library) }.joined(separator: ", "))
             }
-            let splits = steps.filter { if case .splitClip = $0.command { true } else { false } }.count
+            let splits = steps.count {
+                switch $0.command {
+                case .splitClip, .splitClipEvenly: true
+                default: false
+                }
+            }
             if splits > 0 { lines.append("Split \(splits) clips") }
             let beforeOrigins = Set(session.baseline.videoTrack.map(\.originKey))
             let added = candidate.videoTrack.filter { !beforeIDs.contains($0.uid) && !beforeOrigins.contains($0.originKey) }

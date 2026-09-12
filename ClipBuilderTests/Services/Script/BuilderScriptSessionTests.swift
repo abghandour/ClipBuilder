@@ -233,3 +233,70 @@ struct BuilderScriptSessionTests {
     }
 
 }
+
+extension BuilderScriptSessionTests {
+    @Test func recoverableMiddleListRestoresDocumentBindingsAndUIState() throws {
+        let live = ScriptFixtures.model()
+        let clip = live.document.videoTrack[0].uid
+        live.selection = .clip(clip)
+        live.playhead = 1
+        live.focusedTrack = 0
+        let session = BuilderScriptSession(live: live, library: ScriptFixtures.library())
+        defer { session.discard() }
+        let first = session.run([.init(.addText(text: "first"), bind: "title")], recoverRefusals: true)
+        let before = session.workingDocument
+        let selection = session.workingSelection
+        let playhead = session.workingPlayhead
+        let focusedTrack = session.workingFocusedTrack
+        let refused = session.run([
+            .init(.addText(text: "temporary"), bind: "title"),
+            .init(.addText(text: "temporary binding"), bind: "temporary"),
+            .init(.setPlayhead(at: 3)),
+            .init(.removeClip(clip: clip.uuidString)),
+            .init(.removeClip(clip: "invented"))
+        ], recoverRefusals: true)
+        #expect(!refused.completed && refused.hasDocumentChanges)
+        #expect(refused.outcomes.last?.isRefused == true)
+        #expect(session.state == .ready && session.result == first)
+        #expect(session.workingDocument == before)
+        #expect(session.workingSelection == selection)
+        #expect(session.workingPlayhead == playhead && session.workingFocusedTrack == focusedTrack)
+        let lost = session.run([.init(.removeOverlay(overlay: "$temporary"))], recoverRefusals: true)
+        #expect(!lost.completed && session.workingDocument == before)
+        let next = session.run([.init(.setText(overlay: "$title", text: "edited"))], recoverRefusals: true)
+        #expect(next.completed && next.hasDocumentChanges)
+        #expect(session.workingDocument.textOverlays.map { $0.text } == ["edited"])
+        #expect(session.result == next)
+        _ = session.run([.init(.addText(text: "replacement"), bind: "title")], recoverRefusals: true)
+        let replace = session.run([.init(.setText(overlay: "$title", text: "latest"))], recoverRefusals: true)
+        #expect(replace.completed)
+        #expect(session.workingDocument.textOverlays.map { $0.text } == ["edited", "latest"])
+    }
+
+    @Test(arguments: ["{{name}}", "{{s3.tail}}", "${name}", "s3.tail"])
+    func templateBindingsExplainSyntaxAndRemainRetryable(reference: String) throws {
+        let session = ScriptFixtures.session()
+        defer { session.discard() }
+        let clip = session.workingDocument.videoTrack[0].uid.uuidString
+        let first = session.run([.init(.splitClip(clip: clip, at: 2, precision: .speech), bind: "s3")], recoverRefusals: true)
+        #expect(first.completed)
+        // Expansion commands must preserve the same helpful resolver error.
+        let bad = session.run([.init(.setClipSpeed(clip: reference, speed: 1))], recoverRefusals: true)
+        let outcome = try #require(bad.outcomes.last)
+        guard case .refused(_, let reason) = outcome else { Issue.record("Expected refusal"); return }
+        #expect(reason.contains("Bindings are written $name and persist across calls in this session; created IDs are also returned as UUIDs in createdIDs"))
+        #expect(reason.contains("$s3.tail"))
+        #expect(session.state == .ready)
+        let good = session.run([.init(.trimClip(clip: "$s3.tail", duration: 1, precision: .speech))], recoverRefusals: true)
+        #expect(good.completed)
+    }
+
+    @Test func recoverableModeStillEndsOnRevisionChange() {
+        let live = ScriptFixtures.model()
+        let session = BuilderScriptSession(live: live, library: ScriptFixtures.library())
+        defer { session.discard() }
+        live.document.videoTrack[0].duration = 3
+        let result = session.run([.init(.addText(text: "stale"))], recoverRefusals: true)
+        #expect(!result.completed && session.state == .failed)
+    }
+}

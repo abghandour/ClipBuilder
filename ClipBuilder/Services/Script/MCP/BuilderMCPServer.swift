@@ -85,9 +85,9 @@ final class BuilderMCPServer {
         var detail: String?
         do {
             data = try await task.value
-            if tools.session.state == .failed {
+            let result = try? JSONDecoder().decode(BuilderScriptResult.self, from: data)
+            if tools.session.state == .failed || (name == "run_script" && result?.completed == false) {
                 outcome = .refused
-                let result = try? JSONDecoder().decode(BuilderScriptResult.self, from: data)
                 detail = result?.outcomes.compactMap {
                     if case .refused(_, let reason) = $0 { reason } else { nil }
                 }.joined(separator: "; ")
@@ -96,9 +96,9 @@ final class BuilderMCPServer {
             outcome = error is CancellationError ? .cancelled : .refused
             let reason = redactor.text(error.localizedDescription)
             detail = reason
-            // Read-only argument/validation errors are retryable. Budget failures
-            // already fail the session in BuilderTools, regardless of tool kind.
-            if !BuilderTools.isReadOnly(name) || error is CancellationError || error is BuilderBudgetExceeded {
+            // Read-only errors and refused script lists are retryable.
+            // Budget failures and cancellation still terminate the run.
+            if (!BuilderTools.isReadOnly(name) && name != "run_script") || error is CancellationError || error is BuilderBudgetExceeded {
                 _ = tools.session.fail(reason)
             }
             data = (try? JSONEncoder().encode(CommandOutcome.refused(code: outcome.rawValue, reason: reason))) ?? Data()

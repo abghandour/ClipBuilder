@@ -279,7 +279,17 @@ struct MainWindowView: View {
 
     var body: some View {
         @Bindable var store = store
-        NavigationSplitView {
+        // The status bar is part of the layout, never an inset: split-view
+        // panes ignore safe-area insets and were painting under it.
+        VStack(spacing: 0) {
+            workspace
+            AppStatusBar()
+        }
+    }
+
+    private var workspace: some View {
+        @Bindable var store = store
+        return NavigationSplitView {
             ProjectSidebarView()
                 .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 290)
         } detail: {
@@ -301,21 +311,8 @@ struct MainWindowView: View {
         .onChange(of: store.requestedSection) { _, requested in
             handleRequestedSection(requested)
         }
-        // The Analyze Wizard's fire-and-forget progress: a window-wide strip
-        // that follows the user across screens; click for the full log.
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                ActivityStatusInset()
-                PipelineStatusInset()
-                WizardStatusInset()
-            }
-        }
         .sheet(isPresented: $store.showPipelineLog) {
             PipelineLogSheet()
-        }
-        // Instagram refresh / history import: the same bottom-strip pattern.
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            InstagramStatusInset()
         }
         .sheet(isPresented: $store.showIGLog) {
             InstagramLogSheet()
@@ -463,33 +460,4 @@ struct MainWindowView: View {
 #Preview {
     MainWindowView()
         .environment(AppStore())
-}
-
-/// The pipeline strip's presence check, in its own view so stage/progress
-/// writes re-evaluate this leaf instead of the whole main window.
-private struct PipelineStatusInset: View {
-    @Environment(AppStore.self) private var store
-
-    var body: some View {
-        if store.isPipelineRunning || !store.pipelineStage.isEmpty {
-            VStack(spacing: 0) {
-                Divider()
-                PipelineStatusBar()
-            }
-        }
-    }
-}
-
-/// Same for the Instagram refresh/import strip, which updates per progress line.
-private struct InstagramStatusInset: View {
-    @Environment(AppStore.self) private var store
-
-    var body: some View {
-        if store.igStatus != nil {
-            VStack(spacing: 0) {
-                Divider()
-                InstagramStatusBar()
-            }
-        }
-    }
 }

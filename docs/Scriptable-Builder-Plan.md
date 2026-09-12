@@ -139,6 +139,10 @@ one day. Render custom dimensions are even integers 240...7680; CRF is 10...35.
 Unknown keys are refused at every new object boundary. Document-dependent
 eligibility and IDs are validated before mutation. Track fields now have
 individual diff paths; render/pacing and all indirect changes are reflected.
+Any ID field accepts `selected` (the timeline selection, also reported by the
+`timeline` query and `get_document_summary`). Local phrases accept "this clip",
+"the selected scene" and "the current clip" interchangeably, "split … in 4
+separate ones", and "remove the selected sound/text/image/overlay/crop block".
 Local phrases add selected-clip speed/captions, unique music volume, track
 captions/mute, with full recognition. Track-volume phrases remain unsupported.
 

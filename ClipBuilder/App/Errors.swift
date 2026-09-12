@@ -25,6 +25,14 @@ nonisolated struct AppError: Identifiable, Equatable, Sendable {
     }
 }
 
+/// One line of the app's unified log, shown in the status bar's drawer.
+nonisolated struct AppLogLine: Identifiable, Equatable, Sendable {
+    let id: Int
+    let time: Date
+    let channel: String
+    let text: String
+}
+
 nonisolated extension Error {
     /// A message fit for an alert: our own error types describe themselves;
     /// Foundation/system errors use their localized description instead of

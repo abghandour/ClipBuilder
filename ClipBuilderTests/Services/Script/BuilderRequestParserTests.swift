@@ -315,3 +315,49 @@ struct BuilderRequestParserTests {
         }
     }
 }
+
+extension BuilderRequestParserTests {
+    @Test(arguments: ["split this clip into 6 parts", "split this clip into 6 equal pieces",
+                     "split this clip into 6 scenes", "split the selected clip into 6 equal scenes",
+                     "split the selected clip into 6 pieces", "split the selected clip into 6 equal parts"])
+    func recognisesEvenSplitPhrases(request: String) throws {
+        let context = context()
+        let parsed = try steps(request, context)
+        #expect(parsed.map { $0.command } == [.splitClipEvenly(clip: context.document.videoTrack[0].uid.uuidString, parts: 6)])
+    }
+
+    @Test(arguments: ["split the selected scene in 4 separate ones", "split this scene into 4 parts of equal size",
+                     "split the current clip in 4", "split the selected video into 4 different scenes"])
+    func recognisesNaturalSelectedScenePhrases(request: String) throws {
+        let context = context()
+        let parsed = try steps(request, context)
+        #expect(parsed.map { $0.command } == [.splitClipEvenly(clip: context.document.videoTrack[0].uid.uuidString, parts: 4)])
+    }
+
+    @Test func selectedSceneSynonymsAndNonClipSelections() throws {
+        let context = context()
+        let id = try #require(context.selectedClipID).uuidString
+        #expect(try steps("delete the selected scene", context) == [.init(.removeClip(clip: id))])
+        #expect(try steps("duplicate the current scene", context) == [.init(.duplicateClip(clip: id))])
+        #expect(try steps("mute the selected scene", context) == [.init(.setClipMuted(clip: id, muted: true))])
+        #expect(try steps("trim the selected scene to 2 s", context) == [.init(.trimClip(clip: id, duration: 2))])
+        // A selected sound block is removable by name; asking for a text while a sound is selected refuses.
+        let model = ScriptFixtures.model()
+        model.document.soundTrack = [SoundItem(name: "fixture.mp3")]
+        model.selection = .sound(model.document.soundTrack[0].uid)
+        let soundContext = ParserContext(library: ScriptFixtures.library(), model: model)
+        #expect(try steps("remove the selected music", soundContext)
+            == [.init(.removeSound(sound: model.document.soundTrack[0].uid.uuidString))])
+        if case .script = BuilderRequestParser().parse("remove the selected text", context: soundContext) {
+            Issue.record("A sound selection must not satisfy a text request")
+        }
+    }
+
+    @Test func evenSplitRejectsInvalidCountAndTrailingInstructions() {
+        for request in ["split this clip into 13 parts", "split this clip into 6 parts and delete everything"] {
+            if case .script = BuilderRequestParser().parse(request, context: context()) {
+                Issue.record("Must not partially interpret: \(request)")
+            }
+        }
+    }
+}

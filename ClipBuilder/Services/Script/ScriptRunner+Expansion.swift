@@ -3,6 +3,37 @@ import Foundation
 
 @MainActor
 extension ScriptRunner {
+    /// Round cumulative cuts, not each duration, so the final piece retains
+    /// the exact endpoint and rounding error does not accumulate.
+    func splitEvenly(_ reference: String, parts: Int, precision: TimelinePrecision,
+                     model: BuilderTimelineModel, library: ScriptLibrarySnapshot) throws -> [TimelineClip] {
+        guard (2...12).contains(parts) else { throw BuilderCommandFailure.bounds("Parts must be between 2 and 12.") }
+        let uid = try resolve(reference)
+        guard let original = model.clip(uid) else { throw ClipEditFailure.notFound }
+        guard !original.bumper else { throw ClipEditFailure.bumper }
+        guard original.duration.isFinite, original.duration > 0,
+              original.startTime.isFinite, original.startTime >= 0, original.startTime + original.duration <= 86400,
+              let ceiling = library.sourceDuration(for: original) else { throw ClipEditFailure.outOfBounds }
+        let cuts = (1..<parts).map {
+            precision.rounded(original.startTime + original.duration * Double($0) / Double(parts))
+        }
+        let boundaries = [original.startTime] + cuts + [original.startTime + original.duration]
+        guard zip(boundaries, boundaries.dropFirst()).allSatisfy({ $0.1 - $0.0 >= precision.minimumDuration - 1e-9 }) else {
+            throw ClipEditFailure.tooShort
+        }
+        var ids = [uid]
+        var tail = uid
+        for cut in cuts {
+            let split = try model.splitClip(tail, at: cut, precision: precision, sourceDuration: ceiling).get()
+            tail = split.tail
+            ids.append(tail)
+        }
+        return try ids.map {
+            guard let piece = model.clip($0) else { throw ClipEditFailure.notFound }
+            return piece
+        }
+    }
+
     private func requireWideFraming(_ clip: TimelineClip, model: BuilderTimelineModel) throws {
         guard !clip.bumper, clip.wide,
               model.area(forTrack: clip.track, at: clip.startTime) == nil,
@@ -14,8 +45,7 @@ extension ScriptRunner {
     func executeExpansion(_ command: BuilderCommand, model: BuilderTimelineModel,
                           library: ScriptLibrarySnapshot) throws {
         func id(_ reference: String) throws -> UUID {
-            do { return try resolve(reference) }
-            catch { throw BuilderCommandFailure.unknownID }
+            try resolve(reference)
         }
         func clip(_ reference: String) throws -> TimelineClip {
             guard let clip = model.clip(try id(reference)) else { throw BuilderCommandFailure.unknownID }

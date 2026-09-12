@@ -266,7 +266,11 @@ extension BuilderQuery {
                 document.videoTrack = []
                 var timeline: [String: ScriptValue] = ["lanes": ScriptValue.stored(document),
                                                        "duration": .number(model.totalDuration),
-                                                       "playhead": .number(model.playhead)]
+                                                       "playhead": .number(model.playhead),
+                                                       "selection": model.selection.map {
+                                                           .object(["kind": .string($0.kind), "id": .string($0.uid.uuidString)])
+                                                       } ?? .null,
+                                                       "focusedTrack": model.focusedTrack.map { .number(Double($0)) } ?? .null]
                 if sounds.count > cap || overlays.count > cap {
                     timeline["laneRowsTruncated"] = .bool(true)
                     timeline["laneRowsHint"] = .string("Use get_document_summary with offset/limit for every sound and overlay row.")

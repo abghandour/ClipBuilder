@@ -93,12 +93,13 @@ final class BuilderAgentRun {
                         while let newline = progressLine.firstIndex(of: "\n") {
                             let line = String(progressLine[..<newline])
                             progressLine.removeSubrange(...newline)
+                            guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                             let safe = redactor.text(line, limit: 16 * 1024)
                             try endpoint.tools.budget.chargeLog(safe.utf8.count)
                             onProgress?(safe)
                         }
                     case .final(let text):
-                        if !progressLine.isEmpty {
+                        if !progressLine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             let safe = redactor.text(progressLine, limit: 16 * 1024)
                             try endpoint.tools.budget.chargeLog(safe.utf8.count)
                             onProgress?(safe)

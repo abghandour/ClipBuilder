@@ -571,14 +571,13 @@ extension WizardSheetModelTests {
         model.request = "add some fixture text using the agent"
         await model.run()
         if refuseScript {
-            #expect(model.phase == .refused && !model.canApply)
+            // A refused list is rolled back and the run continues; with no
+            // edits left there is nothing to apply, and the refusal stays auditable.
+            #expect(model.phase == .preview && !model.canApply)
             let event = try #require(model.agentEvents.first { $0.toolName == "run_script" })
             let reason = try #require(event.message)
             #expect(event.outcome == .refused && !reason.isEmpty)
-            #expect(model.reasons.contains(reason))
-            #expect(model.statusText == reason)
             #expect(model.copyText(kind: .toolOutcomes).contains(reason))
-            #expect(model.copyText(kind: .everything).contains("Status\n" + reason))
             #expect(store.builder.document == before)
             await model.discard()
             return
@@ -769,5 +768,20 @@ extension WizardSheetModelTests {
         #expect(model.phase == .found && model.results.count == 10)
         #expect(model.results.map(\.id) == Array(stride(from: Int64(12), through: 3, by: -1)))
         #expect(model.agentEvents.isEmpty && model.session == nil)
+    }
+}
+
+extension WizardSheetModelTests {
+    @Test func logDropsBlankLines() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardLog.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = sheet(store, defaults: defaults)
+        model.appendLog("")
+        model.appendLog(" \t\n")
+        model.appendLog("first\n\n \nsecond\n")
+        #expect(model.log == ["first", "second"])
     }
 }
