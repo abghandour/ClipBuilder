@@ -108,6 +108,10 @@ struct BuilderView: View {
                     }
                     Divider()
                     #if DEBUG
+                    Button("Export Script Reference…", systemImage: "doc.text") {
+                        exportScriptReference()
+                    }
+                    .help("Save the current command catalog and JavaScript header reference as Markdown.")
                     Button("Run JavaScript File…", systemImage: "curlybraces") {
                         let panel = NSOpenPanel()
                         panel.allowedContentTypes = [.javaScript]
@@ -257,6 +261,20 @@ struct BuilderView: View {
         wizardModel = model
         store.builderWizard = model
     }
+
+    #if DEBUG
+    private func exportScriptReference() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.nameFieldStringValue = "Builder-Scripting-Reference.md"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try BuilderCommandCatalog.referenceText.write(to: url, atomically: true, encoding: .utf8)
+            } catch { NSAlert(error: error).runModal() }
+        }
+    }
+    #endif
 
     private func showWizard(_ model: WizardSheetModel) {
         if wizardModel !== model { wizardModel?.dismiss() }

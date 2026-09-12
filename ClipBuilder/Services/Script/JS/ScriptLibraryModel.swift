@@ -19,11 +19,54 @@ final class ScriptLibraryModel {
     private(set) var editingID: UUID?
     private(set) var origin: BuilderScriptRecord.Origin = .human
     @ObservationIgnored private let database: Database?
+    @ObservationIgnored private let profile: String
+    @ObservationIgnored private let preferences: ScriptPreferences
+    @ObservationIgnored private var installingExamples = false
     @ObservationIgnored private var generation = 0
 
-    init(database: Database?) { self.database = database }
+    init(database: Database?, profile: String = "", preferences: ScriptPreferences = ScriptPreferences()) {
+        self.database = database
+        self.profile = profile
+        self.preferences = preferences
+    }
 
     var selected: BuilderScriptRecord? { scripts.first { $0.id == selectedID } }
+
+    var recentScripts: [BuilderScriptRecord] {
+        Array(scripts.filter { $0.lastRunAt != nil }.sorted {
+            if $0.lastRunAt == $1.lastRunAt { return $0.id.uuidString < $1.id.uuidString }
+            return ($0.lastRunAt ?? "") > ($1.lastRunAt ?? "")
+        }.prefix(5))
+    }
+
+    func load() async {
+        if !preferences.examplesInstalled(profile: profile) { await installExamples() }
+        await refresh()
+    }
+
+    func installExamples(restoring: Bool = false) async {
+        guard let database, !installingExamples else { return }
+        installingExamples = true
+        defer { installingExamples = false }
+        do {
+            try await database.installBuilderScriptExamples(restoring: restoring)
+            preferences.markExamplesInstalled(profile: profile)
+            await refresh()
+        } catch { fail(error) }
+    }
+
+    func rememberParameters(_ params: Data, id: UUID) throws {
+        try preferences.saveParameters(params, id: id, profile: profile)
+    }
+
+    /// Never substitute defaults for invalid saved values or stale IDs.
+    func recentParameters(for record: BuilderScriptRecord, capture: ScriptCapture) throws -> Data {
+        guard let stored = preferences.parameters(id: record.id, profile: profile) else {
+            throw ScriptError.invalid("No saved parameters. Open Run… to choose values.")
+        }
+        do { return try ScriptHeader.parse(record.source).resolve(stored, capture: capture).0 }
+        catch { throw ScriptError.invalid("Saved parameters are no longer valid. Open Run… to choose values. " + error.localizedDescription) }
+    }
 
     func refresh() async {
         do { scripts = try await database?.fetchBuilderScripts() ?? [] }
@@ -153,7 +196,11 @@ final class ScriptLibraryModel {
     }
 
     func delete(_ record: BuilderScriptRecord) async {
-        do { try await database?.deleteBuilderScript(id: record.id); await refresh() }
+        do {
+            try await database?.deleteBuilderScript(id: record.id)
+            preferences.removeParameters(id: record.id, profile: profile)
+            await refresh()
+        }
         catch { fail(error) }
     }
 

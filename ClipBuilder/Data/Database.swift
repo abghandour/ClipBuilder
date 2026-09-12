@@ -916,6 +916,18 @@ actor Database {
         try connection.query("SELECT * FROM builder_scripts ORDER BY updated_at DESC,id").map { try BuilderScriptPersistence.read($0) }
     }
 
+    /// No suspension between checking IDs and writing. A regular install only
+    /// fills missing IDs; explicit restore resets bundled app-origin rows only.
+    func installBuilderScriptExamples(restoring: Bool = false) throws {
+        try connection.transaction {
+            let existing = Dictionary(uniqueKeysWithValues: try fetchBuilderScripts().map { ($0.id, $0) })
+            for example in ScriptExamples.all {
+                if let record = existing[example.id], !(restoring && record.origin == .app) { continue }
+                try saveBuilderScript(source: example.source, id: example.id, origin: .app)
+            }
+        }
+    }
+
     @discardableResult
     func saveBuilderScript(source: String, id: UUID = UUID(), origin: BuilderScriptRecord.Origin = .human) throws -> BuilderScriptRecord {
         let header = try ScriptHeader.parse(source)

@@ -83,7 +83,7 @@ final class WizardSheetModel {
         self.agentExecutor = agentExecutor
         self.prerequisites = prerequisites ?? store.builderPrerequisites
         database = store.database
-        scriptLibrary = ScriptLibraryModel(database: store.database)
+        scriptLibrary = ScriptLibraryModel(database: store.database, profile: store.builder.profileName)
         historyStore = history
         profile = store.builder.profileName
         timelineID = store.builder.timelineID
@@ -111,6 +111,9 @@ final class WizardSheetModel {
     }
 
     func runLibraryScript() throws {
+        guard task == nil, !busy, phase != .awaitingPrerequisites else {
+            throw ScriptError.invalid("Finish the current run first.")
+        }
         guard let capture = scriptLibrary.capture, capture.matches(store.builder), identityMatches else {
             scriptLibrary.invalidate()
             throw ApplyFailure.staleRevision
@@ -118,6 +121,22 @@ final class WizardSheetModel {
         let params = try scriptLibrary.parameters()
         activeScriptID = scriptLibrary.editingID
         beginJavaScript(source: scriptLibrary.source, params: params, expectedCapture: capture)
+    }
+
+    func runRecentScript(_ record: BuilderScriptRecord) {
+        guard task == nil, !busy, phase != .awaitingPrerequisites, identityMatches else { return }
+        isStarting = true
+        task = Task {
+            defer { task = nil; isStarting = false }
+            do {
+                let capture = try await captureForScript()
+                let params = try scriptLibrary.recentParameters(for: record, capture: capture)
+                activeScriptID = record.id
+                scriptLibrary.selectedID = record.id
+                isStarting = false
+                await previewJavaScript(source: record.source, params: params, expectedCapture: capture)
+            } catch { scriptLibrary.fail(error) }
+        }
     }
 
     private func resetReplay() {
@@ -382,6 +401,12 @@ final class WizardSheetModel {
         run.coordinator.onEvent = { [weak self] event in self?.agentEvents.append(event) }
         do { runRequest = try run.requestText() }
         catch { reasons = [error.localizedDescription]; phase = .refused; scriptRun = nil; session.discard(); self.session = nil; return }
+        if let id = activeScriptID {
+            do { try scriptLibrary.rememberParameters(params, id: id) }
+            catch { scriptLibrary.fail(error) }
+        }
+        historyStore.add("script: " + header.name, profile: profile)
+        history = historyStore.requests(profile: profile)
         await run.run(source: source, record: { [database] record in
             guard let database else { throw ApplyFailure.persistence("Captured database is unavailable.") }
             try await database.recordBuilderRun(record)

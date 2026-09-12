@@ -45,6 +45,14 @@ struct BuilderWizardRequestHeader: View {
                 }
                 Spacer(minLength: 0)
                 Menu {
+                    if !model.scriptLibrary.recentScripts.isEmpty {
+                        Section("Recent scripts") {
+                            ForEach(model.scriptLibrary.recentScripts) { script in
+                                Button(script.name) { model.runRecentScript(script) }
+                                    .help("Run with last-used parameters after checking the current timeline. Review the preview before Apply.")
+                            }
+                        }
+                    }
                     ForEach(model.history, id: \.self) { request in
                         Button(request) { model.request = request }
                             .help("Use this request again against the current timeline.")
@@ -56,8 +64,8 @@ struct BuilderWizardRequestHeader: View {
                 .menuIndicator(.hidden)
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .disabled(model.history.isEmpty || model.busy || model.phase == .awaitingPrerequisites)
-                .help("Recent Requests: the last ten distinct requests for this profile.")
+                .disabled((model.history.isEmpty && model.scriptLibrary.recentScripts.isEmpty) || model.busy || model.phase == .awaitingPrerequisites || !model.identityMatches)
+                .help("Recent Requests: the last ten distinct requests and five run scripts for this profile.")
                 Button("Supported requests", systemImage: "questionmark.circle") { showHelp.toggle() }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)

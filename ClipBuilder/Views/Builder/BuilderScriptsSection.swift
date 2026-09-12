@@ -13,6 +13,8 @@ struct BuilderScriptsSection: View {
             HStack {
                 Text("Scripts").font(.subheadline).fontWeight(.semibold)
                 Spacer(minLength: 0)
+                Button("Restore examples") { Task { await model.installExamples(restoring: true) } }
+                    .help("Reinstall missing examples and reset bundled app-origin scripts, including edits. Duplicate an example first to keep your version.")
                 Button("Import", systemImage: "square.and.arrow.down", action: importScript)
                     .labelStyle(.iconOnly)
                     .help("Import a JavaScript file as a new script in this profile.")
@@ -42,7 +44,7 @@ struct BuilderScriptsSection: View {
                         Button("Run…", systemImage: "play") { open(script, editing: false) }
                             .help("Run \(script.name) with parameters and a manual preview.")
                         Button("Edit", systemImage: "pencil") { open(script, editing: true) }
-                            .help("Edit and validate \(script.name).")
+                            .help("Edit and validate \(script.name). ⌘E edits the selected script.")
                         Button("Duplicate", systemImage: "plus.square.on.square") { Task { await model.duplicate(script) } }
                             .help("Make a new copy of \(script.name).")
                         Button("Export", systemImage: "square.and.arrow.up") { exportScript(script) }
@@ -65,9 +67,15 @@ struct BuilderScriptsSection: View {
             .keyboardShortcut("r", modifiers: .command)
             .help("Run the selected script. ⌘R.")
             .hidden().frame(height: 0).accessibilityHidden(true)
+            Button("Edit selected script") {
+                if let selected = model.selected { open(selected, editing: true) }
+            }
+            .keyboardShortcut("e", modifiers: .command)
+            .help("Edit the selected script. ⌘E.")
+            .hidden().frame(height: 0).accessibilityHidden(true)
         }
         .disabled(wizard.busy || wizard.phase == .awaitingPrerequisites || opening || !wizard.identityMatches)
-        .task { await model.refresh() }
+        .task { await model.load() }
         .onChange(of: wizard.scriptRevision) { _, _ in model.invalidate() }
         .onChange(of: wizard.identityMatches) { _, matches in if !matches { model.invalidate() } }
         .sheet(isPresented: $wizard.showingAuthoredScript) {
@@ -81,7 +89,8 @@ struct BuilderScriptsSection: View {
     @ViewBuilder
     private var creationButtons: some View {
         Button("New Script", systemImage: "plus") { open(nil, editing: true) }
-            .help("Create a reusable script in this profile.")
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .help("Create a reusable script in this profile. ⌘⇧N.")
         Button("Write with AI…", systemImage: "sparkles", action: wizard.beginAuthoring)
             .help("Use the request field to write a script with an AI provider, then review it in the editor.")
     }

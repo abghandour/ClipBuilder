@@ -202,6 +202,49 @@
 <h2>5. Teach the AI Your Taste</h2>
 <p>Open <span class="step-label">AI Lessons</span> in the sidebar. Every card is one kind of learning — Style, Taste, Lessons, Vocabulary, Benchmarks, People, Research — and says what it is for, which features read it, and where to change it. The checklist at the top shows which sources feed the AI Wizard yet, with a button for each gap. <span class="step-label">What the AI reads…</span> shows the exact prompt the wizard sent last time. The in-app <em>Training Guide</em> (Help menu, or the AI Wizard tab) walks through reviewing reels and distilling rules.</p>
 
+<h2>6. Scripts</h2>
+<p>Open the <span class="step-label">Wizard</span> tab in Builder and find <span class="step-label">Scripts</span>. Scripts are reusable JavaScript edits saved in the current profile. They can inspect the captured timeline and Library, split or remove clips, add B-roll, change supported clip and track settings, and edit supported overlays, sound and crop blocks. Find scripts can recommend Library scenes. Every editing run produces a preview for your manual <span class="step-label">Apply</span> or <span class="step-label">Discard</span>; Apply uses one undo step.</p>
+<p>Four examples appear the first time you open Scripts in a profile: split the selection evenly, remove clips with a person, mute all B-roll, and add B-roll from a tag at the playhead. The person example accepts a roster key or name, ignoring case, and refuses unknown or ambiguous names. Normal loading preserves your edits and deletions. <span class="step-label">Restore examples</span> reinstalls missing examples and resets bundled app-origin versions, including edits. Duplicate an example first if you want to keep your version.</p>
+
+<h3>Create and run a script</h3>
+<p>Choose <span class="step-label">New Script</span> (⌘⇧N), or select a script and choose <span class="step-label">Edit</span> (⌘E). Save accepts only a valid header. Select a saved script and press ⌘R, or choose <span class="step-label">Run…</span>, to enter parameters. The request field’s <span class="step-label">Recent Requests</span> menu includes the five most recently run scripts. Choosing one reuses its last-used parameters only after checking them against the current header and captured timeline. If a clip, scene or track is no longer valid, open Run… and choose fresh values. Script runs also add <code>script: &lt;name&gt;</code> to request history.</p>
+<p>The first non-whitespace text must be a <code>/** clipbuilder-script</code> comment containing strict JSON: no JSON comments, duplicate keys or unknown fields. Include a nonempty name and description, a mode (<code>edit</code> or <code>find</code>), and both arrays, even when empty. This full example splits the selected clip into six pieces by default, with millisecond speech precision; it does not transcribe or detect speech:</p>
+<pre><code>/** clipbuilder-script
+{
+  "name": "Split selection evenly",
+  "description": "Split the selected clip with speech precision.",
+  "mode": "edit",
+  "params": [
+    {"name":"parts","type":"number","min":2,"max":12,"step":1,"default":6}
+  ],
+  "requires": []
+}
+*/
+const selection = builder.selection;
+if (!selection || selection.kind !== "clip") {
+  throw new Error("Select a clip to split.");
+}
+builder.ops.split_clip_evenly({
+  clip: selection.id, parts: params.parts, precision: "speech"
+});
+const summary = `Split selection into ${params.parts} pieces.`;
+return { summary };</code></pre>
+
+<h3>Parameters and pickers</h3>
+<p>Declare unique parameter names and read them as <code>params.parts</code>, for example. Supported types are <code>string</code>, <code>number</code>, <code>boolean</code>, <code>choice</code>, <code>clip</code>, <code>scene</code>, <code>track</code> and <code>time</code>. Optional labels describe the controls. Numbers can declare bounds and a step; choices declare a fixed list. Clip, scene and track pickers use the captured timeline or project, including later pages of results. Track I is index 0. Time is a timeline position in seconds from 0 to 86400 and defaults to the captured playhead when no explicit default is supplied. All other parameters need either a default or a value. Commands may snap times to their normal timeline precision; inspect the preview. Reopen the script after the timeline changes to capture fresh choices.</p>
+
+<h3>Prerequisites, confirmation and Validate</h3>
+<p>A script that needs Library work declares it in <code>requires</code>, for example <code>[{"kind":"transcript","video":"$video"}]</code>, with a declared numeric <code>video</code> parameter holding a project video ID. Supported kinds are <code>transcript</code>, <code>people</code> and <code>analysis</code>. The script must call the matching <code>builder.ops.ensure_transcript({video: params.video})</code> (or other ensure operation) before any edit. Run resolves and shows the exact videos and effects for confirmation. Library work that is saved survives Discard, Undo and Revert; timeline edits still wait for Apply.</p>
+<p><span class="step-label">Validate</span> checks the header, syntax, parameters and execution against an isolated copy with your sample values. It never changes the live timeline or performs Library work. Ensures produce a partial “requires user-run validation” result, not proof that the prerequisite or remaining script succeeds. Supply real sample clip and scene choices where required. Errors include source locations when available.</p>
+
+<h3>Save as script and Write with AI</h3>
+<p>After a successful Wizard edit, <span class="step-label">Save as script</span> is available when the observed commands can be replayed and their preview verified as equivalent. It preserves command order and parameterizes supported baseline clip and scene references; it does not infer loops or intent. Unsupported references, missing provenance or an oversized replay disable saving with an explanation. Eligible replays remain available after Apply.</p>
+<p><span class="step-label">Write with AI…</span> uses the request field and a supported AI provider to author source. The provider can inspect captured state and the command reference and submit up to three versions for isolated validation. An accepted script opens in the editor for your explicit Save or Run. Acceptance never runs edits on your behalf, and partial prerequisite validation still needs a confirmed user run.</p>
+
+<h3>Import, export and limits</h3>
+<p><span class="step-label">Import</span> reads a UTF-8 <code>.js</code> file as a new script with a fresh identity. <span class="step-label">Export</span> writes source with its header; Duplicate also creates a new independent copy. Names do not need to be unique. In a debug build, Builder’s timeline menu offers <span class="step-label">Export Script Reference…</span> to save the current generated command and header reference as Markdown. Developers can refresh <code>docs/Builder-Scripting-Reference.md</code> with that command.</p>
+<p>Scripts have only the closed Builder command API: no filesystem, network, shell, AI calls, DOM, timers, modules or retained JavaScript state. Scripts cannot Apply, Revert or switch identity. Values must be JSON-compatible with finite safe numbers. Source is limited to 256 KiB, parameters to 64 KiB, console output to 64 KiB, and each command list to 200 steps / 256 KiB. Queries return at most 200 rows per page and must be paged explicitly. Runs normally allow 64 tool calls and 10 seconds of script time, with separate confirmed prerequisite limits (up to 12 targets and 600 seconds). Cancellations and limit failures stop execution and prevent Apply. JavaScript memory has no hard heap cap, so use bounded loops and data. Find scripts cannot edit or request prerequisites and must submit one scene report.</p>
+
 <h2>Reporting a problem</h2>
 <p>Choose <strong>Help → Report a Bug…</strong> (<strong>⇧⌘B</strong>). Describe what happened and how to reproduce it. The report includes diagnostic logs and app context, a screenshot you can review or remove, and crash details when available. Screenshots may include your footage. Name and email are optional; you can report anonymously.</p>
 <p>The ladybug toolbar menu lets you take screenshots for a report and open <strong>My Reports…</strong> to check its status. Enable it in <strong>Settings → General → Feedback → Show the QA button in the toolbar</strong>; it is always visible in development builds. You can also reveal the log folder or reset your reporting identity in Feedback.</p>

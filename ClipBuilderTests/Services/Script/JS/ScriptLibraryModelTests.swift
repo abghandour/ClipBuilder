@@ -4,6 +4,60 @@ import Testing
 
 @MainActor @Suite("Script library model", .serialized)
 struct ScriptLibraryModelTests {
+    @Test func recentScriptsOrderByLastRunAndLimitToFive() async throws {
+        let temp = try TempDatabase()
+        var records: [BuilderScriptRecord] = []
+        for index in 0..<7 {
+            let source = ScriptHeaderTests.source("return;").replacingOccurrences(of: "\"name\":\"Test script\"", with: "\"name\":\"Recent \(index)\"")
+            records.append(try await temp.database.saveBuilderScript(source: source))
+        }
+        let raw = try SQLiteConnection(path: temp.path.path)
+        for (index, record) in records.enumerated() where index < 6 {
+            try raw.execute("UPDATE builder_scripts SET last_run_at=?,last_run_status='completed' WHERE id=?",
+                [.text("2026-09-12T10:00:0\(index)Z"), .text(record.id.uuidString)])
+        }
+        let model = ScriptLibraryModel(database: temp.database)
+        await model.refresh()
+        #expect(model.recentScripts.map { $0.id } == [5, 4, 3, 2, 1].map { records[$0].id })
+        // Editing must not promote a script in Recents.
+        try await temp.database.saveBuilderScript(source: records[0].source + "\n// edited", id: records[0].id)
+        await model.refresh()
+        #expect(model.recentScripts.first?.id == records[5].id)
+    }
+
+    @Test func lastParametersRoundTripRevalidatesCurrentCaptureAndHeader() async throws {
+        let suite = "ScriptLibraryModelTests." + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let temp = try TempDatabase()
+        let live = ScriptFixtures.model()
+        let capture = ScriptCapture(model: live, library: ScriptFixtures.library())
+        let preferences = ScriptPreferences(defaults: defaults)
+        let model = ScriptLibraryModel(database: temp.database, profile: "One", preferences: preferences)
+        model.open(nil, capture: capture)
+        model.source = ScriptHeaderTests.source("return;", params: #"[{"name":"clip","type":"clip"},{"name":"n","type":"number","min":2,"max":12,"default":6},{"name":"flag","type":"boolean"},{"name":"text","type":"string"},{"name":"time","type":"time"}]"#)
+        model.parse()
+        model.values = ["clip": live.document.videoTrack[0].uid.uuidString, "n": "8", "flag": "false", "text": "A quoted \"value\"", "time": "1.25"]
+        let record = try await model.save()
+        let params = try model.parameters()
+        try model.rememberParameters(params, id: record.id)
+        let reopened = ScriptLibraryModel(database: temp.database, profile: "One", preferences: ScriptPreferences(defaults: defaults))
+        let restored = try reopened.recentParameters(for: record, capture: capture)
+        #expect(try ScriptStrictJSON.decode(restored) == ScriptStrictJSON.decode(params))
+        let other = ScriptLibraryModel(database: temp.database, profile: "Two", preferences: preferences)
+        #expect(throws: (any Error).self) { try other.recentParameters(for: record, capture: capture) }
+        var stale = capture
+        stale.document.videoTrack = []
+        #expect(throws: (any Error).self) { try reopened.recentParameters(for: record, capture: stale) }
+        let changed = try await temp.database.saveBuilderScript(
+            source: model.source.replacingOccurrences(of: "\"max\":12", with: "\"max\":7"), id: record.id)
+        #expect(throws: (any Error).self) { try reopened.recentParameters(for: changed, capture: capture) }
+        // Corrupt JSON can never enter the store.
+        #expect(throws: (any Error).self) { try model.rememberParameters(Data("{broken}".utf8), id: record.id) }
+        let preserved = try reopened.recentParameters(for: record, capture: capture)
+        #expect(try ScriptStrictJSON.decode(preserved) == ScriptStrictJSON.decode(params))
+    }
+
     @Test func allPagesAndInvalidation() throws {
         let live = ScriptFixtures.model()
         var library = ScriptFixtures.library()
