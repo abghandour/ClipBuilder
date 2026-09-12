@@ -7,7 +7,7 @@ struct BuilderWizardStatusBanner: View {
         if model.failure != nil { return .red }
         switch model.phase {
         case .refused, .unrecognised: return .red
-        case .preview, .applied, .found: return .green
+        case .preview, .applied, .found, .completed: return .green
         case .discarded, .idle: return .secondary
         case .awaitingPrerequisites: return .orange
         case .running, .applying: return .accentColor
@@ -18,7 +18,7 @@ struct BuilderWizardStatusBanner: View {
         if model.failure != nil { return "exclamationmark.triangle" }
         switch model.phase {
         case .refused, .unrecognised, .awaitingPrerequisites: return "exclamationmark.triangle"
-        case .preview, .found: return "checkmark.circle"
+        case .preview, .found, .completed: return "checkmark.circle"
         case .applied: return "checkmark.seal"
         case .discarded: return "xmark.circle"
         case .running, .applying: return "clock"

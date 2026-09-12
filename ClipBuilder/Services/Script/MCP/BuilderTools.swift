@@ -3,7 +3,7 @@ import MCP
 
 @MainActor
 final class BuilderTools {
-    nonisolated enum Mode: Sendable { case edit, find }
+    nonisolated enum Mode: Sendable { case edit, find, author }
     let mode: Mode
     let session: BuilderScriptSession
     let budget: BuilderRunBudget
@@ -11,6 +11,8 @@ final class BuilderTools {
     private let ensure: (@MainActor ([BuilderScriptStep]) async -> BuilderScriptResult)?
     private var mutationStarted = false
     private var ensureCount = 0
+    private(set) var submissionAttempts = 0
+    private(set) var lastSubmission: ScriptSubmissionResult?
     private(set) var executedSteps: [BuilderScriptStep] = []
 
     init(session: BuilderScriptSession, budget: BuilderRunBudget, mode: Mode = .edit,
@@ -19,8 +21,8 @@ final class BuilderTools {
         self.mode = mode
         self.session = session
         self.budget = budget
-        self.confirmedPrerequisites = confirmedPrerequisites
-        self.ensure = ensure
+        self.confirmedPrerequisites = mode == .author ? [] : confirmedPrerequisites
+        self.ensure = mode == .author ? nil : ensure
     }
 
     var definitions: [Tool] {
@@ -35,6 +37,17 @@ final class BuilderTools {
             Tool(name: "get_document_summary", description: "Compact paginated rows of the working timeline, selection (kind/id or null), playhead, focusedTrack and trackLabels (index/label). Track I is index 0; clip row IDs are UUIDs. No paths or settings.",
                  inputSchema: Self.object(["offset": Self.integer, "limit": .object(["type": .string("integer"), "minimum": .int(1), "maximum": .int(200)])]))
         ]
+        if mode == .author {
+            tools.removeAll { $0.name == "run_script" }
+            tools.append(Tool(name: "script_reference", description: "Generated JavaScript API, command and query reference. Read before writing a script.",
+                inputSchema: Self.object([:])))
+            tools.append(Tool(name: "submit_script", description: "Validate source and sampleParams in isolation. At most three submissions. Accepted source goes to the user’s editor for explicit Save or Run; requirements receive only partial validation.",
+                inputSchema: Self.object([
+                    "source": .object(["type": .string("string"), "maxLength": .int(256 * 1024)]),
+                    "sampleParams": .object(["type": .string("object")])
+                ], required: ["source", "sampleParams"])))
+            return tools
+        }
         if mode == .find {
             tools.removeAll { $0.name == "run_script" }
             let reason: Value = .object(["type": .string("string"), "minLength": .int(1), "maxLength": .int(500)])
@@ -65,6 +78,51 @@ final class BuilderTools {
         }
         let steps: [BuilderScriptStep]
         switch name {
+        case "script_reference":
+            try budget.admit(arguments: bytes.count, affected: 0)
+            guard arguments.isEmpty else { throw ScriptError.invalid("script_reference accepts no arguments.") }
+            let reference = BuilderCommandCatalog.referenceText
+            guard reference.utf8.count < 24 * 1024 else {
+                throw BuilderBudgetExceeded(reason: "Script reference exceeds 24 KiB.")
+            }
+            return try encode(["reference": reference])
+        case "submit_script":
+            try budget.admit(arguments: bytes.count, affected: 0)
+            guard submissionAttempts < 3, session.authoredScript == nil else {
+                throw BuilderBudgetExceeded(reason: "Script submissions are closed (maximum three attempts).")
+            }
+            submissionAttempts += 1
+            let validation: ScriptValidationResult
+            var submission: ScriptAuthorSubmission?
+            if Set(arguments.keys) == ["source", "sampleParams"],
+               let source = arguments["source"]?.stringValue,
+               let samples = arguments["sampleParams"], case .object = samples {
+                let params = try JSONEncoder().encode(samples)
+                submission = ScriptAuthorSubmission(source: source, sampleParams: params)
+                let remaining = budget.limits.wallSeconds - budget.started.duration(to: .now).seconds
+                validation = await ScriptValidation.validate(source: source, sampleParams: params,
+                    capture: session.replay.capture, seconds: min(10, remaining))
+            } else {
+                validation = .init(diagnostic: .init(code: "invalid_script",
+                    reason: "Expected source and sampleParams object.", line: 1, column: 1),
+                    partial: false, message: "Expected source and sampleParams object.")
+            }
+            try budget.checkTime()
+            guard session.identityIsCurrent, session.state == .ready else {
+                throw ScriptError.invalid("Author session is closed or stale.")
+            }
+            let accepted = validation.diagnostic == nil || validation.prerequisiteStubStopped
+            let result = ScriptSubmissionResult(status: accepted ? "accepted" : "diagnostics",
+                diagnostics: validation.diagnostic.map {
+                    [.init(code: $0.code, reason: $0.reason, line: $0.line ?? 1, column: $0.column ?? 1)]
+                } ?? [], partial: validation.partial,
+                message: validation.partial ? "partial validation: requires user-run validation" : validation.message)
+            lastSubmission = result
+            if accepted, let submission { try session.acceptScript(submission) }
+            else if submissionAttempts == 3 {
+                _ = session.fail(validation.diagnostic?.reason ?? validation.message)
+            }
+            return try encode(result)
         case "report_scenes":
             try enforceBudget { try budget.admit(arguments: bytes.count, affected: 0) }
             guard Set(arguments.keys) == ["scenes", "summary"],
@@ -145,6 +203,7 @@ final class BuilderTools {
 
     static func isReadOnly(_ name: String) -> Bool {
         name == "query" || name == "get_document_summary" || name == "report_scenes"
+            || name == "script_reference" || name == "submit_script"
     }
 
     /// Budget checks throw BuilderBudgetExceeded; the endpoint ends the run on

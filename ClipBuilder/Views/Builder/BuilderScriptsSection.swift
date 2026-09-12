@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct BuilderScriptsSection: View {
-    let wizard: WizardSheetModel
+    @Bindable var wizard: WizardSheetModel
     @Bindable var model: ScriptLibraryModel
     @State private var showingSheet = false
     @State private var editing = false
@@ -16,8 +16,10 @@ struct BuilderScriptsSection: View {
                 Button("Import", systemImage: "square.and.arrow.down", action: importScript)
                     .labelStyle(.iconOnly)
                     .help("Import a JavaScript file as a new script in this profile.")
-                Button("New Script", systemImage: "plus") { open(nil, editing: true) }
-                    .help("Create a reusable script in this profile.")
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.spaceS) { creationButtons }
+                VStack(alignment: .leading, spacing: Theme.spaceS) { creationButtons }
             }
             if model.scripts.isEmpty {
                 Text("Save reusable edits here. Every run previews changes before Apply.")
@@ -68,9 +70,20 @@ struct BuilderScriptsSection: View {
         .task { await model.refresh() }
         .onChange(of: wizard.scriptRevision) { _, _ in model.invalidate() }
         .onChange(of: wizard.identityMatches) { _, matches in if !matches { model.invalidate() } }
+        .sheet(isPresented: $wizard.showingAuthoredScript) {
+            BuilderScriptEditor(model: model, editing: true, run: wizard.runLibraryScript)
+        }
         .sheet(isPresented: $showingSheet) {
             BuilderScriptEditor(model: model, editing: editing, run: wizard.runLibraryScript)
         }
+    }
+
+    @ViewBuilder
+    private var creationButtons: some View {
+        Button("New Script", systemImage: "plus") { open(nil, editing: true) }
+            .help("Create a reusable script in this profile.")
+        Button("Write with AI…", systemImage: "sparkles", action: wizard.beginAuthoring)
+            .help("Use the request field to write a script with an AI provider, then review it in the editor.")
     }
 
     private func lastRun(_ record: BuilderScriptRecord) -> String {

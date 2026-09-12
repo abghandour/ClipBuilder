@@ -785,3 +785,167 @@ extension WizardSheetModelTests {
         #expect(model.log == ["first", "second"])
     }
 }
+
+extension WizardSheetModelTests {
+    @Test func modelChoiceFollowsProviderAndPersists() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardModel.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        store.settings.ai.tasks["builder_agent"] = "claude"
+        store.settings.ai.taskModels["builder_agent"] = "claude-sonnet-4-6"
+        let model = sheet(store, defaults: defaults)
+        #expect(model.provider == .claude && model.agentModel == "claude-sonnet-4-6")
+        #expect(WizardSheetModel.availableModels(for: .claude).contains("claude-haiku-4-5-20251001"))
+        #expect(WizardSheetModel.availableModels(for: .local).isEmpty)
+
+        model.agentModel = "claude-haiku-4-5-20251001"
+        model.saveModelPreference()
+        #expect(store.settings.ai.taskModels["builder_agent"] == "claude-haiku-4-5-20251001")
+
+        // A model outside the provider's catalog is dropped back to the default.
+        model.agentModel = "gemini-2.5-pro"
+        model.saveModelPreference()
+        #expect(model.agentModel == nil && store.settings.ai.taskModels["builder_agent"] == nil)
+        #expect(WizardSheetModel.validModel("claude-sonnet-4-6", for: .gemini) == nil)
+        #expect(WizardSheetModel.validModel("gemini-2.5-pro", for: .gemini) == "gemini-2.5-pro")
+        #expect(WizardSheetModel.validModel("anything", for: .local) == "anything")
+    }
+}
+
+extension WizardSheetModelTests {
+    @Test(arguments: [false, true])
+    func authorRetriesThenHandsOffOrRefuses(failAll: Bool) async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)
+        let suite = "WizardAuthorTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var library = ScriptFixtures.library(); library.projectID = store.activeProjectID
+        let snapshot = library
+        let clip = try #require(store.builder.document.videoTrack.first)
+        let samples = try JSONEncoder().encode(["clip": clip.uid.uuidString])
+        let parameters = #"[{"name":"clip","type":"clip"}]"#
+        let valid = ScriptHeaderTests.source("builder.ops.set_clip_muted({clip:params.clip,muted:true}); return {summary:'Mute preview'};", params: parameters)
+        let sources = [ScriptHeaderTests.source("const broken = ;", params: parameters),
+                       "/** clipbuilder-script\n{}\n*/\nreturn {};", failAll ? "invalid header again" : valid]
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { snapshot }, agentExecutor: { _, launch, _, consume in
+                #expect(launch.arguments.contains(BuilderAgentPrompt.authorRules))
+                let configData = try Data(contentsOf: launch.root.appendingPathComponent("mcp.json"))
+                let decoded = try JSONSerialization.jsonObject(with: configData)
+                let config = try #require(decoded as? [String: Any])
+                let servers = try #require(config["mcpServers"] as? [String: Any])
+                let server = try #require(servers["clipbuilder"] as? [String: Any])
+                let headers = try #require(server["headers"] as? [String: String])
+                let urlString = try #require(server["url"] as? String)
+                let url = try #require(URL(string: urlString))
+                let authorization = try #require(headers["Authorization"])
+                try consume(Data((#"{"type":"system","tools":["mcp__clipbuilder__query","mcp__clipbuilder__get_document_summary","mcp__clipbuilder__script_reference","mcp__clipbuilder__submit_script"]}"# + "\n").utf8))
+                let sampleObject = try JSONSerialization.jsonObject(with: samples)
+                var bodies: [[String: Any]] = [
+                    ["jsonrpc": "2.0", "id": 1, "method": "initialize", "params": [
+                        "protocolVersion": "2025-06-18", "capabilities": [:],
+                        "clientInfo": ["name": "fake-author", "version": "1"]]],
+                    ["jsonrpc": "2.0", "method": "notifications/initialized"],
+                    ["jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": [
+                        "name": "query", "arguments": ["query": ["kind": "clips"]]]],
+                    ["jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": [
+                        "name": "script_reference", "arguments": [:]]]
+                ]
+                for (index, source) in sources.enumerated() {
+                    bodies.append(["jsonrpc": "2.0", "id": index + 4, "method": "tools/call", "params": [
+                        "name": "submit_script", "arguments": ["source": source, "sampleParams": sampleObject]]])
+                }
+                for (index, body) in bodies.enumerated() {
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "POST"; request.httpBody = try JSONSerialization.data(withJSONObject: body)
+                    request.setValue(authorization, forHTTPHeaderField: "Authorization")
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.setValue("application/json", forHTTPHeaderField: "Accept")
+                    request.setValue("2025-06-18", forHTTPHeaderField: "MCP-Protocol-Version")
+                    let responseData: Data
+                    do {
+                        let (data, response) = try await URLSession.shared.data(for: request)
+                        let http = try #require(response as? HTTPURLResponse)
+                        #expect([200, 202].contains(http.statusCode))
+                        responseData = data
+                    } catch {
+                        // The third refusal cancels the child after accounting for
+                        // its diagnostics; cancellation may beat its HTTP response.
+                        if failAll, index == 6 { break }
+                        throw error
+                    }
+                    guard index >= 4 else { continue }
+                    let object = try JSONSerialization.jsonObject(with: responseData)
+                    let rpc = try #require(object as? [String: Any])
+                    let result = try #require(rpc["result"] as? [String: Any])
+                    let content = try #require(result["content"] as? [[String: Any]])
+                    let text = try #require(content.first?["text"] as? String)
+                    let submission = try JSONDecoder().decode(ScriptSubmissionResult.self, from: Data(text.utf8))
+                    if index < 6 || failAll {
+                        #expect(result["isError"] as? Bool == true)
+                        #expect(submission.status == "diagnostics")
+                        let diagnostic = try #require(submission.diagnostics.first)
+                        #expect(diagnostic.line != nil && diagnostic.column != nil)
+                        #expect(diagnostic.code == (index == 4 ? "syntax_error" : "invalid_script"))
+                    } else {
+                        #expect(result["isError"] as? Bool != true)
+                        #expect(submission.status == "accepted" && submission.diagnostics.isEmpty)
+                    }
+                }
+                if !failAll {
+                    try consume(Data((#"{"type":"result","subtype":"success","result":"Review the submitted script"}"# + "\n").utf8))
+                }
+                return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
+            })
+        model.provider = .claude; model.request = "Write a parameterized mute script"
+        let before = store.builder.document
+        await model.run(mode: .author)
+        #expect(store.builder.document == before && !model.canApply && model.diff == nil)
+        #expect(model.session == nil && model.persistentEffects.isEmpty)
+        #expect(model.agentEvents.filter { $0.toolName == "submit_script" }.count == 3)
+        let timelineID = try #require(store.builder.timelineID)
+        let records = try await temp.database.fetchBuilderRuns(timelineID: timelineID)
+        let wizardBefore = try await temp.database.fetchWizardBefore(timelineID: timelineID)
+        #expect(records.isEmpty && wizardBefore == nil)
+        var hydrated = false
+        store.builderLibraryHydration.refresh { hydrated = true }
+        #expect(hydrated)
+        if failAll {
+            #expect(model.phase == .refused && model.authoredScript == nil && !model.showingAuthoredScript)
+            #expect(model.agentEvents.last?.outcome == .failed)
+            #expect(model.statusText.contains("header"))
+        } else {
+            #expect(model.phase == .completed && model.showingAuthoredScript)
+            let submission = try #require(model.authoredScript)
+            #expect(submission.source == valid)
+            let decodedParams = try JSONDecoder().decode([String: String].self, from: submission.sampleParams)
+            #expect(decodedParams == ["clip": clip.uid.uuidString])
+            #expect(model.scriptLibrary.source == valid && model.scriptLibrary.values["clip"] == clip.uid.uuidString)
+            #expect(model.scriptLibrary.origin == .ai && model.scriptLibrary.editingID == nil)
+            let scriptsBeforeSave = try await temp.database.fetchBuilderScripts()
+            #expect(scriptsBeforeSave.isEmpty)
+            let saved = try await model.scriptLibrary.save()
+            #expect(saved.origin == .ai && saved.source == valid)
+            #expect(store.builder.document == before)
+        }
+        model.dismiss()
+    }
+
+    @Test func localAuthoringExplainsProviderRequirement() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let suite = "WizardAuthorLocal.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = sheet(store, defaults: defaults)
+        model.provider = .local; model.request = "Write a mute script"
+        await model.run(mode: .author)
+        #expect(model.phase == .refused && model.statusText.contains("AI provider"))
+        #expect(model.session == nil && model.agentEvents.isEmpty && !model.canApply)
+        model.dismiss()
+    }
+}

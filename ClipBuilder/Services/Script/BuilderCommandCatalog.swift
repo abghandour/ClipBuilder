@@ -239,8 +239,63 @@ enum BuilderCommandCatalog {
 
     static var referenceText: String {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
-        return "builder.run(steps, {tolerate: true}); builder.ops.<op>(args, {bind, tolerate}); builder.query(query); builder.summary({offset:0,limit:50}). Ensures require confirmed video targets.\n"
-            + String(decoding: (try? encoder.encode(commandSchema)) ?? Data(), as: UTF8.self)
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        func json(_ value: Value) -> String {
+            String(decoding: (try? encoder.encode(value)) ?? Data(), as: UTF8.self)
+        }
+        // Intern repeated field schemas (especially transition enums). Every
+        // constraint survives, without repeating the same schema per operation.
+        var rules: [String: Value] = [:]
+        var ruleIDs: [String: String] = [:]
+        func compact(_ schema: Value, discriminator: String) -> Value {
+            guard case .object(var root) = schema,
+                  case .object(let properties) = root.removeValue(forKey: "properties") else { return schema }
+            root.removeValue(forKey: "type")
+            root.removeValue(forKey: "additionalProperties")
+            var fields: [String: Value] = [:]
+            for key in properties.keys.sorted() where key != discriminator {
+                if key == "query" { fields[key] = .string("queryKinds"); continue }
+                guard let value = properties[key] else { continue }
+                let encoded = json(value)
+                let id: String
+                if let existing = ruleIDs[encoded] { id = existing }
+                else {
+                    id = "r" + String(rules.count + 1)
+                    rules[id] = value; ruleIDs[encoded] = id
+                }
+                fields[key] = .string(id)
+            }
+            root["fields"] = .object(fields)
+            return .object(root)
+        }
+        var ops: [String: Value] = [:]
+        let catalog = operations
+        for name in catalog.keys.sorted() {
+            if let schema = catalog[name] { ops[name] = compact(schema, discriminator: "op") }
+        }
+        let queries: [Value]
+        if case .array(let variants) = querySchema.objectValue?["oneOf"] { queries = variants }
+        else { queries = [] }
+        var queryKinds: [String: Value] = [:]
+        for schema in queries {
+            if let kind = schema.objectValue?["properties"]?.objectValue?["kind"]?.objectValue?["const"]?.stringValue {
+                queryKinds[kind] = compact(schema, discriminator: "kind")
+            }
+        }
+        return """
+        Clip Builder JavaScript reference. Every entry is a strict object (no extra keys); its dictionary key supplies op or kind. fields reference fieldRules (query references queryKinds); required lists and all constraints are authoritative. Unknown keys refuse. All IDs must come from captured queries. Track I = 0.
+        Header must be the first non-whitespace token: /** clipbuilder-script
+        {"name":"Example","description":"Describe the preview.","mode":"edit","params":[{"name":"parts","type":"number","min":2,"max":12,"step":1,"default":3}],"requires":[]}
+        */
+        Strict JSON: no comments, duplicate or unknown keys. Nonempty name/description; mode edit|find. params and requires arrays mandatory.
+        Parameter fields: name,type,label?,min?,max?,step?,choices?,default?. Unique ASCII identifiers. Types: string,number,boolean,choice,clip,scene,track,time. min/max/step only number/time/track; finite ordered bounds, positive step aligned from min or zero. choice requires distinct nonempty choices; other types cannot use choices. Defaults obey runtime rules. All params required unless defaulted; time defaults to captured playhead (0…86400 seconds). clip = captured clip UUID; scene = captured safe integer ID; track = visible zero-based index. Supply sampleParams for required IDs without defaults, never guess.
+        requires: at most 12 distinct {kind:"transcript"|"people"|"analysis",video:ID|"$parameterName"}; resolve to concrete safe nonnegative captured video IDs. Find mode prohibits requires. Ensures must precede any mutation, including refused attempts, and match declared confirmed targets. Validation only stubs ensures: partial validation: requires user-run validation. No prerequisite success is certified.
+        API: builder.query(q); builder.summary({offset:0,limit:50}) returns rows,total,nextOffset (limit max 200, offset max 1000000). Page explicitly. Read-only builder.selection = {kind,id}|null; builder.playhead; builder.focusedTrack = index|null; builder.tracks = [{index,label}].
+        builder.run([{op,...,bind?:"name"}] or [{command:{op,...},bind?:"name"}],{tolerate:true}); never mix flat and wire fields. builder.ops.<op>(args,{bind?,tolerate?}) is a one-step run; args may also contain bind. builder.ops.query({query:q}) is a command, separate from builder.query(q).
+        builder.ops.ensure_transcript({video}); builder.ops.ensure_people({video}); builder.ops.ensure_analysis({video}) are separate prefix calls, unavailable without declared requires; never put ensures in builder.run.
+        Result envelope: {outcomes,completed,hasDocumentChanges}. Outcomes: {status:"applied",actualValues,createdIDs,warnings}, {status:"unchanged",reason}, {status:"refused",code,reason}. Refusals throw Error with code/reason unless tolerate:true. A refused list rolls back; earlier lists remain. Bindings persist: use "$name" or "$name.piece1"; rebinding replaces its namespace. Bind only ID-producing operations.
+        Find scripts may query/summary and must call builder.report_scenes({scenes:[{id,reason}],summary}) once; at most 10 unique captured scenes, one-line reasons 1…500 characters, summary 1…2000. No mutations or ensures.
+        Frozen params rejects undeclared reads. Read-only script = {name,mode}; console.log/warn/error bounded to 64 KiB. Optional return {summary:"…"}; no promises, timers, modules, network, filesystem or host objects. JSON only, finite safe numbers, depth <=32; no undefined fields, array holes, functions, cycles or BigInt. Source <=256 KiB, params <=64 KiB, bridge <=1 MiB, command lists <=200 steps/256 KiB. User explicitly Saves/Runs/Applies; scripts cannot Apply.
+        """ + "\n" + json(.object(["operations": .object(ops), "queryKinds": .object(queryKinds), "fieldRules": .object(rules)]))
     }
 }

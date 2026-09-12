@@ -29,6 +29,20 @@ struct BuilderWizardRequestHeader: View {
                 .disabled(model.busy || model.phase == .awaitingPrerequisites)
                 .onChange(of: model.provider) { _, _ in model.saveProviderPreference() }
                 .help("Local works without a provider. Claude uses only Builder tools. Codex and Gemini await confinement and credential validation.")
+                if model.provider != .local {
+                    Picker("Model", selection: $model.agentModel) {
+                        Text("Default model").tag(String?.none)
+                        ForEach(WizardSheetModel.availableModels(for: model.provider), id: \.self) { id in
+                            Text(AICatalog.modelDisplayName(id)).tag(String?.some(id))
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                    .fixedSize()
+                    .disabled(model.busy || model.phase == .awaitingPrerequisites)
+                    .onChange(of: model.agentModel) { _, _ in model.saveModelPreference() }
+                    .help("The model this provider runs for Builder edits. Default uses the provider's model from Settings → AI.")
+                }
                 Spacer(minLength: 0)
                 Menu {
                     ForEach(model.history, id: \.self) { request in

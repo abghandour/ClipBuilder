@@ -94,9 +94,6 @@ struct InstagramReportsView: View {
             Text(store.isImportingPeaceGrappler ? "Importing report history…"
                  : store.isFetchingInstagram ? "Fetching report data…" : "Building report…")
                 .foregroundStyle(.secondary)
-            if let last = store.igLog.last {
-                Text(last).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
-            }
         }
         .padding()
     }
@@ -187,11 +184,6 @@ struct InstagramReportsView: View {
                 if let imported = report.importedThrough {
                     Text("·")
                     Text("History imported through \(imported)")
-                }
-                if store.isFetchingInstagram || store.isImportingPeaceGrappler, let last = store.igLog.last {
-                    Text("·")
-                    ProgressView().controlSize(.mini)
-                    Text(last).lineLimit(1)
                 }
                 Spacer()
             }

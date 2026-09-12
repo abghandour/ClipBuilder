@@ -332,3 +332,25 @@ extension BuilderAgentRunTests {
         #expect(prompt.contains("session stays open: fix the arguments and retry"))
     }
 }
+
+extension BuilderAgentRunTests {
+    @Test func claudeAuthorInventoryAllowsReferenceAndSubmission() throws {
+        var parser = BuilderAgentParser(provider: .claude)
+        _ = try parser.feed(Data((#"{"type":"system","tools":["mcp__clipbuilder__query","mcp__clipbuilder__get_document_summary","mcp__clipbuilder__script_reference","mcp__clipbuilder__submit_script"]}"# + "\n").utf8))
+        for name in ["script_reference", "submit_script"] {
+            let line = try JSONSerialization.data(withJSONObject: ["type": "assistant", "message": ["content": [
+                ["type": "tool_use", "name": "mcp__clipbuilder__" + name]
+            ]]])
+            let messages = try parser.feed(line + Data("\n".utf8))
+            #expect(messages.contains(.toolObserved("mcp__clipbuilder__" + name)))
+        }
+        _ = try parser.feed(Data((#"{"type":"result","subtype":"success","result":"Script submitted"}"# + "\n").utf8))
+        #expect(try parser.finish().isEmpty)
+        let launch = try BuilderAgentLaunch.make(provider: .claude, request: "Write a script", model: nil,
+            endpoint: URL(string: "http://127.0.0.1:49152/mcp")!, token: "fixture", parentEnvironment: [:], mode: .author)
+        defer { try? launch.cleanup() }
+        #expect(launch.arguments.contains(BuilderAgentPrompt.authorRules))
+        let prompt = BuilderAgentPrompt.request("Write a script", model: nil, mode: .author, disclosures: [])
+        #expect(prompt.contains(BuilderAgentPrompt.authorRules))
+    }
+}

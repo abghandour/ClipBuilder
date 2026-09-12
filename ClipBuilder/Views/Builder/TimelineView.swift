@@ -41,6 +41,7 @@ struct TimelineView: View {
                         VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
                             TimeRuler(contentWidth: contentWidth)
                                 .frame(width: contentWidth, height: Self.rulerHeight)
+                                .background(TimelineTrackStyle.ruler, in: TimelineTrackStyle.laneShape)
                             CropLane(contentWidth: contentWidth, height: Self.cropLaneHeight)
                             ForEach(0..<model.document.trackCount, id: \.self) { track in
                                 VideoTrackLane(track: track, layout: layout.videoTracks[track],
@@ -91,21 +92,23 @@ struct TimelineView: View {
             PlayheadTimecode()
                 .frame(height: Self.rulerHeight)
                 .padding(.leading, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(TimelineTrackStyle.ruler, in: TimelineTrackStyle.headerShape)
             CropLaneHeader()
                 .frame(height: Self.cropLaneHeight)
             ForEach(0..<model.document.trackCount, id: \.self) { track in
                 TrackHeader(track: track)
                     .frame(height: layout.videoTracks[track].laneHeight)
             }
-            laneHeader(title: "Sound", systemImage: "music.note")
+            laneHeader(title: "Sound", systemImage: "music.note", shade: TimelineTrackStyle.sound)
                 .frame(height: Self.soundLaneHeight)
-            laneHeader(title: "Overlays", systemImage: "square.2.layers.3d")
+            laneHeader(title: "Overlays", systemImage: "square.2.layers.3d", shade: TimelineTrackStyle.overlays)
                 .frame(height: CGFloat(layout.overlayRowCount)
                        * BuilderTimelineModel.overlayRowHeight)
         }
     }
 
-    private func laneHeader(title: String, systemImage: String) -> some View {
+    private func laneHeader(title: String, systemImage: String, shade: Color) -> some View {
         HStack(spacing: 6) {
             Image(systemName: systemImage)
                 .foregroundStyle(.secondary)
@@ -114,7 +117,30 @@ struct TimelineView: View {
             Spacer()
         }
         .padding(.horizontal, 8)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(shade, in: TimelineTrackStyle.headerShape)
+    }
+}
+
+/// The same neutral shade joins each pinned header to its video lane.
+private enum TimelineTrackStyle {
+    // Alternate light/dark values so neighbouring tracks are easy to separate.
+    static func background(track: Int) -> Color {
+        let shades = [0.025, 0.17, 0.065, 0.21, 0.105, 0.25]
+        return Color.primary.opacity(shades[track % shades.count])
+    }
+
+    static let ruler = Color.primary.opacity(0.045)
+    static let screen = Color.primary.opacity(0.12)
+    static let sound = Color.primary.opacity(0.035)
+    static let overlays = Color.primary.opacity(0.19)
+
+    static var headerShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: 6, bottomLeadingRadius: 6)
+    }
+
+    static var laneShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(bottomTrailingRadius: 6, topTrailingRadius: 6)
     }
 }
 
@@ -186,11 +212,12 @@ struct TrackHeader: View {
             }
         }
         .padding(6)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(highlighted ? Color.green.opacity(0.18) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 6))
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
+                    in: TimelineTrackStyle.headerShape)
+        .background(TimelineTrackStyle.background(track: track), in: TimelineTrackStyle.headerShape)
         .overlay {
-            RoundedRectangle(cornerRadius: 6)
+            TimelineTrackStyle.headerShape
                 .strokeBorder(highlighted ? Color.green.opacity(0.7) : .clear, lineWidth: 1.5)
         }
         .contentShape(Rectangle())
@@ -439,8 +466,13 @@ struct VideoTrackLane: View {
     var body: some View {
         let model = store.builder
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.quaternary.opacity(isDropTarget ? 0.55 : 0.25))
+            TimelineTrackStyle.laneShape
+                .fill(TimelineTrackStyle.background(track: track))
+                .overlay {
+                    if isDropTarget {
+                        TimelineTrackStyle.laneShape.fill(.primary.opacity(0.1))
+                    }
+                }
             ForEach(visibleClips(model: model)) { clip in
                 TimelineClipBlock(clip: clip,
                                   row: layout.rows[clip.uid] ?? 0,
@@ -464,7 +496,7 @@ struct VideoTrackLane: View {
                                   })
             }
         }
-        .frame(width: contentWidth, height: layout.laneHeight)
+        .frame(width: contentWidth, height: layout.laneHeight, alignment: .topLeading)
         .background(
             GeometryReader { proxy in
                 Color.clear
@@ -881,7 +913,8 @@ struct CropLaneHeader: View {
             }
         }
         .padding(.horizontal, 8)
-        .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 6))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .background(TimelineTrackStyle.screen, in: TimelineTrackStyle.headerShape)
     }
 }
 
@@ -896,8 +929,8 @@ struct CropLane: View {
     var body: some View {
         let model = store.builder
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.quaternary.opacity(0.25))
+            TimelineTrackStyle.laneShape
+                .fill(TimelineTrackStyle.screen)
             ForEach(model.document.cropBlocks) { block in
                 CropBlockView(block: block, height: height,
                               isLast: block.uid == model.document.cropBlocks.last?.uid,
@@ -909,7 +942,10 @@ struct CropLane: View {
                 BumperBlockView(clip: bumper, height: height)
             }
         }
-        .frame(width: contentWidth, height: height)
+        // A block can be wider than the lane (a crop that runs past the
+        // content width); anchoring at the leading edge keeps its label in
+        // view instead of centring the overflow and hiding it.
+        .frame(width: contentWidth, height: height, alignment: .topLeading)
     }
 }
 
@@ -1057,8 +1093,9 @@ struct CropBlockView: View {
         let missing = block.layout.isMissing
         // The last block reads as "to the end": it fills the visible row.
         let naturalWidth = CGFloat(block.duration) * pps
-        let baseWidth = isLast ? max(naturalWidth, contentWidth - CGFloat(block.startTime) * pps) : naturalWidth
-        let width = max(24, baseWidth + (isTrimming ? trimDelta : 0))
+        let room = contentWidth - CGFloat(block.startTime) * pps
+        let baseWidth = isLast ? max(naturalWidth, room) : naturalWidth
+        let width = max(24, min(baseWidth, max(24, room)) + (isTrimming ? trimDelta : 0))
         let tint: Color = block.layout.isFullScreen ? .gray : .cyan
 
         HStack(spacing: 6) {
@@ -1175,13 +1212,13 @@ struct SoundLane: View {
     var body: some View {
         let model = store.builder
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.quaternary.opacity(0.25))
+            TimelineTrackStyle.laneShape
+                .fill(TimelineTrackStyle.sound)
             ForEach(model.document.soundTrack) { item in
                 SoundBlock(item: item, height: height)
             }
         }
-        .frame(width: contentWidth, height: height)
+        .frame(width: contentWidth, height: height, alignment: .topLeading)
     }
 }
 
@@ -1284,8 +1321,8 @@ struct OverlayLane: View {
     var body: some View {
         let rowHeight = BuilderTimelineModel.overlayRowHeight
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(.quaternary.opacity(0.25))
+            TimelineTrackStyle.laneShape
+                .fill(TimelineTrackStyle.overlays)
             ForEach(layout.overlayEntries) { entry in
                 let row = layout.overlayRows[entry.uid] ?? 0
                 switch entry {
@@ -1298,7 +1335,7 @@ struct OverlayLane: View {
                 }
             }
         }
-        .frame(width: contentWidth, height: CGFloat(layout.overlayRowCount) * rowHeight)
+        .frame(width: contentWidth, height: CGFloat(layout.overlayRowCount) * rowHeight, alignment: .topLeading)
     }
 }
 

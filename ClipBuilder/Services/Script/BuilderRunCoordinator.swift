@@ -83,9 +83,13 @@ final class BuilderRunCoordinator {
         if !success { terminate(message ?? "Script failed.") }
         if !identityMatches() || !tools.session.identityIsCurrent { terminate("Timeline identity or revision changed.") }
         if tools.mode == .find, tools.session.sceneReport == nil { terminate("report_scenes is required.") }
+        if tools.mode == .author, tools.session.authoredScript == nil { terminate("An accepted submit_script is required.") }
         finishEvent(outcome: terminalReason == nil && tools.session.state == .ready ? .completed : .failed,
                     message: terminalReason ?? message, duration: duration)
-        if terminalReason == nil, freeze { _ = tools.session.freeze() }
+        if terminalReason == nil, freeze {
+            if tools.mode == .author { tools.session.completeAuthoring() }
+            else { _ = tools.session.freeze() }
+        }
     }
 
     func call(name: String, arguments: [String: Value]) async -> CallTool.Result {
@@ -135,9 +139,13 @@ final class BuilderRunCoordinator {
                 try await task.value
             } onCancel: { task.cancel() }
             let result = try? JSONDecoder().decode(BuilderScriptResult.self, from: data)
+            if name == "submit_script", let submission = tools.lastSubmission {
+                if submission.status != "accepted" { outcome = .refused }
+                detail = submission.diagnostics.first?.reason ?? submission.message
+            }
             if tools.session.state == .failed || (name == "run_script" && result?.completed == false) {
                 outcome = .refused
-                detail = result?.outcomes.compactMap {
+                detail = detail ?? result?.outcomes.compactMap {
                     if case .refused(_, let reason) = $0 { reason } else { nil }
                 }.joined(separator: "; ")
             }

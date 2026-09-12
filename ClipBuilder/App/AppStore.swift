@@ -236,11 +236,12 @@ final class AppStore {
     // Wizard job
     var isWizardRunning = false
     /// True while a Builder pre-fill plan runs — drives the Builder's
-    /// loading overlay.
+    /// progress toolbar.
     var isPlanningIntoBuilder = false
     var builderPlanResult: BuilderPlanResult?
     /// The live inline Wizard also supplies the window-wide status and log.
     var builderWizard: WizardSheetModel?
+    var isScriptPreviewRunning = false
     var wizardLog: [String] = [] {
         didSet { updateDiagnosticStatus(wizardLog, previousCount: oldValue.count) }
     }
@@ -315,7 +316,7 @@ final class AppStore {
     /// True while Builder is rendering an exact, temporary preview. Unlike a
     /// normal render, this never creates a Library item.
     var isBuilderPreviewRendering = false {
-        didSet { logDiagnosticOperation("Builder preview render", channel: "builder", running: isBuilderPreviewRendering, previously: oldValue) }
+        didSet { logDiagnosticOperation("Builder preview render", channel: "builder-preview", running: isBuilderPreviewRendering, previously: oldValue) }
     }
     var builderLog: [String] = []
     private var builderRenderTask: Task<Void, Never>?
@@ -353,7 +354,6 @@ final class AppStore {
         var running = true
     }
     var igStatus: IGSyncStatus?
-    var showIGLog = false
     private var igImportTask: Task<Void, Never>?
     var isConnectingInstagram = false
     var isPublishingToInstagram = false
@@ -545,7 +545,10 @@ final class AppStore {
         }
     }
 
-    func clearUnifiedLog() { unifiedLog.removeAll() }
+    func clearUnifiedLog(channel: String = "") {
+        if channel.isEmpty { unifiedLog.removeAll() }
+        else { unifiedLog.removeAll { $0.channel == channel } }
+    }
 
     /// Record one line for the status bar and the diagnostic file.
     func logEvent(_ channel: String, _ line: String) {
@@ -1120,7 +1123,17 @@ final class AppStore {
 
     /// A `@Sendable` log sink for `keyPath` that coalesces bursts of lines
     /// into one main-actor append — hand it to services' `log:` parameters.
-    func logSink(_ keyPath: ReferenceWritableKeyPath<AppStore, [String]>) -> @Sendable (String) -> Void {
+    @ObservationIgnored private var sectionLogRelays: [String: LogRelay] = [:]
+
+    func logSink(_ keyPath: ReferenceWritableKeyPath<AppStore, [String]>, channel: String? = nil) -> @Sendable (String) -> Void {
+        if let channel {
+            if let relay = sectionLogRelays[channel] { return relay.sink }
+            let relay = LogRelay { [weak self] lines in
+                self?.appendLog(keyPath, lines, channel: channel)
+            }
+            sectionLogRelays[channel] = relay
+            return relay.sink
+        }
         if let relay = logRelays[keyPath] { return relay.sink }
         let relay = LogRelay { [weak self] lines in
             self?.appendLog(keyPath, lines)
@@ -1133,30 +1146,33 @@ final class AppStore {
     /// markers drive the status bar), batched and ordered like other logs.
     @ObservationIgnored private var igLogRelays: [String: LogRelay] = [:]
 
-    func igLogSink(importScale: Double? = nil) -> @Sendable (String) -> Void {
-        let key = importScale.map { "\($0)" } ?? "plain"
+    func igLogSink(importScale: Double? = nil, channel: String = "instagram") -> @Sendable (String) -> Void {
+        let key = channel + (importScale.map { "\($0)" } ?? "plain")
         if let relay = igLogRelays[key] { return relay.sink }
         let relay = LogRelay { [weak self] lines in
             guard let self else { return }
             var plain: [String] = []
             for line in lines {
                 if line.hasPrefix("IGPROGRESS:") {
-                    if !plain.isEmpty { self.appendLog(\.igLog, plain); plain = [] }
+                    if !plain.isEmpty { self.appendLog(\.igLog, plain, channel: channel); plain = [] }
                     self.handleIGLog(line, importScale: importScale)
                 } else {
                     plain.append(line)
                 }
             }
-            if !plain.isEmpty { self.appendLog(\.igLog, plain) }
+            if !plain.isEmpty { self.appendLog(\.igLog, plain, channel: channel) }
         }
         igLogRelays[key] = relay
         return relay.sink
     }
 
     /// Append lines to a log in one write, trimming to the cap.
-    func appendLog(_ keyPath: ReferenceWritableKeyPath<AppStore, [String]>, _ lines: [String]) {
+    func appendLog(_ keyPath: ReferenceWritableKeyPath<AppStore, [String]>, _ lines: [String], channel section: String? = nil) {
         if let channel = BugReporting.logChannel(for: keyPath) {
-            for line in lines { logEvent(channel, line) }
+            for line in lines {
+                recordUnifiedLog(channel: section ?? channel, text: line)
+                diagnosticLogSink(channel, line)
+            }
         }
         if diagnosticsFFmpegVersion == nil {
             for line in lines where line.contains("ffmpeg version ") {
@@ -1670,7 +1686,6 @@ final class AppStore {
         }
     }
     /// Opens the full pipeline log sheet (clicking the bottom bar).
-    var showPipelineLog = false
     private var pipelineTask: Task<Void, Never>?
     // The run's plan + per-unit done marks ("people:12", "analysis:12",
     // "naming", …) so Resume re-enters exactly where the run stopped instead
@@ -1711,7 +1726,8 @@ final class AppStore {
         pipelineRunIDs = [:]
         pipelineGenerated = []
         pipelineDeferredPeople = nil
-        pipelineLog = ["Wizard Pipeline: \(targets.count) video(s)"]
+        pipelineLog = []
+        appendLog(\.pipelineLog, ["Wizard Pipeline: \(targets.count) video(s)"])
         runPipeline()
     }
 
@@ -3111,7 +3127,7 @@ final class AppStore {
                 guard published.count >= 3 || ownMedia.count >= 5 || igBenchmarks != nil else {
                     throw AIError.notConfigured("Not enough performance data yet — publish reels or refresh an owned Instagram account first.")
                 }
-                igLog.append("Distilling lessons from \(published.count) published reel(s) and \(ownMedia.count) account reel(s)…")
+                appendLog(\.igLog, ["Distilling lessons from \(published.count) published reel(s) and \(ownMedia.count) account reel(s)…"])
                 let response = try await ai.call(
                     prompt: PerformanceLessons.prompt(published: published, ownMedia: ownMedia,
                                                       benchmarks: igBenchmarks),
@@ -3134,7 +3150,7 @@ final class AppStore {
                         provenance: response.provenance)
                 }
                 lessons = (try? await database.fetchLessons()) ?? lessons
-                igLog.append("Added \(min(PerformanceLessons.maxLessons, distilled.count)) performance lesson(s) — manage them in Settings → AI → Learned Rules.")
+                appendLog(\.igLog, ["Added \(min(PerformanceLessons.maxLessons, distilled.count)) performance lesson(s) — manage them in Settings → AI → Learned Rules."])
             } catch {
                 presentError("Could not distill performance lessons", error)
             }
@@ -4237,7 +4253,7 @@ final class AppStore {
 
         isBuilderPreviewRendering = true
         defer { isBuilderPreviewRendering = false }
-        appendLog(\.builderLog, ["— Exact preview: rendering \(builder.document.videoTrack.count) clip(s) —"])
+        appendLog(\.builderLog, ["— Exact preview: rendering \(builder.document.videoTrack.count) clip(s) —"], channel: "builder-preview")
 
         let document = builder.document
         let scenes = builder.scenes
@@ -4247,14 +4263,14 @@ final class AppStore {
             let result = try await renderer.render(document: document, scenes: scenes,
                                                    profile: profile, database: database,
                                                    centerStageCamera: WizardDefaults.fallbackFramingCamera,
-                                                   preview: true, emit: logSink(\.builderLog))
-            appendLog(\.builderLog, ["Exact preview ready: \(result.duration.timecode)"])
+                                                   preview: true, emit: logSink(\.builderLog, channel: "builder-preview"))
+            appendLog(\.builderLog, ["Exact preview ready: \(result.duration.timecode)"], channel: "builder-preview")
             return result.url
         } catch is CancellationError {
-            appendLog(\.builderLog, ["Exact preview stopped."])
+            appendLog(\.builderLog, ["Exact preview stopped."], channel: "builder-preview")
             return nil
         } catch {
-            appendLog(\.builderLog, ["Exact preview failed: \(error.userMessage)"])
+            appendLog(\.builderLog, ["Exact preview failed: \(error.userMessage)"], channel: "builder-preview")
             presentError("Exact preview failed", error)
             return nil
         }
@@ -4992,13 +5008,16 @@ final class AppStore {
             return
         }
         isLoadingIGReport = true
+        logEvent("instagram-reports", "Building Instagram report")
         defer { isLoadingIGReport = false }
         do {
             let report = try await instagram.buildReport(account: account, period: igReportPeriod,
                                                          database: database, reuseInputs: reuseInputs)
             // The account may have changed while the report was building.
             if igSelectedAccountID == account.id { igReport = report }
+            logEvent("instagram-reports", "Instagram report ready")
         } catch {
+            logEvent("instagram-reports", "Report failed: \(error.userMessage)")
             presentError("Could not build the Instagram report", error)
         }
     }
@@ -5062,7 +5081,7 @@ final class AppStore {
     /// rescaled into the front of the refresh bar (`importScale`).
     private func handleIGLog(_ message: String, importScale: Double? = nil) {
         guard message.hasPrefix("IGPROGRESS:") else {
-            igLog.append(message)
+            appendLog(\.igLog, [message])
             return
         }
         let parts = message.dropFirst("IGPROGRESS:".count).split(separator: ":", maxSplits: 1)
@@ -5145,14 +5164,14 @@ final class AppStore {
         igImportTask = Task {
             do {
                 let summary = try await instagram.importPeaceGrapplerHistory(
-                    repoPath: repoPath, account: account, database: database, log: igLogSink())
+                    repoPath: repoPath, account: account, database: database, log: igLogSink(channel: "instagram-reports"))
                 igImportStatus = summary.description
                 finishIGStatus("done")
                 await reloadIGReport()
                 await reloadIGBenchmarks()
             } catch is CancellationError {
                 igImportStatus = "Import stopped"
-                igLog.append("Import stopped.")
+                appendLog(\.igLog, ["Import stopped."], channel: "instagram-reports")
                 finishIGStatus("stopped")
                 await reloadIGReport()
             } catch {
@@ -5262,16 +5281,16 @@ final class AppStore {
         let state = (try? await database.igSyncState(accountID: account.id)) ?? [:]
         guard state["import_as_of"] == nil else { return }   // imported once already — never again
 
-        igLog.append("First refresh — importing report history from \(repoPath)…")
+        appendLog(\.igLog, ["First refresh — importing report history from \(repoPath)…"], channel: "instagram-reports")
         do {
             let summary = try await instagram.importPeaceGrapplerHistory(
-                repoPath: repoPath, account: account, database: database, log: igLogSink(importScale: 0.3))
+                repoPath: repoPath, account: account, database: database, log: igLogSink(importScale: 0.3, channel: "instagram-reports"))
             igImportStatus = summary.description
-            igLog.append(summary.description)
+            appendLog(\.igLog, [summary.description], channel: "instagram-reports")
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            igLog.append("History import failed (\(error)) — continuing with the live refresh; it retries next time")
+            appendLog(\.igLog, ["History import failed (\(error)) — continuing with the live refresh; it retries next time"], channel: "instagram-reports")
         }
     }
 
@@ -5319,7 +5338,7 @@ final class AppStore {
                 await reloadIGBenchmarks()
                 finishIGStatus("done")
             } catch is CancellationError {
-                igLog.append("Fetch stopped.")
+                appendLog(\.igLog, ["Fetch stopped."])
                 finishIGStatus("stopped")
                 await reloadIGReport()   // keep whatever the stopped sync stored
                 await reloadIGBenchmarks()
@@ -5358,7 +5377,7 @@ final class AppStore {
                 try await instagram.analyzeTemplate(media: media, account: account,
                                                     database: database, settings: settings,
                                                     force: force,
-                                                    provider: provider, model: model, log: logSink(\.igLog))
+                                                    provider: provider, model: model, log: logSink(\.igLog, channel: "instagram-analysis"))
                 igTemplatedMediaIDs.insert(media.id)
                 // Pick up the local_video_path the download wrote.
                 try? await reloadIGMedia()
@@ -5384,7 +5403,7 @@ final class AppStore {
         do {
             let url = try await instagram.ensureDownloaded(
                 media: media, account: account, database: database,
-                settings: settings.instagram, log: logSink(\.igLog))
+                settings: settings.instagram, log: logSink(\.igLog, channel: "instagram-download"))
             try? await reloadIGMedia()
             return url
         } catch {
@@ -5711,7 +5730,7 @@ final class AppStore {
             for (index, item) in media.enumerated() {
                 guard let account = igAccounts.first(where: { $0.id == item.accountID }) else { continue }
                 if media.count > 1 {
-                    igLog.append("Learning from reel \(index + 1)/\(media.count)…")
+                    appendLog(\.igLog, ["Learning from reel \(index + 1)/\(media.count)…"])
                 }
                 do {
                     let video = try await instagram.ensureDownloaded(
@@ -5722,13 +5741,13 @@ final class AppStore {
                         performance: Self.performanceLine(item),
                         mediaID: item.id,
                         provider: provider, model: model, log: logSink(\.igLog))
-                    igLog.append("Learned into “\(label)”")
+                    appendLog(\.igLog, ["Learned into “\(label)”"])
                 } catch {
-                    igLog.append("Skipped a reel — \(error.userMessage)")
+                    appendLog(\.igLog, ["Skipped a reel — \(error.userMessage)"])
                 }
             }
             try? await reloadIGMedia()
-            igLog.append("Taste learning finished — review the video types in Settings → Profile")
+            appendLog(\.igLog, ["Taste learning finished — review the video types in Settings → Profile"])
         }
     }
 
@@ -5952,8 +5971,7 @@ final class AppStore {
     }
 
     /// The Builder pre-fill job: wizard planning only, then load the plan as
-    /// a timeline document. Opens the Builder immediately — a loading overlay
-    /// there (isPlanningIntoBuilder) shows progress while the plan runs.
+    /// a timeline document. Opens the Builder immediately; App Log shows progress.
     func planIntoBuilder(options: WizardOptions) {
         guard let database, !isWizardRunning else { return }
         var options = options
@@ -5973,7 +5991,7 @@ final class AppStore {
             await AIRunCapture.context.withValue(AIRunCapture()) {
             do {
                 let (plan, sceneMap) = try await wizard.plan(options: options, profile: profile,
-                                                             database: database, emit: logSink(\.wizardLog))
+                                                             database: database, emit: logSink(\.wizardLog, channel: "builder-prefill"))
                 guard self.database === database, generation == profileGeneration, !Task.isCancelled else {
                     throw CancellationError()
                 }
@@ -5984,11 +6002,11 @@ final class AppStore {
                 if document.videoTrack.isEmpty {
                     presentError("The plan produced no usable clips")
                 } else {
-                    wizardLog.append("Opening \(document.videoTrack.count) clips in the Builder...")
+                    appendLog(\.wizardLog, ["Opening \(document.videoTrack.count) clips in the Builder..."], channel: "builder-prefill")
                     createTimeline(named: "Wizard Draft", document: document, projectID: projectID, isWizardPlan: true)
                 }
             } catch is CancellationError {
-                wizardLog.append("Pre-fill cancelled")
+                appendLog(\.wizardLog, ["Pre-fill cancelled"], channel: "builder-prefill")
             } catch {
                 presentError("Timeline planning failed", error)
             }

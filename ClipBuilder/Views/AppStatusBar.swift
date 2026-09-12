@@ -1,115 +1,212 @@
 import SwiftUI
 
-/// The permanent strip at the bottom of the window: one line that always
-/// says what the app is doing, the controls for the work in progress, and
-/// a drawer with every log line the app produces. It is laid out as part of
-/// the window, never as an inset, so no screen can paint underneath it.
+/// Permanent window chrome, outside the split views so it cannot cover editing controls.
 struct AppStatusBar: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("statusBar.logExpanded") private var logExpanded = false
     @AppStorage("statusBar.logChannel") private var channelFilter = ""
-    @State private var showWizardLog = false
+    @AppStorage("log.verbose") private var verboseLog = false
+
+    private var lines: [AppLogLine] { AppLogChannels.lines(store.unifiedLog, channel: channelFilter) }
+    private var activities: [StatusBarSummary.Activity] { StatusBarSummary.activities(store: store) }
 
     var body: some View {
         VStack(spacing: 0) {
             Divider()
-            statusRow
+            header
+            if !activities.isEmpty {
+                Divider()
+                ScrollView {
+                    VStack(spacing: Theme.spaceXS) {
+                        ForEach(activities) { activity in
+                            activityRow(activity)
+                        }
+                    }
+                    .padding(.horizontal, Theme.spaceM)
+                    .padding(.vertical, Theme.spaceXS)
+                }
+                .frame(height: min(CGFloat(activities.count) * 32 + 8, 136))
+            }
+            if store.wizardFailureMessage != nil {
+                GenerationFailureNotice().padding(Theme.spaceS)
+            }
             if logExpanded {
                 Divider()
-                AppLogDrawer(channelFilter: $channelFilter)
-                    .frame(height: 200)
+                AppLogDrawer(lines: lines).frame(height: 200)
             }
         }
         .background(.bar)
-        .sheet(isPresented: $showWizardLog) { BuilderWizardLogSheet() }
-        // Drive refreshes used to ride on the activity strip; keep them firing.
         .onChange(of: store.googleDrive.revision) { store.refreshAll() }
+        .onChange(of: store.googleDrive.jobs.map { "\($0.id):\($0.status.rawValue)" }) { old, _ in
+            for job in store.googleDrive.jobs where !old.contains("\(job.id):\(job.status.rawValue)") {
+                store.recordUnifiedLog(channel: "drive", text: "\(job.title): \(job.status.rawValue)")
+            }
+        }
         .onChange(of: store.builderWizard?.identityMatches) { _, matches in
             if matches == false, let model = store.builderWizard, !model.identityMatches { model.dismiss() }
         }
     }
 
-    private var summary: StatusBarSummary { StatusBarSummary(store: store) }
-
-    private var statusRow: some View {
-        let summary = summary
-        return HStack(spacing: 10) {
-            Image(systemName: summary.symbol)
-                .foregroundStyle(summary.tint)
-                .accessibilityHidden(true)
-            if summary.busy {
-                ProgressView().controlSize(.small)
-                    .accessibilityLabel("Busy")
+    private var header: some View {
+        HStack(spacing: Theme.spaceS) {
+            Text("App Log").font(.caption.bold())
+            Picker("App Log section", selection: $channelFilter) {
+                Text("All sections").tag("")
+                ForEach(AppLogChannels.available(in: store.unifiedLog, selection: channelFilter), id: \.self) { channel in
+                    Text(AppLogChannels.title(channel)).tag(channel)
+                }
             }
-            Text(summary.title)
-                .font(.caption)
-                .lineLimit(1)
-                .layoutPriority(1)
-            if let progress = summary.progress {
-                ProgressView(value: progress)
-                    .frame(maxWidth: 180)
-            }
-            if let detail = summary.detail {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
+            .labelsHidden()
+            .frame(width: 180)
+            .help("Filter messages by section")
+            Text("\(lines.count) lines").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             Spacer(minLength: 0)
-            contextActions
-            Button(logExpanded ? "Hide Log" : "Log",
-                   systemImage: logExpanded ? "chevron.down" : "chevron.up") {
-                withAnimation(.easeInOut(duration: 0.15)) { logExpanded.toggle() }
+            if activities.isEmpty {
+                Text(StatusBarSummary(store: store).title)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            .help(logExpanded ? "Hide the app log" : "Show every log line the app produced")
+            Menu("Actions", systemImage: "ellipsis") { recoveryActions }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            Toggle("Verbose", isOn: $verboseLog)
+                .toggleStyle(.checkbox)
+                .help("Include the full AI prompt in logs")
+            LogActions(lines: lines.map(AppLogDrawer.render)) { store.clearUnifiedLog(channel: channelFilter) }
+            Button(logExpanded ? "Hide Log" : "Show Log",
+                   systemImage: logExpanded ? "chevron.down" : "chevron.up", action: toggleLog)
+                .help("Expand or collapse App Log. You can also double-click its header.")
+                .accessibilityValue(logExpanded ? "Expanded" : "Collapsed")
         }
         .controlSize(.small)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
-        .frame(minHeight: 28)
+        .padding(.horizontal, Theme.spaceM)
+        .padding(.vertical, Theme.spaceXS)
+        .frame(minHeight: 32)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2, perform: toggleLog)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Status: \(summary.title)")
     }
 
-    /// Controls for whichever work owns the status line.
+    private func toggleLog() {
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) { logExpanded.toggle() }
+    }
+
     @ViewBuilder
-    private var contextActions: some View {
-        if store.isPipelineRunning {
-            Button("Stop", systemImage: "stop.circle") { store.cancelPipeline() }
-                .help("Stop the Wizard Pipeline run — finished steps are kept and Resume picks up from here")
-        } else if !store.pipelineStage.isEmpty {
+    private var recoveryActions: some View {
+        if !store.isPipelineRunning, !store.pipelineStage.isEmpty {
             if store.canResumePipeline {
-                Button("Resume", systemImage: "play.circle") { store.resumePipeline() }
-                    .buttonStyle(.borderedProminent)
-                    .help("Continue the stopped run — finished steps are skipped")
+                Button("Resume Pipeline") { store.resumePipeline() }
             }
-            Button("Pipeline Log") { store.showPipelineLog = true }
-                .help("The full Wizard Pipeline log")
-            Button("Clear") { store.dismissPipelineBar() }
-                .help("Clear the finished run from the status line (its log and resume point go with it)")
+            Button("Dismiss Pipeline") { store.dismissPipelineBar() }
         }
-        if let status = store.igStatus {
-            if status.running {
-                Button("Stop", systemImage: "stop.circle") { store.cancelInstagramWork() }
-                    .help("Stop — finished steps are kept and the next run resumes from its checkpoints")
-            } else {
-                Button("Instagram Log") { store.showIGLog = true }
-                    .help("The full Instagram sync log")
-                Button("Clear") { store.dismissIGStatusBar() }
-                    .help("Clear the finished run from the status line")
+        if let status = store.igStatus, !status.running {
+            Button("Dismiss Instagram") { store.dismissIGStatusBar() }
+        }
+        if store.googleDrive.jobs.contains(where: { $0.status == .stopped || $0.status == .failed || $0.status == .reconnect }) {
+            Menu("Transfers") {
+                ForEach(store.googleDrive.jobs.filter { $0.status == .stopped || $0.status == .failed || $0.status == .reconnect }) { job in
+                    Section(job.title) {
+                        if job.status == .reconnect { OpenGoogleDriveSettingsButton() }
+                        if !job.isAsset { Button("Resume") { store.googleDrive.resume(job.id) } }
+                        Button("Dismiss") { store.googleDrive.cancel(job.id) }
+                    }
+                }
             }
         }
         if let model = store.builderWizard, model.hasStatus {
-            Button("Wizard Log") { showWizardLog = true }
-                .help("The Builder Wizard log with copy and clear controls")
+            Menu("Copy Wizard Details", systemImage: "doc.on.clipboard") {
+                Button("Copy Tool Outcomes") { copy(model.copyText(kind: .toolOutcomes)) }
+                Button("Copy Everything") { copy(model.copyText(kind: .everything)) }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+            }
+            .labelStyle(.iconOnly)
+            .help("Copy Builder Wizard outcomes or the complete run details")
+        }
+    }
+
+    private func copy(_ text: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    private func activityRow(_ activity: StatusBarSummary.Activity) -> some View {
+        HStack(spacing: Theme.spaceS) {
+            Text(AppLogChannels.title(activity.channel)).fontWeight(.medium)
+            Text("\(activity.project) · \(activity.detail)").lineLimit(1)
+            Spacer(minLength: Theme.spaceS)
+            if let progress = activity.progress {
+                ProgressView(value: min(1, max(0, progress))).frame(width: 140)
+                    .accessibilityLabel("\(activity.detail) progress")
+                Text(progress, format: .percent.precision(.fractionLength(0)))
+                    .monospacedDigit().frame(width: 36, alignment: .trailing)
+            } else {
+                ProgressView().controlSize(.small).accessibilityLabel(activity.detail)
+            }
+            stopButton(activity)
+        }
+        .font(.caption)
+        .controlSize(.small)
+        .frame(height: 28)
+    }
+
+    @ViewBuilder
+    private func stopButton(_ activity: StatusBarSummary.Activity) -> some View {
+        switch activity.id {
+        case "builder-wizard": Button("Stop") { store.builderWizard?.cancelRun() }
+        case "pipeline": Button("Stop") { store.cancelPipeline() }
+        case "analysis": Button("Stop") { store.cancelAnalysis() }
+        case "builder": Button("Stop") { store.cancelBuilderRender() }
+        case "wizard", "prefill": Button("Stop") { store.cancelWizard() }
+        case "instagram-sync": Button("Stop") { store.cancelInstagramWork() }
+        case "instagram-analysis": Button("Stop") {
+            for id in store.igAnalyzingMediaIDs { store.cancelInstagramAnalysis(mediaID: id) }
+        }
+        case "transcription": Button("Stop") {
+            for id in store.transcribingVideoIDs { store.cancelTranscription(videoID: id) }
+        }
+        default:
+            if let job = store.googleDrive.jobs.first(where: { "drive-\($0.id)" == activity.id }) {
+                Button("Stop") { store.googleDrive.stop(job.id) }
+            }
         }
     }
 }
 
-/// What the status line says, resolved from the store in priority order:
-/// the Builder Wizard, a pipeline run, an Instagram run, background work,
-/// then the newest log line, then "Ready".
+/// Stable section names remain selectable even before the first message arrives.
+enum AppLogChannels {
+    static let known = ["app", "analysis", "wizard", "builder", "builder-wizard", "pipeline", "instagram", "instagram-analysis", "instagram-download", "instagram-reports", "builder-prefill", "builder-preview", "script-preview", "drive", "error"]
+
+    static func title(_ channel: String) -> String {
+        switch channel {
+        case "app": "App"
+        case "analysis": "Analysis"
+        case "wizard": "Generation"
+        case "builder": "Builder Render"
+        case "builder-wizard": "Builder Wizard"
+        case "pipeline": "Wizard Pipeline"
+        case "instagram": "Instagram"
+        case "instagram-analysis": "Instagram Analysis"
+        case "instagram-download": "Instagram Downloads"
+        case "instagram-reports": "Instagram Reports"
+        case "builder-prefill": "Builder Pre-fill"
+        case "builder-preview": "Builder Preview"
+        case "script-preview": "Script Preview"
+        case "drive": "Google Drive"
+        case "error": "Errors"
+        default: channel
+        }
+    }
+
+    static func available(in lines: [AppLogLine], selection: String) -> [String] {
+        Array(Set(known + lines.map(\.channel) + (selection.isEmpty ? [] : [selection])))
+            .sorted { title($0).localizedStandardCompare(title($1)) == .orderedAscending }
+    }
+
+    static func lines(_ lines: [AppLogLine], channel: String) -> [AppLogLine] {
+        channel.isEmpty ? lines : lines.filter { $0.channel == channel }
+    }
+}
+
 struct StatusBarSummary: Equatable {
     var title: String
     var detail: String?
@@ -120,137 +217,123 @@ struct StatusBarSummary: Equatable {
 
     @MainActor
     init(store: AppStore) {
-        let activities = StatusBarSummary.activities(store: store)
-        if let wizard = store.builderWizard, wizard.hasStatus {
-            self.init(title: wizard.statusText, detail: wizard.latestLogLine,
-                      symbol: "wand.and.stars", tint: Theme.createTint,
-                      busy: wizard.busy, progress: nil)
-        } else if store.isPipelineRunning || !store.pipelineStage.isEmpty {
-            let stage = store.pipelineStage
-            self.init(title: stage.isEmpty ? "Wizard Pipeline" : "Wizard Pipeline — \(stage)",
-                      detail: store.pipelineLog.last, symbol: "wand.and.rays", tint: Theme.createTint,
-                      busy: store.isPipelineRunning, progress: store.pipelineProgress)
-        } else if let status = store.igStatus {
-            self.init(title: status.stage.isEmpty ? status.title : "\(status.title) — \(status.stage)",
-                      detail: status.running ? store.igLog.last : nil,
-                      symbol: "play.rectangle.on.rectangle", tint: Theme.instagramTint,
-                      busy: status.running, progress: status.fraction)
-        } else if let first = activities.first {
-            let more = activities.count > 1 ? " · \(activities.count - 1) more" : ""
-            self.init(title: "\(first.project) · \(first.detail)\(more)",
-                      detail: store.unifiedLog.last?.text, symbol: "circle.fill", tint: Theme.createTint,
-                      busy: true, progress: nil)
+        if let first = Self.activities(store: store).first {
+            title = "\(first.project) · \(first.detail)"
+            detail = store.unifiedLog.last(where: { $0.channel == first.channel })?.text
+            symbol = "circle.fill"; tint = Theme.createTint; busy = true; progress = first.progress
         } else {
-            self.init(title: store.unifiedLog.last.map { "[\($0.channel)] \($0.text)" } ?? "Ready",
-                      detail: nil, symbol: "circle.fill", tint: .secondary, busy: false, progress: nil)
+            title = store.unifiedLog.last.map { "[\($0.channel)] \($0.text)" } ?? "Ready"
+            detail = nil; symbol = "circle.fill"; tint = .secondary; busy = false; progress = nil
         }
     }
 
-    init(title: String, detail: String?, symbol: String, tint: Color, busy: Bool, progress: Double?) {
-        self.title = title
-        self.detail = detail
-        self.symbol = symbol
-        self.tint = tint
-        self.busy = busy
-        self.progress = progress
-    }
-
-    struct Activity: Equatable {
+    struct Activity: Identifiable, Equatable {
+        var id: String
+        var channel: String
         var project: String
         var detail: String
+        var progress: Double?
     }
 
-    /// Background work in progress, one row each, in the order the old
-    /// activity strip listed them.
     @MainActor
     static func activities(store: AppStore) -> [Activity] {
         var rows: [Activity] = []
-        if store.isBuilderRendering {
-            rows.append(Activity(project: store.builderRenderProjectName ?? "Project", detail: "Rendering timeline"))
+        func add(_ id: String, _ channel: String, _ title: String, _ running: Bool,
+                 progress: Double? = nil, project: String? = nil) {
+            if running {
+                rows.append(Activity(id: id, channel: channel, project: project ?? store.activeProject?.name ?? "Project",
+                                     detail: title, progress: progress))
+            }
         }
-        if store.isAnalyzing {
-            rows.append(Activity(project: store.analysisProjectName ?? "Project",
-                                 detail: store.analysisStage.isEmpty ? "Analyzing" : store.analysisStage))
+        add("builder-wizard", "builder-wizard", store.builderWizard?.statusText ?? "Running Wizard",
+            store.builderWizard?.busy == true)
+        add("pipeline", "pipeline", store.pipelineStage.isEmpty ? "Running pipeline" : store.pipelineStage,
+            store.isPipelineRunning, progress: store.pipelineProgress)
+        add("instagram-sync", "instagram", store.igStatus?.stage ?? "Syncing Instagram",
+            store.igStatus?.running == true || store.isFetchingInstagram || store.isImportingPeaceGrappler,
+            progress: store.igStatus?.fraction)
+        add("builder", "builder", "Rendering timeline", store.isBuilderRendering, project: store.builderRenderProjectName)
+        add("builder-preview", "builder-preview", "Rendering exact preview", store.isBuilderPreviewRendering)
+        add("analysis", "analysis", store.analysisStage.isEmpty ? "Analyzing" : store.analysisStage,
+            store.isAnalyzing, progress: store.analysisProgress, project: store.analysisProjectName)
+        add("prefill", "builder-prefill", "Pre-filling Builder from template", store.isPlanningIntoBuilder)
+        add("wizard", "wizard", store.wizardStatus?.stage ?? "Generating video",
+            store.isWizardRunning && !store.isPlanningIntoBuilder, progress: store.wizardStatus?.fraction,
+            project: store.wizardProjectName)
+        add("curated-render", "wizard", "Rendering curated video", store.isCuratedRendering)
+        add("curated-preview", "wizard", "Rendering curated preview", store.isCuratedPreviewRendering)
+        add("transcription", "analysis", "Transcribing \(store.transcribingVideoIDs.count) videos", !store.transcribingVideoIDs.isEmpty)
+        add("people", "analysis", "Detecting people", store.isDetectingPeople)
+        add("framing", "analysis", "Detecting framing", store.isDetectingFraming, progress: store.framingProgress)
+        add("research", "analysis", "Researching fights", !store.fightResearchInFlight.isEmpty)
+        add("scoring", "analysis", "Scoring fights", !store.fightScoringInFlight.isEmpty)
+        add("instagram-analysis", "instagram-analysis", "Analyzing \(store.igAnalyzingMediaIDs.count) reels", !store.igAnalyzingMediaIDs.isEmpty)
+        add("instagram-download", "instagram-download", "Downloading \(store.igDownloadingMediaIDs.count) reels", !store.igDownloadingMediaIDs.isEmpty)
+        add("instagram-reports", "instagram-reports", "Building reports", store.isLoadingIGReport)
+        add("instagram-connect", "instagram", "Connecting Instagram", store.isConnectingInstagram)
+        add("instagram-publish", "instagram", "Publishing to Instagram", store.isPublishingToInstagram)
+        add("taste", "instagram", "Learning from reels", store.isStudyingTaste)
+        add("performance", "instagram", "Distilling performance lessons", store.isDistillingPerformanceLessons)
+        add("lessons", "wizard", "Distilling lessons", store.isDistillingLessons)
+        add("house-style", "wizard", "Distilling house style", store.isDistillingHouseStyle)
+        add("script-preview", "script-preview", "Running JSON preview", store.isScriptPreviewRunning)
+        add("project", "app", "Loading project", store.isLoadingProject)
+        add("update", "app", "Downloading update", store.isDownloadingUpdate)
+        add("tools", "analysis", "Installing tools", store.isInstallingTools || !store.installingProviderCLIs.isEmpty)
+        for job in store.googleDrive.jobs where job.status == .running || job.status == .waiting {
+            add("drive-\(job.id)", "drive", job.title, true,
+                progress: job.totalBytes == nil ? nil : job.progress, project: job.projectName)
         }
-        if store.isWizardRunning, let status = store.wizardStatus {
-            rows.append(Activity(project: store.wizardProjectName ?? "Project", detail: status.stage))
-        }
-        let uploads = store.googleDrive.jobs.filter { $0.status != .complete }
-        if !uploads.isEmpty {
-            rows.append(Activity(project: "Google Drive", detail: uploads.count == 1
-                                 ? (uploads[0].title) : "\(uploads.count) transfers"))
-        }
+        add("drive-connect", "drive", "Connecting Google Drive", !store.googleDrive.connecting.isEmpty)
         return rows
     }
 }
 
-/// The unified log: every channel, filterable, newest at the bottom.
 private struct AppLogDrawer: View {
     @Environment(AppStore.self) private var store
-    @Binding var channelFilter: String
-
-    private var channels: [String] {
-        Array(Set(store.unifiedLog.map(\.channel))).sorted()
-    }
-
-    private var lines: [AppLogLine] {
-        channelFilter.isEmpty ? store.unifiedLog : store.unifiedLog.filter { $0.channel == channelFilter }
-    }
+    let lines: [AppLogLine]
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: Theme.spaceS) {
-                Text("App Log").font(.caption).bold()
-                Picker("Channel", selection: $channelFilter) {
-                    Text("All channels").tag("")
-                    ForEach(channels, id: \.self) { channel in
-                        Text(channel).tag(channel)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Theme.spaceXS) {
+                    if lines.isEmpty {
+                        Text("No log entries in this section.").foregroundStyle(.secondary)
+                            .padding(Theme.spaceS)
+                    }
+                    ForEach(lines) { line in
+                        HStack(alignment: .top, spacing: Theme.spaceS) {
+                            Text(Self.clock.string(from: line.time)).foregroundStyle(.secondary)
+                            Text(AppLogChannels.title(line.channel)).foregroundStyle(.secondary)
+                                .frame(width: 140, alignment: .leading)
+                            logText(line)
+                        }
+                        .font(.caption.monospaced())
+                        .padding(.horizontal, Theme.spaceM)
+                        .id(line.id)
                     }
                 }
-                .labelsHidden()
-                .frame(maxWidth: 180)
-                .help("Show one channel of the log")
-                Text("\(lines.count) lines").font(.caption).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                LogActions(lines: lines.map(AppLogDrawer.render), clear: store.clearUnifiedLog)
-                DriveActivityRows()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, Theme.spaceXS)
             }
-            .controlSize(.small)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            Divider()
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        if lines.isEmpty {
-                            Text("No log entries yet.")
-                                .foregroundStyle(.secondary)
-                                .padding(Theme.spaceS)
-                        }
-                        ForEach(lines) { line in
-                            HStack(alignment: .top, spacing: Theme.spaceS) {
-                                Text(AppLogDrawer.clock.string(from: line.time))
-                                    .foregroundStyle(.tertiary)
-                                Text(line.channel)
-                                    .foregroundStyle(line.channel == "error" ? Color.red : .secondary)
-                                    .frame(width: 64, alignment: .leading)
-                                Text(line.text)
-                                    .textSelection(.enabled)
-                            }
-                            .font(.caption.monospaced())
-                            .padding(.horizontal, 12)
-                            .id(line.id)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-                .onChange(of: lines.last?.id) { _, last in
-                    if let last { proxy.scrollTo(last, anchor: .bottom) }
-                }
-                .onAppear {
-                    if let last = lines.last?.id { proxy.scrollTo(last, anchor: .bottom) }
-                }
+            .onChange(of: lines.last?.id, initial: true) { _, last in
+                if let last { proxy.scrollTo(last, anchor: .bottom) }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func logText(_ line: AppLogLine) -> some View {
+        if line.text.hasPrefix("VIDEO:"), let name = line.text.dropFirst(6).split(separator: ":").first {
+            Button(String(name), systemImage: "play.rectangle") {
+                if let url = store.generatedVideoURL(named: String(name)) { NSWorkspace.shared.open(url) }
+            }
+            .buttonStyle(.plain)
+            .help("Open generated video")
+        } else {
+            Text(line.text)
+                .foregroundStyle(line.channel == "error" || line.text.hasPrefix("DONE:error") ? Color.red : .primary)
+                .textSelection(.enabled)
         }
     }
 
@@ -261,6 +344,6 @@ private struct AppLogDrawer: View {
     }()
 
     static func render(_ line: AppLogLine) -> String {
-        "\(clock.string(from: line.time)) [\(line.channel)] \(line.text)"
+        "\(clock.string(from: line.time)) [\(AppLogChannels.title(line.channel))] \(line.text)"
     }
 }

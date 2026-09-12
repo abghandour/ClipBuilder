@@ -134,6 +134,7 @@ final class BuilderMCPServer {
         let response = await transport.handleRequest(request)
         coordinator.cache(id: key, fingerprint: fingerprint, response: response.bodyData ?? Data())
         responses[key] = response
+        if tools.mode == .author, coordinator.stopping { onStop?() }
         return response
     }
 

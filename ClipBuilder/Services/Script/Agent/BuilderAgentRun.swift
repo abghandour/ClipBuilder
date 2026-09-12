@@ -118,7 +118,7 @@ final class BuilderAgentRun {
                 throw ScriptError.invalid("Agent run was refused or stopped. No timeline changes applied.")
             }
         } catch {
-            terminalError = redactor.text(error is CancellationError ? "Cancelled. No timeline changes applied." : error.localizedDescription)
+            terminalError = endpoint.coordinator.terminalReason ?? redactor.text(error is CancellationError ? "Cancelled. No timeline changes applied." : error.localizedDescription)
             process?.cancel()
         }
         endpoint.revoke()
@@ -140,11 +140,19 @@ final class BuilderAgentRun {
         if terminalError == nil, endpoint.tools.mode == .find, endpoint.tools.session.sceneReport == nil {
             terminalError = "The assistant did not call report_scenes. No search results were reported."
         }
+        if terminalError == nil, endpoint.tools.mode == .author, endpoint.tools.session.authoredScript == nil {
+            terminalError = "The assistant did not submit an accepted script."
+        }
+        if terminalError == nil,
+           !endpoint.coordinator.identityMatches() || !endpoint.tools.session.identityIsCurrent {
+            terminalError = "Timeline identity or revision changed."
+        }
         if let terminalError { _ = endpoint.tools.session.fail(terminalError) }
         endpoint.finishEvent(outcome: terminalError == nil ? .completed : .failed,
                              message: terminalError, duration: provenance.duration ?? 0)
         // No HTTP handler or child callback can mutate after this point.
-        _ = endpoint.tools.session.freeze()
+        if endpoint.tools.mode == .author { endpoint.tools.session.completeAuthoring() }
+        else { _ = endpoint.tools.session.freeze() }
     }
 
     func failBeforeLaunch(_ reason: String) {

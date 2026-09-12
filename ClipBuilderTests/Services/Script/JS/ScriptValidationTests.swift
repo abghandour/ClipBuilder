@@ -1,4 +1,5 @@
 import Foundation
+import MCP
 import Testing
 @testable import Clip_Builder
 
@@ -33,6 +34,53 @@ struct ScriptValidationTests {
             let records = try await temp.database.fetchBuilderRuns(timelineID: 1)
             #expect(records.isEmpty)
         }
+    }
+
+    @Test func threeAuthorSubmissionsNeverWriteProductionState() async throws {
+        let temp = try TempDatabase()
+        let live = ScriptFixtures.model()
+        let before = live.document
+        let library = ScriptFixtures.library()
+        let video = try #require(library.videos.first)
+        let inventoryBefore = try await temp.database.prerequisiteInventory(videoID: video.id)
+        var autosaves = 0
+        var serviceCalls = 0
+        live.onTimelineAutosave = { _, _ in autosaves += 1 }
+        let session = BuilderScriptSession(live: live, library: library, ownsHydration: false)
+        let tools = BuilderTools(session: session, budget: BuilderRunBudget(.init()), mode: .author,
+            confirmedPrerequisites: [.ensureTranscript(video: video.id)], ensure: { _ in
+                serviceCalls += 1
+                return .init(outcomes: [], completed: true, hasDocumentChanges: false)
+            })
+        let coordinator = BuilderRunCoordinator(tools: tools)
+        let scripts = [
+            ScriptHeaderTests.source("const broken = ;"),
+            ScriptHeaderTests.source("builder.ops.add_text({text:'isolated'}); throw Error('retry');"),
+            ScriptHeaderTests.source("builder.ops.ensure_transcript({video:\(video.id)});",
+                requires: "[{\"kind\":\"transcript\",\"video\":\(video.id)}]")
+        ]
+        for (index, source) in scripts.enumerated() {
+            let response = await coordinator.call(name: "submit_script", arguments: [
+                "source": .string(source), "sampleParams": .object([:])
+            ])
+            #expect(response.isError == (index < 2))
+            var hydrated = false
+            live.scriptLibraryHydration.refresh { hydrated = true }
+            #expect(hydrated && live.document == before && autosaves == 0 && serviceCalls == 0)
+            #expect(session.prerequisiteEffects.isEmpty && session.prerequisiteReports.isEmpty)
+            let records = try await temp.database.fetchBuilderRuns(timelineID: 1)
+            let inventory = try await temp.database.prerequisiteInventory(videoID: video.id)
+            #expect(records.isEmpty && inventory.rows == inventoryBefore.rows)
+            #expect(inventory.rows["Completion receipts"]?.isEmpty == true)
+        }
+        let result = try #require(tools.lastSubmission)
+        #expect(result.status == "accepted" && result.partial)
+        #expect(result.message == "partial validation: requires user-run validation")
+        #expect(result.diagnostics.first?.code == "requires_user_run_validation")
+        #expect(session.authoredScript?.source == scripts.last)
+        await coordinator.finish(success: true, message: nil, duration: 0)
+        #expect(session.state == .completed && session.frozenCandidate == nil && session.candidate == nil)
+        session.discard()
     }
 
     @Test func splitEvenlyUsesSnapshotAndRecordsScriptProvider() async throws {

@@ -56,15 +56,70 @@ struct AppStatusBarTests {
         store.isPipelineRunning = true
         store.pipelineProgress = 0.5
         let pipeline = StatusBarSummary(store: store)
-        #expect(pipeline.title == "Wizard Pipeline — rendering" && pipeline.progress == 0.5 && pipeline.busy)
+        #expect(pipeline.title.contains("rendering") && pipeline.progress == 0.5 && pipeline.busy)
 
         store.isPipelineRunning = false
         let stopped = StatusBarSummary(store: store)
-        #expect(stopped.title == "Wizard Pipeline — rendering" && !stopped.busy)
+        #expect(stopped.title.contains("tagging (30 frames)") && stopped.busy)
         store.pipelineStage = ""
         store.isAnalyzing = false
         // Ending analysis logs "Analysis end", so that is the newest line.
         let idle = StatusBarSummary(store: store)
         #expect(idle.title.hasPrefix("[analysis] Analysis end") && !idle.busy)
     }
+
+    @Test("section filtering and clearing preserve unrelated messages and future entries")
+    func sectionFiltering() {
+        let store = makeStore()
+        store.diagnosticLogSink = { _, _ in }
+        store.appendLog(\.wizardLog, ["Generation"])
+        store.recordUnifiedLog(channel: "builder-wizard", text: "Editing")
+        store.appendLog(\.igLog, ["Downloading"], channel: "instagram-download")
+        #expect(AppLogChannels.lines(store.unifiedLog, channel: "wizard").map(\.text) == ["Generation"])
+        #expect(AppLogChannels.lines(store.unifiedLog, channel: "builder-wizard").map(\.text) == ["Editing"])
+        store.clearUnifiedLog(channel: "builder-wizard")
+        #expect(store.unifiedLog.map(\.text) == ["Generation", "Downloading"])
+        store.recordUnifiedLog(channel: "builder-wizard", text: "Next edit")
+        #expect(AppLogChannels.lines(store.unifiedLog, channel: "builder-wizard").map(\.text) == ["Next edit"])
+        #expect(AppLogChannels.available(in: [], selection: "custom").contains("custom"))
+        #expect(AppLogChannels.available(in: [], selection: "").contains("instagram-reports"))
+    }
+
+    @Test("finished status cannot hide simultaneous activity, including previews and downloads")
+    func simultaneousActivity() {
+        let store = makeStore()
+        store.diagnosticLogSink = { _, _ in }
+        let wizard = WizardSheetModel(store: store)
+        wizard.appendLog("Finished Wizard run")
+        store.builderWizard = wizard
+        store.pipelineStage = "done"
+        store.igStatus = AppStore.IGSyncStatus(title: "Instagram", stage: "done", fraction: 1, running: false)
+        store.isBuilderPreviewRendering = true
+        store.igDownloadingMediaIDs = [42]
+        store.isAnalyzing = true
+        store.analysisProgress = 0.25
+        let activities = StatusBarSummary.activities(store: store)
+        #expect(activities.contains { $0.id == "builder-preview" && $0.progress == nil })
+        #expect(activities.contains { $0.id == "instagram-download" })
+        #expect(activities.contains { $0.id == "analysis" && $0.progress == 0.25 })
+        #expect(!activities.contains { $0.id == "builder-wizard" || $0.id == "pipeline" || $0.id == "instagram-sync" })
+        #expect(StatusBarSummary(store: store).busy)
+        store.isBuilderPreviewRendering = false
+        store.igDownloadingMediaIDs = []
+        store.isAnalyzing = false
+        #expect(!StatusBarSummary.activities(store: store).contains { ["builder-preview", "instagram-download", "analysis"].contains($0.id) })
+    }
+
+    @Test("operation channels do not change the diagnostic log destination")
+    func sectionDiagnostics() {
+        let store = makeStore()
+        var channels: [String] = []
+        store.diagnosticLogSink = { channel, _ in channels.append(channel) }
+        store.appendLog(\.igLog, ["Analyze reel"], channel: "instagram-analysis")
+        store.appendLog(\.igLog, ["Download reel"], channel: "instagram-download")
+        #expect(channels == ["instagram", "instagram"])
+        #expect(store.unifiedLog.map(\.channel) == ["instagram-analysis", "instagram-download"])
+        #expect(store.igLog == ["Analyze reel", "Download reel"])
+    }
+
 }

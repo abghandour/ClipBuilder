@@ -5,7 +5,7 @@ import Observation
 /// request edits cannot relabel the frozen run or change its provenance.
 @MainActor @Observable
 final class WizardSheetModel {
-    enum Phase: Equatable { case idle, awaitingPrerequisites, running, preview, found, unrecognised, refused, applying, applied, discarded }
+    enum Phase: Equatable { case idle, awaitingPrerequisites, running, preview, found, completed, unrecognised, refused, applying, applied, discarded }
     let scriptLibrary: ScriptLibraryModel
     private(set) var replayExport = ScriptReplayExport(reason: "Complete a run to save its replay.")
     private(set) var verifyingReplay = false
@@ -16,8 +16,14 @@ final class WizardSheetModel {
     private(set) var examples = BuilderRequestParser.supportedRequests(library: ScriptLibrarySnapshot())
     private var prefillExamples = false
     var provider: BuilderAgentProvider = .local
+    /// The model the chosen provider runs; nil means the provider's default
+    /// from Settings → AI. Hidden and irrelevant for the local parser.
+    var agentModel: String? = nil
     private(set) var agentEvents: [BuilderRunEvent] = []
     private(set) var agentSummary = ""
+    private(set) var authoredScript: ScriptAuthorSubmission?
+    var showingAuthoredScript = false
+    @ObservationIgnored private var authoring = false
     @ObservationIgnored private var scriptRun: ScriptRunModel?
     @ObservationIgnored private var pendingJavaScript: (source: String, header: ScriptHeader, params: Data)?
     @ObservationIgnored private var agentRun: BuilderAgentRun?
@@ -90,6 +96,7 @@ final class WizardSheetModel {
             guard let store else { throw ApplyFailure.identityChanged }
             return try await BuilderWizardLibrary.snapshot(store: store)
         }
+        agentModel = Self.validModel(store.settings.ai.taskModels["builder_agent"], for: provider)
     }
 
     var scriptRevision: Int { store.builder.revision }
@@ -219,8 +226,9 @@ final class WizardSheetModel {
         switch phase {
         case .idle: return "Describe the edit you want to preview."
         case .awaitingPrerequisites: return "Confirm Library work before running."
-        case .running: return finding ? "Searching the Library…" : "Running — building your preview…"
+        case .running: return authoring ? "Writing a script…" : finding ? "Searching the Library…" : "Running — building your preview…"
         case .preview: return "Ready to apply — \(diff?.changes.count ?? 0) changes"
+        case .completed: return "Script ready — review it in the editor, then Save or Run."
         case .found: return "Found \(results.count) matching scenes"
         case .unrecognised: return reasons.first ?? "Request not recognised. Try a supported request."
         case .refused: return reasons.first ?? "Run refused. No timeline changes applied."
@@ -265,7 +273,29 @@ final class WizardSheetModel {
     func saveProviderPreference() {
         guard !busy, phase != .awaitingPrerequisites, provider.disabledReason == nil else { return }
         store.settings.ai.tasks["builder_agent"] = provider.rawValue
+        // A model from another provider's catalog cannot follow the switch.
+        agentModel = Self.validModel(agentModel, for: provider)
+        store.settings.ai.taskModels["builder_agent"] = agentModel
         store.saveSettings()
+    }
+
+    func saveModelPreference() {
+        guard !busy, phase != .awaitingPrerequisites else { return }
+        agentModel = Self.validModel(agentModel, for: provider)
+        store.settings.ai.taskModels["builder_agent"] = agentModel
+        store.saveSettings()
+    }
+
+    /// Models the picker offers for a provider: its catalog entries, none for the local parser.
+    static func availableModels(for provider: BuilderAgentProvider) -> [String] {
+        provider == .local ? [] : (AICatalog.provider(provider.rawValue)?.models ?? [])
+    }
+
+    /// Keep a model only when the provider's catalog lists it; the local
+    /// parser has no picker, so its stored value passes through untouched.
+    static func validModel(_ model: String?, for provider: BuilderAgentProvider) -> String? {
+        guard let model, provider != .local else { return model }
+        return availableModels(for: provider).contains(model) ? model : nil
     }
 
     func refuseJavaScriptFile(_ error: any Error) {
@@ -297,6 +327,7 @@ final class WizardSheetModel {
         agentAuditSaved = false; agentProvenance = nil; persistentEffects = []; prerequisiteDisclosures = []
         pendingJavaScript = nil; pendingSteps = nil; pendingAgent = false
         diff = nil; diffLines = []; results = []; resultReasons = [:]; findContext = nil; finding = false
+        authoring = false; authoredScript = nil; showingAuthoredScript = false
         do {
             let header = try ScriptHeader.parse(source)
             let library: ScriptLibrarySnapshot
@@ -393,12 +424,17 @@ final class WizardSheetModel {
         }
     }
 
+    func beginAuthoring() {
+        guard task == nil, !busy else { return }
+        task = Task { await run(mode: .author); task = nil }
+    }
+
     func beginRun() {
         guard task == nil, !busy else { return }
         task = Task { await run(); task = nil }
     }
 
-    func run(program suppliedProgram: BuilderProgram? = nil) async {
+    func run(program suppliedProgram: BuilderProgram? = nil, mode: BuilderTools.Mode = .edit) async {
         guard !busy, !dismissed else { return }
         isStarting = true
         activeScriptID = nil
@@ -411,7 +447,7 @@ final class WizardSheetModel {
         let revision = store.builder.revision
         runProvider = provider
         let configuredAgent = store.settings.ai.providers[runProvider.rawValue]
-        runModel = store.settings.ai.taskModels["builder_agent"] ?? configuredAgent?.model
+        runModel = agentModel ?? store.settings.ai.taskModels["builder_agent"] ?? configuredAgent?.model
         runBinary = configuredAgent?.bin
         runLimits = store.settings.builderAgent
         runRequest = request.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -423,13 +459,26 @@ final class WizardSheetModel {
         reasons = []; failure = nil; diff = nil; diffLines = []; results = []; resultReasons = [:]; findContext = nil; finding = false
         pendingSteps = nil; reparseAfterPrerequisites = false; prerequisiteDisclosures = []; persistentEffects = []
         agentEvents = []; agentSummary = ""; agentProvenance = nil; agentAuditSaved = false; pendingAgent = false
+        authoring = mode == .author
+        authoredScript = nil; showingAuthoredScript = false
         let started = Date.now
         do {
+            if authoring {
+                guard runProvider != .local else { throw ScriptError.invalid("Writing a script needs an AI provider. Choose Claude in the provider picker.") }
+                if let reason = runProvider.disabledReason { throw ScriptError.invalid(reason) }
+                guard !runRequest.isEmpty else { throw ScriptError.invalid("Describe the script in the request field first.") }
+            }
             let library = try await loadLibrary()
             try Task.checkCancellation()
             guard !dismissed, token == generation else { return }
             guard identityMatches, library.projectID == projectID else { throw ApplyFailure.identityChanged }
             guard revision == store.builder.revision else { throw ApplyFailure.staleRevision }
+            if authoring {
+                let session = BuilderScriptSession(live: store.builder, library: library, ownsHydration: false)
+                self.session = session
+                await executeAgent(session: session, confirmed: [], token: token, mode: .author)
+                return
+            }
             let context = ParserContext(library: library, model: store.builder)
             let parseStarted = Date.now
             let program: BuilderProgram
@@ -705,7 +754,7 @@ final class WizardSheetModel {
         let record = BuilderRunRecord(runUUID: session.runUUID, timelineID: session.timelineID ?? 0,
                                       request: runRequest, provider: provenance.provider, model: provenance.model, durationSeconds: duration,
                                       status: .discarded, baselineRevision: session.baselineRevision)
-        let alreadyFailed = agentAuditSaved && (session.state == .failed || finding)
+        let alreadyFailed = authoring || (agentAuditSaved && (session.state == .failed || finding))
         scriptRun?.cancel()
         agentRun?.cancel()
         session.discard()
@@ -812,7 +861,7 @@ final class WizardSheetModel {
         persistentEffects = session.prerequisiteEffects
         // Preserve captured database ownership even after the user switches timelines.
         do {
-            if let database, let timelineID = session.timelineID {
+            if mode != .author, let database, let timelineID = session.timelineID {
                 let record = BuilderRunRecord(runUUID: session.runUUID, timelineID: timelineID, request: runRequest,
                     createdAt: (run.provenance.at ?? .now).ISO8601Format(), provider: run.provenance.provider, model: run.provenance.model, durationSeconds: duration,
                     status: session.state == .completed ? .completed : .failed, baselineRevision: session.baselineRevision,
@@ -834,7 +883,7 @@ final class WizardSheetModel {
         diff = session.diff()
         diffLines = BuilderWizardDiff.lines(session: session, steps: tools.executedSteps)
         phase = session.state == .completed && failure == nil ? .preview : .refused
-        if phase == .preview { retainReplay(session) }
+        if phase == .preview, mode != .author { retainReplay(session) }
         if phase == .refused {
             // The terminal error can be generic; put the actual tool refusals first.
             let refusedEvents = agentEvents.filter { $0.toolName != nil && $0.outcome != .completed }
@@ -851,8 +900,28 @@ final class WizardSheetModel {
             let ordered: [String] = toolReasons + sessionReasons + terminal
             reasons = []
             for reason in ordered where !reason.isEmpty && !reasons.contains(reason) { reasons.append(reason) }
+            if mode == .author, tools.submissionAttempts == 3,
+               let last = tools.lastSubmission, last.status == "diagnostics" {
+                reasons = last.diagnostics.map { $0.reason }
+                if reasons.isEmpty { reasons = [last.message] }
+            }
         }
-        if mode == .find {
+        if mode == .author {
+            if phase != .refused, let submission = session.authoredScript {
+                do {
+                    try scriptLibrary.openAuthored(submission, capture: session.replay.capture)
+                    authoredScript = submission
+                    showingAuthoredScript = true
+                    phase = .completed
+                } catch {
+                    scriptLibrary.fail(error); reasons = [error.localizedDescription]; phase = .refused
+                }
+            }
+            diff = nil; diffLines = []
+            if self.session === session { self.session = nil }
+            session.discard()
+            appendLog(phase == .completed ? "Script ready in the editor. Choose Save or Run." : "Script authoring refused.")
+        } else if mode == .find {
             if phase != .refused, let report = session.sceneReport {
                 let byID = Dictionary(session.library.scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                 let entries = Array(report.scenes.prefix(BuilderSceneSearch.limit))

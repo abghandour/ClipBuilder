@@ -381,3 +381,86 @@ extension MCPServerTests {
         #expect(!BuilderWizardDiff.lines(session: session, steps: tools.executedSteps).contains { $0.hasPrefix("Split ") })
     }
 }
+
+extension MCPServerTests {
+    @Test func authorInventoryAndGeneratedReference() async throws {
+        let session = ScriptFixtures.session()
+        let tools = BuilderTools(session: session, budget: BuilderRunBudget(.init()), mode: .author,
+            confirmedPrerequisites: [.ensureTranscript(video: 1)], ensure: { _ in
+                Issue.record("Author mode must not call production prerequisites")
+                return .init(outcomes: [], completed: true, hasDocumentChanges: false)
+            })
+        let server = BuilderMCPServer(tools: tools)
+        try await server.start()
+        let token = server.token
+        let client = Client(name: "author-tests", version: "1")
+        let transport = HTTPClientTransport(endpoint: server.url, streaming: false, requestModifier: { request in
+            var request = request
+            request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+            return request
+        })
+        do {
+            _ = try await client.connect(transport: transport)
+            let list = try await client.listTools()
+            #expect(list.tools.map { $0.name } == ["query", "get_document_summary", "script_reference", "submit_script"])
+            let response = try await client.callTool(name: "script_reference", arguments: [:])
+            #expect(response.isError != true)
+            let text = response.content.compactMap { content -> String? in
+                if case .text(let text, _, _) = content { return text }
+                return nil
+            }.joined()
+            let fields = try JSONDecoder().decode([String: String].self, from: Data(text.utf8))
+            let reference = try #require(fields["reference"])
+            #expect(reference.utf8.count < 24 * 1024)
+            for name in BuilderCommandCatalog.operations.keys { #expect(reference.contains(name)) }
+            for kind in BuilderQuery.Kind.allCases { #expect(reference.contains(kind.rawValue)) }
+            #expect(reference.contains("sampleParams") && reference.contains("actualValues") && reference.contains("requires"))
+            // Unknown tools cannot execute even when called without listing first.
+            for name in ["run_script", "report_scenes", "ensure_transcript"] {
+                await #expect(throws: (any Error).self) { try await tools.call(name: name, arguments: [:]) }
+            }
+            #expect(session.diff().isEmpty && session.authoredScript == nil)
+            await client.disconnect(); await server.shutdown(); session.discard()
+        } catch { await client.disconnect(); await server.shutdown(); session.discard(); throw error }
+    }
+
+    @Test func authorFourthSubmissionRefusedAfterThreeFailures() async throws {
+        let session = ScriptFixtures.session()
+        let tools = BuilderTools(session: session, budget: BuilderRunBudget(.init()), mode: .author)
+        let coordinator = BuilderRunCoordinator(tools: tools)
+        let before = session.workingDocument
+        for attempt in 1...3 {
+            let response = await coordinator.call(name: "submit_script", arguments: [
+                "source": .string("bad header \(attempt)"), "sampleParams": .object([:])
+            ])
+            #expect(response.isError == true)
+            #expect(tools.submissionAttempts == attempt)
+            #expect(session.state == (attempt == 3 ? .failed : .ready))
+        }
+        let last = try #require(tools.lastSubmission)
+        #expect(last.status == "diagnostics" && !last.diagnostics.isEmpty)
+        let fourth = await coordinator.call(name: "submit_script", arguments: [
+            "source": .string(ScriptHeaderTests.source("return {summary:'valid'};")), "sampleParams": .object([:])
+        ])
+        #expect(fourth.isError == true && tools.submissionAttempts == 3)
+        #expect(coordinator.stopping && session.authoredScript == nil)
+        #expect(coordinator.events.count == 3)
+        #expect(coordinator.events.last?.message == last.diagnostics.first?.reason)
+        #expect(session.state == .failed && session.workingDocument == before && session.frozenCandidate == nil)
+        session.discard()
+    }
+
+    @Test func authorSubmissionConsumesCoordinatorCallBudget() async throws {
+        var limits = BuilderAgentLimits(); limits.toolCalls = 1
+        let session = ScriptFixtures.session()
+        let tools = BuilderTools(session: session, budget: BuilderRunBudget(limits), mode: .author)
+        let coordinator = BuilderRunCoordinator(tools: tools)
+        _ = await coordinator.call(name: "get_document_summary", arguments: [:])
+        let result = await coordinator.call(name: "submit_script", arguments: [
+            "source": .string(ScriptHeaderTests.source("return {};")), "sampleParams": .object([:])
+        ])
+        #expect(result.isError == true && coordinator.stopping)
+        #expect(session.authoredScript == nil && tools.submissionAttempts == 0)
+        session.discard()
+    }
+}

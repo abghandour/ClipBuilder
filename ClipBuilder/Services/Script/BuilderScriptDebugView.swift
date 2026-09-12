@@ -14,7 +14,8 @@ struct BuilderScriptDebugView: View {
     """
     @State private var isRunning = false
     @State private var runTask: Task<Void, Never>?
-    @State private var output = "Run a script to inspect its outcomes and complete document diff."
+    @AppStorage("statusBar.logExpanded") private var logExpanded = false
+    @AppStorage("statusBar.logChannel") private var channelFilter = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
@@ -25,11 +26,8 @@ struct BuilderScriptDebugView: View {
                 .font(.system(.body, design: .monospaced))
                 .frame(minHeight: 180)
                 .help("A JSON array of command steps with optional ID bindings.")
-            ScrollView {
-                Text(output).font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minHeight: 200)
+            Text("Results appear in App Log → Script Preview after you close this sheet.")
+                .font(.caption).foregroundStyle(.secondary)
             HStack(spacing: Theme.spaceM) {
                 Button("Run Preview") { runTask = Task { await run() } }
                     .disabled(isRunning)
@@ -48,7 +46,11 @@ struct BuilderScriptDebugView: View {
 
     private func run() async {
         isRunning = true
-        defer { isRunning = false }
+        store.isScriptPreviewRunning = true
+        logExpanded = true
+        channelFilter = "script-preview"
+        store.logEvent("script-preview", "Running JSON script preview")
+        defer { isRunning = false; store.isScriptPreviewRunning = false }
         let baseline = store.builder.document
         let profile = store.activeProfile.profileName
         let project = store.activeProjectID
@@ -95,9 +97,9 @@ struct BuilderScriptDebugView: View {
                     "images": .array(library.images.keys.sorted().map { .string($0) })
                 ])
             ])
-            output = String(decoding: try encoder.encode(report), as: UTF8.self)
+            store.logEvent("script-preview", String(decoding: try encoder.encode(report), as: UTF8.self))
             session.discard()
-        } catch { if !Task.isCancelled { output = error.localizedDescription } }
+        } catch { if !Task.isCancelled { store.logEvent("script-preview", error.localizedDescription) } }
     }
 }
 #endif

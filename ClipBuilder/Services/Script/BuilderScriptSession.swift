@@ -15,6 +15,7 @@ final class BuilderScriptSession {
     let baseline: TimelineDocument
     private(set) var library: ScriptLibrarySnapshot
     private(set) var sceneReport: BuilderSceneReport?
+    private(set) var authoredScript: ScriptAuthorSubmission?
 
     private(set) var prerequisiteEffects: [PrerequisiteEffect] = []
     private(set) var prerequisiteReports: [PrerequisiteReport] = []
@@ -53,6 +54,28 @@ final class BuilderScriptSession {
 
     isolated deinit {
         if hydrationOpen { hydration?.end(runUUID) }
+    }
+
+    func acceptScript(_ submission: ScriptAuthorSubmission) throws {
+        guard state == .ready, authoredScript == nil, identityIsCurrent else {
+            throw ScriptError.invalid("Author session is closed or stale.")
+        }
+        authoredScript = submission
+    }
+
+    /// Authoring completes without normalizing a document or making it applicable.
+    func completeAuthoring() {
+        guard state == .ready else { return }
+        guard authoredScript != nil, identityIsCurrent else {
+            _ = fail("An accepted submit_script is required.")
+            return
+        }
+        working?.cancelPendingAutosave()
+        working = nil
+        candidate = nil
+        frozenCandidate = nil
+        state = .completed
+        endHydration()
     }
 
     func reportScenes(_ report: BuilderSceneReport) throws {

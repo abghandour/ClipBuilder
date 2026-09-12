@@ -225,7 +225,7 @@ struct CuratedWizardSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .help("Render the curated reel to the Library — progress shows in the Generation Log")
+                .help("Render the curated reel to the Library — progress shows in App Log → Generation")
             }
         }
         .padding(.horizontal, 16)

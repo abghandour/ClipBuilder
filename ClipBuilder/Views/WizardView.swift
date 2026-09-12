@@ -234,13 +234,8 @@ struct WizardView: View {
     }
 
     var body: some View {
-        HSplitView {
-            configurationForm
-                .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
-            WizardLogPanel()
-                .rememberedPaneWidth("pane.wizard.log", min: 300, initial: 360, max: 480)
-                .frame(maxHeight: .infinity)
-        }
+        configurationForm
+            .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .screenTitle("AI Wizard", subtitle: store.videos.isEmpty ? "No sources in this project"
                                                  : "\(analyzedSceneCount) scenes available")
@@ -867,7 +862,7 @@ struct WizardView: View {
     private func startGeneration() {
         if store.settings.ai.mutedDispatchPlans.contains(DispatchOperation.generate.rawValue) {
             runWizard()
-            store.wizardLog.append("Model-plan prompt is muted — reset Smart Dispatcher in Settings → AI to show it again.")
+            store.appendLog(\.wizardLog, ["Model-plan prompt is muted — reset Smart Dispatcher in Settings → AI to show it again."])
         } else {
             pendingDispatch = PendingDispatch(operation: .generate) {
                 runWizard()

@@ -9,7 +9,6 @@ struct BuilderView: View {
     @Environment(\.undoManager) private var undoManager
 
     @State private var playingClip: TimelineClip?
-    @State private var showLog = false
     @State private var showPreview = false
     @State private var showScenePicker = false
     @State private var showBRollPicker = false
@@ -63,10 +62,6 @@ struct BuilderView: View {
                     .frame(minHeight: 200, idealHeight: 260, maxHeight: 340)
                     .layoutPriority(2)
 
-                if renderLogVisible {
-                    Divider()
-                    logDrawer
-                }
             }
             .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -83,11 +78,7 @@ struct BuilderView: View {
             .opacity(0)
             .accessibilityHidden(true)
         }
-        .overlay {
-            if store.isPlanningIntoBuilder {
-                PrefillProgressOverlay()
-            }
-        }
+        .disabled(store.isPlanningIntoBuilder)
         .screenTitle(store.openTimeline?.name ?? "Timeline", subtitle: "\(store.activeProject?.name ?? "Project") · \(model.document.videoTrack.count) clips · \(model.totalDuration.timecode)")
         .toolbar {
             // The open timeline's name is the switcher: every timeline in the
@@ -151,14 +142,6 @@ struct BuilderView: View {
                 .help("Switch to another timeline in this project, or create one. ⌥⌘[ and ⌥⌘] cycle.")
             }
             ToolbarItem {
-                Button {
-                    showLog.toggle()
-                } label: {
-                    ToolbarBubbleLabel(text: "Log", systemImage: "text.alignleft")
-                }
-                .help("Show the render log")
-            }
-            ToolbarItem {
                 Button(role: .destructive) {
                     confirmClear = true
                 } label: {
@@ -180,7 +163,6 @@ struct BuilderView: View {
                     .help("Stop the render")
                 } else {
                     Button {
-                        showLog = true
                         store.renderBuilderTimeline()
                     } label: {
                         ToolbarBubbleLabel(text: "Render to Library", systemImage: "play.rectangle.fill")
@@ -264,10 +246,6 @@ struct BuilderView: View {
         .onDeleteCommand {
             deleteSelection()
         }
-    }
-
-    private var renderLogVisible: Bool {
-        showLog || store.isBuilderRendering || store.isBuilderPreviewRendering
     }
 
     private func ensureWizard() {
@@ -393,27 +371,6 @@ struct BuilderView: View {
         .padding(.vertical, Theme.spaceS)
     }
 
-    // MARK: - Log drawer
-
-    private var logDrawer: some View {
-        VStack(spacing: 4) {
-            HStack {
-                Text("Render Log")
-                    .font(.caption.bold())
-                    .foregroundStyle(.secondary)
-                Spacer()
-                LogActions(lines: store.builderLog) { store.builderLog = [] }
-            }
-            .padding(.horizontal, 8)
-            .padding(.top, 6)
-            ActivityLogView(lines: \.builderLog)
-                .padding(.horizontal, 8)
-                .padding(.bottom, 6)
-        }
-        .frame(height: 130)
-        .background(.background.secondary)
-    }
-
     private func deleteSelection() {
         let model = store.builder
         switch model.selection {
@@ -456,41 +413,4 @@ private struct CropStyleMenu: View {
         .disabled(target == nil)
         .help("Change the Screen Crop layout of the selected crop block (or the one at the playhead). Layouts come from Resources > Screen Crop.")
     }
-}
-
-/// Full-screen loading card shown while "Pre-fill Builder" plans a timeline
-/// from a reel template. Isolated so per-line log appends only re-evaluate
-/// this overlay, not the whole Builder.
-private struct PrefillProgressOverlay: View {
-    @Environment(AppStore.self) private var store
-
-    var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(.regularMaterial)
-                .ignoresSafeArea()
-            VStack(spacing: 14) {
-                ProgressView()
-                    .controlSize(.large)
-                Text("Pre-filling from template…")
-                    .font(.headline)
-                Text(store.wizardLog.last ?? "Planning a timeline from the reel's structure")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .frame(maxWidth: 420)
-                    .multilineTextAlignment(.center)
-                Button("Cancel") { store.cancelWizard() }
-                    .controlSize(.small)
-            }
-            .padding(28)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14))
-            .shadow(radius: 24, y: 8)
-        }
-    }
-}
-
-#Preview {
-    BuilderView()
-        .environment(AppStore())
 }

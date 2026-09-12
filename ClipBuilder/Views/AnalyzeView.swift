@@ -28,7 +28,6 @@ struct AnalyzeView: View {
     @State private var showingProjectVideoPicker = false
     @State private var showingProjectFromSelection = false
     @State private var newProjectName = ""
-    @AppStorage("analyze.activity.expanded") private var activityExpanded = false
 
     /// The video the preview pane shows — follows `selection` one run-loop
     /// turn behind it (see `syncPreview`).
@@ -130,13 +129,7 @@ struct AnalyzeView: View {
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity)
-            Divider()
-            AnalysisActivityBar(isExpanded: $activityExpanded)
-            if activityExpanded {
-                AnalysisLogPanel()
-                    .frame(minHeight: 140, maxHeight: 260)
-                Divider()
-            }
+
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $showingDriveBrowser) { GoogleDriveBrowserSheet() }
@@ -574,50 +567,6 @@ private final class NameTapTracker {
     var last: (id: Int64, at: Date)?
 }
 
-/// A compact activity summary leaves the footage table useful until a person
-/// actively needs the detailed log.
-private struct AnalysisActivityBar: View {
-    @Environment(AppStore.self) private var store
-    @Binding var isExpanded: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Button {
-                isExpanded.toggle()
-            } label: {
-                Label(isExpanded ? "Hide Activity" : "Show Activity",
-                      systemImage: isExpanded ? "chevron.down" : "chevron.right")
-            }
-            .buttonStyle(.plain)
-
-            if store.isAnalyzing {
-                ProgressView(value: store.analysisProgress)
-                    .frame(width: 110)
-                Text(store.analysisStage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Button("Stop", systemImage: "stop.circle") {
-                    store.cancelAnalysis()
-                }
-                .controlSize(.small)
-            } else if let last = store.analysisLog.last, !last.isEmpty {
-                Text(last)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            } else {
-                Text("Select videos, then choose Analyze.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-    }
-}
-
 /// Inline player for the single selected source video — watch the footage
 /// before deciding to analyze (or re-analyze) it.
 private struct VideoPreviewPane: View {
@@ -892,41 +841,5 @@ private struct VideoPreviewPane: View {
             player?.pause()
             player = nil
         }
-    }
-}
-
-/// Isolated so per-tick progress/log updates don't re-evaluate the whole
-/// Analyze screen (including the videos table) on every appended line.
-private struct AnalysisLogPanel: View {
-    @Environment(AppStore.self) private var store
-    @AppStorage("log.verbose") private var verboseLog = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Activity")
-                    .font(.headline)
-                Toggle("Verbose", isOn: $verboseLog)
-                    .toggleStyle(.checkbox)
-                    .controlSize(.small)
-                    .help("Log the full prompt sent to the AI for every call")
-                LogActions(lines: store.analysisLog) { store.analysisLog = [] }
-                Spacer()
-                if store.isAnalyzing {
-                    Text(store.analysisStage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ProgressView(value: store.analysisProgress)
-                        .frame(width: 180)
-                    Button("Stop", systemImage: "stop.circle") {
-                        store.cancelAnalysis()
-                    }
-                    .controlSize(.small)
-                    .help("Stop the analysis")
-                }
-            }
-            ActivityLogView(lines: \.analysisLog)
-        }
-        .padding()
     }
 }

@@ -17,6 +17,7 @@ final class ScriptLibraryModel {
     private(set) var message = ""
     private(set) var busy = false
     private(set) var editingID: UUID?
+    private(set) var origin: BuilderScriptRecord.Origin = .human
     @ObservationIgnored private let database: Database?
     @ObservationIgnored private var generation = 0
 
@@ -31,9 +32,25 @@ final class ScriptLibraryModel {
 
     func open(_ record: BuilderScriptRecord?, capture: ScriptCapture) {
         generation += 1
-        self.capture = capture; editingID = record?.id
+        self.capture = capture; editingID = record?.id; origin = record?.origin ?? .human
         source = record?.source ?? Self.newSource
         parse()
+    }
+
+    func openAuthored(_ submission: ScriptAuthorSubmission, capture: ScriptCapture) throws {
+        open(nil, capture: capture)
+        source = submission.source
+        origin = .ai
+        parse()
+        let samples = try JSONDecoder().decode([String: ScriptValue].self, from: submission.sampleParams)
+        for (name, value) in samples {
+            switch value {
+            case .string(let text): values[name] = text
+            case .number(let number): values[name] = String(number)
+            case .bool(let flag): values[name] = flag ? "true" : "false"
+            default: break
+            }
+        }
     }
 
     func parse() {
@@ -123,7 +140,7 @@ final class ScriptLibraryModel {
     func save() async throws -> BuilderScriptRecord {
         _ = try ScriptHeader.parse(source)
         guard let database else { throw ScriptError.invalid("Profile database is unavailable.") }
-        let record = try await database.saveBuilderScript(source: source, id: editingID ?? UUID())
+        let record = try await database.saveBuilderScript(source: source, id: editingID ?? UUID(), origin: origin)
         editingID = record.id; selectedID = record.id
         await refresh()
         message = "Saved."

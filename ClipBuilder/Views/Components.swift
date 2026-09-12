@@ -2,37 +2,7 @@ import SwiftUI
 import AVKit
 import Vision
 
-/// Live log lines in an isolated view: it reads the store array through a
-/// key path in its own body, so per-line appends invalidate just this view
-/// instead of the whole surrounding screen.
-struct ActivityLogView: View {
-    @Environment(AppStore.self) private var store
-    let lines: KeyPath<AppStore, [String]>
-
-    var body: some View {
-        let log = store[keyPath: lines]
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(log.indices, id: \.self) { index in
-                        Text(log[index])
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .id(index)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .onChange(of: log.count) {
-                proxy.scrollTo(log.count - 1, anchor: .bottom)
-            }
-        }
-    }
-}
-
-/// Copy + clear buttons for a log panel header — used beside every
-/// Activity/Wizard log the app shows.
+/// Copy and clear the messages shown by App Log.
 struct LogActions: View {
     let lines: [String]
     let clear: () -> Void
