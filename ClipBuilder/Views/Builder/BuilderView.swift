@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Clip Builder: scene browser on the left; preview + inspector above the
 /// multi-track timeline on the right; Generate renders through the
@@ -116,6 +117,25 @@ struct BuilderView: View {
                     }
                     Divider()
                     #if DEBUG
+                    Button("Run JavaScript File…", systemImage: "curlybraces") {
+                        let panel = NSOpenPanel()
+                        panel.allowedContentTypes = [.javaScript]
+                        panel.allowsMultipleSelection = false
+                        panel.canChooseDirectories = false
+                        panel.begin { response in
+                            guard response == .OK, let url = panel.url else { return }
+                            let wizard = WizardSheetModel(store: store)
+                            showWizard(wizard)
+                            do {
+                                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                                guard data.count <= 256 * 1024, let source = String(data: data, encoding: .utf8) else {
+                                    throw ScriptError.invalid("Expected a UTF-8 JavaScript file of at most 256 KiB.")
+                                }
+                                wizard.beginJavaScript(source: source)
+                            } catch { wizard.refuseJavaScriptFile(error) }
+                        }
+                    }
+                    .help("Run a JavaScript file with header defaults, then review and Apply manually.")
                     Button("Preview JSON Script…", systemImage: "curlybraces") {
                         showScriptPreview = true
                     }

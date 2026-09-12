@@ -20,7 +20,7 @@ final class BuilderScriptSession {
     private var runningPrerequisites = false
     private var activePrerequisite: Task<PrerequisiteReport, Never>?
     private let live: BuilderTimelineModel
-    private let hydration: BuilderLibraryHydration
+    private let hydration: BuilderLibraryHydration?
     private var hydrationOpen = true
     private(set) var state: State = .ready
     private(set) var candidate: TimelineDocument?
@@ -29,9 +29,10 @@ final class BuilderScriptSession {
     private var working: BuilderTimelineModel?
     private var frozenDiff: TimelineDiff?
 
-    init(live: BuilderTimelineModel, library: ScriptLibrarySnapshot, hydration: BuilderLibraryHydration? = nil) {
+    init(live: BuilderTimelineModel, library: ScriptLibrarySnapshot, hydration: BuilderLibraryHydration? = nil, ownsHydration: Bool = true) {
         self.live = live
-        self.hydration = hydration ?? live.scriptLibraryHydration
+        self.hydration = ownsHydration ? (hydration ?? live.scriptLibraryHydration) : nil
+        hydrationOpen = ownsHydration
         baselineRevision = live.revision
         timelineID = live.timelineID
         profileName = live.profileName
@@ -45,11 +46,11 @@ final class BuilderScriptSession {
                        playhead: live.playhead, focusedTrack: live.focusedTrack, zoom: live.pointsPerSecond)
         }
         working = model
-        self.hydration.begin(runUUID)
+        self.hydration?.begin(runUUID)
     }
 
     isolated deinit {
-        if hydrationOpen { hydration.end(runUUID) }
+        if hydrationOpen { hydration?.end(runUUID) }
     }
 
     func reportScenes(_ report: BuilderSceneReport) throws {
@@ -253,7 +254,7 @@ final class BuilderScriptSession {
     private func endHydration() {
         guard hydrationOpen else { return }
         hydrationOpen = false
-        hydration.end(runUUID)
+        hydration?.end(runUUID)
     }
 
     /// Read-only access to the same transient model used by scripts.
@@ -269,6 +270,10 @@ final class BuilderScriptSession {
                 return id
             }
         }
+    }
+
+    var identityIsCurrent: Bool {
+        live.timelineID == timelineID && live.profileName == profileName && live.revision == baselineRevision
     }
 
     var workingSelection: TimelineSelection? { working?.selection }

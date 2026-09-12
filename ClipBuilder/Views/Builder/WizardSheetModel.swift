@@ -12,6 +12,8 @@ final class WizardSheetModel {
     var provider: BuilderAgentProvider = .local
     private(set) var agentEvents: [BuilderRunEvent] = []
     private(set) var agentSummary = ""
+    @ObservationIgnored private var scriptRun: ScriptRunModel?
+    @ObservationIgnored private var pendingJavaScript: (source: String, header: ScriptHeader, params: Data)?
     @ObservationIgnored private var agentRun: BuilderAgentRun?
     @ObservationIgnored private var pendingAgent = false
     @ObservationIgnored private var runProvider: BuilderAgentProvider = .local
@@ -205,6 +207,118 @@ final class WizardSheetModel {
         store.saveSettings()
     }
 
+    func refuseJavaScriptFile(_ error: any Error) {
+        reasons = [error.localizedDescription]
+        phase = .refused
+        appendLog(error.localizedDescription)
+    }
+
+    /// S1 debug entry point; S2 can supply its parameter form's JSON here.
+    func beginJavaScript(source: String, params: Data = Data("{}".utf8)) {
+        guard task == nil, !busy else { return }
+        task = Task { await previewJavaScript(source: source, params: params); task = nil }
+    }
+
+    func previewJavaScript(source: String, params: Data = Data("{}".utf8)) async {
+        guard !busy, !dismissed else { return }
+        await discard()
+        guard identityMatches, !dismissed else { failure = .identityChanged; return }
+        generation += 1
+        let token = generation
+        let revision = store.builder.revision
+        phase = .running
+        reasons = []; failure = nil; agentEvents = []; agentSummary = ""; log = []
+        agentAuditSaved = false; agentProvenance = nil; persistentEffects = []; prerequisiteDisclosures = []
+        pendingJavaScript = nil; pendingSteps = nil; pendingAgent = false
+        diff = nil; diffLines = []; results = []; resultReasons = [:]; findContext = nil; finding = false
+        do {
+            let header = try ScriptHeader.parse(source)
+            let library = try await loadLibrary()
+            try Task.checkCancellation()
+            guard identityMatches, token == generation, !dismissed, library.projectID == projectID else {
+                throw ApplyFailure.identityChanged
+            }
+            guard store.builder.revision == revision else { throw ApplyFailure.staleRevision }
+            let capture = ScriptCapture(model: store.builder, library: library)
+            let (resolved, commands) = try header.resolve(params, capture: capture)
+            request = header.name
+            runRequest = header.name
+            finding = header.mode == "find"
+            if finding {
+                findContext = ParserContext(library: library, model: store.builder)
+                findRevision = revision
+            }
+            let session = BuilderScriptSession(live: store.builder, library: library, hydration: store.builderLibraryHydration)
+            self.session = session
+            if !commands.isEmpty {
+                pendingJavaScript = (source, header, resolved)
+                pendingSteps = commands.map { BuilderScriptStep($0) }
+                prerequisiteDisclosures = commands.compactMap { $0.prerequisite.map { "Video \($0.video): \($0.kind.disclosure)" } }
+                phase = .awaitingPrerequisites
+            } else {
+                await executeJavaScript(source: source, header: header, params: resolved, session: session, confirmed: [], token: token)
+            }
+        } catch {
+            failure = error as? ApplyFailure
+            reasons = [failureMessage ?? error.localizedDescription]
+            phase = .refused
+        }
+    }
+
+    private func executeJavaScript(source: String, header: ScriptHeader, params: Data,
+                                   session: BuilderScriptSession, confirmed: [BuilderCommand], token: Int) async {
+        let library = session.library
+        let language = store.settings.transcribeLanguage
+        let profileGeneration = store.profileGeneration
+        let run = ScriptRunModel(session: session, header: header, params: params, confirmed: confirmed,
+            ensure: { [self] steps in
+                await session.run(steps, prerequisites: prerequisites, confirmed: true,
+                    refreshLibrary: { [database] in
+                        guard let database else { throw ApplyFailure.identityChanged }
+                        return try await library.refreshed(database: database, language: language)
+                    }, identityMatches: { [self] in identityMatches && !dismissed && token == generation })
+            }, identityMatches: { [self] in identityMatches && !dismissed && token == generation })
+        scriptRun = run
+        run.onLog = { [weak self] text in self?.appendLog(text) }
+        run.coordinator.onEvent = { [weak self] event in self?.agentEvents.append(event) }
+        do { runRequest = try run.requestText() }
+        catch { reasons = [error.localizedDescription]; phase = .refused; scriptRun = nil; session.discard(); self.session = nil; return }
+        await run.run(source: source, record: { [database] record in
+            guard let database else { throw ApplyFailure.persistence("Captured database is unavailable.") }
+            try await database.recordBuilderRun(record)
+        })
+        duration = run.duration
+        agentProvenance = AIProvenance(provider: "script", model: header.name, duration: duration)
+        agentSummary = run.summary
+        agentAuditSaved = run.diagnostic?.code != "persistence"
+        persistentEffects = session.prerequisiteEffects
+        scriptRun = nil
+        if identityMatches, let database, !persistentEffects.isEmpty {
+            do {
+                let snapshot = try await database.fetchLibrarySnapshot(projectID: projectID)
+                if identityMatches { store.applyLibrarySnapshot(snapshot, generation: profileGeneration) }
+            } catch { appendLog("Saved Library work could not be refreshed.") }
+        }
+        guard !dismissed, token == generation else { return }
+        diff = session.diff()
+        diffLines = BuilderWizardDiff.lines(session: session, steps: run.coordinator.tools.executedSteps)
+        phase = session.state == .completed && run.diagnostic == nil ? .preview : .refused
+        if let diagnostic = run.diagnostic {
+            reasons = [diagnostic.reason + (diagnostic.line.map { " (line \($0))" } ?? "")]
+            appendLog(reasons[0])
+        }
+        if finding, phase == .preview, let report = session.sceneReport {
+            results = report.scenes.compactMap { entry in session.library.scenes.first { $0.id == entry.id } }
+            resultReasons = Dictionary(uniqueKeysWithValues: report.scenes.map { ($0.id, $0.reason) })
+            phase = .found
+            self.session = nil
+            session.discard()
+        } else if phase == .refused {
+            session.discard()
+            self.session = nil
+        }
+    }
+
     func beginRun() {
         guard task == nil, !busy else { return }
         task = Task { await run(); task = nil }
@@ -370,6 +484,12 @@ final class WizardSheetModel {
               let steps = pendingSteps, let session else { return }
         pendingSteps = nil
         phase = .running
+        if let pending = pendingJavaScript {
+            pendingJavaScript = nil
+            await executeJavaScript(source: pending.source, header: pending.header, params: pending.params,
+                                    session: session, confirmed: steps.map(\.command), token: generation)
+            return
+        }
         if pendingAgent {
             pendingAgent = false
             await executeAgent(session: session, confirmed: steps.map(\.command), token: generation)
@@ -496,12 +616,17 @@ final class WizardSheetModel {
         self.session = nil
         // The captured database/timeline remain the audit owner after a switch.
         // Clear preview synchronously before suspension, but retain its immutable identity.
+        let drainingScript = scriptRun
+        drainingScript?.cancel()
+        await drainingScript?.drain()
         let record = BuilderRunRecord(runUUID: session.runUUID, timelineID: session.timelineID ?? 0,
                                       request: runRequest, provider: provenance.provider, model: provenance.model, durationSeconds: duration,
                                       status: .discarded, baselineRevision: session.baselineRevision)
         let alreadyFailed = agentAuditSaved && (session.state == .failed || finding)
+        scriptRun?.cancel()
         agentRun?.cancel()
         session.discard()
+        pendingJavaScript = nil
         pendingSteps = nil
         phase = .discarded
         appendLog("No timeline changes applied." + (persistentEffects.isEmpty ? "" : " Library work already saved remains."))
@@ -512,6 +637,7 @@ final class WizardSheetModel {
 
     func cancelRun() {
         guard phase == .running else { return }
+        scriptRun?.cancel()
         agentRun?.cancel()
         task?.cancel()
         appendLog("Cancelling and waiting for Library work to stop…")
@@ -522,6 +648,7 @@ final class WizardSheetModel {
         guard !dismissed else { return }
         dismissed = true
         generation += 1
+        scriptRun?.cancel()
         agentRun?.cancel()
         let draining = task
         draining?.cancel()
@@ -579,6 +706,7 @@ final class WizardSheetModel {
         if let agentExecutor { run = BuilderAgentRun(provider: runProvider, model: runModel, tools: tools, executor: agentExecutor) }
         else { run = BuilderAgentRun(provider: runProvider, model: runModel, tools: tools) }
         agentRun = run
+        run.endpoint.coordinator.identityMatches = { [self] in identityMatches && !dismissed && token == generation }
         run.endpoint.onEvent = { [weak self] event in
             guard let self, !self.dismissed, token == self.generation else { return }
             self.agentEvents.append(event)

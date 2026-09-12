@@ -8,7 +8,11 @@ nonisolated enum BuilderRunPersistence {
             INSERT INTO builder_runs (run_uuid, timeline_id, request, created_at, provider, model,
                 duration_seconds, status, baseline_revision, applied_revision, summary,
                 library_effects_json, events_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(run_uuid) DO UPDATE SET status = excluded.status, applied_revision = excluded.applied_revision
+            ON CONFLICT(run_uuid) DO UPDATE SET status = excluded.status, applied_revision = excluded.applied_revision,
+                events_json = CASE WHEN excluded.provider = 'script' AND excluded.status = 'failed'
+                    THEN excluded.events_json ELSE builder_runs.events_json END,
+                summary = CASE WHEN excluded.provider = 'script' AND excluded.status = 'failed'
+                    THEN excluded.summary ELSE builder_runs.summary END
             WHERE builder_runs.timeline_id = excluded.timeline_id AND builder_runs.status = 'completed'
                 AND excluded.status IN ('applied', 'failed', 'discarded')
             """, [.text(run.runUUID), .integer(run.timelineID), .text(run.request), .text(run.createdAt),

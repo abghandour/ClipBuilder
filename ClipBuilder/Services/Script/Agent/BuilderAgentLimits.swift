@@ -56,7 +56,14 @@ final class BuilderRunBudget {
 
     init(_ limits: BuilderAgentLimits) { self.limits = limits.bounded }
 
+    var scriptClock: ScriptExecutionControl?
+
     func checkTime() throws {
+        if let scriptClock {
+            if let reason = scriptClock.reason { throw BuilderBudgetExceeded(reason: reason) }
+            try Task.checkCancellation()
+            return
+        }
         guard started.duration(to: .now) < .seconds(limits.wallSeconds) else {
             throw BuilderBudgetExceeded(reason: "Agent wall-time budget exhausted.")
         }

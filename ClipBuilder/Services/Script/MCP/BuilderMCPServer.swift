@@ -12,31 +12,31 @@ final class BuilderMCPServer {
     private let requestDeadline: Duration
     private(set) var token = UUID().uuidString + UUID().uuidString
     private(set) var port: UInt16 = 0
-    private(set) var events: [BuilderRunEvent] = []
-    var onEvent: (@MainActor (BuilderRunEvent) -> Void)?
+    let coordinator: BuilderRunCoordinator
+    var events: [BuilderRunEvent] { coordinator.events }
+    var onEvent: (@MainActor (BuilderRunEvent) -> Void)? {
+        get { coordinator.onEvent }
+        set { coordinator.onEvent = newValue }
+    }
     var onStop: (@MainActor () -> Void)?
     private var busy = false
     private(set) var stopping = false
-    private var active: Task<Data, any Error>?
-    private var activeHandler: Task<CallTool.Result, Never>?
     private var activeRequestID: String?
-    private var seen: [String: (fingerprint: Data, response: HTTPResponse)] = [:]
-    private var cachedBytes = 0
+    private var responses: [String: HTTPResponse] = [:]
     private var host: MCPHTTPHost?
-    private var terminalRecorded = false
-    private var redactor = BuilderRunRedactor()
 
     init(tools: BuilderTools, requestDeadline: Duration = .seconds(30)) {
         self.tools = tools
+        coordinator = BuilderRunCoordinator(tools: tools)
         self.requestDeadline = max(.milliseconds(10), min(.seconds(30), requestDeadline))
     }
-    var hasActiveCall: Bool { busy || activeHandler != nil }
+    var hasActiveCall: Bool { busy || coordinator.hasActiveCall }
     var url: URL { URL(string: "http://127.0.0.1:\(port)/mcp")! }
     func bind(port: UInt16) { self.port = port }
 
     func start() async throws {
         guard !stopping, host == nil else { throw ScriptError.invalid("Endpoint cannot restart.") }
-        redactor = BuilderRunRedactor(secrets: [token])
+        coordinator.redactor = BuilderRunRedactor(secrets: [token])
         try await server.start(transport: transport)
         await server.withMethodHandler(Initialize.self) { _ in
             Initialize.Result(protocolVersion: Self.wireVersion, capabilities: .init(tools: .init()),
@@ -57,107 +57,16 @@ final class BuilderMCPServer {
     }
 
     private func call(name: String, arguments: [String: Value]) async -> CallTool.Result {
-        guard !stopping, activeHandler == nil else { return refusal("Run closed or busy.") }
-        // Own the entire callback, including result encoding and audit writes.
-        // Draining just tools.call would allow a late encoding/log failure to
-        // invalidate a session after freeze.
-        let handler = Task { await performCall(name: name, arguments: arguments) }
-        activeHandler = handler
-        let result = await handler.value
-        activeHandler = nil
-        return result
-    }
-
-    private func performCall(name: String, arguments: [String: Value]) async -> CallTool.Result {
-        guard !stopping, !Task.isCancelled, active == nil else { return refusal("Run closed or busy.") }
-        do { try tools.budget.chargeLog(2048) }
-        catch {
-            _ = tools.session.fail("Agent log budget exhausted.")
-            return refusal("Agent log budget exhausted.")
-        }
-        let started = Date.now
-        let requestID = activeRequestID
-        let argumentBytes = (try? JSONEncoder().encode(arguments).count) ?? 0
-        let task = Task { try await tools.call(name: name, arguments: arguments) }
-        active = task
-        var data: Data
-        var outcome: BuilderRunEvent.Outcome = .completed
-        var detail: String?
-        do {
-            data = try await task.value
-            let result = try? JSONDecoder().decode(BuilderScriptResult.self, from: data)
-            if tools.session.state == .failed || (name == "run_script" && result?.completed == false) {
-                outcome = .refused
-                detail = result?.outcomes.compactMap {
-                    if case .refused(_, let reason) = $0 { reason } else { nil }
-                }.joined(separator: "; ")
-            }
-        } catch {
-            outcome = error is CancellationError ? .cancelled : .refused
-            let reason = redactor.text(error.localizedDescription)
-            detail = reason
-            // Read-only errors and refused script lists are retryable.
-            // Budget failures and cancellation still terminate the run.
-            if (!BuilderTools.isReadOnly(name) && name != "run_script") || error is CancellationError || error is BuilderBudgetExceeded {
-                _ = tools.session.fail(reason)
-            }
-            data = (try? JSONEncoder().encode(CommandOutcome.refused(code: outcome.rawValue, reason: reason))) ?? Data()
-        }
-        active = nil
-        // Sanitize string values before encoding so redaction cannot corrupt
-        // JSON syntax. Record the actual encoded size and any encoding refusal.
-        do {
-            let value = try JSONDecoder().decode(Value.self, from: data)
-            let safe = try JSONEncoder().encode(sanitize(value))
-            guard safe.count <= tools.budget.limits.resultBytes else { throw ScriptError.invalid("Result payload limit.") }
-            data = safe
-        } catch {
-            outcome = .refused
-            detail = "Result could not be safely encoded."
-            _ = tools.session.fail(detail ?? "Result encoding failed.")
-            data = (try? JSONEncoder().encode(CommandOutcome.refused(code: "result_limit", reason: "Result could not be safely encoded."))) ?? Data()
-        }
-        let text = String(decoding: data, as: UTF8.self)
-        let event = BuilderRunEvent(runID: tools.session.runUUID, sequence: events.count + 1,
-            requestID: requestID.map { redactor.text($0, limit: 128) },
-            toolName: tools.definitions.contains(where: { $0.name == name }) ? name : "unavailable_tool",
-            sanitizedArguments: redactor.arguments(Array(arguments.keys)), argumentBytes: argumentBytes,
-            outcome: outcome, message: detail.map { redactor.text($0, limit: 256) }, resultBytes: data.count, duration: Date.now.timeIntervalSince(started))
-        do {
-            try tools.budget.chargeLog(max(0, JSONEncoder().encode(event).count - 2048))
-            events.append(event)
-            onEvent?(event)
-        } catch {
-            _ = tools.session.fail("Agent log budget exhausted.")
-            return refusal("Agent log budget exhausted.")
-        }
-        return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: outcome != .completed)
-    }
-
-    private func sanitize(_ value: Value) -> Value {
-        switch value {
-        case .string(let text): .string(redactor.text(text, limit: tools.budget.limits.resultBytes))
-        case .array(let values): .array(values.map { sanitize($0) })
-        case .object(let fields): .object(fields.mapValues { sanitize($0) })
-        default: value
-        }
+        coordinator.currentRequestID = activeRequestID
+        return await coordinator.call(name: name, arguments: arguments)
     }
 
     func finishEvent(outcome: BuilderRunEvent.Outcome, message: String?, duration: Double) {
-        guard !terminalRecorded else { return }
-        terminalRecorded = true
-        let event = BuilderRunEvent(runID: tools.session.runUUID, sequence: events.count + 1,
-            outcome: outcome, message: message.map { redactor.text($0, limit: 256) }, duration: duration)
-        events.append(event)
-        onEvent?(event)
-    }
-
-    private func refusal(_ reason: String) -> CallTool.Result {
-        .init(content: [.text(text: "{\"status\":\"refused\",\"reason\":\"\(reason)\"}", annotations: nil, _meta: nil)], isError: true)
+        coordinator.finishEvent(outcome: outcome, message: message, duration: duration)
     }
 
     func handle(_ request: HTTPRequest) async -> HTTPResponse {
-        guard !stopping else { return .error(statusCode: 503, .internalError("Run stopped")) }
+        guard !stopping, !coordinator.stopping else { return .error(statusCode: 503, .internalError("Run stopped")) }
         guard request.header("Authorization") == "Bearer \(token)" else {
             return .error(statusCode: 401, .invalidRequest("Unauthorized"), extraHeaders: ["WWW-Authenticate": "Bearer realm=\"clipbuilder\""])
         }
@@ -191,9 +100,9 @@ final class BuilderMCPServer {
             if case .object(let params) = rpc["params"], let id = params["requestId"],
                Self.idKey(id) == activeRequestID {
                 revoke()
-                active?.cancel()
+                coordinator.revoke()
                 await stop()
-                _ = tools.session.fail("Agent request cancelled.")
+                coordinator.terminate("Agent request cancelled.")
             }
             return response
         }
@@ -206,32 +115,25 @@ final class BuilderMCPServer {
         }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         guard let fingerprint = try? encoder.encode(rpc) else { return .error(statusCode: 400, .invalidRequest("Invalid envelope")) }
-        if let prior = seen[key] {
-            guard prior.fingerprint == fingerprint else {
-                _ = tools.session.fail("Request ID reused with different arguments.")
-                return .error(statusCode: 409, .invalidRequest("Request ID reused with different arguments"))
+        do {
+            if try coordinator.cached(id: key, fingerprint: fingerprint) != nil, let response = responses[key] {
+                return response
             }
-            return prior.response
+        } catch is BuilderBudgetExceeded {
+            return .error(statusCode: 429, .invalidRequest("Request budget exhausted"))
+        } catch {
+            return .error(statusCode: 409, .invalidRequest("Request ID reused with different arguments"))
         }
         guard !busy else { return .error(statusCode: 409, .invalidRequest("One call at a time")) }
-        guard seen.count < 256, cachedBytes + fingerprint.count <= 16 * 1024 * 1024 else {
-            _ = tools.session.fail("Request deduplication budget exhausted.")
-            return .error(statusCode: 429, .invalidRequest("Request budget exhausted"))
-        }
         do { try tools.budget.checkTime() } catch {
-            _ = tools.session.fail("Agent wall-time budget exhausted.")
+            coordinator.terminate("Agent wall-time budget exhausted.")
             return .error(statusCode: 429, .invalidRequest("Run deadline exceeded"))
         }
         busy = true; activeRequestID = key
         defer { busy = false; activeRequestID = nil }
         let response = await transport.handleRequest(request)
-        let bytes = fingerprint.count + (response.bodyData?.count ?? 0)
-        if cachedBytes + bytes <= 16 * 1024 * 1024 {
-            seen[key] = (fingerprint, response); cachedBytes += bytes
-        } else {
-            revoke()
-            _ = tools.session.fail("Request deduplication budget exhausted.")
-        }
+        coordinator.cache(id: key, fingerprint: fingerprint, response: response.bodyData ?? Data())
+        responses[key] = response
         return response
     }
 
@@ -245,21 +147,20 @@ final class BuilderMCPServer {
 
     func revoke() {
         let wasStopping = stopping
-        stopping = true; token = ""; active?.cancel(); activeHandler?.cancel()
+        stopping = true; token = ""; coordinator.revoke()
         if !wasStopping { onStop?() }
     }
 
     /// Host calls this after revocation, before closing sockets.
     func stop() async {
         revoke()
-        let draining = activeHandler
         await server.stop()
-        _ = await draining?.value
+        await coordinator.drain()
     }
 
     func shutdown() async {
         if let host { await host.stop() } else { await stop() }
         host = nil
-        seen.removeAll(); cachedBytes = 0
+        responses.removeAll()
     }
 }
