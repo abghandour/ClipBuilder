@@ -6,6 +6,12 @@ import Observation
 @MainActor @Observable
 final class WizardSheetModel {
     enum Phase: Equatable { case idle, awaitingPrerequisites, running, preview, found, unrecognised, refused, applying, applied, discarded }
+    let scriptLibrary: ScriptLibraryModel
+    private(set) var replayExport = ScriptReplayExport(reason: "Complete a run to save its replay.")
+    private(set) var verifyingReplay = false
+    @ObservationIgnored private var retainedReplay: ScriptReplayTranscript?
+    @ObservationIgnored private var replayTask: Task<Void, Never>?
+    @ObservationIgnored private var activeScriptID: UUID?
     var request = ""
     private(set) var examples = BuilderRequestParser.supportedRequests(library: ScriptLibrarySnapshot())
     private var prefillExamples = false
@@ -71,6 +77,7 @@ final class WizardSheetModel {
         self.agentExecutor = agentExecutor
         self.prerequisites = prerequisites ?? store.builderPrerequisites
         database = store.database
+        scriptLibrary = ScriptLibraryModel(database: store.database)
         historyStore = history
         profile = store.builder.profileName
         timelineID = store.builder.timelineID
@@ -83,6 +90,60 @@ final class WizardSheetModel {
             guard let store else { throw ApplyFailure.identityChanged }
             return try await BuilderWizardLibrary.snapshot(store: store)
         }
+    }
+
+    var scriptRevision: Int { store.builder.revision }
+
+    func captureForScript() async throws -> ScriptCapture {
+        guard identityMatches, !dismissed else { throw ApplyFailure.identityChanged }
+        let revision = store.builder.revision
+        let library = try await loadLibrary()
+        guard identityMatches, library.projectID == projectID, !dismissed else { throw ApplyFailure.identityChanged }
+        guard revision == store.builder.revision else { throw ApplyFailure.staleRevision }
+        return ScriptCapture(model: store.builder, library: library)
+    }
+
+    func runLibraryScript() throws {
+        guard let capture = scriptLibrary.capture, capture.matches(store.builder), identityMatches else {
+            scriptLibrary.invalidate()
+            throw ApplyFailure.staleRevision
+        }
+        let params = try scriptLibrary.parameters()
+        activeScriptID = scriptLibrary.editingID
+        beginJavaScript(source: scriptLibrary.source, params: params, expectedCapture: capture)
+    }
+
+    private func resetReplay() {
+        replayTask?.cancel(); replayTask = nil; retainedReplay = nil
+        verifyingReplay = false
+        replayExport = .init(reason: "Complete a run to save its replay.")
+    }
+
+    private func retainReplay(_ session: BuilderScriptSession) {
+        guard session.state == .completed, !finding else { return }
+        let transcript = session.replay
+        retainedReplay = transcript
+        let token = generation
+        let name = runRequest
+        replayTask?.cancel()
+        verifyingReplay = true
+        replayExport = .init(reason: "Checking replay equivalence…")
+        replayTask = Task { [weak self] in
+            let result = await ScriptReplayExporter.verify(transcript, name: name)
+            guard let self, !Task.isCancelled, token == self.generation else { return }
+            self.replayExport = result
+            self.verifyingReplay = false
+            self.replayTask = nil
+        }
+    }
+
+    func saveReplay() async {
+        guard let source = replayExport.source, let database, identityMatches else { return }
+        do {
+            let record = try await database.saveBuilderScript(source: source)
+            scriptLibrary.selectedID = record.id
+            await scriptLibrary.refresh()
+        } catch { scriptLibrary.fail(error) }
     }
 
     func refreshExamples() async {
@@ -213,17 +274,22 @@ final class WizardSheetModel {
         appendLog(error.localizedDescription)
     }
 
-    /// S1 debug entry point; S2 can supply its parameter form's JSON here.
-    func beginJavaScript(source: String, params: Data = Data("{}".utf8)) {
+    /// Shared debug/file and saved-library entry point.
+    func beginJavaScript(source: String, params: Data = Data("{}".utf8), expectedCapture: ScriptCapture? = nil) {
         guard task == nil, !busy else { return }
-        task = Task { await previewJavaScript(source: source, params: params); task = nil }
+        if expectedCapture == nil { activeScriptID = nil }
+        task = Task { await previewJavaScript(source: source, params: params, expectedCapture: expectedCapture); task = nil }
     }
 
-    func previewJavaScript(source: String, params: Data = Data("{}".utf8)) async {
+    func previewJavaScript(source: String, params: Data = Data("{}".utf8), expectedCapture: ScriptCapture? = nil) async {
         guard !busy, !dismissed else { return }
         await discard()
         guard identityMatches, !dismissed else { failure = .identityChanged; return }
+        if let expectedCapture, !expectedCapture.matches(store.builder) {
+            failure = .staleRevision; phase = .refused; scriptLibrary.invalidate(); return
+        }
         generation += 1
+        resetReplay()
         let token = generation
         let revision = store.builder.revision
         phase = .running
@@ -233,7 +299,9 @@ final class WizardSheetModel {
         diff = nil; diffLines = []; results = []; resultReasons = [:]; findContext = nil; finding = false
         do {
             let header = try ScriptHeader.parse(source)
-            let library = try await loadLibrary()
+            let library: ScriptLibrarySnapshot
+            if let expectedCapture { library = expectedCapture.library }
+            else { library = try await loadLibrary() }
             try Task.checkCancellation()
             guard identityMatches, token == generation, !dismissed, library.projectID == projectID else {
                 throw ApplyFailure.identityChanged
@@ -303,6 +371,12 @@ final class WizardSheetModel {
         diff = session.diff()
         diffLines = BuilderWizardDiff.lines(session: session, steps: run.coordinator.tools.executedSteps)
         phase = session.state == .completed && run.diagnostic == nil ? .preview : .refused
+        if phase == .preview { retainReplay(session) }
+        if let id = activeScriptID, let database {
+            do { try await database.markBuilderScriptRun(id: id, status: phase == .preview ? .completed : .failed) }
+            catch { scriptLibrary.fail(error) }
+            await scriptLibrary.refresh()
+        }
         if let diagnostic = run.diagnostic {
             reasons = [diagnostic.reason + (diagnostic.line.map { " (line \($0))" } ?? "")]
             appendLog(reasons[0])
@@ -327,10 +401,12 @@ final class WizardSheetModel {
     func run(program suppliedProgram: BuilderProgram? = nil) async {
         guard !busy, !dismissed else { return }
         isStarting = true
+        activeScriptID = nil
         defer { isStarting = false }
         await discard()
         guard !dismissed, identityMatches else { failure = .identityChanged; return }
         generation += 1
+        resetReplay()
         let token = generation
         let revision = store.builder.revision
         runProvider = provider
@@ -342,7 +418,8 @@ final class WizardSheetModel {
         historyStore.add(runRequest, profile: profile)
         history = historyStore.requests(profile: profile)
         phase = .running
-        log = ["Collecting the current Library snapshot…"]
+        log = []
+        appendLog("Collecting the current Library snapshot…")
         reasons = []; failure = nil; diff = nil; diffLines = []; results = []; resultReasons = [:]; findContext = nil; finding = false
         pendingSteps = nil; reparseAfterPrerequisites = false; prerequisiteDisclosures = []; persistentEffects = []
         agentEvents = []; agentSummary = ""; agentProvenance = nil; agentAuditSaved = false; pendingAgent = false
@@ -469,6 +546,7 @@ final class WizardSheetModel {
         diff = session.freeze()
         diffLines = BuilderWizardDiff.lines(session: session, steps: steps)
         phase = result.completed ? .preview : .refused
+        if phase == .preview { retainReplay(session) }
         if !result.completed { appendLog("Run refused. No timeline changes applied.") }
     }
 
@@ -542,6 +620,7 @@ final class WizardSheetModel {
         diff = session.freeze()
         diffLines = BuilderWizardDiff.lines(session: session, steps: executedSteps)
         phase = result.completed && reparseReasons.isEmpty ? .preview : .refused
+        if phase == .preview { retainReplay(session) }
         if phase == .refused {
             reasons = reparseReasons + result.outcomes.compactMap { if case .refused(_, let reason) = $0 { reason } else { nil } }
             appendLog("No timeline changes applied." + (persistentEffects.isEmpty ? "" : " Library work already saved remains."))
@@ -598,6 +677,10 @@ final class WizardSheetModel {
             self.session = nil
             session.discard()
             phase = .applied
+            if let id = activeScriptID, let database {
+                do { try await database.markBuilderScriptRun(id: id, status: .applied); await scriptLibrary.refresh() }
+                catch { scriptLibrary.fail(error) }
+            }
             appendLog("Applied as one undoable timeline edit.")
             await refreshBeforeVersion()
         case .failure(let failure):
@@ -647,6 +730,8 @@ final class WizardSheetModel {
         if store.builderWizard === self { store.builderWizard = nil }
         guard !dismissed else { return }
         dismissed = true
+        replayTask?.cancel()
+        scriptLibrary.invalidate()
         generation += 1
         scriptRun?.cancel()
         agentRun?.cancel()
@@ -749,6 +834,7 @@ final class WizardSheetModel {
         diff = session.diff()
         diffLines = BuilderWizardDiff.lines(session: session, steps: tools.executedSteps)
         phase = session.state == .completed && failure == nil ? .preview : .refused
+        if phase == .preview { retainReplay(session) }
         if phase == .refused {
             // The terminal error can be generic; put the actual tool refusals first.
             let refusedEvents = agentEvents.filter { $0.toolName != nil && $0.outcome != .completed }
@@ -790,7 +876,7 @@ final class WizardSheetModel {
     }
     func appendLog(_ line: String) {
         guard !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        store.recordUnifiedLog(channel: "wizard", text: line)
+        store.recordUnifiedLog(channel: "builder-wizard", text: line)
         // Cap individual metadata as well as total retained UI log bytes.
         log += line.components(separatedBy: .newlines)
             .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

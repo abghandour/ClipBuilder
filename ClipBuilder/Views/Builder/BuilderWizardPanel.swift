@@ -13,6 +13,7 @@ struct BuilderWizardPanel: View {
                 BuilderWizardStatusBanner(model: model)
                 ScrollView {
                     VStack(alignment: .leading, spacing: Theme.spaceM) {
+                        BuilderScriptsSection(wizard: model, model: model.scriptLibrary)
                         if model.phase == .found {
                             BuilderWizardFindResults(model: model, openPicker: { sceneID in
                                 guard let request = model.pickerRequest(sceneID: sceneID) else { return }

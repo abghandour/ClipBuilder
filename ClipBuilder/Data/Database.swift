@@ -648,7 +648,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 14
+    static let schemaVersion: Int64 = 15
 
     // MARK: - Script prerequisites (Library state, outside timeline snapshots)
 
@@ -912,7 +912,65 @@ actor Database {
     /// Lazy column migrations mirroring db.py, so old and new columns end up
     /// identical across both apps. One `PRAGMA table_info` per table replaces
     /// the per-column probe statements.
+    func fetchBuilderScripts() throws -> [BuilderScriptRecord] {
+        try connection.query("SELECT * FROM builder_scripts ORDER BY updated_at DESC,id").map { try BuilderScriptPersistence.read($0) }
+    }
+
+    @discardableResult
+    func saveBuilderScript(source: String, id: UUID = UUID(), origin: BuilderScriptRecord.Origin = .human) throws -> BuilderScriptRecord {
+        let header = try ScriptHeader.parse(source)
+        let metadata = try header.metadataJSON()
+        let now = Date.now.ISO8601Format()
+        // One statement: malformed headers/JSON fail before any stored field changes.
+        try connection.execute("""
+            INSERT INTO builder_scripts (id,name,description,source,params_json,requires_json,mode,origin,created_at,updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name, description=excluded.description, source=excluded.source,
+                params_json=excluded.params_json, requires_json=excluded.requires_json,
+                mode=excluded.mode, updated_at=excluded.updated_at
+            """, [.text(id.uuidString), .text(header.name), .text(header.description), .text(source),
+                  .text(metadata.params), .text(metadata.requires), .text(header.mode), .text(origin.rawValue), .text(now), .text(now)])
+        guard let row = try connection.query("SELECT * FROM builder_scripts WHERE id=?", [.text(id.uuidString)]).first else {
+            throw ScriptError.invalid("Saved script is unavailable.")
+        }
+        return try BuilderScriptPersistence.read(row)
+    }
+
+    func deleteBuilderScript(id: UUID) throws {
+        try connection.execute("DELETE FROM builder_scripts WHERE id=?", [.text(id.uuidString)])
+    }
+
+    func duplicateBuilderScript(id: UUID) throws -> BuilderScriptRecord {
+        guard let row = try connection.query("SELECT * FROM builder_scripts WHERE id=?", [.text(id.uuidString)]).first else {
+            throw ScriptError.invalid("Script no longer exists.")
+        }
+        return try saveBuilderScript(source: BuilderScriptPersistence.read(row).source, origin: .human)
+    }
+
+    func importBuilderScript(from url: URL) throws -> BuilderScriptRecord {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: 256 * 1024 + 1) ?? Data()
+        guard data.count <= 256 * 1024, let source = String(data: data, encoding: .utf8) else {
+            throw ScriptError.invalid("Expected a UTF-8 JavaScript file of at most 256 KiB.")
+        }
+        return try saveBuilderScript(source: source)
+    }
+
+    func exportBuilderScript(id: UUID, to url: URL) throws {
+        guard let row = try connection.query("SELECT * FROM builder_scripts WHERE id=?", [.text(id.uuidString)]).first else {
+            throw ScriptError.invalid("Script no longer exists.")
+        }
+        try BuilderScriptPersistence.read(row).source.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    func markBuilderScriptRun(id: UUID, status: BuilderRunStatus) throws {
+        try connection.execute("UPDATE builder_scripts SET last_run_at=?,last_run_status=? WHERE id=?",
+            [.text(Date.now.ISO8601Format()), .text(status.rawValue), .text(id.uuidString)])
+    }
+
     private static func migrate(_ connection: SQLiteConnection) throws {
+        try connection.executeScript(BuilderScriptPersistence.schema)
         if try !connection.columnNames(of: "timelines").contains("document_revision") {
             try connection.execute("ALTER TABLE timelines ADD COLUMN document_revision INTEGER NOT NULL DEFAULT 0")
         }

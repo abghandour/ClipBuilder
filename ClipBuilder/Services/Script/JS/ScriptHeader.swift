@@ -7,6 +7,8 @@ nonisolated struct ScriptCapture: Sendable {
     var selection: TimelineSelection?
     var playhead: Double
     var focusedTrack: Int?
+    var driveBackedPaths: Set<String>
+    var zoom: Double
     var revision: Int
     var timelineID: Int64?
     var profile: String
@@ -14,6 +16,7 @@ nonisolated struct ScriptCapture: Sendable {
     @MainActor init(model: BuilderTimelineModel, library: ScriptLibrarySnapshot) {
         document = model.document; self.library = library; selection = model.selection
         playhead = model.playhead; focusedTrack = model.focusedTrack
+        driveBackedPaths = model.driveBackedPaths; zoom = model.pointsPerSecond
         revision = model.revision; timelineID = model.timelineID; profile = model.profileName
     }
 
@@ -107,6 +110,39 @@ nonisolated struct ScriptHeader: Sendable {
             return Requirement(kind: kind, video: video)
         }
         return Self(name: name, description: description, mode: mode, params: params, requires: requires)
+    }
+
+    /// Header syntax errors point into the original source. Semantic errors
+    /// point at the header declaration; JavaScript diagnostics keep VM locations.
+    static func diagnostic(source: String, error: any Error) -> ScriptDiagnostic {
+        if let diagnostic = error as? ScriptDiagnostic { return diagnostic }
+        let marker = "/** clipbuilder-script"
+        guard let start = source.range(of: marker), let end = source.range(of: "*/", range: start.upperBound..<source.endIndex) else {
+            return .init(code: "invalid_script", reason: error.localizedDescription, line: 1, column: 1)
+        }
+        let prefix = String(source[..<start.upperBound])
+        let json = Data(source[start.upperBound..<end.lowerBound].utf8)
+        let location = ScriptStrictJSON.failureLocation(json)
+        let prefixLines = prefix.split(separator: "\n", omittingEmptySubsequences: false)
+        return .init(code: "invalid_script", reason: error.localizedDescription,
+            line: prefixLines.count + (location?.line ?? 1) - 1,
+            column: (location?.column ?? 1) + ((location?.line ?? 1) == 1 ? (prefixLines.last?.count ?? 0) : 0))
+    }
+
+    func metadataJSON() throws -> (params: String, requires: String) {
+        let parameters: [ScriptValue] = params.map { p in
+            var fields: [String: ScriptValue] = ["name": .string(p.name), "type": .string(p.type)]
+            fields["label"] = p.label.map(ScriptValue.string)
+            fields["min"] = p.min.map(ScriptValue.number)
+            fields["max"] = p.max.map(ScriptValue.number)
+            fields["step"] = p.step.map(ScriptValue.number)
+            fields["choices"] = p.choices.map { .array($0.map(ScriptValue.string)) }
+            fields["default"] = p.defaultValue
+            return .object(fields)
+        }
+        let requirements = requires.map { ScriptValue.object(["kind": .string($0.kind.rawValue), "video": $0.video]) }
+        return (String(decoding: try JSONEncoder().encode(parameters), as: UTF8.self),
+                String(decoding: try JSONEncoder().encode(requirements), as: UTF8.self))
     }
 
     func resolve(_ supplied: Data = Data("{}".utf8), capture: ScriptCapture) throws -> (Data, [BuilderCommand]) {
@@ -213,6 +249,21 @@ nonisolated enum ScriptStrictJSON {
         scanner.whitespace()
         guard scanner.index == scanner.bytes.count else { throw ScriptError.invalid("Trailing JSON data.") }
         return try JSONDecoder().decode(ScriptValue.self, from: data)
+    }
+
+    static func failureLocation(_ data: Data) -> (line: Int, column: Int)? {
+        var scanner = Scanner(bytes: Array(data))
+        do {
+            try scanner.value(depth: 0)
+            scanner.whitespace()
+            guard scanner.index == scanner.bytes.count else { throw ScriptError.invalid("Trailing JSON data.") }
+            _ = try JSONDecoder().decode(ScriptValue.self, from: data)
+            return nil
+        } catch {
+            let prefix = String(decoding: scanner.bytes.prefix(min(scanner.index, scanner.bytes.count)), as: UTF8.self)
+            let lines = prefix.split(separator: "\n", omittingEmptySubsequences: false)
+            return (lines.count, (lines.last?.count ?? 0) + 1)
+        }
     }
 
     private struct Scanner {

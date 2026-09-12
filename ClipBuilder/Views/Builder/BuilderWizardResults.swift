@@ -5,6 +5,16 @@ struct BuilderWizardResults: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
+            if model.phase == .preview || model.phase == .applied {
+                VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                    Button("Save as script…") { Task { await model.saveReplay() } }
+                        .disabled(model.replayExport.source == nil || model.verifyingReplay)
+                        .help(model.replayExport.reason ?? "Save this verified replay as a reusable script in the current profile.")
+                    if let reason = model.replayExport.reason {
+                        Text(reason).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
             if let diff = model.diff {
                 GroupBox("Timeline changes") {
                     VStack(alignment: .leading, spacing: Theme.spaceS) {
@@ -44,10 +54,10 @@ struct BuilderWizardResults: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            if !model.agentEvents.isEmpty {
+            if model.agentEvents.contains(where: { $0.requestID != nil }) {
                 GroupBox("Tool outcomes") {
                     VStack(alignment: .leading, spacing: Theme.spaceS) {
-                        ForEach(model.agentEvents) { event in
+                        ForEach(model.agentEvents.filter { $0.requestID != nil }) { event in
                             VStack(alignment: .leading, spacing: Theme.spaceXS) {
                                 HStack(spacing: Theme.spaceXS) {
                                     Image(systemName: outcomeSymbol(event.outcome))

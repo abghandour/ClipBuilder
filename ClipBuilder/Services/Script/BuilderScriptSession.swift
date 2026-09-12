@@ -11,6 +11,7 @@ final class BuilderScriptSession {
     let timelineID: Int64?
     let profileName: String
     let projectID: Int64?
+    private(set) var replay: ScriptReplayTranscript
     let baseline: TimelineDocument
     private(set) var library: ScriptLibrarySnapshot
     private(set) var sceneReport: BuilderSceneReport?
@@ -38,6 +39,7 @@ final class BuilderScriptSession {
         profileName = live.profileName
         projectID = library.projectID
         baseline = live.document
+        replay = ScriptReplayTranscript(capture: ScriptCapture(model: live, library: library))
         self.library = library
         let model = BuilderTimelineModel(mode: .transient)
         library.withLayouts {
@@ -112,6 +114,7 @@ final class BuilderScriptSession {
             guard encoded.count <= ScriptRunner.maximumBytes else { return fail("Script exceeds 256 KiB.") }
         } catch let error as BuilderCommandFailure { return refuse(error.reason, code: error.code) }
         catch { return refuse(error.localizedDescription) }
+        let replaySelection = working.selection
         let outcomes = runner.run(steps, model: working, library: library, onOutcome: onOutcome)
         let completed = !outcomes.contains(where: \.isRefused)
         let terminal = outcomes.contains {
@@ -134,6 +137,7 @@ final class BuilderScriptSession {
         let result = BuilderScriptResult(outcomes: outcomes, completed: completed,
                                         hasDocumentChanges: completed && !diff().isEmpty)
         self.result = result
+        if completed { replay.append(.init(steps: steps, result: result, selection: replaySelection)) }
         return result
     }
 
@@ -217,12 +221,15 @@ final class BuilderScriptSession {
                     guard state == .ready else { return closedResult() }
                     guard report.outcome.isComplete else { return fail(report.outcome.summary) }
                     let outcome = CommandOutcome.unchanged(reason: report.outcome.summary)
+                    replay.append(.init(steps: [step], result: .init(outcomes: [outcome], completed: true, hasDocumentChanges: false),
+                                        libraryAfterPrerequisite: library, report: report))
                     prefixOutcomes.append(outcome)
                     onOutcome?(index, outcome, Date.now.timeIntervalSince(started))
                 } else if case .query = step.command, let working {
                     let outcomes = ScriptRunner().run([step], model: working, library: library) { _, outcome, elapsed in
                         onOutcome?(index, outcome, elapsed)
                     }
+                    replay.append(.init(steps: [step], result: .init(outcomes: outcomes, completed: !outcomes.contains { $0.isRefused }, hasDocumentChanges: false)))
                     prefixOutcomes += outcomes
                     prefixBytes += try JSONEncoder().encode(outcomes).count
                     guard prefixBytes <= ScriptRunner.maximumResultBytes else { return fail("Prerequisite queries exceed 1 MiB.") }
@@ -247,6 +254,27 @@ final class BuilderScriptSession {
             guard state == .ready else { return closedResult() }
             return fail(error is CancellationError ? "Cancelled. No timeline changes applied; saved Library work remains." : String(describing: error))
         }
+    }
+
+    /// Only copied values enter isolated replay; no service/database capability.
+    func replayPrerequisite(_ entry: ScriptReplayTranscript.Entry) -> BuilderScriptResult {
+        guard state == .ready, let refreshed = entry.libraryAfterPrerequisite,
+              entry.steps.count == 1, entry.steps.first?.command.prerequisite != nil,
+              entry.result.completed else { return closedResult() }
+        library = refreshed
+        if let working {
+            library.withLayouts {
+                working.seed(document: working.document, scenes: library.scenes,
+                    driveBackedPaths: working.driveBackedPaths, selection: working.selection,
+                    playhead: working.playhead, focusedTrack: working.focusedTrack, zoom: working.pointsPerSecond)
+            }
+        }
+        if let report = entry.report {
+            prerequisiteReports.append(report)
+            prerequisiteEffects += report.effects
+        }
+        replay.append(entry)
+        return entry.result
     }
 
     /// Release only at the terminal UI action, after Apply has checked revision.
@@ -294,6 +322,7 @@ final class BuilderScriptSession {
         guard state == .ready, !runningPrerequisites else { return diff() }
         if sceneReport == nil { library.withLayouts { working?.normalizeScriptCandidate() } }
         frozenDiff = diff()
+        if let frozenDiff { replay.finish(frozenDiff) }
         candidate = working?.document
         if let candidate {
             frozenCandidate = BuilderScriptSnapshot(document: candidate, timelineID: timelineID,

@@ -18,7 +18,8 @@ enum ScriptValidation {
             let live = BuilderTimelineModel(mode: .transient)
             capture.library.withLayouts {
                 live.seed(document: capture.document, scenes: capture.library.scenes,
-                          selection: capture.selection, playhead: capture.playhead, focusedTrack: capture.focusedTrack)
+                          driveBackedPaths: capture.driveBackedPaths, selection: capture.selection,
+                          playhead: capture.playhead, focusedTrack: capture.focusedTrack, zoom: capture.zoom)
             }
             let session = BuilderScriptSession(live: live, library: capture.library, ownsHydration: false)
             defer { session.discard() }
@@ -32,7 +33,7 @@ enum ScriptValidation {
             return .init(diagnostic: run.diagnostic, partial: partial,
                          message: partial ? "requires user-run validation" : (run.diagnostic?.reason ?? "Validation passed."))
         } catch {
-            return .init(diagnostic: .init(code: "invalid_script", reason: error.localizedDescription),
+            return .init(diagnostic: ScriptHeader.diagnostic(source: source, error: error),
                          partial: false, message: error.localizedDescription)
         }
     }

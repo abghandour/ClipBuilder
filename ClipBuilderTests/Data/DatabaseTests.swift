@@ -586,7 +586,7 @@ struct SchemaVersionGateTests {
         let reopened = try Database(path: temp.path)
         _ = reopened
         #expect(try raw.columnNames(of: "builder_prerequisites").contains("outcome_json"))
-        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 14)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 15)
     }
 
     @Test func version12GainsBuilderRunTables() throws {
@@ -598,8 +598,8 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 14)
-        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 14)
+        #expect(Database.schemaVersion == 15)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 15)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))
         #expect(try raw.columnNames(of: "timelines").contains("document_revision"))
