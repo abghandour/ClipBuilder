@@ -2,16 +2,16 @@ import Foundation
 import Vision
 
 nonisolated protocol TasteFeaturePrinter: Sendable {
-  func features(_ image: Data) throws -> [Double]
+  func features(_ image: Data) async throws -> [Double]
 }
 nonisolated struct VisionTasteFeaturePrinter: TasteFeaturePrinter {
-  func features(_ image: Data) throws -> [Double] {
-    let request = VNGenerateImageFeaturePrintRequest()
-    request.revision = VNGenerateImageFeaturePrintRequestRevision2
-    try VNImageRequestHandler(data: image).perform([request])
-    guard let observation = request.results?.first, observation.elementType == .float else {
+  func features(_ image: Data) async throws -> [Double] {
+    let request = GenerateImageFeaturePrintRequest(.revision2)
+    let observation = try await request.perform(on: image)
+    guard observation.elementType == .float else {
       throw ReelModelError.unavailable("No Vision feature print for this frame.")
     }
+    // Keep the revision-2 numeric vector format used by existing taste-index.json files.
     return observation.data.withUnsafeBytes { bytes in
       (0..<observation.elementCount).map {
         Double(bytes.loadUnaligned(fromByteOffset: $0 * 4, as: Float.self))
@@ -27,6 +27,7 @@ nonisolated enum TasteSimilarity {
   struct Predictor: ReelModelPredictor, Codable {
     var exemplars: [[String: Double]]
     func predict(_ features: [String: Double]) throws -> [String: Double] {
+      // Persisted vectors use Euclidean distance; covered against FeaturePrintObservation.distance(to:).
       let distances = exemplars.filter { Set($0.keys) == Set(features.keys) }.map { exemplar in
         sqrt(features.reduce(0) { $0 + pow($1.value - (exemplar[$1.key] ?? 0), 2) })
       }
@@ -61,19 +62,20 @@ nonisolated enum TasteSimilarity {
   static func printFeatures(
     _ image: Data, printer: any TasteFeaturePrinter = VisionTasteFeaturePrinter()
   ) async throws -> [String: Double] {
-    features(try printer.features(image))
+    features(try await printer.features(image))
   }
   @concurrent
   static func scoreOnDevice(
     image: Data, predictor: any ReelModelPredictor,
     printer: any TasteFeaturePrinter = VisionTasteFeaturePrinter()
   ) async throws -> Double? {
-    try score(image: image, predictor: predictor, printer: printer)
+    try await score(image: image, predictor: predictor, printer: printer)
   }
   static func score(
     image: Data, predictor: any ReelModelPredictor,
     printer: any TasteFeaturePrinter = VisionTasteFeaturePrinter()
-  ) throws -> Double? {
-    try predictor.predict(features(printer.features(image)))["keep"]
+  ) async throws -> Double? {
+    let vector = try await printer.features(image)
+    return try predictor.predict(features(vector))["keep"]
   }
 }

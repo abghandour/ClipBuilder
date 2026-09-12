@@ -7,7 +7,7 @@ import Testing
 @Suite struct ReelTraitsTests {
   nonisolated struct FixtureInspector: ReelFrameInspector {
     var captioned = false
-    func inspect(_ data: Data) throws -> VisionImageTagger.Signals {
+    func inspect(_ data: Data) async throws -> VisionImageTagger.Signals {
       .init(labels: [:], faces: [], textArea: captioned ? 0.1 : 0)
     }
     func quality(_ data: Data) -> FrameQuality.Metrics? { .init(luminance: 0.5, variance: 100) }

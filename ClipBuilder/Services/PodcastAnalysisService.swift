@@ -421,11 +421,13 @@ actor PodcastVisualAnalyzer {
         let layoutFrames = await ThumbnailService.jpegFrames(url: video.url, at: layoutTimes,
                                                               maxDimension: 720, quality: 0.75)
         let available = layoutFrames.compactMap { $0 }
-        let splitHits = available.filter { jpeg in
-            let metrics = faceMouthMetrics(jpeg)
-            return metrics.keys.contains(.left) && metrics.keys.contains(.right)
-                && hasCenterSeam(jpeg)
-        }.count
+        var splitHits = 0
+        for jpeg in available {
+            let metrics = await faceMouthMetrics(jpeg)
+            if metrics.keys.contains(.left) && metrics.keys.contains(.right) && hasCenterSeam(jpeg) {
+                splitHits += 1
+            }
+        }
         let layoutConfidence = available.isEmpty ? 0 : Double(splitHits) / Double(available.count)
         let layout: PodcastLayout = layoutConfidence >= 0.6 ? .splitHorizontal : .singleCamera
 
@@ -442,7 +444,8 @@ actor PodcastVisualAnalyzer {
         for (index, turn) in sampled.enumerated() {
             guard frames.indices.contains(index * 2 + 1),
                   let before = frames[index * 2], let after = frames[index * 2 + 1] else { continue }
-            let first = faceMouthMetrics(before), second = faceMouthMetrics(after)
+            let first = await faceMouthMetrics(before)
+            let second = await faceMouthMetrics(after)
             let left = abs((second[.left] ?? 0) - (first[.left] ?? 0))
             let right = abs((second[.right] ?? 0) - (first[.right] ?? 0))
             let total = left + right
@@ -486,16 +489,16 @@ actor PodcastVisualAnalyzer {
         return middle > 8 && middle > background * 1.8
     }
 
-    private static func faceMouthMetrics(_ jpeg: Data) -> [PodcastSpeakerSide: Double] {
+    private static func faceMouthMetrics(_ jpeg: Data) async -> [PodcastSpeakerSide: Double] {
         guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return [:] }
-        let request = VNDetectFaceLandmarksRequest()
-        try? VNImageRequestHandler(cgImage: image).perform([request])
+        let request = DetectFaceLandmarksRequest(.revision3)
+        let observations = (try? await request.perform(on: image)) ?? []
         var values: [PodcastSpeakerSide: Double] = [:]
-        for face in request.results ?? [] {
-            let centerX = face.boundingBox.midX
+        for face in observations {
+            let centerX = face.boundingBox.cgRect.midX
             let side: PodcastSpeakerSide = centerX < 0.5 ? .left : .right
-            let points = face.landmarks?.outerLips?.normalizedPoints ?? []
+            let points = face.landmarks?.outerLips.points ?? []
             guard !points.isEmpty else { values[side] = 0; continue }
             let aperture = (points.map(\.y).max() ?? 0) - (points.map(\.y).min() ?? 0)
             values[side] = max(values[side] ?? 0, aperture)

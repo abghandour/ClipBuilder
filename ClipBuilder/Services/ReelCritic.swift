@@ -89,7 +89,7 @@ nonisolated enum ReelCritic {
             if let generatedID { traits = try? await database.reelTraits(kind: "generated", videoID: String(generatedID)) }
             else { traits = nil }
             do {
-                learnedLines = try ReelModelScoring.criticLines(config: config, store: models, traits: traits, frames: frames.map(\.jpeg))
+                learnedLines = try await ReelModelScoring.criticLines(config: config, store: models, traits: traits, frames: frames.map(\.jpeg))
             } catch { emit("Trained scoring unavailable: \(error.localizedDescription)") }
         }
         let learnedBlock = learnedLines.isEmpty ? "" : "\n" + learnedLines.joined(separator: "\n")

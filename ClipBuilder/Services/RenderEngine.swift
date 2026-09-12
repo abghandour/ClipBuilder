@@ -472,10 +472,10 @@ actor RenderEngine {
         for fraction in [0.25, 0.5, 0.75] {
             guard let data = await ThumbnailService.jpegFrame(url: source, at: start + duration * fraction,
                                                               maxDimension: 720) else { continue }
-            let request = VNDetectHumanRectanglesRequest()
+            var request = DetectHumanRectanglesRequest(.revision2)
             request.upperBodyOnly = false
-            try? VNImageRequestHandler(data: data).perform([request])
-            let boxes = Analyzer.primaryPeopleBoxes((request.results ?? []).map(\.boundingBox))
+            let observations = (try? await request.perform(on: data)) ?? []
+            let boxes = Analyzer.primaryPeopleBoxes(observations.map { $0.boundingBox.cgRect })
             guard !boxes.isEmpty else { continue }
             let union = boxes.dropFirst().reduce(boxes[0]) { $0.union($1) }
             centers.append(Double(union.midX))

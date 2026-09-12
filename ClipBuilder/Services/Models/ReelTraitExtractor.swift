@@ -2,15 +2,15 @@ import Foundation
 import NaturalLanguage
 
 nonisolated protocol ReelFrameInspector: Sendable {
-  func inspect(_ data: Data) throws -> VisionImageTagger.Signals
+  func inspect(_ data: Data) async throws -> VisionImageTagger.Signals
   func quality(_ data: Data) -> FrameQuality.Metrics?
 }
 nonisolated extension ReelFrameInspector {
   func quality(_ data: Data) -> FrameQuality.Metrics? { FrameQuality.metrics(data) }
 }
 nonisolated struct VisionReelFrameInspector: ReelFrameInspector {
-  func inspect(_ data: Data) throws -> VisionImageTagger.Signals {
-    try VisionImageTagger.inspect(data)
+  func inspect(_ data: Data) async throws -> VisionImageTagger.Signals {
+    try await VisionImageTagger.inspect(data)
   }
 }
 
@@ -49,7 +49,7 @@ nonisolated enum ReelTraitExtractor {
     for (time, image) in zip(times, images) {
       try Task.checkCancellation()
       guard let image, let quality = inspector.quality(image) else { continue }
-      frames.append(Frame(time: time, signals: try inspector.inspect(image), quality: quality))
+      frames.append(Frame(time: time, signals: try await inspector.inspect(image), quality: quality))
     }
     guard !frames.isEmpty else {
       throw AIError.unusableResponse("Cannot compute traits: no readable frames.")

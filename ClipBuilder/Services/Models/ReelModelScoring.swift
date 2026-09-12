@@ -5,7 +5,7 @@ nonisolated enum ReelModelScoring {
     config: AIConfig, store: ReelModelStore, traits: ReelTraits?,
     frames: [Data], trainer: any ReelModelTrainer = CreateMLReelModelTrainer(),
     printer: any TasteFeaturePrinter = VisionTasteFeaturePrinter()
-  ) throws -> [String] {
+  ) async throws -> [String] {
     var lines: [String] = []
     if let predictor = try? store.predictor(item: .outcome, config: config, trainer: trainer),
       let traits
@@ -19,8 +19,11 @@ nonisolated enum ReelModelScoring {
     if let predictor = try? store.predictor(item: .taste, config: config, trainer: trainer),
       !frames.isEmpty
     {
-      let scores = try frames.compactMap {
-        try TasteSimilarity.score(image: $0, predictor: predictor, printer: printer)
+      var scores: [Double] = []
+      for frame in frames {
+        if let score = try await TasteSimilarity.score(image: frame, predictor: predictor, printer: printer) {
+          scores.append(score)
+        }
       }
       if !scores.isEmpty {
         lines.append(

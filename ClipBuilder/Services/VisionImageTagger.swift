@@ -7,15 +7,19 @@ nonisolated enum VisionImageTagger {
         var faces: [CGRect]
         var textArea: Double
     }
-    static func inspect(_ data: Data) throws -> Signals {
-        let classify = VNClassifyImageRequest()
-        let faces = VNDetectFaceRectanglesRequest()
-        let text = VNRecognizeTextRequest()
+    static func inspect(_ data: Data) async throws -> Signals {
+        let classify = ClassifyImageRequest()
+        let faces = DetectFaceRectanglesRequest()
+        var text = RecognizeTextRequest()
         text.recognitionLevel = .fast
-        try VNImageRequestHandler(data: data).perform([classify, faces, text])
-        return Signals(labels: Dictionary((classify.results ?? []).map { ($0.identifier, $0.confidence) }, uniquingKeysWith: max),
-            faces: (faces.results ?? []).map(\.boundingBox),
-            textArea: (text.results ?? []).reduce(0) { $0 + $1.boundingBox.width * $1.boundingBox.height })
+        // Each request suspends while Vision works; never block a cooperative-pool thread.
+        async let classifications = classify.perform(on: data)
+        async let faceObservations = faces.perform(on: data)
+        async let textObservations = text.perform(on: data)
+        let results = try await (classifications, faceObservations, textObservations)
+        return Signals(labels: Dictionary(results.0.map { ($0.identifier, $0.confidence) }, uniquingKeysWith: max),
+            faces: results.1.map { $0.boundingBox.cgRect },
+            textArea: results.2.reduce(0) { $0 + $1.boundingBox.width * $1.boundingBox.height })
     }
     static func localTag(_ signals: Signals) -> String? {
         if signals.faces.isEmpty && signals.textArea > 0.2 { return "graphic" }

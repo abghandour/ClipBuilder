@@ -471,7 +471,7 @@ actor CenterStageService {
         var targets: [Target] = []
         var nextAnalysis = 0.0
         var lastUnion = CGRect(x: 0.3, y: 0.1, width: 0.4, height: 0.8)
-        let request = VNDetectHumanRectanglesRequest()
+        var request = DetectHumanRectanglesRequest(.revision2)
         request.upperBodyOnly = false
 
         while reader.status == .reading, let sample = readerOutput.copyNextSampleBuffer() {
@@ -489,22 +489,22 @@ actor CenterStageService {
                 continue
             }
 
-            let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
+            let observations: [HumanObservation]
             do {
                 let visionPermit = try await MediaWorkScheduler.shared.acquire(.vision)
                 defer { withExtendedLifetime(visionPermit) {} }
                 try Task.checkCancellation()
                 let timing = PerfSignpost.begin("Vision", metadata: "tracking")
                 defer { PerfSignpost.end(timing) }
-                try? handler.perform([request])
+                observations = (try? await request.perform(on: pixelBuffer, orientation: orientation)) ?? []
             }
             // With the orientation supplied, Vision reports boxes in upright
             // (display) space — bottom-left-origin normalized. Peripheral
             // detections (crowd, staff at distance) are dropped so the
             // camera frames the main subjects instead of everyone visible.
             let detections = Analyzer.primaryPeopleBoxes(
-                (request.results ?? []).map { observation in
-                    let box = observation.boundingBox
+                observations.map { observation in
+                    let box = observation.boundingBox.cgRect
                     return CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
                 })
 
@@ -585,16 +585,17 @@ actor CenterStageService {
         guard let data,
               let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
               let cg = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else { return nil }
-        let request = VNDetectHumanRectanglesRequest()
+        var request = DetectHumanRectanglesRequest(.revision2)
         request.upperBodyOnly = false
+        let observations: [HumanObservation]
         do {
             let permit = try await MediaWorkScheduler.shared.acquire(.vision, priority: .interactive)
             defer { withExtendedLifetime(permit) {} }
             try Task.checkCancellation()
-            try? VNImageRequestHandler(data: data).perform([request])
+            observations = (try? await request.perform(on: data)) ?? []
         } catch { return nil }
-        var boxes = Analyzer.primaryPeopleBoxes((request.results ?? []).map { observation in
-            let box = observation.boundingBox
+        var boxes = Analyzer.primaryPeopleBoxes(observations.map { observation in
+            let box = observation.boundingBox.cgRect
             return CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
         })
         guard !boxes.isEmpty else { return nil }

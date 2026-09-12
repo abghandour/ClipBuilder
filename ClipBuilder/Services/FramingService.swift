@@ -248,16 +248,17 @@ nonisolated enum FramingService {
             guard let data = frame,
                   let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
                   let cg = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else { continue }
-            let request = VNDetectHumanRectanglesRequest()
+            var request = DetectHumanRectanglesRequest(.revision2)
             request.upperBodyOnly = false
+            let observations: [HumanObservation]
             do {
                 let permit = try await MediaWorkScheduler.shared.acquire(.vision)
                 defer { withExtendedLifetime(permit) {} }
                 try Task.checkCancellation()
-                try? VNImageRequestHandler(data: data).perform([request])
+                observations = (try? await request.perform(on: data)) ?? []
             } catch { return samples }
-            let boxes = Analyzer.primaryPeopleBoxes((request.results ?? []).map { observation in
-                let box = observation.boundingBox
+            let boxes = Analyzer.primaryPeopleBoxes(observations.map { observation in
+                let box = observation.boundingBox.cgRect
                 return CGRect(x: box.minX, y: 1 - box.maxY,
                               width: box.width, height: box.height)
             })

@@ -40,7 +40,7 @@ nonisolated enum SceneTraitExtractor {
         url: scene.videoURL, at: scene.startTime + time),
         let quality = inspector.quality(image)
       {
-        frames.append(.init(time: time, signals: try inspector.inspect(image), quality: quality))
+        frames.append(.init(time: time, signals: try await inspector.inspect(image), quality: quality))
       }
     }
     guard !frames.isEmpty else { throw ReelModelError.unavailable("No readable scene frames.") }

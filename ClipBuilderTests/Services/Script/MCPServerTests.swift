@@ -238,7 +238,9 @@ extension MCPServerTests {
                 do { try await Task.sleep(for: .seconds(20)) } catch {}
                 drained = true
                 return .init(outcomes: [], completed: false, hasDocumentChanges: false)
-            }), requestDeadline: .milliseconds(200))
+            // Long enough that the prerequisite has entered before the deadline fires,
+            // even while the rest of the suite loads the machine; short enough to stay quick.
+            }), requestDeadline: .seconds(2))
         try await server.start()
         do {
             _ = try await post(server, #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ensure_transcript","arguments":{"video":1}}}"#)

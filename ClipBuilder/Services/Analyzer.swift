@@ -797,7 +797,10 @@ actor Analyzer {
         let frames = await extractFrames(url: video.url, timestamps: times, log: log)
         guard !frames.isEmpty else { return nil }
         if useLocal {
-            let signals = await Task.detached { frames.compactMap { try? VisionImageTagger.inspect($0.jpeg) } }.value
+            var signals: [VisionImageTagger.Signals] = []
+            for frame in frames {
+                if let signal = try? await VisionImageTagger.inspect(frame.jpeg) { signals.append(signal) }
+            }
             // The caller passes the cached detector cut list when it has one;
             // otherwise detect here. No cut count means no rule can fire: the
             // recap rule reads a high rate.
@@ -2167,17 +2170,18 @@ actor Analyzer {
         for data in frames {
             guard let data else { continue }
             sampled += 1
-            let request = VNDetectHumanRectanglesRequest()
+            var request = DetectHumanRectanglesRequest(.revision2)
             request.upperBodyOnly = false
+            let observations: [HumanObservation]
             do {
                 let permit = try await MediaWorkScheduler.shared.acquire(.vision)
                 defer { withExtendedLifetime(permit) {} }
                 try Task.checkCancellation()
                 let timing = PerfSignpost.begin("Vision", metadata: "portraitFit")
                 defer { PerfSignpost.end(timing) }
-                try? VNImageRequestHandler(data: data).perform([request])
+                observations = (try? await request.perform(on: data)) ?? []
             } catch { return nil }
-            let boxes = Self.primaryPeopleBoxes((request.results ?? []).map(\.boundingBox))
+            let boxes = Self.primaryPeopleBoxes(observations.map { $0.boundingBox.cgRect })
             guard !boxes.isEmpty else { continue }
             judged += 1
             let union = boxes.dropFirst().reduce(boxes[0]) { $0.union($1) }

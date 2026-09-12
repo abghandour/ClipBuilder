@@ -123,7 +123,7 @@ import Testing
     )
     let predictor = try store.predictor(item: .ranker, config: config, trainer: NeverLoad())
     #expect(try ClipRanker.ranked(scenes, predictor: predictor, limit: 1) == scenes)
-    let lines = try ReelModelScoring.criticLines(
+    let lines = try await ReelModelScoring.criticLines(
       config: config, store: store, traits: ReelTraits(), frames: [Data()], trainer: NeverLoad())
     #expect(lines.isEmpty)
     let engine = WizardEngine(ai: AIService(config: config), render: RenderEngine())

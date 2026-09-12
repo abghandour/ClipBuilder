@@ -6,7 +6,7 @@ import Testing
 @testable import Clip_Builder
 
 struct VisionImageTaggerTests {
-    @Test func graphicFixture() throws {
+    @Test func graphicFixture() async throws {
         let context = try #require(CGContext(data: nil, width: 512, height: 512,
             bitsPerComponent: 8, bytesPerRow: 512 * 4, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
@@ -26,7 +26,8 @@ struct VisionImageTaggerTests {
         let destination = try #require(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
         CGImageDestinationAddImage(destination, image, nil)
         #expect(CGImageDestinationFinalize(destination))
-        #expect(VisionImageTagger.localTag(try VisionImageTagger.inspect(data as Data)) == "graphic")
+        let signals = try await VisionImageTagger.inspect(data as Data)
+        #expect(VisionImageTagger.localTag(signals) == "graphic")
     }
     @Test func conservativeRules() {
         #expect(VisionImageTagger.localTag(.init(labels: [:], faces: [], textArea: 0.3)) == "graphic")

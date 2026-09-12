@@ -575,7 +575,7 @@ struct AssetBrowserView: View {
                 store.presentError("Could not read \(item.name)")
                 return
             }
-            let signals = useLocal ? await Task.detached { try? VisionImageTagger.inspect(jpeg) }.value : nil
+            let signals = useLocal ? (try? await VisionImageTagger.inspect(jpeg)) : nil
             if let signals, let tag = VisionImageTagger.localTag(signals) {
                 let info = LibraryAssetMetadata(path: item.url.path, kind: AssetKind.images.rawValue,
                     isBRoll: true, subjects: [], tags: [tag], provider: "local", model: "vision-classify", technique: "vision-classify")

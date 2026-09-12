@@ -6056,7 +6056,10 @@ extension AppStore {
                     for video in sourceVideos where video.duration >= 300 {
                         let times = (0..<5).map { (Double($0) + 0.5) * video.duration / 5 }
                         let data = await ThumbnailService.jpegFrames(url: video.url, at: times)
-                        let signals = await Task.detached { data.compactMap { $0.flatMap { try? VisionImageTagger.inspect($0) } } }.value
+                        var signals: [VisionImageTagger.Signals] = []
+                        for case let frame? in data {
+                            if let signal = try? await VisionImageTagger.inspect(frame) { signals.append(signal) }
+                        }
                         let cuts = try await FFmpeg.sceneChangeTimestamps(of: video.url)
                         let rows = try await database.fetchTranscripts(videoID: video.id)
                         let fraction = rows.isEmpty ? nil : rows.filter { !$0.isTranslation }.reduce(0) { $0 + $1.endTime - $1.startTime } / video.duration
@@ -6069,7 +6072,7 @@ extension AppStore {
                 case "image-tagging":
                     for row in metadata.prefix(sample) {
                         guard let data = try? Data(contentsOf: URL(fileURLWithPath: row.path)),
-                              let signals = await Task.detached(operation: { try? VisionImageTagger.inspect(data) }).value else { continue }
+                              let signals = try? await VisionImageTagger.inspect(data) else { continue }
                         let prompt = "Tag this owned library image for editorial search. Return only JSON: {\"subjects\":[\"person/event/topic\"],\"tags\":[\"crowd|walkout|training|establishing-shot|action|portrait|graphic|other\"],\"is_broll\":true|false}. B-roll means a cutaway, atmosphere, training, walkout, crowd, or establishing visual."
                         let model = try await ai.call(prompt: prompt, task: "analyze", frames: [.init(jpeg: data, label: row.path)], timeout: 120, log: log)
                         guard let tag = VisionImageTagger.localTag(signals) else { continue }
