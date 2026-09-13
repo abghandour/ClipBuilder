@@ -38,7 +38,7 @@ nonisolated enum WizardFieldHelp {
         caption: "Steady keeps clips even. Accelerate shortens them toward the end, Decelerate lengthens them, and Build, then drop speeds up and then settles for the payoff. Applies with a fixed cadence.")
     static let sources = FieldHelp(
         "Which analyzed footage the planner may pick from.",
-        caption: "Every analyzed scene in this project, only the curated scenes, or specific Analyze batches, optionally narrowed to certain people.")
+        caption: "Every analyzed scene in this project, only the favorite scenes, or specific Analyze batches, optionally narrowed to certain people.")
 
     // Output
     static let canvas = FieldHelp(

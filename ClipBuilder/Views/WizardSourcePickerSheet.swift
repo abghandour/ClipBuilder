@@ -6,7 +6,7 @@ struct WizardSourcePickerSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
-    @Binding var curatedOnly: Bool
+    @Binding var favoritesOnly: Bool
     @Binding var limitToSelection: Bool
     @Binding var selectedRunIDsRaw: String
     @Binding var sourcePeopleRaw: String
@@ -23,7 +23,7 @@ struct WizardSourcePickerSheet: View {
 
     private var scope: WizardSourceScope {
         if limitToSelection { return .batches }
-        return curatedOnly ? .curated : .all
+        return favoritesOnly ? .favorites : .all
     }
 
     private var scopeBinding: Binding<WizardSourceScope> {
@@ -32,13 +32,13 @@ struct WizardSourcePickerSheet: View {
             set: { newScope in
                 switch newScope {
                 case .all:
-                    curatedOnly = false
+                    favoritesOnly = false
                     limitToSelection = false
-                case .curated:
-                    curatedOnly = true
+                case .favorites:
+                    favoritesOnly = true
                     limitToSelection = false
                 case .batches:
-                    curatedOnly = false
+                    favoritesOnly = false
                     limitToSelection = true
                 }
             }
@@ -204,8 +204,8 @@ struct WizardSourcePickerSheet: View {
         switch scope {
         case .all:
             "The wizard can choose any analyzed scene in this profile."
-        case .curated:
-            "Only scenes you or the Curator have promoted are eligible."
+        case .favorites:
+            "Only scenes you or AI Favorites have favorited are eligible."
         case .batches:
             "Pick one or more Analyze batches. People shown below are the ones tagged in them."
         }
@@ -216,8 +216,8 @@ struct WizardSourcePickerSheet: View {
         switch scope {
         case .all:
             text = "All analyzed scenes are eligible"
-        case .curated:
-            text = "Only curated scenes are eligible"
+        case .favorites:
+            text = "Only favorite scenes are eligible"
         case .batches:
             text = selectedRunIDs.isEmpty
                 ? "Choose at least one Analyze batch"

@@ -1,18 +1,18 @@
 import AVKit
 import SwiftUI
 
-/// The Curated Video wizard — a guided middle ground between the AI Wizard
+/// The Manual Build wizard — a guided middle ground between the AI Wizard
 /// and the Builder. The app proposes scenes one at a time (best-scored
 /// first); the user previews each inline, trims it, toggles Center Stage,
 /// and approves or skips until the reel reaches its target duration. Then
 /// three quick polish passes — overlays per scene, music per scene, outro —
 /// and the result renders through the Builder's multitrack pipeline.
-struct CuratedWizardSheet: View {
+struct ManualBuildSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     @State private var playbackFetchTask: Task<Void, Never>?
-    @State private var model: CuratedWizardModel
+    @State private var model: ManualBuildModel
     @State private var player: AVPlayer?
     @State private var loopObserver: Any?
     @State private var isScrubbing = false
@@ -20,8 +20,8 @@ struct CuratedWizardSheet: View {
     // Pause/mute for the proposal/overlay preview player — persists across
     // scene changes, steps, and app launches so a muted preview stays muted.
     // Native-control changes are captured into these on every player swap.
-    @AppStorage("curatedWizard.previewAutoplay") private var previewPlaying = true
-    @AppStorage("curatedWizard.previewMuted") private var previewMuted = false
+    @AppStorage("manualBuild.previewAutoplay") private var previewPlaying = true
+    @AppStorage("manualBuild.previewMuted") private var previewMuted = false
     /// Left edge of the fine-trim strip's 10s window (absolute source time).
     @State private var zoomWindowStart: Double = 0
     @State private var showFramingSheet = false
@@ -30,8 +30,8 @@ struct CuratedWizardSheet: View {
     // Reel-preview column: the approved picks stitched into one looping
     // composition (cuts only — overlays/music/transitions render at generate).
     @State private var reelPlayer: AVPlayer?
-    @AppStorage("curatedWizard.reelAutoplay") private var reelPlaying = true
-    @AppStorage("curatedWizard.reelMuted") private var reelMuted = true
+    @AppStorage("manualBuild.reelAutoplay") private var reelPlaying = true
+    @AppStorage("manualBuild.reelMuted") private var reelMuted = true
     @State private var reelEndObserver: NSObjectProtocol?
     @State private var reelRebuildTask: Task<Void, Never>?
     // Exact preview: the reel rendered through the REAL pipeline to a temp
@@ -44,7 +44,7 @@ struct CuratedWizardSheet: View {
     init(scenes: [SceneRecord], targetDuration: Int, includeOutro: Bool,
          batchNames: [Int64: String] = [:],
          selectedBatchIDs: [Int64] = []) {
-        _model = State(initialValue: CuratedWizardModel(queue: scenes,
+        _model = State(initialValue: ManualBuildModel(queue: scenes,
                                                         targetDuration: Double(targetDuration),
                                                         includeOutro: includeOutro,
                                                         batchNames: batchNames,
@@ -113,7 +113,7 @@ struct CuratedWizardSheet: View {
             rebuildReelPreview()
         }) {
             if let scene = model.currentScene {
-                CurateSceneSheet(sceneID: scene.id)
+                SceneEditSheet(sceneID: scene.id)
             }
         }
     }
@@ -154,7 +154,7 @@ struct CuratedWizardSheet: View {
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
             .help("Close — your picks are discarded")
-            Label("Curated Video", systemImage: "checklist")
+            Label("Manual Build", systemImage: "checklist")
                 .font(.headline)
             StepIndicator(current: model.step)
             if model.step == .scenes, model.batchIDs.count > 1, let active = model.activeBatchID {
@@ -210,13 +210,13 @@ struct CuratedWizardSheet: View {
                     .buttonStyle(.borderedProminent)
             case .outro:
                 Button("Open in Builder") {
-                    store.openCuratedInBuilder(model.buildDocument())
+                    store.openManualBuildInBuilder(model.buildDocument())
                     teardownPlayer()
                     dismiss()
                 }
                 .help("Load these picks into the Builder timeline for detailed editing instead of rendering now")
                 Button {
-                    store.renderCuratedDocument(model.buildDocument(),
+                    store.renderManualBuildDocument(model.buildDocument(),
                                                 includeOutro: model.includeOutro)
                     teardownPlayer()
                     dismiss()
@@ -225,7 +225,7 @@ struct CuratedWizardSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .help("Render the curated reel to the Library — progress shows in App Log → Generation")
+                .help("Render the manual build to the Library — progress shows in App Log → Generation")
             }
         }
         .padding(.horizontal, 16)
@@ -269,7 +269,7 @@ struct CuratedWizardSheet: View {
                     Divider()
                     reelListPane
                 }
-                .rememberedPaneWidth("pane.curatedWizard.reel", min: 200, initial: 250, max: 340)
+                .rememberedPaneWidth("pane.manualBuild.reel", min: 200, initial: 250, max: 340)
                 .frame(maxHeight: .infinity)
             }
         }
@@ -359,7 +359,7 @@ struct CuratedWizardSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 6) {
-                    if store.isCuratedPreviewRendering {
+                    if store.isManualBuildPreviewRendering {
                         ProgressView().controlSize(.small)
                         Text("Rendering exact preview…")
                             .font(.caption2)
@@ -376,7 +376,7 @@ struct CuratedWizardSheet: View {
                     }
                     Spacer()
                 }
-                if exactPreviewURL == nil, !store.isCuratedPreviewRendering {
+                if exactPreviewURL == nil, !store.isManualBuildPreviewRendering {
                     Text("Live preview honors each clip's crop, speed, and Center Stage camera — transitions, music, and overlays show in the Exact Preview.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -423,7 +423,7 @@ struct CuratedWizardSheet: View {
                         ContentUnavailableView(
                             "Nothing to suggest from this analyze batch",
                             systemImage: "line.3.horizontal.decrease.circle",
-                            description: Text("The wizard's Source Selection filters — picked people, curated-only, Center Stage fit — matched none of this analyze batch's scenes. Adjust those filters and reopen, or switch to another analyze batch."))
+                            description: Text("The wizard's Source Selection filters — picked people, favorite-only, Center Stage fit — matched none of this analyze batch's scenes. Adjust those filters and reopen, or switch to another analyze batch."))
                     } else {
                         ContentUnavailableView(
                             model.batchIDs.count > 1 ? "No more scenes in this analyze batch"
@@ -516,7 +516,7 @@ struct CuratedWizardSheet: View {
                                 showFramingSheet = true
                             }
                             .controlSize(.small)
-                            .help("Compute the Center Stage camera for this scene and steer it: pin framing hints on the paused frame in the Curate workbench")
+                            .help("Compute the Center Stage camera for this scene and steer it: pin framing hints on the paused frame in the Edit Scene workbench")
                         }
                     }
                 }
@@ -677,7 +677,7 @@ struct CuratedWizardSheet: View {
     /// ramps when the pick tracks, else the static cropXFrac / centered
     /// aspect-fill window.
     private static func framingInstruction(segment: CMTimeRange, track: AVAssetTrack,
-                                           pick: CuratedWizardModel.Pick, scene: SceneRecord,
+                                           pick: ManualBuildModel.Pick, scene: SceneRecord,
                                            orientation: CGAffineTransform, orientedSize: CGSize,
                                            renderSize: CGSize) -> AVMutableVideoCompositionInstruction {
         let instruction = AVMutableVideoCompositionInstruction()
@@ -769,7 +769,7 @@ struct CuratedWizardSheet: View {
         let document = model.buildDocument()
         let includeOutro = model.includeOutro
         exactPreviewTask = Task {
-            guard let url = await store.renderCuratedExactPreview(document,
+            guard let url = await store.renderManualBuildExactPreview(document,
                                                                   includeOutro: includeOutro)
             else { return }
             guard !Task.isCancelled else {
@@ -966,14 +966,14 @@ struct CuratedWizardSheet: View {
                 Spacer()
                 transitionPicker(selection: $model.transitionStyle)
                 Button {
-                    approveAndCurate()
+                    approveAndFavorite()
                 } label: {
                     Label("Add to Reel", systemImage: "plus.circle.fill")
                         .frame(minWidth: 120)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .help("Approve this clip: it joins the reel AND is saved to Curated Scenes with this trim, then the next moment shows (↩)")
+                .help("Approve this clip: it joins the reel AND is saved to Favorites with this trim, then the next moment shows (↩)")
             } else {
                 Spacer()
                 if let index = model.picks.firstIndex(where: { $0.id == model.editingPickID }) {
@@ -982,7 +982,7 @@ struct CuratedWizardSheet: View {
                 Button("Done Editing") { finishEditingAndSync() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .help("Save the new trim for this approved clip (updates its Curated Scenes entry too)")
+                    .help("Save the new trim for this approved clip (updates its Favorites entry too)")
             }
         }
     }
@@ -1000,30 +1000,30 @@ struct CuratedWizardSheet: View {
     }
 
     /// Approving does double duty: the clip joins the reel, and the scene is
-    /// promoted to the Curated Scenes folder with the user's trim saved as
+    /// promoted to the Favorites folder with the user's trim saved as
     /// its range — curation work done here is never lost.
-    private func approveAndCurate() {
+    private func approveAndFavorite() {
         if let scene = model.currentScene {
-            syncSceneCuration(scene)
+            syncSceneFavorite(scene)
         }
         model.approveCurrent()
     }
 
     private func finishEditingAndSync() {
         if let id = model.editingPickID, let pick = model.picks.first(where: { $0.id == id }) {
-            syncSceneCuration(pick.scene)
+            syncSceneFavorite(pick.scene)
         }
         model.finishEditingPick()
     }
 
-    private func syncSceneCuration(_ scene: SceneRecord) {
+    private func syncSceneFavorite(_ scene: SceneRecord) {
         let rangeChanged = abs(model.editStart - scene.startTime) > 0.05
             || abs(model.editEnd - scene.endTime) > 0.05
         if rangeChanged {
             store.setSceneEditRange(scene, start: model.editStart, end: model.editEnd)
         }
-        if !scene.curated {
-            store.curateScene(scene, curated: true)
+        if !scene.favorite {
+            store.favoriteScene(scene, favorite: true)
         }
     }
 
@@ -1089,7 +1089,7 @@ struct CuratedWizardSheet: View {
         .frame(minHeight: 130)
     }
 
-    private func reelRow(_ pick: CuratedWizardModel.Pick, number: Int) -> some View {
+    private func reelRow(_ pick: ManualBuildModel.Pick, number: Int) -> some View {
         let isEditing = model.editingPickID == pick.id
         return HStack(spacing: 8) {
             Text("\(number)")
@@ -1130,7 +1130,7 @@ struct CuratedWizardSheet: View {
     private var overlaysStep: some View {
         HSplitView {
             pickList(subtitle: { pick in
-                pick.overlayChoice == CuratedWizardModel.overlayNone
+                pick.overlayChoice == ManualBuildModel.overlayNone
                     ? "No overlay" : "\(pick.overlayChoice): \(pick.overlayText)"
             })
             overlayEditor
@@ -1145,7 +1145,7 @@ struct CuratedWizardSheet: View {
             HStack(alignment: .top, spacing: 16) {
                 Form {
                     Picker("Overlay", selection: $model.picks[index].overlayChoice) {
-                        Text("None").tag(CuratedWizardModel.overlayNone)
+                        Text("None").tag(ManualBuildModel.overlayNone)
                         Section("Built-in styles") {
                             ForEach(WizardTextStyle.allCases, id: \.rawValue) { style in
                                 Text(style.rawValue.capitalized).tag(style.rawValue)
@@ -1159,7 +1159,7 @@ struct CuratedWizardSheet: View {
                             }
                         }
                     }
-                    if model.picks[index].overlayChoice != CuratedWizardModel.overlayNone {
+                    if model.picks[index].overlayChoice != ManualBuildModel.overlayNone {
                         TextField("Text", text: $model.picks[index].overlayText,
                                   prompt: Text("2-6 punchy ALL-CAPS words"))
                         if WizardTextStyle(rawValue: model.picks[index].overlayChoice) != nil {
@@ -1181,7 +1181,7 @@ struct CuratedWizardSheet: View {
                         Section {
                             ForEach(buzzOverlayLines, id: \.self) { line in
                                 Button(line) {
-                                    if model.picks[index].overlayChoice == CuratedWizardModel.overlayNone {
+                                    if model.picks[index].overlayChoice == ManualBuildModel.overlayNone {
                                         model.picks[index].overlayChoice = WizardTextStyle.impact.rawValue
                                     }
                                     model.picks[index].overlayText = line
@@ -1278,7 +1278,7 @@ struct CuratedWizardSheet: View {
     /// clip's window — the same timing `buildDocument` renders with — so the
     /// preview shows the real enter animation and end-of-clip fade instead of
     /// hiding the overlay once the item's default window ends.
-    private func previewOverlayComposition(for pick: CuratedWizardModel.Pick) -> OverlayComposition? {
+    private func previewOverlayComposition(for pick: ManualBuildModel.Pick) -> OverlayComposition? {
         guard var composition = pick.overlayComposition() else { return nil }
         if WizardTextStyle(rawValue: pick.overlayChoice) != nil {
             for index in composition.texts.indices {
@@ -1295,7 +1295,7 @@ struct CuratedWizardSheet: View {
     /// the pick's rate, so elapsed source maps through the speed). Before
     /// the player exists, a wall-clock loop keeps the animation repeating
     /// over the thumbnail.
-    private func overlayPreviewTime(for pick: CuratedWizardModel.Pick, at date: Date) -> Double {
+    private func overlayPreviewTime(for pick: ManualBuildModel.Pick, at date: Date) -> Double {
         let duration = max(0.5, pick.duration)
         if let player, let range = model.currentLoopRange {
             let elapsed = (player.currentTime().seconds - range.lowerBound) / pick.speed
@@ -1359,8 +1359,8 @@ struct CuratedWizardSheet: View {
                         }
                         Spacer()
                         Picker("Music", selection: $pick.musicChoice) {
-                            Text("Continue previous").tag(CuratedWizardModel.musicContinue)
-                            Text("No music").tag(CuratedWizardModel.musicNone)
+                            Text("Continue previous").tag(ManualBuildModel.musicContinue)
+                            Text("No music").tag(ManualBuildModel.musicNone)
                             Divider()
                             ForEach(tracks, id: \.self) { name in
                                 Text(name).tag(name)
@@ -1376,7 +1376,7 @@ struct CuratedWizardSheet: View {
                         .labelsHidden()
                         .pickerStyle(.segmented)
                         .frame(width: 140)
-                        .disabled(pick.musicChoice == CuratedWizardModel.musicNone)
+                        .disabled(pick.musicChoice == ManualBuildModel.musicNone)
                         .help("Music volume under this clip (1 quiet – 5 loud)")
                     }
                 }
@@ -1418,14 +1418,14 @@ struct CuratedWizardSheet: View {
             // Final check before Generate: run the Exact Preview here and
             // watch precisely the file that Generate will save.
             reelPreviewPane
-                .rememberedPaneWidth("pane.curatedWizard.outroPreview", min: 190, initial: 260, max: 320)
+                .rememberedPaneWidth("pane.manualBuild.outroPreview", min: 190, initial: 260, max: 320)
                 .frame(maxHeight: .infinity)
         }
     }
 
     // MARK: - Shared pick list (steps 2–3)
 
-    private func pickList(subtitle: @escaping (CuratedWizardModel.Pick) -> String) -> some View {
+    private func pickList(subtitle: @escaping (ManualBuildModel.Pick) -> String) -> some View {
         List(selection: $model.selectedPickID) {
             ForEach(model.picks) { pick in
                 HStack(spacing: 10) {
@@ -1449,7 +1449,7 @@ struct CuratedWizardSheet: View {
                 .tag(pick.id)
             }
         }
-        .rememberedPaneWidth("pane.curatedWizard.pickList", min: 240, initial: 280, max: 340)
+        .rememberedPaneWidth("pane.manualBuild.pickList", min: 240, initial: 280, max: 340)
     }
 
     // MARK: - Preview player
@@ -1574,11 +1574,11 @@ private struct PlayerFillView: NSViewRepresentable {
 
 /// The 1–4 step chips in the sheet header.
 private struct StepIndicator: View {
-    let current: CuratedWizardModel.Step
+    let current: ManualBuildModel.Step
 
     var body: some View {
         HStack(spacing: 6) {
-            ForEach(CuratedWizardModel.Step.allCases, id: \.self) { step in
+            ForEach(ManualBuildModel.Step.allCases, id: \.self) { step in
                 Text("\(step.number). \(step.title)")
                     .font(.caption)
                     .padding(.horizontal, 8)
@@ -1614,7 +1614,7 @@ private struct OutroCardPreview: View {
         }
         .task(id: profile.profileName) {
             let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("CuratedOutroPreview", isDirectory: true)
+                .appendingPathComponent("ManualBuildOutroPreview", isDirectory: true)
             guard let url = await BrandRenderer.outroPreviewCard(profile: profile, in: directory) else { return }
             defer { try? FileManager.default.removeItem(at: url) }
             guard !Task.isCancelled else { return }
@@ -1627,10 +1627,10 @@ private struct OutroCardPreview: View {
 
 // MARK: - Model
 
-/// All curated-wizard state: the proposal queue, approved picks with their
+/// All manual-build state: the proposal queue, approved picks with their
 /// edits, the current step, and the final TimelineDocument assembly.
 @MainActor @Observable
-final class CuratedWizardModel {
+final class ManualBuildModel {
     enum Step: Int, CaseIterable {
         case scenes, overlays, music, outro
 
@@ -1661,11 +1661,11 @@ final class CuratedWizardModel {
         /// Transition INTO this clip — captured from the picker at approval
         /// time (cut | fade | action), so each add keeps what was selected.
         var transition: String = "cut"
-        var overlayChoice: String = CuratedWizardModel.overlayNone
+        var overlayChoice: String = ManualBuildModel.overlayNone
         var overlayText: String = ""
         var overlayKicker: String = ""
         var overlayAnimation: String = "pop"
-        var musicChoice: String = CuratedWizardModel.musicContinue
+        var musicChoice: String = ManualBuildModel.musicContinue
         var musicVolume: Int = 3
 
         /// Source seconds this pick consumes.
@@ -1677,7 +1677,7 @@ final class CuratedWizardModel {
         /// The overlay this pick renders with, built the same way the AI
         /// wizard's planner output is turned into overlays. Nil = none.
         func overlayComposition() -> OverlayComposition? {
-            guard overlayChoice != CuratedWizardModel.overlayNone else { return nil }
+            guard overlayChoice != ManualBuildModel.overlayNone else { return nil }
             let text = overlayText.trimmingCharacters(in: .whitespacesAndNewlines)
             if var composition = OverlayTemplateStore.composition(named: overlayChoice) {
                 for index in composition.texts.indices {

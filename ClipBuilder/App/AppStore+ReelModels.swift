@@ -49,7 +49,7 @@ extension AppStore {
           else { continue }
           var row = row
           row.features = try await TasteSimilarity.printFeatures(image, printer: printer)
-          row.targets = ["keep": scene.curated ? 1 : 0]
+          row.targets = ["keep": scene.favorite ? 1 : 0]
           printed.append(row)
         }
         rows = printed

@@ -216,7 +216,7 @@ nonisolated enum AICatalog {
         "distill": "Lesson distillation",
         "overlay": "Overlay extraction",
         "naming": "File naming",
-        "curate": "Scene curation",
+        "curate": "AI favorites",
         "search": "Library search",
         "soundbites": "Soundbite finding",
         "cover": "Cover frame picking",
@@ -247,7 +247,7 @@ nonisolated enum AICatalog {
         "onboard": "claude",
     ]
 
-    /// The smart dispatcher's curated preference chains: best first, each a
+    /// The smart dispatcher's preferred chains: best first, each a
     /// concrete (provider, model). The dispatcher walks a chain skipping
     /// providers whose CLI isn't installed; the same order drives mid-run
     /// failover when a provider errors out.
@@ -311,7 +311,7 @@ nonisolated enum AICatalog {
                    ("codex", "gpt-5-mini"),
                    ("qwen", "qwen3-coder-flash"),
                    ("kimi", "kimi-code/kimi-for-coding")],
-        // AI Curator judges scenes against the taste rubric — taste judgment,
+        // AI Favorites judges scenes against the taste rubric — taste judgment,
         // not extraction, so a stronger text model leads.
         "curate": [("claude", "claude-sonnet-4-6"),
                    ("gemini", "gemini-2.5-pro"),

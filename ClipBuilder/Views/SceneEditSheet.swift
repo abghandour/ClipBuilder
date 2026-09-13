@@ -1,249 +1,8 @@
-import AVKit
 import SwiftUI
+import AVKit
 
-/// Curated Scenes: the staging area between raw analysis and generation.
-/// Scenes promoted here are the keepers — each can be trimmed/extended and
-/// framed (Center Stage) until it's good to go, and the AI Wizard can be
-/// told to draw from only these.
-struct CuratedView: View {
-    @Environment(AppStore.self) private var store
-
-    @State private var selectedSceneID: Int64?
-    @State private var showGenerateSheet = false
-    @State private var showAICurate = false
-    @State private var batchFilter: Int64?
-    /// How aggressively near-simultaneous takes collapse into one row —
-    /// shared app-wide with every other scene surface.
-    @AppStorage(SceneStacks.levelKey) private var stackLevelRaw = SceneStackLevel.standard.rawValue
-    /// Row whose stack picker popover is open.
-    @State private var stackPickerSceneID: Int64?
-    /// Scene playing in the stack picker's large-preview player.
-    @State private var previewScene: SceneRecord?
-
-    private var curatedScenes: [SceneRecord] {
-        store.sceneIndex.curated
-    }
-
-    private struct ListKey: Equatable {
-        var scenesVersion: Int
-        var batchFilter: Int64?
-        var stackLevel: String
-    }
-
-    @State private var listMemo = MemoBox<ListKey, (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]])>()
-    @State private var candidatesMemo = MemoBox<ListKey, [SceneRecord]>()
-
-    private var memoKey: ListKey {
-        ListKey(scenesVersion: store.scenesVersion, batchFilter: batchFilter, stackLevel: stackLevelRaw)
-    }
-
-    /// The curated scenes the list shows, narrowed to the selected analyze
-    /// batch when one is chosen.
-    private var filteredScenes: [SceneRecord] {
-        guard let batchFilter else { return curatedScenes }
-        return curatedScenes.filter { $0.runID == batchFilter }
-    }
-
-    /// The list's rows plus, for every row fronting a stack of takes of the
-    /// same moment, the whole stack behind it (best take first).
-    private var listContents: (scenes: [SceneRecord], stacks: [Int64: [SceneRecord]]) {
-        listMemo(memoKey) {
-            var scenes: [SceneRecord] = []
-            var stacks: [Int64: [SceneRecord]] = [:]
-            for stack in SceneStacks.group(filteredScenes, level: .from(stackLevelRaw)) {
-                scenes.append(stack[0])
-                if stack.count > 1 { stacks[stack[0].id] = stack }
-            }
-            return (scenes, stacks)
-        }
-    }
-
-    /// Analyze batches that hold curated scenes, with curated-scene counts,
-    /// newest first.
-    private var batches: [AnalyzeBatchFilterList.Batch] {
-        var counts: [Int64: Int] = [:]
-        for scene in curatedScenes {
-            if let runID = scene.runID { counts[runID, default: 0] += 1 }
-        }
-        return store.analysisRuns
-            .filter { counts[$0.id] != nil }
-            .sorted { $0.id > $1.id }
-            .map { .init(id: $0.id, name: $0.name, count: counts[$0.id] ?? 0) }
-    }
-
-    /// Uncurated stack-top scenes the AI Curator can propose from — scoped
-    /// to the selected batch when one is chosen.
-    private var curateCandidates: [SceneRecord] {
-        candidatesMemo(memoKey) {
-            let pool = store.scenes.filter { scene in
-                guard !scene.curated, !scene.excluded, !scene.ignored else { return false }
-                if let batchFilter { return scene.runID == batchFilter }
-                return true
-            }
-            return SceneStacks.tops(pool, level: .from(stackLevelRaw))
-        }
-    }
-
-    var body: some View {
-        Group {
-            if curatedScenes.isEmpty {
-                ContentUnavailableView {
-                    Label("No curated scenes yet", systemImage: "checkmark.seal")
-                } description: {
-                    Text("Promote keepers from Raw Scenes. Here they can be trimmed, extended, and framed before you create a video.")
-                } actions: {
-                    Button("Open Raw Scenes") { store.requestedSection = .scenes }
-                        .buttonStyle(.borderedProminent)
-                }
-            } else {
-                HSplitView {
-                    VStack(spacing: 0) {
-                        AnalyzeBatchFilterList(batches: batches, selection: $batchFilter)
-                            .padding(10)
-                        HStack {
-                            SceneStackLevelPicker(compact: true)
-                            Spacer()
-                        }
-                        .controlSize(.small)
-                        .padding(.horizontal, 10)
-                        .padding(.bottom, 8)
-                        Divider()
-                        sceneList
-                    }
-                    .rememberedPaneWidth("pane.curated.list", min: 280, initial: 330, max: 420)
-                    .frame(maxHeight: .infinity)
-                    if let scene = filteredScenes.first(where: { $0.id == selectedSceneID }) {
-                        CuratedSceneEditor(scene: scene)
-                            .id(scene.id)
-                            .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        ContentUnavailableView("Select a scene", systemImage: "checkmark.seal")
-                            .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
-            }
-        }
-        .screenTitle("Scenes", subtitle: "\(curatedScenes.count) scenes")
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    showAICurate = true
-                } label: {
-                    ToolbarBubbleLabel(text: "AI Curate", systemImage: "checkmark.seal")
-                }
-                .disabled(curateCandidates.isEmpty)
-                .help("The AI judges the library's uncurated scenes against your taste rubric and grading history and proposes additions here — every pick reviewed before applying")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    showGenerateSheet = true
-                } label: {
-                    ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
-                }
-                .disabled(curatedScenes.isEmpty)
-                .help("Describe a video to create from the curated scenes — trims and framing carry into the AI Wizard")
-            }
-        }
-        .sheet(isPresented: $showAICurate) {
-            AICurateSheet(candidates: curateCandidates)
-        }
-        .sheet(isPresented: $showGenerateSheet) {
-            // Stacked takes collapse to their best one — siblings would only
-            // hand the wizard the same moment twice.
-            GenerateVideoSheet(source: .scenes(
-                SceneStacks.tops(curatedScenes, level: .from(stackLevelRaw)),
-                personKeys: [], tags: []))
-        }
-        .sheet(item: $previewScene) { scene in
-            PlayerSheet(url: scene.videoURL,
-                        title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
-                        startTime: scene.startTime, endTime: scene.endTime)
-        }
-    }
-
-    private var sceneList: some View {
-        let contents = listContents
-        return List(selection: $selectedSceneID) {
-            ForEach(contents.scenes) { scene in
-                let stack = contents.stacks[scene.id]
-                HStack(spacing: 8) {
-                    VideoThumbnail(url: scene.videoURL,
-                                   time: (scene.startTime + scene.endTime) / 2)
-                        .frame(width: 34, height: 60)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(scene.videoFilename)
-                            .font(.caption)
-                            .lineLimit(1)
-                        Text("\(scene.startTime.timecode)–\(scene.endTime.timecode) · "
-                             + String(format: "%.1fs", scene.duration))
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if let stack {
-                        SceneStackBadge(count: stack.count,
-                                        userPicked: scene.stackChoice,
-                                        compact: true,
-                                        action: { stackPickerSceneID = scene.id })
-                    }
-                    if let score = scene.score {
-                        ScoreBadge(score: score, compact: true)
-                            .help(scene.narrative ?? "Entertainment score")
-                    }
-                    AIInfoButton(size: 11, scene: scene)
-                    if scene.centerStagePathJSON != nil {
-                        Image(systemName: "camera.metering.center.weighted")
-                            .foregroundStyle(.secondary)
-                            .help("Has a Center Stage camera path")
-                            .accessibilityLabel("Has a Center Stage camera path")
-
-                    }
-                    if scene.startTime != scene.originalStart || scene.endTime != scene.originalEnd {
-                        Image(systemName: "timeline.selection")
-                            .foregroundStyle(.orange)
-                            .help("Range edited from the analyzed original")
-                            .accessibilityLabel("Range edited from the analyzed original")
-                    }
-                }
-                .tag(scene.id)
-                .contextMenu {
-                    if let stack {
-                        Button("Choose Best of \(stack.count) Similar Scenes…") {
-                            stackPickerSceneID = scene.id
-                        }
-                        Divider()
-                    }
-                    Button("Remove from Curated") {
-                        if selectedSceneID == scene.id { selectedSceneID = nil }
-                        store.curateScene(scene, curated: false)
-                    }
-                    .help("Takes the scene out of the curated set. Its trims and framing are kept — curate it again to bring it back unchanged.")
-                    Button("Add to Builder") {
-                        store.addScenesToBuilder([scene])
-                    }
-                }
-                .popover(isPresented: Binding(
-                    get: { stackPickerSceneID == scene.id },
-                    set: { if !$0 { stackPickerSceneID = nil } })
-                ) {
-                    if let stack {
-                        SceneStackPicker(members: stack,
-                                         onPick: { pick in
-                                             stackPickerSceneID = nil
-                                             store.chooseStackBest(pick, among: stack)
-                                         },
-                                         onPreview: { previewScene = $0 })
-                    }
-                }
-            }
-        }
-        .listStyle(.inset)
-    }
-}
-
-/// Raw Scenes → "Curate": the full workbench in a sheet — analyze the
-/// scene's framing, apply Center Stage, trim — then save it as curated.
-struct CurateSceneSheet: View {
+/// Edit Scene: framing, Center Stage, and trim in a single workbench.
+struct SceneEditSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let sceneID: Int64
@@ -251,15 +10,17 @@ struct CurateSceneSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             if let scene = store.scenes.first(where: { $0.id == sceneID }) {
-                CuratedSceneEditor(scene: scene, promoteMode: !scene.curated)
+                SceneEditor(scene: scene)
                 HStack {
+                    Toggle("Favorite", isOn: Binding(
+                        get: { scene.favorite },
+                        set: { store.favoriteScene(scene, favorite: $0) }
+                    ))
+                    .toggleStyle(.button)
+                    .help("Keep this scene in Favorites; trims and framing are saved independently")
                     Spacer()
-                    Button(scene.curated ? "Done" : "Save as Curated") {
-                        if !scene.curated {
-                            store.curateScene(scene, curated: true)
-                        }
-                        dismiss()
-                    }
+                    Button("Done") { dismiss() }
+                    .help("Close the scene editor; trim and framing changes are saved as you edit")
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                 }
@@ -276,15 +37,10 @@ struct CurateSceneSheet: View {
 
 /// One scene's workbench: play the effective range with the real framing,
 /// trim/extend it on the source filmstrip, pin framing hints on the paused
-/// frame, and (re)compute its Center Stage path. Used inside the Curated
-/// section and (in promote mode) as the Raw Scenes "Curate" modal.
-struct CuratedSceneEditor: View {
+/// frame, and (re)compute its Center Stage path.
+struct SceneEditor: View {
     @Environment(AppStore.self) private var store
     let scene: SceneRecord
-    /// Promote mode: shown from Raw Scenes before the scene is curated —
-    /// the header's Remove button is hidden (the sheet has Save/Cancel).
-    var promoteMode = false
-
     @State private var player: AVPlayer?
     @State private var timeObserver: Any?
     @State private var clock = PlaybackClock()
@@ -430,13 +186,6 @@ struct CuratedSceneEditor: View {
                 }
             }
             Spacer()
-            if !promoteMode {
-                Button("Remove from Curated", systemImage: "seal") {
-                    store.curateScene(scene, curated: false)
-                }
-                .controlSize(.small)
-                .help("Takes the scene out of the curated set. Its trims and framing are kept — curate it again to bring it back unchanged.")
-            }
         }
     }
 

@@ -542,7 +542,7 @@ struct OverlayPreviewCanvas: View {
     @Binding var selection: OverlayItemSelection?
     let time: Double?
     /// Draw the black stage + thirds grid. False when the canvas sits over
-    /// live video (the curated wizard's overlay preview).
+    /// live video (the manual build's overlay preview).
     var backdrop: Bool = true
 
     var body: some View {

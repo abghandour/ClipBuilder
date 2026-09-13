@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The expanded analyze-batch selector shared by the Builder's scene browser
-/// and the Curated Scenes list: a name-filterable list (5 rows tall) instead
+/// and the Favorites list: a name-filterable list (5 rows tall) instead
 /// of a popup, so batches are scannable at a glance.
 struct AnalyzeBatchFilterList: View {
     /// One selectable row: the analyze run's id, display name, and how many

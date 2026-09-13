@@ -46,7 +46,7 @@ nonisolated enum TasteSimilarity {
       let predictor = Predictor(
         exemplars: exemplars + rows.filter { ($0.targets["keep"] ?? 0) >= 0.5 }.map(\.features))
       guard !predictor.exemplars.isEmpty else {
-        throw ReelModelError.unavailable("Add taste exemplars or curate some scenes first.")
+        throw ReelModelError.unavailable("Add taste exemplars or favorite some scenes first.")
       }
       try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
       try JSONEncoder().encode(predictor).write(

@@ -271,8 +271,8 @@ struct StatusBarSummary: Equatable {
         add("wizard", "wizard", store.wizardStatus?.stage ?? "Generating video",
             store.isWizardRunning && !store.isPlanningIntoBuilder, progress: store.wizardStatus?.fraction,
             project: store.wizardProjectName)
-        add("curated-render", "wizard", "Rendering curated video", store.isCuratedRendering)
-        add("curated-preview", "wizard", "Rendering curated preview", store.isCuratedPreviewRendering)
+        add("manual-build-render", "wizard", "Rendering manual build", store.isManualBuildRendering)
+        add("manual-build-preview", "wizard", "Rendering manual build preview", store.isManualBuildPreviewRendering)
         add("transcription", "analysis", "Transcribing \(store.transcribingVideoIDs.count) videos", !store.transcribingVideoIDs.isEmpty)
         add("people", "analysis", "Detecting people", store.isDetectingPeople)
         add("framing", "analysis", "Detecting framing", store.isDetectingFraming, progress: store.framingProgress)

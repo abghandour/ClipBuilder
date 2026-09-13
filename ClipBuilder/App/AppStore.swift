@@ -166,7 +166,7 @@ final class AppStore {
             scenesVersion &+= 1
         }
     }
-    /// One-pass lookups over `scenes` (counts, person tags, curated list),
+    /// One-pass lookups over `scenes` (counts, person tags, favorite list),
     /// rebuilt whenever an index-affecting scene field changes so views do
     /// not re-scan the library for counts and tag sets.
     private(set) var sceneIndex = SceneIndex()
@@ -804,8 +804,9 @@ final class AppStore {
             projects = try await database.fetchProjects()
             applyLibrarySnapshot(snapshot, generation: profileGeneration)
             let state = projectState(for: activeProject)
-            selectedSection = SidebarSection(rawValue: state.section)?.projectDestination ?? .sources
-            sceneMode = state.sceneFilter
+            selectedSection = state.section == "curated" ? .scenes
+                : SidebarSection(rawValue: state.section)?.projectDestination ?? .sources
+            sceneMode = "all"
             outputsSort = state.outputsSort
             outputsScrollID = state.outputsScrollID
             sourceSelection = state.sourceSelection.intersection(Set(videos.map(\.id)))
@@ -1454,7 +1455,7 @@ final class AppStore {
                 .split(separator: ",").map(String.init)
             : []
         // Center Stage moved to curation: paths are computed per scene from
-        // the Raw Scenes "Curate" modal, never during analysis.
+        // the Raw Scenes "Edit Scene" modal, never during analysis.
         // One-shot trim from the plan sheet — consumed and cleared here so a
         // leftover range never silently applies to a later run.
         let trimStart = UserDefaults.standard.object(forKey: "analysis.trimStart") as? Double
@@ -1948,28 +1949,26 @@ final class AppStore {
 
                 if options.curate, !completed("curate:\(video.id)") {
                     if Task.isCancelled { break }
-                    pipelineStage = "curating — \(current.filename)"
+                    pipelineStage = "AI Favorites — \(current.filename)"
                     let projectScenes = (try? await database.fetchScenes(
                         videoID: current.id, projectID: pipelineProjectID
                     )) ?? []
                     let pool = projectScenes.filter { scene in
-                        !scene.curated && !scene.excluded
+                        !scene.favorite && !scene.excluded
                             && (runID == nil || scene.runID == runID)
                     }
                     if pool.isEmpty {
-                        log("\(current.filename): nothing new to curate")
+                        log("\(current.filename): no new favorite candidates")
                     } else {
                         do {
-                            let curation = try await proposeCuration(for: pool, provider: nil,
+                            let curation = try await proposeFavorites(for: pool, provider: nil,
                                                                      model: nil, log: relay)
-                            for proposal in curation.value {
-                                try? await database.setSceneCurated(proposal.sceneID, curated: true,
-                                                                    provenance: curation.provenance)
-                            }
+                            try await database.setScenesFavorite(curation.value.map(\.sceneID), favorite: true,
+                                                                 provenance: curation.provenance)
                             await refreshAllNow()
-                            log("\(current.filename): curated \(curation.value.count) of \(pool.count) scenes")
+                            log("\(current.filename): favorited \(curation.value.count) of \(pool.count) scenes")
                         } catch {
-                            log("\(current.filename): curation failed — \(error.userMessage)")
+                            log("\(current.filename): AI Favorites failed — \(error.userMessage)")
                         }
                     }
                     finish("curate:\(video.id)")
@@ -2006,10 +2005,10 @@ final class AppStore {
                     wizard.projectID = pipelineProjectID
                     wizard.accountBenchmarks = igBenchmarks
                     wizard.selectedRunIDs = runIDs
-                    // Curated scope only when this video's batch actually has
-                    // curated scenes (holds across Resume, unlike a counter).
-                    wizard.curatedOnly = options.curate && storedScenes.contains { scene in
-                        scene.videoID == current.id && scene.curated
+                    // Favorite scope only when this video's batch actually has
+                    // favorite scenes (holds across Resume, unlike a counter).
+                    wizard.favoritesOnly = options.curate && storedScenes.contains { scene in
+                        scene.videoID == current.id && scene.favorite
                             && (runID == nil || scene.runID == runID)
                     }
                     wizard.critiqueLoop = options.critique
@@ -2121,7 +2120,7 @@ final class AppStore {
     /// The Wizard form's persisted settings as WizardOptions — mirrors
     /// WizardView.runWizard()'s mapping (keep the two in sync) so pipeline
     /// reels honor the same format, branding, audio, and duration the user
-    /// set up on the AI Wizard screen. Batch scoping, curatedOnly, and the
+    /// set up on the AI Wizard screen. Batch scoping, favoritesOnly, and the
     /// critique flag stay the pipeline's to decide; the source-people filter
     /// deliberately doesn't apply (a per-video run could end up with zero
     /// eligible scenes).
@@ -2775,18 +2774,19 @@ final class AppStore {
         return suggestions
     }
 
-    // MARK: - AI Curator
+    // MARK: - AI Favorites
 
-    /// Judge the given uncurated scenes against the taste rubric (with the
-    /// user's grading history and existing Curated picks as worked examples)
+    /// Judge the given non-favorite scenes against the taste rubric (with the
+    /// user's grading history and existing Favorite picks as worked examples)
     /// and return proposed promotions for review. Chunked so any library
     /// size fits in the model's context.
-    func proposeCuration(for candidates: [SceneRecord], provider: String?, model: String?,
+    func proposeFavorites(for candidates: [SceneRecord], provider: String?, model: String?,
                          log: @escaping @Sendable (String) -> Void) async throws
         -> AIOutcome<[SceneCurator.Proposal]> {
+        let candidates = candidates.filter { !$0.favorite && !$0.excluded && !$0.ignored }
         let profile = activeProfile
         let graded = scenes.filter { $0.lastGrade != nil }
-        let curatedExamples = scenes.filter(\.curated)
+        let favoriteExamples = scenes.filter(\.favorite)
         var proposals: [SceneCurator.Proposal] = []
         var provenance: AIProvenance?
         var start = 0
@@ -2797,7 +2797,7 @@ final class AppStore {
             }
             let prompt = SceneCurator.prompt(candidates: chunk, rubric: profile.tasteRubric,
                                              categories: profile.tasteCategories,
-                                             graded: graded, curatedExamples: curatedExamples)
+                                             graded: graded, favoriteExamples: favoriteExamples)
             let response = try await ai.call(prompt: prompt, task: "curate",
                                              model: model, provider: provider,
                                              timeout: 240, log: log)
@@ -2811,16 +2811,11 @@ final class AppStore {
     }
 
     /// Apply the reviewed curator picks in one pass — batched DB writes and
-    /// a single refresh, unlike per-scene `curateScene`. `provenance` is the
+    /// a single refresh, unlike per-scene `favoriteScene`. `provenance` is the
     /// curator that proposed them, stamped on each scene.
-    func applyCuration(sceneIDs: [Int64], provenance: AIProvenance?) {
-        guard let database else { return }
-        Task {
-            for id in sceneIDs {
-                try? await database.setSceneCurated(id, curated: true, provenance: provenance)
-            }
-            await refreshAllNow()
-        }
+    func applyFavorites(sceneIDs: [Int64], provenance: AIProvenance?) {
+        setScenesFavorite(scenes.filter { sceneIDs.contains($0.id) }, favorite: true,
+                          provenance: provenance)
     }
 
     // MARK: - Natural-language scene search
@@ -3062,17 +3057,17 @@ final class AppStore {
                            log: @escaping @Sendable (String) -> Void) async throws
         -> AIOutcome<[GapReporter.Section]> {
         guard let database else { throw AIError.notConfigured("No profile is open.") }
-        var sceneCounts: [Int64: (total: Int, curated: Int)] = [:]
+        var sceneCounts: [Int64: (total: Int, favorite: Int)] = [:]
         for scene in scenes where !scene.excluded {
             sceneCounts[scene.videoID, default: (0, 0)].total += 1
-            if scene.curated { sceneCounts[scene.videoID, default: (0, 0)].curated += 1 }
+            if scene.favorite { sceneCounts[scene.videoID, default: (0, 0)].favorite += 1 }
         }
         let batchCounts = Dictionary(grouping: analysisRuns, by: \.videoID).mapValues(\.count)
         var inventory: [String] = []
         let videoLines = videos.map { video in
             var line = "- \(video.filename) | \(Int(video.duration))s | \(video.type?.label ?? "unclassified")"
             let counts = sceneCounts[video.id] ?? (0, 0)
-            line += " | \(batchCounts[video.id] ?? 0) analyze batch(es), \(counts.total) scenes, \(counts.curated) curated"
+            line += " | \(batchCounts[video.id] ?? 0) analyze batch(es), \(counts.total) scenes, \(counts.favorite) favorites"
             if fightResearch[video.id] != nil { line += " | fight research done" }
             return line
         }
@@ -3352,7 +3347,7 @@ final class AppStore {
         guard let index = scenes.firstIndex(where: { $0.id == id }) else { return }
         rebuildSceneIndexAfterWrite = rebuildSceneIndex
         mutate(&scenes[index])
-        // The index keeps record copies for the Curated screen; when the
+        // The index keeps record copies for the Favorites filter; when the
         // rebuild is skipped those copies still have to follow the change.
         if !rebuildSceneIndex { sceneIndex.replaceCopy(of: scenes[index]) }
         builder.updateScene(scenes[index], rehydrateClips: rehydrateBuilder)
@@ -3379,37 +3374,9 @@ final class AppStore {
     }
 
     func toggleFavorite(_ scene: SceneRecord) {
-        guard let database else { return }
-        let favorite = !scene.favorite
-        Task {
-            do {
-                try await database.setSceneFavorite(scene.id, favorite: favorite)
-                updateScene(scene.id, rebuildSceneIndex: false, rehydrateBuilder: false) {
-                    $0.favorite = favorite
-                }
-            } catch {
-                presentError("Could not save the favorite", error)
-            }
-        }
+        favoriteScene(scene, favorite: !scene.favorite)
     }
 
-    func setScenesFavorite(_ selectedScenes: [SceneRecord], favorite: Bool) {
-        guard let database, !selectedScenes.isEmpty else { return }
-        let sceneIDs = Set(selectedScenes.map(\.id))
-        Task {
-            do {
-                try await database.setScenesFavorite(Array(sceneIDs), favorite: favorite)
-                updateScenes(sceneIDs, rebuildSceneIndex: false) { $0.favorite = favorite }
-            } catch {
-                presentError("Could not save the favorite", error)
-            }
-        }
-    }
-
-    /// Pin one scene as the best of its stack of near-simultaneous scenes —
-    /// it moves on top of the collapsed card and stays there. Clears the pin
-    /// from the other members so exactly one scene per stack holds it;
-    /// re-picking the AI's own choice just records it explicitly.
     func chooseStackBest(_ scene: SceneRecord, among members: [SceneRecord]) {
         guard let database else { return }
         Task {
@@ -4314,31 +4281,31 @@ final class AppStore {
         }
     }
 
-    // MARK: - Curated wizard
+    // MARK: - Manual build
 
-    var isCuratedRendering = false {
-        didSet { logDiagnosticOperation("Curated render", channel: "wizard", running: isCuratedRendering, previously: oldValue) }
+    var isManualBuildRendering = false {
+        didSet { logDiagnosticOperation("Manual build render", channel: "wizard", running: isManualBuildRendering, previously: oldValue) }
     }
     /// An exact (real-pipeline) preview render is in flight for the wizard.
-    var isCuratedPreviewRendering = false {
-        didSet { logDiagnosticOperation("Curated preview render", channel: "wizard", running: isCuratedPreviewRendering, previously: oldValue) }
+    var isManualBuildPreviewRendering = false {
+        didSet { logDiagnosticOperation("Manual build preview render", channel: "wizard", running: isManualBuildPreviewRendering, previously: oldValue) }
     }
 
-    /// Render a curated-wizard document through the Builder's multitrack
+    /// Render a manual-build document through the Builder's multitrack
     /// pipeline, logging into the wizard's Generation Log. The branded outro
     /// card (a wizard-assemble feature the multitrack renderer doesn't have)
     /// is pre-rendered here and appended as a plain video clip.
-    func renderCuratedDocument(_ document: TimelineDocument, includeOutro: Bool) {
-        guard let database, !isCuratedRendering else { return }
-        isCuratedRendering = true
-        appendLog(\.wizardLog, ["— Curated video: rendering \(document.videoTrack.count) clip(s) —"])
+    func renderManualBuildDocument(_ document: TimelineDocument, includeOutro: Bool) {
+        guard let database, !isManualBuildRendering else { return }
+        isManualBuildRendering = true
+        appendLog(\.wizardLog, ["— Manual build: rendering \(document.videoTrack.count) clip(s) —"])
         let profile = activeProfile
         let renderer = multitrackRenderer
         let scenes = self.scenes
         let projectID = activeProjectID
         Task {
             do {
-                let document = try await curatedDocument(document, includeOutro: includeOutro,
+                let document = try await manualBuildDocument(document, includeOutro: includeOutro,
                                                          profile: profile)
                 let result = try await renderer.render(document: document, scenes: scenes,
                                                        profile: profile, database: database,
@@ -4347,22 +4314,22 @@ final class AppStore {
                                                        emit: logSink(\.wizardLog))
                 appendLog(\.wizardLog, ["VIDEO:\(result.url.lastPathComponent):\(String(format: "%.1f", result.duration))"])
             } catch is CancellationError {
-                appendLog(\.wizardLog, ["Curated render stopped."])
+                appendLog(\.wizardLog, ["Manual build render stopped."])
             } catch {
                 appendLog(\.wizardLog, ["Error: \(error.userMessage)"])
-                presentError("Curated video render failed", error)
+                presentError("Manual build render failed", error)
             }
-            isCuratedRendering = false
+            isManualBuildRendering = false
             refreshAll()
         }
     }
 
-    /// The curated document exactly as a render receives it — the branded
+    /// The manual build document exactly as a render receives it — the branded
     /// outro card appended when enabled. Shared by Generate and the exact
     /// preview so both see the same timeline.
-    private var curatedBumperSelection: (key: String, clips: [TimelineClip])?
+    private var manualBuildBumperSelection: (key: String, clips: [TimelineClip])?
 
-    private func curatedDocument(_ document: TimelineDocument, includeOutro: Bool,
+    private func manualBuildDocument(_ document: TimelineDocument, includeOutro: Bool,
                                  profile: BrandProfile) async throws -> TimelineDocument {
         var document = document
         var options = WizardOptions()
@@ -4377,7 +4344,7 @@ final class AppStore {
         if includeOutro,
            profile.logoURL != nil || !(profile.socials["instagram"]?.handle ?? "").isEmpty {
             let scratch = FileManager.default.temporaryDirectory
-                .appendingPathComponent("CuratedOutro-\(UUID().uuidString)", isDirectory: true)
+                .appendingPathComponent("ManualBuildOutro-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
             if let png = BrandRenderer.outroCard(profile: profile, to: scratch) {
                 let card = scratch.appendingPathComponent("outro_card.mp4")
@@ -4393,7 +4360,7 @@ final class AppStore {
                 appendLog(\.wizardLog, ["Branded outro card appended"])
             }
         }
-        if let cached = curatedBumperSelection, cached.key == selectionKey {
+        if let cached = manualBuildBumperSelection, cached.key == selectionKey {
             for clip in cached.clips {
                 BumperPlanner.insertGap(in: &document, at: clip.startTime, duration: clip.duration)
                 document.videoTrack.append(clip)
@@ -4403,27 +4370,27 @@ final class AppStore {
             let existing = Set(document.videoTrack.map(\.uid))
             let log = BumperPlanner.apply(to: &document, bumpers: assets, options: options)
             appendLog(\.wizardLog, log)
-            curatedBumperSelection = (selectionKey, document.videoTrack.filter { $0.bumper && !existing.contains($0.uid) }
+            manualBuildBumperSelection = (selectionKey, document.videoTrack.filter { $0.bumper && !existing.contains($0.uid) }
                 .sorted { $0.startTime < $1.startTime })
         }
         return document
     }
 
-    /// Exact preview for the curated wizard: the REAL render pipeline
+    /// Exact preview for the manual build: the REAL render pipeline
     /// (framing, transitions, music, overlays, outro — identical output) to
     /// a temporary file the reel preview plays. Nothing lands in the
     /// Library. Returns nil on failure or cancellation.
-    func renderCuratedExactPreview(_ document: TimelineDocument,
+    func renderManualBuildExactPreview(_ document: TimelineDocument,
                                    includeOutro: Bool) async -> URL? {
-        guard let database, !isCuratedPreviewRendering else { return nil }
-        isCuratedPreviewRendering = true
-        defer { isCuratedPreviewRendering = false }
+        guard let database, !isManualBuildPreviewRendering else { return nil }
+        isManualBuildPreviewRendering = true
+        defer { isManualBuildPreviewRendering = false }
         appendLog(\.wizardLog, ["— Exact preview: rendering \(document.videoTrack.count) clip(s) —"])
         let profile = activeProfile
         let renderer = multitrackRenderer
         let scenes = self.scenes
         do {
-            let document = try await curatedDocument(document, includeOutro: includeOutro,
+            let document = try await manualBuildDocument(document, includeOutro: includeOutro,
                                                      profile: profile)
             let result = try await renderer.render(document: document, scenes: scenes,
                                                    profile: profile, database: database,
@@ -4538,9 +4505,9 @@ final class AppStore {
         }
     }
 
-    /// Load a curated-wizard document into the Builder for detail work.
-    func openCuratedInBuilder(_ document: TimelineDocument) {
-        createTimeline(named: "Curated Edit", document: document)
+    /// Load a manual-build document into the Builder for detail work.
+    func openManualBuildInBuilder(_ document: TimelineDocument) {
+        createTimeline(named: "Manual Edit", document: document)
     }
 
     /// Continue a reviewed Wizard plan in the Builder, where owned photo and
@@ -5457,34 +5424,34 @@ final class AppStore {
         return try? JSONDecoder().decode(ReelTemplate.self, from: Data(record.templateJSON.utf8))
     }
 
-    // MARK: - Curation
+    // MARK: - Scene editing and favorites
 
-    func curateScene(_ scene: SceneRecord, curated: Bool) {
+    func favoriteScene(_ scene: SceneRecord, favorite: Bool, provenance: AIProvenance? = nil) {
         guard let database else { return }
         Task {
             do {
-                try await database.setSceneCurated(scene.id, curated: curated)
-                // The write also resets curated_provider/model: re-read the row.
+                try await database.setSceneFavorite(scene.id, favorite: favorite, provenance: provenance)
+                // The write also resets favorite_provider/model: re-read the row.
                 await replaceScene(id: scene.id)
             } catch {
-                presentError("Could not save the curation change", error)
+                presentError("Could not save the favorite", error)
             }
         }
     }
 
-    func setScenesCurated(_ selectedScenes: [SceneRecord], curated: Bool) {
+    func setScenesFavorite(_ selectedScenes: [SceneRecord], favorite: Bool, provenance: AIProvenance? = nil) {
         guard let database, !selectedScenes.isEmpty else { return }
         let sceneIDs = Set(selectedScenes.map(\.id))
         Task {
             do {
-                try await database.setScenesCurated(Array(sceneIDs), curated: curated)
+                try await database.setScenesFavorite(Array(sceneIDs), favorite: favorite, provenance: provenance)
                 updateScenes(sceneIDs) {
-                    $0.curated = curated
-                    $0.curatedProvider = nil
-                    $0.curatedModel = nil
+                    $0.favorite = favorite
+                    $0.favoriteProvider = favorite ? provenance?.provider : nil
+                    $0.favoriteModel = favorite ? provenance?.model : nil
                 }
             } catch {
-                presentError("Could not save the curation change", error)
+                presentError("Could not save the favorite", error)
             }
         }
     }

@@ -142,7 +142,6 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case resources
     case analyze
     case scenes
-    case curated
     case people
     case music
     case fonts
@@ -186,7 +185,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .people: return "6"
         case .instagram: return "7"
         case .instagramReports: return "8"
-        case .projects, .analyze, .curated, .builder, .library, .resources, .learned,
+        case .projects, .analyze, .builder, .library, .resources, .learned,
              .music, .fonts, .images, .overlays, .effects, .looks, .screenCrops: return nil
         }
     }
@@ -205,7 +204,6 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .projects: return "All Projects"
         case .sources, .analyze: return "Sources"
         case .scenes: return "Scenes"
-        case .curated: return "Curated Scenes"
         case .people: return "People"
         case .timelines, .builder: return "Timelines"
         case .outputs, .library: return "Outputs"
@@ -230,7 +228,6 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .projects: return "square.grid.2x2"
         case .sources, .analyze: return "film"
         case .scenes: return "square.grid.3x3"
-        case .curated: return "checkmark.seal"
         case .people: return "person.2"
         case .timelines, .builder: return "timeline.selection"
         case .outputs, .library: return "play.rectangle"
@@ -254,7 +251,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         switch self {
         case .projects: .projects
         case .sources, .analyze: .sources
-        case .scenes, .curated: .scenes
+        case .scenes: .scenes
         case .timelines, .builder: .timelines
         case .learned: .learned
         case .wizard: .wizard
@@ -430,7 +427,6 @@ struct MainWindowView: View {
         if requested == .projects {
             store.showProjectsHome()
         } else {
-            if requested == .curated { store.sceneMode = "curated" }
             if requested == .scenes { store.sceneMode = "all" }
             store.selectSection(requested)
         }

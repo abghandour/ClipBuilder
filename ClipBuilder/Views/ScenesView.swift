@@ -4,11 +4,7 @@ import SwiftUI
 /// right with favorite/grade voting and transcripts.
 struct ScenesView: View {
     @Environment(AppStore.self) private var store
-    let curatedOnly: Bool
-
-    init(curatedOnly: Bool = false) {
-        self.curatedOnly = curatedOnly
-    }
+    @State private var favoritesOnly = false
 
     @State private var selectedRunIDs: Set<Int64> = []
     @State private var tagFilter: String?
@@ -20,7 +16,7 @@ struct ScenesView: View {
     @State private var deletingRuns: [AnalysisRun] = []
     @State private var infoRun: AnalysisRun?
     @State private var showGenerateSheet = false
-    @State private var curatingScene: SceneRecord?
+    @State private var editingScene: SceneRecord?
     @State private var sortByScore = false
     @State private var minScore = 0.0
     @State private var showSequenceParts = false
@@ -30,7 +26,7 @@ struct ScenesView: View {
     /// Card whose stack picker popover is open (long-press a stacked card).
     @State private var stackPickerID: Int64?
     @State private var showAskSheet = false
-    @State private var showAICurate = false
+    @State private var showAIFavorites = false
     /// Active AI search: the query plus its ranked scene ids — the grid
     /// narrows to these (rank order) until cleared from the banner.
     @State private var aiMatches: (query: String, ids: [Int64], provenance: AIProvenance)?
@@ -39,7 +35,7 @@ struct ScenesView: View {
 
     // Grid selection: click selects, ⌘-click toggles, ⇧-click extends, and
     // the keyboard drives the whole triage loop (arrows move, Space
-    // previews, ⏎ curates, G/B grade, F favorite, H hide, C curate).
+    // previews, ⏎ edits, G/B grade, F favorite, H hide).
     @State private var selectedSceneIDs: Set<Int64> = []
     @State private var selectionAnchorID: Int64?
     /// Columns currently laid out by the adaptive grid — keeps ↑/↓ movement
@@ -92,7 +88,7 @@ struct ScenesView: View {
         var showSequenceParts: Bool
         var stackLevel: SceneStackLevel
         var sortByScore: Bool
-        var curatedOnly: Bool
+        var favoritesOnly: Bool
     }
 
     @State private var gridMemo = MemoBox<GridKey, GridContents>()
@@ -102,7 +98,7 @@ struct ScenesView: View {
                           runFilter: runFilter, showHidden: showHidden, tagFilter: tagFilter,
                           minScore: minScore, aiMatchIDs: aiMatches?.ids,
                           showSequenceParts: showSequenceParts, stackLevel: stackLevel,
-                          sortByScore: sortByScore, curatedOnly: curatedOnly)
+                          sortByScore: sortByScore, favoritesOnly: favoritesOnly)
         return gridMemo(key) { computeGridContents() }
     }
 
@@ -110,7 +106,7 @@ struct ScenesView: View {
         let needle = searchText.lowercased()
         let runFilter = runFilter
         var result = store.scenes.filter { scene in
-            if curatedOnly && !scene.curated { return false }
+            if favoritesOnly && !scene.favorite { return false }
             if let runFilter, !(scene.runID.map(runFilter.contains) ?? false) { return false }
             if !showHidden && scene.excluded { return false }
             if let tagFilter, !scene.tags.contains(tagFilter) { return false }
@@ -163,10 +159,10 @@ struct ScenesView: View {
         }
     }
 
-    /// The AI Curator's pool: uncurated cards currently in view (stack tops
+    /// The AI Favorites pool: non-favorite cards currently in view (stack tops
     /// only). A multi-selection narrows the judging to just those cards.
-    private var curateCandidates: [SceneRecord] {
-        let pool = gridContents.scenes.filter { !$0.curated && !$0.excluded }
+    private var favoriteCandidates: [SceneRecord] {
+        let pool = gridContents.scenes.filter { !$0.favorite && !$0.excluded }
         let selected = pool.filter { selectedSceneIDs.contains($0.id) }
         return selected.count >= 2 ? selected : pool
     }
@@ -220,9 +216,14 @@ struct ScenesView: View {
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .screenTitle("Scenes", subtitle: selectedSceneIDs.count > 1 ? "\(selectedSceneIDs.count) of \(filtered.count) scenes selected" : curatedOnly ? "\(filtered.count) curated scenes" : stackedAway > 0 ? "\(filtered.count) moments — \(filtered.count + stackedAway) scenes" : "\(filtered.count) scenes")
+        .screenTitle("Scenes", subtitle: selectedSceneIDs.count > 1 ? "\(selectedSceneIDs.count) of \(filtered.count) scenes selected" : favoritesOnly ? "\(filtered.count) favorite scenes" : stackedAway > 0 ? "\(filtered.count) moments — \(filtered.count + stackedAway) scenes" : "\(filtered.count) scenes")
         .searchable(text: $searchText, prompt: "Filter by file or tag")
         .toolbar {
+            ToolbarItem {
+                Toggle("Favorites", isOn: $favoritesOnly)
+                    .toggleStyle(.button)
+                    .help("Show only favorite scenes")
+            }
             if let run = selectedRun {
                 ToolbarItem {
                     Button("Analyze Batch Info", systemImage: "info.circle") {
@@ -281,12 +282,12 @@ struct ScenesView: View {
             }
             ToolbarItem {
                 Button {
-                    showAICurate = true
+                    showAIFavorites = true
                 } label: {
-                    ToolbarBubbleLabel(text: "AI Curate", systemImage: "checkmark.seal")
+                    ToolbarBubbleLabel(text: "AI Favorites", systemImage: "checkmark.seal")
                 }
-                .disabled(curateCandidates.isEmpty)
-                .help("The AI judges the uncurated scenes in view against your taste rubric and grading history and proposes keepers for the Curated set — every pick reviewed before applying. Select 2+ scenes to judge just those.")
+                .disabled(favoriteCandidates.isEmpty)
+                .help("The AI judges the non-favorite scenes in view against your taste rubric and grading history and proposes keepers for the Favorites — every pick reviewed before applying. Select 2+ scenes to judge just those.")
             }
             ToolbarItem {
                 Button {
@@ -307,8 +308,8 @@ struct ScenesView: View {
                 selectedSceneIDs = []
             }
         }
-        .sheet(isPresented: $showAICurate) {
-            AICurateSheet(candidates: curateCandidates)
+        .sheet(isPresented: $showAIFavorites) {
+            AIFavoritesSheet(candidates: favoriteCandidates)
         }
         .sheet(item: $transcriptVideo) { video in
             TranscriptSheet(video: video)
@@ -316,8 +317,8 @@ struct ScenesView: View {
         .sheet(item: $infoRun) { run in
             BatchInfoSheet(run: run)
         }
-        .sheet(item: $curatingScene) { scene in
-            CurateSceneSheet(sceneID: scene.id)
+        .sheet(item: $editingScene) { scene in
+            SceneEditSheet(sceneID: scene.id)
         }
         .sheet(item: $previewScene) { scene in
             PlayerSheet(url: scene.videoURL,
@@ -568,12 +569,12 @@ struct ScenesView: View {
                   onTranscript: {
                       transcriptVideo = store.videos.first { $0.id == scene.videoID }
                   },
-                  onCurate: { curatingScene = scene },
+                  onEdit: { editingScene = scene },
                   bulkActions: selectedSceneIDs.count > 1 && selectedSceneIDs.contains(scene.id)
                       ? SceneBulkActions(
                             count: selectedSceneIDs.count,
                             grade: { score in bulkGrade(score, in: filtered) },
-                            curate: { bulkSetCurated(in: filtered) },
+                            favorite: { bulkToggleFavorite(in: filtered) },
                             hide: { bulkSetHidden(in: filtered) },
                             addToBuilder: { bulkAddToBuilder(in: filtered) })
                       : nil,
@@ -673,8 +674,8 @@ struct ScenesView: View {
         withAnimation { proxy.scrollTo(target.id) }
     }
 
-    /// Grid keys: Space previews, ⏎ opens the Curate workbench, G/5 grades
-    /// good, B/1 grades bad, F favorites, C curates, ⌘A selects all.
+    /// Grid keys: Space previews, ⏎ opens the Edit Scene workbench, G/5 grades
+    /// good, B/1 grades bad, F favorites, ⌘A selects all.
     private func handleKey(_ press: KeyPress, in filtered: [SceneRecord]) -> KeyPress.Result {
         let selection = orderedSelection(in: filtered)
         if press.modifiers.contains(.command) {
@@ -692,7 +693,7 @@ struct ScenesView: View {
             return .handled
         case "\r":
             guard selection.count == 1, let scene = selection.first else { return .ignored }
-            curatingScene = scene
+            editingScene = scene
             return .handled
         case "g", "5":
             guard !selection.isEmpty else { return .ignored }
@@ -709,10 +710,6 @@ struct ScenesView: View {
         case "h":
             guard !selection.isEmpty else { return .ignored }
             bulkSetHidden(in: filtered)
-            return .handled
-        case "c":
-            guard !selection.isEmpty else { return .ignored }
-            bulkSetCurated(in: filtered)
             return .handled
         default:
             return .ignored
@@ -738,24 +735,6 @@ struct ScenesView: View {
             store.toggleFavorite(scene)
         } else {
             store.setScenesFavorite(changed, favorite: makeFavorite)
-        }
-    }
-
-    private func bulkSetCurated(in filtered: [SceneRecord]) {
-        let selection = orderedSelection(in: filtered)
-        guard !selection.isEmpty else { return }
-        // Single scene goes through the full Curate workbench; a batch is
-        // marked curated directly (trim/framing stay editable afterwards).
-        if selection.count == 1, let scene = selection.first, !scene.curated {
-            curatingScene = scene
-            return
-        }
-        let makeCurated = selection.contains { !$0.curated }
-        let changed = selection.filter { $0.curated != makeCurated }
-        if changed.count == 1, let scene = changed.first {
-            store.curateScene(scene, curated: makeCurated)
-        } else {
-            store.setScenesCurated(changed, curated: makeCurated)
         }
     }
 
@@ -874,7 +853,7 @@ private struct BatchInfoSheet: View {
 struct SceneBulkActions {
     var count: Int
     var grade: (Int) -> Void
-    var curate: () -> Void
+    var favorite: () -> Void
     var hide: () -> Void
     var addToBuilder: () -> Void
 }
@@ -883,8 +862,8 @@ struct SceneCard: View {
     @Environment(AppStore.self) private var store
     let scene: SceneRecord
     let onTranscript: () -> Void
-    /// Opens the Curate workbench modal (framing + trim → save as curated).
-    var onCurate: (() -> Void)?
+    /// Opens the Edit Scene workbench modal (framing and trim).
+    var onEdit: (() -> Void)?
     /// Present when the card sits inside a multi-selection.
     var bulkActions: SceneBulkActions?
     /// Set when this card fronts a stack of near-simultaneous takes (2+
@@ -986,50 +965,32 @@ struct SceneCard: View {
             }
 
             HStack(spacing: 8) {
-                Button {
-                    if scene.curated {
-                        store.curateScene(scene, curated: false)
-                    } else if let onCurate {
-                        onCurate()
-                    } else {
-                        store.curateScene(scene, curated: true)
-                    }
-                } label: {
-                    Label(scene.curated ? "Remove from Curated" : "Curate Scene",
-                          systemImage: scene.curated ? "checkmark.seal.fill" : "checkmark.seal")
-                        .foregroundStyle(scene.curated ? .green : .secondary)
+                Button(scene.favorite ? "Unfavorite" : "Favorite",
+                       systemImage: scene.favorite ? "heart.fill" : "heart") {
+                    store.toggleFavorite(scene)
                 }
-                .help(scene.curated
-                      ? "In the Curated set — click to remove"
-                      : "Curate this scene: preview and apply Center Stage, trim, then save it as good to go")
+                .foregroundStyle(scene.favorite ? .red : .secondary)
+                .help(scene.favoriteProvenance.map { "Favorited by \($0.provider == "claude" ? "Claude Code" : $0.brand.label)" }
+                      ?? (scene.favorite ? "Remove from Favorites (F)" : "Add to Favorites (F)"))
+                Button("Edit Scene", systemImage: "slider.horizontal.3") { onEdit?() }
+                    .help("Edit this scene's trim and framing (Return)")
                 Spacer()
-
-                Menu("More", systemImage: "ellipsis") {
-                    Button(scene.favorite ? "Unfavorite" : "Favorite",
-                           systemImage: scene.favorite ? "heart.fill" : "heart") {
-                        store.toggleFavorite(scene)
-                    }
-                    Divider()
-                    Button("Good Scene", systemImage: "hand.thumbsup") {
-                        store.grade(scene, score: 5)
-                    }
-                    Button("Bad Scene", systemImage: "hand.thumbsdown") {
-                        store.grade(scene, score: 1)
-                    }
-                    Divider()
-                    Button("Transcript", systemImage: "text.quote") {
-                        onTranscript()
-                    }
-                    Button(scene.excluded ? "Unhide Scene" : "Hide Scene",
-                           systemImage: scene.excluded ? "eye" : "eye.slash") {
-                        store.setExcluded(scene, excluded: !scene.excluded)
-                    }
-                    Button(scene.isBRoll ? "Remove B-roll Mark" : "Mark as B-roll",
-                           systemImage: scene.isBRoll ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle") {
-                        store.setSceneBRoll(scene, isBRoll: !scene.isBRoll)
-                    }
+                Button("Good Scene", systemImage: "hand.thumbsup") { store.grade(scene, score: 5) }
+                    .help("Grade this scene good (G)")
+                Button("Bad Scene", systemImage: "hand.thumbsdown") { store.grade(scene, score: 1) }
+                    .help("Grade this scene bad (B)")
+                Button("Transcript", systemImage: "text.quote") { onTranscript() }
+                    .help("Show this scene's transcript")
+                Button(scene.excluded ? "Unhide Scene" : "Hide Scene",
+                       systemImage: scene.excluded ? "eye" : "eye.slash") {
+                    store.setExcluded(scene, excluded: !scene.excluded)
                 }
-                .help("Rate, favorite, transcribe, or hide this scene")
+                .help("Hide or unhide this scene (H)")
+                Button(scene.isBRoll ? "Remove B-roll Mark" : "Mark as B-roll",
+                       systemImage: "rectangle.on.rectangle") {
+                    store.setSceneBRoll(scene, isBRoll: !scene.isBRoll)
+                }
+                .help("Toggle this scene's B-roll mark")
             }
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
@@ -1043,7 +1004,8 @@ struct SceneCard: View {
                 Section("\(bulk.count) Selected Scenes") {
                     Button("Grade Good") { bulk.grade(5) }
                     Button("Grade Bad") { bulk.grade(1) }
-                    Button("Curate / Uncurate") { bulk.curate() }
+                    Button("Favorite / Unfavorite") { bulk.favorite() }
+                        .help("Toggle Favorites for the selected scenes (F)")
                     Button("Hide / Unhide") { bulk.hide() }
                     Button("Add to Builder") { bulk.addToBuilder() }
                 }
@@ -1055,16 +1017,10 @@ struct SceneCard: View {
                 }
                 Divider()
             }
-            if scene.curated {
-                // Non-destructive: trims/framing are kept for re-curation.
-                Button("Remove from Curated") {
-                    store.curateScene(scene, curated: false)
-                }
-            } else {
-                Button("Curate…") {
-                    onCurate?()
-                }
-            }
+            Button(scene.favorite ? "Unfavorite" : "Favorite") { store.toggleFavorite(scene) }
+                .help("Toggle this scene's favorite mark (F)")
+            Button("Edit Scene") { onEdit?() }
+                .help("Edit this scene's trim and framing (Return)")
             Button("Add to Builder") {
                 store.addScenesToBuilder([scene])
             }

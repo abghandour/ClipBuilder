@@ -411,11 +411,9 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     /// The range analysis originally detected — the editor's reset target.
     var originalStart: Double = 0
     var originalEnd: Double = 0
-    /// Promoted to the Curated set (the wizard can be told to use only these).
-    var curated: Bool = false
-    /// The AI Curator that promoted it; nil = the user's own pick.
-    var curatedProvider: String? = nil
-    var curatedModel: String? = nil
+    /// The AI that favorited it; nil = the user's own pick.
+    var favoriteProvider: String? = nil
+    var favoriteModel: String? = nil
     /// The analyzer's beat-by-beat story of the sequence.
     var narrative: String?
     /// Entertainment score 0–10 (escalation-aware, audio-excitement boosted).
@@ -452,10 +450,10 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var isBRoll: Bool { tags.contains("b-roll") }
     var videoURL: URL { URL(fileURLWithPath: videoPath) }
 
-    /// Who promoted this scene to Curated, when it was the AI Curator.
-    var curationProvenance: AIProvenance? {
-        guard curated else { return nil }
-        return AIProvenance(provider: curatedProvider, model: curatedModel, task: "curate")
+    /// Who selected this favorite, when it was proposed by AI.
+    var favoriteProvenance: AIProvenance? {
+        guard favorite else { return nil }
+        return AIProvenance(provider: favoriteProvider, model: favoriteModel, task: "curate")
     }
 
     /// Center Stage paths are computed on-device by Apple Vision tracking.

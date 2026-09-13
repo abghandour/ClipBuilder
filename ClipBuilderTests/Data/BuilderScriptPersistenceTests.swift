@@ -54,7 +54,7 @@ struct BuilderScriptPersistenceTests {
         let again = try Database(path: temp.path)
         let rows = try await again.fetchBuilderScripts()
         #expect(rows == [record])
-        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 15)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.query("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_builder_scripts_updated'").count == 1)
     }
 

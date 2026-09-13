@@ -180,7 +180,7 @@ struct EffectControlsTests {
         let existing: [(SidebarSection, String)] = [
             (.projects, "projects"), (.sources, "sources"), (.timelines, "timelines"),
             (.outputs, "outputs"), (.resources, "resources"), (.analyze, "analyze"),
-            (.scenes, "scenes"), (.curated, "curated"), (.people, "people"),
+            (.scenes, "scenes"), (.people, "people"),
             (.music, "music"), (.fonts, "fonts"), (.images, "images"),
             (.overlays, "overlays"), (.effects, "effects"), (.screenCrops, "screenCrops"),
             (.bumpers, "bumpers"), (.wizard, "wizard"), (.learned, "learned"),

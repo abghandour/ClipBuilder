@@ -14,8 +14,8 @@ nonisolated struct SceneIndex: Sendable {
     var allTags: [String] = []
     /// Scenes that are neither excluded nor ignored.
     var usableCount = 0
-    /// Curated, non-ignored scenes in library order.
-    var curated: [SceneRecord] = []
+    /// Favorite, non-ignored scenes in library order.
+    var favorites: [SceneRecord] = []
 
     init() {}
 
@@ -24,7 +24,7 @@ nonisolated struct SceneIndex: Sendable {
         for scene in scenes {
             countsByVideo[scene.videoID, default: 0] += 1
             if !scene.excluded && !scene.ignored { usableCount += 1 }
-            if scene.curated && !scene.ignored { curated.append(scene) }
+            if scene.favorite && !scene.ignored { favorites.append(scene) }
             for tag in scene.tags {
                 tags.insert(tag)
                 if tag.hasPrefix("person:") {
@@ -39,12 +39,11 @@ nonisolated struct SceneIndex: Sendable {
     }
 
     /// Refresh the stored copy of one scene without a full rebuild. Only
-    /// valid for changes that leave the index's shape alone (favorite,
-    /// grade, stack pick); membership changes (curated, excluded, ignored,
+    /// valid for changes that leave the index's shape alone (grade, stack pick); membership changes (favorite, excluded, ignored,
     /// tags, video) need a rebuild.
     mutating func replaceCopy(of scene: SceneRecord) {
-        if let index = curated.firstIndex(where: { $0.id == scene.id }) {
-            curated[index] = scene
+        if let index = favorites.firstIndex(where: { $0.id == scene.id }) {
+            favorites[index] = scene
         }
     }
 }

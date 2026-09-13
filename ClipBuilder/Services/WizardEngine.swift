@@ -3,7 +3,7 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, curatedOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
+        case sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
     }
 
     var localHashtags = false
@@ -33,8 +33,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var useFightResearch = true
     /// Restrict scene selection to these analyze batches (empty = all).
     var selectedRunIDs: Set<Int64> = []
-    /// Only pick from scenes the user promoted to the Curated set.
-    var curatedOnly = false
+    /// Only pick from scenes the user or AI selected as favorites.
+    var favoritesOnly = false
     /// Which taste steers the plan: nil = the profile's main taste rubric,
     /// "none" = no taste block, "cat:<key>" = that learned category's rubric.
     var tastePreset: String?
@@ -406,7 +406,7 @@ actor WizardEngine {
 
     // MARK: - Editorial playbook
 
-    /// Curated combat-sports Reels playbook. This app is specialized for
+    /// Hand-selected combat-sports Reels playbook. This app is specialized for
     /// MMA/grappling content, so a hand-written, versioned playbook replaces
     /// the old AI "research" call: it is more reliable than re-asking a model
     /// for generic best practices, works offline, and never goes stale in a
@@ -585,7 +585,6 @@ actor WizardEngine {
             line += String(format: " grade:%.1f/5", average)
         }
         if scene.favorite { line += " ♥FAVORITE" }
-        if scene.curated { line += " CURATED" }
         if let parent = scene.parentSceneID {
             line += " (action within sequence #\(parent))"
         }
@@ -1236,7 +1235,7 @@ actor WizardEngine {
         You are an expert combat-sports video editor creating an Instagram Reel for \(brand), a \(domain) channel. You know MMA and grappling: what a knockdown, a submission chain, a scramble, and a real crowd pop look like — and you edit like the best fight-highlight accounts. Your ONLY goal: MAXIMIZE ENGAGEMENT (views, likes, shares, saves).
         \(userInstructions)\(pinnedRules)\(durationDirective)\(templateBlock)\(houseStyleBlock)\(benchmarksBlock)\(cadenceDirective)
 
-        ## MMA Reels Playbook (curated editorial baseline)
+        ## MMA Reels Playbook (editorial baseline)
         \(researchJSON)\(buzzBlock)
 
         ## Available Scenes
@@ -1315,7 +1314,7 @@ actor WizardEngine {
         - WIDE scenes use their saved 9:16 framing when available; otherwise they are automatically cropped to fill the frame. Never plan around letterboxing.
         - Scenes with "score:X/10" were rated for ENTERTAINMENT (escalation → payoff, boosted by real crowd noise). STRONGLY prefer high-scoring scenes, put the highest-scoring payoff early as the hook, and use the "story:" lines to build a reel with an arc — setup, escalation, payoff — instead of disconnected action.
         - "grade:X/5" is the USER'S OWN vote on that scene: treat ≥4/5 as must-consider footage, and avoid ≤2.5/5 scenes unless nothing else covers a needed story beat.
-        - "♥FAVORITE" scenes were hand-marked by the user — they love these moments. Strongly prefer them, especially for the hook and the payoff. "CURATED" scenes were hand-trimmed as keepers — prefer them over untouched footage of the same moment.
+        - "♥FAVORITE" scenes were selected by the user or AI Favorites — they love these moments. Strongly prefer them, especially for the hook and the payoff.
         - "CROWD-POP" marks scenes where the real crowd audibly erupted — prime hook and payoff material.
         - A scene marked "(action within sequence #N)" is one beat of that sequence. Pick EITHER the whole sequence OR its individual beats — never both, they cover the same footage.
         - A clip's screen time is (end - start) / speed; a replay adds another (end - start) / 0.5 on top. Account for both when hitting target_duration.
@@ -1691,11 +1690,20 @@ actor WizardEngine {
     }
 
     /// Rank the candidate pool (entertainment score, crowd excitement,
-    /// highlight tags, and the user's grades/favorites/curation) and keep
+    /// highlight tags, and the user's grades/favorites) and keep
     /// only enough footage to plan from — small pools pass through whole.
     /// Kept scenes return in stable source order; parents of kept sequence
     /// beats ride along so "(action within sequence #N)" notes stay valid.
-    private func shortlistScenes(_ scenes: [SceneRecord], targetSeconds: Int?,
+    nonisolated static func shortlistRank(_ scene: SceneRecord) -> Double {
+        var rank = scene.score ?? scene.excitement.map { $0 * 10 } ?? -1
+        if scene.tags.contains(where: { $0 == "highlight" || $0.hasPrefix("highlight:") }) { rank += 5 }
+        if scene.favorite { rank += 2 }
+        if let grade = scene.gradeAverage, scene.gradeCount > 0 { rank += grade - 3 }
+        if scene.tags.contains("low-quality") { rank -= 4 }
+        return rank
+    }
+
+    nonisolated static func shortlistScenes(_ scenes: [SceneRecord], targetSeconds: Int?,
                                  emit: @escaping @Sendable (String) -> Void) -> [SceneRecord] {
         let minimumKept = 40
         guard scenes.count > minimumKept else { return scenes }
@@ -1703,21 +1711,11 @@ actor WizardEngine {
         // duration, and never less than 3 minutes of source.
         let budget = max(Double((targetSeconds ?? 30) * 6), 180)
 
-        func rank(_ scene: SceneRecord) -> Double {
-            var rank = scene.score ?? scene.excitement.map { $0 * 10 } ?? -1
-            if scene.tags.contains(where: { $0 == "highlight" || $0.hasPrefix("highlight:") }) { rank += 5 }
-            if scene.favorite { rank += 4 }
-            if scene.curated { rank += 2 }
-            if let grade = scene.gradeAverage, scene.gradeCount > 0 { rank += grade - 3 }
-            if scene.tags.contains("low-quality") { rank -= 4 }
-            return rank
-        }
-
         var kept: [SceneRecord] = []
         var keptIDs = Set<Int64>()
         var footage = 0.0
-        for scene in scenes.sorted(by: { rank($0) > rank($1) }) {
-            let mustKeep = scene.favorite || scene.curated
+        for scene in scenes.sorted(by: { shortlistRank($0) > shortlistRank($1) }) {
+            let mustKeep = scene.favorite
                 || (scene.gradeCount > 0 && (scene.gradeAverage ?? 0) >= 4)
             guard footage < budget || kept.count < minimumKept || mustKeep else { continue }
             if keptIDs.insert(scene.id).inserted {
@@ -1739,7 +1737,7 @@ actor WizardEngine {
             ($0.videoFilename, $0.startTime) < ($1.videoFilename, $1.startTime)
         }
         emit("Shortlisted \(kept.count) of \(scenes.count) scenes "
-             + "(~\(Int(footage))s of top-ranked footage; favorites, curated, and top-graded scenes always kept)")
+             + "(~\(Int(footage))s of top-ranked footage; favorites and top-graded scenes always kept)")
         return kept
     }
 
@@ -1772,10 +1770,10 @@ actor WizardEngine {
             scenes = scenes.filter { options.includesCopiedSource($0) }
         }
         scenes = SceneStacks.tops(scenes, level: .from(options.stackLevel))
-        if options.curatedOnly {
+        if options.favoritesOnly {
             let before = scenes.count
-            scenes = scenes.filter(\.curated)
-            emit("Curated scenes only: \(scenes.count) of \(before) scene(s)")
+            scenes = scenes.filter(\.favorite)
+            emit("Favorite scenes only: \(scenes.count) of \(before) scene(s)")
         }
         if !options.selectedRunIDs.isEmpty {
             let before = scenes.count
@@ -1826,10 +1824,10 @@ actor WizardEngine {
             } catch is CancellationError { throw CancellationError() }
             catch {
                 emit("Clip ranking unavailable: \(error.localizedDescription)")
-                scenes = shortlistScenes(scenes, targetSeconds: options.targetDurationSeconds, emit: emit)
+                scenes = Self.shortlistScenes(scenes, targetSeconds: options.targetDurationSeconds, emit: emit)
             }
         } else {
-            scenes = shortlistScenes(scenes, targetSeconds: options.targetDurationSeconds, emit: emit)
+            scenes = Self.shortlistScenes(scenes, targetSeconds: options.targetDurationSeconds, emit: emit)
         }
         if options.templateJSON != nil {
             emit("Using reference template: \(options.templateLabel ?? "Instagram reel")")
@@ -3399,7 +3397,7 @@ actor WizardEngine {
             return output
         }
         // Framing belongs to the scene, not to this run. Replay the saved
-        // camera path exactly as it was reviewed in Analyze or Curated; never
+        // camera path exactly as it was reviewed in Analyze or Edit Scene; never
         // silently replace it with a new live tracking pass here.
         if usesSavedFraming, let stored = scene.centerStagePath,
            CenterStageService.pathMatchesCanvas(stored.keyframes) {

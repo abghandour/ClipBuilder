@@ -37,8 +37,8 @@ enum Fixtures {
     ) -> SceneRecord {
         SceneRecord(
             id: id, videoID: 1, runID: 1, startTime: start, endTime: end,
-            originalStart: start, originalEnd: end, curated: false,
-            curatedProvider: nil, curatedModel: nil, narrative: "Fixture scene",
+            originalStart: start, originalEnd: end,
+            favoriteProvider: nil, favoriteModel: nil, narrative: "Fixture scene",
             score: 8, excitement: 0.7, parentSceneID: nil, stackChoice: false,
             excluded: false, ignored: false, favorite: false, cropXFrac: nil,
             freeCropsJSON: nil, centerStagePathJSON: nil, tags: ["fixture"],

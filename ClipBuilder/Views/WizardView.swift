@@ -24,7 +24,7 @@ struct WizardView: View {
     @AppStorage("wizard.bumperMiddle") private var includeMiddleBumper = false
     @AppStorage(WizardDefaults.brandingOverrideKey) private var brandingOverrideRaw = WizardBrandingOverride.savedDefault.rawValue
     @AppStorage("wizard.limitToSelection") private var limitToSelection = false
-    @AppStorage("wizard.curatedOnly") private var curatedOnly = false
+    @AppStorage("wizard.favoritesOnly") private var favoritesOnly = false
     /// Comma-joined Analyze batch IDs — AppStorage cannot persist a Set.
     @AppStorage("wizard.selectedRunIDs") private var selectedRunIDsRaw = ""
     /// Comma-joined person keys (empty means anyone in the selected scenes).
@@ -40,12 +40,12 @@ struct WizardView: View {
     @State private var showTrainingGuide = false
     @State private var showGapReport = false
     @State private var showSourcePicker = false
-    @State private var showCuratedWizard = false
+    @State private var showManualBuild = false
     @State private var pendingDispatch: PendingDispatch?
 
     private struct SourcePoolKey: Equatable {
         var scenesVersion: Int
-        var curatedOnly: Bool
+        var favoritesOnly: Bool
         var limitToSelection: Bool
         var selectedRunIDsRaw: String
         var personTags: Set<String>
@@ -264,15 +264,15 @@ struct WizardView: View {
             HelpSheet()
         }
         .sheet(isPresented: $showSourcePicker) {
-            WizardSourcePickerSheet(curatedOnly: $curatedOnly,
+            WizardSourcePickerSheet(favoritesOnly: $favoritesOnly,
                                     limitToSelection: $limitToSelection,
                                     selectedRunIDsRaw: $selectedRunIDsRaw,
                                     sourcePeopleRaw: $sourcePeopleRaw)
                 .environment(store)
         }
-        .sheet(isPresented: $showCuratedWizard) {
-            CuratedWizardSheet(
-                scenes: curatedWizardPool,
+        .sheet(isPresented: $showManualBuild) {
+            ManualBuildSheet(
+                scenes: manualBuildPool,
                 targetDuration: manualTargetDuration,
                 includeOutro: resolvedBranding.includeOutro,
                 batchNames: Dictionary(uniqueKeysWithValues: store.analysisRuns.map {
@@ -690,9 +690,9 @@ struct WizardView: View {
                 Spacer()
 
                 Button("Build manually…", systemImage: "checklist") {
-                    showCuratedWizard = true
+                    showManualBuild = true
                 }
-                .disabled(!canGenerate || store.isCuratedRendering)
+                .disabled(!canGenerate || store.isManualBuildRendering)
                 .help("Build this reel yourself from the same source selection, scene by scene")
             }
         }
@@ -708,8 +708,8 @@ struct WizardView: View {
             summary = selectedRunIDs.isEmpty
                 ? "Choose Analyze batches"
                 : "\(selectedRunIDs.count) Analyze batch\(selectedRunIDs.count == 1 ? "" : "es")"
-        } else if curatedOnly {
-            summary = "Curated scenes"
+        } else if favoritesOnly {
+            summary = "Favorite scenes"
         } else {
             summary = "All analyzed scenes"
         }
@@ -744,7 +744,7 @@ struct WizardView: View {
             .filter { selectedSourcePeople.contains($0.key) }
             .map(\.tag))
         let key = SourcePoolKey(scenesVersion: store.scenesVersion,
-                                curatedOnly: curatedOnly,
+                                favoritesOnly: favoritesOnly,
                                 limitToSelection: limitToSelection,
                                 selectedRunIDsRaw: selectedRunIDsRaw,
                                 personTags: personTags)
@@ -757,8 +757,8 @@ struct WizardView: View {
         if let copied = AISettingsJSON.decode(WizardOptions.self, pastedSnapshot), copied.sourcesRestricted {
             pool = pool.filter { copied.includesCopiedSource($0) }
         }
-        if curatedOnly {
-            pool = pool.filter(\.curated)
+        if favoritesOnly {
+            pool = pool.filter(\.favorite)
         }
         if limitToSelection, !selectedRunIDs.isEmpty {
             let runIDs = selectedRunIDs
@@ -784,7 +784,7 @@ struct WizardView: View {
     }
 
     /// The manual wizard proposes focused beats from the same source pool.
-    private var curatedWizardPool: [SceneRecord] {
+    private var manualBuildPool: [SceneRecord] {
         var pool = sourcePool
         let byVideo = Dictionary(grouping: pool, by: \.videoID)
         pool = pool.filter { scene in
@@ -910,11 +910,11 @@ struct WizardView: View {
         if !handoff.runIDs.isEmpty {
             setSelectedRunIDs(handoff.runIDs)
             limitToSelection = true
-            curatedOnly = false
+            favoritesOnly = false
         } else if !handoff.videoIDs.isEmpty {
             setSelectedRunIDs(latestRunIDs(forVideoIDs: handoff.videoIDs))
             limitToSelection = true
-            curatedOnly = false
+            favoritesOnly = false
         }
         if !handoff.personKeys.isEmpty {
             sourcePeopleRaw = handoff.personKeys.sorted().joined(separator: ",")
@@ -1022,7 +1022,7 @@ struct WizardView: View {
         options.includeOutroBumper = pasted?.includeOutroBumper ?? includeOutroBumper
         options.includeMiddleBumper = pasted?.includeMiddleBumper ?? includeMiddleBumper
         options.selectedRunIDs = limitToSelection ? selectedRunIDs : []
-        options.curatedOnly = curatedOnly
+        options.favoritesOnly = favoritesOnly
 
         let eligibleKeys = Set(eligibleSourcePeople.map(\.key))
         options.sourcePeople = Array(selectedSourcePeople).sorted()

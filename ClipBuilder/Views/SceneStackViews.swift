@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Dropdown controlling how aggressively similar scenes group into stacks.
 /// Backed by one shared `@AppStorage` key, so changing it on any surface
-/// (Raw Scenes, Builder browser, Curated, People) changes it everywhere.
+/// (Raw Scenes, Builder browser, Favorites, People) changes it everywhere.
 struct SceneStackLevelPicker: View {
     /// Compact renders as a stack-icon menu for dense filter bars; the
     /// default is a plain labeled Picker (a submenu inside toolbar menus).

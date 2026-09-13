@@ -4,6 +4,70 @@ import Testing
 
 @Suite("JSON stores", .serialized)
 struct JSONStoresTests {
+    @Test("legacy Wizard favorite scope decodes but only the new key is encoded")
+    func legacyFavoriteScope() throws {
+        let options = try JSONDecoder().decode(WizardOptions.self, from: Data(#"{"curatedOnly":true}"#.utf8))
+        #expect(options.favoritesOnly)
+        let encoded = try JSONEncoder().encode(options)
+        let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        #expect(object["favoritesOnly"] as? Bool == true)
+        #expect(object["curatedOnly"] == nil)
+        let explicit = try JSONDecoder().decode(WizardOptions.self, from: Data(#"{"curatedOnly":true,"favoritesOnly":false}"#.utf8))
+        #expect(!explicit.favoritesOnly)
+    }
+
+    @Test("legacy source settings survive envelope filtering and preference normalization")
+    func legacyFavoriteSettingsEnvelope() throws {
+        let old: [String: JSONSetting] = ["curatedOnly": .bool(true)]
+        let envelope = AISettingsEnvelope(kind: .wizard, sourceName: "Legacy run", scopes: [.sources], settings: old)
+        #expect(envelope.settings["favoritesOnly"] == .bool(true))
+        #expect(envelope.settings["curatedOnly"] == nil)
+        var decodedLegacy = envelope
+        decodedLegacy.settings = old
+        let applied = decodedLegacy.applying(to: [:], profile: "Test", videoPaths: [],
+                                             runIDs: [], people: [], sceneIDs: [])
+        #expect(applied.settings["favoritesOnly"] == .bool(true))
+        let resource = WizardOptions.normalizeFavoriteSettings(["wizard.curatedOnly": true], prefix: "wizard.")
+        #expect(resource == ["wizard.favoritesOnly": true])
+    }
+
+    @Test("legacy Wizard default moves once without overwriting the new choice")
+    func legacyFavoriteDefault() throws {
+        let name = "Favorites-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set(true, forKey: "wizard.curatedOnly")
+        WizardDefaults.migrateLegacy(defaults: defaults)
+        #expect(defaults.bool(forKey: "wizard.favoritesOnly"))
+        #expect(defaults.object(forKey: "wizard.curatedOnly") == nil)
+        defaults.set(false, forKey: "wizard.favoritesOnly")
+        WizardDefaults.migrateLegacy(defaults: defaults)
+        #expect(!defaults.bool(forKey: "wizard.favoritesOnly"))
+    }
+
+    @Test("favorite index preserves order and follows rebuilds and copy updates")
+    func favoriteIndexMaintenance() {
+        var first = Fixtures.scene(id: 1)
+        first.favorite = true
+        var second = Fixtures.scene(id: 2)
+        var hidden = Fixtures.scene(id: 3)
+        hidden.favorite = true
+        hidden.ignored = true
+        var index = SceneIndex([first, second, hidden])
+        #expect(index.favorites.map(\.id) == [1])
+        first.score = 3
+        index.replaceCopy(of: first)
+        #expect(index.favorites.first?.score == 3)
+        second.favorite = true
+        second.excluded = true
+        index = SceneIndex([first, second, hidden])
+        #expect(index.favorites.map(\.id) == [1, 2])
+        first.favorite = false
+        hidden.ignored = false
+        index = SceneIndex([first, second, hidden])
+        #expect(index.favorites.map(\.id) == [2, 3])
+    }
+
     @Test("profiles and settings stay inside the overridden data folder")
     func profileAndSettings() throws {
         let scope = try DataFolderOverride()
@@ -93,11 +157,11 @@ struct JSONStoresTests {
         WizardDefaults.migrateLegacy(defaults: defaults)
         #expect(defaults.string(forKey: WizardDefaults.layoutModeKey) == WizardLayoutMode.selected.rawValue)
 
-        // Both legacy scope toggles on: batch scope wins, curated filter drops.
+        // Both legacy scope toggles on: batch scope wins, favorite filter drops.
         defaults.set(true, forKey: "wizard.limitToSelection")
-        defaults.set(true, forKey: "wizard.curatedOnly")
+        defaults.set(true, forKey: "wizard.favoritesOnly")
         WizardDefaults.migrateLegacy(defaults: defaults)
-        #expect(!defaults.bool(forKey: "wizard.curatedOnly"))
+        #expect(!defaults.bool(forKey: "wizard.favoritesOnly"))
     }
 
     @Test("wizard options read approved layouts and allowed transitions from defaults")

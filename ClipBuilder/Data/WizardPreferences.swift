@@ -128,13 +128,13 @@ nonisolated enum WizardLayoutMode: String, CaseIterable, Sendable {
 
 nonisolated enum WizardSourceScope: String, CaseIterable, Sendable {
     case all
-    case curated
+    case favorites
     case batches
 
     var title: String {
         switch self {
         case .all: "All analyzed scenes"
-        case .curated: "Curated scenes only"
+        case .favorites: "Favorite scenes only"
         case .batches: "Selected analyze batches"
         }
     }
@@ -221,6 +221,13 @@ nonisolated enum WizardDefaults {
     static let allowedTransitionsKey = "wizard.allowedTransitions"
 
     static func migrateLegacy(defaults: UserDefaults = .standard) {
+        if let oldValue = defaults.object(forKey: "wizard.curatedOnly") {
+            if defaults.object(forKey: "wizard.favoritesOnly") == nil {
+                defaults.set(oldValue, forKey: "wizard.favoritesOnly")
+            }
+            defaults.removeObject(forKey: "wizard.curatedOnly")
+        }
+
         if defaults.object(forKey: audioModeKey) == nil {
             defaults.set(WizardAudioMode.legacyValue(defaults: defaults).rawValue, forKey: audioModeKey)
         }
@@ -242,9 +249,9 @@ nonisolated enum WizardDefaults {
         }
         // Source scope is a single choice now; the old form allowed both
         // toggles at once, and batch scope wins in the UI. Drop the hidden
-        // curated filter so what the picker reports is what the run uses.
-        if defaults.bool(forKey: "wizard.limitToSelection"), defaults.bool(forKey: "wizard.curatedOnly") {
-            defaults.set(false, forKey: "wizard.curatedOnly")
+        // favorites filter so what the picker reports is what the run uses.
+        if defaults.bool(forKey: "wizard.limitToSelection"), defaults.bool(forKey: "wizard.favoritesOnly") {
+            defaults.set(false, forKey: "wizard.favoritesOnly")
         }
         if defaults.object(forKey: brandingOverrideKey) == nil {
             defaults.set(WizardBrandingOverride.savedDefault.rawValue, forKey: brandingOverrideKey)

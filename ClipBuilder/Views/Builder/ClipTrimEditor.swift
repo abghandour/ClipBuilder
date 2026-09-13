@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Trim controls for the selected Builder clip against its raw source
-/// video — the same surfaces the Curated wizard uses: a full-clip filmstrip
+/// video — the same surfaces the manual build uses: a full-clip filmstrip
 /// with draggable start/end handles, a magnified 10-second loupe when the
 /// selection is short, the fight-action pace sparkline on both, and the
 /// fight activity graph for scored footage. Edits write straight to the

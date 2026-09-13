@@ -4,6 +4,29 @@ import Testing
 
 @Suite("Wizard engine")
 struct WizardEngineTests {
+    @Test("a favorite gets exactly one two-point boost and remains must-keep past the budget")
+    func favoriteShortlist() {
+        let ordinary = Fixtures.scene(id: 1, start: 0, end: 10)
+        var favorite = ordinary
+        favorite.id = 2
+        favorite.favorite = true
+        #expect(WizardEngine.shortlistRank(favorite) - WizardEngine.shortlistRank(ordinary) == 2)
+        #expect(SceneStacks.rank(favorite) - SceneStacks.rank(ordinary) == 2)
+        favorite.favoriteProvider = "claude"
+        favorite.favoriteModel = "fixture"
+        #expect(WizardEngine.shortlistRank(favorite) - WizardEngine.shortlistRank(ordinary) == 2)
+        var pool = (3...52).map { id in Fixtures.scene(id: Int64(id), start: 0, end: 10) }
+        favorite.score = -100
+        var lowOrdinary = favorite
+        lowOrdinary.id = 53
+        lowOrdinary.favorite = false
+        pool += [favorite, lowOrdinary]
+        let kept = WizardEngine.shortlistScenes(pool, targetSeconds: 10, emit: { _ in })
+        #expect(kept.contains { $0.id == favorite.id })
+        #expect(!kept.contains { $0.id == lowOrdinary.id })
+        #expect(kept.count == 41)
+    }
+
     @Test("validated plan maps to a speed-aware timeline")
     func timelineDocument() {
         let plan = WizardPlan(

@@ -1,6 +1,15 @@
 import Foundation
 
 nonisolated extension WizardOptions {
+    private enum LegacyKeys: String, CodingKey { case curatedOnly }
+
+    static func normalizeFavoriteSettings<Value>(_ settings: [String: Value], prefix: String = "") -> [String: Value] {
+        var result = settings
+        let old = result.removeValue(forKey: prefix + LegacyKeys.curatedOnly.rawValue)
+        if result[prefix + "favoritesOnly"] == nil { result[prefix + "favoritesOnly"] = old }
+        return result
+    }
+
     init(from decoder: Decoder) throws {
         self = WizardOptions()
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -21,7 +30,9 @@ nonisolated extension WizardOptions {
         aiInstructions = try values.decodeIfPresent(String.self, forKey: .aiInstructions) ?? aiInstructions
         useFightResearch = try values.decodeIfPresent(Bool.self, forKey: .useFightResearch) ?? useFightResearch
         selectedRunIDs = try values.decodeIfPresent(Set<Int64>.self, forKey: .selectedRunIDs) ?? selectedRunIDs
-        curatedOnly = try values.decodeIfPresent(Bool.self, forKey: .curatedOnly) ?? curatedOnly
+        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+        favoritesOnly = try values.decodeIfPresent(Bool.self, forKey: .favoritesOnly)
+            ?? legacy.decodeIfPresent(Bool.self, forKey: .curatedOnly) ?? favoritesOnly
         tastePreset = try values.decodeIfPresent(String.self, forKey: .tastePreset)
         sourcePeople = try values.decodeIfPresent([String].self, forKey: .sourcePeople) ?? sourcePeople
         modelOverride = try values.decodeIfPresent(String.self, forKey: .modelOverride)

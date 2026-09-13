@@ -4,6 +4,59 @@ import Testing
 
 @Suite("Database")
 struct DatabaseTests {
+    @Test("legacy shortlist marks migrate once and preserve favorite provenance")
+    func favoriteMigration() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo(sceneCount: 4)
+        let original = try await temp.database.fetchScenes(videoID: videoID)
+        let ids = original.map(\.id)
+        try #require(ids.count == 4)
+        let raw = try SQLiteConnection(path: temp.path.path)
+        for id in ids.prefix(3) {
+            try raw.execute("UPDATE scenes SET curated = 1, curated_provider = 'claude', curated_model = 'legacy-model' WHERE id = ?", [.integer(id)])
+        }
+        try raw.execute("UPDATE scenes SET favorite = 1 WHERE id IN (?, ?)", [.integer(ids[1]), .integer(ids[2])])
+        try raw.execute("UPDATE scenes SET favorite_provider = 'gemini', favorite_model = 'existing-model' WHERE id = ?", [.integer(ids[2])])
+        try raw.execute("PRAGMA user_version = 15")
+        let reopened = try Database(path: temp.path)
+        let migrated = try await reopened.fetchScenes(videoID: videoID)
+        for id in ids.prefix(2) {
+            let scene = try #require(migrated.first { $0.id == id })
+            #expect(scene.favorite)
+            #expect(scene.favoriteProvider == "claude")
+            #expect(scene.favoriteModel == "legacy-model")
+        }
+        let existing = try #require(migrated.first { $0.id == ids[2] })
+        #expect(existing.favorite && existing.favoriteProvider == "gemini")
+        #expect(existing.favoriteModel == "existing-model")
+        #expect(migrated.first { $0.id == ids[3] }?.favorite == false)
+        try await reopened.setSceneFavorite(ids[0], favorite: false)
+        let again = try Database(path: temp.path)
+        let unfavorited = try #require(try await again.fetchScenes(sceneID: ids[0]).first)
+        #expect(!unfavorited.favorite)
+        #expect(unfavorited.favoriteProvenance == nil)
+    }
+
+    @Test("favorite provenance round-trips, clears for human picks, and clears on unfavorite")
+    func favoriteProvenance() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo(sceneCount: 2)
+        let ids = try await temp.database.fetchScenes(videoID: videoID).map(\.id)
+        let stamp = AIProvenance(provider: "claude", model: "test-model", task: "curate")
+        try await temp.database.setSceneFavorite(ids[0], favorite: true, provenance: stamp)
+        let marked = try #require(try await temp.database.fetchScenes(sceneID: ids[0]).first)
+        #expect(marked.favoriteProvenance == stamp)
+        try await temp.database.setScenesFavorite(ids, favorite: true, provenance: stamp)
+        #expect(try await temp.database.fetchScenes(videoID: videoID).allSatisfy { $0.favoriteProvenance == stamp })
+        try await temp.database.setSceneFavorite(ids[0], favorite: true)
+        let human = try #require(try await temp.database.fetchScenes(sceneID: ids[0]).first)
+        #expect(human.favorite && human.favoriteProvider == nil && human.favoriteModel == nil)
+        try await temp.database.setScenesFavorite(ids, favorite: false, provenance: stamp)
+        #expect(try await temp.database.fetchScenes(videoID: videoID).allSatisfy {
+            !$0.favorite && $0.favoriteProvider == nil && $0.favoriteModel == nil
+        })
+    }
+
     @Test("regression: a fresh database creates its tables before their indexes and stamps the version")
     func freshSchema() async throws {
         let temp = try TempDatabase()
@@ -34,7 +87,7 @@ struct DatabaseTests {
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         for (table, column) in [("videos", "video_type"), ("videos", "naming_provider"),
                                 ("videos", "podcast_layout"), ("videos", "podcast_seam_x"),
-                                ("scenes", "curated_provider"), ("scenes", "stack_choice"),
+                                ("scenes", "favorite_provider"), ("scenes", "stack_choice"),
                                 ("video_notes", "provider"), ("fight_events", "model"),
                                 ("videos", "people_seconds"), ("videos", "speech_seconds"),
                                 ("transcripts", "seconds")] {
@@ -81,7 +134,7 @@ struct DatabaseTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: locked.path).isEmpty)
     }
 
-    @Test("video analysis CRUD preserves tags, grades, and curation provenance")
+    @Test("video analysis CRUD preserves tags, grades, and favorite provenance")
     func analysisCRUD() async throws {
         let temp = try TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 2)
@@ -91,8 +144,8 @@ struct DatabaseTests {
         let sceneID = try #require(scenes.first?.id)
 
         try await temp.database.setSceneFavorite(sceneID, favorite: true)
-        try await temp.database.setSceneCurated(
-            sceneID, curated: true,
+        try await temp.database.setSceneFavorite(
+            sceneID, favorite: true,
             provenance: AIProvenance(provider: "test", model: "fixture", task: "curate")
         )
         try await temp.database.addGrade(sceneID: sceneID, score: 8)
@@ -100,8 +153,7 @@ struct DatabaseTests {
         scenes = try await temp.database.fetchScenes(sceneID: sceneID)
         let updated = try #require(scenes.first)
         #expect(updated.favorite)
-        #expect(updated.curated)
-        #expect(updated.curatedProvider == "test")
+        #expect(updated.favoriteProvider == "test")
         #expect(updated.gradeAverage == 9)
         #expect(updated.gradeCount == 2)
     }
@@ -586,7 +638,7 @@ struct SchemaVersionGateTests {
         let reopened = try Database(path: temp.path)
         _ = reopened
         #expect(try raw.columnNames(of: "builder_prerequisites").contains("outcome_json"))
-        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 15)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
     }
 
     @Test func version12GainsBuilderRunTables() throws {
@@ -598,8 +650,8 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 15)
-        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 15)
+        #expect(Database.schemaVersion == 16)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))
         #expect(try raw.columnNames(of: "timelines").contains("document_revision"))

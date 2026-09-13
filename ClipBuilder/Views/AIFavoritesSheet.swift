@@ -1,13 +1,13 @@
 import SwiftUI
 
-/// AI Curator: judge the offered uncurated scenes against the taste rubric
+/// AI Favorites: judge the offered non-favorite scenes against the taste rubric
 /// and the user's own grading history, then review the proposed promotions —
 /// each with a thumbnail and the model's reason — before any scene joins the
-/// Curated set.
-struct AICurateSheet: View {
+/// Favorites.
+struct AIFavoritesSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    /// Uncurated scenes to judge (stack tops only — takes of the same moment
+    /// Non-favorite scenes to judge (stack tops only — takes of the same moment
     /// would just be judged twice).
     let candidates: [SceneRecord]
 
@@ -47,9 +47,9 @@ struct AICurateSheet: View {
 
     private var setup: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("AI Curator")
+            Text("AI Favorites")
                 .font(.title3.bold())
-            Text("Judges the \(candidates.count) uncurated scene\(candidates.count == 1 ? "" : "s") in view against your taste rubric — using your own grades and existing Curated picks as worked examples — and proposes the keepers. You review every pick before it joins Curated.")
+            Text("Judges the \(candidates.count) non-favorite scene\(candidates.count == 1 ? "" : "s") in view against your taste rubric — using your own grades and existing Favorite picks as worked examples — and proposes the keepers. You review every pick before it joins Favorites.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -58,6 +58,7 @@ struct AICurateSheet: View {
                 ModelPicker(title: "Model", task: "curate", selection: $modelTag,
                             availableProviders: availableProviders)
                     .fixedSize()
+                    .help("Choose the AI provider and model that will propose favorites")
                 Spacer()
             }
 
@@ -83,6 +84,7 @@ struct AICurateSheet: View {
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(candidates.isEmpty || isRunning)
+                    .help("Ask AI Favorites to propose scenes for your review")
             }
         }
         .padding(20)
@@ -95,10 +97,10 @@ struct AICurateSheet: View {
                     Text("\(proposals.count) proposed promotion\(proposals.count == 1 ? "" : "s")")
                         .font(.headline)
                     if let provenance {
-                        AIInfoButton(provenance: provenance, style: .full, role: "Curated by")
+                        AIInfoButton(provenance: provenance, style: .full, role: "Favorited by")
                     }
                 }
-                Text("Uncheck any you disagree with, then Curate. Everything else stays as it is.")
+                Text("Uncheck any you disagree with, then Favorite. Everything else stays as it is.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -109,12 +111,13 @@ struct AICurateSheet: View {
                     ForEach(proposals) { proposal in
                         if let scene = scenesByID[proposal.sceneID] {
                             HStack(spacing: 10) {
-                                Toggle("", isOn: Binding(
+                                Toggle("Favorite this scene", isOn: Binding(
                                     get: { included[proposal.sceneID] ?? true },
                                     set: { included[proposal.sceneID] = $0 }
                                 ))
                                 .labelsHidden()
                                 .toggleStyle(.checkbox)
+                                .help("Include this scene when applying the proposed favorites")
                                 VideoThumbnail(url: scene.videoURL,
                                                time: (scene.startTime + scene.endTime) / 2)
                                     .frame(width: 72, height: 40)
@@ -148,8 +151,8 @@ struct AICurateSheet: View {
             HStack {
                 Spacer()
                 let count = proposals.count { included[$0.sceneID] ?? true }
-                Button(count == 1 ? "Curate 1 Scene" : "Curate \(count) Scenes") {
-                    store.applyCuration(sceneIDs: proposals
+                Button(count == 1 ? "Favorite 1 Scene" : "Favorite \(count) Scenes") {
+                    store.applyFavorites(sceneIDs: proposals
                         .filter { included[$0.sceneID] ?? true }
                         .map(\.sceneID), provenance: provenance)
                     dismiss()
@@ -157,6 +160,7 @@ struct AICurateSheet: View {
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(count == 0)
+                .help("Save the checked scenes as favorites with the proposing AI recorded")
             }
             .padding()
         }
@@ -168,12 +172,12 @@ struct AICurateSheet: View {
         errorMessage = nil
         Task {
             do {
-                let results = try await store.proposeCuration(
+                let results = try await store.proposeFavorites(
                     for: candidates, provider: provider, model: model) { message in
                     if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
                 }
                 if results.value.isEmpty {
-                    errorMessage = "The curator promoted nothing — none of these scenes clearly met the rubric."
+                    errorMessage = "AI Favorites selected nothing — none of these scenes clearly met the rubric."
                 } else {
                     proposals = results.value
                     provenance = results.provenance

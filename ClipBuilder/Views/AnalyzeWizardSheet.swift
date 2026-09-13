@@ -95,8 +95,8 @@ struct AnalyzeWizardSheet: View {
                             "Crawls fan reaction to the fight and distills the story angle for planning and captions. Fights only.")
                     taskRow($proposeNames, "Rename files",
                             "Descriptive filenames built from everything found — applied automatically at the end of the run; derived analyze-batch names follow.")
-                    taskRow($curate, "AI Curator",
-                            "Judges the fresh scenes against your taste rubric and promotes the keepers to Curated — generation then plans from them.")
+                    taskRow($curate, "AI Favorites",
+                            "Judges the fresh scenes against your taste rubric and promotes the keepers to Favorites — generation then plans from them.")
                     taskRow($framing, "Framing detection",
                             "The 9:16 Center Stage framing pass over each new batch's scenes.")
                     taskRow($generate, "Generate video",

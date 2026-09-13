@@ -1,8 +1,8 @@
 import Foundation
 
-/// AI Curator: judges uncurated scenes against the profile's taste rubric —
-/// with the user's grading history and existing Curated picks as worked
-/// examples — and proposes which ones deserve promotion to the Curated set.
+/// AI Favorites: judges non-favorite scenes against the profile's taste rubric —
+/// with the user's grading history and existing Favorite picks as worked
+/// examples — and proposes which ones deserve promotion to the Favorites set.
 /// Text-only: narratives, scores, and tags say enough, so a pass over
 /// hundreds of scenes stays cheap.
 nonisolated enum SceneCurator {
@@ -22,7 +22,7 @@ nonisolated enum SceneCurator {
 
     static func prompt(candidates: [SceneRecord], rubric: String,
                        categories: [TasteCategory],
-                       graded: [SceneRecord], curatedExamples: [SceneRecord]) -> String {
+                       graded: [SceneRecord], favoriteExamples: [SceneRecord]) -> String {
         var sections: [String] = []
 
         let rubricText = rubric.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -38,11 +38,11 @@ nonisolated enum SceneCurator {
 
         let good = graded.filter { ($0.lastGrade ?? 0) >= 4 }.suffix(maxExamples)
         let bad = graded.filter { ($0.lastGrade ?? 5) <= 2 }.suffix(maxExamples)
-        let kept = curatedExamples.filter { $0.narrative?.isEmpty == false }.suffix(maxExamples)
+        let kept = favoriteExamples.filter { $0.narrative?.isEmpty == false }.suffix(maxExamples)
         var examples: [String] = []
         examples += good.map { "- LIKED (graded \($0.lastGrade ?? 5)/5): \(exampleLine($0))" }
         examples += bad.map { "- DISLIKED (graded \($0.lastGrade ?? 1)/5): \(exampleLine($0))" }
-        examples += kept.map { "- ALREADY CURATED: \(exampleLine($0))" }
+        examples += kept.map { "- ALREADY FAVORITE: \(exampleLine($0))" }
         if !examples.isEmpty {
             sections.append("""
             ## THE USER'S OWN VERDICTS (ground truth for their taste)
@@ -64,15 +64,15 @@ nonisolated enum SceneCurator {
             }
             return line
         }
-        sections.append("## CANDIDATE SCENES (uncurated)\n" + lines.joined(separator: "\n"))
+        sections.append("## CANDIDATE SCENES (non-favorite)\n" + lines.joined(separator: "\n"))
 
         return """
-        You are the content curator for a short-form social video brand. From the candidate scenes below, pick ONLY the ones that clearly deserve promotion to the hand-picked Curated set the AI Wizard builds reels from.
+        You are the content curator for a short-form social video brand. From the candidate scenes below, pick ONLY the ones that clearly deserve promotion to the hand-picked Favorites set the AI Wizard builds reels from.
 
         \(sections.joined(separator: "\n\n"))
 
         ## OUTPUT
-        Be selective — promoting everything makes the Curated set worthless; a typical pass promotes roughly 10–25% of candidates, and promoting none is a valid answer. Never promote a scene that resembles the user's DISLIKED examples. Return ONLY a JSON object:
+        Be selective — promoting everything makes the Favorites set worthless; a typical pass promotes roughly 10–25% of candidates, and promoting none is a valid answer. Never promote a scene that resembles the user's DISLIKED examples. Return ONLY a JSON object:
         {"promote": [{"scene_id": <id>, "reason": "<at most 12 words on why it's a keeper>"}]}
         """
     }

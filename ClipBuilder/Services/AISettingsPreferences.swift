@@ -8,7 +8,7 @@ import Foundation
     static func clearWizardPaste(defaults: UserDefaults) {
         for key in [
             snapshotKey, sourceNameKey, "wizard.modelOverride", "wizard.selectedRunIDs",
-            "wizard.limitToSelection", "wizard.sourcePeople", "wizard.curatedOnly",
+            "wizard.limitToSelection", "wizard.sourcePeople", "wizard.favoritesOnly",
             "wizard.sourcesRestricted", "wizard.sourceSceneSelection", "wizard.sourceSceneIDs",
             "wizard.sourceVideoPaths", SceneStacks.levelKey,
         ] {
@@ -21,7 +21,7 @@ import Foundation
         "captionLanguage": "wizard.captionLanguage",
         "reviewProposedCuts": "wizard.reviewProposedCuts",
         "podcastFraming": "wizard.podcastFraming", "critiqueLoop": "wizard.critiqueLoop",
-        "curatedOnly": "wizard.curatedOnly",
+        "favoritesOnly": "wizard.favoritesOnly",
         "modelOverride": "wizard.modelOverride", "stackLevel": SceneStacks.levelKey,
     ]
     static let analysisKeys: [String: String] = [
@@ -33,6 +33,7 @@ import Foundation
         "provider": "analysis.provider", "model": "analysis.model",
     ]
     static func wizard(defaults: UserDefaults, profile: BrandProfile) -> [String: JSONSetting] {
+        WizardDefaults.migrateLegacy(defaults: defaults)
         var options = WizardOptions()
         options.renderSettings = profile.defaultRenderSettings
         options.pacing = profile.defaultPacing
@@ -40,7 +41,7 @@ import Foundation
         if let saved = AISettingsJSON.decode(
             [String: JSONSetting].self, defaults.string(forKey: snapshotKey))
         {
-            result.merge(saved) { _, new in new }
+            result.merge(WizardOptions.normalizeFavoriteSettings(saved)) { _, new in new }
         }
         for (field, key) in wizardKeys {
             if let value = defaults.object(forKey: key) { result[field] = setting(value) }
@@ -112,6 +113,7 @@ import Foundation
         scopes: Set<AISettingsScope> = Set(AISettingsScope.allCases),
         sourceName: String = "another run", defaults: UserDefaults
     ) {
+        let result = kind == .wizard ? WizardOptions.normalizeFavoriteSettings(result) : result
         let mapping = kind == .wizard ? wizardKeys : analysisKeys
         let allowed = scopes.reduce(into: Set<String>()) {
             $0.formUnion(AISettingsEnvelope.keys($1, kind: kind))

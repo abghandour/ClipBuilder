@@ -122,7 +122,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
         case .sources:
             return [
                 "sourceSceneSelection", "sourcesRestricted", "selectedRunIDs", "sourcePeople",
-                "curatedOnly", "stackLevel", "sourceProfile", "sourceVideoPaths", "sourceSceneIDs",
+                "favoritesOnly", "stackLevel", "sourceProfile", "sourceVideoPaths", "sourceSceneIDs",
             ]
         case .options:
             return [
@@ -144,6 +144,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
         self.sourceName = sourceName
         self.scopes = scopes
         let allowed = scopes.reduce(into: Set<String>()) { $0.formUnion(Self.keys($1, kind: kind)) }
+        let settings = kind == .wizard ? WizardOptions.normalizeFavoriteSettings(settings) : settings
         self.settings = settings.filter { allowed.contains($0.key) }
         // Include explicit nulls so a copied "automatic" choice clears an override.
         for key in allowed where self.settings[key] == nil { self.settings[key] = .null }
@@ -155,7 +156,8 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
     )
         -> (settings: [String: JSONSetting], skipped: [String])
     {
-        var result = current
+        let settings = kind == .wizard ? WizardOptions.normalizeFavoriteSettings(self.settings) : self.settings
+        var result = kind == .wizard ? WizardOptions.normalizeFavoriteSettings(current) : current
         var skipped: [String] = []
         let allowed = scopes.reduce(into: Set<String>()) { $0.formUnion(Self.keys($1, kind: kind)) }
         for (key, value) in settings where allowed.contains(key) { result[key] = value }

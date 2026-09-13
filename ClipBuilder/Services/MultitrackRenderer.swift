@@ -65,7 +65,7 @@ actor MultitrackRenderer {
         /// The scene's stored Center Stage camera path sliced to this clip's
         /// source range (t=0 at sourceStart, source seconds). When present,
         /// the reframe prepass replays it instead of re-tracking — the same
-        /// path the curated preview and workbench show, so WYSIWYG holds.
+        /// path the manual build preview and workbench show, so WYSIWYG holds.
         var cameraPath: [CameraPathKeyframe]?
         var staticAreaFilter: String?
         var effectiveEffect: EffectSpec? = nil
@@ -149,7 +149,7 @@ actor MultitrackRenderer {
     /// `preview: true` runs the IDENTICAL pipeline (same framing, crops,
     /// transitions, music, overlays, encode settings — pixel-for-pixel what
     /// a real render produces) but writes to a temporary file and records
-    /// nothing in the Library. The curated wizard's Exact Preview uses it.
+    /// nothing in the Library. The manual build's Exact Preview uses it.
     func render(document: TimelineDocument, scenes: [SceneRecord],
                 profile: BrandProfile, database: Database,
                 centerStageCamera: String = "balanced",

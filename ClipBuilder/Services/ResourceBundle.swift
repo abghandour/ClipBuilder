@@ -177,7 +177,7 @@ nonisolated enum ResourceBundle {
     /// selection state tied to one database is left out.
     private static let preferencePrefixes = ["wizard.", "analysis.", "pipeline."]
     private static let excludedPreferenceKeys: Set<String> = [
-        "wizard.selectedRunIDs", "wizard.sourcePeople", "wizard.limitToSelection", "wizard.curatedOnly",
+        "wizard.selectedRunIDs", "wizard.sourcePeople", "wizard.limitToSelection", "wizard.favoritesOnly",
     ]
 
     private static let imageMarker = "$images/"
@@ -236,7 +236,7 @@ nonisolated enum ResourceBundle {
     }
 
     static func preferences() -> [String: Any] {
-        UserDefaults.standard.dictionaryRepresentation().filter { key, value in
+        WizardOptions.normalizeFavoriteSettings(UserDefaults.standard.dictionaryRepresentation(), prefix: "wizard.").filter { key, value in
             guard preferencePrefixes.contains(where: key.hasPrefix), !excludedPreferenceKeys.contains(key) else {
                 return false
             }
@@ -445,7 +445,8 @@ nonisolated enum ResourceBundle {
             case .preferences:
                 guard let data = try? Data(contentsOf: folder.appendingPathComponent("preferences.json")),
                       let values = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                for (key, value) in values where preferencePrefixes.contains(where: key.hasPrefix) {
+                for (key, value) in WizardOptions.normalizeFavoriteSettings(values, prefix: "wizard.")
+                    where preferencePrefixes.contains(where: key.hasPrefix) {
                     UserDefaults.standard.set(value, forKey: key)
                     summary.preferencesApplied += 1
                 }

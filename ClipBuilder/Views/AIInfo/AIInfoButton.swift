@@ -63,10 +63,11 @@ struct AIInfoButton: View {
             var entry =
                 store.analysisRuns.first { $0.id == scene.runID }.map(runEntry)
                 ?? AIInfoEntry(name: scene.videoFilename)
-            let recorded = AISettingsJSON.decode([AIRole].self, scene.modelsJSON) ?? []
+            let recorded = (AISettingsJSON.decode([AIRole].self, scene.modelsJSON) ?? [])
+                .filter { $0.role != "Curation" && $0.role != "Favorite" }
             entry.roles += recorded
             entry.roles += roles([
-                ("Curation", scene.curationProvenance), ("Framing", scene.framingProvenance),
+                ("Favorite", scene.favoriteProvenance), ("Framing", scene.framingProvenance),
             ]).filter { candidate in
                 !recorded.contains { $0.role == candidate.role }
             }
@@ -94,7 +95,7 @@ struct AIInfoButton: View {
                 || store.analysisRuns.contains { $0.videoID == video.id }
         }
         if let scene {
-            return scene.curationProvenance != nil || scene.framingProvenance != nil
+            return scene.favoriteProvenance != nil || scene.framingProvenance != nil
                 || scene.modelsJSON != nil || store.analysisRuns.contains { $0.id == scene.runID }
         }
         if let output {

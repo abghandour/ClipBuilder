@@ -123,7 +123,7 @@ nonisolated enum SceneStacks {
     /// Stack members in display order: the user's persisted pick first, then
     /// the AI's ranking. The AI's best is NOT simply the longest — it's the
     /// same blend the Wizard shortlists by (entertainment score, crowd
-    /// excitement, highlight tags, favorites, curation, grades).
+    /// excitement, highlight tags, favorites, grades).
     static func ordered(_ members: [SceneRecord]) -> [SceneRecord] {
         members.sorted { a, b in
             if a.stackChoice != b.stackChoice { return a.stackChoice }
@@ -145,13 +145,12 @@ nonisolated enum SceneStacks {
         }
     }
 
-    /// Mirrors WizardEngine.shortlistScenes' rank(_:) so "best of the stack"
+    /// Mirrors WizardEngine.shortlistRank(_:) so "best of the stack"
     /// and "worth planning with" agree on what good footage is.
     static func rank(_ scene: SceneRecord) -> Double {
         var rank = scene.score ?? scene.excitement.map { $0 * 10 } ?? -1
         if scene.tags.contains(where: { $0 == "highlight" || $0.hasPrefix("highlight:") }) { rank += 5 }
-        if scene.favorite { rank += 4 }
-        if scene.curated { rank += 2 }
+        if scene.favorite { rank += 2 }
         if let grade = scene.gradeAverage, scene.gradeCount > 0 { rank += grade - 3 }
         if scene.tags.contains("low-quality") { rank -= 4 }
         return rank

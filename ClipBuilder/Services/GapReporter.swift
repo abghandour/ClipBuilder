@@ -1,7 +1,7 @@
 import Foundation
 
 /// Content gap report: a strategist's pass over the whole pipeline — what's
-/// analyzed but never rendered, curated but unused, imported but untouched,
+/// analyzed but never rendered, favorited but unused, imported but untouched,
 /// and how the publishing cadence looks — returned as a prioritized
 /// checklist referencing actual files.
 nonisolated enum GapReporter {

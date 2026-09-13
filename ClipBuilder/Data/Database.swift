@@ -58,6 +58,8 @@ actor Database {
         excluded BOOLEAN DEFAULT 0,
         ignored BOOLEAN DEFAULT 0,
         favorite INTEGER DEFAULT 0,
+        favorite_provider TEXT,
+        favorite_model TEXT,
         crop_x_frac REAL,
         free_crops TEXT,
         center_stage_path TEXT,
@@ -642,13 +644,19 @@ actor Database {
         let stamped = try connection.query("PRAGMA user_version").first?.values.first?.intValue ?? 0
         if stamped != Self.schemaVersion {
             try Self.migrate(connection)
-            try connection.execute("PRAGMA user_version = \(Self.schemaVersion)")
+            try connection.transaction {
+                if stamped < 16 {
+                    try connection.execute("UPDATE scenes SET favorite = 1, favorite_provider = curated_provider, favorite_model = curated_model WHERE curated = 1 AND favorite = 0")
+                    try connection.execute("UPDATE scenes SET favorite_provider = curated_provider, favorite_model = curated_model WHERE curated = 1 AND favorite = 1 AND favorite_provider IS NULL")
+                }
+                try connection.execute("PRAGMA user_version = \(Self.schemaVersion)")
+            }
         }
     }
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 15
+    static let schemaVersion: Int64 = 16
 
     // MARK: - Script prerequisites (Library state, outside timeline snapshots)
 
@@ -857,7 +865,7 @@ actor Database {
         var rows: [ReelModelRow] = []
         for scene in scenes {
             var votes: [Double] = []
-            if scene.favorite || scene.curated { votes.append(1) }
+            if scene.favorite { votes.append(1) }
             if let grade = scene.gradeAverage, scene.gradeCount > 0 { votes.append(grade >= 3 ? 1 : 0) }
             let reviews = try connection.query("SELECT verdict FROM clip_reviews WHERE scene_id = ?", [.integer(scene.id)])
             votes += reviews.compactMap { $0["verdict"]?.intValue }.filter { $0 != 0 }.map { $0 > 0 ? 1 : 0 }
@@ -1029,7 +1037,7 @@ actor Database {
             ("transcripts", ["provider", "model", "original_text", "words", "technique"]),
             // AI provenance: which provider/model produced each artifact.
             // NULL = human-made (or predates provenance tracking).
-            ("scenes", ["models_json", "curated_provider", "curated_model"]),
+            ("scenes", ["models_json", "curated_provider", "curated_model", "favorite_provider", "favorite_model"]),
             ("fight_events", ["provider", "model"]),
             ("video_notes", ["provider", "model"]),
             ("wizard_lessons", ["provider", "model", "learned_id"]),
@@ -2246,9 +2254,8 @@ actor Database {
                 endTime: row["edit_end"]?.doubleValue ?? originalEnd,
                 originalStart: originalStart,
                 originalEnd: originalEnd,
-                curated: row["curated"]?.boolValue ?? false,
-                curatedProvider: row["curated_provider"]?.stringValue,
-                curatedModel: row["curated_model"]?.stringValue,
+                favoriteProvider: row["favorite_provider"]?.stringValue,
+                favoriteModel: row["favorite_model"]?.stringValue,
                 narrative: row["narrative"]?.stringValue,
                 score: row["score"]?.doubleValue,
                 excitement: row["excitement"]?.doubleValue,
@@ -2271,22 +2278,6 @@ actor Database {
                 videoWidth: Int(row["video_width"]?.intValue ?? 0),
                 videoHeight: Int(row["video_height"]?.intValue ?? 0),
                 wide: row["video_wide"]?.boolValue ?? false)
-        }
-    }
-
-    func setSceneFavorite(_ sceneID: Int64, favorite: Bool) throws {
-        try connection.execute("UPDATE scenes SET favorite = ? WHERE id = ?",
-                               [.integer(favorite ? 1 : 0), .integer(sceneID)])
-    }
-
-    /// Persist one bulk favorite action atomically. Keeping the individual
-    /// updates inside one transaction avoids a commit for every selected card.
-    func setScenesFavorite(_ sceneIDs: [Int64], favorite: Bool) throws {
-        guard !sceneIDs.isEmpty else { return }
-        try connection.transaction {
-            for sceneID in Set(sceneIDs) {
-                try setSceneFavorite(sceneID, favorite: favorite)
-            }
         }
     }
 
@@ -2340,25 +2331,24 @@ actor Database {
                                [.integer(parentID), .integer(sceneID)])
     }
 
-    /// Promote/demote a scene in the curated set. `provenance` records the
-    /// AI Curator that picked it; nil = the user's own pick (or a demotion).
-    func setSceneCurated(_ sceneID: Int64, curated: Bool, provenance: AIProvenance? = nil) throws {
-        let stamp = curated ? provenance : nil
-        try recordSceneRole(id: sceneID, role: "Curation", provenance: stamp)
+    /// Promote/demote a scene in the favorite set. `provenance` records the
+    /// AI Favorites that picked it; nil = the user's own pick (or a demotion).
+    func setSceneFavorite(_ sceneID: Int64, favorite: Bool, provenance: AIProvenance? = nil) throws {
+        let stamp = favorite ? provenance : nil
         try connection.execute("""
-            UPDATE scenes SET curated = ?, curated_provider = ?, curated_model = ? WHERE id = ?
-            """, [.integer(curated ? 1 : 0),
+            UPDATE scenes SET favorite = ?, favorite_provider = ?, favorite_model = ? WHERE id = ?
+            """, [.integer(favorite ? 1 : 0),
                   stamp.map { SQLValue.text($0.provider) } ?? .null,
                   stamp?.model.map(SQLValue.text) ?? .null,
                   .integer(sceneID)])
     }
 
-    func setScenesCurated(_ sceneIDs: [Int64], curated: Bool,
+    func setScenesFavorite(_ sceneIDs: [Int64], favorite: Bool,
                           provenance: AIProvenance? = nil) throws {
         guard !sceneIDs.isEmpty else { return }
         try connection.transaction {
             for sceneID in Set(sceneIDs) {
-                try setSceneCurated(sceneID, curated: curated, provenance: provenance)
+                try setSceneFavorite(sceneID, favorite: favorite, provenance: provenance)
             }
         }
     }
