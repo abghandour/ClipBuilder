@@ -745,6 +745,13 @@ private struct AISettingsTab: View {
                 Text("Restores the recommended model for every task and re-enables the model-plan prompts shown before Analyze and Generate.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Picker("After a provider fails", selection: $store.settings.ai.providerCooldownMinutes) {
+                    Text("Retry it every time").tag(0)
+                    Text("Skip it for 5 minutes").tag(5)
+                    Text("Skip it for 15 minutes").tag(15)
+                    Text("Skip it for 1 hour").tag(60)
+                }
+                .help("When a provider fails to sign in, is out of quota or returns a CLI error, automatic fallback skips it for this long instead of paying the failed call on every video. Picking a provider explicitly still uses it, and changing these settings clears the wait.")
             }
 
             Section("Learning") {

@@ -33,12 +33,15 @@ struct BuilderView: View {
             // divider between them; the timeline's height is remembered.
             VSplitView {
                 HSplitView {
+                    // The preview only needs room for its controls; the
+                    // inspector may take most of the width when someone is
+                    // editing settings rather than watching.
                     BuilderWorkspacePreview(onOpenPreview: { showPreview = true },
                                             onAddClip: { showScenePicker = true })
-                        .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
                         .layoutPriority(1)
                     BuilderInspector()
-                        .rememberedPaneWidth("pane.builder.inspector", min: 240, initial: 310, max: 460)
+                        .rememberedPaneWidth("pane.builder.inspector", min: 240, initial: 310, max: 1200)
                         .frame(maxHeight: .infinity)
                 }
                 .frame(minHeight: 220, maxHeight: .infinity)

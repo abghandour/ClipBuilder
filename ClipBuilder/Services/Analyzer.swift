@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Synchronization
 import Vision
 
 /// Visual analysis pipeline — the Swift port of analyzer.py's visual mode:
@@ -176,10 +177,14 @@ actor Analyzer {
     /// retrying whenever the provider rejects the request as too long — a
     /// thinner analysis beats a dead one. Auxiliary frames (markers, notes,
     /// taste examples) are never dropped; their labels and pixel sizes stay intact.
+    /// `heartbeat`, when given, receives a fresh status line every few seconds
+    /// while the provider is working ("waiting for Claude Code · 43 frames ·
+    /// 2:15 of up to 10:00"), so a long call never looks stalled.
     private func callThinningFrames(prompt: String, auxiliary: [AIFrame], sampled: [AIFrame],
                                     video: URL? = nil, lazySampled: AnalysisFrameSource? = nil,
                                     model: String?, provider: String?,
                                     progress: (@Sendable (Int) -> Void)? = nil,
+                                    heartbeat: (@Sendable (String) -> Void)? = nil,
                                     log: @escaping @Sendable (String) -> Void) async throws -> AIResponse {
         let auxiliary = try await AnalysisImageBudget.fitReferences(auxiliary, log: log)
         let referenceBytes = auxiliary.reduce(0) { $0 + $1.jpeg.count }
@@ -208,6 +213,19 @@ actor Analyzer {
         }
         while true {
             if currentVideo == nil { progress?(frames.count) }
+            let waitState = Mutex<(provider: String, timeout: TimeInterval, started: ContinuousClock.Instant)?>(nil)
+            let frameCount = frames.count
+            let pulse: Task<Void, Never>? = heartbeat.map { heartbeat in
+                Task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(for: .seconds(5))
+                        guard !Task.isCancelled, let state = waitState.withLock({ $0 }) else { continue }
+                        let elapsed = state.started.duration(to: .now).seconds
+                        heartbeat("waiting for \(state.provider) · \(frameCount) frames · \(Self.clock(elapsed)) of up to \(Self.clock(state.timeout))")
+                    }
+                }
+            }
+            defer { pulse?.cancel() }
             do {
                 return try await ai.call(prompt: prompt, task: "analysis",
                                          frames: auxiliary + frames, video: currentVideo,
@@ -216,7 +234,11 @@ actor Analyzer {
                                          timeout: Self.analysisTimeout(sampledFrameCount: frames.count),
                                          timeoutForFrameCount: { count in
                                              Self.analysisTimeout(sampledFrameCount: count - auxiliary.count)
-                                         }, log: log)
+                                         }, log: log,
+                                         waiting: { providerLabel, timeout in
+                                             waitState.withLock { $0 = (providerLabel, timeout, .now) }
+                                             heartbeat?("waiting for \(providerLabel) · \(frameCount) frames · 0:00 of up to \(Self.clock(timeout))")
+                                         })
             } catch let error as ProcessRunnerError {
                 guard case .timedOut = error else { throw error }
                 if currentVideo != nil, let lazySampled {
@@ -247,6 +269,11 @@ actor Analyzer {
                 log("Prompt too long for the model — retrying with \(frames.count) frames")
             }
         }
+    }
+
+    private nonisolated static func clock(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     /// Best-effort explanation for a frame batch that yielded nothing.
@@ -1582,7 +1609,8 @@ actor Analyzer {
             sampled: frames,
             video: nativeVideo, lazySampled: nativeVideo == nil ? nil : frameSource,
             model: model, provider: provider,
-            progress: { count in progress(0.25, "tagging (\(count) frames)") }, log: log)
+            progress: { count in progress(0.25, "tagging (\(count) frames)") },
+            heartbeat: { status in progress(0.25, "tagging · " + status) }, log: log)
         guard let object = AIResponseParser.jsonObject(from: response.text) else {
             throw AIError.emptyResponse("analysis (unparseable JSON)")
         }

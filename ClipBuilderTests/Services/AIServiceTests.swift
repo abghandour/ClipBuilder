@@ -106,6 +106,69 @@ struct AIServiceTests {
         #expect(!logs.lines.contains { $0.contains("secret-stack") })
     }
 
+    @Test("a failed provider cools down for automatic dispatch, explicit choice still runs, sign-in clears it")
+    func providerCooldown() async throws {
+        let directory = try TempDirectory(prefix: "CooldownAI")
+        let failure = directory.url.appendingPathComponent("gemini.sh")
+        let success = directory.url.appendingPathComponent("claude.sh")
+        // A generic CLI failure (not the permanent IneligibleTier marker).
+        try """
+        #!/bin/sh
+        printf 'call\n' >> "$0.count"
+        printf '%s\n' 'Error: something went wrong upstream' >&2
+        exit 1
+        """.write(to: failure, atomically: true, encoding: .utf8)
+        try #"""
+        #!/bin/sh
+        cat >/dev/null
+        printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"fixture answer"}]}}'
+        """#.write(to: success, atomically: true, encoding: .utf8)
+        for script in [failure, success] {
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+        }
+        var config = AIConfig()
+        for provider in AICatalog.providers {
+            config.providers[provider.key] = AIProviderSettings(
+                bin: directory.url.appendingPathComponent("missing-" + provider.key).path, model: "fixture")
+        }
+        config.providers["gemini"] = AIProviderSettings(bin: failure.path, model: "fixture")
+        config.providers["claude"] = AIProviderSettings(bin: success.path, model: "fixture")
+        config.tasks["analysis"] = "gemini"
+        config.providerCooldownMinutes = 15
+        let service = AIService(config: config)
+        let logs = AIServiceLogSink()
+        func calls() throws -> Int {
+            (try? String(contentsOfFile: failure.path + ".count", encoding: .utf8))?.split(separator: "\n").count ?? 0
+        }
+        // First call pays the failure and falls back.
+        let first = try await service.call(prompt: "fixture", task: "analysis", timeout: 5, log: { logs.append($0) })
+        #expect(first.provider == "claude" && first.fellBack)
+        #expect(try calls() == 1)
+        #expect(await service.activeCooldowns()["gemini"] != nil)
+        // Automatic dispatch now skips Gemini without calling it.
+        let second = try await service.call(prompt: "fixture", task: "analysis", timeout: 5, log: { logs.append($0) })
+        #expect(second.provider == "claude" && !second.fellBack)
+        #expect(try calls() == 1)
+        #expect(logs.lines.contains { $0.hasPrefix("Skipping Gemini CLI: cooling down for 15 more minutes") })
+        // An explicit choice still tries the provider.
+        _ = try? await service.call(prompt: "fixture", task: "fixture", provider: "gemini", timeout: 5, log: { logs.append($0) })
+        #expect(try calls() == 2)
+        // Clearing (sign-in) re-enables automatic dispatch; disabling the setting too.
+        await service.clearCooldown(provider: "gemini")
+        #expect(await service.activeCooldowns().isEmpty)
+        _ = try await service.call(prompt: "fixture", task: "analysis", timeout: 5, log: { logs.append($0) })
+        #expect(try calls() == 3)
+        config.providerCooldownMinutes = 0
+        await service.updateConfig(config)
+        _ = try await service.call(prompt: "fixture", task: "analysis", timeout: 5, log: { logs.append($0) })
+        _ = try await service.call(prompt: "fixture", task: "analysis", timeout: 5, log: { logs.append($0) })
+        #expect(try calls() == 5)
+        // Request-specific failures never cool a provider down.
+        #expect(!AIService.deservesCooldown(AIError.promptTooLong("x")))
+        #expect(!AIService.deservesCooldown(AIError.unusableResponse("x")))
+        #expect(AIService.deservesCooldown(AIError.notAuthenticated(provider: "gemini", detail: "x")))
+    }
+
     @Test("AI JSON parser accepts fences and prose")
     func responseParser() throws {
         let fenced = try #require(AIResponseParser.jsonObject(from: "```json\n{\"ok\":true}\n```"))

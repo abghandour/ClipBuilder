@@ -45,12 +45,57 @@ actor AIService {
     private var loggedUnavailableProviders = Set<String>()
     var config: AIConfig
 
+    /// A provider that just failed is left alone for a while so a batch does
+    /// not pay a doomed call (and its timeout) on every item. Explicit
+    /// provider choices still run; the cooldown only steers automatic dispatch.
+    struct Cooldown: Sendable, Equatable {
+        var until: Date
+        var reason: String
+    }
+    private var cooldowns: [String: Cooldown] = [:]
+
     init(config: AIConfig) {
         self.config = config
     }
 
     func updateConfig(_ config: AIConfig) {
         self.config = config
+        // Changing providers, models or binaries is the user acting on the
+        // failure; start fresh rather than keep skipping the fixed provider.
+        cooldowns.removeAll()
+    }
+
+    /// Active cooldowns by provider key (expired entries are dropped).
+    func activeCooldowns(now: Date = Date()) -> [String: Cooldown] {
+        cooldowns = cooldowns.filter { $0.value.until > now }
+        return cooldowns
+    }
+
+    /// Ends a provider's cooldown, e.g. after the user signs in again.
+    func clearCooldown(provider: String) { cooldowns[provider] = nil }
+
+    private func startCooldown(provider: String, reason: String) {
+        let minutes = config.providerCooldownMinutes
+        guard minutes > 0 else { return }
+        cooldowns[provider] = Cooldown(until: Date().addingTimeInterval(Double(minutes) * 60), reason: reason)
+    }
+
+    /// Failures that describe the provider rather than this request.
+    static func deservesCooldown(_ error: Error) -> Bool {
+        if let error = error as? AIError {
+            switch error {
+            case .promptTooLong, .unusableResponse: return false
+            case .notConfigured, .notAuthenticated, .quotaExhausted, .emptyResponse: return true
+            }
+        }
+        // Timeouts scale with the request (Analyzer thins frames and retries
+        // the same provider), so they do not cool a provider down.
+        return false
+    }
+
+    private static func cooldownText(_ cooldown: Cooldown, now: Date = Date()) -> String {
+        let minutes = max(1, Int((cooldown.until.timeIntervalSince(now) / 60).rounded(.up)))
+        return "cooling down for \(minutes) more minute\(minutes == 1 ? "" : "s") after: \(cooldown.reason)"
     }
 
     /// Case-insensitive markers for terminal quota/billing failures — abort
@@ -154,6 +199,8 @@ actor AIService {
 
         var seen = Set<String>()
         var result: [(provider: String, model: String?)] = []
+        var cooling: [(provider: String, model: String?)] = []
+        let active = activeCooldowns()
         for (key, model) in raw {
             guard !seen.contains(key), let provider = AICatalog.provider(key) else { continue }
             seen.insert(key)
@@ -165,7 +212,20 @@ actor AIService {
             }
             if needsImages && !provider.supportsImages { continue }
             guard binaryURL(for: provider) != nil else { continue }
+            // The user's explicit choice always runs; automatic chains skip
+            // a provider that just failed.
+            if let cooldown = active[key], key != providerOverride {
+                log?("Skipping \(provider.label): \(Self.cooldownText(cooldown))")
+                cooling.append((key, model))
+                continue
+            }
             result.append((key, model))
+        }
+        // Nothing left is worse than a doomed retry: fall back to the
+        // cooling providers rather than fail outright.
+        if result.isEmpty, !cooling.isEmpty {
+            log?("Every provider is cooling down — trying them anyway")
+            return cooling
         }
         return result
     }
@@ -205,7 +265,8 @@ actor AIService {
               timeout: TimeInterval = 300,
               timeoutForFrameCount: (@Sendable (Int) -> TimeInterval)? = nil,
               webAccess: Bool = false,
-              log: (@Sendable (String) -> Void)? = nil) async throws -> AIResponse {
+              log: (@Sendable (String) -> Void)? = nil,
+              waiting: (@Sendable (_ provider: String, _ timeout: TimeInterval) -> Void)? = nil) async throws -> AIResponse {
         let emit = log ?? { _ in }
         // Timed from here so a failover's wasted attempt counts: this is the
         // wait the user actually sat through.
@@ -244,14 +305,17 @@ actor AIService {
                     }
                     candidateVideo = nil
                 }
+                let candidateTimeout = candidateVideo == nil
+                    ? (timeoutForFrameCount?(candidateFrames?.count ?? 0) ?? timeout) : timeout
+                waiting?(AICatalog.provider(candidate.provider)?.label ?? candidate.provider, candidateTimeout)
                 let text = try await callProvider(key: candidate.provider, model: candidate.model,
                                                   prompt: prompt, frames: candidateFrames, video: candidateVideo,
-                                                  timeout: candidateVideo == nil
-                                                    ? (timeoutForFrameCount?(candidateFrames?.count ?? 0) ?? timeout) : timeout,
+                                                  timeout: candidateTimeout,
                                                   webAccess: webAccess, emit: emit)
                 // The candidate that answered is the provenance — a
                 // prediction made before the call would misattribute
                 // anything produced after a failover.
+                cooldowns[candidate.provider] = nil
                 let response = AIResponse(text: text, provider: candidate.provider,
                                   model: candidate.model ?? AICatalog.provider(candidate.provider)?.defaultModel,
                                   task: task, fellBack: index > 0,
@@ -263,7 +327,9 @@ actor AIService {
                 if case .promptTooLong = error { tooLongError = error }
                 let label = AICatalog.provider(candidate.provider)?.label ?? candidate.provider
                 emit("\(label) failed: \(error)")
+                if Self.deservesCooldown(error) { startCooldown(provider: candidate.provider, reason: String(describing: error).prefix(120).description) }
             } catch {
+                if Self.deservesCooldown(error) { startCooldown(provider: candidate.provider, reason: String(describing: error).prefix(120).description) }
                 if error is CancellationError || video == nil { throw error }
                 // A timed-out still fallback must reach Analyzer for thinning,
                 // even when this dispatch began as a native-video request.

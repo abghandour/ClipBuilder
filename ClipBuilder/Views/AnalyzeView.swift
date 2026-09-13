@@ -32,13 +32,6 @@ struct AnalyzeView: View {
     /// The video the preview pane shows — follows `selection` one run-loop
     /// turn behind it (see `syncPreview`).
     @State private var previewVideoID: Int64?
-    /// Last single click on a file name, for the double-click-to-rename
-    /// check in `nameTapped`. A reference holder rather than plain state:
-    /// recording the first click must not re-render the table (that
-    /// re-render, landing between the two clicks, put the rename field in
-    /// the wrong row on macOS 27).
-    @State private var nameTaps = NameTapTracker()
-
     /// Exactly one selected video → the preview pane shows it.
     private var previewVideo: VideoRecord? {
         guard let previewVideoID else { return nil }
@@ -56,23 +49,6 @@ struct AnalyzeView: View {
         DispatchQueue.main.async {
             // Selection may have moved again in the meantime.
             previewVideoID = self.selection.count == 1 ? self.selection.first : nil
-        }
-    }
-
-    /// Double-click on a file name starts a rename. A `TapGesture(count: 2)`
-    /// can't be used here: SwiftUI holds every single click on the name for
-    /// the double-click interval (~350 ms) to see whether a second one
-    /// follows, and the row's selection waited with it — the grid felt
-    /// stuck on every click. A plain tap fires immediately; the second
-    /// click is recognized by timing instead.
-    private func nameTapped(_ video: VideoRecord) {
-        let now = Date()
-        if let last = nameTaps.last, last.id == video.id,
-           now.timeIntervalSince(last.at) <= NSEvent.doubleClickInterval {
-            nameTaps.last = nil
-            beginRename(video)
-        } else {
-            nameTaps.last = (video.id, now)
         }
     }
 
@@ -362,8 +338,11 @@ struct AnalyzeView: View {
                 HStack {
                     if video.driveFileID != nil { DriveMediaBadge(media: video.driveMedia) }
                     DriveSourceProgress(media: video.driveMedia)
+                    // No gesture on the cell: a SwiftUI tap in a table cell
+                    // makes AppKit apply the row selection only after mouse
+                    // up, so the highlight lagged by the length of the click.
+                    // Double-click rename comes from the table's primary action.
                     Text(video.filename)
-                        .onTapGesture { nameTapped(video) }
                         .help("Double-click to rename")
                     AIInfoButton(video: video)
                 }
@@ -397,7 +376,7 @@ struct AnalyzeView: View {
             .width(min: 70, ideal: 90)
 
             TableColumn("Status") { video in
-                if store.isAnalyzing && selection.contains(video.id) {
+                if store.analyzingVideoIDs.contains(video.id) {
                     HStack(spacing: 6) {
                         ProgressView()
                             .controlSize(.small)
@@ -512,6 +491,11 @@ struct AnalyzeView: View {
                     pendingRemoval = ids
                 }
             }
+        } primaryAction: { ids in
+            // AppKit's own double-click, so single clicks select on mouse down.
+            if ids.count == 1, let video = store.videos.first(where: { $0.id == ids.first }) {
+                beginRename(video)
+            }
         }
         .dropDestination(for: URL.self) { urls, _ in
             if let projectID = store.activeProjectID {
@@ -562,10 +546,6 @@ struct AnalyzeView: View {
 
 }
 
-/// Mutable box for the last file-name click (see `AnalyzeView.nameTapped`).
-private final class NameTapTracker {
-    var last: (id: Int64, at: Date)?
-}
 
 /// Inline player for the single selected source video — watch the footage
 /// before deciding to analyze (or re-analyze) it.

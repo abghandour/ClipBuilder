@@ -31,6 +31,9 @@ struct AppStatusBar: View {
             if store.wizardFailureMessage != nil {
                 GenerationFailureNotice().padding(Theme.spaceS)
             }
+            if let completion = store.analysisCompletion {
+                AnalysisCompletionNotice(completion: completion).padding(Theme.spaceS)
+            }
             if logExpanded {
                 Divider()
                 AppLogDrawer(lines: lines).frame(height: 200)
@@ -66,9 +69,9 @@ struct AppStatusBar: View {
                 Text(StatusBarSummary(store: store).title)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            Menu("Actions", systemImage: "ellipsis") { recoveryActions }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
+            // Recovery actions appear only when something needs recovering;
+            // an always-present menu that is usually empty reads as broken.
+            recoveryActions
             Toggle("Verbose", isOn: $verboseLog)
                 .toggleStyle(.checkbox)
                 .help("Include the full AI prompt in logs")
@@ -96,11 +99,14 @@ struct AppStatusBar: View {
         if !store.isPipelineRunning, !store.pipelineStage.isEmpty {
             if store.canResumePipeline {
                 Button("Resume Pipeline") { store.resumePipeline() }
+                    .help("Continue the stopped pipeline from where it left off")
             }
             Button("Dismiss Pipeline") { store.dismissPipelineBar() }
+                .help("Clear the finished pipeline status")
         }
         if let status = store.igStatus, !status.running {
             Button("Dismiss Instagram") { store.dismissIGStatusBar() }
+                .help("Clear the finished Instagram sync status")
         }
         if store.googleDrive.jobs.contains(where: { $0.status == .stopped || $0.status == .failed || $0.status == .reconnect }) {
             Menu("Transfers") {
@@ -112,6 +118,9 @@ struct AppStatusBar: View {
                     }
                 }
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Resume or dismiss stopped Google Drive transfers")
         }
         if let model = store.builderWizard, model.hasStatus {
             Menu("Copy Wizard Details", systemImage: "doc.on.clipboard") {
@@ -119,6 +128,8 @@ struct AppStatusBar: View {
                 Button("Copy Everything") { copy(model.copyText(kind: .everything)) }
                     .keyboardShortcut("c", modifiers: [.command, .shift])
             }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
             .labelStyle(.iconOnly)
             .help("Copy Builder Wizard outcomes or the complete run details")
         }
@@ -345,5 +356,40 @@ private struct AppLogDrawer: View {
 
     static func render(_ line: AppLogLine) -> String {
         "\(clock.string(from: line.time)) [\(AppLogChannels.title(line.channel))] \(line.text)"
+    }
+}
+
+
+/// A finished (or stopped) analysis stays visible until dismissed: the
+/// Sources row of an already analyzed video looks the same before and after
+/// a run, so the status bar says what happened and where to look.
+private struct AnalysisCompletionNotice: View {
+    @Environment(AppStore.self) private var store
+    let completion: AppStore.AnalysisCompletion
+
+    var body: some View {
+        HStack(spacing: Theme.spaceS) {
+            Label(completion.stopped ? "Analysis stopped" : completion.failed > 0 ? "Analysis finished with errors" : "Analysis finished",
+                  systemImage: completion.stopped ? "stop.circle.fill" : completion.failed > 0 ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(completion.stopped ? Color.secondary : completion.failed > 0 ? .orange : .green)
+            Text(completion.summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            Spacer(minLength: Theme.spaceS)
+            if !completion.stopped {
+                Button("Open Scenes") {
+                    store.selectedSection = .scenes
+                    store.analysisCompletion = nil
+                }
+                .controlSize(.small)
+                .help("Show the scenes and people this analysis produced")
+            }
+            Button("Dismiss") { store.analysisCompletion = nil }
+                .controlSize(.small)
+                .help("Hide this notice")
+        }
+        .accessibilityElement(children: .combine)
     }
 }

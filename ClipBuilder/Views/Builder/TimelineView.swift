@@ -66,7 +66,8 @@ struct TimelineView: View {
                             }
                             .padding(.bottom, 8)
                         }
-                        .scrollIndicators(.hidden)
+                        .clipped()
+                        .scrollIndicators(.never)
                         .scrollDisabled(true)
                         .scrollPosition($tracksScrollPosition)
                     }
@@ -84,6 +85,7 @@ struct TimelineView: View {
             .onChange(of: store.openTimelineID) { restoreScrollPosition() }
             .onChange(of: store.activeProjectID) { restoreScrollPosition() }
             .background(.background)
+            .clipped()
         }
     }
 
@@ -102,17 +104,27 @@ struct TimelineView: View {
             }
             .frame(width: Self.headerWidth)
             ScrollView(.horizontal) {
+                // Pinned to the band's exact size and top edge: a horizontal
+                // scroll view centres content that is taller than itself, which
+                // pushed the ruler labels up under the controls bar, and an
+                // unbounded playhead overlay drew through that bar.
                 VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
                     TimeRuler(contentWidth: contentWidth)
                         .frame(width: contentWidth, height: Self.rulerHeight)
                         .background(TimelineTrackStyle.ruler, in: TimelineTrackStyle.laneShape)
                     CropLane(contentWidth: contentWidth, height: Self.cropLaneHeight)
+                        .frame(height: Self.cropLaneHeight, alignment: .top)
                 }
+                .frame(width: contentWidth, height: Self.pinnedBandHeight, alignment: .topLeading)
                 .overlay(alignment: .topLeading) {
-                    PlayheadLine()
+                    PlayheadLine(height: Self.pinnedBandHeight)
                 }
             }
-            .scrollIndicators(.hidden)
+            .frame(height: Self.pinnedBandHeight)
+            // `.never`: a legacy scroller here eats band height, the content
+            // gets centred and the ruler labels vanish under the controls
+            // bar. The pinned scrollbar at the bottom is the only scroller.
+            .scrollIndicators(.never)
             .scrollPosition($horizontalScrollPosition)
             .onScrollGeometryChange(for: HorizontalViewport.self) { geometry in
                 HorizontalViewport(rect: geometry.visibleRect, offset: Double(geometry.contentOffset.x))
@@ -124,7 +136,12 @@ struct TimelineView: View {
                 scrollbarPosition.scrollTo(x: x)
             }
         }
-        .frame(height: Self.rulerHeight + BuilderTimelineModel.laneSpacing + Self.cropLaneHeight)
+        .frame(height: Self.pinnedBandHeight)
+        .clipped()
+    }
+
+    private static var pinnedBandHeight: CGFloat {
+        rulerHeight + BuilderTimelineModel.laneSpacing + cropLaneHeight
     }
 
     /// A horizontal scroller that is only ever as tall as its indicator,
@@ -440,13 +457,16 @@ struct TimeRuler: View {
 /// Vertical playhead line across all lanes.
 struct PlayheadLine: View {
     @Environment(AppStore.self) private var store
+    /// Explicit height for bands whose overlay proposal is unbounded.
+    var height: CGFloat? = nil
 
     var body: some View {
         let model = store.builder
         Rectangle()
             .fill(.red)
             .frame(width: 1.5)
-            .frame(maxHeight: .infinity)
+            .frame(height: height)
+            .frame(maxHeight: height == nil ? .infinity : nil)
             .offset(x: CGFloat(model.playhead) * model.pointsPerSecond)
             .allowsHitTesting(false)
     }

@@ -265,6 +265,17 @@ final class AppStore {
     /// Why the last generation produced nothing — shown as a banner in the
     /// wizard's log panel with a Try Again, instead of only a red log line.
     var wizardFailureMessage: String?
+    /// Videos the running analysis is working on right now (the Sources row
+    /// spinner follows the job, not the selection).
+    var analyzingVideoIDs: Set<Int64> = []
+    /// Shown in the status bar after a run so a finished analysis is visible
+    /// even when the video already had scenes.
+    struct AnalysisCompletion: Equatable {
+        var summary: String
+        var failed: Int
+        var stopped: Bool
+    }
+    var analysisCompletion: AnalysisCompletion?
     /// Presents the Training Guide sheet from the main window (Help menu).
     var showTrainingGuide = false
     /// File ▸ Export Resources… / Import Resources… sheets.
@@ -644,6 +655,9 @@ final class AppStore {
             let binary = await ai.binaryURL(forProvider: key)
             do {
                 try ProviderAuth.openSignInTerminal(provider: key, binary: binary)
+                // Signing in is the fix for the failure that started the
+                // cooldown; the next call may try the provider again.
+                await ai.clearCooldown(provider: key)
                 appendLog(\.analysisLog, ["Opened \(label) sign-in in Terminal — finish there, then retry"])
             } catch {
                 presentError("Couldn't open \(label) sign-in", error)
@@ -1420,6 +1434,8 @@ final class AppStore {
                  includeFightScoring: Bool = true, originatingProjectName: String? = nil) {
         guard let database, !isAnalyzing else { return }
         isAnalyzing = true
+        analysisCompletion = nil
+        analyzingVideoIDs = Set(targets.map(\.id))
         analysisProjectName = originatingProjectName ?? activeProject?.name
         analysisLog = []
         analysisProgress = 0
@@ -1492,8 +1508,11 @@ final class AppStore {
             // refetched per video), so keys never repeat across videos.
             var newPeople: [DetectedNewPerson] = []
             var renameSuggestions: [RenameSuggestion] = []
+            let runStarted = ContinuousClock.now
+            var analyzed = 0, failed = 0
             for (index, video) in targets.enumerated() {
                 if Task.isCancelled { break }
+                analyzingVideoIDs = Set(targets[index...].map(\.id))
                 AIRunCapture.current?.reset()
                 var video = video
                 let base = Double(index) / Double(targets.count)
@@ -1636,25 +1655,37 @@ final class AppStore {
                         }
                     }
                     if let runID { try await database.updateAnalysisModels(id: runID) }
+                    analyzed += 1
                     appendLog(\.analysisLog, ["\(video.filename): done"])
                 } catch is CancellationError {
                     break
                 } catch let error as AIError {
+                    failed += 1
                     appendLog(\.analysisLog, ["\(video.filename): \(error)"])
                     if case .quotaExhausted = error {
                         appendLog(\.analysisLog, ["Quota exhausted — stopping the run."])
                         break
                     }
                 } catch {
+                    failed += 1
                     appendLog(\.analysisLog, ["\(video.filename): \(error.userMessage)"])
                 }
             }
+            analyzingVideoIDs = []
+            let elapsed = runStarted.duration(to: .now).seconds
+            let clock = String(format: "%d:%02d", Int(elapsed) / 60, Int(elapsed) % 60)
             if Task.isCancelled {
                 appendLog(\.analysisLog, ["Analysis stopped."])
                 analysisStage = "stopped"
+                analysisCompletion = AnalysisCompletion(summary: "Analysis stopped after \(clock) — \(analyzed) of \(targets.count) video\(targets.count == 1 ? "" : "s") finished.", failed: failed, stopped: true)
             } else {
                 analysisProgress = 1
                 analysisStage = "done"
+                let names = targets.count == 1 ? targets[0].filename : "\(analyzed) of \(targets.count) videos"
+                analysisCompletion = AnalysisCompletion(
+                    summary: failed == 0 ? "Analyzed \(names) in \(clock). Scenes and people are ready on the Scenes screen."
+                        : "Analyzed \(names) in \(clock); \(failed) failed — see the App Log.",
+                    failed: failed, stopped: false)
             }
             // The run's video ids belong to the profile it started in.
             guard generation == profileGeneration else { return }

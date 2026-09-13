@@ -165,6 +165,9 @@ nonisolated struct AIConfig: Codable, Sendable {
     var preferOnDevice: Bool = true
     var onDeviceOverrides: [String: Bool] = [:]
     var onDeviceAgreement: [String: Double] = [:]
+    /// Minutes a provider is skipped by automatic dispatch after it fails
+    /// (sign-in, quota, unavailable, CLI error). 0 disables.
+    var providerCooldownMinutes: Int = 15
 
     init() {}
 
@@ -177,10 +180,12 @@ nonisolated struct AIConfig: Codable, Sendable {
         taskModels = try container.decodeIfPresent([String: String].self, forKey: .taskModels) ?? [:]
         providers = try container.decodeIfPresent([String: AIProviderSettings].self, forKey: .providers) ?? [:]
         mutedDispatchPlans = try container.decodeIfPresent([String].self, forKey: .mutedDispatchPlans) ?? []
+        providerCooldownMinutes = try container.decodeIfPresent(Int.self, forKey: .providerCooldownMinutes) ?? 15
     }
 
     enum CodingKeys: String, CodingKey {
         case tasks, providers
+        case providerCooldownMinutes = "provider_cooldown_minutes"
         case preferOnDevice = "prefer_on_device"
         case onDeviceAgreement = "on_device_agreement"
         case onDeviceOverrides = "on_device_overrides"
