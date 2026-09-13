@@ -608,6 +608,9 @@ struct TimelinePreviewSheet: View {
                       systemImage: mode == .exact ? "checkmark.seal.fill" : "bolt.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(mode == .exact ? .green : .secondary)
+                if mode == .fast && store.builder.document.hasAnyEffect {
+                    LooksPreviewBadge()
+                }
                 Text(mode == .exact
                      ? "This file matches the final render, including framing, captions, transitions, music, and overlays."
                      : "Fast Preview skips framing, captions, text, transitions, and overlay templates.")

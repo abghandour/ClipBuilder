@@ -121,6 +121,8 @@ there where needed. Locations below are in `ClipBuilder/App/BuilderStore.swift`.
 | `set_clip_transitions` | clip, trans_in, trans_out | cut + canonical RenderEngine action/standard names |
 | `set_clip_center_stage` | clip, enabled | wide main Full Screen clips |
 | `set_clip_area_window` | clip, x, y, width, height | assigned area; bounded fractions, width ≥ 0.1, preserves proportions |
+| `set_track_effect` | track, effect (null clears; object: preset, params?, intensity? 0…1) | `updateTrackSettings`; catalog-validated, available looks only |
+| `set_clip_effect` | clip, effect (null inherits area; preset `none` opts out) | `updateClip`; refuses bumpers and unknown IDs |
 | `set_track_captions` / `set_track_muted` | track, captions / track, muted | `updateTrackSettings` |
 | `set_track_position` / `set_track_crop` | track, position / track, fraction (null clears) | Full Screen track defaults |
 | `set_render_settings` | settings {preset?, custom_width?, custom_height?, quality?, custom_crf?} | whitelisted patch through `setRenderSettings` |
@@ -225,6 +227,7 @@ All results have deterministic ordering, limits and pagination where needed.
 | `silences` | classified silence or thresholded gaps in available word timings; evidence and precision included |
 | `tags` | profile vocabulary plus supported synthetic tags |
 | `layouts` | snapshotted Screen Crop layouts and areas |
+| `effects` | id, name, group, params [{name,min,max,default}], available; pagination; `effect` also appears in layout areas and timeline/clip rows |
 | `templates` | name, kind (`template` / `lower_third`), duration; saved overlay snapshot plus built-in Lower Third |
 | `capabilities` | pass state per video, including completion with no data |
 

@@ -25,6 +25,15 @@ nonisolated struct AppError: Identifiable, Equatable, Sendable {
     }
 }
 
+/// A finished Builder render, shown in a player sheet right after
+/// "Render to Library" completes.
+nonisolated struct FinishedRender: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    let url: URL
+    let duration: Double
+    var title: String { url.deletingPathExtension().lastPathComponent }
+}
+
 /// One line of the app's unified log, shown in the status bar's drawer.
 nonisolated struct AppLogLine: Identifiable, Equatable, Sendable {
     let id: Int

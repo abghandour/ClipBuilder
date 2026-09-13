@@ -297,6 +297,14 @@ struct ClipInspector: View {
 
             }
 
+            if !clip.bumper {
+                InspectorSection("Look") {
+                    let inherited = model.document.trackSettings[safe: clip.track]?.effect
+                    EffectControls(effect: binding(\.effect),
+                                   inheritedLookName: EffectCatalog.preset(for: inherited?.preset ?? "none")?.name ?? "None")
+                }
+            }
+
             InspectorSection("Sound") {
                 InspectorRow("Volume") {
                     HStack(spacing: Theme.spaceS) {

@@ -35,6 +35,9 @@ struct BuilderWorkspacePreview: View {
                     Label("Fast Preview — approximate", systemImage: "bolt.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
+                    if model.document.hasAnyEffect {
+                        LooksPreviewBadge()
+                    }
                     Text("Use Render Preview for framing, captions, transitions, and overlays.")
                         .font(.caption)
                         .foregroundStyle(.secondary)

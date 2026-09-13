@@ -239,6 +239,9 @@ final class AppStore {
     /// progress toolbar.
     var isPlanningIntoBuilder = false
     var builderPlanResult: BuilderPlanResult?
+    /// The last "Render to Library" output, presented in a player as soon as
+    /// the render finishes; cleared when the sheet closes.
+    var finishedBuilderRender: FinishedRender?
     /// The live inline Wizard also supplies the window-wide status and log.
     var builderWizard: WizardSheetModel?
     var isScriptPreviewRunning = false
@@ -4217,14 +4220,18 @@ final class AppStore {
         let profile = activeProfile
         let projectID = activeProjectID
         let renderer = multitrackRenderer
+        let outputName = MultitrackRenderer.outputBaseName(project: activeProject?.name,
+                                                           timeline: openTimeline?.name)
         builderRenderTask = Task {
             do {
                 let result = try await renderer.render(document: document, scenes: scenes,
                                                        profile: profile, database: database,
                                                        centerStageCamera: WizardDefaults.fallbackFramingCamera,
                                                        projectID: projectID,
+                                                       outputName: outputName,
                                                        emit: logSink(\.builderLog))
                 appendLog(\.builderLog, ["Done: \(result.url.lastPathComponent) (\(result.duration.timecode))"])
+                finishedBuilderRender = FinishedRender(url: result.url, duration: result.duration)
             } catch is CancellationError {
                 appendLog(\.builderLog, ["Render stopped."])
             } catch {

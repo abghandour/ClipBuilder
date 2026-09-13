@@ -14,7 +14,7 @@ nonisolated struct BuilderCommandFailure: Error, LocalizedError {
 nonisolated extension BuilderCommand {
     /// Structural/value validation shared by JSON and direct Swift callers.
     /// Document-dependent bounds and eligibility are checked by the runner.
-    func validateExpansion() throws {
+    func validateExpansion(effectFilters: Set<String>? = nil) throws {
         func number(_ value: Double, _ range: ClosedRange<Double>) throws {
             guard value.isFinite, range.contains(value) else {
                 throw BuilderCommandFailure.bounds("Number must be finite and within \(range).")
@@ -71,6 +71,13 @@ nonisolated extension BuilderCommand {
             try choice(b, ["cut"] + RenderEngine.allTransitions)
         case .setClipSpeed(_, let speed): try number(speed, 0.5...2)
         case .setClipCaptions(_, let captions): try choice(captions, TimelineClip.captionChoices)
+        case .setTrackEffect(_, let effect), .setClipEffect(_, let effect):
+            if let effect {
+                try EffectCatalog.validate(effect)
+                guard EffectCatalog.isAvailable(effect.preset, filters: effectFilters ?? EffectCatalog.availableFilters) else {
+                    throw BuilderCommandFailure.invalid("Effect unavailable in ffmpeg: \(effect.preset).")
+                }
+            }
         case .setTrackCaptions(_, let captions): try choice(captions, TrackSettings.captionChoices)
         case .setClipAreaWindow(_, let x, let y, let width, let height):
             for value in [x, y, width, height] { try number(value, 0...1) }

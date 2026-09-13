@@ -361,3 +361,26 @@ extension BuilderRequestParserTests {
         }
     }
 }
+
+extension BuilderRequestParserTests {
+    @Test func localEffectPhrases() throws {
+        var context = context()
+        context.document.trackCount = 6
+        let selected = try #require(context.document.videoTrack.first).uid.uuidString
+        for (phrase, command) in [
+            ("make track II black and white", BuilderCommand.setTrackEffect(track: 1, effect: .init(preset: "bw"))),
+            ("make track 6 black and white", .setTrackEffect(track: 5, effect: .init(preset: "bw"))),
+            ("apply sepia to track 1", .setTrackEffect(track: 0, effect: .init(preset: "sepia"))),
+            ("apply Black & White to this clip", .setClipEffect(clip: selected, effect: .init(preset: "bw"))),
+            ("apply lut:kodak_t-max_400 to track III", .setTrackEffect(track: 2, effect: .init(preset: "lut:kodak_t-max_400"))),
+            ("remove the look from track IV", .setTrackEffect(track: 3, effect: nil)),
+            ("remove the look from this clip", .setClipEffect(clip: selected, effect: nil)),
+            ("apply vivid to area 2", .setTrackEffect(track: 1, effect: .init(preset: "vivid")))
+        ] {
+            #expect(try steps(phrase, context).map(\.command) == [command])
+        }
+        if case .script = BuilderRequestParser().parse("apply invented to this clip", context: context) {
+            Issue.record("Unknown preset must refuse")
+        }
+    }
+}

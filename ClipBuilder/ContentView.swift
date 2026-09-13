@@ -149,6 +149,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case images
     case overlays
     case effects
+    case looks
     case screenCrops
     case bumpers
     case wizard
@@ -169,7 +170,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     /// AI Lessons sits with the resources: like them it is profile-wide and
     /// syncs with the Drive home (up when a nickname is set, down always).
     static let resourceSections: [SidebarSection] = [
-        .music, .fonts, .images, .overlays, .effects, .screenCrops, .bumpers, .learned,
+        .music, .fonts, .images, .overlays, .effects, .looks, .screenCrops, .bumpers, .learned,
     ]
     static let visibleSections = projectSections + studioSections + resourceSections
 
@@ -186,7 +187,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .instagram: return "7"
         case .instagramReports: return "8"
         case .projects, .analyze, .curated, .builder, .library, .resources, .learned,
-             .music, .fonts, .images, .overlays, .effects, .screenCrops: return nil
+             .music, .fonts, .images, .overlays, .effects, .looks, .screenCrops: return nil
         }
     }
 
@@ -217,7 +218,8 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .fonts: return AssetKind.fonts.title
         case .images: return AssetKind.images.title
         case .overlays: return "Overlays"
-        case .effects: return "Effects"
+        case .effects: return "Transitions"
+        case .looks: return "Looks"
         case .bumpers: return "Bumpers"
         case .screenCrops: return "Screen Crop"
         }
@@ -241,7 +243,8 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .fonts: return AssetKind.fonts.systemImage
         case .images: return AssetKind.images.systemImage
         case .overlays: return "character.textbox"
-        case .effects: return "sparkles.tv"
+        case .effects: return "rectangle.on.rectangle"
+        case .looks: return "camera.filters"
         case .bumpers: return "film.stack"
         case .screenCrops: return "crop"
         }
@@ -264,6 +267,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .images: .images
         case .overlays: .overlays
         case .effects: .effects
+        case .looks: .looks
         case .bumpers: .bumpers
         case .screenCrops: .screenCrops
         }

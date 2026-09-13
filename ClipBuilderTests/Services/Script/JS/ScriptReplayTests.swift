@@ -118,3 +118,23 @@ struct ScriptReplayTests {
         #expect(bytes.disabledReason?.contains("4 MiB") == true)
     }
 }
+
+extension ScriptReplayTests {
+    @Test func effectsSurviveReplayAndStoredFieldChanges() async throws {
+        let live = ScriptFixtures.gapModel()
+        let clip = live.document.videoTrack[0].uid.uuidString
+        let session = BuilderScriptSession(live: live, library: ScriptFixtures.gapLibrary(), ownsHydration: false)
+        defer { session.discard() }
+        #expect(session.run([
+            .init(.setTrackEffect(track: 0, effect: .init(preset: "none", intensity: 0.5))),
+            .init(.setClipEffect(clip: clip, effect: .init(preset: "none")))
+        ]).completed)
+        session.freeze()
+        let result = await ScriptReplayExporter.verify(session.replay, name: "Looks")
+        let source = try #require(result.source, Comment(rawValue: result.reason ?? "No export"))
+        #expect(source.contains("set_track_effect") && source.contains("set_clip_effect"))
+        let candidate = try #require(session.frozenCandidate)
+        #expect(candidate.document.trackSettings[0].effect?.intensity == 0.5)
+        #expect(candidate.document.videoTrack[0].effect?.preset == "none")
+    }
+}

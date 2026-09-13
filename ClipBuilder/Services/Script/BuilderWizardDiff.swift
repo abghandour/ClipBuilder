@@ -50,7 +50,7 @@ enum BuilderWizardDiff {
     }
 
     private static func readable(_ field: String) -> String {
-        let names = ["fadeIn": "fade in", "fadeOut": "fade out", "transIn": "transition in",
+        let names = ["effect": "look", "effect.preset": "look preset", "effect.intensity": "look intensity", "fadeIn": "fade in", "fadeOut": "fade out", "transIn": "transition in",
                      "transOut": "transition out", "startTime": "start", "endTime": "end",
                      "centerStage": "tracking", "defaultPosition": "position", "defaultCropXFrac": "crop",
                      "customWidth": "custom width", "customHeight": "custom height", "customCRF": "custom CRF"]

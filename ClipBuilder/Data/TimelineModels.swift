@@ -43,6 +43,21 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
             && imageOverlays.isEmpty && overlayBlocks.isEmpty
     }
 
+    /// Effective looks on footage the export will draw. Explicit None and
+    /// zero intensity opt out; bumpers, empty clips, and clips on a track
+    /// with no area under the crop block at their start do not count.
+    nonisolated var hasAnyEffect: Bool {
+        videoTrack.contains { clip in
+            guard !clip.bumper, clip.duration > 0 else { return false }
+            if let block = cropBlock(at: clip.startTime),
+               !clip.coverAllAreas, clip.track >= block.layout.areaCount { return false }
+            let areaEffect = trackSettings.indices.contains(clip.track)
+                ? trackSettings[clip.track].effect : nil
+            guard let effect = clip.effect ?? areaEffect else { return false }
+            return effect.preset != "none" && effect.intensity > 0
+        }
+    }
+
     enum CodingKeys: String, CodingKey {
         case renderSettings = "render_settings"
         case pacing
@@ -593,6 +608,28 @@ nonisolated struct OverlayBlockItem: Codable, Sendable, Equatable, Identifiable 
     }
 }
 
+/// Nil on a clip inherits the track look; preset "none" explicitly opts out.
+nonisolated struct EffectSpec: Codable, Sendable, Equatable {
+    var preset: String
+    var params: [String: Double] = [:]
+    var intensity: Double = 1
+
+    enum CodingKeys: String, CodingKey { case preset, params, intensity }
+
+    init(preset: String = "none", params: [String: Double] = [:], intensity: Double = 1) {
+        self.preset = preset
+        self.params = params
+        self.intensity = intensity
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        preset = try c.decodeIfPresent(String.self, forKey: .preset) ?? "none"
+        params = try c.decodeIfPresent([String: Double].self, forKey: .params) ?? [:]
+        intensity = try c.decodeIfPresent(Double.self, forKey: .intensity) ?? 1
+    }
+}
+
 /// One clip on a video track. Identity: a scene id when untrimmed, or a raw
 /// video_file/start/end triple — the same dual form the web serializer emits
 /// (a trimmed scene clip loses its id so the Python side renders the trim).
@@ -638,6 +675,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     var position: String?         // "top" | "center" | "bottom" | nil (layer default)
     var transIn: String?
     var transOut: String?
+    var effect: EffectSpec?
     var cropXFrac: Double?
     var freeCrops: [FreeCrop]?
     /// A Screen Crop reference ("Layout/Area"): only that area of the 9:16
@@ -747,6 +785,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case stackOrder = "stack_order"
         case transIn = "trans_in"
         case transOut = "trans_out"
+        case effect
         case cropXFrac = "crop_x_frac"
         case freeCrops = "free_crops"
         case screenCrop = "screen_crop"
@@ -785,6 +824,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         position = try container.decodeIfPresent(String.self, forKey: .position)
         transIn = try container.decodeIfPresent(String.self, forKey: .transIn)
         transOut = try container.decodeIfPresent(String.self, forKey: .transOut)
+        effect = try container.decodeIfPresent(EffectSpec.self, forKey: .effect)
         cropXFrac = try container.decodeIfPresent(Double.self, forKey: .cropXFrac)
         freeCrops = try container.decodeIfPresent([FreeCrop].self, forKey: .freeCrops)
         screenCrop = try container.decodeIfPresent(String.self, forKey: .screenCrop)
@@ -843,6 +883,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         try encodeOrNull(position, in: &container, forKey: .position)
         try encodeOrNull(transIn, in: &container, forKey: .transIn)
         try encodeOrNull(transOut, in: &container, forKey: .transOut)
+        try container.encodeIfPresent(effect, forKey: .effect)
         try encodeOrNull(cropXFrac, in: &container, forKey: .cropXFrac)
         if let freeCrops, !freeCrops.isEmpty {
             try container.encode(freeCrops, forKey: .freeCrops)
@@ -881,7 +922,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.stackOrder == rhs.stackOrder && lhs.volume == rhs.volume && lhs.muted == rhs.muted
             && lhs.position == rhs.position && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
             && lhs.centerStage == rhs.centerStage && lhs.speed == rhs.speed
-            && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
+            && lhs.effect == rhs.effect && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
             && lhs.screenCrop == rhs.screenCrop && lhs.areaWindow == rhs.areaWindow
     }
 
@@ -903,22 +944,24 @@ nonisolated struct TrackSettings: Codable, Sendable, Equatable {
     var label: String?
     var defaultPosition: String = "top"     // wide-clip slot when the clip has no override
     var captions: String = "none"           // none | top | middle | bottom
+    var effect: EffectSpec?
     var defaultCropXFrac: Double?
 
     static let captionChoices = ["none", "top", "middle", "bottom"]
 
     enum CodingKeys: String, CodingKey {
-        case muted, captions, label
+        case muted, captions, label, effect
         case defaultPosition = "default_position"
         case defaultCropXFrac = "default_crop_x_frac"
     }
 
     init(muted: Bool = false, label: String? = nil, defaultPosition: String = "top",
-         captions: String = "none", defaultCropXFrac: Double? = nil) {
+         captions: String = "none", defaultCropXFrac: Double? = nil, effect: EffectSpec? = nil) {
         self.muted = muted
         self.label = label
         self.defaultPosition = defaultPosition
         self.captions = captions
+        self.effect = effect
         self.defaultCropXFrac = defaultCropXFrac
     }
 
@@ -935,6 +978,7 @@ nonisolated struct TrackSettings: Codable, Sendable, Equatable {
         } else {
             captions = "none"
         }
+        effect = try container.decodeIfPresent(EffectSpec.self, forKey: .effect)
         defaultCropXFrac = try container.decodeIfPresent(Double.self, forKey: .defaultCropXFrac)
     }
 
@@ -944,6 +988,7 @@ nonisolated struct TrackSettings: Codable, Sendable, Equatable {
         try encodeOrNull(label, in: &container, forKey: .label)
         try container.encode(defaultPosition, forKey: .defaultPosition)
         try container.encode(captions, forKey: .captions)
+        try container.encodeIfPresent(effect, forKey: .effect)
         try encodeOrNull(defaultCropXFrac, in: &container, forKey: .defaultCropXFrac)
     }
 }

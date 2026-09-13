@@ -425,3 +425,146 @@ struct MultitrackRendererPlanningTests {
         )
     }
 }
+
+extension MultitrackRendererPlanningTests {
+    @Test("every catalog builder matches its v1 expression", arguments: EffectCatalog.presets)
+    func effectExpressions(_ preset: EffectCatalog.Preset) throws {
+        let expected: [String: String] = [
+            "none": "", "bw": "hue=s=0", "noir": "hue=s=0,eq=contrast=1.35",
+            "sepia": "colorchannelmixer=.393:.769:.189:0:.349:.686:.168:0:.272:.534:.131",
+            "faded": "curves=preset=lighter,eq=contrast=0.85:brightness=0.04",
+            "vivid": "eq=saturation=1.45:contrast=1.08",
+            "warm": "colortemperature=temperature=4500", "cool": "colortemperature=temperature=8500",
+            "vintage": "curves=preset=vintage,vignette=angle=PI/5,noise=alls=10:allf=t+u",
+            "invert": "negate", "duotone": "hue=s=0,lutrgb=r='0+val*1':g='0+val*1':b='0+val*1'",
+            "brightness": "eq=brightness=0", "contrast": "eq=contrast=1", "saturation": "eq=saturation=1",
+            "gamma": "eq=gamma=1", "temperature": "colortemperature=temperature=6500:mix=1",
+            "vignette": "vignette=angle=PI/2*0.5", "sharpen": "unsharp=5:5:1", "blur": "gblur=sigma=5",
+            "pixelate": EffectCatalog.supportsPixelize ? "pixelize=w=12:h=12"
+                : "scale=iw/12:ih/12,scale=iw*12:ih*12:flags=neighbor",
+            "posterize": "lutrgb=r='trunc(val/64)*64':g='trunc(val/64)*64':b='trunc(val/64)*64'",
+            "grain": "noise=alls=10:allf=t+u", "rgbsplit": "rgbashift=rh=4:bh=-4",
+            "vhs": "chromashift=cbh=4:crh=-4,noise=alls=14:allf=t+u,huesaturation=saturation=-0.2",
+            "edges": "edgedetect=mode=colormix:high=0.4:low=0.2",
+            "mirror": "crop=iw/2:ih:0:0,split[l][r];[r]hflip[rf];[l][rf]hstack"
+        ]
+        let spec = EffectSpec(preset: preset.id)
+        let actual = preset.builder(spec, 1080, 1920)
+        if preset.id.hasPrefix("lut:") {
+            let url = try #require(EffectCatalog.lutURL(named: String(preset.id.dropFirst(4))))
+            #expect(actual == "lut3d=file='\(EffectCatalog.escapeFilterPath(url.path))'")
+        } else {
+            #expect(actual == expected[preset.id])
+        }
+    }
+
+    @Test func effectWrappingAndPlacementPads() {
+        let spec = EffectSpec(preset: "bw", intensity: 0.4)
+        #expect(EffectCatalog.filter(for: spec, width: 100, height: 100)
+            == "split[a][b];[b]hue=s=0[e];[a][e]blend=all_mode=normal:all_opacity=0.4")
+        #expect(EffectCatalog.filter(for: .init(preset: "bw", intensity: 0), width: 100, height: 100).isEmpty)
+        var filters = ["[2:v]scale=100:100[v0]", "[3:v]scale=100:100[v1_0]"]
+        MultitrackRenderer.insertEffect(spec, label: "v0", width: 100, height: 100, filters: &filters)
+        MultitrackRenderer.insertEffect(.init(preset: "mirror", intensity: 0.5), label: "v1_0",
+                                       width: 100, height: 100, filters: &filters)
+        #expect(filters[0].hasSuffix("[pre_v0]"))
+        #expect(filters[2].contains("[fx_v0_a]") && filters[2].hasSuffix("[v0]"))
+        #expect(filters[3].contains("[fx_v1_0_l]") && !filters[3].contains("[l]"))
+        var plain = ["[2:v]scale=100:100[v0]"]
+        MultitrackRenderer.insertEffect(.init(preset: "bw"), label: "v0", width: 100, height: 100, filters: &plain)
+        #expect(plain == ["[2:v]scale=100:100,hue=s=0[v0]"])
+    }
+
+    @Test func effectParametersFallbackAndAvailability() throws {
+        let duo = EffectSpec(preset: "duotone", params: ["shadow_r": 0.2, "highlight_r": 0.8])
+        let filter = EffectCatalog.filter(for: duo, width: 100, height: 100)
+        #expect(filter.contains("r='51+val*0.6'"))
+        #expect(EffectCatalog.pixelate(block: 10, supported: false)
+            == "scale=iw/10:ih/10,scale=iw*10:ih*10:flags=neighbor")
+        #expect(!EffectCatalog.isAvailable("warm", filters: ["hue"]))
+        #expect(!EffectCatalog.isAvailable("edges", filters: []))
+        #expect(EffectCatalog.isAvailable("pixelate", filters: ["scale"]))
+        // An empty probe (ffmpeg missing) is never cached: the next call retries.
+        EffectCatalog.resetAvailability()
+        #expect(EffectCatalog.parseFilters("").isEmpty)
+        // ffmpeg 8 prints two flag characters, older builds three; header lines have no arrow.
+        #expect(EffectCatalog.parseFilters(" T.. hue V->V Adjust hue\n ... pixelize V->V Pixelate\n Filters:") == ["hue", "pixelize"])
+        #expect(EffectCatalog.parseFilters(" TS gblur             V->V       Apply Gaussian Blur filter.\n T. hue               V->V       Adjust hue.\n  T.. = Timeline support\n") == ["gblur", "hue"])
+        for spec in [EffectSpec(preset: "unknown"), .init(preset: "bw", params: ["sigma": 1]),
+                     .init(preset: "blur", params: ["sigma": 21]), .init(preset: "blur", params: ["sigma": .nan]),
+                     .init(preset: "bw", intensity: -0.1), .init(preset: "bw", intensity: 1.01),
+                     .init(preset: "bw", intensity: .infinity)] {
+            #expect(throws: (any Error).self) { try EffectCatalog.validate(spec) }
+        }
+        try EffectCatalog.validate(.init(preset: "blur", params: ["sigma": 20], intensity: 0))
+        #expect(EffectCatalog.lutURL(named: "../outside") == nil)
+        #expect(EffectCatalog.escapeFilterPath("/tmp/look:one.cube") == #"/tmp/look\:one.cube"#)
+        #expect(EffectCatalog.escapeFilterPath("/tmp/it's.cube") == #"/tmp/it'\\\''s.cube"#)
+        #expect(EffectCatalog.escapeFilterPath(#"/tmp/a\b.cube"#) == #"/tmp/a\\b.cube"#)
+    }
+
+    @Test func effectResolutionAndLegacyCodable() throws {
+        var clip = Fixtures.timelineClip(sceneID: 1)
+        var doc = Fixtures.timelineDocument(clips: [clip])
+        doc.trackSettings[0].effect = .init(preset: "bw")
+        let inherited = try #require(MultitrackRenderer.resolveClips(document: doc, scenes: [Fixtures.scene()]).first)
+        #expect(inherited.effectiveEffect?.preset == "bw")
+        var ungraded = inherited
+        ungraded.effectiveEffect = nil
+        #expect(try RenderSegmentCache.key(inherited) != RenderSegmentCache.key(ungraded))
+        let placements = MultitrackRenderer.placements(for: .init(start: 0, end: 1, clips: [inherited]))
+        #expect(placements.first?.effectiveEffect?.preset == "bw")
+        clip.effect = .init(preset: "none")
+        doc.videoTrack = [clip]
+        #expect(MultitrackRenderer.resolveClips(document: doc, scenes: [Fixtures.scene()]).first?.effectiveEffect == nil)
+        clip.effect = .init(preset: "sepia")
+        doc.videoTrack = [clip]
+        #expect(MultitrackRenderer.resolveClips(document: doc, scenes: [Fixtures.scene()]).first?.effectiveEffect?.preset == "sepia")
+        doc.videoTrack[0].bumper = true
+        #expect(MultitrackRenderer.resolveClips(document: doc, scenes: [Fixtures.scene()]).first?.effectiveEffect == nil)
+        #expect(try JSONDecoder().decode(EffectSpec.self, from: Data("{}".utf8)) == EffectSpec())
+        #expect(try JSONDecoder().decode(TrackSettings.self, from: Data("{}".utf8)).effect == nil)
+        #expect(try JSONDecoder().decode(TimelineClip.self, from: Data("{}".utf8)).effect == nil)
+        let decoded = try JSONDecoder().decode(TimelineDocument.self, from: JSONEncoder().encode(doc))
+        #expect(decoded.trackSettings[0].effect == doc.trackSettings[0].effect)
+        #expect(decoded.videoTrack[0].effect == doc.videoTrack[0].effect)
+        var changed = clip
+        changed.effect = nil
+        #expect(changed != clip)
+        #expect(RenderSegmentCache.rendererVersion == "multitrack-segment-v4")
+    }
+}
+
+extension MultitrackRendererPlanningTests {
+    @Test("Builder output names carry project, non-default timeline, and the date")
+    func builderOutputNames() throws {
+        let date = try #require(Calendar(identifier: .gregorian).date(from: DateComponents(
+            timeZone: TimeZone(identifier: "UTC"), year: 2026, month: 9, day: 12, hour: 12)))
+        #expect(MultitrackRenderer.outputBaseName(project: "Poatan", timeline: "Fight Recap", date: date)
+            == "Poatan - Fight Recap - 09-12-26")
+        // The default timeline name and its duplicates are left out.
+        for name in ["Untitled Timeline", "Untitled Timeline Copy", "Untitled Timeline Copy 2", "untitled timeline 3", "", "  "] {
+            #expect(MultitrackRenderer.outputBaseName(project: "Poatan", timeline: name, date: date) == "Poatan - 09-12-26", Comment(rawValue: name))
+        }
+        #expect(!MultitrackRenderer.isDefaultTimelineName("Untitled Timeline Fight"))
+        #expect(MultitrackRenderer.outputBaseName(project: nil, timeline: nil, date: date) == "09-12-26")
+        // Path separators and colons never reach the filesystem.
+        #expect(MultitrackRenderer.outputBaseName(project: "A/B:C", timeline: "x\\y", date: date) == "A-B-C - x-y - 09-12-26")
+        #expect(MultitrackRenderer.outputBaseName(project: "...", timeline: nil, date: date) == "09-12-26"
+            || !MultitrackRenderer.outputBaseName(project: "...", timeline: nil, date: date).hasPrefix("."))
+    }
+
+    @Test("Output files gain a counter when the name is taken")
+    func uniqueOutputFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = MultitrackRenderer.uniqueFile(named: "Poatan - 09-12-26", in: root)
+        #expect(first.lastPathComponent == "Poatan - 09-12-26.mp4")
+        try Data().write(to: first)
+        let second = MultitrackRenderer.uniqueFile(named: "Poatan - 09-12-26", in: root)
+        #expect(second.lastPathComponent == "Poatan - 09-12-26 2.mp4")
+        try Data().write(to: second)
+        #expect(MultitrackRenderer.uniqueFile(named: "Poatan - 09-12-26", in: root).lastPathComponent == "Poatan - 09-12-26 3.mp4")
+    }
+}

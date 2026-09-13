@@ -60,6 +60,8 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     case setClipTransitions(clip: String, transIn: String, transOut: String)
     case setClipCenterStage(clip: String, enabled: Bool)
     case setClipAreaWindow(clip: String, x: Double, y: Double, width: Double, height: Double)
+    case setTrackEffect(track: Int, effect: EffectSpec?)
+    case setClipEffect(clip: String, effect: EffectSpec?)
     case setTrackCaptions(track: Int, captions: String)
     case setTrackMuted(track: Int, muted: Bool)
     case setTrackPosition(track: Int, position: String)
@@ -332,6 +334,31 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
                 y: try c.decode(Double.self, forKey: ScriptKey("y")),
                 width: try c.decode(Double.self, forKey: ScriptKey("width")),
                 height: try c.decode(Double.self, forKey: ScriptKey("height")))
+        case "set_track_effect", "set_clip_effect":
+            let target = op == "set_track_effect" ? "track" : "clip"
+            try c.only(["op", target, "effect"])
+            guard c.contains(ScriptKey("effect")) else {
+                throw BuilderCommandFailure.invalid("Missing effect; use null to clear the look.")
+            }
+            var effect: EffectSpec?
+            if try !c.decodeNil(forKey: ScriptKey("effect")) {
+                let nested = try c.nestedContainer(keyedBy: ScriptKey.self, forKey: ScriptKey("effect"))
+                try nested.only(["preset", "params", "intensity"])
+                _ = try nested.decode(String.self, forKey: ScriptKey("preset"))
+                // Optional fields accept omission, not null, as in the schema.
+                if nested.contains(ScriptKey("params")) {
+                    _ = try nested.decode([String: Double].self, forKey: ScriptKey("params"))
+                }
+                if nested.contains(ScriptKey("intensity")) {
+                    _ = try nested.decode(Double.self, forKey: ScriptKey("intensity"))
+                }
+                effect = try c.decode(EffectSpec.self, forKey: ScriptKey("effect"))
+            }
+            if op == "set_track_effect" {
+                self = .setTrackEffect(track: try c.decode(Int.self, forKey: ScriptKey("track")), effect: effect)
+            } else {
+                self = .setClipEffect(clip: try c.decode(String.self, forKey: ScriptKey("clip")), effect: effect)
+            }
         case "set_track_captions":
             try c.only(["op", "track", "captions"])
             self = .setTrackCaptions(track: try c.decode(Int.self, forKey: ScriptKey("track")),
@@ -478,6 +505,14 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             try c.encode(y, forKey: ScriptKey("y"))
             try c.encode(width, forKey: ScriptKey("width"))
             try c.encode(height, forKey: ScriptKey("height"))
+        case let .setTrackEffect(track, effect):
+            try c.encode("set_track_effect", forKey: ScriptKey("op"))
+            try c.encode(track, forKey: ScriptKey("track"))
+            try c.encode(effect, forKey: ScriptKey("effect"))
+        case let .setClipEffect(clip, effect):
+            try c.encode("set_clip_effect", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(effect, forKey: ScriptKey("effect"))
         case let .setTrackCaptions(track, captions):
             try c.encode("set_track_captions", forKey: ScriptKey("op"))
             try c.encode(track, forKey: ScriptKey("track"))

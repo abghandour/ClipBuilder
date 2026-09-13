@@ -326,6 +326,7 @@ struct TrackSettingsPopover: View {
             Toggle("Muted", isOn: Binding(
                 get: { settings.muted },
                 set: { value in model.updateTrackSettings(track) { $0.muted = value } }))
+                .help("Mute footage in this area")
             if hasFullScreen {
                 Picker("Wide position", selection: Binding(
                     get: { settings.defaultPosition },
@@ -334,6 +335,7 @@ struct TrackSettingsPopover: View {
                     Text("Center").tag("center")
                     Text("Bottom").tag("bottom")
                 }
+                .help("Place wide footage at the top, center, or bottom of the full screen")
             }
             Picker("Captions", selection: Binding(
                 get: { settings.captions },
@@ -343,6 +345,10 @@ struct TrackSettingsPopover: View {
                 Text("Middle").tag("middle")
                 Text("Bottom").tag("bottom")
             }
+            .help("Place captions for footage in this area")
+            EffectControls(effect: Binding(
+                get: { model.document.trackSettings[safe: track]?.effect },
+                set: { value in model.updateTrackSettings(track) { $0.effect = value } }))
             if hasFullScreen {
                 HStack {
                     Toggle("Default crop", isOn: Binding(
@@ -350,12 +356,15 @@ struct TrackSettingsPopover: View {
                         set: { value in
                             model.updateTrackSettings(track) { $0.defaultCropXFrac = value ? 0.5 : nil }
                         }))
+                        .help("Crop wide footage to fill the full screen by default")
                     if let crop = settings.defaultCropXFrac {
                         Slider(value: Binding(
                             get: { crop },
                             set: { value in model.updateTrackSettings(track) { $0.defaultCropXFrac = value } }),
                             in: 0...1)
                             .frame(width: 120)
+                            .accessibilityLabel("Default horizontal crop")
+                            .help("Horizontal crop position: 0…1")
                     }
                 }
             }
@@ -1157,6 +1166,13 @@ struct CropBlockView: View {
         let isSelected = model.selection == .crop(block.uid)
         let areas = block.layout.orderedAreas
         let missing = block.layout.isMissing
+        let looks: [Int: String] = Dictionary(uniqueKeysWithValues:
+            (0..<block.layout.areaCount).compactMap { index -> (Int, String)? in
+                guard let effect = model.document.trackSettings[safe: index]?.effect,
+                      effect.preset != "none", effect.intensity > 0 else { return nil }
+                return (index, EffectCatalog.preset(for: effect.preset)?.name ?? effect.preset)
+            })
+        let lookSummary = looks.isEmpty ? "" : " · \(looks.count) \(looks.count == 1 ? "look" : "looks")"
         // The last block reads as "to the end": it fills the visible row.
         let naturalWidth = CGFloat(block.duration) * pps
         let room = contentWidth - CGFloat(block.startTime) * pps
@@ -1166,15 +1182,15 @@ struct CropBlockView: View {
 
         HStack(spacing: 6) {
             CropLayoutDiagram(areas: areas, highlightedIndex: model.highlightedTrack,
-                              fullScreen: block.layout.isFullScreen)
+                              fullScreen: block.layout.isFullScreen, looks: looks)
                 .frame(width: (height - 14) * 9 / 16, height: height - 14)
             VStack(alignment: .leading, spacing: 1) {
                 Text(block.layout.displayName)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
-                Text(missing ? "Layout missing — shown full screen"
+                Text((missing ? "Layout missing — shown full screen"
                      : block.layout.isFullScreen ? "1 area"
-                     : areas.map(\.name).joined(separator: " · "))
+                     : areas.map(\.name).joined(separator: " · ")) + lookSummary)
                     .font(.caption2)
                     .lineLimit(1)
                     .opacity(0.8)
@@ -1227,10 +1243,11 @@ struct CropBlockView: View {
             Button("Delete", role: .destructive) { model.removeCropBlock(block.uid) }
                 .disabled(block.layout.isFullScreen)
         }
-        .help("\(block.layout.displayName) from \(block.startTime.timecode) to \(block.endTime.timecode)")
+        .help("\(block.layout.displayName) from \(block.startTime.timecode) to \(block.endTime.timecode)"
+              + looks.keys.sorted().map { " · Area \($0 + 1): \(looks[$0] ?? "")" }.joined())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Crop \(block.layout.displayName)")
-        .accessibilityValue("Starts at \(block.startTime.timecode), \(String(format: "%.1f", block.duration)) seconds, \(block.layout.areaCount) areas")
+        .accessibilityValue("Starts at \(block.startTime.timecode), \(String(format: "%.1f", block.duration)) seconds, \(block.layout.areaCount) areas" + lookSummary)
         .accessibilityHint("Drag the trailing edge to change its length. Use Select to change its layout.")
         .accessibilityAction(named: "Select") { model.selectCropBlock(block.uid) }
     }
@@ -1242,6 +1259,7 @@ struct CropLayoutDiagram: View {
     let areas: [ScreenCropArea]
     let highlightedIndex: Int?
     var fullScreen = false
+    var looks: [Int: String] = [:]
 
     var body: some View {
         ZStack {
@@ -1251,12 +1269,19 @@ struct CropLayoutDiagram: View {
                 RoundedRectangle(cornerRadius: 2)
                     .fill(highlightedIndex == 0 ? Color.green.opacity(0.85) : Color.white.opacity(0.25))
                     .padding(1)
+                if looks[0] != nil {
+                    Circle().fill(.orange).frame(width: 4, height: 4)
+                }
             } else {
                 ForEach(Array(areas.enumerated()), id: \.offset) { index, area in
                     ScreenCropPolygon(points: area.points)
                         .fill(index == highlightedIndex ? Color.green.opacity(0.85) : Color.white.opacity(0.25))
                     ScreenCropPolygon(points: area.points)
                         .stroke(.white.opacity(0.7), lineWidth: 0.5)
+                    if looks[index] != nil {
+                        ScreenCropPolygon(points: area.points)
+                            .stroke(.orange, style: StrokeStyle(lineWidth: 2, dash: [2, 2]))
+                    }
                 }
             }
         }

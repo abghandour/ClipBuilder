@@ -258,6 +258,15 @@ extension ScriptRunner {
             }
             let window = FreeCropRect(xFrac: x, yFrac: y, wFrac: width, hFrac: height)
             if item.areaWindow != window { model.updateClip(item.uid) { $0.areaWindow = window } }
+        case .setTrackEffect(let index, let effect):
+            try track(index)
+            if model.document.trackSettings[index].effect != effect {
+                model.updateTrackSettings(index) { $0.effect = effect }
+            }
+        case .setClipEffect(let reference, let effect):
+            let item = try clip(reference)
+            guard !item.bumper else { throw BuilderCommandFailure.invalid("Bumpers do not support looks.") }
+            if item.effect != effect { model.updateClip(item.uid) { $0.effect = effect } }
         case .setTrackCaptions(let index, let captions):
             try track(index)
             if model.document.trackSettings[index].captions != captions {

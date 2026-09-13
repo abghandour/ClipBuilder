@@ -69,6 +69,26 @@ nonisolated private final class ProcessRunState: @unchecked Sendable {
 /// Runs external tools (ffmpeg, ffprobe, claude, gemini, codex, qwen, kimi) off the main
 /// actor, with full stdout/stderr capture and an optional timeout.
 nonisolated enum ProcessRunner {
+    /// Small read-only capability probe for synchronous catalog consumers.
+    /// Drain stdout before waiting (the filter list can exceed pipe capacity).
+    static func filterList() -> String {
+        guard let executable = locate("ffmpeg") else { return "" }
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = ["-hide_banner", "-filters"]
+        process.environment = subprocessEnvironment(overrides: nil)
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return "" }
+        let timeout = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10, execute: timeout)
+        defer { timeout.cancel() }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return process.terminationStatus == 0 ? String(decoding: data, as: UTF8.self) : ""
+    }
+
     enum Capture: Sendable {
         case full
         /// Stdout remains complete; only diagnostics are truncated.
@@ -298,6 +318,8 @@ nonisolated enum ProcessRunner {
         locateCache = [:]
         locateMisses = [:]
         locateLock.unlock()
+        // A newly installed ffmpeg may offer different filters.
+        EffectCatalog.resetAvailability()
     }
 
     private static func locateUncached(_ tool: String) -> URL? {

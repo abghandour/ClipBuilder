@@ -87,6 +87,12 @@ struct PreviewPane: View {
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .aspectRatio(store.builder.document.renderSettings.aspectRatio, contentMode: .fit)
+        .overlay(alignment: .topLeading) {
+            if model.document.hasAnyEffect {
+                LooksPreviewBadge()
+                    .padding(Theme.spaceS)
+            }
+        }
     }
 
     private func sampledTime(for clip: TimelineClip, at time: Double) -> Double {

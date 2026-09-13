@@ -5,6 +5,8 @@ import Foundation
 @MainActor
 struct BuilderRequestParser {
     static let supportedRequests = [
+        "make track II black and white", "apply <preset name or id> to track N / this clip",
+        "remove the look from track N / this clip",
         "remove (all) clips/scenes with <person>",
         "remove clips tagged <tag> [on track N]",
         "find <person> <tag> / find scenes of <person> <tag>",
@@ -36,7 +38,8 @@ struct BuilderRequestParser {
                 "set track 1 captions to bottom", "mute track 1",
                 "remove clip 1 on track 1", "remove the selected clip", "duplicate this clip",
                 "split this clip at 2 s", "trim this clip to 2 s", "mute this clip",
-                "unmute this clip", "cover all areas", "remove clips tagged \(tag) on track 1"]
+                "unmute this clip", "cover all areas", "remove clips tagged \(tag) on track 1",
+                "make track 1 black and white", "apply sepia to this clip", "remove the look from track 1"]
     }
 
     /// "this clip", "the selected scene", "the current clip": the timeline selection.
@@ -47,6 +50,22 @@ struct BuilderRequestParser {
         let text = Self.normalized(request)
         guard !text.isEmpty else { return .unrecognised(["Enter a request."]) }
         do {
+            if let g = match(#"make (?:track|area) (i|ii|iii|iv|v|vi|[1-6]) black and white"#, text) {
+                return .script([.init(.setTrackEffect(track: try track(g[0], context), effect: EffectSpec(preset: "bw")))])
+            }
+            if let g = match(#"remove the look from (?:(?:track|area) (i|ii|iii|iv|v|vi|[1-6])|(this clip))"#, text) {
+                if !g[0].isEmpty { return .script([.init(.setTrackEffect(track: try track(g[0], context), effect: nil))]) }
+                return .script([.init(.setClipEffect(clip: try selection(context).uid.uuidString, effect: nil))])
+            }
+            if let g = match(#"apply (.+) to (?:(?:track|area) (i|ii|iii|iv|v|vi|[1-6])|(this clip))"#, text) {
+                guard let preset = EffectCatalog.presets.first(where: {
+                    Self.normalized($0.id) == g[0] || Self.normalized($0.name) == g[0]
+                        || ($0.id == "bw" && g[0] == "black and white")
+                }) else { throw BuilderCommandFailure.invalid("Unknown look: \(g[0]).") }
+                let effect = EffectSpec(preset: preset.id)
+                if !g[1].isEmpty { return .script([.init(.setTrackEffect(track: try track(g[1], context), effect: effect))]) }
+                return .script([.init(.setClipEffect(clip: try selection(context).uid.uuidString, effect: effect))])
+            }
             if let g = match(#"remove (?:all )?(?:clips|scenes) with (.+)"#, text) {
                 var filter = ClipFilter()
                 filter.people = [try person(g[0], context)]

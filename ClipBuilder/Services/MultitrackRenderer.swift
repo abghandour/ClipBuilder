@@ -68,6 +68,7 @@ actor MultitrackRenderer {
         /// path the curated preview and workbench show, so WYSIWYG holds.
         var cameraPath: [CameraPathKeyframe]?
         var staticAreaFilter: String?
+        var effectiveEffect: EffectSpec? = nil
         /// Original input and framing parameters, before temporary paths replace them.
         var framingIdentity: String?
         var originalSourcePath: String?
@@ -124,6 +125,7 @@ actor MultitrackRenderer {
         var screenCrop: String?
         var speed: Double = 1
         var staticAreaFilter: String?
+        var effectiveEffect: EffectSpec? = nil
     }
 
     private static var width: Int { RenderEngine.outputWidth }
@@ -152,18 +154,59 @@ actor MultitrackRenderer {
                 profile: BrandProfile, database: Database,
                 centerStageCamera: String = "balanced",
                 projectID: Int64? = nil,
+                outputName: String? = nil,
                 preview: Bool = false,
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         try await RenderContext.$settings.withValue(document.renderSettings) {
             try await renderConfigured(document: document, scenes: scenes, profile: profile,
                                        database: database, centerStageCamera: centerStageCamera,
-                                       projectID: projectID, preview: preview, emit: emit)
+                                       projectID: projectID, outputName: outputName,
+                                       preview: preview, emit: emit)
         }
+    }
+
+    /// The base name of a Builder render: project, timeline (unless it is
+    /// still the default name), and today's date as mm-dd-yy. The renderer
+    /// appends " 2", " 3", … when the name is already taken that day.
+    nonisolated static func outputBaseName(project: String?, timeline: String?, date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MM-dd-yy"
+        var parts: [String] = []
+        if let project = project?.trimmingCharacters(in: .whitespacesAndNewlines), !project.isEmpty {
+            parts.append(project)
+        }
+        if let timeline = timeline?.trimmingCharacters(in: .whitespacesAndNewlines), !timeline.isEmpty,
+           !Self.isDefaultTimelineName(timeline) {
+            parts.append(timeline)
+        }
+        parts.append(formatter.string(from: date))
+        let joined = parts.joined(separator: " - ")
+        // Keep the name filesystem-safe: no path separators or colons, no
+        // leading dot, and a sane length.
+        let unsafe = CharacterSet(charactersIn: "/\\:\u{0}").union(.newlines).union(.controlCharacters)
+        let cleaned = joined.unicodeScalars.map { unsafe.contains($0) ? "-" : Character($0) }
+        var name = String(cleaned).trimmingCharacters(in: .whitespaces)
+        while name.hasPrefix(".") { name.removeFirst() }
+        return name.isEmpty ? formatter.string(from: date) : String(name.prefix(120))
+    }
+
+    /// "Untitled Timeline", its duplicates ("Untitled Timeline Copy", "… Copy 2")
+    /// and an empty name all count as the default and are left out of the file name.
+    nonisolated static func isDefaultTimelineName(_ name: String) -> Bool {
+        let lowered = name.lowercased().trimmingCharacters(in: .whitespaces)
+        guard lowered.hasPrefix("untitled timeline") else { return lowered.isEmpty }
+        let rest = lowered.dropFirst("untitled timeline".count).trimmingCharacters(in: .whitespaces)
+        if rest.isEmpty { return true }
+        // "copy", "copy 2", "2"
+        let stripped = rest.hasPrefix("copy") ? rest.dropFirst(4).trimmingCharacters(in: .whitespaces) : rest
+        return stripped.isEmpty || Int(stripped) != nil
     }
 
     private func renderConfigured(document: TimelineDocument, scenes: [SceneRecord],
                                   profile: BrandProfile, database: Database,
-                                  centerStageCamera: String, projectID: Int64?, preview: Bool,
+                                  centerStageCamera: String, projectID: Int64?,
+                                  outputName: String? = nil, preview: Bool,
                                   emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         // Overlay blocks render as their flattened text/image items.
         let document = Self.removingMissingEdgeBumpers(document.expandingOverlayBlocks(), emit: emit)
@@ -274,7 +317,7 @@ actor MultitrackRenderer {
         let outputURL = preview
             ? FileManager.default.temporaryDirectory
                 .appendingPathComponent("ExactPreview-\(UUID().uuidString).mp4")
-            : try Self.outputFile(profile: profile, totalDuration: totalDuration)
+            : try Self.outputFile(profile: profile, totalDuration: totalDuration, baseName: outputName)
         let scratch = try await render.makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
 
@@ -667,6 +710,8 @@ actor MultitrackRenderer {
             let trackSettings = settings[safe: track] ?? TrackSettings()
             let effectivePosition = clip.position ?? trackSettings.defaultPosition
             let effectiveCrop = clip.bumper ? nil : clip.cropXFrac ?? trackSettings.defaultCropXFrac
+            let effect = clip.effect ?? trackSettings.effect
+            let effectiveEffect = clip.bumper || effect?.preset == "none" ? nil : effect
             let muted = clip.muted || trackSettings.muted
             let captionsResolved = clip.captions == "inherit" ? trackSettings.captions : clip.captions
 
@@ -698,7 +743,7 @@ actor MultitrackRenderer {
                                          areaWindow: clip.areaWindow,
                                          captionsPosition: captionsResolved == "none" ? nil : captionsResolved,
                                          speed: clip.effectiveSpeed,
-                                         cameraPath: cameraPath))
+                                         cameraPath: cameraPath, effectiveEffect: effectiveEffect))
         }
         return Self.applyCropBlocks(resolved, document: document).sorted {
             ($0.track, $0.startTime) < ($1.track, $1.startTime)
@@ -801,7 +846,8 @@ actor MultitrackRenderer {
                                         cropXFrac: clip.effectiveCropXFrac,
                                         freeCrops: clip.freeCrops,
                                         screenCrop: clip.screenCrop,
-                                        speed: clip.speed, staticAreaFilter: clip.staticAreaFilter))
+                                        speed: clip.speed, staticAreaFilter: clip.staticAreaFilter,
+                                        effectiveEffect: clip.effectiveEffect))
         }
 
         return orderedPlacements(placements)
@@ -1150,6 +1196,21 @@ actor MultitrackRenderer {
                              + FFmpeg.encodeArgs + [output.path], timeout: 120, capture: .boundedStderrTail())
     }
 
+    /// Splice a placement look before masks and fades, with unique graph pads.
+    nonisolated static func insertEffect(_ effect: EffectSpec, label: String, width: Int,
+                                        height: Int, filters: inout [String]) {
+        let fragment = EffectCatalog.filter(for: effect, width: width, height: height, namespace: "fx_\(label)_")
+        guard !fragment.isEmpty,
+              let index = filters.firstIndex(where: { $0.hasSuffix("[\(label)]") }) else { return }
+        let producer = String(filters[index].dropLast(label.count + 2))
+        if fragment.contains(";") {
+            filters[index] = producer + "[pre_\(label)]"
+            filters.append("[pre_\(label)]\(fragment)[\(label)]")
+        } else {
+            filters[index] = producer + ",\(fragment)[\(label)]"
+        }
+    }
+
     /// Port of video.py composite_layered_segment(): black base canvas, each
     /// placement overlaid in (layer, stack order) order — non-wide clips fill
     /// the frame, cropped wides fill the frame through a 9:16 window, slot
@@ -1262,6 +1323,28 @@ actor MultitrackRenderer {
                                       "setsar=1,fps=30[v%d]",
                                       sourceIndex, pts, Self.width, targetHeight,
                                       Self.width, targetHeight, index))
+            }
+        }
+
+        // All placement branches have produced their labels. Rewrite only
+        // those producers, before any mask or fade can consume the result.
+        for (index, placement) in ordered.enumerated() where !placement.bumper {
+            guard let effect = placement.effectiveEffect else { continue }
+            try EffectCatalog.validate(effect)
+            guard EffectCatalog.isAvailable(effect.preset) else {
+                throw BuilderCommandFailure.invalid("Effect unavailable in ffmpeg: \(effect.preset).")
+            }
+            if let crops = Self.normalizedFreeCrops(placement.freeCrops), !crops.isEmpty {
+                for (cropIndex, crop) in crops.enumerated() {
+                    Self.insertEffect(effect, label: "v\(index)_\(cropIndex)",
+                        width: max(2, Int((Double(Self.width) * crop.dw).rounded())),
+                        height: max(2, Int((Double(Self.height) * crop.dh).rounded())), filters: &filters)
+                }
+            } else {
+                let slot = placement.isWide && placement.cropXFrac == nil
+                    && !placement.fillCanvas && placement.staticAreaFilter == nil
+                Self.insertEffect(effect, label: "v\(index)", width: Self.width,
+                                  height: slot ? Self.slotHeight : Self.height, filters: &filters)
             }
         }
 
@@ -1666,13 +1749,17 @@ actor MultitrackRenderer {
     /// <output>/<YYYY-MM-DD>/hl-<duration>-<n>.mp4, sharing the per-day
     /// counter with the Python builder (it scans every mp4's trailing number).
     private nonisolated static func outputFile(profile: BrandProfile,
-                                               totalDuration: Double) throws -> URL {
+                                               totalDuration: Double,
+                                               baseName: String? = nil) throws -> URL {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         let directory = profile.outputFolderURL
             .appendingPathComponent(formatter.string(from: Date()), isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if let baseName {
+            return Self.uniqueFile(named: baseName, in: directory)
+        }
 
         var counter = 1
         let existing = (try? FileManager.default.contentsOfDirectory(at: directory,
@@ -1684,6 +1771,18 @@ actor MultitrackRenderer {
             }
         }
         return directory.appendingPathComponent("hl-\(Int(totalDuration))-\(counter).mp4")
+    }
+
+    /// `<name>.mp4`, or `<name> 2.mp4`, `<name> 3.mp4`, … when taken.
+    nonisolated static func uniqueFile(named baseName: String, in directory: URL) -> URL {
+        let first = directory.appendingPathComponent(baseName + ".mp4")
+        guard FileManager.default.fileExists(atPath: first.path) else { return first }
+        var counter = 2
+        while true {
+            let candidate = directory.appendingPathComponent("\(baseName) \(counter).mp4")
+            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            counter += 1
+        }
     }
 }
 

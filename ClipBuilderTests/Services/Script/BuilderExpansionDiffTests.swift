@@ -36,6 +36,8 @@ struct BuilderExpansionDiffTests {
             (image + "transOut", { $0.imageOverlays[0].transOut = "cut" }),
             (block + "startTime", { $0.overlayBlocks[0].startTime = 1 }),
             (block + "duration", { $0.overlayBlocks[0].duration = 6 }),
+            (clip + "effect", { $0.videoTrack[0].effect = EffectSpec(preset: "bw") }),
+            ("document.trackSettings.0.effect", { $0.trackSettings[0].effect = EffectSpec(preset: "sepia") }),
             (clip + "speed", { $0.videoTrack[0].speed = 0.5 }),
             (clip + "duration", { $0.videoTrack[0].duration += 1 }),
             (clip + "fadeIn", { $0.videoTrack[0].fadeIn = 0.2 }),
@@ -198,5 +200,37 @@ extension BuilderExpansionDiffTests {
         #expect(throws: (any Error).self) {
             try JSONDecoder().decode(BuilderQuery.self, from: Data(#"{"kind":"templates","filter":{}}"#.utf8))
         }
+    }
+}
+
+
+extension BuilderExpansionDiffTests {
+    @Test func effectLeafFieldsAndReadableLines() throws {
+        var before = Fixtures.timelineDocument()
+        before.videoTrack[0].effect = .init(preset: "blur", params: ["sigma": 2])
+        before.trackSettings[0].effect = .init(preset: "blur", params: ["sigma": 2])
+        let clip = "document.videoTrack.\(before.videoTrack[0].uid).effect."
+        let track = "document.trackSettings.0.effect."
+        let edits: [(String, (inout TimelineDocument) -> Void)] = [
+            (clip + "preset", { $0.videoTrack[0].effect?.preset = "bw" }),
+            (clip + "intensity", { $0.videoTrack[0].effect?.intensity = 0.5 }),
+            (clip + "params.sigma", { $0.videoTrack[0].effect?.params["sigma"] = 5 }),
+            (track + "preset", { $0.trackSettings[0].effect?.preset = "bw" }),
+            (track + "intensity", { $0.trackSettings[0].effect?.intensity = 0.5 }),
+            (track + "params.sigma", { $0.trackSettings[0].effect?.params["sigma"] = 5 })
+        ]
+        for (path, edit) in edits {
+            var after = before
+            edit(&after)
+            #expect(TimelineDiff(before: before, after: after).changes.contains { $0.path == path })
+        }
+        let model = ScriptFixtures.model()
+        let session = BuilderScriptSession(live: model, library: ScriptFixtures.library())
+        defer { session.discard() }
+        let steps: [BuilderScriptStep] = [.init(.setTrackEffect(track: 0, effect: .init(preset: "none")))]
+        #expect(session.run(steps).completed)
+        session.freeze()
+        let lines = BuilderWizardDiff.lines(session: session, steps: steps).joined(separator: "\n")
+        #expect(lines.contains("Track 1") && lines.contains("look") && lines.contains("none"))
     }
 }

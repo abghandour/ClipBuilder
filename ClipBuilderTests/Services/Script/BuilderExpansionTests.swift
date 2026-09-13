@@ -453,3 +453,89 @@ extension BuilderExpansionTests {
         #expect(throws: (any Error).self) { try JSONDecoder().decode(BuilderCommand.self, from: invalid) }
     }
 }
+
+extension BuilderExpansionTests {
+    @Test func effectsApplyClearAndRefuse() throws {
+        let model = ScriptFixtures.gapModel()
+        let library = ScriptFixtures.gapLibrary()
+        let runner = ScriptRunner()
+        let clip = model.document.videoTrack[0].uid.uuidString
+        // None is always available, including machines without ffmpeg.
+        let effect = EffectSpec(preset: "none", intensity: 0.5)
+        let applied = runner.run([.init(.setTrackEffect(track: 0, effect: effect)),
+                                  .init(.setClipEffect(clip: clip, effect: effect))], model: model, library: library)
+        #expect(applied.allSatisfy { if case .applied = $0 { true } else { false } })
+        #expect(model.document.trackSettings[0].effect == effect)
+        #expect(model.document.videoTrack[0].effect == effect)
+        let cleared = runner.run([.init(.setTrackEffect(track: 0, effect: nil)),
+                                  .init(.setClipEffect(clip: clip, effect: nil))], model: model, library: library)
+        #expect(cleared.allSatisfy { if case .applied = $0 { true } else { false } })
+        #expect(model.document.trackSettings[0].effect == nil && model.document.videoTrack[0].effect == nil)
+        let bumper = try #require(model.document.videoTrack.first { $0.bumper })
+        var refusals: [BuilderCommand] = [
+            .setClipEffect(clip: bumper.uid.uuidString, effect: effect),
+            .setTrackEffect(track: 0, effect: .init(preset: "invented")),
+            .setTrackEffect(track: 0, effect: .init(preset: "blur", params: ["sigma": 21])),
+            .setTrackEffect(track: TimelineDocument.maxTracks, effect: nil)
+        ]
+        if let unavailable = EffectCatalog.presets.first(where: { !EffectCatalog.isAvailable($0.id) }) {
+            refusals.append(.setTrackEffect(track: 0, effect: .init(preset: unavailable.id)))
+        }
+        for command in refusals {
+            let before = model.document
+            let outcomes = runner.run([.init(command)], model: model, library: library)
+            #expect(outcomes.first?.isRefused == true)
+            #expect(model.document == before)
+        }
+        let unknown = runner.run([.init(.setClipEffect(clip: "$missing", effect: nil))], model: model, library: library)
+        if case .refused(let code, _) = unknown.first { #expect(code == "unknown_id") }
+        else { Issue.record("Expected unknown_id") }
+        let uuid = runner.run([.init(.setClipEffect(clip: UUID().uuidString, effect: nil))], model: model, library: library)
+        if case .refused(let code, _) = uuid.first { #expect(code == "unknown_id") }
+        else { Issue.record("Expected unknown_id") }
+        if EffectCatalog.isAvailable("bw") {
+            _ = runner.run([.init(.setTrackEffect(track: 0, effect: .init(preset: "bw")))], model: model, library: library)
+            #expect(model.document.trackSettings[0].effect?.preset == "bw")
+        }
+    }
+
+    @Test func unavailableEffectsRefuseBeforeMutation() {
+        for command in [BuilderCommand.setTrackEffect(track: 0, effect: .init(preset: "warm")),
+                        .setClipEffect(clip: "selected", effect: .init(preset: "edges"))] {
+            do {
+                try command.validateExpansion(effectFilters: [])
+                Issue.record("Expected unavailable filter refusal")
+            } catch let error as BuilderCommandFailure {
+                #expect(error.code == "invalid_value" && error.reason.contains("unavailable"))
+            } catch { Issue.record("Unexpected error: \(error)") }
+        }
+    }
+
+    @Test func effectsQueryAndRows() throws {
+        let model = ScriptFixtures.gapModel()
+        let library = ScriptFixtures.gapLibrary()
+        model.document.trackSettings[0].effect = .init(preset: "bw")
+        model.document.videoTrack[0].effect = .init(preset: "sepia")
+        let resolve: (String) throws -> UUID = { _ in throw BuilderCommandFailure.unknownID }
+        let catalog = try BuilderQuery(.effects).execute(model: model, library: library, resolve: resolve)
+        #expect(catalog.effects.map(\.id) == EffectCatalog.ids)
+        #expect(catalog.effects.first { $0.id == "blur" }?.params.first?.name == "sigma")
+        #expect(catalog.effects.first { $0.id == "bw" }?.available == EffectCatalog.isAvailable("bw"))
+        let page = try BuilderQuery(.effects, limit: 1).execute(model: model, library: library, resolve: resolve)
+        #expect(page.effects.count == 1 && page.nextOffset == 1 && page.total == EffectCatalog.ids.count)
+        // A second ordinary clip with no override reports null; the gap
+        // fixture's other clip is a bumper, which the clips query hides.
+        model.document.videoTrack.append(Fixtures.timelineClip(startTime: 20))
+        for kind in [BuilderQuery.Kind.timeline, .clips] {
+            let rows = try BuilderQuery(kind).execute(model: model, library: library, resolve: resolve)
+            let row = try #require(rows.clips.first { $0.id == model.document.videoTrack[0].uid.uuidString })
+            #expect(row.effect == ScriptValue.stored(EffectSpec(preset: "sepia")))
+            #expect(rows.clips.contains { $0.effect == .null })
+        }
+        let layouts = try BuilderQuery(.layouts).execute(model: model, library: library, resolve: resolve)
+        for layout in layouts.layouts where !layout.areas.isEmpty {
+            guard case .object(let area) = layout.areas[0] else { Issue.record("Expected area object"); continue }
+            #expect(area["effect"] == ScriptValue.stored(EffectSpec(preset: "bw")))
+        }
+    }
+}

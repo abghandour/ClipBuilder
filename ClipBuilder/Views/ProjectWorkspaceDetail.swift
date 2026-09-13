@@ -40,7 +40,9 @@ struct ProjectWorkspaceDetail: View {
                 case .overlays:
                     OverlayTemplatesView()
                 case .effects:
-                    EffectsView()
+                    TransitionsView()
+                case .looks:
+                    LooksView()
                 case .bumpers:
                     AssetBrowserView(kind: .bumpers)
                 case .screenCrops:

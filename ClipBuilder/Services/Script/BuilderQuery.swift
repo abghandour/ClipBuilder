@@ -3,7 +3,7 @@ import Foundation
 /// Each query has its own admissible fields; pagination bounds model context.
 nonisolated struct BuilderQuery: Codable, Sendable, Equatable {
     enum Kind: String, Codable, Sendable, CaseIterable {
-        case timeline, clips, scenes, people, transcript, silences, tags, layouts, templates, capabilities
+        case timeline, clips, scenes, people, transcript, silences, tags, layouts, templates, capabilities, effects
     }
     var kind: Kind
     var offset = 0
@@ -95,6 +95,7 @@ nonisolated struct ClipQueryRow: Codable, Sendable, Equatable {
     var position: String?
     var cropFraction: Double?
     var muted: Bool
+    var effect: ScriptValue
     var details: ScriptValue
 
     init(_ clip: TimelineClip, scene: SceneRecord?, library: ScriptLibrarySnapshot = .init()) {
@@ -113,6 +114,7 @@ nonisolated struct ClipQueryRow: Codable, Sendable, Equatable {
         score = metadataScene?.score
         bumperMode = clip.bumper ? clip.bumperMode : nil
         volume = clip.volume; position = clip.position; cropFraction = clip.cropXFrac; muted = clip.muted
+        effect = clip.effect.map { ScriptValue.stored($0) } ?? .null
         details = ScriptValue.stored(clip)
         unknown = []
         if metadataScene == nil { unknown.append("scene") }
@@ -187,7 +189,24 @@ nonisolated struct TemplateQueryRow: Codable, Sendable, Equatable {
 
 nonisolated struct LayoutQueryRow: Codable, Sendable, Equatable {
     var id: String
-    var areas: [ScreenCropArea]
+    var areas: [ScriptValue]
+
+    init(id: String, areas: [ScreenCropArea], settings: [TrackSettings] = []) {
+        self.id = id
+        self.areas = areas.enumerated().map { index, area in
+            guard case .object(var row) = ScriptValue.stored(area) else { return .null }
+            row["effect"] = settings[safe: index]?.effect.map { ScriptValue.stored($0) } ?? .null
+            return .object(row)
+        }
+    }
+}
+
+nonisolated struct EffectQueryRow: Codable, Sendable, Equatable {
+    var id: String
+    var name: String
+    var group: String
+    var params: [EffectCatalog.ParamSpec]
+    var available: Bool
 }
 
 /// Exactly one result collection is populated. Timeline pages include compact
@@ -203,6 +222,7 @@ nonisolated struct BuilderQueryResult: Codable, Sendable, Equatable {
     var silences: [SilenceQueryRow] = []
     var tags: [String] = []
     var layouts: [LayoutQueryRow] = []
+    var effects: [EffectQueryRow] = []
     var templates: [TemplateQueryRow] = []
     var sounds: [BuilderDocumentSummary.Row] = []
     var overlays: [BuilderDocumentSummary.Row] = []
@@ -290,9 +310,17 @@ extension BuilderQuery {
                 + library.people.map(\.tag) + ["b-roll", "highlight"])).sorted())
         case .templates:
             result.templates = page(library.templateRows)
+        case .effects:
+            result.effects = page(EffectCatalog.presets.map {
+                EffectQueryRow(id: $0.id, name: $0.name, group: $0.group,
+                               params: $0.params, available: EffectCatalog.isAvailable($0.id))
+            })
         case .layouts:
-            result.layouts = page([LayoutQueryRow(id: CropLayoutRef.fullScreenName, areas: [])]
-                + library.layouts.sorted { $0.name < $1.name }.map { LayoutQueryRow(id: $0.name, areas: $0.areasInTrackOrder) })
+            result.layouts = page([LayoutQueryRow(id: CropLayoutRef.fullScreenName,
+                areas: [ScreenCropArea(name: CropLayoutRef.fullScreenName,
+                    points: [.init(x: 0, y: 0), .init(x: 1, y: 0), .init(x: 1, y: 1), .init(x: 0, y: 1)])],
+                settings: model.document.trackSettings)]
+                + library.layouts.sorted { $0.name < $1.name }.map { LayoutQueryRow(id: $0.name, areas: $0.areasInTrackOrder, settings: model.document.trackSettings) })
         case .capabilities:
             result.capabilities = page(library.videos.sorted { $0.id < $1.id }.map { video in
                 CapabilityQueryRow(video: video.id,

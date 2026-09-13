@@ -87,8 +87,10 @@ extension BuilderCommandCatalogTests {
         if let value = fields["const"] { return value }
         if let value = fields["enum"]?.arrayValue?.first { return value }
         if let value = fields["oneOf"]?.arrayValue?.first { return sample(value) }
+        if let value = fields["anyOf"]?.arrayValue?.first { return sample(value) }
         switch fields["type"]?.stringValue {
         case "number", "integer": return fields["minimum"] ?? .int(0)
+        case "null": return .null
         case "boolean": return .bool(false)
         case "array": return .array([])
         case "object":

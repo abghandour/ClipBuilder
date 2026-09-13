@@ -210,6 +210,11 @@ struct BuilderView: View {
         .onChange(of: undoManager) { _, manager in
             model.undoManager = manager
         }
+        .sheet(item: Binding(
+            get: { store.finishedBuilderRender },
+            set: { if $0 == nil { store.finishedBuilderRender = nil } })) { render in
+            PlayerSheet(url: render.url, title: "\(render.title) · \(render.duration.timecode)")
+        }
         .sheet(item: $playingClip) { clip in
             PlayerSheet(url: model.sourceURL(for: clip) ?? URL(fileURLWithPath: "/"),
                         title: model.scene(for: clip)?.videoFilename ?? "Clip",

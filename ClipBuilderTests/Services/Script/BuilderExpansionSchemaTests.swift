@@ -84,6 +84,7 @@ struct BuilderExpansionSchemaTests {
             "set_clip_captions": ["clip", "captions"], "set_clip_transitions": ["clip", "trans_in", "trans_out"],
             "set_clip_center_stage": ["clip", "enabled"],
             "set_clip_area_window": ["clip", "x", "y", "width", "height"],
+            "set_track_effect": ["track", "effect"], "set_clip_effect": ["clip", "effect"],
             "set_track_captions": ["track", "captions"],
             "set_track_muted": ["track", "muted"], "set_track_position": ["track", "position"],
             "set_track_crop": ["track", "fraction"], "set_render_settings": ["settings"], "set_pacing": ["pacing"]
@@ -178,6 +179,51 @@ extension BuilderExpansionSchemaTests {
                         .setImageGeometry(overlay: "x", x: .infinity),
                         .setTextStyle(overlay: "x", style: .init(["box_radius": .number(.infinity)]))] {
             #expect(throws: (any Error).self) { try command.validateExpansion() }
+        }
+    }
+}
+
+extension BuilderExpansionSchemaTests {
+    @Test func effectsRoundTripAndStrictObjectSchema() throws {
+        let commands: [BuilderCommand] = [
+            .setTrackEffect(track: 0, effect: .init(preset: "none")),
+            .setClipEffect(clip: "selected", effect: .init(preset: "none", intensity: 0.5)),
+            .setTrackEffect(track: 1, effect: nil), .setClipEffect(clip: "selected", effect: nil)
+        ]
+        for command in commands {
+            let data = try JSONEncoder().encode(command)
+            #expect(try JSONDecoder().decode(BuilderCommand.self, from: data) == command)
+            var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            #expect(object["effect"] != nil)
+            object["extra"] = 1
+            #expect(throws: (any Error).self) {
+                try JSONDecoder().decode(BuilderCommand.self, from: JSONSerialization.data(withJSONObject: object))
+            }
+        }
+        for json in [
+            #"{"op":"set_track_effect","track":0}"#,
+            #"{"op":"set_clip_effect","clip":"selected","effect":{}}"#,
+            #"{"op":"set_clip_effect","clip":"selected","effect":{"preset":"none","extra":1}}"#,
+            #"{"op":"set_clip_effect","clip":"selected","effect":{"preset":"none","params":{"x":"bad"}}}"#,
+            #"{"op":"set_clip_effect","clip":"selected","effect":{"preset":"none","params":null}}"#,
+            #"{"op":"set_clip_effect","clip":"selected","effect":{"preset":"none","intensity":null}}"#,
+            #"{"op":"set_clip_effect","clip":"selected","effect":"bw"}"#
+        ] {
+            #expect(throws: (any Error).self) { try JSONDecoder().decode(BuilderCommand.self, from: Data(json.utf8)) }
+        }
+        for op in ["set_track_effect", "set_clip_effect"] {
+            let schema = try #require(BuilderCommandCatalog.operations[op])
+            let effect = try #require(schema.objectValue?["properties"]?.objectValue?["effect"])
+            let alternatives = try #require(effect.objectValue?["anyOf"]?.arrayValue)
+            #expect(alternatives.count == 2)
+            #expect(alternatives[0].objectValue?["type"] == .string("null"))
+            let object = try #require(alternatives[1].objectValue)
+            #expect(object["additionalProperties"] == .bool(false))
+            #expect(object["required"] == .array([.string("preset")]))
+            let properties = try #require(object["properties"]?.objectValue)
+            #expect(properties["preset"]?.objectValue?["enum"] == .array(EffectCatalog.ids.map(Value.string)))
+            #expect(properties["intensity"]?.objectValue?["minimum"] == .int(0))
+            #expect(properties["intensity"]?.objectValue?["maximum"] == .int(1))
         }
     }
 }

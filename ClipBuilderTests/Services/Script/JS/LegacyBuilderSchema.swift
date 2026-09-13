@@ -46,6 +46,7 @@ enum LegacyBuilderSchema {
             case .timeline: description = "Working timeline overview; pagination only."
             case .tags: description = "Known Library tags; pagination only."
             case .templates: description = "Snapshotted overlay templates and built-in Lower Third; pagination only."
+            case .effects: description = "Effect presets, parameter ranges and local ffmpeg availability; pagination only."
             case .layouts: description = "Available crop layouts; pagination only."
             case .capabilities: description = "Captured prerequisite availability by video; pagination only."
             }
@@ -66,6 +67,15 @@ enum LegacyBuilderSchema {
         for key in ["cover_all", "muted", "sequential"] { fields[key] = bool }
         for key in ["speed", "fade_in", "fade_out", "x", "y", "width", "height", "opacity"] { fields[key] = number }
         for key in ["position", "captions", "trans_in", "trans_out"] { fields[key] = string }
+        fields["effect"] = .object(["anyOf": .array([
+            .object(["type": .string("null")]),
+            object([
+                "preset": .object(["enum": .array(EffectCatalog.ids.map(Value.string))]),
+                "params": .object(["type": .string("object"),
+                                   "additionalProperties": .object(["type": .string("number")])]),
+                "intensity": .object(["type": .string("number"), "minimum": .int(0), "maximum": .int(1)])
+            ], required: ["preset"])
+        ])])
         var styleFields: [String: Value] = [:]
         for key in ["fontcolor", "fontfamily", "bgcolor", "stroke_color", "highlight_color", "design", "kicker", "accent_color"] {
             styleFields[key] = .object(["type": BuilderTextStylePatch.nullableFields.contains(key)
@@ -129,6 +139,8 @@ enum LegacyBuilderSchema {
             ("set_clip_transitions", ["clip", "trans_in", "trans_out"], ["clip", "trans_in", "trans_out"]),
             ("set_clip_center_stage", ["clip", "enabled"], ["clip", "enabled"]),
             ("set_clip_area_window", ["clip", "x", "y", "width", "height"], ["clip", "x", "y", "width", "height"]),
+            ("set_track_effect", ["track", "effect"], ["track", "effect"]),
+            ("set_clip_effect", ["clip", "effect"], ["clip", "effect"]),
             ("set_track_captions", ["track", "captions"], ["track", "captions"]),
             ("set_track_muted", ["track", "muted"], ["track", "muted"]),
             ("set_track_position", ["track", "position"], ["track", "position"]),

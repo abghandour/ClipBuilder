@@ -3,13 +3,13 @@ import AVFoundation
 import AVKit
 import UniformTypeIdentifiers
 
-/// Assets > Effects: every transition the Builder and AI Wizard can use,
+/// Resources > Transitions: every transition the Builder and AI Wizard can use,
 /// grouped by family, with a looping sample of each rendered through the
 /// real pipeline (two cards joined by the effect) so the names finally
 /// have a picture. Samples render once per sample set and cache under
 /// assets/effects. The bottom bar plays/pauses everything, sets playback
 /// speed, and swaps the test cards for stills from videos of your choice.
-struct EffectsView: View {
+struct TransitionsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(WizardDefaults.limitTransitionsKey) private var aiTransitionsLimited = false
     @AppStorage(WizardDefaults.allowedTransitionsKey) private var aiTransitionsRaw = ""
