@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct BuilderWizardPanel: View {
-    let model: WizardSheetModel
+    @Bindable var model: WizardSheetModel
     let discard: () -> Void
     @State private var confirmRevert = false
     let openPicker: (BuilderWizardPickerRequest) -> Void
@@ -16,8 +16,6 @@ struct BuilderWizardPanel: View {
                         if model.phase == .awaitingReply {
                             BuilderWizardReplyForm(model: model)
                         }
-                        BuilderScriptsSection(wizard: model, model: model.scriptLibrary)
-                            .disabled(model.phase == .awaitingReply)
                         if model.phase == .found {
                             BuilderWizardFindResults(model: model, openPicker: { sceneID in
                                 guard let request = model.pickerRequest(sceneID: sceneID) else { return }
@@ -29,6 +27,11 @@ struct BuilderWizardPanel: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                Button("Run selected script") { Task { await model.openSelectedScriptParameters() } }
+                    .keyboardShortcut("r", modifiers: .command)
+                    .disabled(model.busy || model.phase == .awaitingReply || model.phase == .awaitingPrerequisites)
+                    .help("Open run parameters for the selected saved script. ⌘R.")
+                    .hidden().frame(height: 0).accessibilityHidden(true)
                 Divider()
                 HStack(spacing: Theme.spaceXS) {
                     Button("Discard", action: discard)
@@ -56,6 +59,12 @@ struct BuilderWizardPanel: View {
             }
             .controlSize(.small)
             .padding(Theme.spaceS)
+        }
+        .sheet(isPresented: $model.showingScriptParameters) {
+            BuilderScriptEditor(model: model.scriptLibrary, editing: false, run: model.runLibraryScript)
+        }
+        .sheet(isPresented: $model.showingAuthoredScript) {
+            BuilderScriptEditor(model: model.scriptLibrary, editing: true, run: model.runLibraryScript)
         }
         .confirmationDialog("Revert ‘\(model.beforeVersion?.request ?? "last Wizard run")’?", isPresented: $confirmRevert) {
             Button("Revert last run", role: .destructive) { Task { await model.revert() } }

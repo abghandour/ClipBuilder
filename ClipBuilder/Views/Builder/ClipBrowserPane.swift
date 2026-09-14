@@ -146,15 +146,20 @@ struct ClipBrowserPane: View {
         activeFilterCount > 0
     }
 
+    nonisolated static func restoredTab(_ value: String) -> String {
+        ["scenes", "wizard", "scripts"].contains(value) ? value : "scenes"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Picker("Browser", selection: $selectedTab) {
                 Text("Scenes").tag("scenes")
-                Text("Wizard").tag("wizard")
+                Text("AI Wizard").tag("wizard")
+                Text("Scripts").tag("scripts")
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .help("Browse scenes or edit this timeline with the Wizard. ⇧⌘W opens Wizard.")
+            .help("Scenes to add, the AI Wizard, or your saved scripts")
             .padding(Theme.spaceS)
             Divider()
             if selectedTab == "wizard" {
@@ -165,6 +170,12 @@ struct ClipBrowserPane: View {
                     Text("Open a timeline to use the Wizard.")
                         .foregroundStyle(.secondary)
                         .padding(Theme.spaceM)
+                }
+            } else if selectedTab == "scripts" {
+                if let wizardModel {
+                    BuilderScriptsPanel(model: wizardModel, selectedTab: $selectedTab)
+                } else {
+                    Text("Open a timeline to use saved scripts.").foregroundStyle(.secondary)
                 }
             } else {
                 scenesContent

@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct BuilderScriptsSection: View {
     @Bindable var wizard: WizardSheetModel
     @Bindable var model: ScriptLibraryModel
+    var showWizard: () -> Void = {}
     @State private var showingSheet = false
     @State private var editing = false
     @State private var opening = false
@@ -11,7 +12,6 @@ struct BuilderScriptsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
             HStack {
-                Text("Scripts").font(.subheadline).fontWeight(.semibold)
                 Spacer(minLength: 0)
                 Button("Restore examples") { Task { await model.installExamples(restoring: true) } }
                     .help("Reinstall missing examples and reset bundled app-origin scripts, including edits. Duplicate an example first to keep your version.")
@@ -27,37 +27,42 @@ struct BuilderScriptsSection: View {
                 Text("Save reusable edits here. Every run previews changes before Apply.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(model.scripts) { script in
-                VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                    Button { model.selectedID = script.id } label: {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Theme.spaceS) {
+                    ForEach(model.scripts) { script in
                         VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                            Text(script.name).fontWeight(.medium)
-                            Text(script.description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                            Text(lastRun(script)).font(.caption2).foregroundStyle(.secondary)
+                            Button { model.selectedID = script.id } label: {
+                                VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                                    Text(script.name).fontWeight(.medium)
+                                    Text(script.description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                    Text(lastRun(script)).font(.caption2).foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Select \(script.name). ⌘R opens its run parameters.")
+                            HStack(spacing: Theme.spaceM) {
+                                Button("Run…", systemImage: "play") { open(script, editing: false) }
+                                    .help("Run \(script.name) with parameters and a manual preview.")
+                                Button("Edit", systemImage: "pencil") { open(script, editing: true) }
+                                    .help("Edit and validate \(script.name). ⌘E edits the selected script.")
+                                Button("Duplicate", systemImage: "plus.square.on.square") { Task { await model.duplicate(script) } }
+                                    .help("Make a new copy of \(script.name).")
+                                Button("Export", systemImage: "square.and.arrow.up") { exportScript(script) }
+                                    .help("Export \(script.name) with its header as a JavaScript file.")
+                                Button("Delete", systemImage: "trash", role: .destructive) { Task { await model.delete(script) } }
+                                    .help("Delete \(script.name) from this profile.")
+                            }
+                            .labelStyle(.iconOnly)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(.rect)
+                        .padding(Theme.spaceS)
+                        .background(model.selectedID == script.id ? Color.accentColor.opacity(0.12) : Color.clear,
+                                    in: .rect(cornerRadius: Theme.spaceXS))
                     }
-                    .buttonStyle(.plain)
-                    .help("Select \(script.name). ⌘R opens its run parameters.")
-                    HStack(spacing: Theme.spaceM) {
-                        Button("Run…", systemImage: "play") { open(script, editing: false) }
-                            .help("Run \(script.name) with parameters and a manual preview.")
-                        Button("Edit", systemImage: "pencil") { open(script, editing: true) }
-                            .help("Edit and validate \(script.name). ⌘E edits the selected script.")
-                        Button("Duplicate", systemImage: "plus.square.on.square") { Task { await model.duplicate(script) } }
-                            .help("Make a new copy of \(script.name).")
-                        Button("Export", systemImage: "square.and.arrow.up") { exportScript(script) }
-                            .help("Export \(script.name) with its header as a JavaScript file.")
-                        Button("Delete", systemImage: "trash", role: .destructive) { Task { await model.delete(script) } }
-                            .help("Delete \(script.name) from this profile.")
-                    }
-                    .labelStyle(.iconOnly)
                 }
-                .padding(Theme.spaceS)
-                .background(model.selectedID == script.id ? Color.accentColor.opacity(0.12) : Color.clear,
-                            in: .rect(cornerRadius: Theme.spaceXS))
             }
+            .frame(maxHeight: .infinity)
             if !model.message.isEmpty, !showingSheet {
                 Text(model.message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
@@ -74,15 +79,12 @@ struct BuilderScriptsSection: View {
             .help("Edit the selected script. ⌘E.")
             .hidden().frame(height: 0).accessibilityHidden(true)
         }
-        .disabled(wizard.busy || wizard.phase == .awaitingPrerequisites || opening || !wizard.identityMatches)
+        .disabled(wizard.busy || wizard.phase == .awaitingPrerequisites || wizard.phase == .awaitingReply || opening || !wizard.identityMatches)
         .task { await model.load() }
         .onChange(of: wizard.scriptRevision) { _, _ in model.invalidate() }
         .onChange(of: wizard.identityMatches) { _, matches in if !matches { model.invalidate() } }
-        .sheet(isPresented: $wizard.showingAuthoredScript) {
-            BuilderScriptEditor(model: model, editing: true, run: wizard.runLibraryScript)
-        }
         .sheet(isPresented: $showingSheet) {
-            BuilderScriptEditor(model: model, editing: editing, run: wizard.runLibraryScript)
+            BuilderScriptEditor(model: model, editing: editing, run: runScript)
         }
     }
 
@@ -91,8 +93,13 @@ struct BuilderScriptsSection: View {
         Button("New Script", systemImage: "plus") { open(nil, editing: true) }
             .keyboardShortcut("n", modifiers: [.command, .shift])
             .help("Create a reusable script in this profile. ⌘⇧N.")
-        Button("Write with AI…", systemImage: "sparkles", action: wizard.beginAuthoring)
+        Button("Write with AI…", systemImage: "sparkles", action: { showWizard(); wizard.beginAuthoring() })
             .help("Use the request field to write a script with an AI provider, then review it in the editor.")
+    }
+
+    private func runScript() throws {
+        try wizard.runLibraryScript()
+        showWizard()
     }
 
     private func lastRun(_ record: BuilderScriptRecord) -> String {

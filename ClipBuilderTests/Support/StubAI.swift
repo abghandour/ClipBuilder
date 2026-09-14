@@ -8,7 +8,7 @@ struct StubAI {
     let prompts: URL
     let service: AIService
 
-    init(response: String) throws {
+    init(response: String, exitCode: Int = 0) throws {
         let directory = try TempDirectory(prefix: "LocalAIStub")
         self.directory = directory
         calls = directory.url.appendingPathComponent("calls.txt")
@@ -20,13 +20,18 @@ struct StubAI {
             "type": "assistant",
             "message": ["content": [["type": "text", "text": response]]],
         ]
-        let output = String(decoding: try JSONSerialization.data(withJSONObject: event), as: UTF8.self)
+        var output = String(decoding: try JSONSerialization.data(withJSONObject: event), as: UTF8.self)
+        if exitCode != 0 {
+            let failure: [String: Any] = ["type": "result", "is_error": true, "result": response]
+            output += "\n" + String(decoding: try JSONSerialization.data(withJSONObject: failure), as: UTF8.self)
+        }
         func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        let script = "#!/bin/sh\ncat >> \(quote(prompts.path))\nprintf 'call\\n' >> \(quote(calls.path))\nprintf '%s\\n' \(quote(output))\n"
+        let script = "#!/bin/sh\ncat >> \(quote(prompts.path))\nprintf 'call\\n' >> \(quote(calls.path))\nprintf '%s\\n' \(quote(output))\nexit \(exitCode)\n"
         try script.write(to: executable, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
         var config = AIConfig()
         for provider in AICatalog.providers { config.providers[provider.key] = AIProviderSettings(bin: executable.path, model: nil) }
+        config.tasks["route"] = "claude"
         config.tasks["soundbites"] = "claude"
         config.tasks["parse"] = "claude"
         config.tasks["translate"] = "claude"

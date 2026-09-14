@@ -7,6 +7,13 @@ struct ScriptPreferences {
 
     nonisolated init(defaults: UserDefaults = .standard) { self.defaults = defaults }
 
+    nonisolated static let preferSavedScriptsKey = "builder.scripts.preferSavedScripts"
+
+    var preferSavedScripts: Bool {
+        get { defaults.object(forKey: Self.preferSavedScriptsKey) as? Bool ?? true }
+        nonmutating set { defaults.set(newValue, forKey: Self.preferSavedScriptsKey) }
+    }
+
     func examplesInstalled(profile: String) -> Bool {
         defaults.bool(forKey: key(profile) + ".examplesInstalled")
     }

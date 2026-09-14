@@ -5,10 +5,19 @@ struct BuilderWizardResults: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
+            if !model.saveReplayMessage.isEmpty {
+                Text(model.saveReplayMessage).font(.caption).textSelection(.enabled)
+            }
+            if model.offersSaveScript {
+                ViewThatFits(in: .horizontal) {
+                    HStack { savePrompt }
+                    VStack(alignment: .leading) { savePrompt }
+                }
+            }
             if model.phase == .preview || model.phase == .applied {
                 VStack(alignment: .leading, spacing: Theme.spaceXS) {
                     Button("Save as script…") { Task { await model.saveReplay() } }
-                        .disabled(model.replayExport.source == nil || model.verifyingReplay)
+                        .disabled(model.replayExport.source == nil || model.verifyingReplay || model.savingReplay)
                         .help(model.replayExport.reason ?? "Save this verified replay as a reusable script in the current profile.")
                     if let reason = model.replayExport.reason {
                         Text(reason).font(.caption).foregroundStyle(.secondary)
@@ -99,6 +108,16 @@ struct BuilderWizardResults: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private var savePrompt: some View {
+        Text("Save this as a reusable script?").font(.caption)
+        Button("Save") { Task { await model.saveReplay() } }
+            .disabled(model.savingReplay)
+            .help("Save the verified script with a name based on your request.")
+        Button("Not now", action: model.declineSaveScript)
+            .help("Dismiss this suggestion for the current timeline revision.")
     }
 
     private func outcomeSymbol(_ outcome: BuilderRunEvent.Outcome) -> String {

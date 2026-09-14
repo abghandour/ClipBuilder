@@ -6,9 +6,21 @@ import Observation
 @MainActor @Observable
 final class WizardSheetModel {
     enum Phase: Equatable { case idle, awaitingReply, awaitingPrerequisites, running, preview, found, completed, unrecognised, refused, applying, applied, discarded }
+    enum RunOrigin: Equatable { case local, agent, script, routed }
+    private(set) var runOrigin: RunOrigin = .local
+    private(set) var routedScriptName: String?
+    @ObservationIgnored private var routedRequest: String?
+    @ObservationIgnored private let requestRouter = ScriptRequestRouter()
+    @ObservationIgnored private let routingAI: AIService
+    @ObservationIgnored private let scriptPreferences: ScriptPreferences
+    private var appliedRevision: Int?
+    private var declinedSaveRevision: Int?
+    private var savedReplayRevision: Int?
     let scriptLibrary: ScriptLibraryModel
     private(set) var replayExport = ScriptReplayExport(reason: "Complete a run to save its replay.")
     private(set) var verifyingReplay = false
+    private(set) var savingReplay = false
+    private(set) var saveReplayMessage = ""
     @ObservationIgnored private var retainedReplay: ScriptReplayTranscript?
     @ObservationIgnored private var replayTask: Task<Void, Never>?
     @ObservationIgnored private var activeScriptID: UUID?
@@ -30,6 +42,7 @@ final class WizardSheetModel {
     private(set) var agentSummary = ""
     private(set) var authoredScript: ScriptAuthorSubmission?
     var showingAuthoredScript = false
+    var showingScriptParameters = false
     @ObservationIgnored private var authoring = false
     @ObservationIgnored private var scriptRun: ScriptRunModel?
     @ObservationIgnored private var pendingJavaScript: (source: String, header: ScriptHeader, params: Data)?
@@ -83,10 +96,13 @@ final class WizardSheetModel {
          loadLibrary: (@MainActor () async throws -> ScriptLibrarySnapshot)? = nil,
          prerequisites: BuilderPrerequisites? = nil,
          agentExecutor: BuilderAgentRun.Executor? = nil,
-         initialRequest: String = "", prefillExamples: Bool = false) {
+         initialRequest: String = "", prefillExamples: Bool = false,
+         routingAI: AIService? = nil, scriptPreferences: ScriptPreferences = ScriptPreferences()) {
         request = initialRequest
         self.prefillExamples = prefillExamples
         self.store = store
+        self.routingAI = routingAI ?? store.ai
+        self.scriptPreferences = scriptPreferences
         self.agentExecutor = agentExecutor
         self.prerequisites = prerequisites ?? store.builderPrerequisites
         database = store.database
@@ -115,6 +131,16 @@ final class WizardSheetModel {
         guard identityMatches, library.projectID == projectID, !dismissed else { throw ApplyFailure.identityChanged }
         guard revision == store.builder.revision else { throw ApplyFailure.staleRevision }
         return ScriptCapture(model: store.builder, library: library)
+    }
+
+    func openSelectedScriptParameters() async {
+        guard !busy, phase != .awaitingPrerequisites, phase != .awaitingReply,
+              let selected = scriptLibrary.selected else { return }
+        do {
+            let capture = try await captureForScript()
+            scriptLibrary.open(selected, capture: capture)
+            showingScriptParameters = true
+        } catch { scriptLibrary.fail(error) }
     }
 
     func runLibraryScript() throws {
@@ -149,6 +175,7 @@ final class WizardSheetModel {
     private func resetReplay() {
         replayTask?.cancel(); replayTask = nil; retainedReplay = nil
         verifyingReplay = false
+        saveReplayMessage = ""
         replayExport = .init(reason: "Complete a run to save its replay.")
     }
 
@@ -170,13 +197,41 @@ final class WizardSheetModel {
         }
     }
 
+    var offersSaveScript: Bool {
+        phase == .applied && runOrigin == .agent && !verifyingReplay && replayExport.source != nil
+            && appliedRevision == scriptRevision && declinedSaveRevision != scriptRevision
+            && savedReplayRevision != scriptRevision && identityMatches
+            && agentEvents.filter { $0.toolName == "run_script" }.count == 1
+            && agentEvents.contains { $0.toolName == "run_script" && $0.outcome == .completed }
+            && retainedReplay?.entries.filter { entry in
+                entry.steps.contains { step in
+                    if case .query = step.command { return false }
+                    return step.command.prerequisite == nil
+                }
+            }.count == 1
+    }
+
+    func declineSaveScript() { declinedSaveRevision = scriptRevision }
+
     func saveReplay() async {
-        guard let source = replayExport.source, let database, identityMatches else { return }
+        guard !savingReplay, !verifyingReplay, let source = replayExport.source,
+              let database, identityMatches else { return }
+        savingReplay = true
+        defer { savingReplay = false }
+        let token = generation
+        let revision = scriptRevision
+        let origin: BuilderScriptRecord.Origin = runOrigin == .agent ? .ai : .human
         do {
-            let record = try await database.saveBuilderScript(source: source)
+            let record = try await database.saveBuilderScript(source: source, origin: origin)
+            guard token == generation, identityMatches, !dismissed else { return }
+            savedReplayRevision = revision
+            saveReplayMessage = "Saved script: " + record.name
             scriptLibrary.selectedID = record.id
             await scriptLibrary.refresh()
-        } catch { scriptLibrary.fail(error) }
+        } catch {
+            guard token == generation, !dismissed else { return }
+            saveReplayMessage = "Could not save script: " + error.localizedDescription
+        }
     }
 
     func refreshExamples() async {
@@ -339,7 +394,8 @@ final class WizardSheetModel {
         task = Task { await previewJavaScript(source: source, params: params, expectedCapture: expectedCapture); task = nil }
     }
 
-    func previewJavaScript(source: String, params: Data = Data("{}".utf8), expectedCapture: ScriptCapture? = nil) async {
+    func previewJavaScript(source: String, params: Data = Data("{}".utf8), expectedCapture: ScriptCapture? = nil,
+                           routed: (record: BuilderScriptRecord, request: String, reason: String)? = nil) async {
         guard !busy, !dismissed else { return }
         await discard()
         guard identityMatches, !dismissed else { failure = .identityChanged; return }
@@ -348,6 +404,11 @@ final class WizardSheetModel {
         }
         generation += 1
         resetReplay()
+        appliedRevision = nil
+        runOrigin = routed == nil ? .script : .routed
+        routedScriptName = routed?.record.name
+        routedRequest = routed?.request
+        if let routed { activeScriptID = routed.record.id }
         let token = generation
         let revision = store.builder.revision
         phase = .running
@@ -356,6 +417,7 @@ final class WizardSheetModel {
         pendingJavaScript = nil; pendingSteps = nil; pendingAgent = false
         diff = nil; diffLines = []; results = []; resultReasons = [:]; findContext = nil; finding = false
         authoring = false; authoredScript = nil; showingAuthoredScript = false
+        if let routed { appendLog("Routed to saved script '\(routed.record.name)' (\(routed.reason))") }
         do {
             let header = try ScriptHeader.parse(source)
             let library: ScriptLibrarySnapshot
@@ -368,8 +430,8 @@ final class WizardSheetModel {
             guard store.builder.revision == revision else { throw ApplyFailure.staleRevision }
             let capture = ScriptCapture(model: store.builder, library: library)
             let (resolved, commands) = try header.resolve(params, capture: capture)
-            request = header.name
-            runRequest = header.name
+            request = routed?.request ?? header.name
+            runRequest = routed?.request ?? header.name
             finding = header.mode == "find"
             if finding {
                 findContext = ParserContext(library: library, model: store.builder)
@@ -398,6 +460,7 @@ final class WizardSheetModel {
         let language = store.settings.transcribeLanguage
         let profileGeneration = store.profileGeneration
         let run = ScriptRunModel(session: session, header: header, params: params, confirmed: confirmed,
+            origin: runOrigin == .routed ? "routed" : "script",
             ensure: { [self] steps in
                 await session.run(steps, prerequisites: prerequisites, confirmed: true,
                     refreshLibrary: { [database] in
@@ -408,7 +471,7 @@ final class WizardSheetModel {
         scriptRun = run
         run.onLog = { [weak self] text in self?.appendLog(text) }
         run.coordinator.onEvent = { [weak self] event in self?.agentEvents.append(event) }
-        do { runRequest = try run.requestText() }
+        do { runRequest = try routedRequest ?? run.requestText() }
         catch { reasons = [error.localizedDescription]; phase = .refused; scriptRun = nil; session.discard(); self.session = nil; return }
         if let id = activeScriptID {
             do { try scriptLibrary.rememberParameters(params, id: id) }
@@ -421,7 +484,7 @@ final class WizardSheetModel {
             try await database.recordBuilderRun(record)
         })
         duration = run.duration
-        agentProvenance = AIProvenance(provider: "script", model: header.name, duration: duration)
+        agentProvenance = AIProvenance(provider: runOrigin == .routed ? "routed" : "script", model: header.name, duration: duration)
         agentSummary = run.summary
         agentAuditSaved = run.diagnostic?.code != "persistence"
         persistentEffects = session.prerequisiteEffects
@@ -511,7 +574,20 @@ final class WizardSheetModel {
         task = Task { await run(); task = nil }
     }
 
-    func run(program suppliedProgram: BuilderProgram? = nil, mode: BuilderTools.Mode = .edit) async {
+    func beginAskAgentInstead() {
+        guard task == nil, !busy, routedRequest != nil else { return }
+        task = Task { await askAgentInstead(); task = nil }
+    }
+
+    func askAgentInstead() async {
+        guard !busy, let original = routedRequest, identityMatches else { return }
+        request = original
+        if provider == .local { provider = .claude }
+        await run(routingEnabled: false)
+    }
+
+    func run(program suppliedProgram: BuilderProgram? = nil, mode: BuilderTools.Mode = .edit,
+             routingEnabled: Bool = true) async {
         guard !busy, !dismissed else { return }
         isStarting = true
         activeScriptID = nil
@@ -522,6 +598,8 @@ final class WizardSheetModel {
         resetReplay()
         let token = generation
         let revision = store.builder.revision
+        runOrigin = provider == .local ? .local : .agent
+        routedScriptName = nil; routedRequest = nil; appliedRevision = nil
         runProvider = provider
         let configuredAgent = store.settings.ai.providers[runProvider.rawValue]
         runModel = agentModel ?? store.settings.ai.taskModels["builder_agent"] ?? configuredAgent?.model
@@ -557,6 +635,36 @@ final class WizardSheetModel {
                 self.session = session
                 await executeAgent(session: session, confirmed: [], token: token, mode: .author)
                 return
+            }
+            if suppliedProgram == nil, routingEnabled, !runRequest.hasPrefix("[") {
+                let capture = ScriptCapture(model: store.builder, library: library)
+                let scripts: [BuilderScriptRecord]
+                if scriptPreferences.preferSavedScripts {
+                    // A routing read must not install examples or change the library.
+                    if let database { scripts = (try? await database.fetchBuilderScripts()) ?? [] }
+                    else { scripts = scriptLibrary.scripts }
+                } else { scripts = [] }
+                let decision = await requestRouter.route(request: runRequest, scripts: scripts, capture: capture,
+                    ai: routingAI, preferSavedScripts: scriptPreferences.preferSavedScripts)
+                try Task.checkCancellation()
+                guard !dismissed, token == generation else { return }
+                guard identityMatches else { throw ApplyFailure.identityChanged }
+                guard capture.matches(store.builder) else { throw ApplyFailure.staleRevision }
+                switch decision {
+                case .runScript(let record, let parameters, let reason):
+                    let original = runRequest
+                    scriptLibrary.scripts = scripts
+                    scriptLibrary.selectedID = record.id
+                    let params = try JSONEncoder().encode(parameters)
+                    // Transfer this task into the same JavaScript preview implementation
+                    // used by beginJavaScript; never spawn a competing run owner.
+                    phase = .idle; isStarting = false
+                    await previewJavaScript(source: record.source, params: params, expectedCapture: capture,
+                                            routed: (record, original, reason))
+                    return
+                case .escalate(let reason):
+                    appendLog("Escalating to the agent: " + reason)
+                }
             }
             let context = ParserContext(library: library, model: store.builder)
             let parseStarted = Date.now
@@ -805,6 +913,8 @@ final class WizardSheetModel {
             self.session = nil
             session.discard()
             phase = .applied
+            appliedRevision = scriptRevision
+            scriptLibrary.invalidate(ifChanged: store.builder)
             if let id = activeScriptID, let database {
                 do { try await database.markBuilderScriptRun(id: id, status: .applied); await scriptLibrary.refresh() }
                 catch { scriptLibrary.fail(error) }

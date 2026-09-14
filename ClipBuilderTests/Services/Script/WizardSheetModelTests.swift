@@ -515,9 +515,9 @@ struct WizardSheetModelTests {
 }
 
 extension WizardSheetModelTests {
-    @Test(arguments: ["apply", "discard", "refuse"])
+    @Test(arguments: ["apply", "discard", "refuse", "save", "decline"])
     func agentRoutingFreezesAndPersistsEventsThroughTerminalAction(action: String) async throws {
-        let apply = action == "apply"
+        let apply = ["apply", "save", "decline"].contains(action)
         let refuseScript = action == "refuse"
         let temp = try TempDatabase()
         let store = try await makeStore(temp)
@@ -563,6 +563,7 @@ extension WizardSheetModelTests {
                     #expect([200, 202].contains(httpResponse.statusCode),
                             "\(httpResponse.statusCode) for \(body.prefix(80)): \(String(decoding: responseData, as: UTF8.self))")
                 }
+                try consume(Data((#"{"type":"assistant","message":{"content":[{"type":"text","text":"Added **fixture** text with `add_text`."}]}}"# + "\n").utf8))
                 try consume(Data((#"{"type":"result","subtype":"success","result":"Added **fixture** text with `add_text`."}"# + "\n").utf8))
                 return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
             })
@@ -620,7 +621,26 @@ extension WizardSheetModelTests {
         #expect(afterClear == saved)
         let undo = UndoManager(); undo.groupsByEvent = false
         store.builder.undoManager = undo
+        #expect(!model.offersSaveScript)
         if apply { await model.apply() } else { await model.discard() }
+        let verificationDeadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while model.verifyingReplay, ContinuousClock.now < verificationDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.verifyingReplay)
+        #expect(model.offersSaveScript == apply)
+        if action == "save" {
+            await model.saveReplay()
+            let script = try #require(try await temp.database.fetchBuilderScripts().first)
+            #expect(script.origin == .ai)
+            #expect(script.name == "add some fixture text using the agent")
+            #expect(!model.offersSaveScript)
+        } else if action == "decline" {
+            model.declineSaveScript()
+            #expect(!model.offersSaveScript)
+            await model.apply() // Repeated Apply at the same revision cannot nag.
+            #expect(!model.offersSaveScript)
+        }
         let finished = try #require(try await temp.database.fetchBuilderRuns(timelineID: id).first)
         #expect(finished.status == (apply ? .applied : .discarded) && finished.eventsJSON == saved.eventsJSON)
         #expect(finished.provider == "claude")
@@ -1051,6 +1071,11 @@ extension WizardSheetModelTests {
             await model.apply()
             #expect(model.phase == .applied)
             #expect(store.builder.document.textOverlays.count == baseline.textOverlays.count + 2)
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+            while model.verifyingReplay, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(!model.verifyingReplay && !model.offersSaveScript)
         }
     }
 
@@ -1064,5 +1089,88 @@ extension WizardSheetModelTests {
         #expect(throws: (any Error).self) { try conversation.append(question: "Q", answer: "A") }
         #expect(conversation.turns.count == BuilderConversation.maximumTurns)
         #expect(conversation.prompt(request: "Original").contains("Original"))
+    }
+}
+
+
+extension WizardSheetModelTests {
+    @Test func routedScriptUsesManualPreviewAndApply() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        let stub = try StubAI(response: "must not be called")
+        let suite = "WizardRoutedPreview.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let source = ScriptHeaderTests.source("builder.ops.set_clip_muted({clip: builder.selection.id, muted: true});")
+        let record = try await temp.database.saveBuilderScript(source: source)
+        store.builder.selection = .clip(try #require(store.builder.document.videoTrack.first).uid)
+        var library = ScriptFixtures.library()
+        library.projectID = store.activeProjectID
+        let snapshot = library
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { snapshot }, routingAI: stub.service, scriptPreferences: ScriptPreferences(defaults: defaults))
+        let before = store.builder.document
+        await model.previewJavaScript(source: source)
+        #expect(model.phase == .preview && model.canApply && !model.offersSaveScript)
+        let manualDiff = model.diff
+        let manualCandidate = model.session?.candidate
+        await model.discard()
+        model.request = record.name
+        await model.run()
+        #expect(model.phase == .preview && model.canApply)
+        #expect(model.runOrigin == .routed && model.routedScriptName == record.name)
+        #expect(model.diff == manualDiff && model.session?.candidate == manualCandidate)
+        #expect(store.builder.document == before)
+        #expect(model.log.contains { $0.contains("0 model calls") })
+        #expect(!FileManager.default.fileExists(atPath: stub.calls.path))
+        let undo = UndoManager(); undo.groupsByEvent = false; store.builder.undoManager = undo
+        await model.apply()
+        #expect(model.phase == .applied && store.builder.document == manualCandidate)
+        #expect(!model.offersSaveScript && undo.canUndo)
+        let id = try #require(store.builder.timelineID)
+        let audit = try #require(try await temp.database.fetchBuilderRuns(timelineID: id).first)
+        #expect(audit.provider == "routed" && audit.status == .applied)
+    }
+
+    @Test func askAgentInsteadBypassesSavedScriptRouting() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        store.settings.ai.tasks["builder_agent"] = "claude"
+        store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)
+        let stub = try StubAI(response: "must not be called")
+        let suite = "WizardRoutedEscape.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let source = ScriptHeaderTests.source("builder.ops.set_clip_muted({clip: builder.selection.id, muted: true});")
+        let record = try await temp.database.saveBuilderScript(source: source)
+        store.builder.selection = .clip(try #require(store.builder.document.videoTrack.first).uid)
+        var library = ScriptFixtures.library()
+        library.projectID = store.activeProjectID
+        let snapshot = library
+        let counter = WizardReplyTestCounter()
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { snapshot }, agentExecutor: { _, launch, _, consume in
+                _ = await counter.next()
+                #expect(launch.arguments.joined(separator: " ").contains("Test script"))
+                try consume(Data((#"{"type":"system","tools":["mcp__clipbuilder__query","mcp__clipbuilder__run_script"]}"# + "\n").utf8))
+                try consume(Data((#"{"type":"assistant","message":{"content":[{"type":"text","text":"No edits proposed."}]}}"# + "\n").utf8))
+                try consume(Data((#"{"type":"result","subtype":"success","result":"No edits proposed."}"# + "\n").utf8))
+                return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
+            }, routingAI: stub.service, scriptPreferences: ScriptPreferences(defaults: defaults))
+        let before = store.builder.document
+        model.request = record.name
+        await model.run()
+        #expect(model.runOrigin == .routed && model.canApply)
+        #expect(await counter.value() == 0)
+        let routedSession = try #require(model.session)
+        model.request = "an edited, unrun request"
+        await model.askAgentInstead()
+        #expect(await counter.value() == 1)
+        #expect(model.runOrigin == .agent && model.routedScriptName == nil)
+        #expect(model.runRequest == record.name && model.request == record.name)
+        #expect(model.session !== routedSession && !model.canApply)
+        #expect(store.builder.document == before && !model.offersSaveScript)
+        #expect(!FileManager.default.fileExists(atPath: stub.calls.path))
+        await model.discard()
     }
 }

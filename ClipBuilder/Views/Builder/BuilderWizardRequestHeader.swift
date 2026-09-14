@@ -4,6 +4,8 @@ struct BuilderWizardRequestHeader: View {
     @Bindable var model: WizardSheetModel
     @State private var showHelp = false
 
+    @AppStorage(ScriptPreferences.preferSavedScriptsKey) private var preferSavedScripts = true
+
     private let guidance = "B-roll chooses the first matching scene by ID; omit track to use the focused track. Clip numbers count visible clips on the track from left to right, including B-roll. ‘Cover all areas’ targets the selected B-roll clip."
 
     var body: some View {
@@ -45,14 +47,6 @@ struct BuilderWizardRequestHeader: View {
                 }
                 Spacer(minLength: 0)
                 Menu {
-                    if !model.scriptLibrary.recentScripts.isEmpty {
-                        Section("Recent scripts") {
-                            ForEach(model.scriptLibrary.recentScripts) { script in
-                                Button(script.name) { model.runRecentScript(script) }
-                                    .help("Run with last-used parameters after checking the current timeline. Review the preview before Apply.")
-                            }
-                        }
-                    }
                     ForEach(model.history, id: \.self) { request in
                         Button(request) { model.request = request }
                             .help("Use this request again against the current timeline.")
@@ -64,8 +58,8 @@ struct BuilderWizardRequestHeader: View {
                 .menuIndicator(.hidden)
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .disabled((model.history.isEmpty && model.scriptLibrary.recentScripts.isEmpty) || model.busy || (model.phase == .awaitingPrerequisites || model.phase == .awaitingReply) || !model.identityMatches)
-                .help("Recent Requests: the last ten distinct requests and five run scripts for this profile.")
+                .disabled(model.history.isEmpty || model.busy || (model.phase == .awaitingPrerequisites || model.phase == .awaitingReply) || !model.identityMatches)
+                .help("Recent Requests: the last ten distinct requests for this profile.")
                 Button("Supported requests", systemImage: "questionmark.circle") { showHelp.toggle() }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
@@ -73,6 +67,8 @@ struct BuilderWizardRequestHeader: View {
                     .popover(isPresented: $showHelp) {
                         ScrollView {
                             VStack(alignment: .leading, spacing: Theme.spaceM) {
+                                Toggle("Prefer saved scripts", isOn: $preferSavedScripts)
+                                    .help("Try a matching saved script before asking the agent. Every edit still requires Apply.")
                                 Text("Supported requests").font(.headline)
                                 Text(guidance).font(.callout).textSelection(.enabled)
                                 ForEach(model.examples, id: \.self) { example in

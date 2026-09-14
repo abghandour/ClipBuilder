@@ -202,10 +202,11 @@ nonisolated struct AIProviderSettings: Codable, Sendable {
 /// Static provider/task metadata ported from ai_cli.py.
 nonisolated enum AICatalog {
     // "wizard" stays the planning task's key for config back-compat.
-    static let tasks = ["analysis", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay", "naming", "curate", "search", "soundbites", "cover", "dedupe", "trim", "gap", "onboard"]
+    static let tasks = ["analysis", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay", "naming", "curate", "search", "soundbites", "cover", "dedupe", "trim", "gap", "onboard", "route"]
 
     static let taskLabels: [String: String] = [
         "builder_agent": "Builder editing",
+        "route": "Wizard routing",
         "analysis": "Video analysis",
         "wizard": "Reel planning",
         "critique": "Reel critique",
@@ -227,6 +228,7 @@ nonisolated enum AICatalog {
     ]
 
     static let taskDefaults: [String: String] = [
+        "route": "claude",
         "analysis": "claude",
         "wizard": "claude",
         "critique": "claude",
@@ -252,6 +254,9 @@ nonisolated enum AICatalog {
     /// providers whose CLI isn't installed; the same order drives mid-run
     /// failover when a provider errors out.
     static let recommendedChains: [String: [(provider: String, model: String)]] = [
+        "route": [("claude", "claude-haiku-4-5-20251001"),
+                  ("gemini", "gemini-2.5-flash"),
+                  ("codex", "gpt-5-mini")],
         // Frame tagging: multimodal + cheap matters most — 30 images/video.
         "analysis": [("gemini", "gemini-2.5-flash"),
                      ("claude", "claude-sonnet-4-6"),

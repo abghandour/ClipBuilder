@@ -9,6 +9,7 @@ final class ScriptRunModel {
     let engine: ScriptEngine
     let header: ScriptHeader
     let params: Data
+    let origin: String
     private(set) var diagnostic: ScriptDiagnostic?
     private(set) var summary = ""
     private(set) var duration: Double = 0
@@ -18,10 +19,10 @@ final class ScriptRunModel {
     var onLog: (@MainActor (String) -> Void)?
 
     init(session: BuilderScriptSession, header: ScriptHeader, params: Data,
-         confirmed: [BuilderCommand] = [], seconds: Double = 10,
+         confirmed: [BuilderCommand] = [], seconds: Double = 10, origin: String = "script",
          ensure: (@MainActor ([BuilderScriptStep]) async -> BuilderScriptResult)? = nil,
          identityMatches: @escaping @MainActor () -> Bool = { true }) {
-        self.header = header; self.params = params
+        self.header = header; self.params = params; self.origin = origin
         engine = ScriptEngine(seconds: seconds)
         let budget = BuilderRunBudget(BuilderAgentLimits())
         budget.scriptClock = engine.control
@@ -80,7 +81,7 @@ final class ScriptRunModel {
             if let record, let timelineID = session.timelineID {
                 let request = try requestText()
                 let audit = BuilderRunRecord(runUUID: session.runUUID, timelineID: timelineID,
-                    request: request, provider: "script", model: BuilderRunRedactor().text(header.name.isEmpty ? "ad hoc" : header.name, limit: 256),
+                    request: request, provider: origin, model: BuilderRunRedactor().text(header.name.isEmpty ? "ad hoc" : header.name, limit: 256),
                     durationSeconds: duration, status: diagnostic == nil ? .completed : .failed,
                     baselineRevision: session.baselineRevision, summary: summary,
                     libraryEffectsJSON: String(decoding: try JSONEncoder().encode(session.prerequisiteEffects), as: UTF8.self),

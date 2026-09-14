@@ -66,12 +66,19 @@ extension BuilderCommandCatalogTests {
         }
         for op in ["ensure_transcript", "ensure_people", "ensure_analysis"] { source += "builder.ops.\(op)({video:1});\n" }
         source += "builder.query({kind:'clips'});builder.summary();"
-        let result = await ScriptEngine().evaluate(source: source, bootstrap: bootstrap) { name, data in
+        // ~200 bridged calls each hop to the main actor; under the parallel suite the
+        // default 10 s wall budget can expire, so give this exhaustive script more room.
+        let result = await ScriptEngine(seconds: 60).evaluate(source: source, bootstrap: bootstrap) { name, data in
             calls.append((name, data))
             return Data(#"{"value":{"outcomes":[],"completed":true,"hasDocumentChanges":false}}"#.utf8)
         }
         #expect(result.diagnostic == nil)
-        #expect(calls.count == BuilderCommandCatalog.operations.count * 3 + 5)
+        let expectedCalls = BuilderCommandCatalog.operations.count * 3 + 5
+        // Never index past a short call list: that traps and kills the whole test host.
+        guard calls.count == expectedCalls else {
+            Issue.record("Expected \(expectedCalls) bridged calls, got \(calls.count): \(result.diagnostic?.reason ?? "no diagnostic")")
+            return
+        }
         for index in stride(from: 0, to: BuilderCommandCatalog.operations.count * 3, by: 3) {
             let wire = try JSONDecoder().decode(ScriptValue.self, from: calls[index].1)
             let flat = try JSONDecoder().decode(ScriptValue.self, from: calls[index + 1].1)

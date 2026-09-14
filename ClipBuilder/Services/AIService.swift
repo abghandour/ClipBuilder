@@ -172,6 +172,9 @@ actor AIService {
            let taskModel = config.taskModels[task], !taskModel.isEmpty {
             return (key, taskModel)
         }
+        if task == "route", let recommended = AICatalog.recommendedChains[task]?.first(where: { $0.provider == key }) {
+            return (key, recommended.model)
+        }
         let configured = config.providers[key]?.model
         let fallback = AICatalog.provider(key)?.defaultModel
         return (key, configured?.isEmpty == false ? configured : fallback)
@@ -265,6 +268,7 @@ actor AIService {
               timeout: TimeInterval = 300,
               timeoutForFrameCount: (@Sendable (Int) -> TimeInterval)? = nil,
               webAccess: Bool = false,
+              maximumAttempts: Int? = nil,
               log: (@Sendable (String) -> Void)? = nil,
               waiting: (@Sendable (_ provider: String, _ timeout: TimeInterval) -> Void)? = nil) async throws -> AIResponse {
         let emit = log ?? { _ in }
@@ -286,7 +290,7 @@ actor AIService {
         var loadedFallbackFrames: [AIFrame]?
         var lastError: Error?
         var tooLongError: Error?
-        for (index, candidate) in candidates.enumerated() {
+        for (index, candidate) in candidates.prefix(maximumAttempts.map { max(1, $0) } ?? candidates.count).enumerated() {
             if index > 0 {
                 let label = AICatalog.provider(candidate.provider)?.label ?? candidate.provider
                 emit("Falling back to \(label) (\(candidate.model ?? "default model"))...")
@@ -311,7 +315,8 @@ actor AIService {
                 let text = try await callProvider(key: candidate.provider, model: candidate.model,
                                                   prompt: prompt, frames: candidateFrames, video: candidateVideo,
                                                   timeout: candidateTimeout,
-                                                  webAccess: webAccess, emit: emit)
+                                                  webAccess: webAccess,
+                                                  maximumRetries: maximumAttempts.map { max(0, $0 - 1) } ?? 2, emit: emit)
                 // The candidate that answered is the provenance — a
                 // prediction made before the call would misattribute
                 // anything produced after a failover.
@@ -349,7 +354,7 @@ actor AIService {
 
     private func callProvider(key: String, model: String?, prompt: String,
                               frames: [AIFrame]?, video: URL? = nil, timeout: TimeInterval,
-                              webAccess: Bool = false,
+                              webAccess: Bool = false, maximumRetries: Int = 2,
                               emit: @escaping @Sendable (String) -> Void) async throws -> String {
         guard let provider = AICatalog.provider(key) else {
             throw AIError.notConfigured("Unknown AI provider: \(key)")
@@ -372,7 +377,7 @@ actor AIService {
         switch key {
         case "claude":
             return try await callClaude(binary: binary, prompt: prompt, frames: effectiveFrames,
-                                        model: model, timeout: timeout, webAccess: webAccess, log: emit)
+                                        model: model, timeout: timeout, webAccess: webAccess, maxRetries: maximumRetries, log: emit)
         case "gemini":
             // Gemini is video-native: hand it the actual file (motion,
             // impact, audio) instead of sampled stills when one is offered.
@@ -406,7 +411,7 @@ actor AIService {
     // MARK: - Claude (stream-json protocol)
 
     private func callClaude(binary: URL, prompt: String, frames: [AIFrame]?,
-                            model: String?, timeout: TimeInterval, webAccess: Bool = false,
+                            model: String?, timeout: TimeInterval, webAccess: Bool = false, maxRetries: Int = 2,
                             log: @Sendable (String) -> Void) async throws -> String {
         var preparation = PerfSignpost.begin("AIInput", metadata: "claude")
         defer { PerfSignpost.end(preparation) }
@@ -444,7 +449,6 @@ actor AIService {
 
         PerfSignpost.end(preparation)
         preparation = nil
-        let maxRetries = 2
         for attempt in 0...maxRetries {
             let result: ProcessResult
             do {

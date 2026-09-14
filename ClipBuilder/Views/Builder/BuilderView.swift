@@ -192,17 +192,20 @@ struct BuilderView: View {
         }
         .onAppear {
             model.undoManager = undoManager
+            browserTab = ClipBrowserPane.restoredTab(browserTab)
             wizardModel = store.builderWizard
-            if browserTab == "wizard" { ensureWizard() }
+            if browserTab == "wizard" || browserTab == "scripts" { ensureWizard() }
         }
         .onChange(of: browserTab) { _, tab in
-            if tab == "wizard" { ensureWizard() }
+            let restored = ClipBrowserPane.restoredTab(tab)
+            if restored != tab { browserTab = restored; return }
+            if tab == "wizard" || tab == "scripts" { ensureWizard() }
         }
         .onChange(of: wizardModel?.identityMatches) { _, matches in
             if matches == false, wizardModel?.identityMatches == false {
                 wizardModel?.dismiss()
                 wizardModel = nil
-                if browserTab == "wizard" { ensureWizard() }
+                if browserTab == "wizard" || browserTab == "scripts" { ensureWizard() }
             }
         }
         .task(id: wizardModel.map { ObjectIdentifier($0) }) {

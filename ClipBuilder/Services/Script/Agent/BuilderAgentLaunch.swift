@@ -95,6 +95,7 @@ nonisolated enum BuilderAgentPrompt {
     The model is a timeline with video clips, tracks, source ranges, crops, overlays and Library snapshots.
     query accepts {query:{kind,offset,limit,...}}; get_document_summary returns compact clip rows.
     A refused query keeps the session open: correct its arguments and retry; a refused run_script is rolled back and the session stays open: fix the arguments and retry.
+    Prefer a single self-contained script through run_script over many individual edit tools when the change is expressible as one. Keep scripts parameterised so they can be saved and reused.
     run_script accepts {steps:[{command:{op,...},bind?:name}]}; bindings persist across calls; write $name (or $name.tail), never {{name}} or ${name}.
     split_clip accepts precision 'speech' for 0.05 s cuts; 'ordinary' snaps to 0.5 s.
     Use split_clip_evenly with parts 2–12 for equal pieces; it defaults to speech precision.
