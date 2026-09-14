@@ -1,3 +1,5 @@
+import AVFoundation
+import AVKit
 import SwiftUI
 
 /// Poster-frame preview of the composited 9:16 output at the playhead: each
@@ -44,12 +46,15 @@ struct PreviewPane: View {
                         clipLayer(clip: clip, time: time, frame: frame, model: model,
                                   area: layout?.area(forTrack: clip.track))
                     }
-                    ForEach(model.document.imageOverlays.filter {
+                    // Overlay-block items count too: the still shows what the
+                    // render burns in at this instant.
+                    let overlays = model.document.expandingOverlayBlocks()
+                    ForEach(overlays.imageOverlays.filter {
                         $0.startTime <= time && time < $0.endTime
                     }) { overlay in
                         ImageOverlayLayer(overlay: overlay, frame: frame)
                     }
-                    ForEach(model.document.textOverlays.filter {
+                    ForEach(overlays.textOverlays.filter {
                         $0.startTime <= time && time < $0.endTime
                     }) { overlay in
                         TextOverlayLayer(overlay: overlay, frame: frame)
@@ -83,6 +88,14 @@ struct PreviewPane: View {
                 }
             }
             .frame(width: frame.width, height: frame.height)
+            .overlay {
+                // A rendered slice of the final video plays over the still and
+                // drives the playhead while it runs.
+                if let preview = store.builderPreview {
+                    InPlacePreviewPlayer(preview: preview)
+                        .frame(width: frame.width, height: frame.height)
+                }
+            }
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .frame(width: geo.size.width, height: geo.size.height)
         }
@@ -539,5 +552,83 @@ private struct TextOverlayLayer: View {
             $0.xFrac = min(max(($0.xFrac ?? 0.5) + x, 0), 1)
             $0.yFrac = min(max(($0.yFrac ?? 0.5) + y, 0), 1)
         }
+    }
+}
+
+/// Plays a rendered slice of the final video in the monitor. The player's
+/// clock moves the timeline playhead; scrubbing the ruler (a playhead change
+/// the player did not make) or reaching the end stops playback and returns
+/// the monitor to its still.
+struct InPlacePreviewPlayer: View {
+    @Environment(AppStore.self) private var store
+    let preview: AppStore.BuilderInPlacePreview
+
+    @State private var player: AVPlayer?
+    @State private var timeObserver: Any?
+    @State private var endObserver: NSObjectProtocol?
+    /// The last playhead value this player wrote; anything else is a scrub.
+    @State private var reported: Double?
+
+    var body: some View {
+        MonitorPlayerView(player: player)
+            .onAppear(perform: start)
+            .onDisappear(perform: tearDown)
+            .onChange(of: preview.url) { _, _ in tearDown(); start() }
+            .onChange(of: store.builder.playhead) { _, playhead in
+                guard let reported, abs(playhead - reported) > 0.25 else { return }
+                store.stopBuilderPreview()
+            }
+            .accessibilityLabel("Final preview \(preview.window.lowerBound.timecode) to \(preview.window.upperBound.timecode)")
+    }
+
+    private func start() {
+        let item = AVPlayerItem(url: preview.url)
+        let player = AVPlayer(playerItem: item)
+        let window = preview.window
+        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 30), queue: .main) { time in
+            guard time.isNumeric else { return }
+            let playhead = min(window.upperBound, window.lowerBound + time.seconds)
+            Task { @MainActor in
+                reported = playhead
+                store.builder.playhead = playhead
+            }
+        }
+        endObserver = NotificationCenter.default.addObserver(forName: AVPlayerItem.didPlayToEndTimeNotification,
+                                                             object: item, queue: .main) { _ in
+            Task { @MainActor in
+                reported = window.upperBound
+                store.builder.playhead = window.upperBound
+                // Continue into the next cached slice, or finish.
+                store.advanceBuilderPreview()
+            }
+        }
+        reported = window.lowerBound
+        self.player = player
+        player.play()
+    }
+
+    private func tearDown() {
+        if let timeObserver { player?.removeTimeObserver(timeObserver) }
+        if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        timeObserver = nil; endObserver = nil
+        player?.pause()
+        player = nil
+    }
+}
+
+/// Bare player surface: no inline controls, so the timeline stays the transport.
+struct MonitorPlayerView: NSViewRepresentable {
+    let player: AVPlayer?
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .none
+        view.showsFullScreenToggleButton = false
+        view.videoGravity = .resizeAspect
+        return view
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.player = player
     }
 }

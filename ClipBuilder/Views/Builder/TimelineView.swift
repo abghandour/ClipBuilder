@@ -1412,33 +1412,46 @@ struct OverlayChoiceItems: View {
 }
 
 /// Where the pointer was when a lane's context menu opened, as a time.
-/// AppKit reports the mouse in screen coordinates; converting through the
-/// lane's window gives the x SwiftUI's global space uses. Hover is the
-/// fallback when there is no window (previews, tests).
-@Observable @MainActor final class LaneClickLocator {
-    var frame: CGRect = .zero
+/// Nothing is written during layout: the lane's position is read from an
+/// anchor NSView only when the menu asks, so the locator can never feed a
+/// layout loop. Hover is the fallback when there is no window (previews,
+/// tests). Deliberately not Observable: a per-frame write into an observed
+/// object re-rendered the lane on every layout pass and tripped AppKit's
+/// update-constraints guard.
+@MainActor final class LaneClickLocator {
     var hoverX: CGFloat = 0
-    weak var window: NSWindow?
+    weak var anchor: NSView?
 
     func time(pointsPerSecond: Double) -> Double {
         var x = hoverX
-        if let window, frame != .zero {
-            x = window.convertPoint(fromScreen: NSEvent.mouseLocation).x - frame.minX
+        if let anchor, let window = anchor.window {
+            // Anchor origin in window space; the lane's left edge in the
+            // same space as the pointer.
+            let laneMinX = anchor.convert(anchor.bounds, to: nil).minX
+            x = window.convertPoint(fromScreen: NSEvent.mouseLocation).x - laneMinX
         }
         return max(0, BuilderTimelineModel.snap(Double(x / pointsPerSecond)))
     }
 }
 
+/// A zero-size AppKit anchor at a lane's top-leading corner.
+private struct LaneAnchor: NSViewRepresentable {
+    let locator: LaneClickLocator
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        locator.anchor = view
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if locator.anchor !== nsView { locator.anchor = nsView }
+    }
+}
+
 extension View {
     func laneClickTracking(_ locator: LaneClickLocator) -> some View {
-        background(
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear { locator.frame = proxy.frame(in: .global) }
-                    .onChange(of: proxy.frame(in: .global)) { _, frame in locator.frame = frame }
-                    .background(WindowReader { locator.window = $0 })
-            }
-        )
+        background(alignment: .topLeading) {
+            LaneAnchor(locator: locator).frame(width: 0, height: 0)
+        }
         .onContinuousHover { phase in
             if case .active(let point) = phase { locator.hoverX = point.x }
         }

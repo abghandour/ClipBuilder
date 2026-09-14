@@ -335,6 +335,29 @@ final class AppStore {
     var builderLog: [String] = []
     private var builderRenderTask: Task<Void, Never>?
 
+    /// A rendered slice of the final video that plays in the Builder monitor.
+    nonisolated struct BuilderInPlacePreview: Sendable, Equatable {
+        /// Output range of the timeline this file covers.
+        var window: ClosedRange<Double>
+        var url: URL
+        /// Content digest of everything that produced this file.
+        var key: String
+    }
+    /// The slice currently playing in place; nil when the monitor shows the still.
+    var builderPreview: BuilderInPlacePreview?
+    /// The window being rendered for the user right now (not a prefetch).
+    var builderPreviewWindow: ClosedRange<Double>?
+    /// The range the last in-place playback covered, for Replay.
+    var builderPreviewLastPlayed: ClosedRange<Double>?
+    private var builderPreviewTask: Task<Void, Never>?
+    private var builderPrefetchTask: Task<Void, Never>?
+    /// Rendered slices by content key, most recently used last.
+    private var builderPreviewCache: [String: BuilderInPlacePreview] = [:]
+    private var builderPreviewCacheOrder: [String] = []
+    private static let builderPreviewCacheLimit = 12
+    /// Where the playback chain started, so Replay covers the whole run.
+    private var builderPreviewChainStart: Double?
+
     // Instagram
     var igAccounts: [IGAccountRecord] = []
     var igSelectedAccountID: Int64?
@@ -1020,6 +1043,7 @@ final class AppStore {
     /// wait for the database to have them, so nothing is lost to the
     /// autosave debounce or an unawaited task when the process exits.
     func flushForTermination() async {
+        clearBuilderPreviewCache()
         guard let database else { return }
         builder.cancelPendingAutosave()
         if let timelineID = builder.timelineID {
@@ -4249,7 +4273,13 @@ final class AppStore {
     /// final output, but keep the resulting file temporary. This is the
     /// honest alternative to the instant AVFoundation preview, which cannot
     /// reproduce crops, captions, transitions, or overlays.
-    func renderBuilderExactPreview() async -> URL? {
+    /// Seconds of final footage the Preview sheet renders from the playhead.
+    nonisolated static let exactPreviewWindow: Double = 5
+
+    /// Renders `seconds` of the final pipeline starting at `playhead` (clamped
+    /// so the window stays inside the timeline) to a temporary file. Nothing
+    /// is added to the Library; the sheet deletes the file when done.
+    func renderBuilderExactPreview(from playhead: Double, seconds: Double = AppStore.exactPreviewWindow) async -> URL? {
         guard let database, !isBuilderRendering, !isBuilderPreviewRendering else { return nil }
         guard !builder.document.videoTrack.isEmpty else {
             presentError("Add clips to the timeline first.")
@@ -4258,9 +4288,10 @@ final class AppStore {
 
         isBuilderPreviewRendering = true
         defer { isBuilderPreviewRendering = false }
-        appendLog(\.builderLog, ["— Exact preview: rendering \(builder.document.videoTrack.count) clip(s) —"], channel: "builder-preview")
+        let window = Self.exactPreviewRange(from: playhead, seconds: seconds, totalDuration: builder.totalDuration)
+        let document = MultitrackRenderer.windowed(builder.document, from: window.lowerBound, to: window.upperBound)
+        appendLog(\.builderLog, ["— Exact preview: rendering \(window.lowerBound.timecode)–\(window.upperBound.timecode) (\(document.videoTrack.count) clip(s)) —"], channel: "builder-preview")
 
-        let document = builder.document
         let scenes = builder.scenes
         let profile = activeProfile
         let renderer = multitrackRenderer
@@ -4279,6 +4310,213 @@ final class AppStore {
             presentError("Exact preview failed", error)
             return nil
         }
+    }
+
+    /// Pressing Preview: play the slice of the final video that starts at
+    /// the playhead. A cached slice plays at once; otherwise
+    /// `exactPreviewWindow` seconds are rendered first. While a slice plays
+    /// the next one is rendered ahead, so playback continues past the first
+    /// slice whenever the following one is ready. Nothing enters the Library.
+    func startBuilderPreview(from time: Double? = nil) {
+        stopBuilderPreview()
+        guard !builder.document.videoTrack.isEmpty else { presentError("Add clips to the timeline first."); return }
+        guard !isBuilderRendering else { presentError("Wait for the Library render to finish."); return }
+        pruneBuilderPreviewCache()
+        let playhead = time ?? builder.playhead
+        let window = Self.exactPreviewRange(from: playhead, seconds: Self.exactPreviewWindow, totalDuration: builder.totalDuration)
+        guard window.upperBound > window.lowerBound else { return }
+        builderPreviewChainStart = window.lowerBound
+        builderPreviewLastPlayed = nil
+        if let cached = cachedBuilderPreview(for: window) {
+            play(cached)
+            return
+        }
+        builderPreviewWindow = window
+        builderPreviewTask = Task { [weak self] in
+            guard let self else { return }
+            let slice = await renderBuilderPreviewSlice(window: window)
+            guard !Task.isCancelled else { return }
+            builderPreviewWindow = nil
+            guard let slice else { builderPreviewChainStart = nil; return }
+            play(slice)
+        }
+    }
+
+    /// Plays the last run again from where it started (cached, so instant).
+    func replayBuilderPreview() {
+        guard let range = builderPreviewLastPlayed else { return }
+        startBuilderPreview(from: range.lowerBound)
+    }
+
+    /// Stops in-place playback and any render in flight. Cached files stay
+    /// for the next press; `pruneBuilderPreviewCache` drops stale ones.
+    func stopBuilderPreview() {
+        builderPreviewTask?.cancel()
+        builderPreviewTask = nil
+        builderPrefetchTask?.cancel()
+        builderPrefetchTask = nil
+        builderPreviewWindow = nil
+        if let preview = builderPreview {
+            builderPreview = nil
+            if let start = builderPreviewChainStart { builderPreviewLastPlayed = start...builder.playhead }
+            _ = preview
+        }
+        builderPreviewChainStart = nil
+    }
+
+    /// The current slice ended: continue with the next cached slice if the
+    /// prefetch got there, otherwise finish and offer Replay.
+    func advanceBuilderPreview() {
+        guard let current = builderPreview else { return }
+        let end = current.window.upperBound
+        if end < builder.totalDuration - 0.05 {
+            let next = Self.exactPreviewRange(from: end, seconds: Self.exactPreviewWindow, totalDuration: builder.totalDuration)
+            if next.lowerBound >= end - 0.001, let cached = cachedBuilderPreview(for: next) {
+                play(cached)
+                return
+            }
+        }
+        builderPreviewLastPlayed = (builderPreviewChainStart ?? current.window.lowerBound)...end
+        builderPrefetchTask?.cancel()
+        builderPrefetchTask = nil
+        builderPreview = nil
+        builderPreviewChainStart = nil
+    }
+
+    private func play(_ slice: BuilderInPlacePreview) {
+        touchBuilderPreviewCache(slice.key)
+        builder.playhead = slice.window.lowerBound
+        builderPreview = slice
+        prefetchBuilderPreview(after: slice)
+    }
+
+    /// Renders the slice after `slice` while it plays, if it is not cached.
+    private func prefetchBuilderPreview(after slice: BuilderInPlacePreview) {
+        builderPrefetchTask?.cancel()
+        let end = slice.window.upperBound
+        guard end < builder.totalDuration - 0.05 else { return }
+        let next = Self.exactPreviewRange(from: end, seconds: Self.exactPreviewWindow, totalDuration: builder.totalDuration)
+        guard next.lowerBound >= end - 0.001, cachedBuilderPreview(for: next) == nil else { return }
+        builderPrefetchTask = Task { [weak self] in
+            guard let self else { return }
+            _ = await renderBuilderPreviewSlice(window: next)
+        }
+    }
+
+    /// Renders one window and files it in the cache under its content key.
+    private func renderBuilderPreviewSlice(window: ClosedRange<Double>) async -> BuilderInPlacePreview? {
+        guard let key = builderPreviewKey(for: window) else { return nil }
+        if let cached = builderPreviewCache[key], FileManager.default.fileExists(atPath: cached.url.path) { return cached }
+        guard let rendered = await renderBuilderExactPreview(from: window.lowerBound, seconds: window.upperBound - window.lowerBound) else { return nil }
+        guard !Task.isCancelled else { try? FileManager.default.removeItem(at: rendered); return nil }
+        // The render's own key may differ if the document changed meanwhile.
+        guard builderPreviewKey(for: window) == key else { try? FileManager.default.removeItem(at: rendered); return nil }
+        let slice = BuilderInPlacePreview(window: window, url: rendered, key: key)
+        insertBuilderPreviewCache(slice)
+        return slice
+    }
+
+    private func cachedBuilderPreview(for window: ClosedRange<Double>) -> BuilderInPlacePreview? {
+        guard let key = builderPreviewKey(for: window), let slice = builderPreviewCache[key] else { return nil }
+        guard FileManager.default.fileExists(atPath: slice.url.path) else { removeBuilderPreviewCache(key); return nil }
+        return slice
+    }
+
+    private func insertBuilderPreviewCache(_ slice: BuilderInPlacePreview) {
+        if let old = builderPreviewCache[slice.key], old.url != slice.url { try? FileManager.default.removeItem(at: old.url) }
+        builderPreviewCache[slice.key] = slice
+        touchBuilderPreviewCache(slice.key)
+        while builderPreviewCacheOrder.count > Self.builderPreviewCacheLimit, let oldest = builderPreviewCacheOrder.first {
+            if oldest == builderPreview?.key { break }
+            removeBuilderPreviewCache(oldest)
+        }
+    }
+
+    private func touchBuilderPreviewCache(_ key: String) {
+        builderPreviewCacheOrder.removeAll { $0 == key }
+        builderPreviewCacheOrder.append(key)
+    }
+
+    private func removeBuilderPreviewCache(_ key: String) {
+        builderPreviewCacheOrder.removeAll { $0 == key }
+        if let slice = builderPreviewCache.removeValue(forKey: key) {
+            let url = slice.url
+            Task.detached { try? FileManager.default.removeItem(at: url) }
+        }
+    }
+
+    /// Drops every cached slice whose window no longer produces the same
+    /// content (the timeline changed under it). Correctness over speed: a
+    /// slice that is playing is stopped too. Called on every document change
+    /// and before each press.
+    func pruneBuilderPreviewCache() {
+        for (key, slice) in builderPreviewCache where builderPreviewKey(for: slice.window) != key {
+            if builderPreview?.key == key {
+                builderPreview = nil
+                builderPreviewChainStart = nil
+                builderPrefetchTask?.cancel()
+                builderPrefetchTask = nil
+            }
+            removeBuilderPreviewCache(key)
+        }
+        // Replay must not replay a stale run.
+        if let range = builderPreviewLastPlayed {
+            let window = Self.exactPreviewRange(from: range.lowerBound, seconds: Self.exactPreviewWindow, totalDuration: builder.totalDuration)
+            if cachedBuilderPreview(for: window) == nil { builderPreviewLastPlayed = nil }
+        }
+    }
+
+    /// Deletes every cached slice (quit).
+    func clearBuilderPreviewCache() {
+        stopBuilderPreview()
+        for key in Array(builderPreviewCache.keys) { removeBuilderPreviewCache(key) }
+        builderPreviewLastPlayed = nil
+    }
+
+    /// Everything the render of `window` depends on, from the document side:
+    /// the windowed document itself, the scene facts the renderer reads for
+    /// its clips, the brand profile (captions, fonts) and the framing camera.
+    private func builderPreviewKey(for window: ClosedRange<Double>) -> String? {
+        Self.builderPreviewKey(document: builder.document, scenes: builder.scenes, profile: activeProfile,
+                               camera: WizardDefaults.fallbackFramingCamera, window: window)
+    }
+
+    nonisolated static func builderPreviewKey(document: TimelineDocument, scenes: [SceneRecord], profile: BrandProfile,
+                                              camera: String, window: ClosedRange<Double>) -> String? {
+        struct SceneFacts: Encodable {
+            var id: Int64; var videoPath: String; var startTime: Double; var endTime: Double
+            var centerStagePathJSON: String?; var cropXFrac: Double?; var freeCropsJSON: String?; var wide: Bool
+        }
+        struct Evidence: Encodable {
+            var document: TimelineDocument
+            /// The renderer's own view of each clip (source path, trimmed
+            /// range, speed, effects): the document encoder omits some of
+            /// these fields depending on the clip's kind.
+            var clips: [MultitrackRenderer.ResolvedClip]
+            var scenes: [SceneFacts]
+            var profile: BrandProfile
+            var camera: String
+            var seconds: Double
+        }
+        let windowed = MultitrackRenderer.windowed(document, from: window.lowerBound, to: window.upperBound)
+        let used = Set(windowed.videoTrack.compactMap(\.sceneID))
+        let facts = scenes.filter { used.contains($0.id) }.sorted { $0.id < $1.id }.map {
+            SceneFacts(id: $0.id, videoPath: $0.videoPath, startTime: $0.startTime, endTime: $0.endTime,
+                       centerStagePathJSON: $0.centerStagePathJSON, cropXFrac: $0.cropXFrac,
+                       freeCropsJSON: $0.freeCropsJSON, wide: $0.wide)
+        }
+        let evidence = Evidence(document: windowed, clips: MultitrackRenderer.resolveClips(document: windowed, scenes: scenes),
+                                scenes: facts, profile: profile, camera: camera,
+                                seconds: window.upperBound - window.lowerBound)
+        return try? RenderSegmentCache.key(evidence, version: "builder-preview-slice-v1")
+    }
+
+    /// The preview window: `seconds` from the playhead, pulled back so it
+    /// ends at the timeline's end, never past it, never before 0.
+    nonisolated static func exactPreviewRange(from playhead: Double, seconds: Double, totalDuration: Double) -> ClosedRange<Double> {
+        let length = max(0, min(seconds, totalDuration))
+        let start = min(max(0, playhead), max(0, totalDuration - length))
+        return start...(start + length)
     }
 
     // MARK: - Manual build

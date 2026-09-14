@@ -434,7 +434,7 @@ actor MultitrackRenderer {
             var blocks: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)] = []
             for item in document.soundTrack.sorted(by: { $0.startTime < $1.startTime }) {
                 guard let url = musicLookup[item.name], item.duration > 0 else { continue }
-                blocks.append((item.startTime, item.duration, url, item.volume, 0))
+                blocks.append((item.startTime, item.duration, url, item.volume, item.sourceOffset))
             }
             // A bumper owns the sound as well as the picture: cut every
             // music block around the measured bumper spans. Each remaining
@@ -442,7 +442,7 @@ actor MultitrackRenderer {
             blocks = blocks.flatMap { block in
                 TimelineDocument.subtracting(bumperSpans, from: block.start..<(block.start + block.duration))
                     .map { (start: $0.lowerBound, duration: $0.upperBound - $0.lowerBound,
-                            music: block.music, volume: block.volume, offset: $0.lowerBound - block.start) }
+                            music: block.music, volume: block.volume, offset: block.offset + ($0.lowerBound - block.start)) }
             }
             if !blocks.isEmpty {
                 var filled: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)] = []
@@ -590,7 +590,6 @@ actor MultitrackRenderer {
     nonisolated static func removingMissingEdgeBumpers(_ input: TimelineDocument,
         exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) },
         emit: (String) -> Void = { _ in }) -> TimelineDocument {
-        var document = input
         let missing = input.videoTrack.filter { $0.bumper && !exists($0.videoFile ?? "") }
         var logged: Set<String> = []
         for clip in missing where logged.insert(clip.videoFile ?? clip.uid.uuidString).inserted {
@@ -616,6 +615,23 @@ actor MultitrackRenderer {
             }
         }
         upper = max(lower, upper)
+        return windowed(input, from: lower, to: upper)
+    }
+
+    /// The document restricted to the output range `lower..<upper` and
+    /// rebased so `lower` becomes 0. Straddling clips keep their source
+    /// position (speed-aware); sound items keep their place in the song via
+    /// `sourceOffset`; overlays, overlay blocks and crop blocks are clipped.
+    /// Bumpers are treated like any other clip: the overlapping part of their
+    /// span survives. A transition into the first surviving clip is ignored
+    /// by the join planner, so it needs no special handling here.
+    nonisolated static func windowed(_ input: TimelineDocument, from lower: Double, to upper: Double) -> TimelineDocument {
+        // Overlay blocks are expanded first: their items are placed relative
+        // to the block, so trimming the block would silently drop items that
+        // start after the cut. Expansion is idempotent for the renderer.
+        let input = input.expandingOverlayBlocks()
+        var document = input
+        let lower = max(0, lower), upper = max(lower, upper)
         document.videoTrack = input.videoTrack.compactMap { item in
             let start = max(lower, item.startTime)
             let stop = min(upper, item.startTime + item.duration)
@@ -630,14 +646,19 @@ actor MultitrackRenderer {
             let start = max(lower, item.startTime), stop = min(upper, item.startTime + item.duration)
             guard stop > start else { return nil }
             var item = item
+            item.sourceOffset += start - item.startTime
             item.startTime = start - lower
             item.duration = stop - start
             return item
         }
+        // An overlay already on screen at the cut is shown settled, not
+        // animating in again; one that outlives the window does not animate out.
         document.textOverlays = input.textOverlays.compactMap { item in
             let start = max(lower, item.startTime), stop = min(upper, item.endTime)
             guard stop > start else { return nil }
             var item = item
+            if item.startTime < lower { item.transIn = "cut" }
+            if item.endTime > upper { item.transOut = "cut" }
             item.startTime = start - lower
             item.endTime = stop - lower
             return item
@@ -646,6 +667,8 @@ actor MultitrackRenderer {
             let start = max(lower, item.startTime), stop = min(upper, item.endTime)
             guard stop > start else { return nil }
             var item = item
+            if item.startTime < lower { item.transIn = "cut" }
+            if item.endTime > upper { item.transOut = "cut" }
             item.startTime = start - lower
             item.endTime = stop - lower
             return item

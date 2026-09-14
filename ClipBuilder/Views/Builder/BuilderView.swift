@@ -9,7 +9,6 @@ struct BuilderView: View {
     @Environment(\.undoManager) private var undoManager
 
     @State private var playingClip: TimelineClip?
-    @State private var showPreview = false
     @State private var showScenePicker = false
     @State private var showBRollPicker = false
     @AppStorage("builder.browserTab") private var browserTab = "scenes"
@@ -36,8 +35,7 @@ struct BuilderView: View {
                     // The preview only needs room for its controls; the
                     // inspector may take most of the width when someone is
                     // editing settings rather than watching.
-                    BuilderWorkspacePreview(onOpenPreview: { showPreview = true },
-                                            onAddClip: { showScenePicker = true })
+                    BuilderWorkspacePreview(onAddClip: { showScenePicker = true })
                         .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
                         .layoutPriority(1)
                     BuilderInspector()
@@ -226,9 +224,6 @@ struct BuilderView: View {
                         title: model.scene(for: clip)?.videoFilename ?? "Clip",
                         startTime: clip.sourceStart ?? 0,
                         endTime: (clip.sourceStart ?? 0) + clip.duration)
-        }
-        .sheet(isPresented: $showPreview) {
-            TimelinePreviewSheet()
         }
         .sheet(isPresented: $showScenePicker) {
             BuilderScenePickerSheet()

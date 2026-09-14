@@ -4,6 +4,8 @@ import SwiftUI
 struct ProviderStatusRow: View {
     @Environment(AppStore.self) private var store
     @State private var model = ProviderStatusModel()
+    /// Inline in the status bar: no leading-aligned fill or bottom padding.
+    var compact = false
 
     private var binaries: [String: String] {
         Dictionary(uniqueKeysWithValues: AICatalog.providers.map { provider in
@@ -37,9 +39,9 @@ struct ProviderStatusRow: View {
         }
         .font(.caption)
         .controlSize(.mini)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Theme.spaceM)
-        .padding(.bottom, model.items.isEmpty ? 0 : Theme.spaceS)
+        .frame(maxWidth: compact ? nil : .infinity, alignment: .leading)
+        .padding(.horizontal, compact ? 0 : Theme.spaceM)
+        .padding(.bottom, compact || model.items.isEmpty ? 0 : Theme.spaceS)
         .task(id: binaries) {
             await model.refresh(binaries: binaries, force: true)
         }
@@ -61,7 +63,6 @@ struct ProviderStatusRow: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .fixedSize()
         }
         .contentShape(.rect)
     }

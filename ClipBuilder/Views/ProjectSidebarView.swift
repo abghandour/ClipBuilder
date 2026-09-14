@@ -108,8 +108,6 @@ struct ProjectSidebarView: View {
                 }
             }
             .listStyle(.sidebar)
-
-            ProviderStatusRow()
         }
         .padding(.horizontal, Theme.spaceS)
         .padding(.top, Theme.spaceS)

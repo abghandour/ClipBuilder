@@ -14,20 +14,10 @@ struct AppStatusBar: View {
     var body: some View {
         VStack(spacing: 0) {
             Divider()
+            // One always-visible toolbar: provider lights, the running
+            // activity (or the latest log line), and the log controls.
+            // Double-click opens the drawer with every activity and the log.
             header
-            if !activities.isEmpty {
-                Divider()
-                ScrollView {
-                    VStack(spacing: Theme.spaceXS) {
-                        ForEach(activities) { activity in
-                            activityRow(activity)
-                        }
-                    }
-                    .padding(.horizontal, Theme.spaceM)
-                    .padding(.vertical, Theme.spaceXS)
-                }
-                .frame(height: min(CGFloat(activities.count) * 32 + 8, 136))
-            }
             if store.wizardFailureMessage != nil {
                 GenerationFailureNotice().padding(Theme.spaceS)
             }
@@ -35,6 +25,19 @@ struct AppStatusBar: View {
                 AnalysisCompletionNotice(completion: completion).padding(Theme.spaceS)
             }
             if logExpanded {
+                if activities.count > 1 {
+                    Divider()
+                    ScrollView {
+                        VStack(spacing: Theme.spaceXS) {
+                            ForEach(activities) { activity in
+                                activityRow(activity)
+                            }
+                        }
+                        .padding(.horizontal, Theme.spaceM)
+                        .padding(.vertical, Theme.spaceXS)
+                    }
+                    .frame(height: min(CGFloat(activities.count) * 32 + 8, 136))
+                }
                 Divider()
                 AppLogDrawer(lines: lines).frame(height: 200)
             }
@@ -53,7 +56,26 @@ struct AppStatusBar: View {
 
     private var header: some View {
         HStack(spacing: Theme.spaceS) {
-            Text("App Log").font(.caption.bold())
+            ProviderStatusRow(compact: true)
+            Divider().frame(height: 16)
+            if let first = activities.first {
+                activityRow(first)
+                    .frame(maxWidth: 560, alignment: .leading)
+                if activities.count > 1 {
+                    Text("+\(activities.count - 1)")
+                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .help(activities.dropFirst().map { "\(AppLogChannels.title($0.channel)): \($0.detail)" }
+                            .joined(separator: "\n") + "\nDouble-click to see every activity")
+                        .accessibilityLabel("\(activities.count - 1) more activities")
+                }
+            } else {
+                Text(StatusBarSummary(store: store).title)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: Theme.spaceS)
+            // Recovery actions appear only when something needs recovering;
+            // an always-present menu that is usually empty reads as broken.
+            recoveryActions
             Picker("App Log section", selection: $channelFilter) {
                 Text("All sections").tag("")
                 ForEach(AppLogChannels.available(in: store.unifiedLog, selection: channelFilter), id: \.self) { channel in
@@ -61,30 +83,25 @@ struct AppStatusBar: View {
                 }
             }
             .labelsHidden()
-            .frame(width: 180)
-            .help("Filter messages by section")
+            .frame(width: 150)
+            .help("Filter log messages by section")
             Text("\(lines.count) lines").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-            if activities.isEmpty {
-                Text(StatusBarSummary(store: store).title)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            // Recovery actions appear only when something needs recovering;
-            // an always-present menu that is usually empty reads as broken.
-            recoveryActions
             Toggle("Verbose", isOn: $verboseLog)
                 .toggleStyle(.checkbox)
                 .help("Include the full AI prompt in logs")
             LogActions(lines: lines.map(AppLogDrawer.render)) { store.clearUnifiedLog(channel: channelFilter) }
             Button(logExpanded ? "Hide Log" : "Show Log",
                    systemImage: logExpanded ? "chevron.down" : "chevron.up", action: toggleLog)
-                .help("Expand or collapse App Log. You can also double-click its header.")
+                .help("Expand or collapse the App Log and every running activity. You can also double-click this bar.")
                 .accessibilityValue(logExpanded ? "Expanded" : "Collapsed")
         }
         .controlSize(.small)
         .padding(.horizontal, Theme.spaceM)
-        .padding(.vertical, Theme.spaceXS)
-        .frame(minHeight: 32)
+        // A fixed height: the bar sits in the window root, and a height that
+        // depends on its own content can oscillate between layout passes and
+        // trip AppKit's update-constraints guard.
+        .frame(height: 32)
+        .clipped()
         .contentShape(Rectangle())
         .onTapGesture(count: 2, perform: toggleLog)
         .accessibilityElement(children: .contain)
@@ -143,8 +160,8 @@ struct AppStatusBar: View {
     private func activityRow(_ activity: StatusBarSummary.Activity) -> some View {
         HStack(spacing: Theme.spaceS) {
             Text(AppLogChannels.title(activity.channel)).fontWeight(.medium)
-            Text("\(activity.project) · \(activity.detail)").lineLimit(1)
-            Spacer(minLength: Theme.spaceS)
+            Text("\(activity.project) · \(activity.detail)").lineLimit(1).truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
             if let progress = activity.progress {
                 ProgressView(value: min(1, max(0, progress))).frame(width: 140)
                     .accessibilityLabel("\(activity.detail) progress")

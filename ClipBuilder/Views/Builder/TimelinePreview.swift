@@ -491,7 +491,7 @@ extension BuilderTimelineModel {
                                              timelineStart: $0.lowerBound,
                                              duration: $0.upperBound - $0.lowerBound,
                                              volume: Double(item.volume) / 5.0 * 0.7,
-                                             sourceOffset: $0.lowerBound - item.startTime) }
+                                             sourceOffset: item.sourceOffset + ($0.lowerBound - item.startTime)) }
             }
         return (segments, music)
     }
@@ -506,7 +506,7 @@ struct PreviewPlayButton: View {
 
     var body: some View {
         Button(action: action) {
-            Label("Play Fast Preview", systemImage: "play.circle.fill")
+            Label("Preview \(Int(AppStore.exactPreviewWindow)) s of the final video", systemImage: "play.circle.fill")
                 .font(.system(size: 52))
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(.white, .black.opacity(hovering ? 0.75 : 0.55))
@@ -570,6 +570,9 @@ struct TimelinePreviewSheet: View {
         .modalCloseButton { dismiss() }
         .task {
             await prepareFastPreview()
+            // Pressing Preview renders the final footage from the playhead
+            // right away; Fast Preview covers the wait.
+            if !store.builder.document.videoTrack.isEmpty, !store.isBuilderRendering { renderExactPreview() }
         }
         .onChange(of: mode) { _, newMode in
             // Both players outlive the view swap; only the visible one plays.
@@ -603,7 +606,7 @@ struct TimelinePreviewSheet: View {
                 Text("Timeline Preview")
                     .font(.headline)
                 Label(mode == .exact
-                      ? "Render Preview — final fidelity"
+                      ? "Final Preview — \(Int(AppStore.exactPreviewWindow)) s from the playhead"
                       : "Fast Preview — approximate",
                       systemImage: mode == .exact ? "checkmark.seal.fill" : "bolt.fill")
                     .font(.caption.weight(.semibold))
@@ -612,8 +615,10 @@ struct TimelinePreviewSheet: View {
                     LooksPreviewBadge()
                 }
                 Text(mode == .exact
-                     ? "This file matches the final render, including framing, captions, transitions, music, and overlays."
-                     : "Fast Preview skips framing, captions, text, transitions, and overlay templates.")
+                     ? "\(Int(AppStore.exactPreviewWindow)) seconds of the final render from \(renderedWindow.lowerBound.timecode): framing, captions, transitions, music, and overlays. Nothing is added to the Library."
+                     : store.isBuilderPreviewRendering
+                        ? "Rendering \(Int(AppStore.exactPreviewWindow)) s of final footage from \(renderedWindow.lowerBound.timecode)… Fast Preview plays meanwhile."
+                        : "Fast Preview skips framing, captions, text, transitions, and overlay templates.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -635,7 +640,7 @@ struct TimelinePreviewSheet: View {
                     if store.isBuilderPreviewRendering {
                         Label("Rendering…", systemImage: "hourglass")
                     } else {
-                        Label(exactPreviewURL == nil ? "Render Preview" : "Render Again",
+                        Label(exactPreviewURL == nil ? "Render \(Int(AppStore.exactPreviewWindow)) s" : "Render \(Int(AppStore.exactPreviewWindow)) s Again",
                               systemImage: "checkmark.seal")
                     }
                 }
@@ -643,7 +648,7 @@ struct TimelinePreviewSheet: View {
                 .disabled(store.isBuilderPreviewRendering || store.isBuilderRendering)
                 .help(store.isBuilderRendering
                       ? "Wait for the Library render to finish."
-                      : "Render an exact temporary preview. Nothing is added to the Library.")
+                      : "Render \(Int(AppStore.exactPreviewWindow)) seconds of the final video from the playhead into a temporary file. Nothing is added to the Library.")
                 Button("Done") { dismiss() }
                     .controlSize(.small)
                     .keyboardShortcut(.defaultAction)
@@ -674,10 +679,17 @@ struct TimelinePreviewSheet: View {
         }
     }
 
+    /// The output range the last (or current) final render covers.
+    private var renderedWindow: ClosedRange<Double> {
+        AppStore.exactPreviewRange(from: store.builder.playhead, seconds: AppStore.exactPreviewWindow,
+                                   totalDuration: store.builder.totalDuration)
+    }
+
     private func renderExactPreview() {
         exactPreviewTask?.cancel()
+        let playhead = store.builder.playhead
         exactPreviewTask = Task {
-            guard let url = await store.renderBuilderExactPreview() else { return }
+            guard let url = await store.renderBuilderExactPreview(from: playhead) else { return }
             guard !Task.isCancelled else {
                 try? FileManager.default.removeItem(at: url)
                 return

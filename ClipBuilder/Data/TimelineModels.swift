@@ -1000,17 +1000,23 @@ nonisolated struct SoundItem: Codable, Sendable, Equatable, Identifiable {
     var volume: Int = 3            // 1-5
     var startTime: Double = 0
     var duration: Double = 10
+    /// Where in the song this item starts (seconds). Nonzero when a timeline
+    /// is windowed or trimmed from the front so the song continues rather than
+    /// restarting; omitted from JSON when zero.
+    var sourceOffset: Double = 0
 
     enum CodingKeys: String, CodingKey {
         case name, volume, duration
         case startTime = "start_time"
+        case sourceOffset = "source_offset"
     }
 
-    init(name: String = "", volume: Int = 3, startTime: Double = 0, duration: Double = 10) {
+    init(name: String = "", volume: Int = 3, startTime: Double = 0, duration: Double = 10, sourceOffset: Double = 0) {
         self.name = name
         self.volume = volume
         self.startTime = startTime
         self.duration = duration
+        self.sourceOffset = sourceOffset
     }
 
     init(from decoder: Decoder) throws {
@@ -1019,6 +1025,7 @@ nonisolated struct SoundItem: Codable, Sendable, Equatable, Identifiable {
         volume = try container.decodeIfPresent(Int.self, forKey: .volume) ?? 3
         startTime = try container.decodeIfPresent(Double.self, forKey: .startTime) ?? 0
         duration = try container.decodeIfPresent(Double.self, forKey: .duration) ?? 10
+        sourceOffset = max(0, try container.decodeIfPresent(Double.self, forKey: .sourceOffset) ?? 0)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1027,11 +1034,13 @@ nonisolated struct SoundItem: Codable, Sendable, Equatable, Identifiable {
         try container.encode(volume, forKey: .volume)
         try container.encode(startTime, forKey: .startTime)
         try container.encode(duration, forKey: .duration)
+        if sourceOffset > 0 { try container.encode(sourceOffset, forKey: .sourceOffset) }
     }
 
     static func == (lhs: SoundItem, rhs: SoundItem) -> Bool {
         lhs.uid == rhs.uid && lhs.name == rhs.name && lhs.volume == rhs.volume
             && lhs.startTime == rhs.startTime && lhs.duration == rhs.duration
+            && lhs.sourceOffset == rhs.sourceOffset
     }
 
     var id: UUID { uid }
