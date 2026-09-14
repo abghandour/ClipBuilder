@@ -57,8 +57,8 @@ struct TimelineView: View {
                                                    cullClips: model.document.videoTrack.count >= 40,
                                                    onPlayClip: onPlayClip)
                                 }
-                                SoundLane(contentWidth: contentWidth, height: Self.soundLaneHeight)
                                 OverlayLane(layout: layout, contentWidth: contentWidth)
+                                SoundLane(contentWidth: contentWidth, height: Self.soundLaneHeight)
                             }
                             .padding(.top, BuilderTimelineModel.laneSpacing)
                             .overlay(alignment: .topLeading) {
@@ -182,11 +182,11 @@ struct TimelineView: View {
                 TrackHeader(track: track)
                     .frame(height: layout.videoTracks[track].laneHeight)
             }
-            laneHeader(title: "Sound", systemImage: "music.note", shade: TimelineTrackStyle.sound)
-                .frame(height: Self.soundLaneHeight)
             laneHeader(title: "Overlays", systemImage: "square.2.layers.3d", shade: TimelineTrackStyle.overlays)
                 .frame(height: CGFloat(layout.overlayRowCount)
                        * BuilderTimelineModel.overlayRowHeight)
+            laneHeader(title: "Sound", systemImage: "music.note", shade: TimelineTrackStyle.sound)
+                .frame(height: Self.soundLaneHeight)
         }
         .padding(.top, BuilderTimelineModel.laneSpacing)
     }
@@ -1319,6 +1319,7 @@ struct SoundLane: View {
     @Environment(AppStore.self) private var store
     let contentWidth: CGFloat
     let height: CGFloat
+    @State private var click = LaneClickLocator()
 
     var body: some View {
         let model = store.builder
@@ -1330,6 +1331,117 @@ struct SoundLane: View {
             }
         }
         .frame(width: contentWidth, height: height, alignment: .topLeading)
+        .laneClickTracking(click)
+        .contextMenu {
+            // Right-click on empty lane: add music where the pointer is.
+            let time = click.time(pointsPerSecond: model.pointsPerSecond)
+            Section("Add music at \(time.timecode)") {
+                MusicChoiceItems { name in model.addSound(name: name, at: time) }
+            }
+        }
+    }
+}
+
+/// The music library as menu items, grouped by folder like the Add menu.
+struct MusicChoiceItems: View {
+    let choose: (String) -> Void
+
+    var body: some View {
+        let groups = WizardEngine.musicByFolder()
+        if groups.isEmpty {
+            Text("Add music files to the Music library first")
+        } else {
+            ForEach(groups, id: \.folder) { group in
+                if group.folder.isEmpty {
+                    ForEach(group.tracks, id: \.name) { track in
+                        Button(track.name) { choose(track.name) }
+                    }
+                } else {
+                    Menu(group.folder, systemImage: "folder") {
+                        ForEach(group.tracks, id: \.name) { track in
+                            Button(track.name.split(separator: "/").last.map(String.init) ?? track.name) {
+                                choose(track.name)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Overlay choices (lower thirds, templates, a text) as menu items.
+struct OverlayChoiceItems: View {
+    @Environment(AppStore.self) private var store
+    /// Called with a display name and the composition to place or swap in.
+    let choose: (String, OverlayComposition) -> Void
+    /// Shown only when adding: a fresh text overlay has no composition.
+    var addText: (() -> Void)? = nil
+
+    var body: some View {
+        if let addText {
+            Button("Text", systemImage: "textformat", action: addText)
+        }
+        Menu("Lower Third", systemImage: "rectangle.bottomthird.inset.filled") {
+            Button("Blank Lower Third") {
+                choose("Lower Third", LowerThirdOverlay.composition(
+                    name: "NAME", role: "ROLE / TITLE", logoPath: store.activeProfile.logoPath))
+            }
+            let people = store.people.filter { !$0.name.isEmpty && !$0.hidden }
+            if !people.isEmpty {
+                Divider()
+                ForEach(people) { person in
+                    Button(person.displayName) {
+                        choose("Lower Third — \(person.displayName)", LowerThirdOverlay.composition(
+                            name: person.displayName,
+                            role: person.descriptor.isEmpty ? "Guest" : person.descriptor,
+                            logoPath: store.activeProfile.logoPath))
+                    }
+                }
+            }
+        }
+        let templates = OverlayTemplateStore.list()
+        if templates.isEmpty {
+            Text("Create an overlay template first")
+        } else {
+            ForEach(templates) { template in
+                Button(template.name) { choose(template.name, template.composition) }
+            }
+        }
+    }
+}
+
+/// Where the pointer was when a lane's context menu opened, as a time.
+/// AppKit reports the mouse in screen coordinates; converting through the
+/// lane's window gives the x SwiftUI's global space uses. Hover is the
+/// fallback when there is no window (previews, tests).
+@Observable @MainActor final class LaneClickLocator {
+    var frame: CGRect = .zero
+    var hoverX: CGFloat = 0
+    weak var window: NSWindow?
+
+    func time(pointsPerSecond: Double) -> Double {
+        var x = hoverX
+        if let window, frame != .zero {
+            x = window.convertPoint(fromScreen: NSEvent.mouseLocation).x - frame.minX
+        }
+        return max(0, BuilderTimelineModel.snap(Double(x / pointsPerSecond)))
+    }
+}
+
+extension View {
+    func laneClickTracking(_ locator: LaneClickLocator) -> some View {
+        background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { locator.frame = proxy.frame(in: .global) }
+                    .onChange(of: proxy.frame(in: .global)) { _, frame in locator.frame = frame }
+                    .background(WindowReader { locator.window = $0 })
+            }
+        )
+        .onContinuousHover { phase in
+            if case .active(let point) = phase { locator.hoverX = point.x }
+        }
     }
 }
 
@@ -1410,7 +1522,12 @@ struct SoundBlock: View {
                 dragOffset = 0
             })
         .contextMenu {
-            Button("Delete", role: .destructive) { model.removeSound(item.uid) }
+            Menu("Replace with", systemImage: "arrow.triangle.2.circlepath") {
+                MusicChoiceItems { name in
+                    model.updateSound(item.uid) { $0.name = name }
+                }
+            }
+            Button("Remove", systemImage: "trash", role: .destructive) { model.removeSound(item.uid) }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Music \(item.name)")
@@ -1426,11 +1543,14 @@ struct SoundBlock: View {
 /// into extra rows (the lane grows vertically) instead of painting over
 /// each other.
 struct OverlayLane: View {
+    @Environment(AppStore.self) private var store
     let layout: TimelineLayoutSnapshot
     let contentWidth: CGFloat
+    @State private var click = LaneClickLocator()
 
     var body: some View {
         let rowHeight = BuilderTimelineModel.overlayRowHeight
+        let model = store.builder
         ZStack(alignment: .topLeading) {
             TimelineTrackStyle.laneShape
                 .fill(TimelineTrackStyle.overlays)
@@ -1447,6 +1567,16 @@ struct OverlayLane: View {
             }
         }
         .frame(width: contentWidth, height: CGFloat(layout.overlayRowCount) * rowHeight, alignment: .topLeading)
+        .laneClickTracking(click)
+        .contextMenu {
+            // Right-click on empty lane: add an overlay where the pointer is.
+            let time = click.time(pointsPerSecond: model.pointsPerSecond)
+            Section("Add overlay at \(time.timecode)") {
+                OverlayChoiceItems(choose: { name, composition in
+                    model.addOverlayBlock(name: name, composition: composition, at: time)
+                }, addText: { _ = model.addText(at: time) })
+            }
+        }
     }
 }
 
@@ -1525,7 +1655,13 @@ struct OverlayBlockView: View {
                 dragOffset = 0
             })
         .contextMenu {
-            Button("Delete", role: .destructive) { model.removeOverlayBlock(item.uid) }
+            Menu("Replace with", systemImage: "arrow.triangle.2.circlepath") {
+                OverlayChoiceItems(choose: { name, composition in
+                    // Keep the block's place and length; swap what it shows.
+                    model.updateOverlayBlock(item.uid) { $0.name = name; $0.composition = composition }
+                })
+            }
+            Button("Remove", systemImage: "trash", role: .destructive) { model.removeOverlayBlock(item.uid) }
         }
         .help("\(item.name) — overlay template block")
         .accessibilityElement(children: .ignore)
@@ -1611,7 +1747,7 @@ struct ImageBlock: View {
                 dragOffset = 0
             })
         .contextMenu {
-            Button("Delete", role: .destructive) { model.removeImage(item.uid) }
+            Button("Remove", systemImage: "trash", role: .destructive) { model.removeImage(item.uid) }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Image overlay \(item.displayName)")
@@ -1698,7 +1834,7 @@ struct TextBlock: View {
                 dragOffset = 0
             })
         .contextMenu {
-            Button("Delete", role: .destructive) { model.removeText(item.uid) }
+            Button("Remove", systemImage: "trash", role: .destructive) { model.removeText(item.uid) }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Text overlay \(item.text.isEmpty ? "Text" : item.text)")
