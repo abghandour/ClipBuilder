@@ -60,6 +60,35 @@ actor HeldUploadTransport: DriveTransport {
 @Suite("Sources Drive upload")
 @MainActor
 struct SourcesDriveUploadTests {
+    @Test("A running fetch or download of a file shows as activity; uploads and finished jobs do not")
+    func activeFetchJob() async throws {
+        let transport = HeldUploadTransport()
+        let auth = GoogleDriveAuth(
+            configuration: .init(clientID: "test", clientSecret: "test"), transport: transport,
+            credentials: FakeDriveCredentials())
+        let transfers = GoogleDriveTransfers(auth: auth)
+        let media = DriveMedia(kind: .source, recordID: 1, path: "/tmp/fetch-me.mp4", fileID: "f1", offloaded: true)
+        let other = DriveMedia(kind: .source, recordID: 2, path: "/tmp/other.mp4", fileID: "f2")
+        #expect(transfers.activeFetchJob(for: media, profile: "P") == nil)
+        transfers.jobs = [
+            DriveTransfer(profile: "P", projectName: "P", operation: .upload, media: media, status: .running),
+            DriveTransfer(profile: "P", projectName: "P", operation: .fetch, media: other, status: .running),
+            DriveTransfer(profile: "Q", projectName: "Q", operation: .fetch, media: media, status: .running),
+            DriveTransfer(profile: "P", projectName: "P", operation: .fetch, media: media, status: .complete),
+        ]
+        #expect(transfers.activeFetchJob(for: media, profile: "P") == nil)
+        let fetch = DriveTransfer(profile: "P", projectName: "P", operation: .fetch, media: media, status: .waiting)
+        transfers.jobs.append(fetch)
+        #expect(transfers.activeFetchJob(for: media, profile: "P")?.id == fetch.id)
+        transfers.jobs[transfers.jobs.count - 1].status = DriveTransfer.Status.reconnect
+        #expect(transfers.activeFetchJob(for: media, profile: "P")?.id == fetch.id)
+        transfers.jobs[transfers.jobs.count - 1].status = DriveTransfer.Status.stopped
+        #expect(transfers.activeFetchJob(for: media, profile: "P") == nil)
+        let download = DriveTransfer(profile: "P", projectName: "P", operation: .download, media: media, status: .running)
+        transfers.jobs.append(download)
+        #expect(transfers.activeFetchJob(for: media, profile: "P")?.id == download.id)
+    }
+
     @Test("Selection skips sources that already have a Drive copy")
     func selectionFilter() {
         let local = DriveMedia(kind: .source, recordID: 1, path: "/local.mp4")

@@ -92,11 +92,29 @@ struct DriveMediaBadge: View {
 
     var body: some View {
         if current.fileID != nil {
-            let offloaded = current.offloaded
-            Image(systemName: offloaded ? "cloud" : "cloud.fill")
+            // The glyph reflects what is actually on disk: a copy the record
+            // still calls local but that is gone shows the outline too.
+            let cloudOnly = current.offloaded || !FileManager.default.fileExists(atPath: current.path)
+            Image(systemName: cloudOnly ? "cloud" : "cloud.fill")
                 .foregroundStyle(.secondary)
-                .help(offloaded ? "In Drive — no local copy" : "Local and Drive")
-                .accessibilityLabel(offloaded ? "In Drive" : "Local and Drive")
+                .help(cloudOnly ? "In Drive — no local copy" : "Local and Drive")
+                .accessibilityLabel(cloudOnly ? "In Drive" : "Local and Drive")
+        }
+    }
+}
+
+/// A small spinner beside the file name while its media is being fetched
+/// from Drive.
+struct DriveFetchIndicator: View {
+    @Environment(AppStore.self) private var store
+    let media: DriveMedia
+
+    var body: some View {
+        if let job = store.googleDrive.activeFetchJob(for: media, profile: store.activeProfile.profileName) {
+            ProgressView()
+                .controlSize(.mini)
+                .help(job.status == .reconnect ? "Waiting for Google Drive to reconnect" : "Downloading from Drive…")
+                .accessibilityLabel("Downloading from Drive")
         }
     }
 }

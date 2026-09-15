@@ -344,6 +344,7 @@ struct AnalyzeView: View {
                     // Double-click rename comes from the table's primary action.
                     Text(video.filename)
                         .help("Double-click to rename")
+                    if video.driveFileID != nil { DriveFetchIndicator(media: video.driveMedia) }
                     AIInfoButton(video: video)
                 }
                 // Table cells are hosted per row by AppKit. A recycled cell can
@@ -559,7 +560,11 @@ private struct VideoPreviewPane: View {
     /// sheet rule.
     let onNameWizard: () -> Void
 
+    /// What the player area shows while there is no player.
+    private enum Availability { case loading, downloading, ready, unavailable }
+
     @State private var player: AVPlayer?
+    @State private var availability = Availability.loading
     @State private var roster: [VideoPersonRecord] = []
     /// Whether any transcript rows exist for this video — shows the editor.
     @State private var hasTranscript = false
@@ -574,9 +579,31 @@ private struct VideoPreviewPane: View {
                 .frame(maxWidth: .infinity, minHeight: 140, idealHeight: 230, maxHeight: 260)
                 .background(.black, in: RoundedRectangle(cornerRadius: 8))
                 .overlay {
-                    if player == nil {
+                    switch availability {
+                    case .loading:
                         ProgressView()
                             .controlSize(.small)
+                    case .downloading:
+                        VStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Downloading from Drive…")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    case .unavailable:
+                        VStack(spacing: 4) {
+                            Label("Video not available", systemImage: "video.slash")
+                                .font(.caption)
+                            if video.driveFileID != nil {
+                                Text("Download a local copy from the Drive menu.")
+                                    .font(.caption2)
+                            }
+                        }
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Video not available")
+                    case .ready:
+                        EmptyView()
                     }
                 }
             VStack(spacing: 2) {
@@ -799,13 +826,31 @@ private struct VideoPreviewPane: View {
             player?.pause()
             player = nil
             roster = []
+            availability = .loading
             // Let the pane's loading state paint before the file is touched.
             await Task.yield()
-            guard await DrivePlayback.prepare(video.url) else { return }
-            guard let asset = try? await DriveLocalAsset.make(video.url) else { return }
-            _ = try? await asset.load(.isPlayable, .duration, .preferredTransform)
+            // A file that is not on this Mac is reported, not spun on; a
+            // download the user already started is joined and shown as such.
+            // Selecting a row never starts a download by itself.
+            if !FileManager.default.fileExists(atPath: video.path) {
+                let fetching = video.driveFileID != nil
+                    && store.googleDrive.activeFetchJob(for: video.driveMedia, profile: store.activeProfile.profileName) != nil
+                guard fetching else { availability = .unavailable; return }
+                availability = .downloading
+            }
+            guard await DrivePlayback.prepare(video.url) else {
+                if !Task.isCancelled { availability = .unavailable }
+                return
+            }
+            guard let asset = try? await DriveLocalAsset.make(video.url),
+                  let playable = try? await asset.load(.isPlayable), playable else {
+                if !Task.isCancelled { availability = .unavailable }
+                return
+            }
+            _ = try? await asset.load(.duration, .preferredTransform)
             guard !Task.isCancelled else { return }
             player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+            availability = .ready
             UITiming.responseReady(screen: "Sources", what: "preview player")
             roster = await store.videoPeople(for: video.id)
         }

@@ -161,6 +161,16 @@ final class GoogleDriveTransfers {
         media.filter { $0.fileID == nil }
     }
 
+    /// A download or fetch of this media that is still in progress: the row
+    /// shows it as activity next to the file name.
+    func activeFetchJob(for media: DriveMedia, profile: String) -> DriveTransfer? {
+        jobs.last {
+            $0.profile == profile && $0.media?.path == media.path
+                && ($0.operation == .fetch || $0.operation == .download)
+                && ($0.status == .running || $0.status == .waiting || $0.status == .reconnect)
+        }
+    }
+
     func uploadJob(for media: DriveMedia, profile: String) -> DriveTransfer? {
         jobs.last {
             $0.profile == profile && $0.media?.id == media.id && $0.operation == .upload && $0.status != .complete
