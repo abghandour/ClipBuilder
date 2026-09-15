@@ -143,8 +143,8 @@ struct BuilderView: View {
                         store.closeTimeline()
                     }
                 } label: {
-                    Label(store.openTimeline?.name ?? "Timeline", systemImage: "chevron.down")
-                        .labelStyle(.titleAndIcon)
+                    // The menu draws its own indicator; a chevron in the label doubled it.
+                    Text(store.openTimeline?.name ?? "Timeline")
                 }
                 .help("Switch to another timeline in this project, or create one. ⌥⌘[ and ⌥⌘] cycle.")
             }
@@ -391,6 +391,10 @@ struct BuilderView: View {
             Image(systemName: "plus.magnifyingglass")
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
+
+            Divider().frame(height: 16)
+
+            BuilderPreviewControls()
         }
         .controlSize(.small)
         .padding(.horizontal, Theme.spaceM)
