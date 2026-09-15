@@ -3997,6 +3997,9 @@ final class AppStore {
 
     private func saveTimeline(id: Int64, document: TimelineDocument) {
         guard let database else { return }
+        // Quit and timeline switches may flush a document autosave already
+        // persisted. Do not submit that revision to the database CAS again.
+        guard builder.revision != builder.persistedRevision else { return }
         let key = TimelineSaveKey(database: ObjectIdentifier(database), id: id)
         timelineSaveVersion += 1
         pendingTimelineSaves[key] = TimelineSaveSnapshot(
@@ -4009,13 +4012,17 @@ final class AppStore {
         // replace queued snapshots and invalidate an encode still in progress.
         timelineSaveTasks[key] = Task {
             defer { timelineSaveTasks[key] = nil }
+            var savedRevision: Int?
             while let snapshot = pendingTimelineSaves.removeValue(forKey: key) {
+                // A second flush can arrive while the first write is suspended.
+                if snapshot.revision == savedRevision { continue }
                 do {
                     let json = try await Self.encodeTimeline(snapshot.document)
                     if let newer = pendingTimelineSaves[key], newer.version > snapshot.version { continue }
                     try await database.saveTimelineRevision(id: id, documentJSON: json, revision: snapshot.revision,
                                                            thumbnailVideoID: snapshot.thumbnailVideoID,
                                                            runUUID: snapshot.runUUID, status: snapshot.runStatus)
+                    savedRevision = snapshot.revision
                     timelineSaveFailures[key] = nil
                     if self.database === database, builder.timelineID == id {
                         builder.acknowledgePersistedRevision(snapshot.revision)
