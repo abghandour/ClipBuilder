@@ -50,6 +50,56 @@ struct BuilderTimelineModelTests {
         #expect(model.trackIndex(fromTrack: 99, verticalDelta: 10_000) == 2)
     }
 
+    @Test("a drop anywhere in the lane stack lands on the lane under it, else the nearest track")
+    func dropTrackFromLaneOffset() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let model = BuilderTimelineModel()
+        model.loadDocument(TimelineDocument())
+        #expect(model.trackIndex(atLaneOffset: 500) == 0)
+        model.document.trackCount = 3
+        let layout = model.timelineLayout()
+        let first = layout.videoTracks[0].laneHeight
+        let second = layout.videoTracks[1].laneHeight
+        #expect(model.trackIndex(atLaneOffset: -20) == 0)
+        #expect(model.trackIndex(atLaneOffset: first / 2) == 0)
+        #expect(model.trackIndex(atLaneOffset: first + BuilderTimelineModel.laneSpacing / 2) == 0)
+        #expect(model.trackIndex(atLaneOffset: first + BuilderTimelineModel.laneSpacing + second / 2) == 1)
+        // Below the last lane (Overlays, Sound, empty space): the last track.
+        #expect(model.trackIndex(atLaneOffset: 10_000) == 2)
+    }
+
+    @Test("a drop on a sequential track inserts at the pointer: before the clip whose middle is to the right")
+    func dropInsertsAtPointer() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let model = BuilderTimelineModel()
+        model.load(profileName: "Drop")
+        let a = Fixtures.scene(id: 1, start: 0, end: 4)
+        let b = Fixtures.scene(id: 2, start: 10, end: 16)
+        let c = Fixtures.scene(id: 3, start: 20, end: 22)
+        model.updateScenes([a, b, c])
+        model.addScene(a)   // 0-4
+        model.addScene(b)   // 4-10
+        func order() -> [Int64] { model.clips(inTrack: 0).sorted { $0.startTime < $1.startTime }.compactMap(\.sceneID) }
+        #expect(order() == [1, 2])
+        // Past every middle: appended.
+        #expect(model.dropInsertionTime(track: 0, at: 9) == 10)
+        // Left of b's middle (7): before b, just under its start, unsnapped.
+        #expect(abs(model.dropInsertionTime(track: 0, at: 5) - 3.999) < 1e-9)
+        // Left of a's middle (2): before a.
+        #expect(abs(model.dropInsertionTime(track: 0, at: 0.5) - (-0.001)) < 1e-9)
+        model.addScene(c, at: model.dropInsertionTime(track: 0, at: 5), track: 0, snapped: false)
+        #expect(order() == [1, 3, 2])
+        #expect(model.clips(inTrack: 0).sorted { $0.startTime < $1.startTime }.map(\.startTime) == [0, 4, 6])
+        model.addScene(c, at: model.dropInsertionTime(track: 0, at: 0.5), track: 0, snapped: false)
+        #expect(order() == [3, 1, 3, 2])
+        #expect(model.clips(inTrack: 0).map(\.startTime).min() == 0)
+        // A free-placement track keeps the snapped pointer time.
+        model.setTrackSequential(false, track: 0)
+        #expect(model.dropInsertionTime(track: 0, at: 5.3) == 5.5)
+    }
+
     @Test("every clip operation is undoable and redoable")
     func clipOperationsAndUndo() throws {
         let scope = try DataFolderOverride()

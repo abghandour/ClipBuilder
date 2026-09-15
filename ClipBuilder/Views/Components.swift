@@ -54,7 +54,15 @@ struct VideoThumbnail: View {
     @State private var loadedKey: String?
     @State private var requestedKey: String?
 
-    private var key: String { "\(url.path)|\(time)|frame" }
+    private var key: String { Self.cacheKey(url: url, time: time) }
+
+    nonisolated static func cacheKey(url: URL, time: Double) -> String { "\(url.path)|\(time)|frame" }
+
+    /// The frame this thumbnail would paint, if it is already in memory —
+    /// drag previews are snapshotted at once and cannot wait for a load.
+    nonisolated static func cachedFrame(url: URL, time: Double) -> NSImage? {
+        ImageCache.cached(key: cacheKey(url: url, time: time))
+    }
 
     var body: some View {
         ZStack {

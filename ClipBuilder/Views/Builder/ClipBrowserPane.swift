@@ -336,6 +336,40 @@ struct ClipBrowserPane: View {
     }
 }
 
+/// The ghost that follows the pointer while a scene is dragged: the card's
+/// own frame (from the thumbnail cache, since a preview is snapshotted the
+/// moment the drag starts) with its duration.
+struct SceneDragPreview: View {
+    let scene: SceneRecord
+
+    var body: some View {
+        ZStack {
+            if let frame = VideoThumbnail.cachedFrame(url: scene.videoURL, time: (scene.startTime + scene.endTime) / 2) {
+                Image(nsImage: frame)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Rectangle().fill(.quaternary)
+                Image(systemName: "film")
+                    .font(.title)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 81, height: 144)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(alignment: .bottomLeading) {
+            DurationBadge(seconds: scene.duration)
+                .padding(4)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 2)
+        }
+        .opacity(0.85)
+        .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+        .accessibilityLabel("Dragging \(scene.duration.timecode) scene")
+    }
+}
+
 /// Compact draggable scene card. The drag payload is "scene:<id>", which the
 /// timeline lanes decode in their drop destinations.
 struct BrowserSceneCard: View {
@@ -368,7 +402,11 @@ struct BrowserSceneCard: View {
                         .draggable({
                             TimelineDropPayload.scene(
                                 scene.id, cutaway: NSEvent.modifierFlags.contains(.option))
-                        }())
+                        }()) {
+                            // The handle itself is clear, so without this the
+                            // drag image would be empty: a ghost of the card.
+                            SceneDragPreview(scene: scene)
+                        }
                         .simultaneousGesture(TapGesture(count: 2).onEnded { onPlay() })
                         .padding(.vertical, 28)
                 }

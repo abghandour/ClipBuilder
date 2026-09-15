@@ -65,6 +65,26 @@ struct TimelineView: View {
                                 PlayheadLine()
                             }
                             .padding(.bottom, 8)
+                            // A scene let go between lanes, over Overlays or
+                            // Sound, or below the last lane still lands: the
+                            // nearest video track takes it. Drops over a track
+                            // lane are handled by that lane first.
+                            .dropDestination(for: String.self) { items, location in
+                                guard let payload = items.first,
+                                      let parsed = TimelineDropPayload.parse(payload),
+                                      let scene = model.scenes.first(where: { $0.id == parsed.sceneID }) else { return false }
+                                let track = model.trackIndex(atLaneOffset: location.y - BuilderTimelineModel.laneSpacing)
+                                let pointer = Double(location.x / model.pointsPerSecond)
+                                let time = BuilderTimelineModel.snap(pointer)
+                                guard model.canPlace(track: track, at: time) else { return false }
+                                if parsed.cutaway {
+                                    _ = model.addCutaway(source: .scene(scene), at: time, track: track)
+                                } else {
+                                    model.addScene(scene, at: model.dropInsertionTime(track: track, at: pointer),
+                                                   track: track, snapped: false)
+                                }
+                                return true
+                            }
                         }
                         .clipped()
                         .scrollIndicators(.never)
@@ -604,14 +624,17 @@ struct VideoTrackLane: View {
             guard let payload = items.first,
                   let parsed = TimelineDropPayload.parse(payload),
                   let scene = model.scenes.first(where: { $0.id == parsed.sceneID }) else { return false }
-            let time = BuilderTimelineModel.snap(Double(location.x / model.pointsPerSecond))
+            let pointer = Double(location.x / model.pointsPerSecond)
+            let time = BuilderTimelineModel.snap(pointer)
             // Only where the Screen row gives this track an area.
             guard model.canPlace(track: track, at: time) else { return false }
             if parsed.cutaway {
                 // Option-drag: B-roll with the default window.
                 _ = model.addCutaway(source: .scene(scene), at: time, track: track)
             } else {
-                model.addScene(scene, at: time, track: track)
+                // The clip lands where it was let go: a sequential track
+                // inserts it there instead of appending.
+                model.addScene(scene, at: model.dropInsertionTime(track: track, at: pointer), track: track, snapped: false)
             }
             return true
         } isTargeted: { targeted in

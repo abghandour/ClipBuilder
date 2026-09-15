@@ -778,6 +778,26 @@ final class BuilderTimelineModel {
         return nearest ?? sourceIndex
     }
 
+    /// The video track for a point dropped anywhere in the lane stack, by
+    /// its vertical offset from the top of the first lane: the lane under
+    /// the point, else the nearest one, so a scene let go over the Overlays
+    /// or Sound lane still lands on a track.
+    func trackIndex(atLaneOffset y: CGFloat) -> Int {
+        guard document.trackCount > 1 else { return 0 }
+        let layout = timelineLayout()
+        var top: CGFloat = 0
+        var nearest = 0
+        var nearestDistance = CGFloat.greatestFiniteMagnitude
+        for index in 0..<document.trackCount {
+            let height = layout.videoTracks[index].laneHeight
+            if y >= top && y < top + height { return index }
+            let distance = abs(top + height / 2 - y)
+            if distance < nearestDistance { nearest = index; nearestDistance = distance }
+            top += height + Self.laneSpacing
+        }
+        return nearest
+    }
+
     // MARK: - Clip lookup
 
     func clipIndex(_ uid: UUID) -> Int? {
@@ -979,7 +999,23 @@ final class BuilderTimelineModel {
         }
     }
 
-    func addScene(_ scene: SceneRecord, at time: Double? = nil, track: Int = 0) {
+    /// Where a scene dropped at `time` should start so it lands where the
+    /// pointer is. A sequential track packs its clips in start order, so the
+    /// drop becomes an insertion: before the clip whose middle the pointer
+    /// is left of, else at the end. The returned time sits just before that
+    /// clip and is deliberately not snapped, so packing keeps the order.
+    func dropInsertionTime(track: Int, at time: Double) -> Double {
+        guard track >= 0, track < TimelineDocument.maxTracks, document.trackSequential[track] else {
+            return Self.snap(time)
+        }
+        let sorted = clips(inTrack: track).filter { !$0.isCutaway }.sorted { $0.startTime < $1.startTime }
+        if let next = sorted.first(where: { time < $0.startTime + $0.duration / 2 }) {
+            return next.startTime - 0.001
+        }
+        return sorted.map { $0.startTime + $0.duration }.max() ?? 0
+    }
+
+    func addScene(_ scene: SceneRecord, at time: Double? = nil, track: Int = 0, snapped: Bool = true) {
         var clip = TimelineClip()
         clip.sceneID = scene.id
         clip.videoFile = scene.videoPath
@@ -996,8 +1032,8 @@ final class BuilderTimelineModel {
         let targetTrack = min(max(0, track), document.trackCount - 1)
         clip.track = targetTrack
         let trackEnd = clips(inTrack: targetTrack).map { $0.startTime + $0.duration }.max() ?? 0
-        clip.startTime = Self.snap(time ?? trackEnd)
-        guard canPlace(track: targetTrack, at: clip.startTime) else { return }
+        clip.startTime = snapped ? Self.snap(time ?? trackEnd) : (time ?? trackEnd)
+        guard canPlace(track: targetTrack, at: max(0, clip.startTime)) else { return }
         registerUndo("Add Clip")
         document.videoTrack.append(clip)
         resolveLayout(track: targetTrack)
