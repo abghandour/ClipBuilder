@@ -28,6 +28,30 @@ struct VideoDetectorsTests {
         let window = try #require(signals.contentWindow(duration: duration))
         #expect(abs(window.lowerBound - 2) < 0.2)
         #expect(abs(window.upperBound - (duration - 2)) < 0.2)
+        // Hardware and software passes report the same events.
+        let software = try await FFmpeg.detectorSignals(of: output, duration: duration, timeout: 120, hardware: false)
+        #expect(signals.black == software.black && signals.frozen == software.frozen)
+        #expect(signals.cuts == (try await FFmpeg.sceneChangeTimestamps(of: output, hardware: false)))
+        #expect(signals.cuts.contains { abs($0 - 2) < 0.2 })
+    }
+
+    @Test func parsersIgnoreEachOthersLines() {
+        let stderr = """
+        [blackdetect @ 0x1] black_start:0 black_end:2 black_duration:2
+        [Parsed_showinfo_3 @ 0x2] n:   0 pts:   60 pts_time:2.0 duration: 20 fmt:yuv420p
+        [freezedetect @ 0x3] lavfi.freezedetect.freeze_start: 7.5
+        frame=  100 fps=0.0 q=-0.0 size=N/A time=00:00:03.33 [Parsed_showinfo_3 @ 0x2] n:   1 pts:  300 pts_time:10.004 duration: 20
+        [freezedetect @ 0x3] lavfi.freezedetect.freeze_end: 10
+        [blackdetect @ 0x1] black_start:11 black_end:12.5 black_duration:1.5
+        """
+        let signals = VideoDetectors.parse(stderr, duration: 12.5)
+        #expect(signals.black == [0...2, 11...12.5])
+        #expect(signals.frozen == [7.5...10])
+        #expect(FFmpeg.sceneChangeTimestamps(parsing: stderr) == [2, 10])
+        #expect(FFmpeg.decodeArguments(hardware: false).isEmpty)
+        #expect(FFmpeg.decodeArguments(hardware: true) == (FFmpeg.hasVideoToolboxDecode ? ["-hwaccel", "videotoolbox"] : []))
+        #expect(FFmpeg.detectorTimeout(duration: 10) == 300)
+        #expect(FFmpeg.detectorTimeout(duration: 3600) == 3600)
     }
     @Test func parsing() {
         let result = VideoDetectors.parse("black_start:0 black_end:2 black_duration:2\nlavfi.freezedetect.freeze_start: 18\nlavfi.freezedetect.freeze_end: 20", duration: 20)

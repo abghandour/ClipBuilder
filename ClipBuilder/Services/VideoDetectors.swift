@@ -47,21 +47,56 @@ extension FFmpeg {
         }
         return result.stderrText
     }
-    // Changes to these filters/parsers also require bumping ReelDetectorCache key version.
+    /// The black/freeze scan and the scene-change scan run concurrently,
+    /// each decoding through VideoToolbox when the build offers it. Hardware
+    /// decoding leaves the filters bound by their own single thread, so two
+    /// passes finish sooner than one combined graph, at a fraction of the
+    /// CPU of two software decodes. `CLIPBUILDER_DETECTOR_MODE=legacy`
+    /// restores the sequential software passes for same-binary measurement.
+    /// The filters, thresholds and parsers are unchanged, so events match
+    /// the earlier scan exactly and cached results stay valid; changes to
+    /// them still require bumping the ReelDetectorCache key version.
+    nonisolated static var legacyDetectorPasses: Bool {
+        ProcessInfo.processInfo.environment["CLIPBUILDER_DETECTOR_MODE"] == "legacy"
+    }
+
+    nonisolated static func detectorTimeout(duration: Double) -> TimeInterval {
+        max(300, min(3600, duration * 5))
+    }
+
     nonisolated static func detectors(of url: URL, duration: Double) async throws -> VideoDetectors {
-        var result: VideoDetectors
+        let timeout = detectorTimeout(duration: duration)
+        if legacyDetectorPasses {
+            var result = try await detectorSignals(of: url, duration: duration, timeout: timeout, hardware: false)
+            result.cuts = try await sceneChangeTimestamps(of: url, timeout: timeout, hardware: false)
+            return result
+        }
+        async let signals = detectorSignals(of: url, duration: duration, timeout: timeout, hardware: true)
+        async let cuts = sceneChangeTimestamps(of: url, timeout: timeout, hardware: true)
+        var result = try await signals
+        result.cuts = try await cuts
+        return result
+    }
+
+    /// Black and frozen runs. A hardware-decode failure retries in software
+    /// before the older-build mpdecimate fallback is considered.
+    nonisolated static func detectorSignals(of url: URL, duration: Double, timeout: TimeInterval,
+                                            hardware: Bool) async throws -> VideoDetectors {
+        let filters = "blackdetect=d=1.0:pic_th=0.98,freezedetect=n=-50dB:d=2"
         do {
-            let stderr = try await runCapturingStderr(["-hide_banner", "-i", url.path, "-vf",
-                "blackdetect=d=1.0:pic_th=0.98,freezedetect=n=-50dB:d=2", "-an", "-f", "null", "-"])
-            result = VideoDetectors.parse(stderr, duration: duration)
+            let stderr = try await runCapturingStderr(decodeArguments(hardware: hardware) +
+                ["-hide_banner", "-i", url.path, "-vf", filters, "-an", "-f", "null", "-"], timeout: timeout)
+            return VideoDetectors.parse(stderr, duration: duration)
         } catch FFmpegError.commandFailed(_, _, let stderr) where stderr.contains("No such filter") && stderr.contains("freezedetect") {
             let stderr = try await runCapturingStderr(["-hide_banner", "-i", url.path, "-vf",
-                "blackdetect=d=1.0:pic_th=0.98,mpdecimate,showinfo", "-an", "-f", "null", "-"])
-            result = VideoDetectors.parse(stderr, duration: duration)
+                "blackdetect=d=1.0:pic_th=0.98,mpdecimate,showinfo", "-an", "-f", "null", "-"], timeout: timeout)
+            var result = VideoDetectors.parse(stderr, duration: duration)
             result.frozen = VideoDetectors.decimatedGaps(stderr, duration: duration)
+            return result
+        } catch FFmpegError.commandFailed where hardware && hardwareDecodeArguments.isEmpty == false {
+            try Task.checkCancellation()
+            return try await detectorSignals(of: url, duration: duration, timeout: timeout, hardware: false)
         }
-        result.cuts = try await sceneChangeTimestamps(of: url)
-        return result
     }
     nonisolated static func blackSegments(of url: URL) async throws -> [ClosedRange<Double>] {
         try await detectors(of: url, duration: duration(of: url)).black

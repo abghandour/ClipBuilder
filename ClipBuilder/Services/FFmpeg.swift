@@ -219,24 +219,66 @@ nonisolated enum FFmpeg {
         await info(of: url).hasAudio
     }
 
+    static let sceneChangeThreshold = 0.3
+
+    /// Whether this ffmpeg build can decode through VideoToolbox. Decoding is
+    /// normative, so hardware and software passes yield the same frames.
+    static let hasVideoToolboxDecode: Bool = {
+        guard let url = ProcessRunner.locate("ffmpeg") else { return false }
+        let process = Process()
+        process.executableURL = url
+        process.arguments = ["-hide_banner", "-hwaccels"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return false }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return String(data: data, encoding: .utf8)?
+            .split(separator: "\n").contains { $0.trimmingCharacters(in: .whitespaces) == "videotoolbox" } ?? false
+    }()
+
+    /// Input options placed before `-i` for analysis passes whose filters,
+    /// not decoding, bound their wall time.
+    static var hardwareDecodeArguments: [String] {
+        hasVideoToolboxDecode ? ["-hwaccel", "videotoolbox"] : []
+    }
+
+    static func decodeArguments(hardware: Bool) -> [String] {
+        hardware ? hardwareDecodeArguments : []
+    }
+
     /// Timestamps (seconds) where the scene-change detector fires — objective
-    /// cut positions used as ground truth for reel template analysis.
-    static func sceneChangeTimestamps(of url: URL, threshold: Double = 0.3) async throws -> [Double] {
+    /// cut positions used as ground truth for reel template analysis. A
+    /// hardware-decode failure retries in software.
+    static func sceneChangeTimestamps(of url: URL, threshold: Double = sceneChangeThreshold,
+                                      timeout: TimeInterval = 300, hardware: Bool = true) async throws -> [Double] {
+        let hardware = hardware && !hardwareDecodeArguments.isEmpty
         let result = try await ProcessRunner.run(
             executable: ffmpegURL(),
-            arguments: ["-hide_banner", "-i", url.path,
+            arguments: decodeArguments(hardware: hardware) + ["-hide_banner", "-i", url.path,
                         "-vf", "select='gt(scene,\(threshold))',showinfo",
-                        "-f", "null", "-"],
-            timeout: 300, mediaResource: .decoding)
+                        "-an", "-f", "null", "-"],
+            timeout: timeout, mediaResource: .decoding)
         guard result.exitCode == 0 else {
+            if hardware {
+                try Task.checkCancellation()
+                return try await sceneChangeTimestamps(of: url, threshold: threshold, timeout: timeout, hardware: false)
+            }
             throw FFmpegError.commandFailed(tool: "ffmpeg scene detection",
                                             exitCode: result.exitCode, stderr: result.stderrText)
         }
-        // showinfo logs matched frames to stderr as "... pts_time:12.345 ...".
+        return sceneChangeTimestamps(parsing: result.stderrText)
+    }
+
+    /// showinfo logs matched frames to stderr as "... pts_time:12.345 ...".
+    /// blackdetect and freezedetect lines never carry `pts_time`, so the same
+    /// stderr can feed both parsers.
+    nonisolated static func sceneChangeTimestamps(parsing stderr: String) -> [Double] {
         var timestamps: [Double] = []
-        for line in result.stderrText.split(separator: "\n") {
+        for line in stderr.split(separator: "\n") {
             guard let range = line.range(of: "pts_time:") else { continue }
-            let digits = line[range.upperBound...].prefix { "0123456789.".contains($0) }
+            let digits = line[range.upperBound...].drop { $0 == " " }.prefix { "0123456789.".contains($0) }
             if let time = Double(digits) {
                 timestamps.append(time.rounded(toPlaces: 2))
             }
