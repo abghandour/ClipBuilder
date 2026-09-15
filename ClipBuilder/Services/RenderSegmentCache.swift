@@ -35,8 +35,10 @@ actor RenderSegmentCache {
         do {
             // Copy avoids sharing a mutable inode with a later render retry.
             try FileManager.default.copyItem(at: source, to: destination)
+            // The touch keeps LRU order; a hit adds no bytes, so eviction
+            // waits for the next publish instead of scanning the whole
+            // directory on every one of a render's dozens of hits.
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: source.path)
-            evict(in: directory)
             return true
         } catch { return false }
     }
