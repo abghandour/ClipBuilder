@@ -2193,23 +2193,17 @@ actor Analyzer {
         var centers: [Double] = []
         let fractions = [0.25, 0.5, 0.75]
         let cache = frameCache ?? SampledFrameCache.current ?? SampledFrameCache()
-        let frames = await cache.jpegFrames(
-            url: url, at: fractions.map { start + duration * $0 }, maxDimension: 720)
-        for data in frames {
-            guard let data else { continue }
+        // Detections are shared with the framing pass, which samples the
+        // same three moments at the same size later in the run.
+        let detected: [[CGRect]?]
+        do {
+            detected = try await cache.humanBoxes(url: url, at: fractions.map { start + duration * $0 },
+                                                  maxDimension: 720)
+        } catch { return nil }
+        for raw in detected {
+            guard let raw else { continue }
             sampled += 1
-            var request = DetectHumanRectanglesRequest(.revision2)
-            request.upperBodyOnly = false
-            let observations: [HumanObservation]
-            do {
-                let permit = try await MediaWorkScheduler.current.acquire(.vision)
-                defer { withExtendedLifetime(permit) {} }
-                try Task.checkCancellation()
-                let timing = PerfSignpost.begin("Vision", metadata: "portraitFit")
-                defer { PerfSignpost.end(timing) }
-                observations = (try? await request.perform(on: data)) ?? []
-            } catch { return nil }
-            let boxes = Self.primaryPeopleBoxes(observations.map { $0.boundingBox.cgRect })
+            let boxes = Self.primaryPeopleBoxes(raw)
             guard !boxes.isEmpty else { continue }
             judged += 1
             let union = boxes.dropFirst().reduce(boxes[0]) { $0.union($1) }

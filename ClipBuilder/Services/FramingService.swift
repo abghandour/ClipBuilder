@@ -77,13 +77,24 @@ nonisolated enum FramingService {
         let frameCache = SampledFrameCache.current ?? SampledFrameCache()
         let centerStage = CenterStageService()
         var summary = Summary()
+        // The sampled people serve the static rect and the framed: tags; a
+        // moving camera without tagging never reads them, so skip the
+        // frame extraction and Vision work for those scenes.
+        let needsSamples = camera == staticCamera || tagFramedPeople || SampledFrameCache.legacyEvidence
+        var samplesSkipped = 0
         for (index, scene) in scenes.enumerated() {
             try Task.checkCancellation()
             progress?(Double(index) / Double(scenes.count))
 
             // People at three sample moments: the static rect's subject, and
             // the "who sits inside the framing" evidence for framed: tags.
-            let samples = await sampleFrames(url: video.url, scene: scene, frameCache: frameCache)
+            let samples: [SceneSample]
+            if needsSamples {
+                samples = await sampleFrames(url: video.url, scene: scene, frameCache: frameCache)
+            } else {
+                samples = []
+                samplesSkipped += 1
+            }
             let sceneHints = hints
                 .filter { $0.atTime >= scene.startTime - 0.25 && $0.atTime <= scene.endTime + 0.25 }
 
@@ -116,6 +127,9 @@ nonisolated enum FramingService {
                     try? await database.addSceneTag(sceneID: scene.id, tag: "framed:\(key)")
                 }
             }
+        }
+        if samplesSkipped > 0 {
+            log("Framing: skipped evidence samples for \(samplesSkipped) tracked scene(s) without framed: tags")
         }
         progress?(1)
         log("Framing: \(summary.framed) scene(s) framed"
@@ -243,24 +257,21 @@ nonisolated enum FramingService {
         var samples: [SceneSample] = []
         let times = [0.25, 0.5, 0.75].map { scene.startTime + scene.duration * $0 }
         let cache = frameCache ?? SampledFrameCache.current ?? SampledFrameCache()
-        let frames = await cache.jpegFrames(url: url, at: times, maxDimension: 720)
-        for (time, frame) in zip(times, frames) {
-            guard let data = frame,
+        // Portrait fit already detected people in these frames during the
+        // same run; the cache answers without a second Vision request.
+        let detected: [[CGRect]?]
+        do {
+            detected = try await cache.humanBoxes(url: url, at: times, maxDimension: 720)
+        } catch { return samples }
+        let occupied = zip(times, detected).filter { !($0.1 ?? []).isEmpty }.map(\.0)
+        let frames = Dictionary(uniqueKeysWithValues: zip(occupied,
+            await cache.jpegFrames(url: url, at: occupied, maxDimension: 720)))
+        for (time, raw) in zip(times, detected) {
+            guard let raw, !raw.isEmpty, let data = frames[time] ?? nil,
                   let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
                   let cg = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else { continue }
-            var request = DetectHumanRectanglesRequest(.revision2)
-            request.upperBodyOnly = false
-            let observations: [HumanObservation]
-            do {
-                let permit = try await MediaWorkScheduler.current.acquire(.vision)
-                defer { withExtendedLifetime(permit) {} }
-                try Task.checkCancellation()
-                observations = (try? await request.perform(on: data)) ?? []
-            } catch { return samples }
-            let boxes = Analyzer.primaryPeopleBoxes(observations.map { observation in
-                let box = observation.boundingBox.cgRect
-                return CGRect(x: box.minX, y: 1 - box.maxY,
-                              width: box.width, height: box.height)
+            let boxes = Analyzer.primaryPeopleBoxes(raw.map { box in
+                CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
             })
             guard let first = boxes.first else { continue }
             samples.append(SceneSample(
