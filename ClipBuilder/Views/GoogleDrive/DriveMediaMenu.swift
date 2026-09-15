@@ -3,6 +3,10 @@ import SwiftUI
 struct DriveMediaMenu: View {
     @Environment(AppStore.self) private var store
     let media: [DriveMedia]
+    /// Icon only, and nothing at all for media with no Drive copy: the
+    /// glyph alone says where the file is (outline cloud: Drive only;
+    /// filled cloud: Drive and local). Used under scene cards.
+    var compact = false
     @State private var uploading = false
     @State private var removing = false
     @State private var error: String?
@@ -14,7 +18,19 @@ struct DriveMediaMenu: View {
     }
     private var uploadCandidates: [DriveMedia] { currentMedia.filter { $0.fileID == nil } }
     private var copies: [DriveMedia] { currentMedia.filter { $0.fileID != nil } }
+    /// Every Drive copy is absent from disk, whether offloaded or simply gone.
+    private var cloudOnly: Bool {
+        copies.allSatisfy { $0.offloaded || !FileManager.default.fileExists(atPath: $0.path) }
+    }
     var body: some View {
+        if compact && copies.isEmpty {
+            EmptyView()
+        } else {
+            menu
+        }
+    }
+
+    private var menu: some View {
         Menu {
             if store.googleDrive.states[store.activeProfile.profileName]?.isConnected != true {
                 Text(
@@ -46,12 +62,18 @@ struct DriveMediaMenu: View {
                 }
             }
         } label: {
-            Label(
-                copies.isEmpty ? "Google Drive" : copies.allSatisfy(\.offloaded) ? "In Drive" : "Local and Drive",
-                systemImage: copies.isEmpty
-                    ? "icloud.and.arrow.up" : copies.allSatisfy(\.offloaded) ? "cloud" : "cloud.fill")
+            let title = copies.isEmpty ? "Google Drive" : cloudOnly ? "In Drive" : "Local and Drive"
+            let label = Label(title, systemImage: copies.isEmpty ? "icloud.and.arrow.up" : cloudOnly ? "cloud" : "cloud.fill")
+            if compact {
+                label.labelStyle(.iconOnly)
+                    .help(cloudOnly ? "In Drive — no local copy" : "Local and Drive")
+                    .accessibilityLabel(title)
+            } else {
+                label.labelStyle(.titleAndIcon)
+            }
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(compact ? .hidden : .automatic)
         .fixedSize()
         .sheet(isPresented: $uploading) { GoogleDriveBrowserSheet(uploadMedia: uploadCandidates) }
         .confirmationDialog("Remove local media copies?", isPresented: $removing) {
