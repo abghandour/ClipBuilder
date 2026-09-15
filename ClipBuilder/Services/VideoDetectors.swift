@@ -47,6 +47,7 @@ extension FFmpeg {
         }
         return result.stderrText
     }
+    // Changes to these filters/parsers also require bumping ReelDetectorCache key version.
     nonisolated static func detectors(of url: URL, duration: Double) async throws -> VideoDetectors {
         var result: VideoDetectors
         do {

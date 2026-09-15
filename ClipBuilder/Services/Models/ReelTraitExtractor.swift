@@ -15,6 +15,19 @@ nonisolated struct VisionReelFrameInspector: ReelFrameInspector {
 }
 
 nonisolated enum ReelTraitExtractor {
+  @TaskLocal static var stageCompleted: (@Sendable (String, Double) -> Void)?
+
+  static func measure<T: Sendable>(_ name: String, _ operation: () async throws -> T) async rethrows -> T {
+    let interval = PerfSignpost.begin("ReelTraitStage", metadata: name)
+    let start = ContinuousClock.now
+    defer {
+      PerfSignpost.end(interval)
+      let elapsed = start.duration(to: .now).components
+      stageCompleted?(name, Double(elapsed.seconds) + Double(elapsed.attoseconds) / 1e18)
+    }
+    return try await operation()
+  }
+
   struct Frame: Sendable {
     var time: Double
     var signals: VisionImageTagger.Signals
@@ -25,9 +38,10 @@ nonisolated enum ReelTraitExtractor {
   static func traits(
     for url: URL, caption: String?, transcript: [TranscriptSegment]?,
     cachedDetectors: VideoDetectors? = nil,
+    detectorCache: ReelDetectorCache? = nil,
     inspector: any ReelFrameInspector = VisionReelFrameInspector()
   ) async throws -> ReelTraits {
-    let info = await FFmpeg.info(of: url)
+    let info = await measure("probe") { await FFmpeg.info(of: url) }
     guard info.duration > 0 else {
       throw AIError.unusableResponse("Cannot compute traits: no video duration.")
     }
@@ -35,7 +49,18 @@ nonisolated enum ReelTraitExtractor {
     if let cachedDetectors {
       detectors = cachedDetectors
     } else {
-      detectors = try await FFmpeg.detectors(of: url, duration: info.duration)
+      detectors = try await measure("detectors") {
+        if let detectorCache,
+           let tool = try? FFmpeg.ffmpegURL(),
+           let version = try? await ProcessRunner.run(executable: tool, arguments: ["-version"],
+                                                       timeout: 10, mediaResource: .probing),
+           version.exitCode == 0, !version.stdout.isEmpty {
+          return try await detectorCache.detectors(for: url, duration: info.duration,
+            runtime: version.stdoutText) { try await FFmpeg.detectors(of: url, duration: info.duration) }
+        }
+        try Task.checkCancellation()
+        return try await FFmpeg.detectors(of: url, duration: info.duration)
+      }
     }
     let times = Array(
       Set(
@@ -44,18 +69,21 @@ nonisolated enum ReelTraitExtractor {
             info.duration * (Double($0) + 0.5) / 12
           }).filter { $0 < info.duration })
     ).sorted()
-    let images = await ThumbnailService.jpegFrames(url: url, at: times)
+    let images = await measure("frames") { await ThumbnailService.jpegFrames(url: url, at: times) }
+    let visionStart = ContinuousClock.now
     var frames: [Frame] = []
     for (time, image) in zip(times, images) {
       try Task.checkCancellation()
       guard let image, let quality = inspector.quality(image) else { continue }
       frames.append(Frame(time: time, signals: try await inspector.inspect(image), quality: quality))
     }
+    let visionElapsed = visionStart.duration(to: .now).components
+    stageCompleted?("vision", Double(visionElapsed.seconds) + Double(visionElapsed.attoseconds) / 1e18)
     guard !frames.isEmpty else {
       throw AIError.unusableResponse("Cannot compute traits: no readable frames.")
     }
-    let box = await RenderEngine().detectContentBox(source: url, start: 0, duration: info.duration)
-    let loudness = info.hasAudio ? await Analyzer.loudnessCurve(url: url) : []
+    let box = await measure("crop") { await RenderEngine().detectContentBox(source: url, start: 0, duration: info.duration) }
+    let loudness = await measure("loudness") { info.hasAudio ? await Analyzer.loudnessCurve(url: url) : [] }
     return assemble(
       duration: info.duration, width: info.width, height: info.height,
       detectors: detectors, frames: frames, caption: caption, transcript: transcript,

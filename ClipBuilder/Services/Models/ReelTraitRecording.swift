@@ -1,6 +1,8 @@
 import Foundation
 
 nonisolated enum ReelTraitRecording {
+  @TaskLocal static var detectorCacheEnabled = true
+
   /// Project the audible source transcript onto output time, for both proxy and final files.
   static func transcript(document: TimelineDocument, scenes: [SceneRecord], database: Database)
     async throws -> [TranscriptSegment]?
@@ -36,9 +38,12 @@ nonisolated enum ReelTraitRecording {
     log: @escaping @Sendable (String) -> Void
   ) async {
     do {
-      let transcript = try await transcript(document: document, scenes: scenes, database: database)
+      let transcript = try await ReelTraitExtractor.measure("transcript") {
+        try await transcript(document: document, scenes: scenes, database: database)
+      }
       let traits = try await ReelTraitExtractor.traits(
-        for: url, caption: caption, transcript: transcript)
+        for: url, caption: caption, transcript: transcript,
+        detectorCache: detectorCacheEnabled ? .shared : nil)
       try await database.saveReelTraits(traits, kind: "generated", videoID: String(id))
     } catch { log("Reel traits unavailable: \(error.localizedDescription)") }
   }
