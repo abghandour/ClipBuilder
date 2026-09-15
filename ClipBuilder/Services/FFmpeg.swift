@@ -164,6 +164,24 @@ nonisolated enum FFmpeg {
         await info(of: url).duration
     }
 
+    struct VideoClock: Sendable, Equatable {
+        var startTime: Double
+        var frameRate: String
+    }
+
+    /// The first video stream's start offset and nominal frame rate, as the
+    /// filter clock sees them. Not cached: callers probe scratch intermediates.
+    static func videoClock(of url: URL) async -> VideoClock? {
+        guard let output = try? await probe(["-v", "quiet", "-select_streams", "v:0", "-show_entries",
+                                             "stream=r_frame_rate,start_time", "-of", "json", url.path]),
+              let data = output.data(using: .utf8),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let stream = (root["streams"] as? [[String: Any]])?.first,
+              let rate = stream["r_frame_rate"] as? String else { return nil }
+        let start = (stream["start_time"] as? String).flatMap(Double.init) ?? 0
+        return VideoClock(startTime: start.isFinite ? start : 0, frameRate: rate)
+    }
+
     static func dimensions(of url: URL) async -> (width: Int, height: Int) {
         let info = await info(of: url)
         return (info.width, info.height)

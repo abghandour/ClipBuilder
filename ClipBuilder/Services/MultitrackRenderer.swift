@@ -155,20 +155,29 @@ actor MultitrackRenderer {
         ["top": 0, "center": slotHeight, "bottom": slotHeight * 2]
     }
 
+    /// When the final overlay pass may run as cached ranges. `editsOnly`
+    /// keeps a cold render on the single full pass and creates ranges only
+    /// once a render reuses at least one cached segment, i.e. a re-render.
+    nonisolated enum IncrementalFinishing: String, Sendable {
+        case off, editsOnly, always
+    }
+
     private let segmentCache: RenderSegmentCache
     private let finishingCacheEnabled: Bool
     private let assemblyCacheEnabled: Bool
     private let framingCacheEnabled: Bool
+    private let incrementalFinishing: IncrementalFinishing
     private let render: RenderEngine
     private let centerStageService = CenterStageService()
 
     init(render: RenderEngine, segmentCache: RenderSegmentCache = .shared,
          finishingCacheEnabled: Bool = true, assemblyCacheEnabled: Bool = true,
-         framingCacheEnabled: Bool = true) {
+         framingCacheEnabled: Bool = true, incrementalFinishing: IncrementalFinishing = .editsOnly) {
         self.segmentCache = segmentCache
         self.finishingCacheEnabled = finishingCacheEnabled
         self.assemblyCacheEnabled = assemblyCacheEnabled
         self.framingCacheEnabled = framingCacheEnabled
+        self.incrementalFinishing = incrementalFinishing
         self.render = render
     }
 
@@ -471,10 +480,32 @@ actor MultitrackRenderer {
             && !transitions.contains(where: { TransitionRecipes.isRecipe($0) })
             && artifacts.allSatisfy(\.reusable)
         let canReuseFinishing = finishingCacheEnabled && !overlayPlan.remaining.isEmpty && canReuseAssembly
-        var finishingKey = canReuseFinishing ? try? await RenderFinishingKey.make(
-            segments: clipPaths, transitions: transitions, transitionDuration: transitionDuration,
-            overlays: overlayPlan.remaining, settings: RenderContext.settings, encoder: FFmpeg.encodeArgs) : nil
+        let segmentDigests = canReuseFinishing ? try? await RenderFinishingKey.digests(of: clipPaths) : nil
+        var finishingKey: String?
+        if let segmentDigests {
+            finishingKey = try? await RenderFinishingKey.make(
+                segmentDigests: segmentDigests, transitions: transitions, transitionDuration: transitionDuration,
+                overlays: overlayPlan.remaining, settings: RenderContext.settings, encoder: FFmpeg.encodeArgs)
+        }
         try Task.checkCancellation()
+        // Ranges need the actual hard-cut groups and their encoded lengths;
+        // both are known only while assembly's intermediates exist.
+        let segmentHits = artifacts.filter(\.wasCached).count
+        let rangesAllowed: Bool
+        switch incrementalFinishing {
+        case .off: rangesAllowed = false
+        case .always: rangesAllowed = true
+        case .editsOnly: rangesAllowed = segmentHits > 0
+        }
+        let assemblyGroups = Mutex<[RenderFinishingRanges.Group]>([])
+        let digestByPath = Dictionary(zip(clipPaths, segmentDigests ?? []), uniquingKeysWith: { first, _ in first })
+        let collectGroups: @Sendable ([RenderEngine.AssemblyGroup]) async -> Void = { groups in
+            if let identified = await Self.identifyGroups(groups, digestByPath: digestByPath,
+                                                          transitionDuration: transitionDuration) {
+                assemblyGroups.withLock { $0 = identified }
+            }
+        }
+        let onGroups = rangesAllowed && finishingKey != nil ? collectGroups : nil
         var complete = true
         let assemblyArtifacts = Mutex<[RenderSegmentCache.Entry]>([])
         let assemblyCache = assemblyCacheEnabled && canReuseAssembly ? RenderEngine.AssemblyCache(
@@ -482,6 +513,7 @@ actor MultitrackRenderer {
             record: { entry in assemblyArtifacts.withLock { $0.append(entry) } },
             hit: { emit("Assembly cache hit; crossfade encode=0") }) : nil
         var assembled = scratch.appendingPathComponent("assembled.mp4")
+        var rangeArtifacts: [RenderSegmentCache.Entry] = []
         let finishingWasCached: Bool
         if let key = finishingKey {
             finishingWasCached = await segmentCache.restore(key: key, to: assembled)
@@ -502,7 +534,7 @@ actor MultitrackRenderer {
                 let fellBack = Mutex(false)
                 try await render.concatenate(clips: clipPaths, transitions: transitions, output: assembled,
                     transitionDuration: transitionDuration, assemblyCache: assemblyCache,
-                    onFallback: { fellBack.withLock { $0 = true } })
+                    onFallback: { fellBack.withLock { $0 = true } }, onGroups: onGroups)
                 if fellBack.withLock({ $0 }) { finishingKey = nil }
             }
 
@@ -560,16 +592,36 @@ actor MultitrackRenderer {
                 return overlay.endTime > overlay.startTime ? overlay : nil
             }
             if !remainingOverlays.isEmpty {
-                emit("Burning \(remainingOverlays.count) overlay(s)…")
                 let withText = scratch.appendingPathComponent("with_overlays.mp4")
-                do {
-                    try await addOverlays(video: assembled, overlays: remainingOverlays, excluding: bumperSpans, output: withText)
-                    assembled = withText
-                } catch {
-                    try Task.checkCancellation()
-                    complete = false
-                    emit("Overlay burn failed, continuing without overlays (\(error))")
+                var burned = false
+                let groups = assemblyGroups.withLock { $0 }
+                if finishingKey != nil, bumperSpans.isEmpty, !groups.isEmpty {
+                    do {
+                        if let entries = try await addOverlaysByRange(
+                            video: assembled, videoDuration: videoDuration, overlays: remainingOverlays,
+                            groups: groups, scratch: scratch, output: withText, emit: emit) {
+                            rangeArtifacts = entries
+                            burned = true
+                        }
+                    } catch {
+                        // A range failure must not cost the render its overlays.
+                        try Task.checkCancellation()
+                        try? FileManager.default.removeItem(at: withText)
+                        emit("Finishing ranges failed; burning overlays in one pass (\(error))")
+                    }
                 }
+                if !burned {
+                    emit("Burning \(remainingOverlays.count) overlay(s)…")
+                    do {
+                        try await addOverlays(video: assembled, overlays: remainingOverlays, excluding: bumperSpans, output: withText)
+                        burned = true
+                    } catch {
+                        try Task.checkCancellation()
+                        complete = false
+                        emit("Overlay burn failed, continuing without overlays (\(error))")
+                    }
+                }
+                if burned { assembled = withText }
             }
         }
 
@@ -580,7 +632,8 @@ actor MultitrackRenderer {
         let finishingArtifact = finishingWasCached ? nil : finishingKey.map {
             RenderSegmentCache.Entry(key: $0, source: assembled)
         }
-        let finishingArtifacts = framingArtifacts + assemblyArtifacts.withLock { $0 } + [finishingArtifact].compactMap { $0 }
+        let finishingArtifacts = framingArtifacts + assemblyArtifacts.withLock { $0 } + rangeArtifacts
+            + [finishingArtifact].compactMap { $0 }
         if preview {
             if complete && finalDuration > 0 { await publishSegments(artifacts, clips: clips, finishing: finishingArtifacts) }
             try Task.checkCancellation()
@@ -1779,11 +1832,95 @@ actor MultitrackRenderer {
         ], timeout: 900, capture: .boundedStderrTail())
     }
 
+    /// Durations and identities of the hard-cut assembly groups, or nil when
+    /// any group is not made of digested segments.
+    private nonisolated static func identifyGroups(_ groups: [RenderEngine.AssemblyGroup], digestByPath: [URL: String],
+                                                   transitionDuration: Double) async -> [RenderFinishingRanges.Group]? {
+        guard let durations = try? await BoundedConcurrency.map(groups, limit: FFmpeg.jobLimit, { _, group in
+            await FFmpeg.duration(of: group.output)
+        }) else { return nil }
+        var identified: [RenderFinishingRanges.Group] = []
+        for (group, duration) in zip(groups, durations) {
+            let digests = group.clips.compactMap { digestByPath[$0] }
+            guard digests.count == group.clips.count,
+                  let identity = try? RenderFinishingRanges.groupIdentity(
+                    segmentDigests: digests, transitions: group.transitions,
+                    transitionDuration: transitionDuration) else { return nil }
+            identified.append(RenderFinishingRanges.Group(duration: duration, identity: identity))
+        }
+        return identified
+    }
+
+    /// The full-timeline burn as cached ranges: restore every range whose
+    /// assembly groups, neighbors and rasters are unchanged, encode only the
+    /// missing ranges from a seeked read of the assembled video, then join
+    /// them with the assembled audio by stream copy. Returns nil when the
+    /// output is not eligible (fewer than two ranges or an unexpected clock);
+    /// throws when an encode or the join fails so the caller can fall back.
+    private func addOverlaysByRange(video: URL, videoDuration: Double, overlays: [TimedOverlayPNG],
+                                    groups: [RenderFinishingRanges.Group], scratch: URL, output: URL,
+                                    emit: @escaping @Sendable (String) -> Void) async throws
+        -> [RenderSegmentCache.Entry]? {
+        guard groups.count >= 2, videoDuration > 0,
+              let clock = await FFmpeg.videoClock(of: video),
+              clock.frameRate == RenderFinishingRanges.frameRateLabel else { return nil }
+        // The full pass caps its output at the probed length to three decimals.
+        let limit = Double(String(format: "%.3f", videoDuration)) ?? videoDuration
+        var parts = try RenderFinishingRanges.plan(durations: groups.map(\.duration),
+            target: RenderFinishingRanges.targetLength(totalDuration: videoDuration))
+        guard parts.count >= 2 else { return nil }
+        RenderFinishingRanges.clock(&parts, startTime: clock.startTime, limit: limit)
+        let overlayIdentities = try RenderFinishingKey.overlayIdentities(overlays)
+        let encoder = FFmpeg.encodeArgs
+        let videoEncoder = FFmpeg.videoEncodeArgs
+        let settings = RenderContext.settings
+        let keys = try parts.map {
+            try RenderFinishingRanges.key(part: $0, groups: groups, overlays: overlayIdentities,
+                                          settings: settings, encoder: encoder)
+        }
+        let timing = PerfSignpost.begin("OverlayBurnRanges", metadata: "ranges=\(parts.count)")
+        defer { PerfSignpost.end(timing) }
+        let cache = segmentCache
+        let indexed = Array(zip(parts, keys).enumerated())
+        // Each range process holds the decoded video plus every raster's
+        // RGBA frames; the shared hardware encoder gains little beyond two
+        // workers, so two bounds first-edit memory near a single full pass.
+        let ranges = try await BoundedConcurrency.map(indexed, limit: min(2, FFmpeg.jobLimit)) {
+            _, item -> (file: URL, entry: RenderSegmentCache.Entry?) in
+            let (index, (part, key)) = item
+            let file = scratch.appendingPathComponent("range-\(index).mp4")
+            if await cache.restore(key: key, to: file) {
+                PerfSignpost.event("FinishingRangeHit", metadata: "range=\(index)")
+                return (file: file, entry: RenderSegmentCache.Entry?.none)
+            }
+            try Task.checkCancellation()
+            var arguments = RenderFinishingRanges.inputArguments(video: video, part: part)
+            var filters: [String] = []
+            let previous = Self.appendOverlayFilters(overlays, firstInput: 1, previous: "[0:v]",
+                                                     arguments: &arguments, filters: &filters,
+                                                     inputSeek: RenderFinishingRanges.seekArguments(part))
+            filters.append(RenderFinishingRanges.rangeFilter(previous: previous, part: part))
+            try await FFmpeg.run(arguments + ["-filter_complex", filters.joined(separator: ";")]
+                + RenderFinishingRanges.outputArguments(part: part, encoder: videoEncoder, output: file),
+                timeout: 900, capture: .boundedStderrTail())
+            return (file: file, entry: RenderSegmentCache.Entry(key: key, source: file))
+        }
+        try Task.checkCancellation()
+        let listing = scratch.appendingPathComponent("ranges.txt")
+        try RenderFinishingRanges.concatListing(ranges.map(\.file))
+            .write(to: listing, atomically: true, encoding: .utf8)
+        try await FFmpeg.run(RenderFinishingRanges.joinArguments(listing: listing, audio: video,
+            firstClockStart: parts[0].clockStart, output: output), timeout: 600, capture: .boundedStderrTail())
+        let entries = ranges.compactMap(\.entry)
+        emit("Finishing ranges: hits=\(ranges.count - entries.count) encodes=\(entries.count)")
+        return entries
+    }
+
     /// Both segment and full-timeline burns use the identical animation graph.
     /// Wizard extractClip has a whole-clip animation API; Builder's independent
     /// entry/exit windows must remain intact here.
     private nonisolated static func appendOverlayFilters(_ overlays: [TimedOverlayPNG], firstInput: Int,
-        previous: String, arguments: inout [String], filters: inout [String]) -> String {
+        previous: String, arguments: inout [String], filters: inout [String], inputSeek: [String] = []) -> String {
         var previous = previous
         var inputIndex = firstInput - 1
         let animDuration = 0.4
@@ -1800,7 +1937,7 @@ actor MultitrackRenderer {
             // and its fades are stamped in absolute time — otherwise a
             // faded overlay that starts after t=0 has already faded to
             // transparent by the time `enable` lets it through.
-            arguments += ["-loop", "1", "-t", String(format: "%.2f", end + 1), "-i", pngURL.path]
+            arguments += inputSeek + ["-loop", "1", "-t", String(format: "%.2f", end + 1), "-i", pngURL.path]
 
             var current = "[\(inputIndex):v]"
             let fadeIn = overlay.transIn == "fade" || overlay.transIn == "pop"

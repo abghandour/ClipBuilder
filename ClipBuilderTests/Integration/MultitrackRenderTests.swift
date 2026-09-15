@@ -8,8 +8,11 @@ import Synchronization
                 "Install ffmpeg and ffprobe to run."))
 struct MultitrackRenderTests {
     /// A registered, analyzed 3-second wide fixture: one scene spanning it.
-    private func seedScene(in temp: TempDatabase, hash: String) async throws -> (source: URL, scene: SceneRecord) {
-        let source = try await FixtureVideo.make(in: temp.directory.url, wide: true)
+    private func seedScene(in temp: TempDatabase, hash: String,
+                           directory: URL? = nil) async throws -> (source: URL, scene: SceneRecord) {
+        let directory = directory ?? temp.directory.url
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = try await FixtureVideo.make(in: directory, wide: true)
         let videoID = try await temp.database.registerVideo(
             hash: hash, filename: source.lastPathComponent, path: source.path,
             duration: 3, width: 1920, height: 1080, wide: true
@@ -400,6 +403,111 @@ extension MultitrackRenderTests {
         outputs.append(titleEdit.url)
         #expect(!messages.withLock { $0.contains { $0.hasPrefix("Finishing cache hit") } })
         #expect(try await decoded(titleEdit.url) != captionFrames)
+    }
+
+    @Test("finishing ranges appear only on the edit path, rebuild the edited range, and keep the full pass timing")
+    func finishingRangesOnEditPath() async throws {
+        let temp = try TempDatabase()
+        let (sourceA, sceneA) = try await seedScene(in: temp, hash: "ranges-a")
+        let (sourceB, sceneB) = try await seedScene(in: temp, hash: "ranges-b",
+            directory: temp.directory.url.appendingPathComponent("second", isDirectory: true))
+        var first = Fixtures.timelineClip(sceneID: sceneA.id, sourceStart: 0, duration: 3)
+        first.videoFile = sourceA.path
+        first.captions = "bottom"
+        var second = Fixtures.timelineClip(sceneID: sceneB.id, sourceStart: 0, duration: 3, startTime: 3)
+        second.videoFile = sourceB.path
+        second.captions = "bottom"
+        var third = second
+        third.uid = UUID()
+        third.startTime = 6
+        var document = Fixtures.timelineDocument(clips: [first, second, third])
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        var title = TextOverlayItem(text: "Whole timeline", startTime: 0.1, endTime: 8.8)
+        title.transIn = "fade"
+        title.transOut = "slide_up"
+        document.textOverlays = [title]
+        try await temp.database.replaceTranscripts(videoID: sceneB.videoID, language: "en", isTranslation: false,
+            segments: [TranscriptSegment(start: 0.2, end: 1.2, text: "Right caption")], provider: nil, model: nil)
+        func caption(_ text: String) async throws {
+            try await temp.database.replaceTranscripts(videoID: sceneA.videoID, language: "en", isTranslation: false,
+                segments: [TranscriptSegment(start: 0.2, end: 1.2, text: text)], provider: nil, model: nil)
+        }
+        try await caption("Original caption")
+        let cacheDirectory = temp.directory.url.appendingPathComponent("segments")
+        let cache = RenderSegmentCache(directory: cacheDirectory)
+        let renderer = MultitrackRenderer(render: RenderEngine(), segmentCache: cache)
+        let scenes = [sceneA, sceneB]
+        var outputs: [URL] = []
+        defer { for url in outputs { try? FileManager.default.removeItem(at: url) } }
+        func render(_ renderer: MultitrackRenderer) async throws -> (result: MultitrackRenderer.RenderResult, lines: [String]) {
+            let messages = Mutex<[String]>([])
+            let result = try await renderer.render(document: document, scenes: scenes, profile: Fixtures.brand(),
+                database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
+            outputs.append(result.url)
+            return (result, messages.withLock { $0 })
+        }
+        func decoded(_ url: URL) async throws -> (timing: [[String]], audio: [String], frames: Int) {
+            let text = try await FFmpeg.run(["-v", "error", "-i", url.path, "-map", "0:v:0", "-map", "0:a:0",
+                                             "-f", "framemd5", "-"], timeout: 60, mediaResource: .decoding)
+            var timing: [[String]] = []
+            var audio: [String] = []
+            for line in text.split(separator: "\n") where !line.hasPrefix("#") {
+                let fields = line.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                if fields.first == "0" { timing.append(Array(fields.prefix(4))) } else { audio.append(String(line)) }
+            }
+            return (timing, audio, timing.count)
+        }
+
+        // A cold render keeps the single full pass.
+        let cold = try await render(renderer)
+        #expect(cold.lines.contains { $0.hasPrefix("Burning 1 overlay") })
+        #expect(!cold.lines.contains { $0.hasPrefix("Finishing ranges") })
+        #expect(cold.lines.filter { $0.hasSuffix("cache hit; encodes=0") }.isEmpty)
+
+        // The first edit reuses two segments, so ranges are created: all miss.
+        try await caption("Edited caption")
+        let firstEdit = try await render(renderer)
+        #expect(firstEdit.lines.filter { $0.hasSuffix("cache hit; encodes=0") }.count == 2)
+        #expect(firstEdit.lines.contains("Finishing ranges: hits=0 encodes=2"))
+        #expect(!firstEdit.lines.contains { $0.hasPrefix("Burning") })
+        #expect(!firstEdit.lines.contains { $0.contains("failed") })
+
+        // The second edit touches only the first group: the range that
+        // covers groups 1-2 (with group 0 outside its neighbors) is restored.
+        try await caption("Edited caption again")
+        let secondEdit = try await render(renderer)
+        #expect(secondEdit.lines.contains("Finishing ranges: hits=1 encodes=1"))
+        #expect(!secondEdit.lines.contains { $0.contains("failed") })
+        let reference = try await render(MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("reference-cache")),
+            incrementalFinishing: .off))
+        #expect(reference.lines.contains { $0.hasPrefix("Burning 1 overlay") })
+        let ranged = try await decoded(secondEdit.result.url)
+        let full = try await decoded(reference.result.url)
+        #expect(ranged.frames == full.frames)
+        #expect(ranged.frames > 200)
+        #expect(ranged.timing == full.timing)
+        #expect(ranged.audio == full.audio)
+        #expect(abs(secondEdit.result.duration - reference.result.duration) < 0.001)
+        let cold_frames = try await decoded(cold.result.url)
+        #expect(cold_frames.frames == full.frames)
+
+        // A raster change invalidates every range.
+        document.textOverlays[0].text = "Changed title"
+        let titleEdit = try await render(renderer)
+        #expect(titleEdit.lines.contains("Finishing ranges: hits=0 encodes=2"))
+
+        // `always` creates ranges on a cold render; the unchanged rerender
+        // still takes the whole-finishing hit.
+        let always = MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("always-cache")),
+            incrementalFinishing: .always)
+        let alwaysCold = try await render(always)
+        #expect(alwaysCold.lines.contains("Finishing ranges: hits=0 encodes=2"))
+        #expect(try await decoded(alwaysCold.result.url).timing == full.timing)
+        let alwaysWarm = try await render(always)
+        #expect(alwaysWarm.lines.contains("Finishing cache hit; assembly and overlay encodes=0"))
+        #expect(!alwaysWarm.lines.contains { $0.hasPrefix("Finishing ranges") })
     }
 
     @Test("an unaffordable crossfade reports its hard-cut fallback")

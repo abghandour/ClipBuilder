@@ -29,20 +29,44 @@ nonisolated struct RenderFinishingKey: Encodable, Sendable {
                      overlays: [MultitrackRenderer.TimedOverlayPNG], settings: RenderSettings,
                      encoder: [String], maximumOverlap: Double? = nil,
                      version: String = "multitrack-finishing-v1") async throws -> String {
+        try await make(segmentDigests: digests(of: segments), transitions: transitions,
+                       transitionDuration: transitionDuration, overlays: overlays, settings: settings,
+                       encoder: encoder, maximumOverlap: maximumOverlap, version: version)
+    }
+
+    /// Callers that also plan finishing ranges digest the segments once and
+    /// share the result.
+    @concurrent
+    static func make(segmentDigests: [String], transitions: [String?], transitionDuration: Double,
+                     overlays: [MultitrackRenderer.TimedOverlayPNG], settings: RenderSettings,
+                     encoder: [String], maximumOverlap: Double? = nil,
+                     version: String = "multitrack-finishing-v1") async throws -> String {
         let timing = PerfSignpost.begin("FinishingCacheKey")
         defer { PerfSignpost.end(timing) }
         let input = try Self(
-            segments: segments.map { try digest($0) }, transitions: transitions,
+            segments: segmentDigests, transitions: transitions,
             transitionDuration: transitionDuration,
-            overlays: overlays.map {
-                try Overlay(pixels: digest($0.png), start: $0.startTime, end: $0.endTime,
-                            transIn: $0.transIn, transOut: $0.transOut)
-            }, settings: settings, encoder: encoder, maximumOverlap: maximumOverlap)
+            overlays: overlayIdentities(overlays), settings: settings, encoder: encoder,
+            maximumOverlap: maximumOverlap)
         try Task.checkCancellation()
         return try RenderSegmentCache.key(input, version: version)
     }
 
-    private static func digest(_ url: URL) throws -> String {
+    @concurrent
+    static func digests(of segments: [URL]) async throws -> [String] {
+        let timing = PerfSignpost.begin("FinishingCacheKey", metadata: "segments=\(segments.count)")
+        defer { PerfSignpost.end(timing) }
+        return try segments.map { try digest($0) }
+    }
+
+    static func overlayIdentities(_ overlays: [MultitrackRenderer.TimedOverlayPNG]) throws -> [Overlay] {
+        try overlays.map {
+            try Overlay(pixels: digest($0.png), start: $0.startTime, end: $0.endTime,
+                        transIn: $0.transIn, transOut: $0.transOut)
+        }
+    }
+
+    static func digest(_ url: URL) throws -> String {
         let file = try FileHandle(forReadingFrom: url)
         defer { try? file.close() }
         var hash = SHA256()

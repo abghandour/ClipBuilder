@@ -502,10 +502,19 @@ actor RenderEngine {
     /// rest groups consecutive xfade-joined clips, xfades within each group,
     /// then plain-concats the groups. Falls back to the concat demuxer on
     /// degenerate durations.
+    /// One input of the final hard-cut concatenation: a single segment or a
+    /// crossfaded run. `output` lives only until concatenation returns.
+    nonisolated struct AssemblyGroup: Sendable {
+        var output: URL
+        var clips: [URL]
+        var transitions: [String]
+    }
+
     func concatenate(clips: [URL], transitions: [String?], output: URL,
                      maximumOverlap: Double? = nil, transitionDuration: Double? = nil,
                      assemblyCache: AssemblyCache? = nil,
-                     onFallback: (@Sendable () -> Void)? = nil) async throws {
+                     onFallback: (@Sendable () -> Void)? = nil,
+                     onGroups: (@Sendable ([AssemblyGroup]) async -> Void)? = nil) async throws {
         let timing = PerfSignpost.begin("Assembly", metadata: "clips=\(clips.count)")
         defer { PerfSignpost.end(timing) }
         guard !clips.isEmpty else { return }
@@ -530,6 +539,7 @@ actor RenderEngine {
         }
 
         if padded.allSatisfy({ $0 == nil }) {
+            await onGroups?(clips.map { AssemblyGroup(output: $0, clips: [$0], transitions: []) })
             try await concatPlain(clips: clips, output: output)
             return
         }
@@ -582,6 +592,9 @@ actor RenderEngine {
                 groupOutputs.append(groupOutput)
             }
         }
+        await onGroups?(zip(groups, groupOutputs).map {
+            AssemblyGroup(output: $1, clips: $0.clips, transitions: $0.transitions)
+        })
         if groupOutputs.count == 1 {
             try FileManager.default.copyItemReplacing(at: groupOutputs[0], to: output)
         } else {
