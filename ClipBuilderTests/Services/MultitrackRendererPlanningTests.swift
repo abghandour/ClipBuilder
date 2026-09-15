@@ -4,6 +4,29 @@ import Testing
 
 @Suite("Multitrack renderer planning")
 struct MultitrackRendererPlanningTests {
+    @Test("original caption time survives crop splits and both framing passes", arguments: [0.5, 1.0, 2.0])
+    func framedTranscriptTime(speed: Double) throws {
+        let clip = Fixtures.timelineClip(sourceStart: 2, duration: 4, startTime: 10, speed: speed)
+        var document = Fixtures.timelineDocument(clips: [clip])
+        document.cropBlocks = [
+            CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"), startTime: 0, duration: 12),
+            CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"), startTime: 12, duration: 2),
+        ]
+        var pieces = MultitrackRenderer.resolveClips(document: document, scenes: [Fixtures.scene(end: 10)])
+        #expect(pieces.count == 2)
+        for index in pieces.indices {
+            let expected = 2 + (Double(index) * 2 + 0.5) * speed
+            let at = pieces[index].startTime + 0.5
+            #expect(pieces[index].transcriptStart(at: at) == expected)
+            for areaPass in [false, true] {
+                pieces[index].useFramedSource(URL(fileURLWithPath: "/framed.mp4"),
+                    identity: "pass", areaPass: areaPass, reusable: true)
+                #expect(pieces[index].sourceStart == 0)
+                #expect(pieces[index].transcriptStart(at: at) == expected)
+            }
+        }
+    }
+
     @Test("clip resolution applies track settings and drops missing scenes")
     func resolveClips() {
         var valid = Fixtures.timelineClip(sceneID: 1, sourceStart: 2, duration: 4, track: 0, speed: 0.5)
@@ -531,7 +554,7 @@ extension MultitrackRendererPlanningTests {
         var changed = clip
         changed.effect = nil
         #expect(changed != clip)
-        #expect(RenderSegmentCache.rendererVersion == "multitrack-segment-v4")
+        #expect(RenderSegmentCache.rendererVersion == "multitrack-segment-v5")
     }
 }
 

@@ -74,6 +74,26 @@ actor MultitrackRenderer {
         var originalSourcePath: String?
         var sourceFingerprint: String?
         var cacheable = true
+        /// Original-video time, independent of a framing intermediate's seek time.
+        var transcriptSourceStart: Double?
+
+        func transcriptStart(at timelineTime: Double) -> Double {
+            (transcriptSourceStart ?? sourceStart) + (timelineTime - startTime) * speed
+        }
+
+        mutating func useFramedSource(_ url: URL, identity: String, areaPass: Bool, reusable: Bool) {
+            transcriptSourceStart = transcriptSourceStart ?? sourceStart
+            framingIdentity = (framingIdentity ?? "") + identity
+            sourcePath = url.path
+            sourceStart = 0
+            cacheable = cacheable && reusable
+            wide = false
+            if areaPass {
+                centerStage = false
+                cameraPath = nil
+                effectiveCropXFrac = nil
+            }
+        }
     }
 
     /// One alpha dissolve inside a segment, in segment-local seconds.
@@ -136,11 +156,19 @@ actor MultitrackRenderer {
     }
 
     private let segmentCache: RenderSegmentCache
+    private let finishingCacheEnabled: Bool
+    private let assemblyCacheEnabled: Bool
+    private let framingCacheEnabled: Bool
     private let render: RenderEngine
     private let centerStageService = CenterStageService()
 
-    init(render: RenderEngine, segmentCache: RenderSegmentCache = .shared) {
+    init(render: RenderEngine, segmentCache: RenderSegmentCache = .shared,
+         finishingCacheEnabled: Bool = true, assemblyCacheEnabled: Bool = true,
+         framingCacheEnabled: Bool = true) {
         self.segmentCache = segmentCache
+        self.finishingCacheEnabled = finishingCacheEnabled
+        self.assemblyCacheEnabled = assemblyCacheEnabled
+        self.framingCacheEnabled = framingCacheEnabled
         self.render = render
     }
 
@@ -225,9 +253,16 @@ actor MultitrackRenderer {
             .appendingPathComponent("cb_areas_\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: framingScratch, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: framingScratch) }
+        var framingArtifacts: [RenderSegmentCache.Entry] = []
+        #if PERFORMANCE_BASELINE
+        let framingStarted = ContinuousClock.now
+        #endif
         // Group only source/framing inputs, not timeline placement. A repeated
         // clip shares its intermediate. Permits remain in leaf media work.
         for areaPass in [false, true] {
+            #if PERFORMANCE_BASELINE
+            let passStarted = ContinuousClock.now
+            #endif
             var groups: [String: [Int]] = [:]
             var areas: [String: ScreenCropArea] = [:]
             for index in clips.indices {
@@ -252,6 +287,16 @@ actor MultitrackRenderer {
                 try Task.checkCancellation()
                 let clip = job.clip
                 let source = URL(fileURLWithPath: clip.sourcePath)
+                let owned = framingScratch.appendingPathComponent(UUID().uuidString + ".mp4")
+                if self.framingCacheEnabled && clip.cacheable,
+                   await self.segmentCache.restore(key: job.key, to: owned) {
+                    try Task.checkCancellation()
+                    emit("Framing cache hit; uses=\(job.indices.count); intermediates=0")
+                    try Task.checkCancellation()
+                    return PrepassArtifact(url: owned, cacheable: true, wasCached: true)
+                }
+                // A failed copy must not interfere with a fresh framing result.
+                try? FileManager.default.removeItem(at: owned)
                 let fellBack = Mutex(false)
                 do {
                     let framed: URL
@@ -272,12 +317,12 @@ actor MultitrackRenderer {
                                 tuning: .named(centerStageCamera), log: emit)
                         }
                     }
-                    let owned = framingScratch.appendingPathComponent(UUID().uuidString + ".mp4")
                     defer { try? FileManager.default.removeItem(at: framed) }
                     try Task.checkCancellation()
                     try FileManager.default.moveItem(at: framed, to: owned)
                     let intermediates = job.area == nil || fellBack.withLock({ $0 }) ? 1 : 2
                     emit("Framing prepass: intermediates=\(intermediates); uses=\(job.indices.count)")
+                    try Task.checkCancellation()
                     return PrepassArtifact(url: owned, cacheable: !fellBack.withLock { $0 })
                 } catch {
                     try Task.checkCancellation()
@@ -290,20 +335,21 @@ actor MultitrackRenderer {
                     for index in job.indices { clips[index].cacheable = false }
                     continue
                 }
+                if framingCacheEnabled && job.clip.cacheable && result.cacheable && !result.wasCached {
+                    framingArtifacts.append(.init(key: job.key, source: result.url))
+                }
                 for index in job.indices {
-                    clips[index].framingIdentity = (clips[index].framingIdentity ?? "") + job.key
-                    clips[index].sourcePath = result.url.path
-                    clips[index].cacheable = clips[index].cacheable && result.cacheable
-                    clips[index].sourceStart = 0
-                    clips[index].wide = false
-                    if areaPass {
-                        clips[index].centerStage = false
-                        clips[index].cameraPath = nil
-                        clips[index].effectiveCropXFrac = nil
-                    }
+                    clips[index].useFramedSource(result.url, identity: job.key,
+                        areaPass: areaPass, reusable: result.cacheable)
                 }
             }
+            #if PERFORMANCE_BASELINE
+            emit("FRAMING_PASS area=\(areaPass) jobs=\(jobs.count) uses=\(jobs.reduce(0) { $0 + $1.indices.count }) seconds=\(passStarted.duration(to: .now).seconds)")
+            #endif
         }
+        #if PERFORMANCE_BASELINE
+        emit("FRAMING_PREPARATION seconds=\(framingStarted.duration(to: .now).seconds)")
+        #endif
         guard !clips.isEmpty else {
             throw CocoaError(.fileNoSuchFile, userInfo: [
                 NSLocalizedDescriptionKey: "No valid clips in the video track"])
@@ -320,6 +366,10 @@ actor MultitrackRenderer {
             : try Self.outputFile(profile: profile, totalDuration: totalDuration, baseName: outputName)
         let scratch = try await render.makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
+        var previewSucceeded = false
+        defer {
+            if preview && !previewSucceeded { try? FileManager.default.removeItem(at: outputURL) }
+        }
 
         // Slice the timeline into constant-membership segments + black gaps.
         let segments = Self.buildLayeredSegments(clips)
@@ -413,81 +463,113 @@ actor MultitrackRenderer {
         transitions = Array(transitions.prefix(max(0, clipPaths.count - 1)))
 
         try Task.checkCancellation()
-        emit("Assembling \(clipPaths.count) segment(s)…")
+        // Reuse only a complete finishing pass. Its inputs are actual segment
+        // bytes and raster pixels, not document JSON or scratch/overlay UUIDs.
+        // Music, bumpers and recipe transitions retain their existing pipeline.
+        let transitionDuration = SettingsStore.loadSettings().transitions.xfadeDuration
+        let canReuseAssembly = document.soundTrack.isEmpty && bumperSpans.isEmpty
+            && !transitions.contains(where: { TransitionRecipes.isRecipe($0) })
+            && artifacts.allSatisfy(\.reusable)
+        let canReuseFinishing = finishingCacheEnabled && !overlayPlan.remaining.isEmpty && canReuseAssembly
+        var finishingKey = canReuseFinishing ? try? await RenderFinishingKey.make(
+            segments: clipPaths, transitions: transitions, transitionDuration: transitionDuration,
+            overlays: overlayPlan.remaining, settings: RenderContext.settings, encoder: FFmpeg.encodeArgs) : nil
+        try Task.checkCancellation()
         var complete = true
+        let assemblyArtifacts = Mutex<[RenderSegmentCache.Entry]>([])
+        let assemblyCache = assemblyCacheEnabled && canReuseAssembly ? RenderEngine.AssemblyCache(
+            cache: segmentCache, stagingDirectory: scratch,
+            record: { entry in assemblyArtifacts.withLock { $0.append(entry) } },
+            hit: { emit("Assembly cache hit; crossfade encode=0") }) : nil
         var assembled = scratch.appendingPathComponent("assembled.mp4")
-        if clipPaths.count == 1 {
-            assembled = clipPaths[0]
-        } else if !bumperSpans.isEmpty {
-            bumperSpans = try await concatenateWithBumpers(paths: clipPaths, segments: fullSegments,
-                transitions: transitions, scratch: scratch, output: assembled)
+        let finishingWasCached: Bool
+        if let key = finishingKey {
+            finishingWasCached = await segmentCache.restore(key: key, to: assembled)
         } else {
-            try await render.concatenate(clips: clipPaths, transitions: transitions, output: assembled)
+            finishingWasCached = false
         }
-
-        let videoDuration = await FFmpeg.duration(of: assembled)
-
-        // Music track (blocks with silence-filled gaps + original-audio ducking).
-        if !document.soundTrack.isEmpty {
-            let musicLookup = Dictionary(uniqueKeysWithValues:
-                WizardEngine.availableMusic().map { ($0.name, $0.url) })
-            var blocks: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)] = []
-            for item in document.soundTrack.sorted(by: { $0.startTime < $1.startTime }) {
-                guard let url = musicLookup[item.name], item.duration > 0 else { continue }
-                blocks.append((item.startTime, item.duration, url, item.volume, item.sourceOffset))
+        if finishingWasCached {
+            emit("Finishing cache hit; assembly and overlay encodes=0")
+            PerfSignpost.event("FinishingCacheHit")
+        } else {
+            emit("Assembling \(clipPaths.count) segment(s)…")
+            if clipPaths.count == 1 {
+                assembled = clipPaths[0]
+            } else if !bumperSpans.isEmpty {
+                bumperSpans = try await concatenateWithBumpers(paths: clipPaths, segments: fullSegments,
+                    transitions: transitions, scratch: scratch, output: assembled)
+            } else {
+                let fellBack = Mutex(false)
+                try await render.concatenate(clips: clipPaths, transitions: transitions, output: assembled,
+                    transitionDuration: transitionDuration, assemblyCache: assemblyCache,
+                    onFallback: { fellBack.withLock { $0 = true } })
+                if fellBack.withLock({ $0 }) { finishingKey = nil }
             }
-            // A bumper owns the sound as well as the picture: cut every
-            // music block around the measured bumper spans. Each remaining
-            // piece keeps its offset into the song so it continues, not restarts.
-            blocks = blocks.flatMap { block in
-                TimelineDocument.subtracting(bumperSpans, from: block.start..<(block.start + block.duration))
-                    .map { (start: $0.lowerBound, duration: $0.upperBound - $0.lowerBound,
-                            music: block.music, volume: block.volume, offset: block.offset + ($0.lowerBound - block.start)) }
-            }
-            if !blocks.isEmpty {
-                var filled: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)] = []
-                var soundCursor = 0.0
-                for block in blocks {
-                    if block.start > soundCursor + 0.05 {
-                        filled.append((soundCursor, block.start - soundCursor, nil, 0, 0))
+
+            let videoDuration = await FFmpeg.duration(of: assembled)
+
+            // Music track (blocks with silence-filled gaps + original-audio ducking).
+            if !document.soundTrack.isEmpty {
+                let musicLookup = Dictionary(uniqueKeysWithValues:
+                    WizardEngine.availableMusic().map { ($0.name, $0.url) })
+                var blocks: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)] = []
+                for item in document.soundTrack.sorted(by: { $0.startTime < $1.startTime }) {
+                    guard let url = musicLookup[item.name], item.duration > 0 else { continue }
+                    blocks.append((item.startTime, item.duration, url, item.volume, item.sourceOffset))
+                }
+                // A bumper owns the sound as well as the picture: cut every
+                // music block around the measured bumper spans. Each remaining
+                // piece keeps its offset into the song so it continues, not restarts.
+                blocks = blocks.flatMap { block in
+                    TimelineDocument.subtracting(bumperSpans, from: block.start..<(block.start + block.duration))
+                        .map { (start: $0.lowerBound, duration: $0.upperBound - $0.lowerBound,
+                                music: block.music, volume: block.volume, offset: block.offset + ($0.lowerBound - block.start)) }
+                }
+                if !blocks.isEmpty {
+                    var filled: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)] = []
+                    var soundCursor = 0.0
+                    for block in blocks {
+                        if block.start > soundCursor + 0.05 {
+                            filled.append((soundCursor, block.start - soundCursor, nil, 0, 0))
+                        }
+                        filled.append(block)
+                        soundCursor = block.start + block.duration
                     }
-                    filled.append(block)
-                    soundCursor = block.start + block.duration
+                    if soundCursor < videoDuration {
+                        filled.append((soundCursor, videoDuration - soundCursor, nil, 0, 0))
+                    }
+                    emit("Building music track (\(blocks.count) block(s))…")
+                    let musicTrack = scratch.appendingPathComponent("music_track.m4a")
+                    do {
+                        try await buildMusicTrack(segments: filled, totalDuration: videoDuration, output: musicTrack)
+                        let withMusic = scratch.appendingPathComponent("with_music.mp4")
+                        try await overlayMusicTrack(video: assembled, musicTrack: musicTrack,
+                                                    segments: filled, output: withMusic)
+                        assembled = withMusic
+                    } catch {
+                        try Task.checkCancellation()
+                        complete = false
+                        emit("Music overlay failed, continuing without music (\(error))")
+                    }
                 }
-                if soundCursor < videoDuration {
-                    filled.append((soundCursor, videoDuration - soundCursor, nil, 0, 0))
-                }
-                emit("Building music track (\(blocks.count) block(s))…")
-                let musicTrack = scratch.appendingPathComponent("music_track.m4a")
+            }
+
+            let remainingOverlays = overlayPlan.remaining.compactMap { overlay -> TimedOverlayPNG? in
+                var overlay = overlay
+                overlay.endTime = min(overlay.endTime, videoDuration)
+                return overlay.endTime > overlay.startTime ? overlay : nil
+            }
+            if !remainingOverlays.isEmpty {
+                emit("Burning \(remainingOverlays.count) overlay(s)…")
+                let withText = scratch.appendingPathComponent("with_overlays.mp4")
                 do {
-                    try await buildMusicTrack(segments: filled, totalDuration: videoDuration, output: musicTrack)
-                    let withMusic = scratch.appendingPathComponent("with_music.mp4")
-                    try await overlayMusicTrack(video: assembled, musicTrack: musicTrack,
-                                                segments: filled, output: withMusic)
-                    assembled = withMusic
+                    try await addOverlays(video: assembled, overlays: remainingOverlays, excluding: bumperSpans, output: withText)
+                    assembled = withText
                 } catch {
                     try Task.checkCancellation()
                     complete = false
-                    emit("Music overlay failed, continuing without music (\(error))")
+                    emit("Overlay burn failed, continuing without overlays (\(error))")
                 }
-            }
-        }
-
-        let remainingOverlays = overlayPlan.remaining.compactMap { overlay -> TimedOverlayPNG? in
-            var overlay = overlay
-            overlay.endTime = min(overlay.endTime, videoDuration)
-            return overlay.endTime > overlay.startTime ? overlay : nil
-        }
-        if !remainingOverlays.isEmpty {
-            emit("Burning \(remainingOverlays.count) overlay(s)…")
-            let withText = scratch.appendingPathComponent("with_overlays.mp4")
-            do {
-                try await addOverlays(video: assembled, overlays: remainingOverlays, excluding: bumperSpans, output: withText)
-                assembled = withText
-            } catch {
-                try Task.checkCancellation()
-                complete = false
-                emit("Overlay burn failed, continuing without overlays (\(error))")
             }
         }
 
@@ -495,8 +577,14 @@ actor MultitrackRenderer {
         let finalDuration = await FFmpeg.duration(of: outputURL)
 
         try Task.checkCancellation()
+        let finishingArtifact = finishingWasCached ? nil : finishingKey.map {
+            RenderSegmentCache.Entry(key: $0, source: assembled)
+        }
+        let finishingArtifacts = framingArtifacts + assemblyArtifacts.withLock { $0 } + [finishingArtifact].compactMap { $0 }
         if preview {
-            if complete && finalDuration > 0 { await publishSegments(artifacts, clips: clips) }
+            if complete && finalDuration > 0 { await publishSegments(artifacts, clips: clips, finishing: finishingArtifacts) }
+            try Task.checkCancellation()
+            previewSucceeded = true
             emit("Exact preview ready (\(finalDuration.timecode))")
             return RenderResult(url: outputURL, duration: finalDuration)
         }
@@ -519,7 +607,7 @@ actor MultitrackRenderer {
         await ReelTraitRecording.record(url: outputURL, id: recordID, database: database,
             document: document, scenes: scenes, log: emit)
         try Task.checkCancellation()
-        if complete && finalDuration > 0 { await publishSegments(artifacts, clips: clips) }
+        if complete && finalDuration > 0 { await publishSegments(artifacts, clips: clips, finishing: finishingArtifacts) }
         emit("Saved \(outputURL.lastPathComponent)")
         return RenderResult(url: outputURL, duration: finalDuration)
     }
@@ -816,6 +904,7 @@ actor MultitrackRenderer {
                 piece.startTime = pieceStart
                 piece.duration = pieceEnd - pieceStart
                 piece.sourceStart = clip.sourceStart + offset * clip.speed
+                piece.transcriptSourceStart = clip.transcriptStart(at: pieceStart)
                 if clip.coverAllAreas {
                     // The whole canvas: no mask, scaled to fill.
                     piece.screenCrop = nil
@@ -1040,10 +1129,16 @@ actor MultitrackRenderer {
     private nonisolated struct PrepassArtifact: Sendable {
         var url: URL
         var cacheable: Bool
+        var wasCached = false
     }
 
-    private nonisolated static func prepassKey(_ clip: ResolvedClip, area: ScreenCropArea?,
-                                               tuning: String) throws -> String {
+    /// Bump when CenterStageService/AreaFramer output or tracking semantics change.
+    nonisolated static let framingVersion = "multitrack-framing-v1"
+
+    nonisolated static func prepassKey(_ clip: ResolvedClip, area: ScreenCropArea?,
+                                      tuning: String, settings: RenderSettings = RenderContext.settings,
+                                      encoder: [String] = FFmpeg.encodeArgs,
+                                      version: String = framingVersion) throws -> String {
         nonisolated struct Input: Encodable {
             var source: String
             var fingerprint: String
@@ -1052,11 +1147,14 @@ actor MultitrackRenderer {
             var path: [CameraPathKeyframe]?
             var area: ScreenCropArea?
             var tuning: String
+            var settings: RenderSettings
+            var encoder: [String]
+            var rendererVersion = RenderSegmentCache.rendererVersion
         }
         return try RenderSegmentCache.key(Input(source: clip.framingIdentity ?? clip.sourcePath,
             fingerprint: clip.framingIdentity ?? SourceIdentityCache.shared.fingerprint(of: URL(fileURLWithPath: clip.sourcePath)),
             start: clip.sourceStart, duration: clip.duration * clip.speed,
-            path: clip.cameraPath, area: area, tuning: tuning))
+            path: clip.cameraPath, area: area, tuning: tuning, settings: settings, encoder: encoder), version: version)
     }
 
     // MARK: - Segment rendering
@@ -1092,7 +1190,7 @@ actor MultitrackRenderer {
             let key = try RenderSegmentCache.key(input)
             if await segmentCache.restore(key: key, to: gapPath) {
                 emit("Segment \(index + 1): cache hit; encodes=0")
-                return SegmentArtifact(url: gapPath, key: nil)
+                return SegmentArtifact(url: gapPath, key: nil, wasCached: true)
             }
             emit("Segment \(index + 1): encode pass")
             try await generatePlaceholder(duration: segment.duration, output: gapPath)
@@ -1108,8 +1206,7 @@ actor MultitrackRenderer {
         var segmentComplete = true
         for clip in segment.clips {
             guard let captionPosition = clip.captionsPosition, let videoID = clip.videoID else { continue }
-            let clipOffset = (segment.start - clip.startTime) * clip.speed
-            let sourceStart = clip.sourceStart + clipOffset
+            let sourceStart = clip.transcriptStart(at: segment.start)
             let sourceEnd = sourceStart + segment.duration * clip.speed
             let rows: [TranscriptSegment]
             do {
@@ -1172,7 +1269,7 @@ actor MultitrackRenderer {
             ? try RenderSegmentCache.key(input) : nil
         if let key, await segmentCache.restore(key: key, to: segmentPath) {
             emit("Segment \(index + 1): cache hit; encodes=0")
-            return SegmentArtifact(url: segmentPath, key: nil)
+            return SegmentArtifact(url: segmentPath, key: nil, wasCached: true)
         }
         do {
             emit("Segment \(index + 1): encode pass")
@@ -1192,18 +1289,23 @@ actor MultitrackRenderer {
     nonisolated struct SegmentArtifact: Sendable {
         var url: URL
         var key: String?
+        var wasCached = false
+        var reusable: Bool { key != nil || wasCached }
     }
 
-    private func publishSegments(_ artifacts: [SegmentArtifact], clips: [ResolvedClip]) async {
+    private func publishSegments(_ artifacts: [SegmentArtifact], clips: [ResolvedClip],
+                                 finishing: [RenderSegmentCache.Entry] = []) async {
         // Do not cache an encode whose source changed during the run.
         for clip in clips {
             guard let path = clip.originalSourcePath,
                   let fingerprint = try? SourceIdentityCache.shared.fingerprint(of: URL(fileURLWithPath: path)),
                   fingerprint == clip.sourceFingerprint else { return }
         }
-        await segmentCache.store(artifacts.compactMap { artifact in
+        var entries = artifacts.compactMap { artifact in
             artifact.key.map { RenderSegmentCache.Entry(key: $0, source: artifact.url) }
-        })
+        }
+        entries.append(contentsOf: finishing)
+        await segmentCache.store(entries)
     }
 
     // MARK: - FFmpeg stages

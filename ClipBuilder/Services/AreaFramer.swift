@@ -8,6 +8,7 @@ import CoreGraphics
 /// the canvas with the area's polygon. When nobody is visible the window
 /// is a static center crop at the same aspect.
 nonisolated enum AreaFramer {
+    // Output/tracking changes must bump MultitrackRenderer.framingVersion.
     /// The area's bounding box in output pixels, rounded to even sizes
     /// (encoders and `pad` want even dimensions).
     static func pixelBounds(of area: ScreenCropArea) -> CGRect {

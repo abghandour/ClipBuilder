@@ -486,6 +486,15 @@ actor RenderEngine {
 
     // MARK: - Concatenation
 
+    /// The caller owns staging and publishes entries only after its complete
+    /// render succeeds. Crossfade scratch files disappear when assembly ends.
+    nonisolated struct AssemblyCache: Sendable {
+        var cache: RenderSegmentCache
+        var stagingDirectory: URL
+        var record: @Sendable (RenderSegmentCache.Entry) -> Void
+        var hit: @Sendable () -> Void
+    }
+
     /// Concatenate normalized clips with per-gap transitions or hard cuts —
     /// the port of video.py concatenate_clips(). Each transitions entry is an
     /// xfade name, an action recipe name, "cut"/nil (hard cut). Recipe gaps
@@ -494,7 +503,9 @@ actor RenderEngine {
     /// then plain-concats the groups. Falls back to the concat demuxer on
     /// degenerate durations.
     func concatenate(clips: [URL], transitions: [String?], output: URL,
-                     maximumOverlap: Double? = nil) async throws {
+                     maximumOverlap: Double? = nil, transitionDuration: Double? = nil,
+                     assemblyCache: AssemblyCache? = nil,
+                     onFallback: (@Sendable () -> Void)? = nil) async throws {
         let timing = PerfSignpost.begin("Assembly", metadata: "clips=\(clips.count)")
         defer { PerfSignpost.end(timing) }
         guard !clips.isEmpty else { return }
@@ -524,8 +535,12 @@ actor RenderEngine {
         }
         if padded.allSatisfy({ $0 != nil }) {
             do {
-                try await xfadeAll(clips: clips, transitions: padded.compactMap { $0 }, output: output, maximumOverlap: maximumOverlap)
+                try await cachedXfade(clips: clips, transitions: padded.compactMap { $0 }, output: output,
+                                      maximumOverlap: maximumOverlap, transitionDuration: transitionDuration,
+                                      cache: assemblyCache)
             } catch {
+                try Task.checkCancellation()
+                onFallback?()
                 try await concatPlain(clips: clips, output: output)
             }
             return
@@ -556,8 +571,12 @@ actor RenderEngine {
             } else {
                 let groupOutput = scratch.appendingPathComponent("group_\(index).mp4")
                 do {
-                    try await xfadeAll(clips: group.clips, transitions: group.transitions, output: groupOutput, maximumOverlap: maximumOverlap)
+                    try await cachedXfade(clips: group.clips, transitions: group.transitions, output: groupOutput,
+                                          maximumOverlap: maximumOverlap, transitionDuration: transitionDuration,
+                                          cache: assemblyCache)
                 } catch {
+                    try Task.checkCancellation()
+                    onFallback?()
                     try await concatPlain(clips: group.clips, output: groupOutput)
                 }
                 groupOutputs.append(groupOutput)
@@ -567,6 +586,38 @@ actor RenderEngine {
             try FileManager.default.copyItemReplacing(at: groupOutputs[0], to: output)
         } else {
             try await concatPlain(clips: groupOutputs, output: output)
+        }
+    }
+
+    private func cachedXfade(clips: [URL], transitions: [String], output: URL,
+                             maximumOverlap: Double?, transitionDuration: Double?,
+                             cache: AssemblyCache?) async throws {
+        let duration = transitionDuration ?? SettingsStore.loadSettings().transitions.xfadeDuration
+        let key: String?
+        if cache != nil {
+            key = try? await RenderFinishingKey.make(segments: clips, transitions: transitions.map { $0 },
+                transitionDuration: duration, overlays: [], settings: RenderContext.settings,
+                encoder: FFmpeg.encodeArgs, maximumOverlap: maximumOverlap, version: "multitrack-assembly-v1")
+        } else {
+            key = nil
+        }
+        try Task.checkCancellation()
+        if let cache, let key, await cache.cache.restore(key: key, to: output) {
+            cache.hit()
+            PerfSignpost.event("AssemblyCacheHit", metadata: "clips=\(clips.count)")
+            try Task.checkCancellation()
+            return
+        }
+        try await xfadeAll(clips: clips, transitions: transitions, output: output,
+                           maximumOverlap: maximumOverlap, transitionDuration: duration)
+        try Task.checkCancellation()
+        if let cache, let key {
+            let staged = cache.stagingDirectory.appendingPathComponent("assembly-\(UUID().uuidString).mp4")
+            // A cache I/O failure must not turn a successful crossfade into
+            // a hard-cut fallback. Staging belongs to the caller's scratch.
+            if (try? FileManager.default.copyItem(at: output, to: staged)) != nil {
+                cache.record(.init(key: key, source: staged))
+            }
         }
     }
 
@@ -690,11 +741,11 @@ actor RenderEngine {
     /// when durations can't support the crossfades so callers can fall back
     /// to a plain concat.
     private func xfadeAll(clips: [URL], transitions: [String], output: URL,
-                          maximumOverlap: Double? = nil) async throws {
+                          maximumOverlap: Double? = nil, transitionDuration: Double? = nil) async throws {
         let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
             await FFmpeg.duration(of: clip)
         }
-        let configured = SettingsStore.loadSettings().transitions.xfadeDuration
+        let configured = transitionDuration ?? SettingsStore.loadSettings().transitions.xfadeDuration
 
         // Resolve each gap to (xfade name, requested duration), then clamp to
         // what the adjoining clips can afford. Any gap that can't fit even a
