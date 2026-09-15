@@ -63,44 +63,11 @@ struct BuilderWizardResults: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            if model.agentEvents.contains(where: { $0.requestID != nil }) {
-                GroupBox("Tool outcomes") {
-                    VStack(alignment: .leading, spacing: Theme.spaceS) {
-                        ForEach(model.agentEvents.filter { $0.requestID != nil }) { event in
-                            VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                                HStack(spacing: Theme.spaceXS) {
-                                    Image(systemName: outcomeSymbol(event.outcome))
-                                        .foregroundStyle(outcomeColor(event.outcome))
-                                        .accessibilityLabel(event.outcome.rawValue)
-                                    Text(event.toolName ?? "run")
-                                        .fontWeight(.medium)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                        .layoutPriority(1)
-                                    Spacer(minLength: 0)
-                                    Text("\(event.argumentBytes)/\(event.resultBytes) B · \(Int(event.duration * 1000)) ms")
-                                        .monospacedDigit().foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                        .help("\(event.argumentBytes) input bytes, \(event.resultBytes) output bytes. Request \(event.requestID ?? "none"). \(event.sanitizedArguments ?? "")")
-                                }
-                                Text(event.message ?? event.outcome.rawValue)
-                                    .foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                    }
-                    .font(.caption)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
             if !model.agentSummary.isEmpty && model.phase != .awaitingReply {
                 GroupBox("Agent explanation") {
                     VStack(alignment: .leading, spacing: Theme.spaceS) {
                         Text(model.explanationText).textSelection(.enabled)
-                        Text("This explanation is not evidence of success. Review tool outcomes and the diff.")
+                        Text("This explanation is not evidence of success. Review the diff; each tool call is in the log.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -118,21 +85,5 @@ struct BuilderWizardResults: View {
             .help("Save the verified script with a name based on your request.")
         Button("Not now", action: model.declineSaveScript)
             .help("Dismiss this suggestion for the current timeline revision.")
-    }
-
-    private func outcomeSymbol(_ outcome: BuilderRunEvent.Outcome) -> String {
-        switch outcome {
-        case .completed: "checkmark.circle.fill"
-        case .refused, .failed: "xmark.circle.fill"
-        case .cancelled: "clock"
-        }
-    }
-
-    private func outcomeColor(_ outcome: BuilderRunEvent.Outcome) -> Color {
-        switch outcome {
-        case .completed: .green
-        case .refused, .failed: .red
-        case .cancelled: .secondary
-        }
     }
 }

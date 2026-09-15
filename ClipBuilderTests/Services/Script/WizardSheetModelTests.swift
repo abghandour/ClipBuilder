@@ -601,6 +601,9 @@ extension WizardSheetModelTests {
         #expect(!log.isEmpty)
         #expect(model.copyText(kind: .log) == log.joined(separator: "\n"))
         let outcomes = model.copyText(kind: .toolOutcomes)
+        // Every tool call lands in the run log; the results panel no longer lists them.
+        #expect(log.filter { $0.hasPrefix("Tool: ") }.count == events.filter { $0.requestID != nil }.count)
+        #expect(log.contains { $0.hasPrefix("Tool: ") && $0.contains("run_script · completed") })
         #expect(outcomes.contains("query · refused") && outcomes.contains("run_script · completed"))
         #expect(outcomes.contains("filter is only valid for kind clips"))
         #expect(outcomes.contains(" B in / ") && outcomes.contains(" B out · ") && outcomes.contains(" ms"))

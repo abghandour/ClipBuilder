@@ -327,12 +327,21 @@ final class WizardSheetModel {
 
     /// Pure export; clipboard access belongs to the view. Use the captured request
     /// so editing the field cannot relabel the results of the previous run.
+    /// One line per tool call, the same shape Copy Tool Outcomes produces.
+    static func outcomeLine(_ event: BuilderRunEvent) -> String {
+        "\(event.sequence). \(event.toolName ?? "run") · \(event.outcome.rawValue)"
+            + (event.message.map { " · " + $0 } ?? "")
+            + " · \(event.argumentBytes) B in / \(event.resultBytes) B out · \(Int(event.duration * 1000)) ms"
+    }
+
+    /// Tool outcomes belong in the run log, not the results panel.
+    private func logToolOutcome(_ event: BuilderRunEvent) {
+        guard event.requestID != nil else { return }
+        appendLog("Tool: " + Self.outcomeLine(event))
+    }
+
     func copyText(kind: CopyKind) -> String {
-        let outcomes = agentEvents.map { event in
-            "\(event.sequence). \(event.toolName ?? "run") · \(event.outcome.rawValue)"
-                + (event.message.map { " · " + $0 } ?? "")
-                + " · \(event.argumentBytes) B in / \(event.resultBytes) B out · \(Int(event.duration * 1000)) ms"
-        }.joined(separator: "\n")
+        let outcomes = agentEvents.map(Self.outcomeLine).joined(separator: "\n")
         switch kind {
         case .log: return log.joined(separator: "\n")
         case .toolOutcomes: return outcomes
@@ -470,7 +479,10 @@ final class WizardSheetModel {
             }, identityMatches: { [self] in identityMatches && !dismissed && token == generation })
         scriptRun = run
         run.onLog = { [weak self] text in self?.appendLog(text) }
-        run.coordinator.onEvent = { [weak self] event in self?.agentEvents.append(event) }
+        run.coordinator.onEvent = { [weak self] event in
+            self?.agentEvents.append(event)
+            self?.logToolOutcome(event)
+        }
         do { runRequest = try routedRequest ?? run.requestText() }
         catch { reasons = [error.localizedDescription]; phase = .refused; scriptRun = nil; session.discard(); self.session = nil; return }
         if let id = activeScriptID {
@@ -1036,6 +1048,7 @@ final class WizardSheetModel {
             var event = event
             event.sequence = self.agentEvents.count + 1
             self.agentEvents.append(event)
+            self.logToolOutcome(event)
         }
         run.onProgress = { [weak self] text in
             guard let self, !self.dismissed, token == self.generation else { return }
