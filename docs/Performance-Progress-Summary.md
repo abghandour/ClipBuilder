@@ -92,6 +92,9 @@ and [post-scheduler local checks](Performance-Finishing-Cache-Results.md).
 | Incremental overlays: cold sampled peak RSS | 592 MiB | 2,013 MiB | **3.40× memory**; blocks default adoption |
 | Incremental overlays: edited sampled peak RSS | 590 MiB | 580 MiB | 1.7% lower median; does not offset cold cost |
 | Decoded PNG looping, one exploratory pair | 10.405 s | 10.312 s | 0.9% lower observed time; insufficient evidence of useful gain, no production change |
+| [Cold render](Performance-Cold-Render-Experiments.md): hardware decode for 2 s segments | 0.583 s | 0.754 s | Slower; session setup outweighs sixty frames |
+| Cold render: libx264 instead of VideoToolbox for segments, eight at four parallel | 3.280 s | 3.850 s | Slower in parallel; CPU bound |
+| Cold render: hardware decode for the full overlay pass | 10.314 s | 10.356 s | No change; filter thread and encoder bound |
 
 The incremental overlay prototype preserved measured timing/audio but changed
 encoded video slightly (mean per-frame SSIM 0.998691 on the main fixture).
