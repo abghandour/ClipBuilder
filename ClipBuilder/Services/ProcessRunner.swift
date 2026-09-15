@@ -97,20 +97,38 @@ nonisolated enum ProcessRunner {
         case streamingStdout(@Sendable (Data) -> Void)
     }
 
+    /// Keep unknown ffmpeg graphs on the encode budget. Decode-only leaves
+    /// opt in explicitly, avoiding guesses about filters or multiple outputs.
+    static func mediaResource(for executable: URL) -> MediaWorkScheduler.Resource? {
+        switch executable.lastPathComponent {
+        case "ffprobe": .probing
+        case "ffmpeg": .encoding
+        default: nil
+        }
+    }
+
     static func run(executable: URL,
                     arguments: [String],
                     stdin: Data? = nil,
                     timeout: TimeInterval? = nil,
                     environment: [String: String]? = nil,
-                    capture: Capture = .full) async throws -> ProcessResult {
+                    capture: Capture = .full,
+                    mediaResource: MediaWorkScheduler.Resource? = nil) async throws -> ProcessResult {
         let toolName = executable.lastPathComponent
         let mediaLeases = (toolName == "ffmpeg" || toolName == "ffprobe")
             ? try await DriveMediaResolver.shared.prepareInputs(arguments, probe: toolName == "ffprobe") : []
         defer { withExtendedLifetime(mediaLeases) {} }
-        let permit = (toolName == "ffmpeg" || toolName == "ffprobe")
-            ? try await MediaWorkScheduler.shared.acquire(.encoding, priority: MediaWorkScheduler.priority) : nil
+        let resource = mediaResource ?? Self.mediaResource(for: executable)
+        let permit: MediaWorkScheduler.Permit?
+        if let resource {
+            permit = try await MediaWorkScheduler.current.acquire(resource)
+        } else {
+            permit = nil
+        }
         defer { withExtendedLifetime(permit) {} }
         try Task.checkCancellation()
+        let timing = resource == nil ? nil : PerfSignpost.begin("MediaExecution", metadata: "\(toolName) \(String(describing: resource))")
+        defer { PerfSignpost.end(timing) }
         let state = ProcessRunState()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in

@@ -490,10 +490,16 @@ actor PodcastVisualAnalyzer {
     }
 
     private static func faceMouthMetrics(_ jpeg: Data) async -> [PodcastSpeakerSide: Double] {
+        guard let permit = try? await MediaWorkScheduler.current.acquire(.vision) else { return [:] }
+        defer { withExtendedLifetime(permit) {} }
+        guard !Task.isCancelled else { return [:] }
         guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return [:] }
         let request = DetectFaceLandmarksRequest(.revision3)
+        let timing = PerfSignpost.begin("Vision", metadata: "podcast face landmarks")
+        defer { PerfSignpost.end(timing) }
         let observations = (try? await request.perform(on: image)) ?? []
+        guard !Task.isCancelled else { return [:] }
         var values: [PodcastSpeakerSide: Double] = [:]
         for face in observations {
             let centerX = face.boundingBox.cgRect.midX

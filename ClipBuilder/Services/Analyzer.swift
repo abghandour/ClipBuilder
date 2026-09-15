@@ -2158,7 +2158,7 @@ actor Analyzer {
             "-af", "aresample=8000,asetnsamples=8000,astats=metadata=1:reset=1,"
                 + "ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-",
             "-f", "null", "-",
-        ], timeout: 300) else { return [] }
+        ], timeout: 300, mediaResource: .decoding) else { return [] }
         return output.split(separator: "\n").compactMap { line -> Double? in
             guard let range = line.range(of: "RMS_level=") else { return nil }
             let value = Double(line[range.upperBound...].trimmingCharacters(in: .whitespaces))
@@ -2202,7 +2202,7 @@ actor Analyzer {
             request.upperBodyOnly = false
             let observations: [HumanObservation]
             do {
-                let permit = try await MediaWorkScheduler.shared.acquire(.vision)
+                let permit = try await MediaWorkScheduler.current.acquire(.vision)
                 defer { withExtendedLifetime(permit) {} }
                 try Task.checkCancellation()
                 let timing = PerfSignpost.begin("Vision", metadata: "portraitFit")

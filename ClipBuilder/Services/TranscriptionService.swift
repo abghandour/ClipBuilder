@@ -115,7 +115,7 @@ actor TranscriptionService {
         let sampleSource = try await NormalizedAudioCache.shared.existing(source: video.url) ?? video.url
         try await FFmpeg.run(["-y", "-i", sampleSource.path, "-t", "60", "-vn",
                               "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
-                              sampleURL.path], timeout: 180)
+                              sampleURL.path], timeout: 180, mediaResource: .decoding)
 
         var primary: [PodcastLanguageCandidate] = []
         var tried = Set<String>()

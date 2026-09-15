@@ -84,9 +84,11 @@ nonisolated enum FFmpeg {
     /// Run ffmpeg with the given arguments; throws with stderr tail on failure.
     @discardableResult
     static func run(_ arguments: [String], timeout: TimeInterval? = nil,
-                    capture: ProcessRunner.Capture = .full) async throws -> String {
+                    capture: ProcessRunner.Capture = .full,
+                    mediaResource: MediaWorkScheduler.Resource = .encoding) async throws -> String {
         let result = try await ProcessRunner.run(executable: ffmpegURL(),
-                                                 arguments: arguments, timeout: timeout, capture: capture)
+                                                 arguments: arguments, timeout: timeout, capture: capture,
+                                                 mediaResource: mediaResource)
         guard result.exitCode == 0 else {
             throw FFmpegError.commandFailed(tool: "ffmpeg", exitCode: result.exitCode,
                                             stderr: result.stderrText)
@@ -182,7 +184,7 @@ nonisolated enum FFmpeg {
         arguments += ["-f", "image2", "-"]
         guard let executable = try? ffmpegURL(),
               let result = try? await ProcessRunner.run(executable: executable,
-                                                        arguments: arguments, timeout: 30),
+                                                        arguments: arguments, timeout: 30, mediaResource: .decoding),
               result.exitCode == 0, !result.stdout.isEmpty else { return nil }
         return result.stdout
     }
@@ -199,7 +201,7 @@ nonisolated enum FFmpeg {
             arguments: ["-hide_banner", "-i", url.path,
                         "-vf", "select='gt(scene,\(threshold))',showinfo",
                         "-f", "null", "-"],
-            timeout: 300)
+            timeout: 300, mediaResource: .decoding)
         guard result.exitCode == 0 else {
             throw FFmpegError.commandFailed(tool: "ffmpeg scene detection",
                                             exitCode: result.exitCode, stderr: result.stderrText)

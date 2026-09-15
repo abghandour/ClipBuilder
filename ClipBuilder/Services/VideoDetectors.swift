@@ -40,7 +40,8 @@ nonisolated struct VideoDetectors: Codable, Sendable {
 
 extension FFmpeg {
     nonisolated static func runCapturingStderr(_ arguments: [String], timeout: TimeInterval = 120) async throws -> String {
-        let result = try await ProcessRunner.run(executable: ffmpegURL(), arguments: arguments, timeout: timeout)
+        let result = try await ProcessRunner.run(executable: ffmpegURL(), arguments: arguments,
+                                                 timeout: timeout, mediaResource: .decoding)
         guard result.exitCode == 0 else {
             throw FFmpegError.commandFailed(tool: "ffmpeg", exitCode: result.exitCode, stderr: result.stderrText)
         }

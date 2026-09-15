@@ -41,6 +41,10 @@ nonisolated struct AIFrame: Sendable {
 /// locally installed `claude` (stream-json protocol), `gemini`, `codex`,
 /// `qwen`, and `kimi` CLIs so it reuses whatever auth the user already has.
 actor AIService {
+    /// Instance-scoped process boundary for testing dispatch and retry behavior.
+    typealias ProcessExecutor = @Sendable (URL, [String], Data?, TimeInterval?, [String: String]?) async throws -> ProcessResult
+
+    private let executeProcess: ProcessExecutor
     private var unavailableProviders = Set<String>()
     private var loggedUnavailableProviders = Set<String>()
     var config: AIConfig
@@ -54,8 +58,12 @@ actor AIService {
     }
     private var cooldowns: [String: Cooldown] = [:]
 
-    init(config: AIConfig) {
+    init(config: AIConfig, executeProcess: @escaping ProcessExecutor = { executable, arguments, stdin, timeout, environment in
+        try await ProcessRunner.run(executable: executable, arguments: arguments,
+                                    stdin: stdin, timeout: timeout, environment: environment)
+    }) {
         self.config = config
+        self.executeProcess = executeProcess
     }
 
     func updateConfig(_ config: AIConfig) {
@@ -404,8 +412,7 @@ actor AIService {
                             timeout: TimeInterval?, environment: [String: String]? = nil) async throws -> ProcessResult {
         let timing = PerfSignpost.begin("AIRemoteWait", metadata: executable.lastPathComponent)
         defer { PerfSignpost.end(timing) }
-        return try await ProcessRunner.run(executable: executable, arguments: arguments,
-                                           stdin: stdin, timeout: timeout, environment: environment)
+        return try await executeProcess(executable, arguments, stdin, timeout, environment)
     }
 
     // MARK: - Claude (stream-json protocol)

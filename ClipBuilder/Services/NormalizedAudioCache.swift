@@ -25,7 +25,7 @@ actor NormalizedAudioCache {
         var keepTemporary = false
         defer { if !keepTemporary { try? FileManager.default.removeItem(at: scratch) } }
         try await FFmpeg.run(["-y", "-i", source.path, "-vn", "-ac", "1", "-ar", "16000",
-                              "-c:a", "pcm_s16le", temporary.path], timeout: 600)
+                              "-c:a", "pcm_s16le", temporary.path], timeout: 600, mediaResource: .decoding)
         try Task.checkCancellation()
         guard try cache.fingerprint(of: source) == fingerprint else {
             throw CocoaError(.fileReadUnknown, userInfo: [NSLocalizedDescriptionKey: "Source changed during audio extraction."])

@@ -141,7 +141,7 @@ actor ThumbnailService {
     @concurrent
     private static func generatedFrame(asset: AVURLAsset, at time: Double, maxDimension: CGFloat,
                                        widthOnly: Bool = false) async -> CGImage? {
-        guard let permit = try? await MediaWorkScheduler.shared.acquire(.decoding, priority: MediaWorkScheduler.priority)
+        guard let permit = try? await MediaWorkScheduler.current.acquire(.decoding, priority: MediaWorkScheduler.priority)
         else { return nil }
         defer { withExtendedLifetime((asset, permit)) {} }
         guard !Task.isCancelled else { return nil }
@@ -202,7 +202,7 @@ actor ThumbnailService {
     private static func generatedFrames(asset: AVURLAsset, at timestamps: [Double],
                                         maxDimension: CGFloat, quality: CGFloat) async -> [Data?] {
         let requestedTimes = timestamps.map { CMTime(seconds: $0, preferredTimescale: 600) }
-        guard let permit = try? await MediaWorkScheduler.shared.acquire(.decoding, priority: MediaWorkScheduler.priority)
+        guard let permit = try? await MediaWorkScheduler.current.acquire(.decoding, priority: MediaWorkScheduler.priority)
         else { return Array(repeating: nil, count: timestamps.count) }
         defer { withExtendedLifetime((asset, permit)) {} }
         guard !Task.isCancelled else { return Array(repeating: nil, count: timestamps.count) }

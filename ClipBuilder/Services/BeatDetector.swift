@@ -30,7 +30,7 @@ actor BeatDetector {
                 arguments: ["-v", "error", "-i", url.path,
                             "-ac", "1", "-ar", String(Int(sampleRate)),
                             "-f", "f32le", "-"],
-                timeout: 120, capture: .streamingStdout { accumulator.append($0) }),
+                timeout: 120, capture: .streamingStdout { accumulator.append($0) }, mediaResource: .decoding),
               result.exitCode == 0 else { return [] }
         // Preserve the original 22.05 kHz decode (the podcast artifact is
         // 16 kHz): changing sample rate or PCM precision changes cut positions.

@@ -252,7 +252,7 @@ nonisolated enum FramingService {
             request.upperBodyOnly = false
             let observations: [HumanObservation]
             do {
-                let permit = try await MediaWorkScheduler.shared.acquire(.vision)
+                let permit = try await MediaWorkScheduler.current.acquire(.vision)
                 defer { withExtendedLifetime(permit) {} }
                 try Task.checkCancellation()
                 observations = (try? await request.perform(on: data)) ?? []

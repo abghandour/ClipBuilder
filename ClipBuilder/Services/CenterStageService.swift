@@ -224,6 +224,7 @@ actor CenterStageService {
     /// `frame` is the output size (default 1080×1920): a screen-crop area's
     /// bounding box makes the camera track people at THAT aspect, so the
     /// footage fills the area instead of a 9:16 window.
+    // Output/tracking changes must bump MultitrackRenderer.framingVersion.
     func reframeClip(source: URL, start: Double, duration: Double,
                      focusRanges: [(start: Double, end: Double)] = [],
                      focusPortraits: [Data] = [],
@@ -414,7 +415,7 @@ actor CenterStageService {
                              avoidPortraits: [Data] = [],
                              orientation: CGImagePropertyOrientation,
                              tuning: Tuning) async throws -> [Target] {
-        let decodePermit = try await MediaWorkScheduler.shared.acquire(.decoding)
+        let decodePermit = try await MediaWorkScheduler.current.acquire(.decoding)
         defer { withExtendedLifetime(decodePermit) {} }
         try Task.checkCancellation()
         // Identity focus: reference fingerprints from the user's person
@@ -491,12 +492,13 @@ actor CenterStageService {
 
             let observations: [HumanObservation]
             do {
-                let visionPermit = try await MediaWorkScheduler.shared.acquire(.vision)
+                let visionPermit = try await MediaWorkScheduler.current.acquire(.vision)
                 defer { withExtendedLifetime(visionPermit) {} }
                 try Task.checkCancellation()
                 let timing = PerfSignpost.begin("Vision", metadata: "tracking")
                 defer { PerfSignpost.end(timing) }
                 observations = (try? await request.perform(on: pixelBuffer, orientation: orientation)) ?? []
+                try Task.checkCancellation()
             }
             // With the orientation supplied, Vision reports boxes in upright
             // (display) space — bottom-left-origin normalized. Peripheral
@@ -589,7 +591,7 @@ actor CenterStageService {
         request.upperBodyOnly = false
         let observations: [HumanObservation]
         do {
-            let permit = try await MediaWorkScheduler.shared.acquire(.vision, priority: .interactive)
+            let permit = try await MediaWorkScheduler.current.acquire(.vision, priority: .interactive)
             defer { withExtendedLifetime(permit) {} }
             try Task.checkCancellation()
             observations = (try? await request.perform(on: data)) ?? []
@@ -775,6 +777,9 @@ actor CenterStageService {
                         keyframes: [Keyframe],
                         renderSize: CGSize = CenterStageService.defaultRenderSize,
                         output: URL) async throws {
+        // Composition tracks need not retain the original AVURLAsset object
+        // that owns a Drive lease. Keep it alive through queueing and export.
+        defer { withExtendedLifetime(asset) {} }
         let timing = PerfSignpost.begin("FramingExport", metadata: "CenterStage")
         defer { PerfSignpost.end(timing) }
         let composition = AVMutableComposition()
@@ -834,15 +839,6 @@ actor CenterStageService {
             throw CenterStageError(message: "Could not create the export session.")
         }
         export.videoComposition = videoComposition
-        export.outputURL = output
-        export.outputFileType = .mp4
-        try? FileManager.default.removeItem(at: output)
-        await export.export()
-        if let error = export.error {
-            throw CenterStageError(message: "Export failed: \(error.localizedDescription)")
-        }
-        guard export.status == .completed else {
-            throw CenterStageError(message: "Export did not complete (status \(export.status.rawValue)).")
-        }
+        try await MediaExport.run(export, to: output)
     }
 }

@@ -4,20 +4,32 @@ import Testing
 
 @Suite("AI service logic")
 struct AIServiceTests {
-    @Test("Claude timeouts propagate without repeating the request")
-    func timeoutIsNotRetried() async throws {
+    @Test("Claude timeouts propagate without repeating the request", arguments: [false, true])
+    func timeoutIsNotRetried(beforeScriptStarts: Bool) async throws {
         let directory = try TempDirectory(prefix: "TimeoutAI")
+        defer { withExtendedLifetime(directory) {} }
         let script = directory.url.appendingPathComponent("timeout.sh")
         try """
         #!/bin/sh
-        printf 'call\n' >> "$0.count"
         cat >/dev/null
         exec /bin/sleep 10
         """.write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         var config = AIConfig()
         config.providers["claude"] = AIProviderSettings(bin: script.path, model: "fixture")
-        let service = AIService(config: config)
+        // Count requests before entering the process runner. A short timeout can
+        // kill the child before its first shell statement, so a child-written
+        // count file cannot reliably prove how many attempts the service made.
+        let attempts = AIServiceLogSink()
+        let service = AIService(config: config) { executable, arguments, stdin, timeout, environment in
+            attempts.append(executable.path)
+            #expect(timeout == 1)
+            if beforeScriptStarts {
+                throw ProcessRunnerError.timedOut(executable.lastPathComponent)
+            }
+            return try await ProcessRunner.run(executable: executable, arguments: arguments,
+                                                stdin: stdin, timeout: timeout, environment: environment)
+        }
         let logs = AIServiceLogSink()
         do {
             _ = try await service.call(prompt: "timeout fixture", task: "fixture",
@@ -29,9 +41,8 @@ struct AIServiceTests {
                 return
             }
         }
-        let calls = try String(contentsOfFile: script.path + ".count", encoding: .utf8)
-        #expect(calls.split(separator: "\n").count == 1)
-        #expect(!logs.lines.contains { $0.contains("retrying") })
+        #expect(attempts.lines == [script.path])
+        #expect(!logs.lines.contains { $0.localizedCaseInsensitiveContains("retrying") })
     }
 
     @Test("terminal provider markers and first-line errors")
@@ -284,7 +295,7 @@ private actor FrameLoadCounter {
 }
 
 
-private final class AIServiceLogSink: @unchecked Sendable {
+nonisolated private final class AIServiceLogSink: @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [String] = []
     var lines: [String] { lock.withLock { storage } }

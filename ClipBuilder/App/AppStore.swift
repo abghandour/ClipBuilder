@@ -4279,7 +4279,8 @@ final class AppStore {
     /// Renders `seconds` of the final pipeline starting at `playhead` (clamped
     /// so the window stays inside the timeline) to a temporary file. Nothing
     /// is added to the Library; the sheet deletes the file when done.
-    func renderBuilderExactPreview(from playhead: Double, seconds: Double = AppStore.exactPreviewWindow) async -> URL? {
+    func renderBuilderExactPreview(from playhead: Double, seconds: Double = AppStore.exactPreviewWindow,
+                                   priority: MediaWorkScheduler.Priority = .interactive) async -> URL? {
         guard let database, !isBuilderRendering, !isBuilderPreviewRendering else { return nil }
         guard !builder.document.videoTrack.isEmpty else {
             presentError("Add clips to the timeline first.")
@@ -4296,10 +4297,12 @@ final class AppStore {
         let profile = activeProfile
         let renderer = multitrackRenderer
         do {
-            let result = try await renderer.render(document: document, scenes: scenes,
-                                                   profile: profile, database: database,
-                                                   centerStageCamera: WizardDefaults.fallbackFramingCamera,
-                                                   preview: true, emit: logSink(\.builderLog, channel: "builder-preview"))
+            let result = try await MediaWorkScheduler.$priority.withValue(priority) {
+                try await renderer.render(document: document, scenes: scenes,
+                                          profile: profile, database: database,
+                                          centerStageCamera: WizardDefaults.fallbackFramingCamera,
+                                          preview: true, emit: logSink(\.builderLog, channel: "builder-preview"))
+            }
             appendLog(\.builderLog, ["Exact preview ready: \(result.duration.timecode)"], channel: "builder-preview")
             return result.url
         } catch is CancellationError {
@@ -4399,15 +4402,16 @@ final class AppStore {
         guard next.lowerBound >= end - 0.001, cachedBuilderPreview(for: next) == nil else { return }
         builderPrefetchTask = Task { [weak self] in
             guard let self else { return }
-            _ = await renderBuilderPreviewSlice(window: next)
+            _ = await renderBuilderPreviewSlice(window: next, priority: .background)
         }
     }
 
     /// Renders one window and files it in the cache under its content key.
-    private func renderBuilderPreviewSlice(window: ClosedRange<Double>) async -> BuilderInPlacePreview? {
+    private func renderBuilderPreviewSlice(window: ClosedRange<Double>,
+                                           priority: MediaWorkScheduler.Priority = .interactive) async -> BuilderInPlacePreview? {
         guard let key = builderPreviewKey(for: window) else { return nil }
         if let cached = builderPreviewCache[key], FileManager.default.fileExists(atPath: cached.url.path) { return cached }
-        guard let rendered = await renderBuilderExactPreview(from: window.lowerBound, seconds: window.upperBound - window.lowerBound) else { return nil }
+        guard let rendered = await renderBuilderExactPreview(from: window.lowerBound, seconds: window.upperBound - window.lowerBound, priority: priority) else { return nil }
         guard !Task.isCancelled else { try? FileManager.default.removeItem(at: rendered); return nil }
         // The render's own key may differ if the document changed meanwhile.
         guard builderPreviewKey(for: window) == key else { try? FileManager.default.removeItem(at: rendered); return nil }
