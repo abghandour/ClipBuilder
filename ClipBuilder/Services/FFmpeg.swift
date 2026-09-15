@@ -71,8 +71,16 @@ nonisolated enum FFmpeg {
         videoEncodeArgs + audioEncodeArgs + ["-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     }
 
-    /// How many ffmpeg jobs to run concurrently during segment/clip renders.
-    static let jobLimit = max(2, min(4, ProcessInfo.processInfo.activeProcessorCount / 2))
+    /// How many ffmpeg jobs to run concurrently during segment/clip renders;
+    /// also the scheduler's encoding budget. `CLIPBUILDER_FFMPEG_JOBS` in the
+    /// environment overrides it (1–16) for measurements.
+    static let jobLimit: Int = {
+        if let override = ProcessInfo.processInfo.environment["CLIPBUILDER_FFMPEG_JOBS"].flatMap(Int.init),
+           (1...16).contains(override) {
+            return override
+        }
+        return max(2, min(4, ProcessInfo.processInfo.activeProcessorCount / 2))
+    }()
 
     static func ffprobeURL() throws -> URL {
         guard let url = ProcessRunner.locate("ffprobe") else { throw FFmpegError.toolNotFound("ffprobe") }
