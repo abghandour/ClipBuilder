@@ -104,6 +104,46 @@ struct MultitrackRendererPlanningTests {
         #expect(MultitrackRenderer.partitionOverlays([overlay(0.5, 1)], segments: gaps).remaining.count == 1)
     }
 
+    @Test("spanning overlays fuse into every segment they touch on the segment's clock, after local overlays")
+    func overlayFusion() throws {
+        typealias Overlay = MultitrackRenderer.TimedOverlayPNG
+        func overlay(_ start: Double, _ end: Double, _ name: String) -> Overlay {
+            Overlay(png: URL(fileURLWithPath: "/\(name).png"), startTime: start, endTime: end, transIn: "fade", transOut: "slide_up")
+        }
+        let first = resolved(start: 0, duration: 3, track: 0)
+        let second = resolved(start: 3, duration: 3, track: 0)
+        let third = resolved(start: 6, duration: 3, track: 0)
+        let segments = MultitrackRenderer.buildLayeredSegments([first, second, third])
+        let plan = MultitrackRenderer.partitionOverlays([overlay(0.2, 1, "local"), overlay(2.5, 7, "span")], segments: segments)
+        #expect(plan.bySegment[0]?.count == 1 && plan.remaining.count == 1)
+        let fused = try #require(MultitrackRenderer.fuseSpanningOverlays(plan, segments: segments))
+        #expect(fused.remaining.isEmpty)
+        #expect(fused.bySegment[0]?.map { $0.png.lastPathComponent } == ["local.png", "span.png"])
+        #expect(fused.bySegment[0]?.last?.startTime == 2.5 && fused.bySegment[0]?.last?.endTime == 7)
+        #expect(fused.bySegment[1]?.first?.startTime == -0.5 && fused.bySegment[1]?.first?.endTime == 4)
+        #expect(fused.bySegment[2]?.first?.startTime == -3.5 && fused.bySegment[2]?.first?.endTime == 1)
+        #expect(fused.bySegment[1]?.first?.transIn == "fade" && fused.bySegment[2]?.first?.transOut == "slide_up")
+        // A fade half over at a cut cannot be expressed per segment.
+        let straddling = MultitrackRenderer.partitionOverlays([overlay(2.8, 7, "straddle")], segments: segments)
+        #expect(MultitrackRenderer.fuseSpanningOverlays(straddling, segments: segments) == nil)
+        var slideOnly = overlay(2.8, 7, "slide")
+        slideOnly.transIn = "slide_left"
+        let slidePlan = MultitrackRenderer.partitionOverlays([slideOnly], segments: segments)
+        #expect(MultitrackRenderer.fuseSpanningOverlays(slidePlan, segments: segments) != nil)
+        // An overlay over a gap needs the final pass.
+        let gaps = [MultitrackRenderer.Segment(start: 0, end: 2, clips: []),
+                    MultitrackRenderer.Segment(start: 2, end: 5, clips: [first])]
+        let gapPlan = MultitrackRenderer.partitionOverlays([overlay(1, 4, "over-gap")], segments: gaps)
+        #expect(MultitrackRenderer.fuseSpanningOverlays(gapPlan, segments: gaps) == nil)
+        for name in [nil, "cut", "fade", "dissolve", "wipeleft", "circleopen", "hlslice", "smoothright"] {
+            #expect(MultitrackRenderer.transitionKeepsOverlayPixels(name), Comment(rawValue: name ?? "nil"))
+        }
+        for name in ["slideleft", "coverright", "revealleft", "zoomin", "pixelize", "circlecrop",
+                     "fadeblack", "fadewhite", "flash_white", "flash_black", TransitionRecipes.names.first ?? "recipe"] {
+            #expect(!MultitrackRenderer.transitionKeepsOverlayPixels(name), Comment(rawValue: name))
+        }
+    }
+
     // MARK: - B-roll (cutaways)
 
     private func cutawayClip(start: Double, duration: Double, track: Int,

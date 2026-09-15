@@ -21,6 +21,7 @@ enum PerformanceBaseline {
         var framingClipCount: Int?
         var disableFramingCache: Bool?
         var incrementalFinishing: String?
+        var overlayFusion: String?
     }
 
     private struct Phase: Encodable {
@@ -304,7 +305,8 @@ enum PerformanceBaseline {
             finishingCacheEnabled: configuration.disableFinishingCache != true,
             assemblyCacheEnabled: configuration.disableAssemblyCache != true,
             framingCacheEnabled: configuration.disableFramingCache != true,
-            incrementalFinishing: incremental)
+            incrementalFinishing: incremental,
+            overlayFusionEnabled: configuration.overlayFusion != "off")
         // The second edit changes the same caption again: the steady state
         // after finishing ranges exist, with one range to rebuild.
         let edits = ["render-caption-edit": "Changed baseline caption",

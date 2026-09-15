@@ -114,7 +114,7 @@ def record(args):
                   disableReelDetectorCache=args.disable_reel_detector_cache,
                   framingClipCount=args.framing_clips,
                   disableFramingCache=args.disable_framing_cache,
-                  incrementalFinishing=args.incremental_finishing)
+                  incrementalFinishing=args.incremental_finishing, overlayFusion=args.overlay_fusion)
     (root / "config.json").write_text(json.dumps(config, indent=2))
     with APP.open("rb") as binary:
         digest = hashlib.sha256()
@@ -279,6 +279,8 @@ def main():
                          help="Analysis control: sequential software detector passes instead of concurrent hardware-decoded ones")
     capture.add_argument("--framing-mode", choices=["legacy"],
                          help="Analysis control: run Vision for every framing caller and sample every scene")
+    capture.add_argument("--overlay-fusion", choices=["off"],
+                         help="Render control: keep the final overlay pass instead of fusing spanning overlays into segments")
     capture.add_argument("--incremental-finishing", choices=["off", "editsOnly", "always"],
                          help="Render-only: when the final overlay pass may run as cached ranges (app default: editsOnly)")
     capture.add_argument("--limit", type=int, default=1800)

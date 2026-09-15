@@ -167,13 +167,20 @@ actor MultitrackRenderer {
     private let assemblyCacheEnabled: Bool
     private let framingCacheEnabled: Bool
     private let incrementalFinishing: IncrementalFinishing
+    /// Burn timeline-spanning overlays into the segments they touch instead
+    /// of a final pass over the whole video. `CLIPBUILDER_OVERLAY_FUSION=off`
+    /// keeps the final pass for same-binary measurement.
+    private let overlayFusionEnabled: Bool
     private let render: RenderEngine
     private let centerStageService = CenterStageService()
 
     init(render: RenderEngine, segmentCache: RenderSegmentCache = .shared,
          finishingCacheEnabled: Bool = true, assemblyCacheEnabled: Bool = true,
-         framingCacheEnabled: Bool = true, incrementalFinishing: IncrementalFinishing = .editsOnly) {
+         framingCacheEnabled: Bool = true, incrementalFinishing: IncrementalFinishing = .editsOnly,
+         overlayFusionEnabled: Bool = true) {
         self.segmentCache = segmentCache
+        self.overlayFusionEnabled = overlayFusionEnabled
+            && ProcessInfo.processInfo.environment["CLIPBUILDER_OVERLAY_FUSION"] != "off"
         self.finishingCacheEnabled = finishingCacheEnabled
         self.assemblyCacheEnabled = assemblyCacheEnabled
         self.framingCacheEnabled = framingCacheEnabled
@@ -396,7 +403,6 @@ actor MultitrackRenderer {
         // Assemble clip list + transition list in the same order/rules as the
         // Python generator (pad/truncate at the end for exact parity).
         var clipPaths: [URL] = []
-        var transitions: [String?] = []
 
         let captionRenderer = CaptionRenderer(videoWidth: Self.width, videoHeight: Self.height,
                                               style: profile.captions)
@@ -430,15 +436,48 @@ actor MultitrackRenderer {
         let fontFingerprints = try? AssetStore.allFiles(of: .fonts).map {
             try SourceIdentityCache.shared.fingerprint(of: $0.url)
         }.sorted()
-        let overlayPlan = Self.partitionOverlays(overlays, segments: fullSegments)
+        var overlayPlan = Self.partitionOverlays(overlays, segments: fullSegments)
         let fusedOverlayCount = overlayPlan.bySegment.values.reduce(0) { $0 + $1.count }
         emit("Overlay plan: segment=\(fusedOverlayCount); timeline=\(overlayPlan.remaining.count)")
 
+        // Joins are decided by the clips alone, so they are known before any
+        // segment is encoded. Cutaways never take part in a join: a boundary
+        // a cutaway introduced must not replay the main clip's transition,
+        // so the incoming and outgoing clips are the lowest-layer main clips
+        // and their ORIGINAL extent decides. A join takes the incoming
+        // clip's transition in, else the outgoing clip's transition out.
+        var transitions: [String?] = []
+        for (index, segment) in fullSegments.enumerated() where index > 0 {
+            let incoming = Self.joinClip(in: segment.clips)
+            let outgoing = Self.joinClip(in: fullSegments[index - 1].clips)
+            let entry = incoming.flatMap { abs($0.originalStart - segment.start) < 0.001 ? $0.transIn : nil }
+            let exit = outgoing.flatMap { abs($0.originalEnd - segment.start) < 0.001 ? $0.transOut : nil }
+            transitions.append(entry ?? exit)
+        }
+
+        // Spanning overlays ride the segments they touch, on each segment's
+        // own clock, when every join keeps pixels in place and no overlay
+        // touches a gap or bumper; that removes the final pass over the
+        // whole video. Otherwise the final pass runs as before.
+        var spanningFused = false
+        if overlayFusionEnabled, !overlayPlan.remaining.isEmpty,
+           transitions.allSatisfy(Self.transitionKeepsOverlayPixels),
+           let fused = Self.fuseSpanningOverlays(overlayPlan, segments: fullSegments) {
+            emit("Spanning overlays fused into segments: \(overlayPlan.remaining.count)")
+            overlayPlan = fused
+            spanningFused = true
+        }
+
         // Render every segment concurrently (bounded) — each is one
         // independent ffmpeg job with captions burned in the same pass.
+        // A fused spanning overlay adds its RGBA raster stream to every
+        // segment process (about 190 MiB each), and three such processes
+        // already saturate the shared hardware encoder, so fused renders cap
+        // the concurrency at three to hold the peak memory down.
+        let segmentJobs = spanningFused ? min(FFmpeg.jobLimit, 3) : FFmpeg.jobLimit
         try Task.checkCancellation()
         let artifacts = try await BoundedConcurrency.map(fullSegments,
-                                                        limit: FFmpeg.jobLimit) { index, segment in
+                                                        limit: segmentJobs) { index, segment in
             try await self.renderSegment(segment, index: index, of: segmentCount,
                                          scratch: scratch, database: database,
                                          captionLanguage: profile.captionLanguages.first,
@@ -447,22 +486,7 @@ actor MultitrackRenderer {
                                          fontFingerprints: fontFingerprints,
                                          overlays: overlayPlan.bySegment[index] ?? [], emit: emit)
         }
-        for (index, segment) in fullSegments.enumerated() {
-            clipPaths.append(artifacts[index].url)
-            guard clipPaths.count > 1 else { continue }
-            // Cutaways never take part in a join: a boundary a cutaway
-            // introduced must not replay the main clip's transition, so
-            // the incoming and outgoing clips are the lowest-layer main
-            // clips and their ORIGINAL extent decides.
-            let incoming = Self.joinClip(in: segment.clips)
-            let outgoing = Self.joinClip(in: fullSegments[index - 1].clips)
-            let entry = incoming.flatMap { abs($0.originalStart - segment.start) < 0.001 ? $0.transIn : nil }
-            let exit = outgoing.flatMap { abs($0.originalEnd - segment.start) < 0.001 ? $0.transOut : nil }
-            // A join takes the incoming clip's transition in, else the
-            // outgoing clip's transition out — both gated on the clip's
-            // original extent, so a cutaway's boundary triggers neither.
-            transitions.append(entry ?? exit)
-        }
+        clipPaths = artifacts.map(\.url)
 
         guard !clipPaths.isEmpty else {
             throw CocoaError(.fileNoSuchFile, userInfo: [
@@ -479,7 +503,10 @@ actor MultitrackRenderer {
         let canReuseAssembly = document.soundTrack.isEmpty && bumperSpans.isEmpty
             && !transitions.contains(where: { TransitionRecipes.isRecipe($0) })
             && artifacts.allSatisfy(\.reusable)
-        let canReuseFinishing = finishingCacheEnabled && !overlayPlan.remaining.isEmpty && canReuseAssembly
+        // With the overlays fused there is no final pass, but the assembled
+        // video is still worth restoring whole on an unchanged rerender.
+        let canReuseFinishing = finishingCacheEnabled && canReuseAssembly
+            && (!overlayPlan.remaining.isEmpty || clipPaths.count > 1)
         let segmentDigests = canReuseFinishing ? try? await RenderFinishingKey.digests(of: clipPaths) : nil
         var finishingKey: String?
         if let segmentDigests {
@@ -1770,6 +1797,58 @@ actor MultitrackRenderer {
         return plan
     }
 
+    /// Entry and exit animation length, capped at a third of the overlay.
+    nonisolated static let overlayAnimationDuration = 0.4
+
+    /// xfade transitions that combine the two clips pixel by pixel in place
+    /// (blends, dissolves, wipes and mask reveals): an overlay burned into
+    /// both clips at the same absolute time survives them unchanged.
+    /// Transitions that move, scale, crop or dip the picture (slides, covers,
+    /// reveals, zoom, circle crop, pixelize, flashes) and recipes keep the
+    /// final pass. Hard cuts trivially qualify.
+    nonisolated static func transitionKeepsOverlayPixels(_ name: String?) -> Bool {
+        guard let name, name != "cut" else { return true }
+        return Self.inPlaceTransitions.contains(name)
+    }
+
+    private nonisolated static let inPlaceTransitions: Set<String> = [
+        "fade", "dissolve", "wipeleft", "wiperight", "wipeup", "wipedown",
+        "circleopen", "circleclose", "radial", "smoothleft", "smoothright", "diagtl", "diagbr",
+        "horzopen", "horzclose", "vertopen", "vertclose", "hlslice", "hrslice",
+    ]
+
+    /// Every remaining overlay burned into each segment it touches, on the
+    /// segment's own clock: an overlay that started earlier keeps a negative
+    /// start, so its entry animation is already over, and one that ends later
+    /// stays enabled to the segment's end. Spanning overlays follow the
+    /// segment-local ones so the final-pass stacking (spanning on top) holds.
+    /// Nil when an overlay touches a gap or bumper segment, which only the
+    /// final pass can window correctly.
+    nonisolated static func fuseSpanningOverlays(_ plan: OverlayPlan, segments: [Segment]) -> OverlayPlan? {
+        var fused = plan
+        for overlay in plan.remaining {
+            let anim = min(overlayAnimationDuration, (overlay.endTime - overlay.startTime) / 3)
+            let fadesIn = overlay.transIn == "fade" || overlay.transIn == "pop"
+            let fadesOut = overlay.transOut == "fade" || overlay.transOut == "pop"
+            for (index, segment) in segments.enumerated()
+            where overlay.startTime < segment.end && overlay.endTime > segment.start {
+                guard !segment.clips.isEmpty, !segment.clips.allSatisfy(\.missingBumper),
+                      !segment.clips.contains(where: \.bumper) else { return nil }
+                var local = overlay
+                local.startTime -= segment.start
+                local.endTime -= segment.start
+                // ffmpeg's fade cannot begin before the segment's first frame,
+                // so a fade that is half over at a cut keeps the final pass.
+                let entryStraddles = fadesIn && local.startTime < 0 && local.startTime + anim > 0
+                let exitStraddles = fadesOut && local.endTime - anim < 0 && local.endTime > 0
+                if entryStraddles || exitStraddles { return nil }
+                fused.bySegment[index, default: []].append(local)
+            }
+        }
+        fused.remaining = []
+        return fused
+    }
+
     /// Half-open visibility windows prevent an overlay from leaking onto
     /// the first bumper frame. Keep animations only at the original edges.
     nonisolated static func overlayWindows(_ overlays: [TimedOverlayPNG],
@@ -1923,7 +2002,7 @@ actor MultitrackRenderer {
         previous: String, arguments: inout [String], filters: inout [String], inputSeek: [String] = []) -> String {
         var previous = previous
         var inputIndex = firstInput - 1
-        let animDuration = 0.4
+        let animDuration = overlayAnimationDuration
 
         for (index, overlay) in overlays.enumerated() {
             let pngURL = overlay.png
@@ -1942,11 +2021,20 @@ actor MultitrackRenderer {
             var current = "[\(inputIndex):v]"
             let fadeIn = overlay.transIn == "fade" || overlay.transIn == "pop"
             let fadeOut = overlay.transOut == "fade" || overlay.transOut == "pop"
-            if fadeIn || fadeOut {
+            // A fused overlay that began before this segment keeps a negative
+            // start: an entry fade already over is simply not applied (the
+            // raster is opaque), and `fuseSpanningOverlays` never lets a fade
+            // straddle the segment start, since `fade` cannot start before 0.
+            let entryFadeOver = start + anim <= 0
+            let exitFadeOver = end - anim < 0 && end <= 0
+            if (fadeIn && !entryFadeOver) || (fadeOut && !exitFadeOver) {
                 var fadeParts = ["format=rgba"]
-                if fadeIn { fadeParts.append(String(format: "fade=t=in:st=%.3f:d=%.3f:alpha=1", start, anim)) }
-                if fadeOut { fadeParts.append(String(format: "fade=t=out:st=%.3f:d=%.3f:alpha=1",
-                                                     end - anim, anim)) }
+                if fadeIn, !entryFadeOver {
+                    fadeParts.append(String(format: "fade=t=in:st=%.3f:d=%.3f:alpha=1", max(0, start), anim))
+                }
+                if fadeOut, !exitFadeOver {
+                    fadeParts.append(String(format: "fade=t=out:st=%.3f:d=%.3f:alpha=1", max(0, end - anim), anim))
+                }
                 let label = "[tf\(index)]"
                 filters.append("\(current)\(fadeParts.joined(separator: ","))\(label)")
                 current = label

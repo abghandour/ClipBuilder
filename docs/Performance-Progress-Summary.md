@@ -46,6 +46,12 @@ prototype, where it covers Python and its descendants.
 | Finishing ranges: sampled peak RSS during the second edit | 838 MiB | 840 MiB | Unchanged |
 | Finishing ranges: retained scratch cache size | 290.0 MiB | 310.3 MiB | **20.3 MiB more disk (+7.0%)** |
 | Finishing ranges: cancellation phase, including intentional 1 s delay | 1.082 s | 1.074 s | Similar |
+| [Overlay fusion](Performance-Overlay-Fusion-Results.md): cold render, spanning overlays burned into segments (five pairs) | 26.886 s | 20.024 s | **25.5% less time**; no final overlay pass |
+| Overlay fusion: first caption edit | 13.378 s | 1.999 s | **85.1% less time**; one segment encode plus assembly |
+| Overlay fusion: second edit of the same caption | 2.886 s | 1.989 s | **31.1% less time** than finishing ranges |
+| Overlay fusion: unchanged rerender | 0.166 s | 0.155 s | Unchanged whole-finishing hit |
+| Overlay fusion: cold render sampled peak RSS | 1,571 MiB | 2,270 MiB | **699 MiB higher (+44%)**; segment concurrency capped at three when fused |
+| Overlay fusion: retained scratch cache size | 310.3 MiB | 245.8 MiB | 64.5 MiB less; no range files |
 | [Detector scan](Performance-Detector-Scan-Results.md): cold scan, concurrent hardware-decoded passes (three pairs) | 21.587 s | 12.848 s | **40.5% less time**, about 1.7× faster; identical events |
 | Detector scan: cold scan sampled CPU (core-seconds) | 119.6 | 35.5 | **70.3% less CPU** |
 | Detector scan: cold scan sampled peak RSS | 390 MiB | 668 MiB | **278 MiB higher (+71%)** for the scan's duration |
@@ -98,12 +104,18 @@ and [post-scheduler local checks](Performance-Finishing-Cache-Results.md).
 
 The incremental overlay prototype preserved measured timing/audio but changed
 encoded video slightly (mean per-frame SSIM 0.998691 on the main fixture).
-Its edit-path idea now ships as [finishing ranges](Performance-Incremental-Finishing-Results.md):
-input seeking removed the prefix evaluation that made its cold pass slow, and
-ranges are created only on the edit path, so cold renders are untouched. Range
-outputs carry the same SSIM difference from a continuous encode.
+Its edit-path idea shipped as [finishing ranges](Performance-Incremental-Finishing-Results.md),
+and [overlay fusion](Performance-Overlay-Fusion-Results.md) then removed the
+final pass altogether for renders whose joins keep pixels in place; ranges
+remain for the rest.
 
 ## Latest validation
+
+After overlay fusion the renderer and planning suites pass; the full suite
+result is in the commit gate for that change. Fused outputs were validated
+against the final pass on the fixture (identical audio, SSIM 0.998 mean,
+2,380 frames against the old pass's 2,381) and frame for frame in
+`spanningOverlayFusionMatchesFinalPass`.
 
 After the framing-evidence change the full suite ran at **865 tests: 863
 passed, one failed, one live Drive test skipped**; the failure is the

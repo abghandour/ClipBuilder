@@ -70,7 +70,25 @@ struct MultitrackRenderTests {
         #expect(abs(warm.duration - result.duration) < 0.05)
     }
 
-    @Test("local and transition-spanning overlays need two segment burns and one final overlay pass")
+    /// Renders `document` and reports the log, the successful video encodes
+    /// (stream-copy concat/music calls are deliberately excluded) and the result.
+    private func renderCounting(_ renderer: MultitrackRenderer, document: TimelineDocument, scene: SceneRecord,
+                                database: Database) async throws -> (lines: [String], encodes: Int, result: MultitrackRenderer.RenderResult) {
+        let messages = Mutex<[String]>([])
+        let encodes = Mutex(0)
+        let result = try await FFmpeg.$commandCompleted.withValue({ arguments in
+            if let index = arguments.firstIndex(of: "-c:v"),
+               arguments.indices.contains(index + 1), arguments[index + 1] != "copy" {
+                encodes.withLock { $0 += 1 }
+            }
+        }) {
+            try await renderer.render(document: document, scenes: [scene], profile: Fixtures.brand(),
+                database: database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
+        }
+        return (messages.withLock { $0 }, encodes.withLock { $0 }, result)
+    }
+
+    @Test("a transition-spanning overlay is fused into both segments; without fusion it needs a final pass")
     func mixedOverlayPasses() async throws {
         let temp = try TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "overlay-passes-fixture")
@@ -83,30 +101,104 @@ struct MultitrackRenderTests {
         var document = Fixtures.timelineDocument(clips: [first, second])
         document.textOverlays = [TextOverlayItem(text: "Local", startTime: 0.2, endTime: 1),
                                  TextOverlayItem(text: "Across", startTime: 2.5, endTime: 3.5)]
-        let messages = Mutex<[String]>([])
-        let renderer = MultitrackRenderer(render: RenderEngine(),
-            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("segments")))
-        let encodes = Mutex(0)
-        let result = try await FFmpeg.$commandCompleted.withValue({ arguments in
-            if let index = arguments.firstIndex(of: "-c:v"),
-               arguments.indices.contains(index + 1), arguments[index + 1] != "copy" {
-                encodes.withLock { $0 += 1 }
-            }
-        }) {
-            try await renderer.render(document: document, scenes: [scene], profile: Fixtures.brand(),
-                database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
-        }
-        defer { try? FileManager.default.removeItem(at: result.url) }
-        let lines = messages.withLock { $0 }
-        #expect(lines.contains("Overlay plan: segment=1; timeline=1"))
-        #expect(lines.filter { $0.contains("encode pass") }.count == 2)
-        #expect(lines.filter { $0.hasPrefix("Burning 1 overlay") }.count == 1)
-        #expect(!lines.contains { $0.contains("failed") })
-        // Two segment encodes, one xfade assembly, one remaining overlay burn.
-        // Stream-copy concat/music calls are deliberately excluded.
-        #expect(encodes.withLock { $0 } == 4)
+        var outputs: [URL] = []
+        defer { for url in outputs { try? FileManager.default.removeItem(at: url) } }
         let expected = 6 - min(SettingsStore.loadSettings().transitions.xfadeDuration, 1.2)
-        #expect(abs(result.duration - expected) < 0.15)
+
+        // The final pass: two segment encodes, one xfade assembly, one overlay burn.
+        let finalPass = try await renderCounting(MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("segments-final")),
+            overlayFusionEnabled: false), document: document, scene: scene, database: temp.database)
+        outputs.append(finalPass.result.url)
+        #expect(finalPass.lines.contains("Overlay plan: segment=1; timeline=1"))
+        #expect(finalPass.lines.filter { $0.contains("encode pass") }.count == 2)
+        #expect(finalPass.lines.filter { $0.hasPrefix("Burning 1 overlay") }.count == 1)
+        #expect(!finalPass.lines.contains { $0.contains("failed") })
+        #expect(finalPass.encodes == 4)
+        #expect(abs(finalPass.result.duration - expected) < 0.15)
+
+        // Fused: the fade keeps pixels in place, so the spanning overlay rides
+        // both segments and the final pass disappears.
+        let fused = try await renderCounting(MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("segments-fused"))),
+            document: document, scene: scene, database: temp.database)
+        outputs.append(fused.result.url)
+        #expect(fused.lines.contains("Overlay plan: segment=1; timeline=1"))
+        #expect(fused.lines.contains("Spanning overlays fused into segments: 1"))
+        #expect(!fused.lines.contains { $0.hasPrefix("Burning") })
+        #expect(fused.lines.filter { $0.contains("encode pass") }.count == 2)
+        #expect(fused.encodes == 3)
+        #expect(abs(fused.result.duration - expected) < 0.15)
+
+        // A slide moves pixels, so the final pass stays.
+        document.videoTrack[1].transIn = "slideleft"
+        let slide = try await renderCounting(MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("segments-slide"))),
+            document: document, scene: scene, database: temp.database)
+        outputs.append(slide.result.url)
+        #expect(!slide.lines.contains { $0.hasPrefix("Spanning overlays fused") })
+        #expect(slide.lines.filter { $0.hasPrefix("Burning 1 overlay") }.count == 1)
+        #expect(slide.encodes == 4)
+    }
+
+    @Test("fused spanning overlays match the final pass frame for frame across hard cuts")
+    func spanningOverlayFusionMatchesFinalPass() async throws {
+        let temp = try TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "overlay-fusion-parity")
+        var clips: [TimelineClip] = []
+        for index in 0..<3 {
+            var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3, startTime: Double(index * 3))
+            clip.videoFile = source.path
+            clip.captions = "bottom"
+            clips.append(clip)
+        }
+        var document = Fixtures.timelineDocument(clips: clips)
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        // The final pass evaluated overlay clocks on the assembled video's
+        // container offset (about 23 ms here); fused overlays share the
+        // segment clock captions use. Static overlays with window edges just
+        // before a frame boundary switch on the same frame under both
+        // clocks, so the two outputs can be compared frame for frame.
+        // (Animated entries and exits differ by that sub-frame phase.)
+        var title = TextOverlayItem(text: "Across every cut", startTime: 0.495, endTime: 8.395)
+        title.transIn = "none"
+        title.transOut = "none"
+        var late = TextOverlayItem(text: "Second half", startTime: 3.995, endTime: 7.195)
+        late.transIn = "none"
+        late.transOut = "none"
+        document.textOverlays = [title, late]
+        try await temp.database.replaceTranscripts(videoID: scene.videoID, language: "en", isTranslation: false,
+            segments: [TranscriptSegment(start: 0.2, end: 1.2, text: "Caption")], provider: nil, model: nil)
+        var outputs: [URL] = []
+        defer { for url in outputs { try? FileManager.default.removeItem(at: url) } }
+        let fused = try await renderCounting(MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("fused"))),
+            document: document, scene: scene, database: temp.database)
+        outputs.append(fused.result.url)
+        let finalPass = try await renderCounting(MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("final")),
+            overlayFusionEnabled: false), document: document, scene: scene, database: temp.database)
+        outputs.append(finalPass.result.url)
+        #expect(fused.lines.contains("Spanning overlays fused into segments: 2"))
+        #expect(!fused.lines.contains { $0.hasPrefix("Burning") })
+        #expect(finalPass.lines.filter { $0.hasPrefix("Burning 2 overlay") }.count == 1)
+        #expect(fused.encodes == 3 && finalPass.encodes == 4)
+        // The final pass re-encodes the assembled video, shifts its timestamps
+        // by about 10 ms and appends one frame; the fused output is the
+        // assembled video itself, so compare frame by frame over the common
+        // length and allow that trailing frame.
+        let comparison = try await Self.compareDecoded(fused.result.url, finalPass.result.url, trailingFramesAllowed: 1)
+        #expect(comparison.videoTimingIdentical)
+        #expect(comparison.audioIdentical)
+        #expect(comparison.minimumSSIM >= 0.99, Comment(rawValue: "minimum per-frame SSIM \(comparison.minimumSSIM)"))
+        #expect(abs(fused.result.duration - finalPass.result.duration) < 0.05)
+        // An unchanged rerender restores the assembled video whole.
+        let warm = try await renderCounting(MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("fused"))),
+            document: document, scene: scene, database: temp.database)
+        outputs.append(warm.result.url)
+        #expect(warm.lines.contains("Finishing cache hit; assembly and overlay encodes=0"))
+        #expect(warm.encodes == 0)
     }
 
     @Test("regression: wide masked clip and delayed faded text render successfully")
@@ -440,7 +532,9 @@ extension MultitrackRenderTests {
         try await caption("Original caption")
         let cacheDirectory = temp.directory.url.appendingPathComponent("segments")
         let cache = RenderSegmentCache(directory: cacheDirectory)
-        let renderer = MultitrackRenderer(render: RenderEngine(), segmentCache: cache)
+        // Ranges serve renders that keep the final pass (bumpers, recipes or
+        // pixel-moving transitions); this fixture opts out of fusion to reach them.
+        let renderer = MultitrackRenderer(render: RenderEngine(), segmentCache: cache, overlayFusionEnabled: false)
         let scenes = [sceneA, sceneB]
         var outputs: [URL] = []
         defer { for url in outputs { try? FileManager.default.removeItem(at: url) } }
@@ -485,7 +579,7 @@ extension MultitrackRenderTests {
         #expect(!secondEdit.lines.contains { $0.contains("failed") })
         let reference = try await render(MultitrackRenderer(render: RenderEngine(),
             segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("reference-cache")),
-            incrementalFinishing: .off))
+            incrementalFinishing: .off, overlayFusionEnabled: false))
         #expect(reference.lines.contains { $0.hasPrefix("Burning 1 overlay") })
         let ranged = try await decoded(secondEdit.result.url)
         let full = try await decoded(reference.result.url)
@@ -506,7 +600,7 @@ extension MultitrackRenderTests {
         // still takes the whole-finishing hit.
         let always = MultitrackRenderer(render: RenderEngine(),
             segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("always-cache")),
-            incrementalFinishing: .always)
+            incrementalFinishing: .always, overlayFusionEnabled: false)
         let alwaysCold = try await render(always)
         #expect(alwaysCold.lines.contains("Finishing ranges: hits=0 encodes=2"))
         #expect(try await decoded(alwaysCold.result.url).timing == full.timing)
@@ -523,7 +617,8 @@ extension MultitrackRenderTests {
 
     /// Frame timing and decoded audio must match exactly; pixels are scored
     /// per frame because hardware encodes of identical frames differ slightly.
-    private static func compareDecoded(_ candidate: URL, _ reference: URL) async throws -> DecodedComparison {
+    private static func compareDecoded(_ candidate: URL, _ reference: URL,
+                                       trailingFramesAllowed: Int = 0) async throws -> DecodedComparison {
         func streams(_ url: URL) async throws -> (video: [[String]], audio: [String]) {
             let text = try await FFmpeg.run(["-v", "error", "-i", url.path, "-map", "0:v:0", "-map", "0:a:0",
                                              "-f", "framemd5", "-"], timeout: 60, mediaResource: .decoding)
@@ -539,16 +634,32 @@ extension MultitrackRenderTests {
         let b = try await streams(reference)
         let stats = FileManager.default.temporaryDirectory.appendingPathComponent("ssim-\(UUID().uuidString).log")
         defer { try? FileManager.default.removeItem(at: stats) }
+        // Pair frames by index, not by timestamp, so a constant offset in one
+        // file does not pair a frame with its neighbour across a cut.
         try await FFmpeg.run(["-v", "error", "-i", candidate.path, "-i", reference.path,
-                              "-lavfi", "[0:v][1:v]ssim=stats_file=\(stats.path)", "-an", "-f", "null", "-"],
-                             timeout: 60, mediaResource: .decoding)
+                              "-lavfi", "[0:v]setpts=PTS-STARTPTS[a];[1:v]setpts=PTS-STARTPTS[b];[a][b]ssim=stats_file=\(stats.path)",
+                              "-an", "-f", "null", "-"], timeout: 60, mediaResource: .decoding)
         let values = try String(contentsOf: stats, encoding: .utf8).split(separator: "\n").compactMap { line -> Double? in
             guard let range = line.range(of: "All:") else { return nil }
             return Double(line[range.upperBound...].prefix { "0123456789.".contains($0) })
         }
-        return DecodedComparison(videoTimingIdentical: a.video == b.video && a.video.count == values.count,
+        let common = min(a.video.count, b.video.count)
+        let extra = max(a.video.count, b.video.count) - common
+        // Timing rows carry the stream timebase pts; compare them relative to
+        // the first frame so a constant container offset does not count.
+        func relative(_ rows: [[String]]) -> [[String]] {
+            guard let first = rows.first, let base = Int(first[2]) else { return rows }
+            return rows.prefix(common).map { row in
+                var row = row
+                if let dts = Int(row[1]) { row[1] = String(dts - base) }
+                if let pts = Int(row[2]) { row[2] = String(pts - base) }
+                return row
+            }
+        }
+        return DecodedComparison(videoTimingIdentical: relative(a.video) == relative(b.video)
+                                    && extra <= trailingFramesAllowed && values.count >= common,
                                  audioIdentical: a.audio == b.audio && !a.audio.isEmpty,
-                                 minimumSSIM: values.min() ?? 0)
+                                 minimumSSIM: values.prefix(common).min() ?? 0)
     }
 
     @Test("an unaffordable crossfade reports its hard-cut fallback")
@@ -583,17 +694,22 @@ extension MultitrackRenderTests {
         var document = Fixtures.timelineDocument(clips: [first, second])
         document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
         document.textOverlays = [TextOverlayItem(text: "Tiny join", startTime: 0, endTime: 0.12)]
-        let cache = RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("segments"))
-        let renderer = MultitrackRenderer(render: RenderEngine(), segmentCache: cache)
-        let messages = Mutex<[String]>([])
-        for _ in 0..<2 {
-            messages.withLock { $0.removeAll() }
-            let result = try await renderer.render(document: document, scenes: [scene], profile: Fixtures.brand(),
-                database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
-            defer { try? FileManager.default.removeItem(at: result.url) }
-            #expect(result.duration > 0.1)
-            #expect(!messages.withLock { $0.contains { $0.hasPrefix("Finishing cache hit") } })
-            #expect(messages.withLock { $0.contains { $0.hasPrefix("Burning 1 overlay") } })
+        for fusion in [false, true] {
+            let cache = RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("segments-\(fusion)"))
+            let renderer = MultitrackRenderer(render: RenderEngine(), segmentCache: cache, overlayFusionEnabled: fusion)
+            let messages = Mutex<[String]>([])
+            for _ in 0..<2 {
+                messages.withLock { $0.removeAll() }
+                let result = try await renderer.render(document: document, scenes: [scene], profile: Fixtures.brand(),
+                    database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
+                defer { try? FileManager.default.removeItem(at: result.url) }
+                #expect(result.duration > 0.1)
+                #expect(!messages.withLock { $0.contains { $0.hasPrefix("Finishing cache hit") } })
+                // Fused overlays keep their timeline placement whichever join the
+                // assembly ends up with, so the fallback needs no final pass.
+                #expect(messages.withLock { $0.contains { $0.hasPrefix(fusion ? "Spanning overlays fused" : "Burning 1 overlay") } })
+                #expect(fusion == !messages.withLock { $0.contains { $0.hasPrefix("Burning") } })
+            }
         }
     }
 }
