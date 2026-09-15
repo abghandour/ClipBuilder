@@ -237,11 +237,16 @@ extension MultitrackRenderTests {
             framingCacheEnabled: false).render(document: document, scenes: [scene], profile: Fixtures.brand(),
                 database: temp.database, preview: true, emit: { _ in })
         outputs.append(reference.url)
-        let cachedFrames = try await FFmpeg.run(["-v", "error", "-i", outputs[1].path,
-            "-map", "0:v:0", "-map", "0:a:0", "-f", "framemd5", "-"], timeout: 60, mediaResource: .decoding)
-        let referenceFrames = try await FFmpeg.run(["-v", "error", "-i", reference.url.path,
-            "-map", "0:v:0", "-map", "0:a:0", "-f", "framemd5", "-"], timeout: 60, mediaResource: .decoding)
-        #expect(cachedFrames == referenceFrames)
+        // The framed intermediate and the segments are hardware encodes, and
+        // VideoToolbox is not pixel-deterministic while other encodes share
+        // it (the parallel suite), so the cached render and the fresh rebuild
+        // are compared on exact frame timing and audio plus per-frame SSIM.
+        // A caption change scores about 0.97 on every affected frame; two
+        // encodes of the same frames score above 0.999.
+        let comparison = try await Self.compareDecoded(outputs[1], reference.url)
+        #expect(comparison.videoTimingIdentical)
+        #expect(comparison.audioIdentical)
+        #expect(comparison.minimumSSIM >= 0.99, Comment(rawValue: "minimum per-frame SSIM \(comparison.minimumSSIM)"))
 
         let input = document
         let sourceScene = scene
@@ -508,6 +513,42 @@ extension MultitrackRenderTests {
         let alwaysWarm = try await render(always)
         #expect(alwaysWarm.lines.contains("Finishing cache hit; assembly and overlay encodes=0"))
         #expect(!alwaysWarm.lines.contains { $0.hasPrefix("Finishing ranges") })
+    }
+
+    struct DecodedComparison {
+        var videoTimingIdentical: Bool
+        var audioIdentical: Bool
+        var minimumSSIM: Double
+    }
+
+    /// Frame timing and decoded audio must match exactly; pixels are scored
+    /// per frame because hardware encodes of identical frames differ slightly.
+    private static func compareDecoded(_ candidate: URL, _ reference: URL) async throws -> DecodedComparison {
+        func streams(_ url: URL) async throws -> (video: [[String]], audio: [String]) {
+            let text = try await FFmpeg.run(["-v", "error", "-i", url.path, "-map", "0:v:0", "-map", "0:a:0",
+                                             "-f", "framemd5", "-"], timeout: 60, mediaResource: .decoding)
+            var video: [[String]] = []
+            var audio: [String] = []
+            for line in text.split(separator: "\n") where !line.hasPrefix("#") {
+                let fields = line.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+                if fields.first == "0" { video.append(Array(fields.prefix(4))) } else { audio.append(String(line)) }
+            }
+            return (video, audio)
+        }
+        let a = try await streams(candidate)
+        let b = try await streams(reference)
+        let stats = FileManager.default.temporaryDirectory.appendingPathComponent("ssim-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: stats) }
+        try await FFmpeg.run(["-v", "error", "-i", candidate.path, "-i", reference.path,
+                              "-lavfi", "[0:v][1:v]ssim=stats_file=\(stats.path)", "-an", "-f", "null", "-"],
+                             timeout: 60, mediaResource: .decoding)
+        let values = try String(contentsOf: stats, encoding: .utf8).split(separator: "\n").compactMap { line -> Double? in
+            guard let range = line.range(of: "All:") else { return nil }
+            return Double(line[range.upperBound...].prefix { "0123456789.".contains($0) })
+        }
+        return DecodedComparison(videoTimingIdentical: a.video == b.video && a.video.count == values.count,
+                                 audioIdentical: a.audio == b.audio && !a.audio.isEmpty,
+                                 minimumSSIM: values.min() ?? 0)
     }
 
     @Test("an unaffordable crossfade reports its hard-cut fallback")
