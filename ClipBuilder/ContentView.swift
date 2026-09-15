@@ -38,8 +38,12 @@ struct ClipBuilderApp: App {
     @NSApplicationDelegateAdaptor(TerminationDelegate.self) private var terminationDelegate
 
     init() {
+#if PERFORMANCE_BASELINE
+        let store = PerformanceBaseline.makeStore()
+#else
         let store = AppStore()
         BugReporting.configureIfPossible(store: store)
+#endif
         _store = State(initialValue: store)
     }
 
@@ -55,6 +59,9 @@ struct ClipBuilderApp: App {
                 MainWindowView()
                     .environment(store)
                     .onAppear { terminationDelegate.store = store }
+#if PERFORMANCE_BASELINE
+                    .task { await PerformanceBaseline.run(store: store) }
+#endif
             }
         }
         .defaultSize(width: 1200, height: 780)
@@ -395,6 +402,7 @@ struct MainWindowView: View {
             }
         }
         .task {
+#if !PERFORMANCE_BASELINE
             store.checkForUpdatesAtLaunch()
             store.ensureToolsAtLaunch()
             // Directory creation plus a recursive font-library walk and
@@ -403,6 +411,7 @@ struct MainWindowView: View {
                 AssetStore.ensureRoots()
                 AssetStore.registerFonts()
             }.value
+#endif
         }
         .onDisappear {
             store.builder.flushPendingAutosave()
