@@ -291,7 +291,7 @@ struct StatusBarSummary: Equatable {
         add("manual-build-render", "wizard", "Rendering manual build", store.isManualBuildRendering)
         add("manual-build-preview", "wizard", "Rendering manual build preview", store.isManualBuildPreviewRendering)
         add("transcription", "analysis", "Transcribing \(store.transcribingVideoIDs.count) videos", !store.transcribingVideoIDs.isEmpty)
-        add("people", "analysis", "Detecting people", store.isDetectingPeople)
+        add("people", "analysis", store.peopleDetectionStage ?? "Detecting people", store.isDetectingPeople)
         add("framing", "analysis", "Detecting framing", store.isDetectingFraming, progress: store.framingProgress)
         add("research", "analysis", "Researching fights", !store.fightResearchInFlight.isEmpty)
         add("scoring", "analysis", "Scoring fights", !store.fightScoringInFlight.isEmpty)

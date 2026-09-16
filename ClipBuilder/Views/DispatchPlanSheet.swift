@@ -476,17 +476,16 @@ struct DispatchPlanSheet: View {
                     // Re-running once everything is done redoes every video;
                     // otherwise only the pending ones burn model calls.
                     let targets = peopleGateSatisfied ? videos : videos.filter { !peopleDone($0) }
-                    Task {
-                        for video in targets {
-                            _ = await store.detectPeopleInVideo(video,
-                                                                provider: choice.provider,
-                                                                model: choice.model)
-                        }
-                    }
+                    // The run is the app's, not the sheet's: it continues in
+                    // the background (status bar, analysis log) and the sheet
+                    // closes so the app stays usable. Reopening Analyze lands
+                    // on Tags once every video has a roster.
+                    store.detectPeople(in: targets, provider: choice.provider, model: choice.model)
+                    dismiss()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(store.isDetectingPeople)
-                .help("Watch each video and record who appears where, using your markers as ground truth — tag detection unlocks once every video has been through it")
+                .help("Watch each video and record who appears where, using your markers as ground truth. Runs in the background: this window closes, the status bar shows progress, and tag detection unlocks once every video has been through it")
             }
             .padding()
         }

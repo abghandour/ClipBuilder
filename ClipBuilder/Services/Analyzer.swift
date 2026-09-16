@@ -22,49 +22,114 @@ actor Analyzer {
     /// wrong `wide` flag, so bumping this forces one full re-probe per DB.
     static let probeVersion = 3
 
+    struct SourceScan: Equatable, Sendable {
+        /// Files registered for the first time.
+        var discovered = 0
+        /// Files still being written (a copy in progress): not registered
+        /// yet, the caller scans again once they have settled.
+        var settling = 0
+        /// Zero-duration rows removed because the same file registered
+        /// properly under its finished fingerprint.
+        var repaired = 0
+    }
+
+    /// Size and modification date: the two values a copy in progress changes.
+    nonisolated private static func signature(of url: URL) -> (size: Int?, modified: Date?)? {
+        // A fresh URL each time: NSURL caches resource values per instance.
+        guard let values = try? URL(fileURLWithPath: url.path).resourceValues(
+            forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return nil }
+        return (values.fileSize, values.contentModificationDate)
+    }
+
+    /// Files modified this recently may still be arriving (Finder and the
+    /// app's own import write them in place); they get a second look after
+    /// a short pause before anything is fingerprinted.
+    nonisolated static let settleWindow: TimeInterval = 5
+    nonisolated(unsafe) static var settlePause: Duration = .seconds(1)
+
     /// Register every video file in the profile's source folder (recursive),
     /// keyed by content fingerprint so renames/moves don't duplicate rows.
-    /// Returns the number of newly discovered videos.
+    /// Files still being written wait for a later scan.
     @discardableResult
-    func scanSourceFolder(profile: BrandProfile, database: Database) async throws -> Int {
+    func scanSourceFolder(profile: BrandProfile, database: Database) async throws -> SourceScan {
         let timing = PerfSignpost.begin("SourceScan", metadata: profile.sourceFolderURL.lastPathComponent)
         defer { PerfSignpost.end(timing) }
         let folder = profile.sourceFolderURL
         let probeVersionKey = "analyzer.probeVersion.\(profile.profileName)"
         let reprobeAll = UserDefaults.standard.integer(forKey: probeVersionKey) < Self.probeVersion
-        let known = Dictionary(try await database.fetchVideos().map { ($0.hash, ($0.path, $0.duration)) },
+        let videos = try await database.fetchVideos()
+        let known = Dictionary(videos.map { ($0.hash, ($0.path, $0.duration)) },
                                uniquingKeysWith: { first, _ in first })
-        var candidates: [(url: URL, hash: String)] = []
+        var result = SourceScan()
+        var files: [(url: URL, before: (size: Int?, modified: Date?))] = []
         let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])
         while let item = enumerator?.nextObject() as? URL {
             guard Self.videoExtensions.contains(item.pathExtension.lowercased()) else { continue }
             try Task.checkCancellation()
-            let fingerprint = try? SourceIdentityCache.shared.fingerprint(of: item, force: reprobeAll)
+            guard let before = Self.signature(of: item) else { continue }
+            files.append((item, before))
+        }
+        // A file whose fingerprint and probe would describe a truncated copy
+        // must not be registered: it would come back as a second row (with a
+        // zero duration) once the copy finished. Freshly modified files are
+        // measured again after a pause; one that grew or was touched is
+        // still arriving.
+        let now = Date.now
+        let fresh = files.filter { file in
+            guard let modified = file.before.modified else { return true }
+            return now.timeIntervalSince(modified) < Self.settleWindow
+        }
+        if !fresh.isEmpty { try await Task.sleep(for: Self.settlePause) }
+        var candidates: [(url: URL, hash: String, before: (size: Int?, modified: Date?))] = []
+        for file in files {
+            if fresh.contains(where: { $0.url == file.url }) {
+                guard let after = Self.signature(of: file.url), after == file.before else {
+                    result.settling += 1; continue
+                }
+            }
+            let fingerprint = try? SourceIdentityCache.shared.fingerprint(of: file.url, force: reprobeAll)
             guard let hash = fingerprint else { continue }
             // Known and unmoved — skip the probes; rescans fire on every
             // folder event, so this must be cheap for existing files. A zero
             // duration means the registration probe failed (e.g. ffmpeg was
             // missing), so those rows get re-probed.
-            if !reprobeAll, let (path, duration) = known[hash], path == item.path, duration > 0 { continue }
-            candidates.append((item, hash))
+            if !reprobeAll, let (path, duration) = known[hash], path == file.url.path, duration > 0 { continue }
+            candidates.append((file.url, hash, file.before))
         }
         let probed = try await BoundedConcurrency.map(candidates, limit: FFmpeg.jobLimit) { _, candidate in
             (candidate, await FFmpeg.info(of: candidate.url))
         }
-        var discovered = 0
         for (candidate, info) in probed {
+            // Changed while it was being fingerprinted and probed: still arriving.
+            guard let after = Self.signature(of: candidate.url), after == candidate.before else {
+                result.settling += 1; continue
+            }
             let wide = info.width > 0 && info.height > 0 && info.width > info.height
-            if known[candidate.hash] == nil { discovered += 1 }
+            if known[candidate.hash] == nil { result.discovered += 1 }
             try await database.registerVideo(hash: candidate.hash, filename: candidate.url.lastPathComponent,
                                              path: candidate.url.path, duration: info.duration,
                                              width: info.width, height: info.height, wide: wide)
         }
+        // A file registered while it was still copying left a zero-duration
+        // row under the truncated fingerprint; once the finished file has its
+        // own row at the same path, that row is a duplicate with nothing
+        // attached (it was never analyzed). Remove it.
+        let registered = try await database.fetchVideos()
+        let byPath = Dictionary(grouping: registered, by: \.path)
+        let ghosts = byPath.values.flatMap { rows -> [VideoRecord] in
+            guard rows.contains(where: { $0.duration > 0 }) else { return [] }
+            return rows.filter { $0.duration <= 0 }
+        }
+        if !ghosts.isEmpty {
+            try await database.deleteVideos(ghosts.map(\.id))
+            result.repaired = ghosts.count
+        }
         // Only after every row was rewritten — a thrown probe retries the
         // full pass on the next scan.
-        if reprobeAll {
+        if reprobeAll, result.settling == 0 {
             UserDefaults.standard.set(Self.probeVersion, forKey: probeVersionKey)
         }
-        return discovered
+        return result
     }
 
     // MARK: - Frame sampling

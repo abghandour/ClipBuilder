@@ -185,6 +185,10 @@ final class AppStore {
     static let logLineCap = 4000
     var analysisRuns: [AnalysisRun] = [] { didSet { analysisRunsVersion &+= 1 } }
     private(set) var analysisRunsVersion = 0
+    /// Distinct people the people pass found per video; the Sources table
+    /// shows them as soon as a detection finishes.
+    var videoPeopleCounts: [Int64: Int] = [:] { didSet { videoPeopleVersion &+= 1 } }
+    private(set) var videoPeopleVersion = 0
     var people: [PersonRecord] = []
     /// Saved fight research by video id — the Analyze page's column and the
     /// wizards' story/caption injection read from here.
@@ -1298,6 +1302,7 @@ final class AppStore {
             if self.builder.scenes != snapshot.scenes { self.builder.updateScenes(snapshot.scenes) }
         }
         if analysisRuns != snapshot.analysisRuns { analysisRuns = snapshot.analysisRuns }
+        if videoPeopleCounts != snapshot.videoPeopleCounts { videoPeopleCounts = snapshot.videoPeopleCounts }
         if people != snapshot.people { people = snapshot.people }
         if generatedVideos != snapshot.generatedVideos { generatedVideos = snapshot.generatedVideos }
         if feedback != snapshot.feedback { feedback = snapshot.feedback }
@@ -1328,16 +1333,34 @@ final class AppStore {
         guard let database else { return }
         let profile = activeProfile
         let analyzer = analyzer
+        let generation = profileGeneration
         Task {
             do {
-                let discovered = try await analyzer.scanSourceFolder(profile: profile, database: database)
-                if discovered > 0 {
-                    appendLog(\.analysisLog, ["Discovered \(discovered) new video(s)"])
+                let scan = try await analyzer.scanSourceFolder(profile: profile, database: database)
+                if scan.discovered > 0 {
+                    appendLog(\.analysisLog, ["Discovered \(scan.discovered) new video(s)"])
+                }
+                if scan.repaired > 0 {
+                    appendLog(\.analysisLog, ["Removed \(scan.repaired) duplicate registration(s) of files that were still copying"])
                 }
                 refreshAll()
+                // Files still arriving are registered once they stop changing;
+                // the folder watcher only sees the directory, not their growth.
+                if scan.settling > 0 { scheduleSettledRescan(generation: generation) }
             } catch {
                 presentError("Folder scan failed", error)
             }
+        }
+    }
+
+    private var settledRescan: Task<Void, Never>?
+
+    private func scheduleSettledRescan(generation: Int) {
+        settledRescan?.cancel()
+        settledRescan = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard !Task.isCancelled, let self, generation == profileGeneration else { return }
+            scanSourceFolder()
         }
     }
 
@@ -1655,6 +1678,22 @@ final class AppStore {
                             }
                             if let runID {
                                 try? await database.markAnalysisRunTranscribed(id: runID)
+                            }
+                            // Talking footage gets the podcast pass's speaker map
+                            // too: who speaks when, where they sit, so the
+                            // Wizard can frame one person at a time.
+                            if video.type == .interview {
+                                analysisStage = "mapping speakers"
+                                do {
+                                    try await PodcastAnalysisService.mapSpeakers(
+                                        video: video, database: database,
+                                        holdSeconds: settings.podcast.speakerHoldSeconds,
+                                        log: logSink(\.analysisLog))
+                                } catch is CancellationError {
+                                    break
+                                } catch {
+                                    appendLog(\.analysisLog, ["\(video.filename): speaker map failed — \(error.userMessage)"])
+                                }
                             }
                         } catch is CancellationError {
                             break
@@ -5787,13 +5826,43 @@ final class AppStore {
     /// Run (or re-run) the people-only AI pass for one video and return the
     /// fresh roster. Provider/model override the dispatcher's routing (the
     /// analyze sheet passes its picker's live choice).
+    /// Status-bar text for a run over several videos ("2 of 3"); nil for one.
+    var peopleDetectionStage: String?
+    /// The video whose people are being detected right now (its Sources
+    /// row shows the spinner).
+    var detectingPeopleVideoID: Int64?
+
+    /// Detect people in several videos one after another, in the background:
+    /// the caller (the analysis sheet) closes and the user keeps working while
+    /// the status bar and the analysis log follow the run.
+    func detectPeople(in videos: [VideoRecord], provider: String? = nil, model: String? = nil) {
+        guard !videos.isEmpty, !isDetectingPeople else { return }
+        isDetectingPeople = true
+        Task {
+            defer { isDetectingPeople = false; peopleDetectionStage = nil }
+            for (index, video) in videos.enumerated() {
+                peopleDetectionStage = videos.count > 1 ? "Detecting people \(index + 1) of \(videos.count)" : nil
+                _ = await runPeopleDetection(video, provider: provider, model: model, refreshLibrary: true)
+            }
+            appendLog(\.analysisLog, ["People detection finished for \(videos.count) video(s)"])
+        }
+    }
+
     func detectPeopleInVideo(_ video: VideoRecord,
                              provider: String? = nil,
                              model: String? = nil,
                              refreshLibrary: Bool = true) async -> [VideoPersonRecord] {
-        guard let database, !isDetectingPeople else { return [] }
+        guard !isDetectingPeople else { return [] }
         isDetectingPeople = true
         defer { isDetectingPeople = false }
+        return await runPeopleDetection(video, provider: provider, model: model, refreshLibrary: refreshLibrary)
+    }
+
+    private func runPeopleDetection(_ video: VideoRecord, provider: String?, model: String?,
+                                    refreshLibrary: Bool) async -> [VideoPersonRecord] {
+        guard let database else { return [] }
+        detectingPeopleVideoID = video.id
+        defer { detectingPeopleVideoID = nil }
         do {
             let (roster, suggestedFilename) = try await analyzer.detectPeopleOnly(
                 video: video, profile: activeProfile, database: database,
@@ -5808,6 +5877,7 @@ final class AppStore {
                                      suggestedName: suggestedFilename),
                 ])
             }
+            videoPeopleCounts[video.id] = Set(roster.map(\.key)).count
             if refreshLibrary { refreshAll() }
             return roster
         } catch {

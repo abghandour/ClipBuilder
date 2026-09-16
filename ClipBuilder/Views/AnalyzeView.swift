@@ -294,6 +294,7 @@ struct AnalyzeView: View {
         var videosVersion: Int
         var runsVersion: Int
         var scenesVersion: Int
+        var peopleVersion: Int
         var sortOrder: [KeyPathComparator<VideoRecord>]
     }
 
@@ -310,7 +311,8 @@ struct AnalyzeView: View {
     private var tableSummary: TableSummary {
         let key = TableKey(storeID: ObjectIdentifier(store),
                            videosVersion: store.videosVersion, runsVersion: store.analysisRunsVersion,
-                           scenesVersion: store.scenesVersion, sortOrder: sortOrder)
+                           scenesVersion: store.scenesVersion, peopleVersion: store.videoPeopleVersion,
+                           sortOrder: sortOrder)
         return tableMemo(key) { computeTableSummary() }
     }
 
@@ -321,11 +323,15 @@ struct AnalyzeView: View {
         let transcriptCounts = store.analysisRuns.reduce(into: [Int64: Int]()) {
             if $1.hasTranscript { $0[$1.videoID, default: 0] += 1 }
         }
-        // Distinct people tagged across a video's batches.
+        // Distinct people tagged across a video's batches, or the roster the
+        // people pass built when that is all there is yet.
         let personTagsByRun = store.sceneIndex.personTagsByRun
-        let peopleCounts = store.analysisRuns.reduce(into: [Int64: Set<String>]()) { result, run in
+        var peopleCounts = store.analysisRuns.reduce(into: [Int64: Set<String>]()) { result, run in
             if let tags = personTagsByRun[run.id] { result[run.videoID, default: []].formUnion(tags) }
         }.mapValues(\.count)
+        for (video, roster) in store.videoPeopleCounts where roster > (peopleCounts[video] ?? 0) {
+            peopleCounts[video] = roster
+        }
         return TableSummary(videos: store.videos.sorted(using: sortOrder), sceneCounts: sceneCounts,
                             batchCounts: batchCounts, transcriptCounts: transcriptCounts,
                             peopleCounts: peopleCounts)
@@ -384,6 +390,14 @@ struct AnalyzeView: View {
                         Text("Analyzing")
                     }
                     .foregroundStyle(.secondary)
+                } else if store.detectingPeopleVideoID == video.id {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Detecting people")
+                    }
+                    .foregroundStyle(.secondary)
+                    .help("The people pass is watching this video in the background")
                 } else {
                     let batches = summary.batchCounts[video.id] ?? 0
                     let scenes = summary.sceneCounts[video.id] ?? 0
@@ -406,7 +420,9 @@ struct AnalyzeView: View {
                             Label("Needs analysis", systemImage: "circle.dashed")
                                 .foregroundStyle(.secondary)
                         }
-                        if batches > 0 {
+                        // The people count shows as soon as the people pass
+                        // finishes, analyzed or not.
+                        if batches > 0 || people > 0 {
                             Group {
                                 if hasTranscript {
                                     Image(systemName: "text.quote")
@@ -853,6 +869,11 @@ private struct VideoPreviewPane: View {
             availability = .ready
             UITiming.responseReady(screen: "Sources", what: "preview player")
             roster = await store.videoPeople(for: video.id)
+        }
+        // A detect run that started elsewhere (the analysis sheet) finished:
+        // show the roster it built.
+        .onChange(of: store.isDetectingPeople) { _, running in
+            if !running { Task { roster = await store.videoPeople(for: video.id) } }
         }
         // Re-check when a transcription for this video finishes.
         .task(id: "\(video.id)|\(store.transcribingVideoIDs.contains(video.id))") {
