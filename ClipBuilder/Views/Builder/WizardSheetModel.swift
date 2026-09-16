@@ -882,7 +882,41 @@ final class WizardSheetModel {
         previewBRoll([scene])
     }
 
+    /// The visible video tracks a find result can land on, named like the
+    /// timeline's headers (with the area under the playhead).
+    var trackChoices: [(index: Int, label: String)] {
+        let numerals = ["I", "II", "III", "IV", "V", "VI"]
+        return (0..<store.builder.document.trackCount).map { track in
+            var label = "Track \(numerals[safe: track] ?? "\(track + 1)")"
+            if let area = store.builder.area(forTrack: track, at: store.builder.playhead)?.name { label += " · \(area)" }
+            return (track, label)
+        }
+    }
+
+    /// Preview every result as a main clip on `track`, back to back from
+    /// the playhead. Apply is required, as for B-roll.
+    func addAllToTrack(_ track: Int) { previewMain(results, track: track) }
+
+    func addToTrack(sceneID: Int64, track: Int) {
+        guard let scene = results.first(where: { $0.id == sceneID }) else { return }
+        previewMain([scene], track: track)
+    }
+
+    private func previewMain(_ scenes: [SceneRecord], track: Int) {
+        previewAddition(scenes, label: "Add find results to track \(track + 1)") { scene, at in
+            .addScene(scene: scene.id, at: at, track: track)
+        }
+    }
+
     private func previewBRoll(_ scenes: [SceneRecord]) {
+        previewAddition(scenes, label: "Add find results as B-roll") { [store] scene, at in
+            .addCutaway(scene: scene.id, at: at, track: store.builder.focusedTrack ?? 0,
+                        duration: scene.duration, coverAll: false)
+        }
+    }
+
+    private func previewAddition(_ scenes: [SceneRecord], label: String,
+                                 step: (SceneRecord, Double) -> BuilderCommand) {
         guard phase == .found, let context = findContext, identityMatches else { failure = .identityChanged; return }
         guard findRevision == store.builder.revision,
               TimelineDiff(before: context.document, after: store.builder.document).isEmpty else { failure = .staleRevision; return }
@@ -892,7 +926,7 @@ final class WizardSheetModel {
         }
         failure = nil
         // Explicit user action starts a new mutation preview; always requires Apply.
-        runRequest = "Add find results as B-roll: " + runRequest
+        runRequest = label + ": " + runRequest
         var at = store.builder.playhead
         // Search was already audited. This explicit edit has local provenance
         // and a fresh session/run UUID, just like a deterministic addition.
@@ -901,8 +935,7 @@ final class WizardSheetModel {
         finding = false
         let steps = scenes.map { scene in
             defer { at += scene.duration }
-            return BuilderScriptStep(.addCutaway(scene: scene.id, at: at, track: store.builder.focusedTrack ?? 0,
-                                                 duration: scene.duration, coverAll: false))
+            return BuilderScriptStep(step(scene, at))
         }
         execute(steps, library: context.library)
     }

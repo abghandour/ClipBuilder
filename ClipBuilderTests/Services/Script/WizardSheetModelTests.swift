@@ -787,11 +787,13 @@ extension WizardSheetModelTests {
             let picker = try #require(model.pickerRequest(sceneID: 12))
             #expect(picker.scenes.map(\.id) == [12])
             store.builder.playhead = 1
-            model.addAsBRoll(sceneID: 12)
+            #expect(model.trackChoices.map(\.index) == Array(0..<store.builder.document.trackCount) && model.trackChoices.first?.label.hasPrefix("Track I") == true)
+            model.addToTrack(sceneID: 12, track: 0)
             #expect(model.phase == .preview && model.canApply)
             let candidate = try #require(model.session?.candidate)
-            let additions = candidate.videoTrack.filter { $0.isCutaway }
-            #expect(additions.count == 1 && additions.first?.sceneID == 12 && additions.first?.startTime == 1)
+            let additions = candidate.videoTrack.filter { $0.sceneID == 12 }
+            #expect(additions.count == 1 && additions.first?.isCutaway == false && additions.first?.track == 0)
+            #expect(model.runRequest.hasPrefix("Add find results to track 1: "))
             #expect(store.builder.document == before)
             await model.discard()
             let afterDiscard = try await temp.database.fetchBuilderRuns(timelineID: timelineID)

@@ -3,6 +3,9 @@ import SwiftUI
 struct BuilderWizardFindResultRow: View {
     let scene: SceneRecord
     let reason: String
+    /// The tracks the scene can land on as a main clip.
+    var tracks: [(index: Int, label: String)] = []
+    var addToTrack: ((Int) -> Void)? = nil
     let add: () -> Void
     let openPicker: () -> Void
 
@@ -31,6 +34,15 @@ struct BuilderWizardFindResultRow: View {
             Text(reason).font(.caption).fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                if let addToTrack, !tracks.isEmpty {
+                    Menu("Add to Track") {
+                        ForEach(tracks, id: \.index) { choice in
+                            Button(choice.label) { addToTrack(choice.index) }
+                        }
+                    }
+                    .fixedSize()
+                    .help("Preview this scene as a main clip on that track at the current playhead. Apply is required.")
+                }
                 Button("Add as B-roll", action: add)
                     .help("Preview this scene as B-roll at the current playhead on the focused track. Apply is required.")
                 Button("Open in B-roll picker", action: openPicker)
