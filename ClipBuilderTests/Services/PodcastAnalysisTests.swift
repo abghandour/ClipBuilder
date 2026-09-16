@@ -115,6 +115,92 @@ struct PodcastAnalysisTests {
         #expect(path.keyframes.last!.x < 0.5)
     }
 
+    @Test("a video-call grid becomes tiles from recurring face positions; stacked feeds count as a grid, one face does not")
+    func gridTiles() {
+        func box(_ cx: Double, _ cy: Double) -> CGRect { CGRect(x: cx - 0.05, y: cy - 0.05, width: 0.1, height: 0.1) }
+        let quad = [box(0.25, 0.25), box(0.75, 0.25), box(0.25, 0.75), box(0.75, 0.75)]
+        // One frame misses a face; a stray extra face appears once.
+        let tiles = PodcastVisualAnalyzer.inferTiles(faceSets: [quad, Array(quad.prefix(3)), quad + [box(0.5, 0.5)]])
+        #expect(tiles.count == 4)
+        #expect(tiles.map(\.index) == [0, 1, 2, 3])
+        #expect(tiles[0].x == 0 && tiles[0].y == 0 && tiles[0].w == 0.5 && tiles[0].h == 0.5)
+        #expect(tiles[3].x == 0.5 && tiles[3].y == 0.5)
+        #expect(tiles[1].contains(x: 0.75, y: 0.25) && !tiles[1].contains(x: 0.25, y: 0.25))
+        let stacked = PodcastVisualAnalyzer.inferTiles(faceSets: [[box(0.5, 0.25), box(0.5, 0.75)], [box(0.5, 0.25), box(0.5, 0.75)]])
+        #expect(stacked.count == 2 && stacked[0].h == 0.5 && stacked[1].y == 0.5 && stacked[0].w == 1)
+        #expect(PodcastVisualAnalyzer.inferTiles(faceSets: [[box(0.5, 0.5)], [box(0.5, 0.5)]]).isEmpty)
+        #expect(PodcastVisualAnalyzer.tilePresence(faceSets: [quad, Array(quad.prefix(3))], tiles: tiles) == 0.5)
+        let roster = [VideoPersonRecord(videoID: 1, personID: 1, key: "modestino", name: "Modestino", descriptor: "",
+                                        portraitAt: 1, portraitBox: .init(x: 0.6, y: 0.55, w: 0.2, h: 0.3))]
+        let named = PodcastVisualAnalyzer.named(tiles, roster: roster)
+        #expect(named[3].personKey == "modestino" && named.prefix(3).allSatisfy { $0.personKey == nil })
+    }
+
+    @Test("grid turns resolve to the tile whose mouth moved, fall back to the voice's usual tile, and crop the tile at 9:16")
+    func gridResolutionAndCrop() {
+        var tiles = PodcastVisualAnalyzer.inferTiles(faceSets: [[
+            CGRect(x: 0.2, y: 0.2, width: 0.1, height: 0.1), CGRect(x: 0.7, y: 0.2, width: 0.1, height: 0.1),
+            CGRect(x: 0.2, y: 0.7, width: 0.1, height: 0.1), CGRect(x: 0.7, y: 0.7, width: 0.1, height: 0.1)]])
+        tiles[3].personKey = "quemuel"
+        let audio = [
+            SpeakerTurn(videoID: 1, start: 0, end: 2, cluster: 0, confidence: 0.6),
+            SpeakerTurn(videoID: 1, start: 2, end: 4, cluster: 1, confidence: 0.6),
+            SpeakerTurn(videoID: 1, start: 4, end: 6, cluster: 0, confidence: 0.6),
+        ]
+        let picture = [PictureTalkerSignal(start: 0, end: 2, side: .right, confidence: 0.9, tile: 3),
+                       PictureTalkerSignal(start: 2, end: 4, side: .left, confidence: 0.8, tile: 0)]
+        let roster = [VideoPersonRecord(videoID: 1, personID: 1, key: "modestino", name: "Modestino", descriptor: "",
+                                        portraitAt: 1, portraitBox: .init(x: 0.1, y: 0.1, w: 0.2, h: 0.2))]
+        let resolved = PodcastSpeakerTimelineResolver.resolve(audioTurns: audio, picture: picture, layout: .grid,
+                                                              roster: roster, minimumHold: 1.5, tiles: tiles)
+        let resolvedTiles: [Int?] = resolved.map { $0.tile }
+        let resolvedPeople: [String?] = resolved.map { $0.personKey }
+        #expect(resolvedTiles == [3, 0, 3])
+        #expect(resolvedPeople == ["quemuel", "modestino", "quemuel"])
+        #expect(resolved[0].resolvedSide == .right && resolved[1].resolvedSide == .left)
+        let path = PodcastSpeakerTimelineResolver.cameraPath(for: 0...6, turns: resolved, layout: .grid,
+                                                             videoSize: CGSize(width: 1920, height: 1080),
+                                                             roster: roster, minimumHold: 1.5, tiles: tiles)
+        let first = try! #require(path.keyframes.first)
+        // The largest 9:16 crop inside the bottom-right cell, centered on it.
+        let expectedWidth = 0.5 * (9.0 / 16.0) / (1920.0 / 1080.0)
+        #expect(abs(first.h - 0.5) < 1e-9)
+        #expect(abs(first.w - expectedWidth) < 1e-9)
+        #expect(abs(first.x - (0.75 - first.w / 2)) < 1e-9)
+        #expect(abs(first.y - 0.5) < 1e-9)
+        #expect(path.keyframes.contains { $0.t >= 2 && $0.y == 0 && $0.x < 0.5 })
+        #expect(path.keyframes.last?.y == 0.5)
+    }
+
+    @Test("the speaker map needs a transcript and stores nothing without one")
+    func speakerMapWithoutTranscript() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo(sceneCount: 0)
+        let video = try #require(try await temp.database.video(id: videoID))
+        let turns = try await PodcastAnalysisService.mapSpeakers(video: video, database: temp.database,
+                                                                 holdSeconds: 1.5, log: { _ in })
+        #expect(turns.isEmpty)
+        #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID).isEmpty)
+        #expect(try await temp.database.video(id: videoID)?.podcastLayout == nil)
+    }
+
+    @Test("grid tiles and per-turn tiles persist")
+    func gridPersistence() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo(sceneCount: 0)
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "host"),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1)]
+        try await temp.database.setPodcastLayout(videoID: videoID, layout: .grid, seamX: nil, confidence: 0.8, tiles: tiles)
+        let video = try #require(try await temp.database.video(id: videoID))
+        #expect(video.podcastLayout == "grid" && video.podcastTiles == tiles)
+        let turn = SpeakerTurn(videoID: videoID, start: 1, end: 4, cluster: 1, confidence: 0.75,
+                               resolvedSide: .right, personKey: "guest", tile: 1)
+        try await temp.database.replaceSpeakerTurns(videoID: videoID, turns: [turn])
+        #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID).first?.tile == 1)
+        try await temp.database.setPodcastLayout(videoID: videoID, layout: .singleCamera, seamX: nil, confidence: 1)
+        #expect(try await temp.database.video(id: videoID)?.podcastTiles.isEmpty == true)
+    }
+
     @Test("multi-sentence speech results split only at timestamped word ends")
     func sentenceBoundaries() {
         let words = [TranscriptWord(word: "Why?", start: 0, end: 1),

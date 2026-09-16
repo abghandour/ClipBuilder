@@ -97,6 +97,28 @@ struct DatabaseTests {
         #expect(try await database.fetchVideos().isEmpty)
     }
 
+    @Test("the library snapshot counts the people pass's roster per video, distinct by person")
+    func snapshotCountsVideoPeople() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let first = try await temp.seedVideo()
+        let second = try await database.registerVideo(hash: "second", filename: "second.mp4", path: "/tmp/second.mp4",
+                                                      duration: 5, width: 1920, height: 1080, wide: true)
+        let alice = try await database.createPerson(name: "Alice")
+        let bob = try await database.createPerson(name: "Bob")
+        try await database.replaceVideoPeople(videoID: first, entries: [
+            (personID: alice.id, portraitAt: 1, portraitJSON: nil, rangesJSON: nil),
+            (personID: bob.id, portraitAt: 2, portraitJSON: nil, rangesJSON: nil),
+        ])
+        let snapshot = try await database.fetchLibrarySnapshot()
+        #expect(snapshot.videoPeopleCounts == [first: 2])
+        #expect(snapshot.videoPeopleCounts[second] == nil)
+        try await database.replaceVideoPeople(videoID: first, entries: [
+            (personID: alice.id, portraitAt: 1, portraitJSON: nil, rangesJSON: nil),
+        ])
+        #expect(try await database.fetchLibrarySnapshot().videoPeopleCounts == [first: 1])
+    }
+
     @Test("a database stamped with the current version skips the column migrations")
     func stampedDatabaseSkipsMigration() async throws {
         let temp = try TempDatabase()
@@ -650,7 +672,7 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 16)
+        #expect(Database.schemaVersion == 17)
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))

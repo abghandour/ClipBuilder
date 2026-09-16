@@ -41,6 +41,12 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     var podcastLayout: String? = nil
     var podcastSeamX: Double? = nil
     var podcastLayoutConfidence: Double? = nil
+    /// Grid layouts: the tiles (JSON array of PodcastTile).
+    var podcastTilesJSON: String? = nil
+    var podcastTiles: [PodcastTile] {
+        guard let data = podcastTilesJSON?.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([PodcastTile].self, from: data)) ?? []
+    }
 
     var driveFileID: String? = nil
     var driveLink: String? = nil
@@ -806,4 +812,7 @@ nonisolated struct LibrarySnapshot: Sendable {
     var lessons: [WizardLesson]
     var fightResearch: [FightResearchRecord]
     var fightEvents: [FightEventRecord]
+    /// People the people pass found per video (distinct roster entries),
+    /// present before any tag analysis has run.
+    var videoPeopleCounts: [Int64: Int] = [:]
 }

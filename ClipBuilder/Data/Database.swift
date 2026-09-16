@@ -24,7 +24,8 @@ actor Database {
         analyzed_at TEXT,
         podcast_layout TEXT,
         podcast_seam_x REAL,
-        podcast_layout_confidence REAL
+        podcast_layout_confidence REAL,
+        podcast_tiles_json TEXT
     );
 
     CREATE TABLE IF NOT EXISTS builder_prerequisites (
@@ -292,7 +293,8 @@ actor Database {
         picture_side TEXT,
         picture_confidence REAL NOT NULL DEFAULT 0,
         resolved_side TEXT,
-        person_key TEXT
+        person_key TEXT,
+        tile INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_speaker_turns_video_time
         ON speaker_turns(video_id, start_time, end_time);
@@ -656,7 +658,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 16
+    static let schemaVersion: Int64 = 17
 
     // MARK: - Script prerequisites (Library state, outside timeline snapshots)
 
@@ -1062,6 +1064,12 @@ actor Database {
         }
         if !videoColumns.contains("podcast_layout_confidence") {
             try connection.execute("ALTER TABLE videos ADD COLUMN podcast_layout_confidence REAL")
+        }
+        if !videoColumns.contains("podcast_tiles_json") {
+            try connection.execute("ALTER TABLE videos ADD COLUMN podcast_tiles_json TEXT")
+        }
+        if !(try connection.columnNames(of: "speaker_turns")).contains("tile") {
+            try connection.execute("ALTER TABLE speaker_turns ADD COLUMN tile INTEGER")
         }
         // How long the on-device passes took, for the AI details sheet.
         for column in ["speech_seconds", "people_seconds"] where !videoColumns.contains(column) {
@@ -1733,6 +1741,13 @@ actor Database {
         return rows.first?["id"]?.intValue ?? connection.lastInsertRowID
     }
 
+    /// Remove source rows outright; every dependent table cascades.
+    func deleteVideos(_ ids: [Int64]) throws {
+        for id in ids {
+            try connection.execute("DELETE FROM videos WHERE id = ?", [.integer(id)])
+        }
+    }
+
     // MARK: - Video notes (timestamped analysis guidance)
 
     func videoNotes(videoID: Int64) throws -> [VideoNote] {
@@ -2081,6 +2096,7 @@ actor Database {
             podcastLayout: row["podcast_layout"]?.stringValue,
             podcastSeamX: row["podcast_seam_x"]?.doubleValue,
             podcastLayoutConfidence: row["podcast_layout_confidence"]?.doubleValue,
+            podcastTilesJSON: row["podcast_tiles_json"]?.stringValue,
             driveFileID: row["drive_file_id"]?.stringValue,
             driveLink: row["drive_link"]?.stringValue,
             driveOffloaded: row["drive_offloaded"]?.boolValue ?? false,
@@ -2093,12 +2109,15 @@ actor Database {
     }
 
     func setPodcastLayout(videoID: Int64, layout: PodcastLayout,
-                          seamX: Double?, confidence: Double) throws {
+                          seamX: Double?, confidence: Double, tiles: [PodcastTile] = []) throws {
+        let tilesJSON = tiles.isEmpty ? nil
+            : (try? JSONEncoder().encode(tiles)).flatMap { String(data: $0, encoding: .utf8) }
         try connection.execute("""
-            UPDATE videos SET podcast_layout = ?, podcast_seam_x = ?, podcast_layout_confidence = ?
+            UPDATE videos SET podcast_layout = ?, podcast_seam_x = ?, podcast_layout_confidence = ?,
+                podcast_tiles_json = ?
             WHERE id = ?
             """, [.text(layout.rawValue), seamX.map(SQLValue.real) ?? .null,
-                  .real(confidence), .integer(videoID)])
+                  .real(confidence), tilesJSON.map(SQLValue.text) ?? .null, .integer(videoID)])
     }
 
     func replaceSpeakerTurns(videoID: Int64, turns: [SpeakerTurn]) throws {
@@ -2108,13 +2127,14 @@ actor Database {
                 try connection.execute("""
                     INSERT INTO speaker_turns
                         (video_id, start_time, end_time, cluster, confidence, picture_side,
-                         picture_confidence, resolved_side, person_key)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         picture_confidence, resolved_side, person_key, tile)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .real(turn.start), .real(turn.end),
                           .integer(Int64(turn.cluster)), .real(turn.confidence),
                           .text(turn.pictureSide.rawValue), .real(turn.pictureConfidence),
                           .text(turn.resolvedSide.rawValue),
-                          turn.personKey.map(SQLValue.text) ?? .null])
+                          turn.personKey.map(SQLValue.text) ?? .null,
+                          turn.tile.map { SQLValue.integer(Int64($0)) } ?? .null])
             }
         }
     }
@@ -2132,7 +2152,8 @@ actor Database {
                             pictureSide: PodcastSpeakerSide(rawValue: row["picture_side"]?.stringValue ?? "") ?? .unknown,
                             pictureConfidence: row["picture_confidence"]?.doubleValue ?? 0,
                             resolvedSide: PodcastSpeakerSide(rawValue: row["resolved_side"]?.stringValue ?? "") ?? .unknown,
-                            personKey: row["person_key"]?.stringValue)
+                            personKey: row["person_key"]?.stringValue,
+                            tile: row["tile"]?.intValue.map { Int($0) })
             }
     }
 
@@ -2160,7 +2181,18 @@ actor Database {
                         feedback: try fetchAllFeedback().filter { generatedIDs.contains($0.generatedVideoID) },
                         lessons: try fetchLessons(),
                         fightResearch: ((try? fetchFightResearch()) ?? []).filter { videoIDs.contains($0.videoID) },
-                        fightEvents: ((try? fetchFightEvents()) ?? []).filter { videoIDs.contains($0.videoID) })
+                        fightEvents: ((try? fetchFightEvents()) ?? []).filter { videoIDs.contains($0.videoID) },
+                        videoPeopleCounts: try fetchVideoPeopleCounts().filter { videoIDs.contains($0.key) })
+    }
+
+    /// Distinct people per video from the people pass.
+    func fetchVideoPeopleCounts() throws -> [Int64: Int] {
+        var counts: [Int64: Int] = [:]
+        for row in try connection.query(
+            "SELECT video_id, COUNT(DISTINCT person_id) AS people FROM video_people GROUP BY video_id") {
+            if let video = row["video_id"]?.intValue, let people = row["people"]?.intValue { counts[video] = Int(people) }
+        }
+        return counts
     }
 
     func fetchScenes(videoID: Int64? = nil, sceneID: Int64? = nil,

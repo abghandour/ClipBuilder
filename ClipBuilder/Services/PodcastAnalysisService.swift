@@ -47,13 +47,20 @@ actor PodcastAnalysisService {
         }
 
         progress(0.55, "reading speaker motion")
-        let visual = await PodcastVisualAnalyzer.analyze(video: video, turns: turns)
+        var visual = await PodcastVisualAnalyzer.analyze(video: video, turns: turns)
+        // Who sits in which tile: the People pass's portraits name the cells.
+        visual.tiles = PodcastVisualAnalyzer.named(visual.tiles, roster: roster)
         try await database.setPodcastLayout(videoID: video.id, layout: visual.layout,
                                             seamX: visual.seamX,
-                                            confidence: visual.layoutConfidence)
-        let resolved = PodcastSpeakerTimelineResolver.resolve(
-            audioTurns: turns, picture: visual.talkers, layout: visual.layout,
-            roster: roster, minimumHold: holdSeconds)
+                                            confidence: visual.layoutConfidence, tiles: visual.tiles)
+        if visual.layout == .grid {
+            log("Podcast layout: grid of \(visual.tiles.count) tiles"
+                + (visual.tiles.compactMap(\.personKey).isEmpty ? ""
+                   : " (" + visual.tiles.map { "\($0.index): \($0.personKey ?? "?")" }.joined(separator: ", ") + ")"))
+        }
+        progress(0.60, "tracking who is talking")
+        let resolved = try await Self.resolveTurns(video: video, audioTurns: turns, visual: visual,
+                                                   roster: roster, holdSeconds: holdSeconds, log: log)
         try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
         let podcastSettings = capturedSettings ?? SettingsStore.loadSettings().podcast
         let enrichment = TranscriptFeatureAnalyzer.analyze(
@@ -102,7 +109,7 @@ actor PodcastAnalysisService {
             let path = PodcastSpeakerTimelineResolver.cameraPath(
                 for: scene.start...scene.end, turns: resolved,
                 layout: visual.layout, videoSize: CGSize(width: video.width, height: video.height),
-                roster: roster, minimumHold: holdSeconds)
+                roster: roster, minimumHold: holdSeconds, tiles: visual.tiles)
             if !path.keyframes.isEmpty, let data = try? encoder.encode(path) {
                 try await database.setSceneCenterStagePath(
                     scene.id, json: String(data: data, encoding: .utf8))
@@ -111,6 +118,71 @@ actor PodcastAnalysisService {
         progress(1, "podcast ready")
         return Result(runID: runID, newPeople: newPeople,
                       suggestedFilename: peopleResult.suggestedFilename)
+    }
+
+    /// The speaker map alone, for talking footage the visual pipeline
+    /// analyzes (interviews): voices from the transcript, the layout and its
+    /// tiles from the picture, each turn placed and named, all persisted so
+    /// the Wizard's speakers query and the speaker-follow camera can use
+    /// them. Needs transcript rows; returns the turns it stored.
+    @discardableResult
+    static func mapSpeakers(video: VideoRecord, database: Database, holdSeconds: Double,
+                            log: @escaping @Sendable (String) -> Void) async throws -> [SpeakerTurn] {
+        let rows = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
+        guard !rows.isEmpty else { return [] }
+        let segments = rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: nil) }
+        let turns = try await PodcastSpeakerSeparator.separate(video: video, segments: segments)
+        guard !turns.isEmpty else { return [] }
+        let roster = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
+        var visual = await PodcastVisualAnalyzer.analyze(video: video, turns: turns)
+        visual.tiles = PodcastVisualAnalyzer.named(visual.tiles, roster: roster)
+        try await database.setPodcastLayout(videoID: video.id, layout: visual.layout, seamX: visual.seamX,
+                                            confidence: visual.layoutConfidence, tiles: visual.tiles)
+        let resolved = try await resolveTurns(video: video, audioTurns: turns, visual: visual,
+                                              roster: roster, holdSeconds: holdSeconds, log: log)
+        try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
+        let named = Set(resolved.compactMap(\.personKey)).count
+        log("Speaker map for \(video.filename): \(resolved.count) turns, layout \(visual.layout.label.lowercased())"
+            + (visual.tiles.isEmpty ? "" : " with \(visual.tiles.count) tiles") + ", \(named) named speaker(s)")
+        return resolved
+    }
+
+    /// Who speaks when. With two or more face slots on screen the speaker
+    /// tracker decides from voice clusters and mouth motion together, for any
+    /// number of people; a single camera keeps the transcript-window turns
+    /// and the side/portrait resolution.
+    static func resolveTurns(video: VideoRecord, audioTurns: [SpeakerTurn], visual: PodcastVisualAnalyzer.Result,
+                             roster: [VideoPersonRecord], holdSeconds: Double,
+                             log: @escaping @Sendable (String) -> Void) async throws -> [SpeakerTurn] {
+        let fallback = PodcastSpeakerTimelineResolver.resolve(
+            audioTurns: audioTurns, picture: visual.talkers, layout: visual.layout,
+            roster: roster, minimumHold: holdSeconds, tiles: visual.tiles)
+        guard visual.tiles.count >= 2, !audioTurns.isEmpty else { return fallback }
+        do {
+            let outcome = try await trackSpeakers(video: video, speech: audioTurns.map { $0.start...$0.end },
+                                                  tiles: visual.tiles, log: log)
+            guard !outcome.turns.isEmpty else { return fallback }
+            log(String(format: "Speaker tracking: %d voice(s) over %d slot(s), %d turns, margin %.2f",
+                       outcome.clusterCount, visual.tiles.count, outcome.turns.count, outcome.margin))
+            return outcome.turns
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            log("Speaker tracking unavailable; keeping the side-based turns (\(error))")
+            return fallback
+        }
+    }
+
+    @concurrent
+    static func trackSpeakers(video: VideoRecord, speech: [ClosedRange<Double>], tiles: [PodcastTile],
+                              log: @escaping @Sendable (String) -> Void) async throws -> SpeakerTracker.Outcome {
+        let audioURL = try await NormalizedAudioCache.shared.audio(source: video.url)
+        let windows = try SpeakerFeatures.windows(audioURL: audioURL, speech: speech)
+        try Task.checkCancellation()
+        let activity = try await VisualSpeechActivity.measure(url: video.url, tiles: tiles, duration: video.duration, log: log)
+        try Task.checkCancellation()
+        return SpeakerTracker.track(.init(audioWindows: windows, activity: activity, speech: speech,
+                                          tiles: tiles, duration: video.duration), videoID: video.id)
     }
 
     /// saveAnalysis creates a scene per distinct range. Every tag must use the
@@ -128,6 +200,9 @@ actor PodcastAnalysisService {
             }
             if layout == .splitHorizontal {
                 tagRanges["podcast:split", default: []].append(range)
+            }
+            if layout == .grid {
+                tagRanges["podcast:grid", default: []].append(range)
             }
             for key in exchange.speakerKeys {
                 tagRanges["person:\(key)", default: []].append(range)
@@ -328,7 +403,10 @@ nonisolated enum PodcastSpeakerSeparator {
 nonisolated enum PodcastSpeakerTimelineResolver {
     static func resolve(audioTurns: [SpeakerTurn], picture: [PictureTalkerSignal],
                         layout: PodcastLayout, roster: [VideoPersonRecord],
-                        minimumHold: Double) -> [SpeakerTurn] {
+                        minimumHold: Double, tiles: [PodcastTile] = []) -> [SpeakerTurn] {
+        if layout == .grid, !tiles.isEmpty {
+            return resolveGrid(audioTurns: audioTurns, picture: picture, roster: roster, tiles: tiles)
+        }
         var clusterSides: [Int: PodcastSpeakerSide] = [:]
         for cluster in Set(audioTurns.map(\.cluster)) {
             let overlapping = picture.filter { signal in
@@ -366,15 +444,70 @@ nonisolated enum PodcastSpeakerTimelineResolver {
         return result
     }
 
+    /// Grid layouts: a turn belongs to the tile whose mouth moved during it;
+    /// a voice cluster's usual tile covers turns the picture could not read.
+    /// The tile's person, when the People pass named one, is the speaker.
+    static func resolveGrid(audioTurns: [SpeakerTurn], picture: [PictureTalkerSignal],
+                            roster: [VideoPersonRecord], tiles: [PodcastTile]) -> [SpeakerTurn] {
+        var clusterTiles: [Int: Int] = [:]
+        for cluster in Set(audioTurns.map(\.cluster)) {
+            var weight: [Int: Double] = [:]
+            for signal in picture where signal.tile != nil {
+                if audioTurns.contains(where: { $0.cluster == cluster && signal.end > $0.start && signal.start < $0.end }) {
+                    weight[signal.tile!, default: 0] += signal.confidence
+                }
+            }
+            clusterTiles[cluster] = weight.max { $0.value < $1.value }?.key
+        }
+        func person(in tile: Int?) -> String? {
+            guard let tile, let cell = tiles.first(where: { $0.index == tile }) else { return nil }
+            if let key = cell.personKey { return key }
+            return roster.first { person in
+                guard let box = person.portraitBox else { return false }
+                return cell.contains(x: box.x + box.w / 2, y: box.y + box.h / 2)
+            }?.key
+        }
+        var result: [SpeakerTurn] = []
+        for var turn in audioTurns {
+            let strongest = picture.filter { $0.tile != nil && $0.end > turn.start && $0.start < turn.end }
+                .max { $0.confidence < $1.confidence }
+            let pictureWins = strongest.map { $0.confidence >= 0.7 || $0.confidence > turn.confidence } ?? false
+            let tile = pictureWins ? strongest?.tile : (clusterTiles[turn.cluster] ?? strongest?.tile)
+            turn.tile = tile
+            turn.pictureSide = strongest?.side ?? .unknown
+            turn.pictureConfidence = strongest?.confidence ?? 0
+            turn.resolvedSide = tile.flatMap { index in tiles.first { $0.index == index } }
+                .map { $0.centerX < 0.5 ? PodcastSpeakerSide.left : .right } ?? .unknown
+            turn.personKey = person(in: tile)
+            result.append(turn)
+        }
+        return result
+    }
+
+    /// The largest 9:16 crop that fits inside a tile, centered on it.
+    static func tileCrop(_ tile: PodcastTile, aspect: Double, canvasAspect: Double = 9.0 / 16.0)
+        -> (x: Double, y: Double, w: Double, h: Double) {
+        // A crop of normalized height h is w = h × canvas ÷ source in normalized width.
+        var h = tile.h
+        var w = h * canvasAspect / aspect
+        if w > tile.w { w = tile.w; h = w * aspect / canvasAspect }
+        return (x: min(1 - w, max(0, tile.centerX - w / 2)), y: min(1 - h, max(0, tile.centerY - h / 2)), w: w, h: h)
+    }
+
     static func cameraPath(for range: ClosedRange<Double>, turns: [SpeakerTurn],
                            layout: PodcastLayout, videoSize: CGSize,
                            roster: [VideoPersonRecord] = [],
-                           minimumHold: Double = 1.5) -> SceneCameraPath {
+                           minimumHold: Double = 1.5, tiles: [PodcastTile] = []) -> SceneCameraPath {
         let relevant = turns.filter { $0.end > range.lowerBound && $0.start < range.upperBound }
         guard !relevant.isEmpty else { return SceneCameraPath(camera: "podcast", keyframes: []) }
         let aspect = videoSize.height > 0 ? videoSize.width / videoSize.height : 16 / 9
         let cropWidth = min(layout == .splitHorizontal ? 0.5 : 1, (9.0 / 16.0) / aspect)
+        let grid = layout == .grid && !tiles.isEmpty
         func frame(_ turn: SpeakerTurn, at time: Double) -> CameraPathKeyframe {
+            if grid, let tile = tiles.first(where: { $0.index == turn.tile }) ?? tiles.first {
+                let crop = tileCrop(tile, aspect: aspect)
+                return CameraPathKeyframe(t: max(0, time - range.lowerBound), x: crop.x, y: crop.y, w: crop.w, h: crop.h)
+            }
             let portraitCenter = roster.first(where: { $0.key == turn.personKey })?.portraitBox
                 .map { $0.x + $0.w / 2 }
             let center = layout == .singleCamera ? (portraitCenter ?? 0.5)
@@ -389,7 +522,8 @@ nonisolated enum PodcastSpeakerTimelineResolver {
         for turn in relevant {
             var time = max(range.lowerBound, turn.start)
             let changed = previous.map {
-                layout == .singleCamera ? $0.personKey != turn.personKey : $0.resolvedSide != turn.resolvedSide
+                grid ? $0.tile != turn.tile
+                    : layout == .singleCamera ? $0.personKey != turn.personKey : $0.resolvedSide != turn.resolvedSide
             } ?? false
             if changed {
                 time = max(time, heldSince + max(0, minimumHold))
@@ -413,6 +547,16 @@ actor PodcastVisualAnalyzer {
         var seamX: Double?
         var layoutConfidence: Double
         var talkers: [PictureTalkerSignal]
+        var tiles: [PodcastTile] = []
+    }
+
+    /// One detected face: its box normalized to the frame with a top-left
+    /// origin, and how open the mouth is.
+    struct FaceSample: Sendable, Hashable {
+        var box: CGRect
+        var aperture: Double
+        var centerX: Double { box.midX }
+        var centerY: Double { box.midY }
     }
 
     static func analyze(video: VideoRecord, turns: [SpeakerTurn]) async -> Result {
@@ -422,14 +566,24 @@ actor PodcastVisualAnalyzer {
                                                               maxDimension: 720, quality: 0.75)
         let available = layoutFrames.compactMap { $0 }
         var splitHits = 0
+        var faceSets: [[CGRect]] = []
         for jpeg in available {
-            let metrics = await faceMouthMetrics(jpeg)
+            let faces = await faceSamples(jpeg)
+            faceSets.append(faces.map(\.box))
+            let metrics = sideMetrics(faces)
             if metrics.keys.contains(.left) && metrics.keys.contains(.right) && hasCenterSeam(jpeg) {
                 splitHits += 1
             }
         }
-        let layoutConfidence = available.isEmpty ? 0 : Double(splitHits) / Double(available.count)
-        let layout: PodcastLayout = layoutConfidence >= 0.6 ? .splitHorizontal : .singleCamera
+        let tiles = inferTiles(faceSets: faceSets)
+        var layoutConfidence = available.isEmpty ? 0 : Double(splitHits) / Double(available.count)
+        var layout: PodcastLayout = layoutConfidence >= 0.6 ? .splitHorizontal : .singleCamera
+        // Three or more fixed feeds, or two stacked, is a grid: sides cannot
+        // tell its speakers apart.
+        if tiles.count >= 3 || (tiles.count == 2 && abs(tiles[0].centerY - tiles[1].centerY) > abs(tiles[0].centerX - tiles[1].centerX)) {
+            layout = .grid
+            layoutConfidence = max(layoutConfidence, tilePresence(faceSets: faceSets, tiles: tiles))
+        }
 
         let sampled = turns.count <= 160 ? turns : turns.enumerated().compactMap {
             $0.offset.isMultiple(of: max(1, (turns.count + 159) / 160)) ? $0.element : nil
@@ -444,8 +598,22 @@ actor PodcastVisualAnalyzer {
         for (index, turn) in sampled.enumerated() {
             guard frames.indices.contains(index * 2 + 1),
                   let before = frames[index * 2], let after = frames[index * 2 + 1] else { continue }
-            let first = await faceMouthMetrics(before)
-            let second = await faceMouthMetrics(after)
+            let firstFaces = await faceSamples(before)
+            let secondFaces = await faceSamples(after)
+            if layout == .grid {
+                // The tile whose mouth moved most is the talker.
+                let first = tileMetrics(firstFaces, tiles: tiles)
+                let second = tileMetrics(secondFaces, tiles: tiles)
+                let deltas = tiles.map { tile in (tile, abs((second[tile.index] ?? 0) - (first[tile.index] ?? 0))) }
+                let total = deltas.reduce(0) { $0 + $1.1 }
+                guard total > 0.002, let best = deltas.max(by: { $0.1 < $1.1 }) else { continue }
+                signals.append(PictureTalkerSignal(start: turn.start, end: turn.end,
+                                                    side: best.0.centerX < 0.5 ? .left : .right,
+                                                    confidence: min(1, best.1 / total), tile: best.0.index))
+                continue
+            }
+            let first = sideMetrics(firstFaces)
+            let second = sideMetrics(secondFaces)
             let left = abs((second[.left] ?? 0) - (first[.left] ?? 0))
             let right = abs((second[.right] ?? 0) - (first[.right] ?? 0))
             let total = left + right
@@ -455,7 +623,102 @@ actor PodcastVisualAnalyzer {
                                                 confidence: min(1, max(left, right) / total)))
         }
         return Result(layout: layout, seamX: layout == .splitHorizontal ? 0.5 : nil,
-                      layoutConfidence: layoutConfidence, talkers: signals)
+                      layoutConfidence: layoutConfidence, talkers: signals,
+                      tiles: tiles.count >= 2 ? tiles : [])
+    }
+
+    /// Cells of a fixed multi-feed layout from the faces seen in a few
+    /// frames: face centers that recur in the same place are one feed; the
+    /// distinct columns and rows they form become the grid, and each feed
+    /// gets the cell around it. Fewer than two feeds is not a grid.
+    nonisolated static func inferTiles(faceSets: [[CGRect]], minimumFrames: Int? = nil) -> [PodcastTile] {
+        guard !faceSets.isEmpty else { return [] }
+        var clusters: [(x: Double, y: Double, hits: Int)] = []
+        for faces in faceSets {
+            var seen = Set<Int>()
+            for face in faces {
+                let cx = face.midX, cy = face.midY
+                if let index = clusters.indices.first(where: { !seen.contains($0) && hypot(clusters[$0].x - cx, clusters[$0].y - cy) < 0.14 }) {
+                    let c = clusters[index]
+                    let n = Double(c.hits)
+                    clusters[index] = ((c.x * n + cx) / (n + 1), (c.y * n + cy) / (n + 1), c.hits + 1)
+                    seen.insert(index)
+                } else {
+                    clusters.append((cx, cy, 1)); seen.insert(clusters.count - 1)
+                }
+            }
+        }
+        let needed = minimumFrames ?? max(1, min(2, faceSets.count))
+        let steady = clusters.filter { $0.hits >= needed }
+        guard steady.count >= 2 else { return [] }
+        func groups(_ values: [Double]) -> [Double] {
+            var centers: [Double] = []
+            for value in values.sorted() {
+                if let last = centers.last, abs(last - value) < 0.2 { centers[centers.count - 1] = (last + value) / 2 }
+                else { centers.append(value) }
+            }
+            return centers
+        }
+        let columns = groups(steady.map(\.x)), rows = groups(steady.map(\.y))
+        // A fixed multi-feed layout divides the frame evenly; cells are the
+        // uniform grid the feeds sit in, not the midpoints between faces.
+        func edges(_ centers: [Double]) -> [Double] {
+            (0...centers.count).map { Double($0) / Double(centers.count) }
+        }
+        let columnEdges = edges(columns), rowEdges = edges(rows)
+        func slot(_ value: Double, _ centers: [Double]) -> Int {
+            centers.indices.min { abs(centers[$0] - value) < abs(centers[$1] - value) } ?? 0
+        }
+        var tiles: [PodcastTile] = []
+        for cluster in steady {
+            let column = slot(cluster.x, columns), row = slot(cluster.y, rows)
+            let tile = PodcastTile(index: 0, x: columnEdges[column], y: rowEdges[row],
+                                   w: columnEdges[column + 1] - columnEdges[column],
+                                   h: rowEdges[row + 1] - rowEdges[row])
+            if !tiles.contains(where: { $0.x == tile.x && $0.y == tile.y }) { tiles.append(tile) }
+        }
+        tiles.sort { $0.y != $1.y ? $0.y < $1.y : $0.x < $1.x }
+        return tiles.enumerated().map { index, tile in var t = tile; t.index = index; return t }
+    }
+
+    /// Fraction of sampled frames in which every tile showed a face.
+    nonisolated static func tilePresence(faceSets: [[CGRect]], tiles: [PodcastTile]) -> Double {
+        guard !faceSets.isEmpty, !tiles.isEmpty else { return 0 }
+        let full = faceSets.count { faces in
+            tiles.allSatisfy { tile in faces.contains { tile.contains(x: $0.midX, y: $0.midY) } }
+        }
+        return Double(full) / Double(faceSets.count)
+    }
+
+    /// Tiles named by the People pass: the person whose portrait sits in
+    /// the cell.
+    nonisolated static func named(_ tiles: [PodcastTile], roster: [VideoPersonRecord]) -> [PodcastTile] {
+        tiles.map { tile in
+            var named = tile
+            named.personKey = roster.first { person in
+                guard let box = person.portraitBox else { return false }
+                return tile.contains(x: box.x + box.w / 2, y: box.y + box.h / 2)
+            }?.key
+            return named
+        }
+    }
+
+    nonisolated static func sideMetrics(_ faces: [FaceSample]) -> [PodcastSpeakerSide: Double] {
+        var values: [PodcastSpeakerSide: Double] = [:]
+        for face in faces {
+            let side: PodcastSpeakerSide = face.centerX < 0.5 ? .left : .right
+            values[side] = max(values[side] ?? 0, face.aperture)
+        }
+        return values
+    }
+
+    nonisolated static func tileMetrics(_ faces: [FaceSample], tiles: [PodcastTile]) -> [Int: Double] {
+        var values: [Int: Double] = [:]
+        for face in faces {
+            guard let tile = tiles.first(where: { $0.contains(x: face.centerX, y: face.centerY) }) else { continue }
+            values[tile.index] = max(values[tile.index] ?? 0, face.aperture)
+        }
+        return values
     }
 
     /// Two faces alone also describes an ordinary studio shot. Require a
@@ -489,27 +752,27 @@ actor PodcastVisualAnalyzer {
         return middle > 8 && middle > background * 1.8
     }
 
-    private static func faceMouthMetrics(_ jpeg: Data) async -> [PodcastSpeakerSide: Double] {
-        guard let permit = try? await MediaWorkScheduler.current.acquire(.vision) else { return [:] }
+    /// Every face in the frame with its mouth opening. Vision's boxes have a
+    /// bottom-left origin; these are flipped to the top-left frame the rest
+    /// of the app uses.
+    static func faceSamples(_ jpeg: Data) async -> [FaceSample] {
+        guard let permit = try? await MediaWorkScheduler.current.acquire(.vision) else { return [] }
         defer { withExtendedLifetime(permit) {} }
-        guard !Task.isCancelled else { return [:] }
+        guard !Task.isCancelled else { return [] }
         guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return [:] }
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return [] }
         let request = DetectFaceLandmarksRequest(.revision3)
         let timing = PerfSignpost.begin("Vision", metadata: "podcast face landmarks")
         defer { PerfSignpost.end(timing) }
         let observations = (try? await request.perform(on: image)) ?? []
-        guard !Task.isCancelled else { return [:] }
-        var values: [PodcastSpeakerSide: Double] = [:]
-        for face in observations {
-            let centerX = face.boundingBox.cgRect.midX
-            let side: PodcastSpeakerSide = centerX < 0.5 ? .left : .right
+        guard !Task.isCancelled else { return [] }
+        return observations.map { face in
+            let rect = face.boundingBox.cgRect
+            let box = CGRect(x: rect.minX, y: 1 - rect.maxY, width: rect.width, height: rect.height)
             let points = face.landmarks?.outerLips.points ?? []
-            guard !points.isEmpty else { values[side] = 0; continue }
-            let aperture = (points.map(\.y).max() ?? 0) - (points.map(\.y).min() ?? 0)
-            values[side] = max(values[side] ?? 0, aperture)
+            let aperture = points.isEmpty ? 0 : (points.map(\.y).max() ?? 0) - (points.map(\.y).min() ?? 0)
+            return FaceSample(box: box, aperture: aperture)
         }
-        return values
     }
 }
 

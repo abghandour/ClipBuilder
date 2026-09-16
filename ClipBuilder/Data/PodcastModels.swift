@@ -3,12 +3,34 @@ import Foundation
 nonisolated enum PodcastLayout: String, Codable, Sendable, CaseIterable {
     case singleCamera = "single_camera"
     case splitHorizontal = "split_horizontal"
+    /// Several fixed feeds in cells (a video call, a stacked two-up): each
+    /// speaker lives in one tile of `PodcastTile`s.
+    case grid = "grid"
 
     var label: String {
         switch self {
         case .singleCamera: "Single camera"
         case .splitHorizontal: "Side by side"
+        case .grid: "Grid"
         }
+    }
+}
+
+/// One cell of a grid layout, normalized to the source frame (top-left
+/// origin), with the person the People pass put there when known.
+nonisolated struct PodcastTile: Codable, Sendable, Hashable, Identifiable {
+    var index: Int
+    var x: Double
+    var y: Double
+    var w: Double
+    var h: Double
+    var personKey: String? = nil
+
+    var id: Int { index }
+    var centerX: Double { x + w / 2 }
+    var centerY: Double { y + h / 2 }
+    func contains(x px: Double, y py: Double) -> Bool {
+        px >= x && px <= x + w && py >= y && py <= y + h
     }
 }
 
@@ -33,6 +55,8 @@ nonisolated struct SpeakerTurn: Identifiable, Codable, Sendable, Hashable {
     var pictureConfidence: Double = 0
     var resolvedSide: PodcastSpeakerSide = .unknown
     var personKey: String? = nil
+    /// Grid layouts: the tile the speaker was seen talking in.
+    var tile: Int? = nil
 }
 
 nonisolated struct PictureTalkerSignal: Sendable, Hashable {
@@ -40,6 +64,8 @@ nonisolated struct PictureTalkerSignal: Sendable, Hashable {
     var end: Double
     var side: PodcastSpeakerSide
     var confidence: Double
+    /// Grid layouts: the tile whose mouth moved most during the turn.
+    var tile: Int? = nil
 }
 
 nonisolated struct PodcastLanguageCandidate: Sendable, Hashable {
