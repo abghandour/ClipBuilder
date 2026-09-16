@@ -114,6 +114,7 @@ struct AnalyzeWizardSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button("Start") {
                     store.startPipeline(videos: videos, options: options)
                     dismiss()

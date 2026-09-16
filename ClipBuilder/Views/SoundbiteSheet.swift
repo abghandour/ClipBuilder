@@ -74,6 +74,7 @@ struct SoundbiteSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button(isRunning ? "Finding…" : "Find Soundbites") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)

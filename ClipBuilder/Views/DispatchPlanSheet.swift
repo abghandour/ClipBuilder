@@ -471,6 +471,7 @@ struct DispatchPlanSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button(peopleGateSatisfied ? "Detect People Again" : "Detect People") {
                     let choice = analysisChoice
                     // Re-running once everything is done redoes every video;
@@ -542,6 +543,7 @@ struct DispatchPlanSheet: View {
 
             HStack {
                 Spacer()
+                Button("Close") { dismiss() }
                 Button(framingScenes.contains(where: { $0.centerStagePathJSON != nil })
                        ? "Refresh Center Stage" : "Create Center Stage") {
                     guard let video = videos.first else { return }
@@ -646,6 +648,7 @@ struct DispatchPlanSheet: View {
                 }
                 HStack {
                     Spacer()
+                    Button("Cancel") { dismiss() }
                     Button(operation == .analyze ? "Analyze Scenes" : "Generate Video") { start() }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)

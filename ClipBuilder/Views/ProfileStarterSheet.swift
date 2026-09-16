@@ -95,6 +95,7 @@ struct ProfileStarterSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button(isRunning ? "Generating…" : "Generate") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -165,6 +166,7 @@ struct ProfileStarterSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button("Apply to Profile") {
                     store.applyProfileStarter(
                         ProfileStarter.Result(rubric: rubric, houseStyle: houseStyle,

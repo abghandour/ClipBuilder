@@ -86,6 +86,7 @@ struct AvatarPickerSheet: View {
                 }
                 .help("Back to the automatic pick: a drawn marker's portrait, else the first scene's face")
                 Spacer()
+                Button("Cancel") { dismiss() }
             }
         }
         .padding(20)

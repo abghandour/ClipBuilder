@@ -95,6 +95,7 @@ struct FileNameWizardSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button(isRunning ? "Naming…" : "Suggest Names") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)

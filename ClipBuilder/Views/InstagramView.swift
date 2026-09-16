@@ -304,6 +304,10 @@ struct InstagramView: View {
                 .foregroundStyle(.secondary)
             HStack {
                 Spacer()
+                Button("Cancel") {
+                    addingAccount = false
+                    newHandle = ""
+                }
                 Button("Add Account") { submitNewHandle() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)

@@ -140,6 +140,7 @@ struct GenerateVideoSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button("Generate Video") {
                     remember(requestText)
                     switch source {

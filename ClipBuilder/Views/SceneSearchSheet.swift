@@ -60,6 +60,7 @@ struct SceneSearchSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button(isRunning ? "Searching…" : "Search") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)

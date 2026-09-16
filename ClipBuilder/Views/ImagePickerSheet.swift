@@ -60,6 +60,7 @@ struct ImagePickerSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button(selectedPaths.count > 1 ? "Add \(selectedPaths.count) Images" : "Add Image") {
                     let urls = files.map(\.url).filter { selectedPaths.contains($0.path) }
                     dismiss()

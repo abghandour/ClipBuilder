@@ -138,6 +138,7 @@ struct FightResearchSheet: View {
             Divider()
             HStack {
                 Spacer()
+                Button("Cancel") { requestDismissal() }
                 if hasResearch {
                     Button("Save Changes", action: saveEdits)
                     .buttonStyle(.borderedProminent)

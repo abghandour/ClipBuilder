@@ -68,6 +68,7 @@ struct GapReportSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button(isRunning ? "Analyzing…" : "Build Report") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)

@@ -90,6 +90,7 @@ struct CoverFrameSheet: View {
             if candidates == nil {
                 HStack {
                     Spacer()
+                    Button("Cancel") { dismiss() }
                     Button(isRunning ? "Picking…" : "Propose Covers") { run() }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)

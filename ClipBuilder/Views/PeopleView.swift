@@ -506,6 +506,7 @@ private struct MergePeopleSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button("Merge") {
                     if let main = people.first(where: { $0.id == mainID }) {
                         onMerge(main, name)

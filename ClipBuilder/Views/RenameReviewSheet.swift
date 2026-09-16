@@ -86,6 +86,7 @@ struct RenameSuggestionEditor: View {
 
         HStack {
             Spacer()
+            Button("Cancel") { onApplied() }
             Button("Rename") {
                 for suggestion in suggestions
                 where included[suggestion.videoID] ?? true {

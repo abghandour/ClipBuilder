@@ -80,6 +80,7 @@ struct AIFavoritesSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 Button(isRunning ? "Judging…" : "Judge Scenes") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -150,6 +151,7 @@ struct AIFavoritesSheet: View {
 
             HStack {
                 Spacer()
+                Button("Cancel") { dismiss() }
                 let count = proposals.count { included[$0.sceneID] ?? true }
                 Button(count == 1 ? "Favorite 1 Scene" : "Favorite \(count) Scenes") {
                     store.applyFavorites(sceneIDs: proposals

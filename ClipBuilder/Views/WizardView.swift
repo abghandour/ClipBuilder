@@ -900,6 +900,10 @@ struct WizardView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+            HStack {
+                Spacer()
+                Button("Close") { store.pendingWizardPrompt = nil }
+            }
         }
         .padding(20)
         .frame(width: 440)
