@@ -2,7 +2,13 @@ import Foundation
 
 /// Persisted defaults are clamped again at run creation, including programmatic edits.
 nonisolated struct BuilderAgentLimits: Codable, Sendable, Equatable {
-    var wallSeconds: Double = 180
+    /// Runs that look at frames take minutes: a 68 s podcast clip framed at
+    /// speaker changes used three, so the default allows ten.
+    static let defaultWallSeconds = 600.0
+    /// The default before frame sampling existed; a saved copy of it means
+    /// "never chosen", not "three minutes".
+    static let legacyWallSeconds = 180.0
+    var wallSeconds: Double = BuilderAgentLimits.defaultWallSeconds
     var toolCalls = 64
     var affectedItems = 2_000
     var argumentBytes = 256 * 1024
@@ -16,7 +22,8 @@ nonisolated struct BuilderAgentLimits: Codable, Sendable, Equatable {
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        wallSeconds = try c.decodeIfPresent(Double.self, forKey: .wallSeconds) ?? 180
+        let saved = try c.decodeIfPresent(Double.self, forKey: .wallSeconds) ?? Self.defaultWallSeconds
+        wallSeconds = saved == Self.legacyWallSeconds ? Self.defaultWallSeconds : saved
         toolCalls = try c.decodeIfPresent(Int.self, forKey: .toolCalls) ?? 64
         affectedItems = try c.decodeIfPresent(Int.self, forKey: .affectedItems) ?? 2_000
         argumentBytes = try c.decodeIfPresent(Int.self, forKey: .argumentBytes) ?? 256 * 1024
@@ -28,7 +35,7 @@ nonisolated struct BuilderAgentLimits: Codable, Sendable, Equatable {
 
     var bounded: Self {
         var value = self
-        value.wallSeconds = wallSeconds.isFinite ? min(600, max(1, wallSeconds)) : 180
+        value.wallSeconds = wallSeconds.isFinite ? min(1800, max(1, wallSeconds)) : Self.defaultWallSeconds
         value.toolCalls = min(128, max(1, toolCalls))
         value.affectedItems = min(10_000, max(1, affectedItems))
         value.argumentBytes = min(256 * 1024, max(1024, argumentBytes))

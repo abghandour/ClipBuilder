@@ -252,6 +252,52 @@ struct BuilderRequestParserTests {
     }
 
 
+    @Test(arguments: ["add file fixture.mp4", "add video fixture", "add the whole file fixture.mp4 to the timeline",
+                      "Add File FIXTURE.MP4 into the timeline"])
+    func addWholeFile(_ request: String) throws {
+        #expect(try steps(request, context()) == [.init(.addVideo(video: 1, track: 0))])
+    }
+
+    @Test func addWholeFileWithTimeTrackAndFailures() throws {
+        var context = context()
+        #expect(try steps("add file fixture.mp4 at 2 s on track 1", context) == [.init(.addVideo(video: 1, at: 2, track: 0))])
+        #expect(try steps("add video fixture at 0:05 on track i", context) == [.init(.addVideo(video: 1, at: 5, track: 0))])
+        #expect(try steps("add file fixture at the playhead", context) == [.init(.addVideo(video: 1, at: context.playhead, track: 0))])
+        #expect(BuilderRequestParser.supportedRequests(library: context.library).contains("add file fixture.mp4"))
+        guard case .unrecognised(let reasons) = BuilderRequestParser().parse("add file missing.mp4", context: context) else {
+            Issue.record("Unknown file must refuse"); return
+        }
+        #expect(reasons.contains { $0.contains("missing.mp4") })
+        var twin = Fixtures.video(id: 2); twin.filename = "fixture.mov"; twin.path = "/tmp/fixture.mov"
+        context.library.videos.append(twin)
+        guard case .unrecognised(let ambiguous) = BuilderRequestParser().parse("add file fixture", context: context) else {
+            Issue.record("An ambiguous name must refuse"); return
+        }
+        #expect(ambiguous.contains { $0.contains("extension") })
+        #expect(try steps("add file fixture.mov", context) == [.init(.addVideo(video: 2, track: 0))])
+        // Extra instructions are not silently dropped: the assistant handles them.
+        guard case .unrecognised = BuilderRequestParser().parse(
+            "add file fixture.mp4 into the timeline but crop it to whoever is talking", context: context) else {
+            Issue.record("A request with more than the grammar covers must not be a partial match"); return
+        }
+    }
+
+    @Test(arguments: ["find scenes where Alex Smith is striking and add 1 sec clips to the timeline",
+                      "find Alex Smith punching, then put them on track 1",
+                      "find scenes of Alex Smith and then insert them at 3 s",
+                      "show me Alex Smith scenes and place the best one at the end"])
+    func findFollowedByAnEditIsNotASearch(_ request: String) {
+        var context = context()
+        context.library.tags += ["punches"]
+        guard case .unrecognised(let reasons) = BuilderRequestParser().parse(request, context: context) else {
+            Issue.record("A find that continues with an edit must not become a read-only find"); return
+        }
+        #expect(reasons.contains { $0.contains("Choose Claude") })
+        #expect(BuilderRequestParser.editVerbAfterFind("alex smith and punching") == nil)
+        #expect(BuilderRequestParser.editVerbAfterFind("alex smith band practice") == nil)
+        #expect(BuilderRequestParser.editVerbAfterFind("alex smith and add them") == "add")
+    }
+
     @Test(arguments: ["find scenes with Alex Smith and punching", "find me scenes of ALEX_KEY punching",
                       "find scenes where Alex Smith punching", "find scenes showing Alex Smith punching",
                       "search scenes for Alex Smith punching", "show me Alex Smith punching scenes",

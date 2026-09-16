@@ -14,6 +14,9 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     case setSourceRange(clip: String, start: Double, end: Double, precision: TimelinePrecision? = nil)
     case placeClip(clip: String, start: Double, track: Int)
     case addScene(scene: Int64, at: Double? = nil, track: Int)
+    case addVideo(video: Int64, at: Double? = nil, track: Int)
+    /// An explicit camera path on a wide main clip; an empty list clears it.
+    case setClipCameraPath(clip: String, keyframes: [CameraPathKeyframe])
     case addCutaway(scene: Int64? = nil, video: Int64? = nil, at: Double? = nil,
                     track: Int, duration: Double? = nil, sourceStart: Double? = nil, coverAll: Bool)
     case setClipRole(clip: String, role: ClipRole)
@@ -132,6 +135,12 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             try c.only(["op", "scene", "at", "track"])
             self = .addScene(
                 scene: try c.decode(Int64.self, forKey: ScriptKey("scene")),
+                at: try c.decodeIfPresent(Double.self, forKey: ScriptKey("at")),
+                track: try c.decode(Int.self, forKey: ScriptKey("track")))
+        case "add_video":
+            try c.only(["op", "video", "at", "track"])
+            self = .addVideo(
+                video: try c.decode(Int64.self, forKey: ScriptKey("video")),
                 at: try c.decodeIfPresent(Double.self, forKey: ScriptKey("at")),
                 track: try c.decode(Int.self, forKey: ScriptKey("track")))
         case "add_cutaway":
@@ -327,6 +336,10 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             try c.only(["op", "clip", "enabled"])
             self = .setClipCenterStage(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
                 enabled: try c.decode(Bool.self, forKey: ScriptKey("enabled")))
+        case "set_clip_camera_path":
+            try c.only(["op", "clip", "keyframes"])
+            self = .setClipCameraPath(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                keyframes: try c.decode([CameraPathKeyframe].self, forKey: ScriptKey("keyframes")))
         case "set_clip_area_window":
             try c.only(["op", "clip", "x", "y", "width", "height"])
             self = .setClipAreaWindow(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
@@ -498,6 +511,10 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             try c.encode("set_clip_center_stage", forKey: ScriptKey("op"))
             try c.encode(clip, forKey: ScriptKey("clip"))
             try c.encode(enabled, forKey: ScriptKey("enabled"))
+        case let .setClipCameraPath(clip, keyframes):
+            try c.encode("set_clip_camera_path", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(keyframes, forKey: ScriptKey("keyframes"))
         case let .setClipAreaWindow(clip, x, y, width, height):
             try c.encode("set_clip_area_window", forKey: ScriptKey("op"))
             try c.encode(clip, forKey: ScriptKey("clip"))
@@ -579,6 +596,11 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
         case let .addScene(scene, at, track):
             try c.encode("add_scene", forKey: ScriptKey("op"))
             try c.encode(scene, forKey: ScriptKey("scene"))
+            try c.encodeIfPresent(at, forKey: ScriptKey("at"))
+            try c.encode(track, forKey: ScriptKey("track"))
+        case let .addVideo(video, at, track):
+            try c.encode("add_video", forKey: ScriptKey("op"))
+            try c.encode(video, forKey: ScriptKey("video"))
             try c.encodeIfPresent(at, forKey: ScriptKey("at"))
             try c.encode(track, forKey: ScriptKey("track"))
         case let .addCutaway(scene, video, at, track, duration, sourceStart, coverAll):

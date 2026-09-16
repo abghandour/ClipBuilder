@@ -154,6 +154,17 @@ struct PreviewPane: View {
                             .clipped()
                             .offset(x: box.minX, y: box.minY)
                     }
+                } else if clip.wide, !clip.isCutaway,
+                          let rect = model.cameraRect(for: clip, atTimeline: time) {
+                    // Tracking or custom camera: exactly the crop the render
+                    // shows at this instant, scaled to fill the frame.
+                    let fullWidth = frame.width / max(0.01, rect.w)
+                    let fullHeight = frame.height / max(0.01, rect.h)
+                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                        .frame(width: fullWidth, height: fullHeight)
+                        .offset(x: -rect.x * fullWidth, y: -rect.y * fullHeight)
+                        .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+                        .clipped()
                 } else if clip.wide && !cropped {
                     // Slot band: 1080x640 at top/center/bottom.
                     let position = clip.position ?? settings.defaultPosition

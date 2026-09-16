@@ -16,7 +16,8 @@ struct BuilderExpansionSchemaTests {
         #expect(variants.count == BuilderQuery.Kind.allCases.count)
         let extra: [String: Set<String>] = [
             "clips": ["filter"], "scenes": ["sceneFilter"], "people": ["includeHidden"],
-            "transcript": ["video", "range"], "silences": ["video", "range", "clip", "threshold"]
+            "transcript": ["video", "range"], "silences": ["video", "range", "clip", "threshold"],
+            "speakers": ["video"], "camera": ["clip"]
         ]
         var seen = Set<String>()
         for variant in variants {

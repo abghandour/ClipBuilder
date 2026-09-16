@@ -859,6 +859,46 @@ actor MultitrackRenderer {
 
     // MARK: - Clip resolution
 
+    /// The camera path a clip renders with, on the clip's own clock (seconds
+    /// from its source start): its explicit path, else its scene's stored
+    /// path, else the file's analyzed scenes stitched together. Empty when
+    /// the camera is off or nothing is known.
+    nonisolated static func effectiveCameraPath(for clip: TimelineClip, scenes: [SceneRecord]) -> [CameraPathKeyframe] {
+        let span = max(0, clip.duration * clip.effectiveSpeed)
+        guard clip.wide, !clip.isCutaway, !clip.bumper, span > 0 else { return [] }
+        if let explicit = clip.cameraPath { return CenterStageService.slice(explicit, from: 0, duration: span) }
+        guard clip.centerStage else { return [] }
+        if let sceneID = clip.sceneID, let scene = scenes.first(where: { $0.id == sceneID }) {
+            guard let path = scene.centerStagePath, path.keyframes.count >= 2 else { return [] }
+            return CenterStageService.slice(path.keyframes, from: (clip.sourceStart ?? scene.startTime) - scene.startTime, duration: span)
+        }
+        guard let file = clip.videoFile, let start = clip.sourceStart else { return [] }
+        return stitchedCameraPath(scenes: scenes.filter { $0.videoPath == file }, from: start, duration: span)
+    }
+
+    /// The camera path for a stretch of a source file without a scene of
+    /// its own: the stored paths of the file's analyzed scenes (each on its
+    /// scene clock) laid out on the file clock and sliced to the range.
+    /// Between scenes the camera glides from one path's end to the next
+    /// path's start; a range no analyzed scene covers gets no path.
+    nonisolated static func stitchedCameraPath(scenes: [SceneRecord], from: Double,
+                                               duration: Double) -> [CameraPathKeyframe] {
+        var absolute: [CameraPathKeyframe] = []
+        for scene in scenes.sorted(by: { $0.startTime < $1.startTime }) {
+            guard let path = scene.centerStagePath, path.keyframes.count >= 2 else { continue }
+            for keyframe in path.keyframes {
+                var shifted = keyframe
+                shifted.t = keyframe.t + scene.startTime
+                // Overlapping scenes: the earlier path keeps its say.
+                if let last = absolute.last, shifted.t <= last.t + 0.001 { continue }
+                absolute.append(shifted)
+            }
+        }
+        guard absolute.count >= 2, let first = absolute.first, let last = absolute.last,
+              first.t < from + duration, last.t > from else { return [] }
+        return CenterStageService.slice(absolute, from: from, duration: duration)
+    }
+
     /// Port of the resolve/effective-settings pass in _generate_multitrack.
     nonisolated static func resolveClips(document: TimelineDocument,
                                          scenes: [SceneRecord]) -> [ResolvedClip] {
@@ -882,7 +922,11 @@ actor MultitrackRenderer {
                 // Stored camera path (scene-relative source time) → this
                 // clip's range, so the render replays exactly what the
                 // preview showed instead of re-tracking.
-                if clip.centerStage, clip.wide, let path = scene.centerStagePath,
+                if let explicit = clip.cameraPath, clip.wide, !clip.isCutaway {
+                    // The clip's own path (from the clip's source start) wins.
+                    let sliced = CenterStageService.slice(explicit, from: 0, duration: duration * clip.effectiveSpeed)
+                    if sliced.count >= 2 { cameraPath = sliced }
+                } else if clip.centerStage, clip.wide, let path = scene.centerStagePath,
                    path.keyframes.count >= 2 {
                     let sliced = CenterStageService.slice(
                         path.keyframes, from: sourceStart - scene.startTime,
@@ -894,6 +938,18 @@ actor MultitrackRenderer {
                 sourceStart = start
                 duration = clip.duration > 0 ? clip.duration
                     : max(0, (clip.sourceEnd ?? start) - start)
+                // A whole-file clip has no scene of its own but the file's
+                // analyzed scenes know its video (captions) and its framing.
+                let own = scenes.filter { $0.videoPath == file }
+                videoID = own.first?.videoID
+                if let explicit = clip.cameraPath, clip.wide, !clip.isCutaway {
+                    let sliced = CenterStageService.slice(explicit, from: 0, duration: duration * clip.effectiveSpeed)
+                    if sliced.count >= 2 { cameraPath = sliced }
+                } else if clip.centerStage, clip.wide, !clip.isCutaway {
+                    let sliced = Self.stitchedCameraPath(scenes: own, from: start,
+                                                         duration: duration * clip.effectiveSpeed)
+                    if sliced.count >= 2 { cameraPath = sliced }
+                }
             }
             guard let sourcePath, duration > 0 else { continue }
 
@@ -923,7 +979,7 @@ actor MultitrackRenderer {
                                          fadeOut: clip.isCutaway ? clip.fadeOut : 0,
                                          documentIndex: documentIndex,
                                          volume: clip.volume,
-                                         centerStage: clip.centerStage && clip.wide,
+                                         centerStage: (clip.centerStage || cameraPath != nil) && clip.wide,
                                          muted: muted,
                                          transIn: clip.transIn,
                                          transOut: clip.transOut,

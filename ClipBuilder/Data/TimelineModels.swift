@@ -690,6 +690,29 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// Wide clips only: reframe with the Center Stage tracking camera
     /// instead of a static crop.
     var centerStage: Bool = false
+    /// Wide main clips only: an explicit camera path (normalized crop
+    /// rectangles over seconds from the clip's source start) that replaces
+    /// the tracked or analyzed one; written by scripts and the Wizard.
+    var cameraPath: [CameraPathKeyframe]?
+    /// Who wrote the camera path: "wizard" for a script or Wizard run, nil
+    /// for the inspector.
+    var cameraPathSource: String?
+
+    /// How a wide main clip in Full Screen is framed.
+    enum Framing: String, CaseIterable, Sendable {
+        case fixed, tracking, custom
+        var label: String {
+            switch self {
+            case .fixed: "Static"
+            case .tracking: "Tracking"
+            case .custom: "Custom"
+            }
+        }
+    }
+    var framing: Framing {
+        if let cameraPath, cameraPath.count >= 2 { return .custom }
+        return centerStage ? .tracking : .fixed
+    }
     /// Playback speed (nil = 1×). 0.5 = slow motion; `duration` is screen
     /// time, so the source span consumed is duration × speed.
     var speed: Double?
@@ -743,6 +766,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             fadeOut = max(0, fadeOut)
         }
         centerStage = false
+        cameraPath = nil
+        cameraPathSource = nil
         captions = "none"
         freeCrops = nil
         muted = cutawayAudio == .muted
@@ -791,6 +816,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case screenCrop = "screen_crop"
         case areaWindow = "area_window"
         case centerStage = "center_stage"
+        case cameraPath = "camera_path"
+        case cameraPathSource = "camera_path_source"
         case speed
     }
 
@@ -830,6 +857,10 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         screenCrop = try container.decodeIfPresent(String.self, forKey: .screenCrop)
         areaWindow = try container.decodeIfPresent(FreeCropRect.self, forKey: .areaWindow)
         centerStage = try container.decodeIfPresent(Bool.self, forKey: .centerStage) ?? false
+        if let path = try container.decodeIfPresent([CameraPathKeyframe].self, forKey: .cameraPath), path.count >= 2 {
+            cameraPath = path
+            cameraPathSource = try container.decodeIfPresent(String.self, forKey: .cameraPathSource)
+        }
         speed = try container.decodeIfPresent(Double.self, forKey: .speed)
         captions = Self.decodeCaptions(container, key: .captions, fallback: "inherit",
                                        valid: Self.captionChoices)
@@ -894,6 +925,10 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         if let areaWindow { try container.encode(areaWindow, forKey: .areaWindow) }
         try container.encode(captions, forKey: .captions)
         try container.encode(centerStage, forKey: .centerStage)
+        if let cameraPath, cameraPath.count >= 2 {
+            try container.encode(cameraPath, forKey: .cameraPath)
+            try container.encodeIfPresent(cameraPathSource, forKey: .cameraPathSource)
+        }
         try encodeOrNull(speed, in: &container, forKey: .speed)
         if let sceneID, !isTrimmedScene {
             try container.encode(sceneID, forKey: .sceneID)

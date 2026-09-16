@@ -3,7 +3,8 @@ import Foundation
 /// Each query has its own admissible fields; pagination bounds model context.
 nonisolated struct BuilderQuery: Codable, Sendable, Equatable {
     enum Kind: String, Codable, Sendable, CaseIterable {
-        case timeline, clips, scenes, people, transcript, silences, tags, layouts, templates, capabilities, effects
+        case timeline, clips, scenes, people, transcript, silences, tags, layouts, templates, capabilities, effects, videos,
+             speakers, camera
     }
     var kind: Kind
     var offset = 0
@@ -30,6 +31,8 @@ nonisolated struct BuilderQuery: Codable, Sendable, Equatable {
         case .people: fields.insert("includeHidden")
         case .transcript: fields.formUnion(["video", "range"])
         case .silences: fields.formUnion(["video", "range", "clip", "threshold"])
+        case .speakers: fields.insert("video")
+        case .camera: fields.insert("clip")
         default: break
         }
         let unknown = Set(c.allKeys.map(\.stringValue)).subtracting(fields)
@@ -70,6 +73,8 @@ nonisolated struct BuilderQuery: Codable, Sendable, Equatable {
                 try c.encodeIfPresent(clip, forKey: ScriptKey("clip"))
                 try c.encode(threshold, forKey: ScriptKey("threshold"))
             }
+        case .speakers: try c.encodeIfPresent(video, forKey: ScriptKey("video"))
+        case .camera: try c.encodeIfPresent(clip, forKey: ScriptKey("clip"))
         default: break
         }
     }
@@ -127,6 +132,40 @@ nonisolated struct ClipQueryRow: Codable, Sendable, Equatable {
         if score == nil { unknown.append("score") }
         if sourceStart == nil { unknown.append("source_range") }
     }
+}
+
+/// A whole project source file, for add_video and for reasoning about
+/// files rather than scenes.
+nonisolated struct VideoQueryRow: Codable, Sendable, Equatable {
+    var id: Int64
+    var filename: String
+    var duration: Double
+    var width: Int
+    var height: Int
+    var wide: Bool
+    var type: String?
+    /// An analysis pass ran (visual or podcast) or scenes exist; scenes may
+    /// still be zero.
+    var analyzed: Bool
+    var scenes: Int
+    /// Roster keys of the people detected in this file.
+    var people: [String]
+}
+
+nonisolated struct SpeakerQueryRow: Codable, Sendable, Equatable {
+    var start: Double
+    var end: Double
+    var person: String?
+    var side: String
+    var tile: Int?
+    var confidence: Double
+}
+
+nonisolated struct PodcastLayoutRow: Codable, Sendable, Equatable {
+    var video: Int64
+    var layout: String?
+    var tiles: [PodcastTile]
+    var analyzed: Bool
 }
 
 nonisolated struct SceneQueryRow: Codable, Sendable, Equatable {
@@ -227,6 +266,12 @@ nonisolated struct BuilderQueryResult: Codable, Sendable, Equatable {
     var sounds: [BuilderDocumentSummary.Row] = []
     var overlays: [BuilderDocumentSummary.Row] = []
     var capabilities: [CapabilityQueryRow] = []
+    var videos: [VideoQueryRow] = []
+    var speakers: [SpeakerQueryRow] = []
+    var podcast: PodcastLayoutRow? = nil
+    var camera: [CameraPathKeyframe] = []
+    /// camera: where the path came from (clip, scene, file, none).
+    var cameraSource: String? = nil
     var timeline: ScriptValue? = nil
     var unknown: [String] = []
 }
@@ -239,9 +284,9 @@ extension BuilderQuery {
               threshold <= 60 else { throw ScriptError.invalid("Invalid query limits or silence threshold.") }
         guard (filter == nil || kind == .clips), (sceneFilter == nil || kind == .scenes),
               (!includeHidden || kind == .people),
-              (video == nil || kind == .transcript || kind == .silences),
+              (video == nil || kind == .transcript || kind == .silences || kind == .speakers),
               (range == nil || kind == .transcript || kind == .silences),
-              (clip == nil || kind == .silences) else {
+              (clip == nil || kind == .silences || kind == .camera) else {
             throw ScriptError.invalid("Fields do not belong to this query schema.")
         }
         try range?.validate()
@@ -321,6 +366,32 @@ extension BuilderQuery {
                     points: [.init(x: 0, y: 0), .init(x: 1, y: 0), .init(x: 1, y: 1), .init(x: 0, y: 1)])],
                 settings: model.document.trackSettings)]
                 + library.layouts.sorted { $0.name < $1.name }.map { LayoutQueryRow(id: $0.name, areas: $0.areasInTrackOrder, settings: model.document.trackSettings) })
+        case .speakers:
+            guard let video, let record = library.videos.first(where: { $0.id == video }) else {
+                throw ScriptError.invalid("speakers requires a project video id.")
+            }
+            let layout = record.podcastLayout.flatMap(PodcastLayout.init(rawValue:))
+            result.podcast = PodcastLayoutRow(video: video, layout: layout?.rawValue,
+                                              tiles: record.podcastTiles, analyzed: layout != nil)
+            result.speakers = page((library.speakerTurns[video] ?? []).map {
+                SpeakerQueryRow(start: $0.start, end: $0.end, person: $0.personKey,
+                                side: $0.resolvedSide.rawValue, tile: $0.tile, confidence: $0.confidence)
+            })
+        case .camera:
+            guard let clip, let found = model.clip(try resolve(clip)) else { throw ScriptError.invalid("camera requires a clip.") }
+            let path = MultitrackRenderer.effectiveCameraPath(for: found, scenes: library.scenes)
+            result.camera = page(path)
+            result.cameraSource = found.cameraPath != nil ? "clip"
+                : found.sceneID != nil ? "scene" : path.isEmpty ? "none" : "file"
+        case .videos:
+            result.videos = page(library.videos.sorted { $0.id < $1.id }.map { video in
+                VideoQueryRow(id: video.id, filename: video.filename, duration: video.duration,
+                              width: video.width, height: video.height, wide: video.wide, type: video.videoType,
+                              analyzed: video.analyzedAt != nil || video.visualAnalyzedAt != nil
+                                  || library.scenes.contains { $0.videoID == video.id },
+                              scenes: library.scenes.filter { $0.videoID == video.id && !$0.excluded }.count,
+                              people: (library.videoPeople[video.id] ?? []).map(\.key).sorted())
+            })
         case .capabilities:
             result.capabilities = page(library.videos.sorted { $0.id < $1.id }.map { video in
                 CapabilityQueryRow(video: video.id,

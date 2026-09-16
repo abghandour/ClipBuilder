@@ -12,6 +12,7 @@ struct BuilderRequestParser {
         "find <person> <tag> / find scenes of <person> <tag>",
         "cut/remove silence [longer than N s] on track N / in this clip",
         "add b-roll of <tag> at <time> [on track N] [for N s]",
+        "add file <file name> [at <time>] [on track N]",
         "split this clip at <time>", "trim this clip to N s",
         "mute/unmute this clip", "cover all areas",
         "set this clip speed to N x", "captions off for this clip", "set music volume to V",
@@ -32,6 +33,11 @@ struct BuilderRequestParser {
             let key = normalized(tag)
             return !key.isEmpty && tags.filter { normalized($0) == key }.count == 1
         } ?? "<tag>"
+        let files = library.videos.map { normalized($0.filename) }
+        let file = library.videos.first { video in
+            let key = normalized(video.filename)
+            return !key.isEmpty && files.filter { $0 == key }.count == 1
+        }?.filename ?? "<file name>"
         return ["remove clips with \(name)", "find scenes of \(name) \(tag)",
                 "cut silence longer than 1 s on track 1", "add b-roll of \(tag) at 12 s",
                 "set this clip speed to 1.5x", "captions off for this clip", "set music volume to 2",
@@ -39,7 +45,8 @@ struct BuilderRequestParser {
                 "remove clip 1 on track 1", "remove the selected clip", "duplicate this clip",
                 "split this clip at 2 s", "trim this clip to 2 s", "mute this clip",
                 "unmute this clip", "cover all areas", "remove clips tagged \(tag) on track 1",
-                "make track 1 black and white", "apply sepia to this clip", "remove the look from track 1"]
+                "make track 1 black and white", "apply sepia to this clip", "remove the look from track 1",
+                "add file \(file)"]
     }
 
     /// "this clip", "the selected scene", "the current clip": the timeline selection.
@@ -76,6 +83,13 @@ struct BuilderRequestParser {
                 filter.tags = [try tag(g[0], context)]
                 if !g[1].isEmpty { filter.track = try track(g[1], context) }
                 return .script([.init(.removeClips(filter: filter))])
+            }
+            // "find … and add …" edits the timeline: never a read-only find.
+            // Locally it is refused with guidance; with an assistant chosen the
+            // sheet hands it to the edit agent, which searches and then edits.
+            if ["find ", "search scenes for ", "show me ", "scenes with "].contains(where: text.hasPrefix),
+               let verb = Self.editVerbAfterFind(text) {
+                return .unrecognised(["'\(verb)' after a find changes the timeline, so this is not a search. Choose Claude to let the assistant find the scenes and add them in one run, or run the find alone and use Add as B-roll."])
             }
             for pattern in [#"find (?:me )?scenes (?:with|of|where|showing) (.+)"#,
                             #"search scenes for (.+)"#, #"show me (.+) scenes"#,
@@ -116,6 +130,12 @@ struct BuilderRequestParser {
                     return .deferred(prerequisites: missing.sorted().map { .init(.ensureTranscript(video: $0)) })
                 }
                 return .script(try BuilderSilenceExpansion.steps(clips: clips, threshold: threshold, context: context))
+            }
+            if let g = match(#"add (?:the )?(?:file|video|whole file|whole video) (.+?)(?: at (.+?))?(?: on (?:track )?(i|ii|iii|iv|v|vi|[1-6]))?(?: to the timeline| into the timeline)?"#, text) {
+                let video = try video(g[0], context)
+                let at = g[1].isEmpty ? nil : try time(g[1], context)
+                let lane = g[2].isEmpty ? try track(String(context.focusedTrack + 1), context) : try track(g[2], context)
+                return .script([.init(.addVideo(video: video.id, at: at, track: lane))])
             }
             if let g = match(#"add b-roll of (.+?) at (.+?)(?: on (?:track )?(i|ii|iii|iv|v|vi|[1-6]))?(?: for ([0-9]+(?:\.[0-9]+)?)\s*s)?"#, text) {
                 var filter = SceneFilter()
@@ -199,6 +219,16 @@ struct BuilderRequestParser {
         } catch { return .unrecognised([error.localizedDescription]) }
     }
 
+    /// The edit verb that follows the search terms in "find X and add …",
+    /// "find X, then put …": a request that edits as well as searches.
+    nonisolated static func editVerbAfterFind(_ terms: String) -> String? {
+        let pattern = #"(?:\band\b|\bthen\b|,)\s*(?:then\s+)?(add|put|insert|place|append|drop)\b"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let result = regex.firstMatch(in: terms, range: NSRange(terms.startIndex..., in: terms)),
+              let range = Range(result.range(at: 1), in: terms) else { return nil }
+        return String(terms[range])
+    }
+
     nonisolated static func normalized(_ text: String) -> String {
         text.lowercased().split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
@@ -226,6 +256,21 @@ struct BuilderRequestParser {
             throw ScriptError.invalid("Unknown or ambiguous profile tag, or unconsumed words: \(value).")
         }
         return found
+    }
+
+    /// A project video by file name, with or without its extension; the
+    /// match must be unique.
+    private func video(_ value: String, _ context: ParserContext) throws -> VideoRecord {
+        let wanted = Self.normalized(value)
+        let matches = context.library.videos.filter { video in
+            let name = Self.normalized(video.filename)
+            return name == wanted || Self.normalized((video.filename as NSString).deletingPathExtension) == wanted
+        }
+        guard matches.count == 1, let video = matches.first, video.duration > 0 else {
+            throw ScriptError.invalid(matches.isEmpty ? "No project file is named \(value)."
+                                      : "Several project files are named \(value); include the extension.")
+        }
+        return video
     }
 
     private func track(_ value: String, _ context: ParserContext) throws -> Int {

@@ -225,22 +225,47 @@ struct ClipInspector: View {
                             .labelsHidden()
                             .help("Where a wide clip sits when it is not cropped to 9:16")
                         }
-                        InspectorRow("Crop") {
-                            Toggle("Crop to 9:16", isOn: Binding(
-                                get: { clip.cropXFrac != nil },
-                                set: { value in model.updateClip(clip.uid) { $0.cropXFrac = value ? 0.5 : nil } }))
+                        // A whole-file clip has no scene: its file says whether
+                        // the camera follows speakers or the action.
+                        let podcast = scene?.tags.contains("podcast") == true
+                            || (scene == nil && store.videos.first { $0.path == clip.videoFile }?.type == .podcast)
+                        InspectorRow("Framing") {
+                            Picker("Framing", selection: Binding(
+                                get: { clip.framing },
+                                set: { model.setFraming(clip.uid, $0) })) {
+                                ForEach(TimelineClip.Framing.allCases, id: \.self) { Text($0.label).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .help("Static: one crop you place. Tracking: the analysis follows the action or the speaker. Custom: keyframes you or the Wizard set, adjustable at the playhead.")
                         }
-                        if let crop = clip.cropXFrac {
-                            cropPreview(fraction: crop)
-                            Text("Drag the frame, or click where it should sit.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        InspectorRow("Camera") {
-                            Toggle(scene?.tags.contains("podcast") == true ? "Follow active speaker" : "Tracking reframe",
-                                   isOn: binding(\.centerStage))
-                                .help(scene?.tags.contains("podcast") == true
-                                      ? "Cut the saved crop between speakers after the minimum hold time"
-                                      : "Follow the action with a tracking camera instead of the static crop")
+                        switch clip.framing {
+                        case .fixed:
+                            InspectorRow("Crop") {
+                                Toggle("Crop to 9:16", isOn: Binding(
+                                    get: { clip.cropXFrac != nil },
+                                    set: { value in model.updateClip(clip.uid) { $0.cropXFrac = value ? 0.5 : nil } }))
+                            }
+                            if let crop = clip.cropXFrac {
+                                cropPreview(fraction: crop)
+                                Text("Drag the frame, or click where it should sit.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        case .tracking:
+                            Text(podcast
+                                 ? "Cuts between speakers after the minimum hold time, from the podcast analysis."
+                                 : scene == nil
+                                 ? "Follows the action with the camera paths of this file's analyzed scenes."
+                                 : "Follows the action with the tracking camera from the analysis.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Button("Make Editable", systemImage: "slider.horizontal.below.rectangle") {
+                                model.makeCameraPathEditable(clip.uid)
+                            }
+                            .controlSize(.small)
+                            .help("Copy the tracked path onto this clip as keyframes you can adjust at any moment")
+                        case .custom:
+                            CameraKeyframeEditor(clip: clip)
                         }
                         if scene?.tags.contains("podcast:split") == true {
                             Button("Split Zoom Feeds", systemImage: "rectangle.split.2x1") {

@@ -71,19 +71,11 @@ struct TimelineView: View {
                             // lane are handled by that lane first.
                             .dropDestination(for: String.self) { items, location in
                                 guard let payload = items.first,
-                                      let parsed = TimelineDropPayload.parse(payload),
-                                      let scene = model.scenes.first(where: { $0.id == parsed.sceneID }) else { return false }
+                                      let parsed = TimelineDropPayload.parse(payload) else { return false }
                                 let track = model.trackIndex(atLaneOffset: location.y - BuilderTimelineModel.laneSpacing)
                                 let pointer = Double(location.x / model.pointsPerSecond)
-                                let time = BuilderTimelineModel.snap(pointer)
-                                guard model.canPlace(track: track, at: time) else { return false }
-                                if parsed.cutaway {
-                                    _ = model.addCutaway(source: .scene(scene), at: time, track: track)
-                                } else {
-                                    model.addScene(scene, at: model.dropInsertionTime(track: track, at: pointer),
-                                                   track: track, snapped: false)
-                                }
-                                return true
+                                return TimelineDrop.perform(parsed, model: model, videos: store.videos,
+                                                            track: track, pointer: pointer)
                             }
                         }
                         .clipped()
@@ -622,21 +614,9 @@ struct VideoTrackLane: View {
         )
         .dropDestination(for: String.self) { items, location in
             guard let payload = items.first,
-                  let parsed = TimelineDropPayload.parse(payload),
-                  let scene = model.scenes.first(where: { $0.id == parsed.sceneID }) else { return false }
+                  let parsed = TimelineDropPayload.parse(payload) else { return false }
             let pointer = Double(location.x / model.pointsPerSecond)
-            let time = BuilderTimelineModel.snap(pointer)
-            // Only where the Screen row gives this track an area.
-            guard model.canPlace(track: track, at: time) else { return false }
-            if parsed.cutaway {
-                // Option-drag: B-roll with the default window.
-                _ = model.addCutaway(source: .scene(scene), at: time, track: track)
-            } else {
-                // The clip lands where it was let go: a sequential track
-                // inserts it there instead of appending.
-                model.addScene(scene, at: model.dropInsertionTime(track: track, at: pointer), track: track, snapped: false)
-            }
-            return true
+            return TimelineDrop.perform(parsed, model: model, videos: store.videos, track: track, pointer: pointer)
         } isTargeted: { targeted in
             isDropTarget = targeted
         }
@@ -750,6 +730,21 @@ struct TimelineClipBlock: View {
                 .allowsHitTesting(false)
                 .help("Fight action pace inside this clip — spikes are the scored moments")
             }
+            // Keyframes of a custom camera path, as ticks along the top.
+            if let path = clip.cameraPath, clip.framing == .custom {
+                GeometryReader { proxy in
+                    Path { ticks in
+                        for index in CameraKeyframes.visible(path) {
+                            let x = CGFloat(path[index].t / clip.effectiveSpeed) * pps
+                            guard x <= proxy.size.width else { continue }
+                            ticks.move(to: CGPoint(x: x, y: 0))
+                            ticks.addLine(to: CGPoint(x: x, y: 6))
+                        }
+                    }
+                    .stroke(Color.accentColor, lineWidth: 1.5)
+                }
+                .allowsHitTesting(false)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 3) {
                     if clip.bumper {
@@ -779,6 +774,16 @@ struct TimelineClipBlock: View {
                     }
                     if clip.wide && !clip.bumper && !clip.isCutaway {
                         WideBadge(compact: true)
+                        if clip.framing != .fixed {
+                            Text(clip.framing.label)
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 3)
+                                .background((clip.framing == .custom ? Color.accentColor : Color.teal).opacity(0.85), in: .capsule)
+                                .help(clip.framing == .custom
+                                      ? "Custom camera path" + (clip.cameraPathSource == "wizard" ? " set by the Wizard" : "") + "; adjust it at the playhead in the inspector"
+                                      : "Tracking camera from the analysis")
+                        }
                     }
                     if clip.effectiveSpeed != 1 {
                         SpeedBadge(speed: clip.effectiveSpeed, compact: true)
@@ -1877,5 +1882,34 @@ struct TextBlock: View {
         .accessibilityValue("Starts at \(item.startTime.timecode), \(String(format: "%.1f", item.duration)) seconds")
         .accessibilityHint("Drag to move or trim. Use Select to edit its settings.")
         .accessibilityAction(named: "Select") { model.selection = .text(item.uid) }
+    }
+}
+
+/// One place for what a drop onto a lane does, whether it came from a
+/// lane or from the stack around the lanes.
+@MainActor
+enum TimelineDrop {
+    /// Adds the dropped scene or file at the pointer. A sequential track
+    /// inserts it there instead of appending; Option-dragged scenes become
+    /// B-roll with the default window. False when the track has no area.
+    @discardableResult
+    static func perform(_ parsed: TimelineDropPayload.Parsed, model: BuilderTimelineModel,
+                        videos: [VideoRecord], track: Int, pointer: Double) -> Bool {
+        let time = BuilderTimelineModel.snap(pointer)
+        // Only where the Screen row gives this track an area.
+        guard model.canPlace(track: track, at: time) else { return false }
+        switch parsed {
+        case .scene(let id, let cutaway):
+            guard let scene = model.scenes.first(where: { $0.id == id }) else { return false }
+            if cutaway {
+                _ = model.addCutaway(source: .scene(scene), at: time, track: track)
+            } else {
+                model.addScene(scene, at: model.dropInsertionTime(track: track, at: pointer), track: track, snapped: false)
+            }
+        case .file(let id):
+            guard let video = videos.first(where: { $0.id == id }) else { return false }
+            model.addVideo(video, at: model.dropInsertionTime(track: track, at: pointer), track: track, snapped: false)
+        }
+        return true
     }
 }

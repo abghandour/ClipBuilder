@@ -84,6 +84,24 @@ nonisolated extension BuilderCommand {
             guard width > 0, height > 0, x + width <= 1, y + height <= 1 else {
                 throw BuilderCommandFailure.bounds("The positive area window must fit within the source frame.")
             }
+        case .setClipCameraPath(_, let keyframes):
+            guard keyframes.isEmpty || (2...2000).contains(keyframes.count) else {
+                throw BuilderCommandFailure.bounds("A camera path needs 2 to 2000 keyframes, or none to clear it.")
+            }
+            var previous = -1.0
+            for frame in keyframes {
+                for value in [frame.t, frame.x, frame.y, frame.w, frame.h] {
+                    guard value.isFinite else { throw BuilderCommandFailure.bounds("Camera keyframes must be finite.") }
+                }
+                guard frame.t >= 0, frame.t <= 86400, frame.t > previous else {
+                    throw BuilderCommandFailure.bounds("Camera keyframe times must start at or after 0 and strictly increase.")
+                }
+                previous = frame.t
+                guard frame.w >= 0.05, frame.h >= 0.05, frame.x >= 0, frame.y >= 0,
+                      frame.x + frame.w <= 1 + 1e-9, frame.y + frame.h <= 1 + 1e-9 else {
+                    throw BuilderCommandFailure.bounds("Camera keyframe rectangles are fractions of the source frame, at least 0.05 wide and high, inside 0…1.")
+                }
+            }
         case .setTrackCrop(_, let fraction):
             if let fraction { try number(fraction, 0...1) }
         case .setRenderSettings(let settings): try settings.validate()

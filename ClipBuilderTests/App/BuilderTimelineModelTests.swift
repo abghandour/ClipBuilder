@@ -69,6 +69,77 @@ struct BuilderTimelineModelTests {
         #expect(model.trackIndex(atLaneOffset: 10_000) == 2)
     }
 
+    @Test("framing switches between static, tracking and custom; custom edits at the playhead; the canvas rescales paths")
+    func customFraming() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let model = BuilderTimelineModel()
+        model.load(profileName: "Framing")
+        var scene = Fixtures.scene(id: 1, start: 0, end: 8)
+        scene.centerStagePathJSON = String(decoding: try JSONEncoder().encode(SceneCameraPath(camera: "balanced",
+            keyframes: [CameraPathKeyframe(t: 0, x: 0.1, y: 0, w: 0.3164, h: 1), CameraPathKeyframe(t: 8, x: 0.5, y: 0, w: 0.3164, h: 1)])), as: UTF8.self)
+        model.updateScenes([scene])
+        model.addScene(scene)
+        let uid = try #require(model.document.videoTrack.first?.uid)
+        #expect(model.clip(uid)?.framing == .fixed)
+        #expect(abs(model.cropRatio(for: model.clip(uid)!) - 0.5625 / (16.0 / 9.0)) < 1e-9)
+        model.setFraming(uid, .tracking)
+        #expect(model.clip(uid)?.framing == .tracking && model.clip(uid)?.centerStage == true)
+        #expect(model.cameraRect(for: model.clip(uid)!, atTimeline: 4).map { abs($0.x - 0.3) < 1e-9 } == true)
+        // Editable: the tracked path becomes the clip's own.
+        model.makeCameraPathEditable(uid)
+        let custom = try #require(model.clip(uid))
+        #expect(custom.framing == .custom && custom.cameraPath?.count == 2 && custom.cameraPathSource == nil)
+        // A drag at 4 s (no keyframe within a quarter second) adds one; at 7.9 s it moves the last.
+        model.setCameraKeyframe(uid, atTimeline: 4, rect: CameraPathKeyframe(t: 0, x: 0.6, y: 0, w: 0.3164, h: 1))
+        #expect(model.clip(uid)?.cameraPath?.map(\.t) == [0, 4, 8])
+        model.setCameraKeyframe(uid, atTimeline: 7.9, rect: CameraPathKeyframe(t: 0, x: 0.2, y: 0, w: 0.3164, h: 1))
+        #expect(model.clip(uid)?.cameraPath?.map(\.t) == [0, 4, 8] && model.clip(uid)?.cameraPath?[2].x == 0.2)
+        model.setCameraCut(uid, at: 1, cut: true)
+        #expect(model.clip(uid)?.cameraPath?.map(\.t) == [0, 3.99, 4, 8])
+        #expect(abs((model.cameraRect(for: model.clip(uid)!, atTimeline: 3.5)?.x ?? 0) - 0.1) < 1e-9)
+        model.removeCameraKeyframe(uid, at: 2)
+        #expect(model.clip(uid)?.cameraPath?.map(\.t) == [0, 8])
+        // Square canvas: heights stay, widths follow, centers hold.
+        var settings = model.document.renderSettings
+        settings.preset = .square1080
+        model.setRenderSettings(settings)
+        let rescaled = try #require(model.clip(uid)?.cameraPath)
+        #expect(abs(rescaled[0].w - 1 / (16.0 / 9.0)) < 1e-9 && rescaled[0].h == 1)
+        model.setFraming(uid, .fixed)
+        #expect(model.clip(uid)?.framing == .fixed && model.clip(uid)?.cameraPath == nil && model.clip(uid)?.cropXFrac == 0.5)
+        #expect(model.cameraRect(for: model.clip(uid)!, atTimeline: 4) == nil)
+        model.undoManager?.undo()
+    }
+
+    @Test("a whole file becomes one main clip from its start to its end, packed after the track's clips")
+    func addWholeFile() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let model = BuilderTimelineModel()
+        model.load(profileName: "Files")
+        let scene = Fixtures.scene(id: 1, start: 0, end: 4)
+        model.updateScenes([scene])
+        model.addScene(scene)
+        let video = Fixtures.video()
+        model.addVideo(video)
+        let clips = model.document.videoTrack.sorted { $0.startTime < $1.startTime }
+        #expect(clips.count == 2)
+        let file = try #require(clips.last)
+        #expect(file.sceneID == nil && file.videoFile == video.path && file.wide == video.wide)
+        #expect(file.sourceStart == 0 && file.sourceEnd == 10 && file.duration == 10 && file.startTime == 4)
+        #expect(file.role == .main && !file.isCutaway)
+        #expect(model.selection == .clip(file.uid))
+        #expect(model.sourceURL(for: file) == video.url)
+        // Dropped at the pointer on a sequential track: inserted before the scene.
+        model.addVideo(video, at: model.dropInsertionTime(track: 0, at: 1), track: 0, snapped: false)
+        let order = model.document.videoTrack.sorted { $0.startTime < $1.startTime }
+        #expect(order.map(\.sceneID) == [nil, 1, nil] && order.map(\.startTime) == [0, 10, 14])
+        var empty = video; empty.duration = 0
+        model.addVideo(empty)
+        #expect(model.document.videoTrack.count == 3)
+    }
+
     @Test("a drop on a sequential track inserts at the pointer: before the clip whose middle is to the right")
     func dropInsertsAtPointer() throws {
         let scope = try DataFolderOverride()

@@ -4,6 +4,59 @@ import Testing
 
 @Suite("Multitrack renderer planning")
 struct MultitrackRendererPlanningTests {
+    @Test("a whole-file clip takes its video from the file's scenes and stitches their camera paths")
+    func wholeFileClipFraming() throws {
+        func path(_ frames: [(Double, Double)]) -> String {
+            let keyframes = frames.map { CameraPathKeyframe(t: $0.0, x: $0.1, y: 0, w: 0.5, h: 1) }
+            return String(decoding: try! JSONEncoder().encode(SceneCameraPath(camera: "balanced", keyframes: keyframes)), as: UTF8.self)
+        }
+        var first = Fixtures.scene(id: 1, start: 0, end: 4)
+        first.centerStagePathJSON = path([(0, 0.1), (4, 0.2)])
+        var second = Fixtures.scene(id: 2, start: 6, end: 10)
+        second.centerStagePathJSON = path([(0, 0.4), (4, 0.5)])
+        let untracked = Fixtures.scene(id: 3, start: 4, end: 6)
+        var clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 10)
+        clip.wide = true
+        clip.centerStage = true
+        let document = Fixtures.timelineDocument(clips: [clip])
+        let resolved = try #require(MultitrackRenderer.resolveClips(document: document, scenes: [second, untracked, first]).first)
+        #expect(resolved.videoID == 1 && resolved.sourcePath == "/tmp/fixture.mp4")
+        let frames = try #require(resolved.cameraPath)
+        #expect(frames.map(\.t) == [0, 4, 6, 10])
+        #expect(frames.map(\.x) == [0.1, 0.2, 0.4, 0.5])
+        // A sub-range keeps only what it covers, on its own clock.
+        let part = MultitrackRenderer.stitchedCameraPath(scenes: [first, second], from: 2, duration: 3)
+        #expect(part.first?.t == 0 && part.last?.t == 3 && part.count == 3)
+        #expect(abs((part.first?.x ?? 0) - 0.15) < 1e-9)
+        // No tracked scene in range, or the camera off: no path.
+        #expect(MultitrackRenderer.stitchedCameraPath(scenes: [first], from: 5, duration: 2).isEmpty)
+        clip.centerStage = false
+        let plain = try #require(MultitrackRenderer.resolveClips(document: Fixtures.timelineDocument(clips: [clip]), scenes: [first]).first)
+        #expect(plain.cameraPath == nil && plain.videoID == 1)
+    }
+
+    @Test("a clip's own camera path outranks its scene's and the file's, sliced to the clip's span")
+    func explicitCameraPathWins() throws {
+        var scene = Fixtures.scene(id: 1, start: 0, end: 10)
+        scene.centerStagePathJSON = String(decoding: try JSONEncoder().encode(SceneCameraPath(camera: "balanced",
+            keyframes: [CameraPathKeyframe(t: 0, x: 0.9, y: 0, w: 0.1, h: 1), CameraPathKeyframe(t: 10, x: 0.9, y: 0, w: 0.1, h: 1)])), as: UTF8.self)
+        var clip = Fixtures.timelineClip(sceneID: 1, sourceStart: 2, duration: 4)
+        clip.wide = true
+        clip.cameraPath = [CameraPathKeyframe(t: 0, x: 0.1, y: 0, w: 0.3, h: 1),
+                           CameraPathKeyframe(t: 8, x: 0.5, y: 0, w: 0.3, h: 1)]
+        let resolved = try #require(MultitrackRenderer.resolveClips(document: Fixtures.timelineDocument(clips: [clip]), scenes: [scene]).first)
+        let path = try #require(resolved.cameraPath)
+        #expect(resolved.centerStage)
+        #expect(path.first?.t == 0 && path.last?.t == 4)
+        #expect(abs((path.last?.x ?? 0) - 0.3) < 1e-9)
+        #expect(MultitrackRenderer.effectiveCameraPath(for: clip, scenes: [scene]) == path)
+        clip.cameraPath = nil
+        clip.centerStage = true
+        #expect(MultitrackRenderer.effectiveCameraPath(for: clip, scenes: [scene]).first?.x == 0.9)
+        clip.centerStage = false
+        #expect(MultitrackRenderer.effectiveCameraPath(for: clip, scenes: [scene]).isEmpty)
+    }
+
     @Test("original caption time survives crop splits and both framing passes", arguments: [0.5, 1.0, 2.0])
     func framedTranscriptTime(speed: Double) throws {
         let clip = Fixtures.timelineClip(sourceStart: 2, duration: 4, startTime: 10, speed: speed)

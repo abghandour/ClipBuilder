@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import Clip_Builder
 
@@ -656,6 +657,39 @@ extension WizardSheetModelTests {
 }
 
 extension WizardSheetModelTests {
+    @Test func findFollowedByAnEditGoesToTheEditAgent() async throws {
+        let temp = try TempDatabase()
+        let store = try await makeStore(temp)
+        store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)
+        let suite = "WizardFindTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var library = ScriptFixtures.library(); library.projectID = store.activeProjectID
+        let snapshot = library
+        let launches = Mutex(0)
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults),
+            loadLibrary: { snapshot }, agentExecutor: { _, launch, _, _ in
+                launches.withLock { $0 += 1 }
+                // The edit rules, never the read-only find rules.
+                #expect(launch.arguments.contains(BuilderAgentPrompt.rules))
+                #expect(!launch.arguments.contains(BuilderAgentPrompt.findRules))
+                return ProcessResult(stdout: Data(), stderr: Data(), exitCode: 0)
+            })
+        let request = "find scenes with anjo and add 1 sec clips to track 1"
+        model.provider = .local
+        model.request = request
+        await model.run()
+        #expect(model.phase == .unrecognised && launches.withLock { $0 } == 0)
+        #expect(model.reasons.contains { $0.contains("Choose Claude") })
+        model.provider = .claude
+        model.request = request
+        await model.run()
+        // The fake agent reports nothing, so the run ends refused; what
+        // matters is that it was launched with the edit rules, not as a find.
+        #expect(launches.withLock { $0 } == 1)
+        #expect(model.phase != .unrecognised && model.results.isEmpty)
+    }
+
     @Test func localAssistedFindExplainsUnresolvedWithoutAgent() async throws {
         let temp = try TempDatabase()
         let store = try await makeStore(temp)

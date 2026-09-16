@@ -52,6 +52,20 @@ struct BuilderAgentRunTests {
         #expect(try errorParser.feed(Data((#"{"type":"result","subtype":"error","is_error":true}"# + "\n").utf8)) == [.terminalError("Claude reported a terminal failure.")])
         var short = BuilderAgentParser(provider: .claude, maximumLineBytes: 4)
         #expect(throws: (any Error).self) { try short.feed(Data("12345".utf8)) }
+        // Claude echoes tool results as "user" turns; one carrying sampled
+        // frames is far past the line limit and is dropped, not fatal.
+        var echo = BuilderAgentParser(provider: .claude, maximumLineBytes: 96)
+        _ = try echo.feed(Data((#"{"type":"system","tools":["mcp__clipbuilder__query"]}"# + "\n").utf8))
+        let big = #"{"type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"image","data":""# + String(repeating: "A", count: 400) + #""}]}]}}"#
+        var echoed: [BuilderAgentMessage] = []
+        for byte in Data((big + "\n" + #"{"type":"result","subtype":"success","result":"ok"}"# + "\n").utf8) {
+            echoed += try echo.feed(Data([byte]))
+        }
+        #expect(echoed == [.final("ok")])
+        var bigAssistant = BuilderAgentParser(provider: .claude, maximumLineBytes: 96)
+        #expect(throws: (any Error).self) {
+            try bigAssistant.feed(Data((#"{"type":"assistant","message":{"content":[{"type":"text","text":""# + String(repeating: "B", count: 400) + #""}]}}"# + "\n").utf8))
+        }
         var invalid = BuilderAgentParser(provider: .claude)
         #expect(throws: (any Error).self) { try invalid.feed(Data([0xff, 0x0a])) }
         var unfinished = BuilderAgentParser(provider: .claude)
@@ -218,12 +232,16 @@ extension BuilderAgentRunTests {
         let old = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
         #expect(old.builderAgent == BuilderAgentLimits())
         let partial = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"builder_agent":{"toolCalls":4}}"#.utf8))
-        #expect(partial.builderAgent.toolCalls == 4 && partial.builderAgent.wallSeconds == 180)
+        #expect(partial.builderAgent.toolCalls == 4 && partial.builderAgent.wallSeconds == 600)
         var limits = BuilderAgentLimits()
         limits.toolCalls = Int.max; limits.affectedItems = Int.max; limits.wallSeconds = .infinity
         limits.argumentBytes = Int.max; limits.resultBytes = Int.max; limits.loggedBytes = Int.max; limits.outputBytes = Int.max
         let bounded = limits.bounded
-        #expect(bounded.toolCalls == 128 && bounded.affectedItems == 10_000 && bounded.wallSeconds == 180)
+        #expect(bounded.toolCalls == 128 && bounded.affectedItems == 10_000 && bounded.wallSeconds == 600)
+        // The old three-minute default reads as the new default; a chosen value stays.
+        #expect(try JSONDecoder().decode(BuilderAgentLimits.self, from: Data(#"{"wallSeconds":180}"#.utf8)).wallSeconds == 600)
+        #expect(try JSONDecoder().decode(BuilderAgentLimits.self, from: Data(#"{"wallSeconds":240}"#.utf8)).wallSeconds == 240)
+        #expect(try JSONDecoder().decode(BuilderAgentLimits.self, from: Data(#"{"wallSeconds":9000}"#.utf8)).wallSeconds == 1800)
         #expect(bounded.argumentBytes == 256 * 1024 && bounded.resultBytes == 1024 * 1024)
         #expect(bounded.loggedBytes == 1024 * 1024 && bounded.outputBytes == 16 * 1024 * 1024)
     }

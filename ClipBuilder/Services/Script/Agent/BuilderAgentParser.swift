@@ -14,6 +14,10 @@ nonisolated struct BuilderAgentParser: Sendable {
     let provider: BuilderAgentProvider
     var maximumLineBytes = 256 * 1024
     private var pending = Data()
+    /// An oversized line the parser never reads (Claude's echo of a tool
+    /// result, which carries every sampled frame) is being dropped up to
+    /// its newline.
+    private var discarding = false
     private var terminal = false
     private var providerText = ""
     private var sawClaudeTextDelta = false
@@ -28,18 +32,36 @@ nonisolated struct BuilderAgentParser: Sendable {
         // Bounded even when one chunk contains many lines or a huge partial line.
         for byte in chunk {
             if byte == 10 {
+                if discarding { discarding = false; continue }
                 if !pending.isEmpty { messages += try line(pending) }
                 pending.removeAll(keepingCapacity: true)
+            } else if discarding {
+                continue
             } else {
-                guard pending.count < maximumLineBytes else { throw ScriptError.invalid("Agent JSONL line exceeds limit.") }
+                if pending.count >= maximumLineBytes {
+                    // Tool results echoed back as "user" turns are not parsed;
+                    // one with image content can be megabytes. Drop it whole.
+                    guard Self.isIgnoredEcho(pending) else { throw ScriptError.invalid("Agent JSONL line exceeds limit.") }
+                    discarding = true
+                    pending.removeAll(keepingCapacity: true)
+                    continue
+                }
                 pending.append(byte)
             }
         }
         return messages
     }
 
+    /// Claude's stream-json echoes each tool result as {"type":"user",…}; the
+    /// parser ignores those lines, so their size need not be bounded.
+    private static func isIgnoredEcho(_ head: Data) -> Bool {
+        let prefix = String(decoding: head.prefix(64), as: UTF8.self)
+        return prefix.hasPrefix("{") && prefix.contains("\"type\":\"user\"")
+    }
+
     mutating func finish() throws -> [BuilderAgentMessage] {
         var messages: [BuilderAgentMessage] = []
+        if discarding { discarding = false; pending.removeAll() }
         if !pending.isEmpty { messages = try line(pending); pending.removeAll() }
         guard terminal else { throw ScriptError.invalid("Agent stream ended without a terminal result.") }
         return messages
@@ -145,8 +167,8 @@ nonisolated struct BuilderAgentParser: Sendable {
     }
     private static func allowedTool(_ name: String) -> Bool {
         // Every tool the endpoint can ever advertise, in edit, find or author mode.
-        ["ask_user", "query", "run_script", "get_document_summary", "report_scenes", "script_reference", "submit_script",
-         "ensure_transcript", "ensure_people", "ensure_analysis"]
+        ["ask_user", "query", "run_script", "get_document_summary", "sample_frames", "report_scenes", "script_reference",
+         "submit_script", "ensure_transcript", "ensure_people", "ensure_analysis"]
             .contains { name == "mcp__clipbuilder__" + $0 }
     }
 }

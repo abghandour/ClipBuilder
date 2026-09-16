@@ -131,7 +131,7 @@ final class ScriptRunner {
 
     private static func canBind(_ command: BuilderCommand) -> Bool {
         switch command {
-        case .splitClipEvenly, .splitClip, .duplicateClip, .addScene, .addCutaway, .addCropBlock,
+        case .splitClipEvenly, .splitClip, .duplicateClip, .addScene, .addVideo, .addCutaway, .addCropBlock,
              .addBumper, .addSound, .addText, .addImage, .addOverlay, .splitCropBlock, .splitZoomFeeds: true
         default: false
         }
@@ -283,6 +283,15 @@ final class ScriptRunner {
                 throw ScriptError.invalid("Scene has invalid source bounds after ordinary rounding.")
             }
             model.addScene(value, at: at, track: trackIndex)
+            target = try addedClip(); created["clip"] = target?.uuidString
+        case .addVideo(let id, let at, let trackIndex):
+            guard let video = library.videos.first(where: { $0.id == id }),
+                  video.duration.isFinite, video.duration > 0 else {
+                throw ScriptError.invalid("Video is unavailable or outside this project.")
+            }
+            let end = model.clips(inTrack: trackIndex).map { $0.startTime + $0.duration }.max() ?? 0
+            try placement(trackIndex, at ?? end)
+            model.addVideo(video, at: at, track: trackIndex)
             target = try addedClip(); created["clip"] = target?.uuidString
         case .addCutaway(let sceneID, let videoID, let at, let trackIndex, let duration, let sourceStart, let coverAll):
             try placement(trackIndex, at ?? model.playhead, coverAll: coverAll)

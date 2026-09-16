@@ -40,7 +40,7 @@ struct MCPServerTests {
             let initialized = try await client.connect(transport: transport)
             #expect(initialized.protocolVersion == "2025-06-18")
             let list = try await client.listTools()
-            #expect(Set(list.tools.map(\.name)) == ["ask_user", "query", "run_script", "get_document_summary"])
+            #expect(Set(list.tools.map(\.name)) == ["ask_user", "query", "run_script", "get_document_summary", "sample_frames"])
             for tool in list.tools {
                 #expect(tool.inputSchema.objectValue?["additionalProperties"] == .bool(false))
             }
@@ -276,11 +276,41 @@ extension MCPServerTests {
             let json = try #require(decoded as? [String: Any])
             let result = try #require(json["result"] as? [String: Any])
             let definitions = try #require(result["tools"] as? [[String: Any]])
-            #expect(definitions.compactMap { $0["name"] as? String } == ["ask_user", "query", "get_document_summary", "report_scenes"])
+            #expect(definitions.compactMap { $0["name"] as? String } == ["ask_user", "query", "get_document_summary", "sample_frames", "report_scenes"])
             let before = session.workingDocument
             let (refused, _) = try await post(server, #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"run_script","arguments":{"steps":[]}}}"#)
             #expect(String(decoding: refused, as: UTF8.self).contains("Unknown or unavailable tool"))
             #expect(session.workingDocument == before)
+            await server.shutdown()
+        } catch { await server.shutdown(); throw error }
+        session.discard()
+    }
+
+    @Test(.enabled(if: FixtureVideo.integrationsAvailable, "Install ffmpeg and ffprobe to run."))
+    func sampledFramesArriveAsImageContent() async throws {
+        let temp = try TempDirectory()
+        let source = try await FixtureVideo.make(in: temp.url, wide: true)
+        var library = ScriptFixtures.library()
+        library.videos[0].path = source.path
+        library.videos[0].duration = 3
+        let session = BuilderScriptSession(live: ScriptFixtures.model(), library: library)
+        let tools = BuilderTools(session: session, budget: BuilderRunBudget(.init()))
+        let server = BuilderMCPServer(tools: tools)
+        try await server.start()
+        do {
+            let (data, _) = try await post(server, #"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sample_frames","arguments":{"video":1,"times":[0.5,2],"size":240}}}"#)
+            let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let result = try #require(json["result"] as? [String: Any])
+            #expect(result["isError"] as? Bool != true)
+            let content = try #require(result["content"] as? [[String: Any]])
+            #expect(content.map { $0["type"] as? String } == ["text", "image", "image"])
+            let text = try #require(content.first?["text"] as? String)
+            // The model reads the detections as text and the frames as images; no base64 in the text.
+            #expect(text.contains("\"frames\"") && text.contains("\"images\":2") && !text.contains("/9j/"))
+            for image in content.dropFirst() {
+                #expect(image["mimeType"] as? String == "image/jpeg")
+                #expect(Data(base64Encoded: image["data"] as? String ?? "") != nil)
+            }
             await server.shutdown()
         } catch { await server.shutdown(); throw error }
         session.discard()

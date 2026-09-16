@@ -10,6 +10,11 @@ nonisolated struct ScriptLibrarySnapshot: Sendable {
     var people: [PersonRecord] = []
     var videoPeople: [Int64: [VideoPersonRanges]] = [:]
     var videosWithPeople: Set<Int64> = []
+    /// Podcast speaker turns per video, when the podcast pass ran.
+    var speakerTurns: [Int64: [SpeakerTurn]] = [:]
+    /// The People pass roster per video, with portrait boxes, for naming
+    /// what sample_frames sees.
+    var rosters: [Int64: [VideoPersonRecord]] = [:]
     var transcripts: [TranscriptRow] = []
     var features: [TranscriptFeatureSegment] = []
     var proposals: [EditProposal] = []
@@ -61,7 +66,8 @@ nonisolated struct ScriptLibrarySnapshot: Sendable {
         copy.scenes = try await database.fetchScenes(projectID: projectID)
         copy.people = try await database.fetchPeople()
         copy.transcripts = []; copy.features = []; copy.proposals = []
-        copy.videoPeople = [:]; copy.videosWithPeople = []; copy.prerequisiteOutcomes = [:]
+        copy.videoPeople = [:]; copy.videosWithPeople = []; copy.prerequisiteOutcomes = [:]; copy.speakerTurns = [:]
+        copy.rosters = [:]
         let started = ContinuousClock.now
         for video in copy.videos {
             try Task.checkCancellation()
@@ -73,7 +79,14 @@ nonisolated struct ScriptLibrarySnapshot: Sendable {
             copy.proposals += try await database.fetchEditProposals(videoID: video.id)
             let roster = try await database.fetchVideoPeopleRanges(videoID: video.id)
             copy.videoPeople[video.id] = roster
-            if !roster.isEmpty { copy.videosWithPeople.insert(video.id) }
+            if video.podcastLayout != nil {
+                let turns = try await database.fetchSpeakerTurns(videoID: video.id)
+                if !turns.isEmpty { copy.speakerTurns[video.id] = turns }
+            }
+            if !roster.isEmpty {
+                copy.videosWithPeople.insert(video.id)
+                copy.rosters[video.id] = try await database.fetchVideoPeople(videoID: video.id)
+            }
             for kind in BuilderPrerequisiteKind.allCases {
                 let signature = "v1:\(video.hash):\(kind == .transcript ? language : "")"
                 if let outcome = try await database.prerequisiteResult(kind: kind, video: video,

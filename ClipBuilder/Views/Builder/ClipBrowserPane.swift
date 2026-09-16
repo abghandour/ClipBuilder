@@ -147,19 +147,37 @@ struct ClipBrowserPane: View {
     }
 
     nonisolated static func restoredTab(_ value: String) -> String {
-        ["scenes", "wizard", "scripts"].contains(value) ? value : "scenes"
+        ["scenes", "files", "wizard", "scripts"].contains(value) ? value : "scenes"
+    }
+
+    @State private var fileSearch = ""
+    @State private var playingVideo: VideoRecord?
+
+    /// Whole source files the timeline can use: the project's analyzed
+    /// videos, so their scenes' framing can follow the camera. Analyzed
+    /// means what the Sources table's check mark means: an analysis batch
+    /// or scenes exist (a podcast pass stamps the speech date, not the
+    /// visual one).
+    private var analyzedVideos: [VideoRecord] {
+        let needle = fileSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let analyzed = Set(store.analysisRuns.map(\.videoID)).union(store.scenes.map(\.videoID))
+        return store.videos
+            .filter { analyzed.contains($0.id) && $0.duration > 0 }
+            .filter { needle.isEmpty || $0.filename.localizedCaseInsensitiveContains(needle) }
+            .sorted { $0.filename.localizedCaseInsensitiveCompare($1.filename) == .orderedAscending }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             Picker("Browser", selection: $selectedTab) {
                 Text("Scenes").tag("scenes")
+                Text("Files").tag("files")
                 Text("AI Wizard").tag("wizard")
                 Text("Scripts").tag("scripts")
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .help("Scenes to add, the AI Wizard, or your saved scripts")
+            .help("Scenes or whole files to add, the AI Wizard, or your saved scripts")
             .padding(Theme.spaceS)
             Divider()
             if selectedTab == "wizard" {
@@ -177,6 +195,8 @@ struct ClipBrowserPane: View {
                 } else {
                     Text("Open a timeline to use saved scripts.").foregroundStyle(.secondary)
                 }
+            } else if selectedTab == "files" {
+                filesContent
             } else {
                 scenesContent
             }
@@ -317,6 +337,53 @@ struct ClipBrowserPane: View {
         }
     }
 
+    /// Whole analyzed source files: drag one onto a track or press + to add
+    /// it at the playhead as one clip from start to end.
+    private var filesContent: some View {
+        VStack(spacing: 0) {
+            TextField("Search files", text: $fileSearch)
+                .textFieldStyle(.roundedBorder)
+                .padding(Theme.spaceM)
+            Divider()
+            let videos = analyzedVideos
+            if videos.isEmpty {
+                ContentUnavailableView("No Analyzed Files", systemImage: "film.stack",
+                                       description: Text(fileSearch.isEmpty
+                                           ? "Analyze source videos, then drag a whole file onto the timeline."
+                                           : "No analyzed file matches the search."))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8, alignment: .top)],
+                              spacing: 8) {
+                        ForEach(videos) { video in
+                            BrowserFileCard(video: video,
+                                            sceneCount: store.scenes.filter { $0.videoID == video.id && !$0.excluded }.count,
+                                            onAdd: { store.builder.addVideo(video, at: store.builder.playhead) },
+                                            onPlay: { playingVideo = video })
+                                .safeAreaInset(edge: .bottom) {
+                                    if video.driveFileID != nil {
+                                        DriveMediaMenu(media: [video.driveMedia], compact: true).font(.caption)
+                                    }
+                                }
+                        }
+                    }
+                    .padding(Theme.spaceM)
+                }
+            }
+        }
+        .sheet(item: $playingVideo) { video in
+            PlayerSheet(url: video.url, title: video.filename, startTime: 0, endTime: video.duration,
+                        onMarkAsBRoll: { start, end in
+                            let model = store.builder
+                            let outcome = model.addCutaway(source: .file(url: video.url, duration: video.duration),
+                                                           at: model.playhead, track: model.focusedTrack ?? 0,
+                                                           duration: end - start, sourceStart: start)
+                            return outcome.message(at: model.playhead)
+                        })
+        }
+    }
+
     private func clearFilters() {
         tagFilter = nil
         favoritesOnly = false
@@ -367,6 +434,83 @@ struct SceneDragPreview: View {
         .opacity(0.85)
         .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
         .accessibilityLabel("Dragging \(scene.duration.timecode) scene")
+    }
+}
+
+/// The ghost that follows the pointer while a whole file is dragged.
+struct FileDragPreview: View {
+    let video: VideoRecord
+
+    var body: some View {
+        ZStack {
+            if let frame = VideoThumbnail.cachedFrame(url: video.url, time: video.duration / 2) {
+                Image(nsImage: frame).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Rectangle().fill(.quaternary)
+                Image(systemName: "film").font(.title).foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 144, height: 81)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(alignment: .bottomLeading) { DurationBadge(seconds: video.duration).padding(4) }
+        .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 2) }
+        .opacity(0.85)
+        .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+        .accessibilityLabel("Dragging \(video.filename)")
+    }
+}
+
+/// A whole analyzed source file. The drag payload is "file:<id>"; the
+/// timeline adds the file from start to end as one main clip.
+struct BrowserFileCard: View {
+    let video: VideoRecord
+    let sceneCount: Int
+    let onAdd: () -> Void
+    let onPlay: () -> Void
+
+    private var detail: String {
+        var parts = [video.duration.timecode]
+        if let type = video.type { parts.append(type.label) }
+        parts.append(sceneCount == 1 ? "1 scene" : "\(sceneCount) scenes")
+        return parts.joined(separator: " · ")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceXS) {
+            VideoThumbnail(url: video.url, time: video.duration / 2)
+                .aspectRatio(16 / 9, contentMode: .fit)
+                .overlay {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .draggable(TimelineDropPayload.file(video.id)) { FileDragPreview(video: video) }
+                        .simultaneousGesture(TapGesture(count: 2).onEnded { onPlay() })
+                        .padding(.vertical, 18)
+                }
+                .overlay(alignment: .bottomLeading) {
+                    DurationBadge(seconds: video.duration)
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    Button("Add to timeline", systemImage: "plus.circle.fill", action: onAdd)
+                        .font(.system(size: 16))
+                        .foregroundStyle(.white, Color.accentColor)
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.plain)
+                        .help("Add the whole file to the timeline at the playhead")
+                        .padding(Theme.spaceXS)
+                }
+            Text(video.filename)
+                .font(.caption)
+                .lineLimit(1)
+            Text(detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .help(video.filename)
+        .contextMenu {
+            Button("Add to Timeline") { onAdd() }
+            Button("Play") { onPlay() }
+        }
     }
 }
 

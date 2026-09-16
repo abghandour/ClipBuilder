@@ -238,6 +238,23 @@ extension ScriptRunner {
                 throw BuilderCommandFailure.invalid("Tracking requires a wide main clip in Full Screen.")
             }
             if item.centerStage != enabled { model.updateClip(item.uid) { $0.centerStage = enabled } }
+        case .setClipCameraPath(let reference, let keyframes):
+            let item = try clip(reference)
+            let path: [CameraPathKeyframe]? = keyframes.isEmpty ? nil : keyframes
+            guard path == nil || (!item.bumper && !item.isCutaway && item.wide
+                && model.area(forTrack: item.track, at: item.startTime) == nil
+                && !model.document.isOrphaned(item)) else {
+                throw BuilderCommandFailure.invalid("A camera path requires a wide main clip in Full Screen.")
+            }
+            if let path, let last = path.last, last.t > item.sourceSpan + 0.5 {
+                throw BuilderCommandFailure.bounds("Camera keyframes run past the clip's source span (\(item.sourceSpan) s).")
+            }
+            guard item.cameraPath != path || (path != nil && !item.centerStage) else { return }
+            model.updateClip(item.uid) {
+                $0.cameraPath = path
+                $0.cameraPathSource = path == nil ? nil : "wizard"
+                if path != nil { $0.centerStage = true }
+            }
         case .setClipAreaWindow(let reference, let x, let y, let width, let height):
             let item = try clip(reference)
             guard !item.bumper, !item.coverAllAreas,

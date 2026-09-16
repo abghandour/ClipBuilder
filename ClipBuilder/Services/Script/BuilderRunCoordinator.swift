@@ -173,8 +173,19 @@ final class BuilderRunCoordinator {
         }
         // Sanitize string values before encoding so redaction cannot corrupt
         // JSON syntax. Record the actual encoded size and any encoding refusal.
+        // Frames a tool returns travel as image content, not as text.
+        var images: [Tool.Content] = []
         do {
-            let value = try JSONDecoder().decode(Value.self, from: data)
+            var value = try JSONDecoder().decode(Value.self, from: data)
+            if outcome == .completed, case .object(var fields) = value, case .array(let items)? = fields["images"] {
+                for item in items {
+                    guard let object = item.objectValue, let mimeType = object["mimeType"]?.stringValue,
+                          let encoded = object["data"]?.stringValue else { continue }
+                    images.append(.image(data: encoded, mimeType: mimeType, annotations: nil, _meta: nil))
+                }
+                fields["images"] = .int(images.count)
+                value = .object(fields)
+            }
             let safe = try JSONEncoder().encode(sanitize(value))
             guard safe.count <= tools.budget.limits.resultBytes else { throw ScriptError.invalid("Result payload limit.") }
             data = safe
@@ -198,7 +209,7 @@ final class BuilderRunCoordinator {
             terminate("Agent log budget exhausted.")
             return refusal("Agent log budget exhausted.")
         }
-        return .init(content: [.text(text: text, annotations: nil, _meta: nil)], isError: outcome != .completed)
+        return .init(content: [.text(text: text, annotations: nil, _meta: nil)] + images, isError: outcome != .completed)
     }
 
     private func sanitize(_ value: Value) -> Value {

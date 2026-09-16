@@ -204,10 +204,11 @@ struct BRollBuilderTests {
     func dropPayloadParsing() {
         #expect(TimelineDropPayload.scene(7) == "scene:7")
         #expect(TimelineDropPayload.scene(7, cutaway: true) == "scene:7:cutaway")
-        let plain = TimelineDropPayload.parse("scene:7")
-        #expect(plain?.sceneID == 7 && plain?.cutaway == false)
-        let broll = TimelineDropPayload.parse("scene:7:cutaway")
-        #expect(broll?.sceneID == 7 && broll?.cutaway == true)
+        #expect(TimelineDropPayload.parse("scene:7") == .scene(id: 7, cutaway: false))
+        #expect(TimelineDropPayload.parse("scene:7:cutaway") == .scene(id: 7, cutaway: true))
+        #expect(TimelineDropPayload.file(3) == "file:3")
+        #expect(TimelineDropPayload.parse("file:3") == .file(id: 3))
+        #expect(TimelineDropPayload.parse("file:3:cutaway") == nil)
         #expect(TimelineDropPayload.parse("image:7") == nil)
         #expect(TimelineDropPayload.parse("scene:not-a-number") == nil)
     }

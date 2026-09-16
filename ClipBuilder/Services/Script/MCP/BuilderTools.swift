@@ -37,10 +37,20 @@ final class BuilderTools {
                     "items": Self.object(["command": Self.commandSchema, "bind": .object(["type": .string("string"), "maxLength": .int(64)])], required: ["command"])
                  ])], required: ["steps"])),
             Tool(name: "get_document_summary", description: "Compact paginated rows of the working timeline, selection (kind/id or null), playhead, focusedTrack and trackLabels (index/label). Track I is index 0; clip row IDs are UUIDs. No paths or settings.",
-                 inputSchema: Self.object(["offset": Self.integer, "limit": .object(["type": .string("integer"), "minimum": .int(1), "maximum": .int(200)])]))
+                 inputSchema: Self.object(["offset": Self.integer, "limit": .object(["type": .string("integer"), "minimum": .int(1), "maximum": .int(200)])])),
+            Tool(name: "sample_frames", description: "Look at a project video: JPEG frames at the given source times (1–12), each with the people and faces detected in the full frame as fractions of the frame (top-left origin, person key when known) and the grid tile under the largest face. crop {x,y,w,h} (fractions of the frame) returns only that part, e.g. a planned camera rectangle, to check what it shows. size is the longest edge in pixels (160–1024, default 512).",
+                 inputSchema: Self.object([
+                    "video": Self.integer,
+                    "times": .object(["type": .string("array"), "minItems": .int(1), "maxItems": .int(FrameSampler.maximumTimes),
+                                      "items": .object(["type": .string("number"), "minimum": .int(0), "maximum": .int(86400)])]),
+                    "crop": Self.object(["x": Self.fraction, "y": Self.fraction, "w": Self.fraction, "h": Self.fraction],
+                                        required: ["x", "y", "w", "h"]),
+                    "size": .object(["type": .string("integer"), "minimum": .int(FrameSampler.sizeRange.lowerBound),
+                                     "maximum": .int(FrameSampler.sizeRange.upperBound)])
+                 ], required: ["video", "times"]))
         ]
         if mode == .author {
-            tools.removeAll { $0.name == "run_script" }
+            tools.removeAll { $0.name == "run_script" || $0.name == "sample_frames" }
             tools.append(Tool(name: "script_reference", description: "Generated JavaScript API, command and query reference. Read before writing a script.",
                 inputSchema: Self.object([:])))
             tools.append(Tool(name: "submit_script", description: "Validate source and sampleParams in isolation. At most three submissions. Accepted source goes to the user’s editor for explicit Save or Run; requirements receive only partial validation.",
@@ -145,6 +155,21 @@ final class BuilderTools {
             let report = try JSONDecoder().decode(BuilderSceneReport.self, from: bytes)
             try session.reportScenes(report)
             return try encode(report)
+        case "sample_frames":
+            try enforceBudget { try budget.admit(arguments: bytes.count, affected: 0) }
+            guard Set(arguments.keys).isSubset(of: ["video", "times", "crop", "size"]) else {
+                throw ScriptError.invalid("sample_frames accepts video, times, crop and size.")
+            }
+            let request = try JSONDecoder().decode(FrameSampler.Request.self, from: bytes)
+            guard let video = session.library.videos.first(where: { $0.id == request.video }) else {
+                throw ScriptError.invalid("Video is unavailable or outside this project.")
+            }
+            try FrameSampler.validate(request, duration: video.duration)
+            budget.scriptClock?.pause()
+            defer { budget.scriptClock?.resume() }
+            let result = try await FrameSampler.sample(request, video: video,
+                                                       roster: session.library.rosters[video.id] ?? [])
+            return try encode(result)
         case "query":
             try enforceBudget { try budget.admit(arguments: bytes.count, affected: 0) }
             guard arguments.count == 1, let value = arguments["query"] else { throw ScriptError.invalid("Expected query.") }
@@ -215,7 +240,7 @@ final class BuilderTools {
 
     static func isReadOnly(_ name: String) -> Bool {
         name == "ask_user" || name == "query" || name == "get_document_summary" || name == "report_scenes"
-            || name == "script_reference" || name == "submit_script"
+            || name == "script_reference" || name == "submit_script" || name == "sample_frames"
     }
 
     /// Budget checks throw BuilderBudgetExceeded; the endpoint ends the run on
@@ -250,6 +275,7 @@ final class BuilderTools {
     }
 
     private static var integer: Value { BuilderCommandCatalog.integer }
+    private static let fraction: Value = .object(["type": .string("number"), "minimum": .int(0), "maximum": .int(1)])
     private static var querySchema: Value { BuilderCommandCatalog.querySchema }
     private static var commandSchema: Value { BuilderCommandCatalog.commandSchema }
     private static func object(_ properties: [String: Value], required: [String] = []) -> Value {

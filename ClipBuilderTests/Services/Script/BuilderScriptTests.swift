@@ -14,6 +14,10 @@ struct BuilderScriptTests {
             .trimClip(clip: id, duration: 2.345, precision: .speech),
             .setSourceRange(clip: id, start: 1, end: 3, precision: .ordinary),
             .placeClip(clip: id, start: 2, track: 0), .addScene(scene: 1, at: 2, track: 0),
+            .addVideo(video: 1, at: 2, track: 0), .addVideo(video: 1, track: 0),
+            .setClipCameraPath(clip: id, keyframes: [CameraPathKeyframe(t: 0, x: 0.1, y: 0, w: 0.3, h: 1),
+                                                     CameraPathKeyframe(t: 2.5, x: 0.6, y: 0, w: 0.3, h: 1)]),
+            .setClipCameraPath(clip: id, keyframes: []),
             .addCutaway(scene: 1, at: 2, track: 0, duration: 1, sourceStart: 3, coverAll: true),
             .addCutaway(video: 1, track: 0, coverAll: false),
             .setClipRole(clip: id, role: .cutaway), .setCutawayAudio(clip: id, audio: .mixed),
@@ -79,6 +83,100 @@ struct BuilderScriptTests {
         #expect(tail.role == .cutaway && tail.cutawayAudio == .mixed && !tail.muted)
         #expect(tail.originKey == source.originKey)
         #expect(!document.trackSequential[0])
+    }
+
+    @Test("add_video adds the whole file as a main clip, binds it, and the videos query describes files")
+    func addVideoAndVideosQuery() throws {
+        let session = ScriptFixtures.session()
+        let result = session.run([.init(.addVideo(video: 1, track: 0), bind: "file")])
+        #expect(result.completed)
+        let document = try #require(session.candidate)
+        let file = try #require(document.videoTrack.first { $0.sceneID == nil && !$0.isCutaway })
+        #expect(file.videoFile == "/tmp/fixture.mp4" && file.sourceStart == 0 && file.sourceEnd == 10
+                && file.duration == 10 && file.startTime == 4 && file.wide)
+        #expect(result.outcomes.first?.createdIDs["clip"] == file.uid.uuidString)
+        // The binding resolves in a later command of the same session.
+        let follow = session.run([.init(.setClipCenterStage(clip: "$file", enabled: true))])
+        #expect(follow.completed && session.candidate?.videoTrack.first { $0.uid == file.uid }?.centerStage == true)
+        let decoded = try JSONDecoder().decode([BuilderScriptStep].self,
+            from: Data(#"[{"command":{"op":"add_video","video":1,"track":0,"at":2}}]"#.utf8))
+        #expect(decoded == [.init(.addVideo(video: 1, at: 2, track: 0))])
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode([BuilderScriptStep].self,
+                from: Data(#"[{"command":{"op":"add_video","video":1,"track":0,"duration":3}}]"#.utf8))
+        }
+        var library = ScriptFixtures.library()
+        // A podcast pass stamps analyzedAt and the speech date, never the visual one.
+        library.videos[0].analyzedAt = "2026-09-15"
+        library.videos[0].speechAnalyzedAt = "2026-09-15"
+        library.videos[0].videoType = "podcast"
+        library.videoPeople = [1: [VideoPersonRanges(key: "b", name: "Bob", ranges: []),
+                                   VideoPersonRanges(key: "a", name: "Alice", ranges: [])]]
+        let resolve: (String) throws -> UUID = { _ in throw ScriptError.invalid("unused") }
+        let videos = try BuilderQuery(.videos).execute(model: ScriptFixtures.model(), library: library, resolve: resolve)
+        #expect(videos.videos == [VideoQueryRow(id: 1, filename: "fixture.mp4", duration: 10, width: 1920, height: 1080,
+                                                wide: true, type: "podcast", analyzed: true, scenes: 1, people: ["a", "b"])])
+        #expect(videos.total == 1 && videos.nextOffset == nil)
+        var filtered = BuilderQuery(.videos); filtered.filter = ClipFilter()
+        #expect(throws: (any Error).self) { try filtered.execute(model: ScriptFixtures.model(), library: library, resolve: resolve) }
+    }
+
+    @Test("a scripted camera path sets, reads back through the camera query, clears, and refuses bad paths")
+    func cameraPathScripting() throws {
+        var source = Fixtures.timelineClip()
+        source.wide = true
+        let id = source.uid.uuidString
+        let session = ScriptFixtures.session(clips: [source])
+        let frames = [CameraPathKeyframe(t: 0, x: 0.1, y: 0, w: 0.3, h: 1),
+                      CameraPathKeyframe(t: 3, x: 0.6, y: 0, w: 0.3, h: 1)]
+        let set = session.run([.init(.setClipCameraPath(clip: id, keyframes: frames))])
+        #expect(set.completed)
+        let clip = try #require(session.candidate?.videoTrack.first { $0.uid == source.uid })
+        #expect(clip.cameraPath == frames && clip.centerStage && clip.framing == .custom && clip.cameraPathSource == "wizard")
+        // The document keeps it across a save/load round trip.
+        let encoded = try JSONEncoder().encode(clip)
+        let decoded = try JSONDecoder().decode(TimelineClip.self, from: encoded)
+        #expect(decoded.cameraPath == frames && decoded.cameraPathSource == "wizard")
+        // The camera query reports the clip's own path on its own clock.
+        var query = BuilderQuery(.camera); query.clip = id
+        let model = ScriptFixtures.model(clips: [clip])
+        let camera = try query.execute(model: model, library: ScriptFixtures.library(), resolve: { UUID(uuidString: $0)! })
+        // Sliced to the clip's 4 s span: the path holds its last rectangle past 3 s.
+        #expect(camera.cameraSource == "clip" && camera.camera.first?.x == 0.1 && camera.camera.last?.t == 4)
+        #expect(camera.camera.last?.x == 0.6 && camera.camera.contains { $0.t == 3 })
+        let cleared = session.run([.init(.setClipCameraPath(clip: id, keyframes: []))])
+        #expect(cleared.completed)
+        #expect(session.candidate?.videoTrack.first { $0.uid == source.uid }?.cameraPath == nil)
+        for bad in [[CameraPathKeyframe(t: 0, x: 0, y: 0, w: 0.3, h: 1)],
+                    [CameraPathKeyframe(t: 1, x: 0, y: 0, w: 0.3, h: 1), CameraPathKeyframe(t: 1, x: 0, y: 0, w: 0.3, h: 1)],
+                    [CameraPathKeyframe(t: 0, x: 0.9, y: 0, w: 0.3, h: 1), CameraPathKeyframe(t: 1, x: 0, y: 0, w: 0.3, h: 1)],
+                    [CameraPathKeyframe(t: 0, x: 0, y: 0, w: 0.3, h: 1), CameraPathKeyframe(t: 30, x: 0, y: 0, w: 0.3, h: 1)]] {
+            let refused = ScriptFixtures.session(clips: [source]).run([.init(.setClipCameraPath(clip: id, keyframes: bad))])
+            #expect(!refused.completed, "\(bad)")
+        }
+        // Not wide: refused.
+        let narrow = ScriptFixtures.session().run([.init(.setClipCameraPath(clip: Fixtures.timelineClip().uid.uuidString, keyframes: frames))])
+        #expect(!narrow.completed)
+    }
+
+    @Test("the speakers query reports podcast turns with their tiles and the layout")
+    func speakersQuery() throws {
+        var library = ScriptFixtures.library()
+        library.videos[0].podcastLayout = "grid"
+        library.videos[0].podcastTilesJSON = #"[{"index":0,"x":0,"y":0,"w":0.5,"h":1,"personKey":"host"},{"index":1,"x":0.5,"y":0,"w":0.5,"h":1}]"#
+        library.speakerTurns = [1: [SpeakerTurn(videoID: 1, start: 0, end: 2, cluster: 0, confidence: 0.9, resolvedSide: .left, personKey: "host", tile: 0),
+                                    SpeakerTurn(videoID: 1, start: 2, end: 5, cluster: 1, confidence: 0.8, resolvedSide: .right, tile: 1)]]
+        var query = BuilderQuery(.speakers); query.video = 1
+        let resolve: (String) throws -> UUID = { _ in throw ScriptError.invalid("unused") }
+        let result = try query.execute(model: ScriptFixtures.model(), library: library, resolve: resolve)
+        #expect(result.speakers == [SpeakerQueryRow(start: 0, end: 2, person: "host", side: "left", tile: 0, confidence: 0.9),
+                                    SpeakerQueryRow(start: 2, end: 5, person: nil, side: "right", tile: 1, confidence: 0.8)])
+        #expect(result.podcast?.layout == "grid" && result.podcast?.tiles.count == 2 && result.podcast?.tiles[0].personKey == "host")
+        #expect(result.total == 2)
+        #expect(throws: (any Error).self) { try BuilderQuery(.speakers).execute(model: ScriptFixtures.model(), library: library, resolve: resolve) }
+        let decoded = try JSONDecoder().decode(BuilderQuery.self, from: Data(#"{"kind":"speakers","video":1}"#.utf8))
+        #expect(decoded == query)
+        #expect(throws: (any Error).self) { try JSONDecoder().decode(BuilderQuery.self, from: Data(#"{"kind":"speakers","clip":"x"}"#.utf8)) }
     }
 
     @Test("All additions use their documented defaults and return actual values")
@@ -157,6 +255,7 @@ struct BuilderScriptTests {
         let commands: [BuilderCommand] = [
             .removeClip(clip: UUID().uuidString), .placeClip(clip: id, start: 0, track: -1),
             .setTrackSequential(track: 6, sequential: false), .addScene(scene: 999, track: 0),
+            .addVideo(video: 999, track: 0), .addVideo(video: 1, track: 1),
             .addScene(scene: 1, track: 1), .addImage(image: "/tmp/arbitrary.png", length: 2),
             .addSound(sound: "unknown", duration: 3), .addBumper(bumper: "unknown", mode: .pause),
             .setCutawayAudio(clip: id, audio: .mixed), .setSourceRange(clip: id, start: 8, end: 11),

@@ -49,6 +49,13 @@ enum LegacyBuilderSchema {
             case .effects: description = "Effect presets, parameter ranges and local ffmpeg availability; pagination only."
             case .layouts: description = "Available crop layouts; pagination only."
             case .capabilities: description = "Captured prerequisite availability by video; pagination only."
+            case .videos: description = "Project source files as wholes: id, filename, duration, size, type, analysis state, scene count and roster keys; pagination only. Use with add_video."
+            case .speakers:
+                fields["video"] = integer
+                description = "Who speaks when in a project video (podcast analysis): turns with start, end, person key, side, tile and confidence, plus the layout and its tiles (cells with the person in each). video is required."
+            case .camera:
+                fields["clip"] = string
+                description = "The camera path a wide clip renders with: crop rectangles (fractions of the source frame) at seconds from the clip's source start, from its own path, its scene, or the file's analyzed scenes. clip is required."
             }
             guard case .object(var schema) = object(fields, required: ["kind"]) else { preconditionFailure() }
             schema["description"] = .string(description)
@@ -138,6 +145,7 @@ enum LegacyBuilderSchema {
             ("set_clip_captions", ["clip", "captions"], ["clip", "captions"]),
             ("set_clip_transitions", ["clip", "trans_in", "trans_out"], ["clip", "trans_in", "trans_out"]),
             ("set_clip_center_stage", ["clip", "enabled"], ["clip", "enabled"]),
+            ("set_clip_camera_path", ["clip", "keyframes"], ["clip", "keyframes"]),
             ("set_clip_area_window", ["clip", "x", "y", "width", "height"], ["clip", "x", "y", "width", "height"]),
             ("set_track_effect", ["track", "effect"], ["track", "effect"]),
             ("set_clip_effect", ["clip", "effect"], ["clip", "effect"]),
@@ -155,6 +163,7 @@ enum LegacyBuilderSchema {
             ("set_source_range", ["clip", "start", "end", "precision"], ["clip", "start", "end"]),
             ("place_clip", ["clip", "start", "track"], ["clip", "start", "track"]),
             ("add_scene", ["scene", "at", "track"], ["scene", "track"]),
+            ("add_video", ["video", "at", "track"], ["video", "track"]),
             ("add_cutaway", ["scene", "video", "at", "track", "duration", "source_start", "cover_all"], ["track", "cover_all"]),
             ("set_clip_role", ["clip", "role"], ["clip", "role"]),
             ("set_cutaway_audio", ["clip", "audio"], ["clip", "audio"]),
@@ -201,6 +210,14 @@ enum LegacyBuilderSchema {
             if op == "set_clip_area_window" {
                 for key in ["x", "y", "width", "height"] { properties[key] = bounded(0, 1) }
             }
+            if op == "set_clip_camera_path" {
+                properties["keyframes"] = .object([
+                    "type": .string("array"), "maxItems": .int(2000),
+                    "items": object(["t": bounded(0, 86400), "x": bounded(0, 1), "y": bounded(0, 1),
+                                     "w": bounded(0.05, 1), "h": bounded(0.05, 1)],
+                                    required: ["t", "x", "y", "w", "h"])
+                ])
+            }
             if op == "set_sound_range" || op == "set_overlay_range" {
                 properties["duration"] = bounded(0.5, 86400)
             }
@@ -223,6 +240,8 @@ enum LegacyBuilderSchema {
                 "set_overlay_transitions": "Text/image transitions only; overlay blocks retain their composition transitions.",
                 "set_clip_area_window": "Requires a crop area and captured source dimensions; preserve the current window aspect ratio (or the default area aspect). Width must be at least 0.1.",
                 "set_clip_fades": "B-roll only; each fade is at most half the clip duration.",
+                "set_clip_camera_path": "Wide main clip in Full Screen only. Keyframes are crop rectangles as fractions of the source frame (top-left origin) at t seconds from the clip's source start, strictly increasing, 2 to 2000, each at least 0.05 wide and high; the crop glides between keyframes and holds after the last; for a hard cut, repeat the previous rectangle at t − 0.01 right before the new one. Keep every rectangle at the canvas aspect (9:16 on a portrait canvas: w = h × (9/16) ÷ source aspect). An empty list clears the path; a set path turns the camera on. Verify with sample_frames using the same rectangles.",
+                "add_video": "The whole source file (source 0 to its duration) as a main clip; video from query kind videos. Trim with set_source_range or split_clip. On the new clip, set_clip_center_stage follows the file's analyzed framing (its scenes' camera paths; the active speaker for podcasts); a wide clip on a 9:16 canvas is otherwise cropped statically with set_clip_crop.",
                 "set_clip_speed": "Preserves source start and rounds screen duration to 0.1 seconds like the inspector. Refuses source overflow."
             ]
             if let description = limitations[op], case .object(var fields) = schema {

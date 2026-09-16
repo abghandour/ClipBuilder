@@ -1,17 +1,31 @@
+import CoreGraphics
 import Foundation
 import Observation
 
-/// What the clip browser puts on the pasteboard when a scene is dragged
-/// onto a lane. Option-drag asks for B-roll instead of a main clip.
+/// What the clip browser puts on the pasteboard when a scene or a whole
+/// source file is dragged onto a lane. Option-drag asks for B-roll instead
+/// of a main clip.
 nonisolated enum TimelineDropPayload {
+    enum Parsed: Equatable, Sendable {
+        case scene(id: Int64, cutaway: Bool)
+        /// A whole source video (its full duration) as a main clip.
+        case file(id: Int64)
+    }
+
     static func scene(_ id: Int64, cutaway: Bool = false) -> String {
         cutaway ? "scene:\(id):cutaway" : "scene:\(id)"
     }
 
-    static func parse(_ payload: String) -> (sceneID: Int64, cutaway: Bool)? {
+    static func file(_ id: Int64) -> String { "file:\(id)" }
+
+    static func parse(_ payload: String) -> Parsed? {
         let parts = payload.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count >= 2, parts[0] == "scene", let id = Int64(parts[1]) else { return nil }
-        return (id, parts.count > 2 && parts[2] == "cutaway")
+        guard parts.count >= 2, let id = Int64(parts[1]) else { return nil }
+        switch parts[0] {
+        case "scene": return .scene(id: id, cutaway: parts.count > 2 && parts[2] == "cutaway")
+        case "file": return parts.count == 2 ? .file(id: id) : nil
+        default: return nil
+        }
     }
 }
 
@@ -522,7 +536,16 @@ final class BuilderTimelineModel {
     func setRenderSettings(_ settings: RenderSettings) {
         guard document.renderSettings != settings else { return }
         registerUndo("Change Output Format", coalescing: "output-format")
+        let previousAspect = document.renderSettings.aspectRatio
         document.renderSettings = settings
+        // Custom camera paths keep their heights and centers on the new canvas.
+        if abs(settings.aspectRatio - previousAspect) > 1e-6 {
+            for index in document.videoTrack.indices {
+                let clip = document.videoTrack[index]
+                guard let path = clip.cameraPath, clip.wide else { continue }
+                document.videoTrack[index].cameraPath = CameraKeyframes.rescaled(path, to: cropRatio(for: clip))
+            }
+        }
         documentDidChange()
     }
 
@@ -538,7 +561,105 @@ final class BuilderTimelineModel {
     func updateScenes(_ scenes: [SceneRecord]) {
         self.scenes = scenes
         scenesByID = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
+        sourceSizeByPath = [:]
+        for scene in scenes where scene.videoWidth > 0 && scene.videoHeight > 0 {
+            sourceSizeByPath[scene.videoPath] = CGSize(width: scene.videoWidth, height: scene.videoHeight)
+        }
+        cameraPathMemo.removeAll()
         hydrateClips()
+    }
+
+    // MARK: - Camera paths
+
+    /// Source frame sizes by path, from the analyzed scenes.
+    private var sourceSizeByPath: [String: CGSize] = [:]
+    private var cameraPathMemo: [UUID: (key: String, path: [CameraPathKeyframe])] = [:]
+
+    /// Width ÷ height of a clip's source frame, when the Library knows it.
+    func sourceAspect(for clip: TimelineClip) -> Double? {
+        if let scene = scene(for: clip), scene.videoWidth > 0, scene.videoHeight > 0 {
+            return Double(scene.videoWidth) / Double(scene.videoHeight)
+        }
+        guard let file = clip.videoFile, let size = sourceSizeByPath[file], size.height > 0 else { return nil }
+        return Double(size.width) / Double(size.height)
+    }
+
+    /// A crop's width per unit height, in frame fractions, for the canvas.
+    func cropRatio(for clip: TimelineClip) -> Double {
+        let canvas = document.renderSettings.aspectRatio
+        return canvas / (sourceAspect(for: clip) ?? 16.0 / 9.0)
+    }
+
+    /// The path a clip renders with, on its own clock (seconds from its
+    /// source start); memoized per clip until its framing or the scenes change.
+    func effectiveCameraPath(for clip: TimelineClip) -> [CameraPathKeyframe] {
+        let key = "\(clip.sourceStart ?? -1)|\(clip.duration)|\(clip.effectiveSpeed)|\(clip.centerStage)|\(clip.cameraPath?.hashValue ?? 0)|\(clip.sceneID ?? -1)|\(clip.videoFile ?? "")|\(clip.wide)|\(clip.role)"
+        if let memo = cameraPathMemo[clip.uid], memo.key == key { return memo.path }
+        let path = MultitrackRenderer.effectiveCameraPath(for: clip, scenes: scenes)
+        cameraPathMemo[clip.uid] = (key, path)
+        return path
+    }
+
+    /// The crop the render shows at a timeline instant inside the clip.
+    func cameraRect(for clip: TimelineClip, atTimeline time: Double) -> CameraPathKeyframe? {
+        let path = effectiveCameraPath(for: clip)
+        guard path.count >= 2 else { return nil }
+        return CameraKeyframes.rect(path, at: CameraKeyframes.sourceOffset(atTimeline: time, clip: clip))
+    }
+
+    /// Static, tracking or custom framing for a wide main clip. Custom starts
+    /// from the path the clip renders with now, or a centered crop.
+    func setFraming(_ uid: UUID, _ framing: TimelineClip.Framing) {
+        guard let clip = clip(uid), clip.framing != framing, clip.wide, !clip.isCutaway, !clip.bumper else { return }
+        let seed = framing == .custom ? (effectiveCameraPath(for: clip).count >= 2
+            ? effectiveCameraPath(for: clip)
+            : CameraKeyframes.seed(span: clip.sourceSpan, ratio: cropRatio(for: clip))) : nil
+        registerUndo("Change Framing")
+        updateClip(uid) {
+            switch framing {
+            case .fixed:
+                $0.centerStage = false; $0.cameraPath = nil; $0.cameraPathSource = nil
+                if $0.cropXFrac == nil { $0.cropXFrac = 0.5 }
+            case .tracking:
+                $0.centerStage = true; $0.cameraPath = nil; $0.cameraPathSource = nil
+            case .custom:
+                $0.centerStage = true; $0.cameraPath = seed; $0.cameraPathSource = nil
+            }
+        }
+    }
+
+    /// Copy the tracked path onto the clip so its moments can be edited.
+    func makeCameraPathEditable(_ uid: UUID) {
+        guard let clip = clip(uid), clip.framing == .tracking else { return }
+        setFraming(uid, .custom)
+    }
+
+    /// Set the crop at a timeline instant: the nearest keyframe within a
+    /// quarter second moves, otherwise one is added there.
+    func setCameraKeyframe(_ uid: UUID, atTimeline time: Double, rect: CameraPathKeyframe) {
+        guard let clip = clip(uid), let path = clip.cameraPath else { return }
+        let offset = CameraKeyframes.sourceOffset(atTimeline: time, clip: clip)
+        let next = CameraKeyframes.setRect(path, at: offset, rect: rect)
+        guard next != path else { return }
+        updateClip(uid) { $0.cameraPath = next; $0.cameraPathSource = nil }
+    }
+
+    func removeCameraKeyframe(_ uid: UUID, at index: Int) {
+        guard let clip = clip(uid), let path = clip.cameraPath else { return }
+        registerUndo("Remove Keyframe")
+        let next = CameraKeyframes.remove(path, at: index)
+        updateClip(uid) {
+            $0.cameraPath = next
+            if next == nil { $0.cameraPathSource = nil }
+        }
+    }
+
+    func setCameraCut(_ uid: UUID, at index: Int, cut: Bool) {
+        guard let clip = clip(uid), let path = clip.cameraPath else { return }
+        let next = CameraKeyframes.setCut(path, at: index, cut: cut)
+        guard next != path else { return }
+        registerUndo(cut ? "Cut to Keyframe" : "Glide to Keyframe")
+        updateClip(uid) { $0.cameraPath = next; $0.cameraPathSource = nil }
     }
 
     /// Merge a set of changed library rows and hydrate the timeline once.
@@ -1035,6 +1156,30 @@ final class BuilderTimelineModel {
         clip.startTime = snapped ? Self.snap(time ?? trackEnd) : (time ?? trackEnd)
         guard canPlace(track: targetTrack, at: max(0, clip.startTime)) else { return }
         registerUndo("Add Clip")
+        document.videoTrack.append(clip)
+        resolveLayout(track: targetTrack)
+        selection = .clip(clip.uid)
+        documentDidChange()
+    }
+
+    /// The whole source file as a main clip: source 0 to its duration, no
+    /// scene behind it. Framing comes from the file's analyzed scenes at
+    /// render time when the camera is on.
+    func addVideo(_ video: VideoRecord, at time: Double? = nil, track: Int = 0, snapped: Bool = true) {
+        guard video.duration.isFinite, video.duration > 0 else { return }
+        var clip = TimelineClip()
+        clip.videoFile = video.path
+        clip.sourceStart = 0
+        clip.sourceEnd = video.duration
+        clip.duration = (video.duration * 10).rounded() / 10
+        clip.sceneFullDuration = clip.duration
+        clip.wide = video.wide
+        let targetTrack = min(max(0, track), document.trackCount - 1)
+        clip.track = targetTrack
+        let trackEnd = clips(inTrack: targetTrack).map { $0.startTime + $0.duration }.max() ?? 0
+        clip.startTime = snapped ? Self.snap(time ?? trackEnd) : (time ?? trackEnd)
+        guard canPlace(track: targetTrack, at: max(0, clip.startTime)) else { return }
+        registerUndo("Add File")
         document.videoTrack.append(clip)
         resolveLayout(track: targetTrack)
         selection = .clip(clip.uid)
