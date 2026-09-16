@@ -307,10 +307,23 @@ struct BuilderView: View {
 
     private var controlsBar: some View {
         let model = store.builder
+        let _ = model.revision
+        let undo = model.undoManager
         return HStack(spacing: Theme.spaceM) {
             Text("Timeline")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
+
+            HStack(spacing: Theme.spaceXS) {
+                Button("Undo", systemImage: "arrow.uturn.backward") { undo?.undo() }
+                    .disabled(!(undo?.canUndo ?? false))
+                    .help(undo?.canUndo == true ? undo?.undoMenuItemTitle ?? "Undo" : "Nothing to undo")
+                Button("Redo", systemImage: "arrow.uturn.forward") { undo?.redo() }
+                    .disabled(!(undo?.canRedo ?? false))
+                    .help(undo?.canRedo == true ? undo?.redoMenuItemTitle ?? "Redo" : "Nothing to redo")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
 
             BuilderAddMenu(showScenePicker: $showScenePicker,
                            showImagePicker: $showImagePicker,

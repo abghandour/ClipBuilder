@@ -584,10 +584,15 @@ final class BuilderTimelineModel {
         return Double(size.width) / Double(size.height)
     }
 
-    /// A crop's width per unit height, in frame fractions, for the canvas.
+    /// A crop's width per unit height, in frame fractions, for the canvas
+    /// or, for a clip in a crop area, for that area's box.
     func cropRatio(for clip: TimelineClip) -> Double {
-        let canvas = document.renderSettings.aspectRatio
-        return canvas / (sourceAspect(for: clip) ?? 16.0 / 9.0)
+        var target = document.renderSettings.aspectRatio
+        if let area = area(forTrack: clip.track, at: clip.startTime) {
+            let bounds = area.bounds
+            target *= bounds.w / max(0.001, bounds.h)
+        }
+        return target / (sourceAspect(for: clip) ?? 16.0 / 9.0)
     }
 
     /// The path a clip renders with, on its own clock (seconds from its
@@ -608,9 +613,45 @@ final class BuilderTimelineModel {
     }
 
     /// Static, tracking or custom framing for a wide main clip. Custom starts
-    /// from the path the clip renders with now, or a centered crop.
+    /// from the path the clip renders with now, or a centered crop. In a
+    /// crop area, Static is a hand-placed window, Tracking the area's camera,
+    /// Custom keyframes at the area's aspect.
     func setFraming(_ uid: UUID, _ framing: TimelineClip.Framing) {
-        guard let clip = clip(uid), clip.framing != framing, clip.wide, !clip.isCutaway, !clip.bumper else { return }
+        guard let clip = clip(uid), clip.wide, !clip.isCutaway, !clip.bumper else { return }
+        if let area = area(forTrack: clip.track, at: clip.startTime) {
+            guard clip.areaFraming != framing else { return }
+            let aspect = sourceAspect(for: clip) ?? 16.0 / 9.0
+            // A still window: the clip's own, else its feed cropped at the
+            // area's aspect, else the centered default.
+            let window: FreeCropRect
+            if let own = clip.areaWindow {
+                window = own
+            } else if let region = clip.areaRegion {
+                let bounds = area.bounds
+                window = CropRecipePlanner.crop(
+                    tile: PodcastTile(index: 0, x: region.xFrac, y: region.yFrac, w: region.wFrac, h: region.hFrac),
+                    aspect: document.renderSettings.aspectRatio * bounds.w / max(0.001, bounds.h), sourceAspect: aspect)
+            } else {
+                window = RenderContext.$settings.withValue(document.renderSettings) {
+                    AreaFramer.defaultWindow(for: area, sourceSize: CGSize(width: aspect * 1000, height: 1000))
+                }
+            }
+            registerUndo("Change Framing")
+            updateClip(uid) {
+                switch framing {
+                case .fixed:
+                    $0.areaWindow = window; $0.cameraPath = nil; $0.cameraPathSource = nil
+                case .tracking:
+                    $0.areaWindow = nil; $0.cameraPath = nil; $0.cameraPathSource = nil
+                case .custom:
+                    let hold = CameraPathKeyframe(t: 0, x: window.xFrac, y: window.yFrac, w: window.wFrac, h: window.hFrac)
+                    var end = hold; end.t = max(0.1, $0.sourceSpan)
+                    $0.areaWindow = nil; $0.cameraPath = [hold, end]; $0.cameraPathSource = nil
+                }
+            }
+            return
+        }
+        guard clip.framing != framing else { return }
         let seed = framing == .custom ? (effectiveCameraPath(for: clip).count >= 2
             ? effectiveCameraPath(for: clip)
             : CameraKeyframes.seed(span: clip.sourceSpan, ratio: cropRatio(for: clip))) : nil
@@ -632,6 +673,115 @@ final class BuilderTimelineModel {
     func makeCameraPathEditable(_ uid: UUID) {
         guard let clip = clip(uid), clip.framing == .tracking else { return }
         setFraming(uid, .custom)
+    }
+
+    // MARK: - Crop recipes
+
+    struct ComposeResult: Sendable {
+        var block: UUID?
+        var clips: [UUID]
+        /// Where the composition starts on the timeline.
+        var start: Double = 0
+    }
+
+    /// What a recipe lays out: a whole file or one of its scenes.
+    enum ComposeSource: Sendable {
+        case video(VideoRecord)
+        case scene(SceneRecord)
+
+        var duration: Double {
+            switch self {
+            case .video(let video): video.duration
+            case .scene(let scene): scene.duration
+            }
+        }
+    }
+
+    /// Lay a file or a scene out by a recipe plan at `time`: the layout on
+    /// the cropping row for the source's length, the source on one track
+    /// per area, each cell fixed on its window or following its keyframes,
+    /// only the first track audible, and the talker's cell outlined when asked.
+    @discardableResult
+    func compose(_ plan: CropRecipePlanner.Plan, source: ComposeSource, at time: Double? = nil,
+                 highlightTalker: Bool = false) -> ComposeResult {
+        guard source.duration.isFinite, source.duration > 0, !plan.slots.isEmpty else { return ComposeResult(clips: []) }
+        registerUndo("Compose")
+        // A sequential first track packs its clips back to back, so the
+        // composition starts where that track ends; otherwise at the
+        // playhead. The other cells are freed from packing so they line up
+        // with the first and with the crop block.
+        let start = document.trackSequential[0]
+            ? (clips(inTrack: 0).map { $0.startTime + $0.duration }.max() ?? 0)
+            : Self.snap(time ?? playhead)
+        let length = (source.duration * 10).rounded() / 10
+        var block: UUID?
+        if !plan.layout.isFullScreen {
+            block = addCropBlock(plan.layout, at: start, duration: length)
+        }
+        for track in 1..<max(1, plan.slots.count) where track < TimelineDocument.maxTracks && document.trackSequential[track] {
+            setTrackSequential(false, track: track)
+        }
+        var clips: [UUID] = []
+        for (track, slot) in plan.slots.enumerated() {
+            guard track < document.trackCount else { break }
+            let before = Set(document.videoTrack.map(\.uid))
+            switch source {
+            case .video(let video): addVideo(video, at: start, track: track)
+            case .scene(let scene): addScene(scene, at: start, track: track)
+            }
+            guard let uid = document.videoTrack.first(where: { !before.contains($0.uid) })?.uid else { continue }
+            updateClip(uid) {
+                $0.muted = track > 0
+                $0.areaWindow = slot.window
+                $0.areaRegion = slot.region
+                if let path = slot.path, path.count >= 2 {
+                    $0.cameraPath = path
+                    $0.cameraPathSource = "recipe"
+                    if plan.layout.isFullScreen { $0.centerStage = true }
+                }
+            }
+            clips.append(uid)
+            if highlightTalker, !plan.layout.isFullScreen, !slot.talking.isEmpty {
+                clips.append(contentsOf: outline(uid, spans: slot.talking))
+            }
+        }
+        if let first = clips.first { selection = .clip(first) }
+        documentDidChange()
+        return ComposeResult(block: block, clips: clips, start: start)
+    }
+
+    /// Split a clip at the edges of `spans` (source seconds) and outline the
+    /// pieces inside them. Returns the pieces created.
+    private func outline(_ uid: UUID, spans: [ClosedRange<Double>]) -> [UUID] {
+        guard let clip = clip(uid) else { return [] }
+        let sourceStart = clip.sourceStart ?? 0
+        let clipStart = clip.startTime
+        let end = clip.startTime + clip.duration
+        let speed = clip.effectiveSpeed
+        let edges: [Double] = spans.flatMap { [$0.lowerBound, $0.upperBound] }
+        var cutSet = Set<Double>()
+        for edge in edges {
+            let time = TimelinePrecision.speech.rounded(clipStart + (edge - sourceStart) / speed)
+            if time > clipStart + 0.1 && time < end - 0.1 { cutSet.insert(time) }
+        }
+        let cuts = cutSet.sorted()
+        var current = uid
+        var pieces = [uid]
+        var created: [UUID] = []
+        for cut in cuts {
+            guard case .success(let split) = splitClip(current, at: cut, precision: .speech) else { continue }
+            current = split.tail
+            pieces.append(split.tail)
+            created.append(split.tail)
+        }
+        for piece in pieces {
+            guard let item = self.clip(piece) else { continue }
+            let mid = sourceStart + (item.startTime - clipStart) * clip.effectiveSpeed + item.sourceSpan / 2
+            if spans.contains(where: { $0.contains(mid) }) {
+                updateClip(piece) { $0.effect = EffectSpec(preset: "outline") }
+            }
+        }
+        return created
     }
 
     /// Set the crop at a timeline instant: the nearest keyframe within a

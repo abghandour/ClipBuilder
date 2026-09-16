@@ -204,7 +204,32 @@ struct ClipInspector: View {
                             Text(area.name)
                                 .help("Set by the cropping row: this track shows this area while the clip starts")
                         }
-                        AreaWindowEditor(clip: clip, area: area)
+                        if clip.wide, !clip.isCutaway {
+                            InspectorRow("Framing") {
+                                Picker("Framing", selection: Binding(
+                                    get: { clip.areaFraming },
+                                    set: { model.setFraming(clip.uid, $0) })) {
+                                    ForEach(TimelineClip.Framing.allCases, id: \.self) { Text($0.label).tag($0) }
+                                }
+                                .pickerStyle(.segmented)
+                                .labelsHidden()
+                                .help("Static: one window you place. Tracking: the camera follows the people in this area. Custom: keyframes you, a recipe or the Wizard set, adjustable at the playhead.")
+                            }
+                            switch clip.areaFraming {
+                            case .fixed:
+                                AreaWindowEditor(clip: clip, area: area)
+                            case .tracking:
+                                Text(clip.areaRegion != nil
+                                     ? "The tracking camera follows the person inside this cell's feed of the recording."
+                                     : "The tracking camera frames the people at this area's shape.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            case .custom:
+                                CameraKeyframeEditor(clip: clip)
+                            }
+                        } else {
+                            AreaWindowEditor(clip: clip, area: area)
+                        }
                     } else if model.document.isOrphaned(clip) {
                         Label("No crop area on this track here — this stretch will not render. Move the clip or change the crop block.",
                               systemImage: "exclamationmark.triangle.fill")

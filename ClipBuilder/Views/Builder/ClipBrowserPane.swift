@@ -152,6 +152,7 @@ struct ClipBrowserPane: View {
 
     @State private var fileSearch = ""
     @State private var playingVideo: VideoRecord?
+    @AppStorage("builder.recipe.markTalker") private var markTalker = false
 
     /// Whole source files the timeline can use: the project's analyzed
     /// videos, so their scenes' framing can follow the camera. Analyzed
@@ -294,6 +295,10 @@ struct ClipBrowserPane: View {
                             BrowserSceneCard(scene: scene,
                                              onAdd: { store.builder.addScene(scene, at: store.builder.playhead) },
                                              onPlay: { playingScene = scene },
+                                             onCompose: { recipe in
+                                                 store.composeScene(scene, recipe: recipe, highlightTalker: markTalker)
+                                             },
+                                             markTalker: $markTalker,
                                              stackMembers: stack,
                                              onPickFromStack: stack != nil
                                                  ? { stackPickerSceneID = scene.id } : nil)
@@ -360,7 +365,11 @@ struct ClipBrowserPane: View {
                             BrowserFileCard(video: video,
                                             sceneCount: store.scenes.filter { $0.videoID == video.id && !$0.excluded }.count,
                                             onAdd: { store.builder.addVideo(video, at: store.builder.playhead) },
-                                            onPlay: { playingVideo = video })
+                                            onPlay: { playingVideo = video },
+                                            onCompose: { recipe in
+                                                store.composeVideo(video, recipe: recipe, highlightTalker: markTalker)
+                                            },
+                                            markTalker: $markTalker)
                                 .safeAreaInset(edge: .bottom) {
                                     if video.driveFileID != nil {
                                         DriveMediaMenu(media: [video.driveMedia], compact: true).font(.caption)
@@ -467,6 +476,9 @@ struct BrowserFileCard: View {
     let sceneCount: Int
     let onAdd: () -> Void
     let onPlay: () -> Void
+    /// Lay the whole file out by a recipe at the playhead.
+    var onCompose: ((CropRecipe.Kind) -> Void)? = nil
+    var markTalker: Binding<Bool>? = nil
 
     private var detail: String {
         var parts = [video.duration.timecode]
@@ -490,12 +502,8 @@ struct BrowserFileCard: View {
                     DurationBadge(seconds: video.duration)
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    Button("Add to timeline", systemImage: "plus.circle.fill", action: onAdd)
-                        .font(.system(size: 16))
-                        .foregroundStyle(.white, Color.accentColor)
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.plain)
-                        .help("Add the whole file to the timeline at the playhead")
+                    CardAddButton(onAdd: onAdd, onCompose: onCompose, markTalker: markTalker,
+                                  addHelp: "Add the whole file to the timeline at the playhead, or lay it out by a crop recipe")
                         .padding(Theme.spaceXS)
                 }
             Text(video.filename)
@@ -509,7 +517,69 @@ struct BrowserFileCard: View {
         .help(video.filename)
         .contextMenu {
             Button("Add to Timeline") { onAdd() }
+            if let onCompose {
+                Menu("Compose As") { RecipeMenuItems(onCompose: onCompose, markTalker: markTalker) }
+            }
             Button("Play") { onPlay() }
+        }
+    }
+}
+
+/// The crop recipes, each with what it does, and the talker mark toggle.
+struct RecipeMenuItems: View {
+    let onCompose: (CropRecipe.Kind) -> Void
+    var markTalker: Binding<Bool>?
+
+    var body: some View {
+        ForEach(CropRecipe.Kind.allCases, id: \.self) { kind in
+            Button {
+                onCompose(kind)
+            } label: {
+                Text(kind.name)
+                Text(kind.summary)
+            }
+        }
+        if let markTalker {
+            Divider()
+            Toggle("Mark the Talker", isOn: markTalker)
+        }
+    }
+}
+
+/// The card's plus button: "Add to Timeline" first, then the crop recipes
+/// and the talker mark. A card without recipes keeps a plain button.
+struct CardAddButton: View {
+    let onAdd: () -> Void
+    var onCompose: ((CropRecipe.Kind) -> Void)?
+    var markTalker: Binding<Bool>?
+    var addHelp: String
+
+    private var icon: some View {
+        Label("Add to timeline", systemImage: "plus.circle.fill")
+            .font(.system(size: 16))
+            .foregroundStyle(.white, Color.accentColor)
+            .labelStyle(.iconOnly)
+    }
+
+    var body: some View {
+        if let onCompose {
+            Menu {
+                Button("Add to Timeline", action: onAdd)
+                Divider()
+                Section("Compose As") {
+                    RecipeMenuItems(onCompose: onCompose, markTalker: markTalker)
+                }
+            } label: {
+                icon
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help(addHelp)
+        } else {
+            Button(action: onAdd) { icon }
+                .buttonStyle(.plain)
+                .help(addHelp)
         }
     }
 }
@@ -520,6 +590,9 @@ struct BrowserSceneCard: View {
     let scene: SceneRecord
     let onAdd: () -> Void
     let onPlay: () -> Void
+    /// Lay the scene out by a crop recipe at the playhead.
+    var onCompose: ((CropRecipe.Kind) -> Void)? = nil
+    var markTalker: Binding<Bool>? = nil
     /// Set when this card fronts a stack of near-simultaneous takes (2+
     /// members, this scene first) — draws the stack badge.
     var stackMembers: [SceneRecord]?
@@ -574,12 +647,8 @@ struct BrowserSceneCard: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    Button("Add to timeline", systemImage: "plus.circle.fill", action: onAdd)
-                        .font(.system(size: 16))
-                        .foregroundStyle(.white, Color.accentColor)
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.plain)
-                        .help("Add to timeline")
+                    CardAddButton(onAdd: onAdd, onCompose: onCompose, markTalker: markTalker,
+                                  addHelp: "Add to the timeline at the playhead, or lay the scene out by a crop recipe")
                         .padding(Theme.spaceXS)
                 }
             Text(scene.videoFilename)
@@ -589,6 +658,9 @@ struct BrowserSceneCard: View {
         }
         .contextMenu {
             Button("Add to Timeline") { onAdd() }
+            if let onCompose {
+                Menu("Compose As") { RecipeMenuItems(onCompose: onCompose, markTalker: markTalker) }
+            }
             Button("Play") { onPlay() }
             if let onPickFromStack, let stackMembers {
                 Button("Choose Best of \(stackMembers.count) Similar Scenes…") {

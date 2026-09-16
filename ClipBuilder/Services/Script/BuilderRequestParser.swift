@@ -46,7 +46,7 @@ struct BuilderRequestParser {
                 "split this clip at 2 s", "trim this clip to 2 s", "mute this clip",
                 "unmute this clip", "cover all areas", "remove clips tagged \(tag) on track 1",
                 "make track 1 black and white", "apply sepia to this clip", "remove the look from track 1",
-                "add file \(file)"]
+                "add file \(file)", "add file \(file) as a grid", "add file \(file) as talker and rest with the talker highlighted"]
     }
 
     /// "this clip", "the selected scene", "the current clip": the timeline selection.
@@ -130,6 +130,23 @@ struct BuilderRequestParser {
                     return .deferred(prerequisites: missing.sorted().map { .init(.ensureTranscript(video: $0)) })
                 }
                 return .script(try BuilderSilenceExpansion.steps(clips: clips, threshold: threshold, context: context))
+            }
+            if let g = match(#"(?:add|put|compose|lay out) (?:the )?(?:file|video|whole file|whole video) (.+?) (?:as|in|with) (?:a |an |the )?(2x2 grid|2x3 grid|grid|50/50|50-50|33/33/33|33-33-33|thirds|talker full screen|full screen talker|talker and (?:the )?rest|talker and (?:the )?previous(?: speaker)?|talker and (?:the )?(?:rotating|rotation|rotating others|others rotating)|talker)( (?:with|and) (?:the )?(?:talker|speaker) (?:highlighted|marked|outlined)| highlighting the (?:talker|speaker)| marking the (?:talker|speaker))?(?: at (.+?))?"#, text) {
+                let video = try video(g[0], context)
+                let (kind, layout): (CropRecipe.Kind, String?) = switch g[1] {
+                case "2x2 grid": (.grid, "2x2 Grid")
+                case "2x3 grid": (.grid, "2x3 Grid")
+                case "50/50", "50-50": (.grid, "50-50 Horizontal")
+                case "33/33/33", "33-33-33", "thirds": (.grid, "33-33-33 Horizontal")
+                case "grid": (.grid, nil)
+                case "talker", "talker full screen", "full screen talker": (.talker, nil)
+                case "talker and rest", "talker and the rest": (.talkerAndRest, nil)
+                case let phrase where phrase.contains("rotat"): (.talkerAndRotation, nil)
+                default: (.talkerAndPrevious, nil)
+                }
+                let at = g[3].isEmpty ? nil : try time(g[3], context)
+                return .script([.init(.composeVideo(video: video.id, recipe: kind.rawValue, layout: layout, at: at,
+                                                    highlightTalker: !g[2].isEmpty))])
             }
             if let g = match(#"add (?:the )?(?:file|video|whole file|whole video) (.+?)(?: at (.+?))?(?: on (?:track )?(i|ii|iii|iv|v|vi|[1-6]))?(?: to the timeline| into the timeline)?"#, text) {
                 let video = try video(g[0], context)

@@ -134,9 +134,18 @@ struct PreviewPane: View {
                     let box = CGRect(x: bounds.x * frame.width, y: bounds.y * frame.height,
                                      width: bounds.w * frame.width, height: bounds.h * frame.height)
                     let boxSize = box.size
-                    if let window = clip.areaWindow {
-                        // Hand-placed window: show exactly that part of the
-                        // source, scaled so the window fills the area's box.
+                    let regionWindow: FreeCropRect? = clip.areaRegion.map { region in
+                        CropRecipePlanner.crop(
+                            tile: PodcastTile(index: 0, x: region.xFrac, y: region.yFrac, w: region.wFrac, h: region.hFrac),
+                            aspect: model.document.renderSettings.aspectRatio * bounds.w / max(0.001, bounds.h),
+                            sourceAspect: model.sourceAspect(for: clip) ?? 16.0 / 9.0)
+                    }
+                    if let window = clip.areaWindow ?? (clip.cameraPath == nil ? regionWindow
+                        : model.cameraRect(for: clip, atTimeline: time).map {
+                            FreeCropRect(xFrac: $0.x, yFrac: $0.y, wFrac: $0.w, hFrac: $0.h) }) {
+                        // Hand-placed window, or the keyframe crop at this
+                        // instant: show exactly that part of the source,
+                        // scaled so the window fills the area's box.
                         let fullWidth = boxSize.width / max(0.01, window.wFrac)
                         let fullHeight = boxSize.height / max(0.01, window.hFrac)
                         VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)

@@ -69,6 +69,46 @@ struct BuilderTimelineModelTests {
         #expect(model.trackIndex(atLaneOffset: 10_000) == 2)
     }
 
+    @Test("a clip in a crop area frames as a window, the tracking camera or keyframes at the area's aspect; splits keep each piece's path")
+    func areaFraming() throws {
+        var clip = Fixtures.timelineClip(sceneID: 1, sourceStart: 0, duration: 8, startTime: 0)
+        clip.wide = true
+        var document = Fixtures.timelineDocument(clips: [clip])
+        document.cropBlocks = [CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"), startTime: 0, duration: 20)]
+        document.normalizeCropBlocks()
+        let model = BuilderTimelineModel(mode: .transient)
+        model.seed(document: document, scenes: [Fixtures.scene(id: 1, start: 0, end: 8)])
+        let uid = clip.uid
+        #expect(model.clip(uid)?.areaFraming == .tracking)
+        // The top half of a 9:16 canvas is 1.125 wide per unit height.
+        #expect(abs(model.cropRatio(for: model.clip(uid)!) - 1.125 / (16.0 / 9.0)) < 1e-9)
+        model.setFraming(uid, .fixed)
+        let window = try #require(model.clip(uid)?.areaWindow)
+        #expect(model.clip(uid)?.areaFraming == .fixed && window.hFrac == 1 && abs(window.wFrac - 1.125 / (16.0 / 9.0)) < 1e-6)
+        model.setFraming(uid, .custom)
+        let custom = try #require(model.clip(uid))
+        #expect(custom.areaFraming == .custom && custom.areaWindow == nil && custom.cameraPath?.count == 2
+                && custom.cameraPath?.first?.x == window.xFrac && custom.cameraPath?.last?.t == 8 && !custom.centerStage)
+        #expect(model.cameraRect(for: custom, atTimeline: 4)?.x == window.xFrac)
+        model.setCameraKeyframe(uid, atTimeline: 4, rect: CameraPathKeyframe(t: 0, x: 0.3, y: 0, w: window.wFrac, h: 1))
+        model.setCameraCut(uid, at: 1, cut: true)
+        #expect(model.clip(uid)?.cameraPath?.map(\.t) == [0, 3.99, 4, 8])
+        // A split hands each piece the part of the path it plays, on its own clock.
+        guard case .success(let split) = model.splitClip(uid, at: 4) else { Issue.record("split refused"); return }
+        let head = try #require(model.clip(split.head)), tail = try #require(model.clip(split.tail))
+        #expect(head.cameraPath?.last?.t == 4 && CameraKeyframes.rect(head.cameraPath ?? [], at: 3.5)?.x == window.xFrac)
+        #expect(tail.cameraPath?.first?.t == 0 && tail.cameraPath?.first?.x == 0.3 && tail.cameraPath?.last?.t == 4)
+        model.setFraming(split.tail, .tracking)
+        #expect(model.clip(split.tail)?.areaFraming == .tracking && model.clip(split.tail)?.cameraPath == nil)
+        // A cell tracking inside a feed: Static crops that feed at the area's aspect.
+        model.updateClip(split.tail) { $0.areaRegion = FreeCropRect(xFrac: 0.5, yFrac: 0, wFrac: 0.5, hFrac: 0.5) }
+        model.setFraming(split.tail, .fixed)
+        let fromFeed = try #require(model.clip(split.tail)?.areaWindow)
+        #expect(fromFeed.hFrac == 0.5 && fromFeed.xFrac >= 0.5 && fromFeed.xFrac + fromFeed.wFrac <= 1 + 1e-9)
+        let encoded = try JSONEncoder().encode(model.clip(split.tail)!)
+        #expect(try JSONDecoder().decode(TimelineClip.self, from: encoded).areaRegion?.xFrac == 0.5)
+    }
+
     @Test("framing switches between static, tracking and custom; custom edits at the playhead; the canvas rescales paths")
     func customFraming() throws {
         let scope = try DataFolderOverride()

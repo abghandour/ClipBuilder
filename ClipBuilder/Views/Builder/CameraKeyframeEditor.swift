@@ -25,8 +25,8 @@ struct CameraKeyframeEditor: View {
             HStack {
                 Text(visible.count == 1 ? "1 keyframe" : "\(visible.count) keyframes")
                     .font(.caption.weight(.medium))
-                if clip.cameraPathSource == "wizard" {
-                    Text("· set by the Wizard")
+                if let source = clip.cameraPathSource, source == "wizard" || source == "recipe" {
+                    Text(source == "wizard" ? "· set by the Wizard" : "· set by a recipe")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

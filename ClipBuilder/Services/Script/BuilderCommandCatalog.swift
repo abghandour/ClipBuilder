@@ -116,6 +116,14 @@ enum BuilderCommandCatalog {
         fields["role"] = .object(["enum": .array(ClipRole.allCases.map { .string($0.rawValue) })])
         fields["audio"] = .object(["enum": .array(CutawayAudio.allCases.map { .string($0.rawValue) })])
         fields["mode"] = .object(["enum": .array(BumperMode.allCases.map { .string($0.rawValue) })])
+        fields["recipe"] = .object(["enum": .array(CropRecipe.Kind.allCases.map { .string($0.rawValue) })])
+        fields["slots"] = .object(["type": .string("array"), "minItems": .int(1), "maxItems": .int(TimelineDocument.maxTracks),
+                                   "items": string])
+        fields["highlight_talker"] = bool
+        fields["hold"] = .object(["type": .string("number"), "minimum": .double(CropRecipe.holdRange.lowerBound),
+                                  "maximum": .double(CropRecipe.holdRange.upperBound)])
+        fields["rotate"] = .object(["type": .string("number"), "minimum": .double(CropRecipe.rotationRange.lowerBound),
+                                    "maximum": .double(CropRecipe.rotationRange.upperBound)])
         fields["filter"] = clipFilterSchema; fields["query"] = querySchema
         // Each operation has exactly the fields accepted by BuilderCommand.
         let variants: [(String, [String], [String])] = [
@@ -163,6 +171,7 @@ enum BuilderCommandCatalog {
             ("place_clip", ["clip", "start", "track"], ["clip", "start", "track"]),
             ("add_scene", ["scene", "at", "track"], ["scene", "track"]),
             ("add_video", ["video", "at", "track"], ["video", "track"]),
+            ("compose_video", ["video", "scene", "recipe", "layout", "slots", "at", "highlight_talker", "hold", "rotate"], ["recipe"]),
             ("add_cutaway", ["scene", "video", "at", "track", "duration", "source_start", "cover_all"], ["track", "cover_all"]),
             ("set_clip_role", ["clip", "role"], ["clip", "role"]),
             ("set_cutaway_audio", ["clip", "audio"], ["clip", "audio"]),
@@ -239,7 +248,8 @@ enum BuilderCommandCatalog {
                 "set_overlay_transitions": "Text/image transitions only; overlay blocks retain their composition transitions.",
                 "set_clip_area_window": "Requires a crop area and captured source dimensions; preserve the current window aspect ratio (or the default area aspect). Width must be at least 0.1.",
                 "set_clip_fades": "B-roll only; each fade is at most half the clip duration.",
-                "set_clip_camera_path": "Wide main clip in Full Screen only. Keyframes are crop rectangles as fractions of the source frame (top-left origin) at t seconds from the clip's source start, strictly increasing, 2 to 2000, each at least 0.05 wide and high; the crop glides between keyframes and holds after the last; for a hard cut, repeat the previous rectangle at t − 0.01 right before the new one. Keep every rectangle at the canvas aspect (9:16 on a portrait canvas: w = h × (9/16) ÷ source aspect). An empty list clears the path; a set path turns the camera on. Verify with sample_frames using the same rectangles.",
+                "compose_video": "Lay a whole analyzed file (video) or one of its scenes (scene; exactly one of the two) out by a crop recipe from the playhead (or at): the layout goes on the cropping row for the source's length, the source lands on one track per area (only track 0 audible), and each cell is fixed on a feed or cuts to whoever is talking after hold seconds (default 1.5). recipe talker: full screen, the talker. grid: everyone in a cell, the layout chosen by head count (50-50 Horizontal, 33-33-33 Horizontal, 2x2 Grid, 2x3 Grid). talker_and_rest: the talker on top, the others across the bottom. talker_and_previous: the talker on top, the previous speaker below. talker_and_rotation: the talker on top, the bottom cell taking turns through the others every rotate seconds (default 5). layout names another Screen Crop layout; slots names what each area shows (talker, previous, recent:N, others:N, tile:N, person:<key>, rotate:N). A cell that always shows one feed gets the tracking camera inside that feed; a cell that changes gets hard cuts between feeds centered on their faces. highlight_talker outlines the talker's cell (not in Full Screen) by splitting cells at speaker changes. The composition starts at the end of a sequential track 0, else at the playhead (or at); the other cells' tracks are switched to free placement so they line up. Needs speaker turns (query kind speakers); feeds come from the podcast tiles, the two halves of a side-by-side recording, or roster portraits. Returns the first clip and the crop block.",
+                "set_clip_camera_path": "Wide main clip, in Full Screen or in a crop area (then at the area's aspect: w = h × area width ÷ area height × canvas aspect ÷ source aspect). Keyframes are crop rectangles as fractions of the source frame (top-left origin) at t seconds from the clip's source start, strictly increasing, 2 to 2000, each at least 0.05 wide and high; the crop glides between keyframes and holds after the last; for a hard cut, repeat the previous rectangle at t − 0.01 right before the new one. Keep every rectangle at the canvas aspect (9:16 on a portrait canvas: w = h × (9/16) ÷ source aspect). An empty list clears the path; a set path turns the camera on. Verify with sample_frames using the same rectangles.",
                 "add_video": "The whole source file (source 0 to its duration) as a main clip; video from query kind videos. Trim with set_source_range or split_clip. On the new clip, set_clip_center_stage follows the file's analyzed framing (its scenes' camera paths; the active speaker for podcasts); a wide clip on a 9:16 canvas is otherwise cropped statically with set_clip_crop.",
                 "set_clip_speed": "Preserves source start and rounds screen duration to 0.1 seconds like the inspector. Refuses source overflow."
             ]

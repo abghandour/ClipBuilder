@@ -241,19 +241,20 @@ extension ScriptRunner {
         case .setClipCameraPath(let reference, let keyframes):
             let item = try clip(reference)
             let path: [CameraPathKeyframe]? = keyframes.isEmpty ? nil : keyframes
+            let inArea = model.area(forTrack: item.track, at: item.startTime) != nil
             guard path == nil || (!item.bumper && !item.isCutaway && item.wide
-                && model.area(forTrack: item.track, at: item.startTime) == nil
-                && !model.document.isOrphaned(item)) else {
-                throw BuilderCommandFailure.invalid("A camera path requires a wide main clip in Full Screen.")
+                && (inArea || !model.document.isOrphaned(item))) else {
+                throw BuilderCommandFailure.invalid("A camera path requires a wide main clip in Full Screen or in a crop area.")
             }
             if let path, let last = path.last, last.t > item.sourceSpan + 0.5 {
                 throw BuilderCommandFailure.bounds("Camera keyframes run past the clip's source span (\(item.sourceSpan) s).")
             }
-            guard item.cameraPath != path || (path != nil && !item.centerStage) else { return }
+            guard item.cameraPath != path || (path != nil && !inArea && !item.centerStage) else { return }
             model.updateClip(item.uid) {
                 $0.cameraPath = path
                 $0.cameraPathSource = path == nil ? nil : "wizard"
-                if path != nil { $0.centerStage = true }
+                if path != nil, !inArea { $0.centerStage = true }
+                if path != nil, inArea { $0.areaWindow = nil }
             }
         case .setClipAreaWindow(let reference, let x, let y, let width, let height):
             let item = try clip(reference)

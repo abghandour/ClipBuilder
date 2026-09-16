@@ -258,6 +258,27 @@ struct BuilderRequestParserTests {
         #expect(try steps(request, context()) == [.init(.addVideo(video: 1, track: 0))])
     }
 
+    @Test func composeFileByRecipe() throws {
+        let context = context()
+        #expect(try steps("add file fixture.mp4 as a 2x2 grid", context)
+                == [.init(.composeVideo(video: 1, recipe: "grid", layout: "2x2 Grid"))])
+        #expect(try steps("put the video fixture as a grid with the talker highlighted at 2 s", context)
+                == [.init(.composeVideo(video: 1, recipe: "grid", at: 2, highlightTalker: true))])
+        #expect(try steps("add file fixture as talker and the rest", context)
+                == [.init(.composeVideo(video: 1, recipe: "talker_and_rest"))])
+        #expect(try steps("add file fixture.mp4 as 50/50 marking the speaker", context)
+                == [.init(.composeVideo(video: 1, recipe: "grid", layout: "50-50 Horizontal", highlightTalker: true))])
+        #expect(try steps("add file fixture as talker and previous", context)
+                == [.init(.composeVideo(video: 1, recipe: "talker_and_previous"))])
+        #expect(try steps("compose file fixture as full screen talker", context)
+                == [.init(.composeVideo(video: 1, recipe: "talker"))])
+        #expect(try steps("add file fixture as talker and rotating others", context)
+                == [.init(.composeVideo(video: 1, recipe: "talker_and_rotation"))])
+        if case .script = BuilderRequestParser().parse("add file nothing.mp4 as a grid", context: context) {
+            Issue.record("Unknown file accepted")
+        }
+    }
+
     @Test func addWholeFileWithTimeTrackAndFailures() throws {
         var context = context()
         #expect(try steps("add file fixture.mp4 at 2 s on track 1", context) == [.init(.addVideo(video: 1, at: 2, track: 0))])

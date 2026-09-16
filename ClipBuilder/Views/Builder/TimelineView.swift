@@ -781,7 +781,7 @@ struct TimelineClipBlock: View {
                                 .padding(.horizontal, 3)
                                 .background((clip.framing == .custom ? Color.accentColor : Color.teal).opacity(0.85), in: .capsule)
                                 .help(clip.framing == .custom
-                                      ? "Custom camera path" + (clip.cameraPathSource == "wizard" ? " set by the Wizard" : "") + "; adjust it at the playhead in the inspector"
+                                      ? "Custom camera path" + (clip.cameraPathSource == "wizard" ? " set by the Wizard" : clip.cameraPathSource == "recipe" ? " set by a recipe" : "") + "; adjust it at the playhead in the inspector"
                                       : "Tracking camera from the analysis")
                         }
                     }

@@ -102,6 +102,24 @@ nonisolated extension BuilderCommand {
                     throw BuilderCommandFailure.bounds("Camera keyframe rectangles are fractions of the source frame, at least 0.05 wide and high, inside 0…1.")
                 }
             }
+        case .composeVideo(let video, let scene, let recipe, _, let slots, let at, _, let hold, let rotate):
+            guard (video == nil) != (scene == nil) else {
+                throw BuilderCommandFailure.invalid("Name exactly one of video or scene.")
+            }
+            guard CropRecipe.Kind(rawValue: recipe) != nil else {
+                throw BuilderCommandFailure.invalid("recipe is one of \(CropRecipe.Kind.allCases.map(\.rawValue).joined(separator: ", ")).")
+            }
+            if let at { try number(at, 0...86400) }
+            if let hold { try number(hold, CropRecipe.holdRange) }
+            if let rotate { try number(rotate, CropRecipe.rotationRange) }
+            if let slots {
+                guard (1...TimelineDocument.maxTracks).contains(slots.count) else {
+                    throw BuilderCommandFailure.bounds("slots holds 1 to \(TimelineDocument.maxTracks) subjects.")
+                }
+                for token in slots where CropRecipeSubject(token: token) == nil {
+                    throw BuilderCommandFailure.invalid("Unknown slot \"\(token)\": talker, previous, recent:N, others:N, tile:N or person:<key>.")
+                }
+            }
         case .setTrackCrop(_, let fraction):
             if let fraction { try number(fraction, 0...1) }
         case .setRenderSettings(let settings): try settings.validate()

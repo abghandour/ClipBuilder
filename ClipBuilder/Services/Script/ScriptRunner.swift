@@ -131,7 +131,7 @@ final class ScriptRunner {
 
     private static func canBind(_ command: BuilderCommand) -> Bool {
         switch command {
-        case .splitClipEvenly, .splitClip, .duplicateClip, .addScene, .addVideo, .addCutaway, .addCropBlock,
+        case .splitClipEvenly, .splitClip, .duplicateClip, .addScene, .addVideo, .composeVideo, .addCutaway, .addCropBlock,
              .addBumper, .addSound, .addText, .addImage, .addOverlay, .splitCropBlock, .splitZoomFeeds: true
         default: false
         }
@@ -293,6 +293,53 @@ final class ScriptRunner {
             try placement(trackIndex, at ?? end)
             model.addVideo(video, at: at, track: trackIndex)
             target = try addedClip(); created["clip"] = target?.uuidString
+        case .composeVideo(let videoID, let sceneID, let recipeName, let layoutName, let slotTokens, let at, let highlight, let hold, let rotate):
+            let source: BuilderTimelineModel.ComposeSource
+            var range: ClosedRange<Double>?
+            let id: Int64
+            if let sceneID {
+                let item = try scene(sceneID)
+                source = .scene(item); range = item.startTime...item.endTime; id = item.videoID
+            } else {
+                id = videoID ?? -1
+                guard let video = library.videos.first(where: { $0.id == id }) else {
+                    throw ScriptError.invalid("Video is unavailable or outside this project.")
+                }
+                source = .video(video)
+            }
+            guard let video = library.videos.first(where: { $0.id == id }),
+                  video.duration.isFinite, video.duration > 0 else {
+                throw ScriptError.invalid("Video is unavailable or outside this project.")
+            }
+            guard let kind = CropRecipe.Kind(rawValue: recipeName) else { throw ScriptError.invalid("Unknown recipe.") }
+            var recipe = CropRecipe(kind: kind, layout: layoutName, highlightTalker: highlight)
+            if let hold { recipe.minimumHold = hold }
+            if let rotate { recipe.rotationSeconds = rotate }
+            if let slotTokens {
+                recipe.slots = try slotTokens.map { token in
+                    guard let subject = CropRecipeSubject(token: token) else { throw ScriptError.invalid("Unknown slot \"\(token)\".") }
+                    return subject
+                }
+            }
+            if let layoutName { _ = try layout(layoutName) }
+            try time(at ?? model.playhead)
+            let plan: CropRecipePlanner.Plan
+            do {
+                plan = try CropRecipePlanner.plan(recipe, video: video, range: range, turns: library.speakerTurns[id] ?? [],
+                                                  roster: library.rosters[id] ?? [], layouts: library.layouts,
+                                                  canvasAspect: model.document.renderSettings.aspectRatio)
+            } catch let failure as CropRecipePlanner.Failure {
+                throw ScriptError.invalid(failure.description)
+            }
+            let result = model.compose(plan, source: source, at: at, highlightTalker: highlight)
+            guard let first = result.clips.first else { throw ScriptError.invalid("Store refused the insertion.") }
+            try charge(result.clips.count + (result.block == nil ? 0 : 1))
+            target = first; created["clip"] = first.uuidString
+            if let block = result.block { created["block"] = block.uuidString }
+            warnings.append(contentsOf: plan.notes)
+            if let at, abs(result.start - at) > 0.001 {
+                warnings.append("Placed at \(result.start) s, the end of sequential track 0, not at \(at) s.")
+            }
         case .addCutaway(let sceneID, let videoID, let at, let trackIndex, let duration, let sourceStart, let coverAll):
             try placement(trackIndex, at ?? model.playhead, coverAll: coverAll)
             if let duration { try time(duration, positive: true) }

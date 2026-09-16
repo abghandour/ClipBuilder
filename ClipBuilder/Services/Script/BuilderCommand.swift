@@ -17,6 +17,12 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     case addVideo(video: Int64, at: Double? = nil, track: Int)
     /// An explicit camera path on a wide main clip; an empty list clears it.
     case setClipCameraPath(clip: String, keyframes: [CameraPathKeyframe])
+    /// A whole file laid out by a crop recipe: the layout on the cropping
+    /// row, the file on one track per area, each cell fixed on a feed or
+    /// cutting to whoever is talking.
+    case composeVideo(video: Int64? = nil, scene: Int64? = nil, recipe: String, layout: String? = nil,
+                      slots: [String]? = nil, at: Double? = nil, highlightTalker: Bool = false, hold: Double? = nil,
+                      rotate: Double? = nil)
     case addCutaway(scene: Int64? = nil, video: Int64? = nil, at: Double? = nil,
                     track: Int, duration: Double? = nil, sourceStart: Double? = nil, coverAll: Bool)
     case setClipRole(clip: String, role: ClipRole)
@@ -143,6 +149,18 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
                 video: try c.decode(Int64.self, forKey: ScriptKey("video")),
                 at: try c.decodeIfPresent(Double.self, forKey: ScriptKey("at")),
                 track: try c.decode(Int.self, forKey: ScriptKey("track")))
+        case "compose_video":
+            try c.only(["op", "video", "scene", "recipe", "layout", "slots", "at", "highlight_talker", "hold", "rotate"])
+            self = .composeVideo(
+                video: try c.decodeIfPresent(Int64.self, forKey: ScriptKey("video")),
+                scene: try c.decodeIfPresent(Int64.self, forKey: ScriptKey("scene")),
+                recipe: try c.decode(String.self, forKey: ScriptKey("recipe")),
+                layout: try c.decodeIfPresent(String.self, forKey: ScriptKey("layout")),
+                slots: try c.decodeIfPresent([String].self, forKey: ScriptKey("slots")),
+                at: try c.decodeIfPresent(Double.self, forKey: ScriptKey("at")),
+                highlightTalker: try c.decodeIfPresent(Bool.self, forKey: ScriptKey("highlight_talker")) ?? false,
+                hold: try c.decodeIfPresent(Double.self, forKey: ScriptKey("hold")),
+                rotate: try c.decodeIfPresent(Double.self, forKey: ScriptKey("rotate")))
         case "add_cutaway":
             try c.only(["op", "scene", "video", "at", "track", "duration", "source_start", "cover_all"])
             self = .addCutaway(
@@ -603,6 +621,17 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             try c.encode(video, forKey: ScriptKey("video"))
             try c.encodeIfPresent(at, forKey: ScriptKey("at"))
             try c.encode(track, forKey: ScriptKey("track"))
+        case let .composeVideo(video, scene, recipe, layout, slots, at, highlightTalker, hold, rotate):
+            try c.encode("compose_video", forKey: ScriptKey("op"))
+            try c.encodeIfPresent(video, forKey: ScriptKey("video"))
+            try c.encodeIfPresent(scene, forKey: ScriptKey("scene"))
+            try c.encode(recipe, forKey: ScriptKey("recipe"))
+            try c.encodeIfPresent(layout, forKey: ScriptKey("layout"))
+            try c.encodeIfPresent(slots, forKey: ScriptKey("slots"))
+            try c.encodeIfPresent(at, forKey: ScriptKey("at"))
+            if highlightTalker { try c.encode(true, forKey: ScriptKey("highlight_talker")) }
+            try c.encodeIfPresent(hold, forKey: ScriptKey("hold"))
+            try c.encodeIfPresent(rotate, forKey: ScriptKey("rotate"))
         case let .addCutaway(scene, video, at, track, duration, sourceStart, coverAll):
             try c.encode("add_cutaway", forKey: ScriptKey("op"))
             try c.encodeIfPresent(scene, forKey: ScriptKey("scene"))

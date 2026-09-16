@@ -5835,6 +5835,48 @@ final class AppStore {
     /// Detect people in several videos one after another, in the background:
     /// the caller (the analysis sheet) closes and the user keeps working while
     /// the status bar and the analysis log follow the run.
+    /// Lay a whole file out in the Builder by a crop recipe at the playhead,
+    /// from the file's speaker turns, tiles and roster.
+    func composeVideo(_ video: VideoRecord, recipe kind: CropRecipe.Kind, highlightTalker: Bool) {
+        compose(.video(video), video: video, recipe: kind, highlightTalker: highlightTalker)
+    }
+
+    /// Lay one scene out by a crop recipe: the same, over the scene's range.
+    func composeScene(_ scene: SceneRecord, recipe kind: CropRecipe.Kind, highlightTalker: Bool) {
+        guard let video = videos.first(where: { $0.id == scene.videoID }) else {
+            presentError("The scene's file is not in this project.")
+            return
+        }
+        compose(.scene(scene), video: video, recipe: kind, highlightTalker: highlightTalker)
+    }
+
+    private func compose(_ source: BuilderTimelineModel.ComposeSource, video: VideoRecord,
+                         recipe kind: CropRecipe.Kind, highlightTalker: Bool) {
+        guard let database else { return }
+        let name: String
+        var range: ClosedRange<Double>?
+        switch source {
+        case .video: name = video.filename
+        case .scene(let scene): name = "\(video.filename) \(scene.startTime.timecode)–\(scene.endTime.timecode)"; range = scene.startTime...scene.endTime
+        }
+        Task {
+            do {
+                let turns = try await database.fetchSpeakerTurns(videoID: video.id)
+                let roster = try await database.fetchVideoPeople(videoID: video.id)
+                let recipe = CropRecipe(kind: kind, highlightTalker: highlightTalker)
+                let plan = try CropRecipePlanner.plan(recipe, video: video, range: range, turns: turns, roster: roster,
+                                                      layouts: ScreenCropStore.all(),
+                                                      canvasAspect: builder.document.renderSettings.aspectRatio)
+                let result = builder.compose(plan, source: source, at: builder.playhead, highlightTalker: highlightTalker)
+                appendLog(\.analysisLog, ["Composed \(name) as \(kind.name): \(result.clips.count) clip(s)"]
+                    + plan.notes.map { "  " + $0 })
+                if result.clips.isEmpty { presentError("The recipe placed nothing; the timeline has no room at the playhead.") }
+            } catch {
+                presentError("Compose \(name) as \(kind.name)", error)
+            }
+        }
+    }
+
     func detectPeople(in videos: [VideoRecord], provider: String? = nil, model: String? = nil) {
         guard !videos.isEmpty, !isDetectingPeople else { return }
         isDetectingPeople = true

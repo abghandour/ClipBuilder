@@ -121,6 +121,123 @@ struct BuilderScriptTests {
         #expect(throws: (any Error).self) { try filtered.execute(model: ScriptFixtures.model(), library: library, resolve: resolve) }
     }
 
+    @Test("compose_video lays a file out by a recipe: layout block, one muted track per cell, windows or paths, outlined talker")
+    func composeVideo() throws {
+        var library = ScriptFixtures.library()
+        library.videos = [try CropRecipeTests.video()]
+        library.speakerTurns = [1: CropRecipeTests.turns]
+        let session = BuilderScriptSession(live: ScriptFixtures.model(clips: []), library: library)
+        let grid = session.run([.init(.composeVideo(video: 1, recipe: "grid", at: 0), bind: "grid")])
+        #expect(grid.completed, "\(grid.outcomes)")
+        var document = try #require(session.candidate)
+        #expect(document.cropBlocks.first?.layout.name == "2x2 Grid" && document.cropBlocks.first?.duration == 10)
+        #expect(document.videoTrack.count == 4 && document.trackCount == 4)
+        #expect(document.videoTrack.map(\.track) == [0, 1, 2, 3] && document.videoTrack.map(\.muted) == [false, true, true, true])
+        #expect(document.videoTrack.allSatisfy { $0.areaRegion != nil && $0.areaWindow == nil && $0.cameraPath == nil && $0.videoFile == "/tmp/fixture.mp4" })
+        #expect(document.videoTrack.allSatisfy { $0.areaFraming == .tracking })
+        // Cells beyond the first are freed from sequential packing so they line up.
+        #expect(document.trackSequential[0] && !document.trackSequential[1] && !document.trackSequential[3])
+        #expect(grid.outcomes.first?.createdIDs["clip"] == document.videoTrack[0].uid.uuidString)
+        #expect(grid.outcomes.first?.createdIDs["block"] == document.cropBlocks.first?.uid.uuidString)
+        // The binding names the first cell.
+        #expect(session.run([.init(.setClipMuted(clip: "$grid", muted: true))]).completed)
+
+        // The talker on top with keyframes in the area; the others below; the talker's cell outlined.
+        let rest = BuilderScriptSession(live: ScriptFixtures.model(clips: []), library: library)
+        let outcome = rest.run([.init(.composeVideo(video: 1, recipe: "talker_and_rest", at: 0, highlightTalker: true))])
+        #expect(outcome.completed, "\(outcome.outcomes)")
+        document = try #require(rest.candidate)
+        #expect(document.cropBlocks.first?.layout.name == "Talker + 3")
+        let top = document.videoTrack.filter { $0.track == 0 }.sorted { $0.startTime < $1.startTime }
+        #expect(top.count == 1 && top[0].cameraPath?.count == 8 && top[0].areaFraming == .custom
+                && top[0].cameraPathSource == "recipe" && top[0].effect?.preset == "outline" && !top[0].centerStage)
+        // "Other 1" never holds the talker, so it stays one piece without an outline.
+        let second = document.videoTrack.filter { $0.track == 1 }
+        #expect(second.count == 1 && second[0].effect == nil && second[0].cameraPath?.count == 6)
+
+        // A grid with the talker marked: cells split where their person talks.
+        let marked = BuilderScriptSession(live: ScriptFixtures.model(clips: []), library: library)
+        #expect(marked.run([.init(.composeVideo(video: 1, recipe: "grid", at: 0, highlightTalker: true))]).completed)
+        document = try #require(marked.candidate)
+        let first = document.videoTrack.filter { $0.track == 0 }.sorted { $0.startTime < $1.startTime }
+        #expect(first.map(\.startTime) == [0, 3, 8] && first.map { $0.effect?.preset } == ["outline", nil, "outline"])
+        #expect(first.map(\.sourceStart) == [0, 3, 8] && first.allSatisfy { $0.areaRegion == first[0].areaRegion && $0.areaRegion != nil })
+        #expect(document.videoTrack.filter { $0.track == 3 }.count == 1)
+
+        // Named layout and subjects, a hold, JSON round trip, and refusals.
+        let decoded = try JSONDecoder().decode([BuilderScriptStep].self, from: Data(
+            #"[{"command":{"op":"compose_video","video":1,"recipe":"grid","layout":"50-50 Horizontal","slots":["person:bob","previous"],"hold":2,"highlight_talker":true,"rotate":3}}]"#.utf8))
+        #expect(decoded == [.init(.composeVideo(video: 1, recipe: "grid", layout: "50-50 Horizontal",
+                                                slots: ["person:bob", "previous"], highlightTalker: true, hold: 2, rotate: 3))])
+        let encoded = String(decoding: try JSONEncoder().encode(decoded), as: UTF8.self)
+        #expect(encoded.contains("\"highlight_talker\":true") && encoded.contains("\"hold\":2") && encoded.contains("\"rotate\":3"))
+        let custom = BuilderScriptSession(live: ScriptFixtures.model(clips: []), library: library)
+        #expect(custom.run(decoded).completed)
+        #expect(custom.candidate?.videoTrack.count == 4 && custom.candidate?.cropBlocks.first?.layout.name == "50-50 Horizontal", "bob's cell splits around 3…6 s; the previous-speaker cell stays whole")
+        for bad in [BuilderCommand.composeVideo(video: 1, recipe: "mosaic"),
+                    .composeVideo(video: 1, recipe: "grid", slots: ["faces"]),
+                    .composeVideo(video: 1, recipe: "grid", hold: 0.1),
+                    .composeVideo(video: 1, recipe: "grid", layout: "Nope"),
+                    .composeVideo(video: 2, recipe: "grid")] {
+            #expect(!BuilderScriptSession(live: ScriptFixtures.model(clips: []), library: library).run([.init(bad)]).completed, "\(bad)")
+        }
+        // The rotation recipe cuts the lower cell on a beat.
+        let rotating = BuilderScriptSession(live: ScriptFixtures.model(clips: []), library: library)
+        #expect(rotating.run([.init(.composeVideo(video: 1, recipe: "talker_and_rotation", at: 0, rotate: 2))]).completed)
+        #expect((rotating.candidate?.videoTrack.first { $0.track == 1 }?.cameraPath?.count ?? 0) > 6)
+        #expect(!BuilderScriptSession(live: ScriptFixtures.model(clips: []), library: library)
+            .run([.init(.composeVideo(video: 1, recipe: "talker_and_rotation", rotate: 0.5))]).completed)
+
+        // On a sequential first track the composition starts where that track ends, with a warning.
+        let packedModel = ScriptFixtures.model()
+        let packed = BuilderScriptSession(live: packedModel, library: library)
+        let end = packedModel.clips(inTrack: 0).map { $0.startTime + $0.duration }.max() ?? 0
+        let late = packed.run([.init(.composeVideo(video: 1, recipe: "grid", at: 20))])
+        #expect(late.completed)
+        if case .applied(_, _, let warnings) = late.outcomes[0] { #expect(warnings.contains { $0.contains("sequential") }) }
+        #expect(packed.candidate?.cropBlocks.first { !$0.layout.isFullScreen }?.startTime == end)
+        #expect(packed.candidate?.videoTrack.filter { $0.videoFile == "/tmp/fixture.mp4" && $0.sceneID == nil }.allSatisfy { $0.startTime == end } == true)
+
+        // A scene of the file: the block spans the scene, the cells are scene clips.
+        let free = ScriptFixtures.model(clips: [])
+        free.setTrackSequential(false, track: 0)
+        let sceneRun = BuilderScriptSession(live: free, library: library)
+        let composed = sceneRun.run([.init(.composeVideo(scene: 1, recipe: "talker_and_previous", at: 1))])
+        #expect(composed.completed, "\(composed.outcomes)")
+        document = try #require(sceneRun.candidate)
+        let sceneBlock = document.cropBlocks.first { !$0.layout.isFullScreen }
+        #expect(sceneBlock?.startTime == 1 && sceneBlock?.duration == 4 && sceneBlock?.layout.name == "50-50 Horizontal")
+        #expect(document.videoTrack.count == 2 && document.videoTrack.allSatisfy { $0.sceneID == 1 && $0.sourceStart == 2 && $0.duration == 4 })
+        #expect(document.videoTrack[0].cameraPath?.first?.t == 0 && document.videoTrack[0].cameraPath?.last?.t == 4)
+        for bad in [BuilderCommand.composeVideo(recipe: "grid"), .composeVideo(video: 1, scene: 1, recipe: "grid"),
+                    .composeVideo(scene: 9, recipe: "grid")] {
+            #expect(!BuilderScriptSession(live: ScriptFixtures.model(clips: []), library: library).run([.init(bad)]).completed, "\(bad)")
+        }
+        // No turns: the talker recipe is refused with a reason.
+        var silent = library; silent.speakerTurns = [:]
+        let refused = BuilderScriptSession(live: ScriptFixtures.model(clips: []), library: silent)
+            .run([.init(.composeVideo(video: 1, recipe: "talker"))])
+        #expect(!refused.completed)
+    }
+
+    @Test("a camera path on a clip in a crop area is accepted at the area's aspect and replaces its window")
+    func cameraPathInArea() throws {
+        var source = Fixtures.timelineClip()
+        source.wide = true
+        source.areaWindow = FreeCropRect(xFrac: 0.2, yFrac: 0, wFrac: 0.5, hFrac: 0.5)
+        let model = ScriptFixtures.model(clips: [source])
+        var document = model.document
+        document.cropBlocks = [CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"), startTime: 0, duration: 20)]
+        document.normalizeCropBlocks()
+        model.seed(document: document, scenes: model.scenes)
+        let session = BuilderScriptSession(live: model, library: ScriptFixtures.library())
+        let frames = [CameraPathKeyframe(t: 0, x: 0.1, y: 0, w: 0.3, h: 0.5), CameraPathKeyframe(t: 3, x: 0.6, y: 0, w: 0.3, h: 0.5)]
+        let set = session.run([.init(.setClipCameraPath(clip: source.uid.uuidString, keyframes: frames))])
+        #expect(set.completed, "\(set.outcomes)")
+        let clip = try #require(session.candidate?.videoTrack.first { $0.uid == source.uid })
+        #expect(clip.cameraPath == frames && clip.areaWindow == nil && !clip.centerStage && clip.areaFraming == .custom)
+    }
+
     @Test("a scripted camera path sets, reads back through the camera query, clears, and refuses bad paths")
     func cameraPathScripting() throws {
         var source = Fixtures.timelineClip()
