@@ -80,6 +80,67 @@ nonisolated enum AreaFramer {
         return output
     }
 
+    /// Like `frame`, but the tracking camera only sees `region` (fractions
+    /// of the source frame): the feed is cut out first, so one person's
+    /// cell of a video call is framed on that person alone.
+    static func frame(source: URL, start: Double, duration: Double,
+                      area: ScreenCropArea, region: FreeCropRect,
+                      tuning: CenterStageService.Tuning = .fastAction,
+                      centerStage: CenterStageService,
+                      scratch: URL,
+                      onFallback: (@Sendable () -> Void)? = nil,
+                      log: @escaping @Sendable (String) -> Void) async throws -> URL {
+        let timing = PerfSignpost.begin("AreaFraming", metadata: "region")
+        defer { PerfSignpost.end(timing) }
+        func clamp(_ value: Double) -> Double { min(1, max(0, value)) }
+        let x = clamp(region.xFrac), y = clamp(region.yFrac)
+        let w = max(0.05, min(region.wFrac, 1 - x))
+        let h = max(0.05, min(region.hFrac, 1 - y))
+        let feed = scratch.appendingPathComponent("feed_\(UUID().uuidString).mp4")
+        let filter = String(format: "crop='2*floor(iw*%.5f/2)':'2*floor(ih*%.5f/2)':'iw*%.5f':'ih*%.5f',setsar=1", w, h, x, y)
+        var arguments: [String] = ["-y", "-ss", String(format: "%.3f", max(0, start)),
+                                   "-t", String(format: "%.3f", duration), "-i", source.path,
+                                   "-vf", filter, "-t", String(format: "%.3f", duration)]
+        arguments += FFmpeg.encodeArgs
+        arguments.append(feed.path)
+        try await FFmpeg.run(arguments, timeout: 600)
+        defer { try? FileManager.default.removeItem(at: feed) }
+        log(String(format: "Area \"%@\": feed %.0f%%×%.0f%% at (%.0f%%, %.0f%%) cut out for tracking",
+                   area.name, w * 100, h * 100, x * 100, y * 100))
+        return try await frame(source: feed, start: 0, duration: duration, area: area, tuning: tuning,
+                               centerStage: centerStage, scratch: scratch, onFallback: onFallback, log: log)
+    }
+
+    /// Like `frame`, but the camera replays an explicit path (crop
+    /// rectangles as fractions of the source at the area's aspect, seconds
+    /// from `start`) instead of tracking.
+    static func frame(source: URL, start: Double, duration: Double,
+                      area: ScreenCropArea, path: [CameraPathKeyframe],
+                      centerStage: CenterStageService,
+                      scratch: URL,
+                      log: @escaping @Sendable (String) -> Void) async throws -> URL {
+        let timing = PerfSignpost.begin("AreaFraming", metadata: "path")
+        defer { PerfSignpost.end(timing) }
+        let box = pixelBounds(of: area)
+        let output = scratch.appendingPathComponent("area_\(UUID().uuidString).mp4")
+        let w = RenderEngine.outputWidth
+        let h = RenderEngine.outputHeight
+        let fitted = try await centerStage.reframeClip(source: source, start: start, duration: duration,
+                                                       path: path, frame: box.size, log: log)
+        defer { try? FileManager.default.removeItem(at: fitted) }
+        log(String(format: "Area \"%@\": camera path with %d keyframes at %.0f×%.0f", area.name, path.count,
+                   box.width, box.height))
+        let filter = "[0:v]scale=\(Int(box.width)):\(Int(box.height)),"
+            + "pad=\(w):\(h):\(Int(box.minX)):\(Int(box.minY)):color=black,setsar=1,fps=30,format=yuv420p[vout]"
+        var arguments: [String] = ["-y", "-i", fitted.path,
+                                   "-filter_complex", filter, "-map", "[vout]", "-map", "0:a?",
+                                   "-t", String(format: "%.3f", duration)]
+        arguments += FFmpeg.encodeArgs
+        arguments.append(output.path)
+        try await FFmpeg.run(arguments, timeout: 600)
+        return output
+    }
+
     /// Like `frame`, but the window is fixed: `window` (fractions of the
     /// source frame, at the area's aspect) is cropped out, scaled into the
     /// area's bounding box, and placed on the black canvas. No tracking.

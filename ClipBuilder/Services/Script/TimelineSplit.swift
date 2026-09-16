@@ -83,6 +83,14 @@ nonisolated enum TimelineSplit {
         tail.duration = tailDuration
         tail.transIn = nil
         tail.fadeIn = 0
+        // A custom camera path counts from the clip's source start: each
+        // piece keeps the part it plays, on its own clock.
+        if let path = clip.cameraPath, path.count >= 2 {
+            let headPath = CenterStageService.slice(path, from: 0, duration: cut - sourceStart)
+            let tailPath = CenterStageService.slice(path, from: cut - sourceStart, duration: playedEnd - cut)
+            head.cameraPath = headPath.count >= 2 ? headPath : nil
+            tail.cameraPath = tailPath.count >= 2 ? tailPath : nil
+        }
         return (head, tail)
     }
 }

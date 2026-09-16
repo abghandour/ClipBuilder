@@ -25,8 +25,16 @@ nonisolated struct PodcastTile: Codable, Sendable, Hashable, Identifiable {
     var w: Double
     var h: Double
     var personKey: String? = nil
+    /// Where the face usually sits in this feed (fractions of the source
+    /// frame), from the frames the layout pass looked at.
+    var faceX: Double? = nil
+    var faceY: Double? = nil
 
     var id: Int { index }
+    var faceCenter: (x: Double, y: Double)? {
+        guard let faceX, let faceY else { return nil }
+        return (faceX, faceY)
+    }
     var centerX: Double { x + w / 2 }
     var centerY: Double { y + h / 2 }
     func contains(x px: Double, y py: Double) -> Bool {

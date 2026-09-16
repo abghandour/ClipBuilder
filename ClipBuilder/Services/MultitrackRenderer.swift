@@ -58,6 +58,8 @@ actor MultitrackRenderer {
         var screenCrop: String?
         /// Hand-placed source window for the area (nil = tracking camera).
         var areaWindow: FreeCropRect?
+        /// The feed the area's tracking camera stays inside (nil = whole frame).
+        var areaRegion: FreeCropRect?
         var captionsPosition: String?     // nil = captions off for this clip
         /// Playback speed (1 = normal): `duration` is screen time; source
         /// consumption maps through this factor.
@@ -284,8 +286,9 @@ actor MultitrackRenderer {
             for index in clips.indices {
                 let clip = clips[index]
                 let area = ScreenCropStore.area(reference: clip.screenCrop)
-                guard (areaPass ? (clip.freeCrops?.isEmpty != false && area != nil) : clip.centerStage) else { continue }
-                if areaPass, let area, let window = clip.areaWindow {
+                guard (areaPass ? (clip.freeCrops?.isEmpty != false && area != nil)
+                       : (clip.centerStage && !(area != nil && clip.cameraPath != nil))) else { continue }
+                if areaPass, let area, let window = clip.areaWindow, clip.cameraPath == nil {
                     clips[index].staticAreaFilter = AreaFramer.staticFilter(area: area, window: window)
                     clips[index].wide = false
                     clips[index].effectiveCropXFrac = nil
@@ -316,7 +319,16 @@ actor MultitrackRenderer {
                 let fellBack = Mutex(false)
                 do {
                     let framed: URL
-                    if let area = job.area {
+                    if let area = job.area, let path = clip.cameraPath, path.count >= 2 {
+                        framed = try await AreaFramer.frame(source: source, start: clip.sourceStart,
+                            duration: clip.duration * clip.speed, area: area, path: path,
+                            centerStage: self.centerStageService, scratch: framingScratch, log: emit)
+                    } else if let area = job.area, let region = clip.areaRegion {
+                        framed = try await AreaFramer.frame(source: source, start: clip.sourceStart,
+                            duration: clip.duration * clip.speed, area: area, region: region,
+                            tuning: .named(centerStageCamera), centerStage: self.centerStageService,
+                            scratch: framingScratch, onFallback: { fellBack.withLock { $0 = true } }, log: emit)
+                    } else if let area = job.area {
                         framed = try await AreaFramer.frame(source: source, start: clip.sourceStart,
                             duration: clip.duration * clip.speed, area: area,
                             tuning: .named(centerStageCamera), centerStage: self.centerStageService,
@@ -988,6 +1000,7 @@ actor MultitrackRenderer {
                                          freeCrops: clip.freeCrops,
                                          screenCrop: clip.screenCrop,
                                          areaWindow: clip.areaWindow,
+                                         areaRegion: clip.areaWindow == nil && clip.cameraPath == nil ? clip.areaRegion : nil,
                                          captionsPosition: captionsResolved == "none" ? nil : captionsResolved,
                                          speed: clip.effectiveSpeed,
                                          cameraPath: cameraPath, effectiveEffect: effectiveEffect))
@@ -1269,7 +1282,7 @@ actor MultitrackRenderer {
     }
 
     /// Bump when CenterStageService/AreaFramer output or tracking semantics change.
-    nonisolated static let framingVersion = "multitrack-framing-v1"
+    nonisolated static let framingVersion = "multitrack-framing-v2"
 
     nonisolated static func prepassKey(_ clip: ResolvedClip, area: ScreenCropArea?,
                                       tuning: String, settings: RenderSettings = RenderContext.settings,
@@ -1282,6 +1295,7 @@ actor MultitrackRenderer {
             var duration: Double
             var path: [CameraPathKeyframe]?
             var area: ScreenCropArea?
+            var region: FreeCropRect?
             var tuning: String
             var settings: RenderSettings
             var encoder: [String]
@@ -1290,7 +1304,8 @@ actor MultitrackRenderer {
         return try RenderSegmentCache.key(Input(source: clip.framingIdentity ?? clip.sourcePath,
             fingerprint: clip.framingIdentity ?? SourceIdentityCache.shared.fingerprint(of: URL(fileURLWithPath: clip.sourcePath)),
             start: clip.sourceStart, duration: clip.duration * clip.speed,
-            path: clip.cameraPath, area: area, tuning: tuning, settings: settings, encoder: encoder), version: version)
+            path: clip.cameraPath, area: area, region: area == nil ? nil : clip.areaRegion,
+            tuning: tuning, settings: settings, encoder: encoder), version: version)
     }
 
     // MARK: - Segment rendering

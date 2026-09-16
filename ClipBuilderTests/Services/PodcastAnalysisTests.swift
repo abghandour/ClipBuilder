@@ -184,6 +184,17 @@ struct PodcastAnalysisTests {
         #expect(try await temp.database.video(id: videoID)?.podcastLayout == nil)
     }
 
+    @Test("tiles remember where their faces sit")
+    func tileFaceCenters() {
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1), PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1)]
+        let faces: [[CGRect]] = [[CGRect(x: 0.1, y: 0.2, width: 0.1, height: 0.2), CGRect(x: 0.7, y: 0.3, width: 0.1, height: 0.2)],
+                                 [CGRect(x: 0.2, y: 0.2, width: 0.1, height: 0.2)]]
+        let centered = PodcastVisualAnalyzer.withFaceCenters(tiles, faceSets: faces)
+        #expect(centered[0].faceCenter.map { abs($0.x - 0.2) < 1e-9 && abs($0.y - 0.3) < 1e-9 } == true)
+        #expect(centered[1].faceCenter.map { abs($0.x - 0.75) < 1e-9 } == true)
+        #expect(PodcastVisualAnalyzer.withFaceCenters(tiles, faceSets: []).allSatisfy { $0.faceCenter == nil })
+    }
+
     @Test("grid tiles and per-turn tiles persist")
     func gridPersistence() async throws {
         let temp = try TempDatabase()

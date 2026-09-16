@@ -144,7 +144,7 @@ struct ClipFilterTests {
         #expect(result.capabilities.first?.people == .completedEmpty)
         #expect(result.capabilities.first?.analysis == .completedWithData)
         #expect(try BuilderQuery(.tags).execute(model: model, library: library, resolve: { _ in UUID() }).tags.contains("custom"))
-        #expect(try BuilderQuery(.layouts).execute(model: model, library: library, resolve: { _ in UUID() }).layouts.count == 4)
+        #expect(try BuilderQuery(.layouts).execute(model: model, library: library, resolve: { _ in UUID() }).layouts.count == ScreenCropStore.builtIn.count + 1)
     }
 
     private func transcript(words: String?) -> TranscriptRow {

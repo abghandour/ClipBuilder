@@ -132,6 +132,31 @@ nonisolated enum ScreenCropStore {
             ScreenCropArea(name: "Middle", points: rect(0, 1.0 / 3, 1, 2.0 / 3)),
             ScreenCropArea(name: "Bottom", points: rect(0, 2.0 / 3, 1, 1)),
         ]),
+        ScreenCropLayout(name: "2x2 Grid", areas: [
+            ScreenCropArea(name: "Top Left", points: rect(0, 0, 0.5, 0.5)),
+            ScreenCropArea(name: "Top Right", points: rect(0.5, 0, 1, 0.5)),
+            ScreenCropArea(name: "Bottom Left", points: rect(0, 0.5, 0.5, 1)),
+            ScreenCropArea(name: "Bottom Right", points: rect(0.5, 0.5, 1, 1)),
+        ]),
+        ScreenCropLayout(name: "2x3 Grid", areas: [
+            ScreenCropArea(name: "Top Left", points: rect(0, 0, 0.5, 1.0 / 3)),
+            ScreenCropArea(name: "Top Right", points: rect(0.5, 0, 1, 1.0 / 3)),
+            ScreenCropArea(name: "Middle Left", points: rect(0, 1.0 / 3, 0.5, 2.0 / 3)),
+            ScreenCropArea(name: "Middle Right", points: rect(0.5, 1.0 / 3, 1, 2.0 / 3)),
+            ScreenCropArea(name: "Bottom Left", points: rect(0, 2.0 / 3, 0.5, 1)),
+            ScreenCropArea(name: "Bottom Right", points: rect(0.5, 2.0 / 3, 1, 1)),
+        ]),
+        ScreenCropLayout(name: "Talker + 2", areas: [
+            ScreenCropArea(name: "Top", points: rect(0, 0, 1, 0.5)),
+            ScreenCropArea(name: "Bottom Left", points: rect(0, 0.5, 0.5, 1)),
+            ScreenCropArea(name: "Bottom Right", points: rect(0.5, 0.5, 1, 1)),
+        ]),
+        ScreenCropLayout(name: "Talker + 3", areas: [
+            ScreenCropArea(name: "Top", points: rect(0, 0, 1, 0.5)),
+            ScreenCropArea(name: "Bottom Left", points: rect(0, 0.5, 1.0 / 3, 1)),
+            ScreenCropArea(name: "Bottom Middle", points: rect(1.0 / 3, 0.5, 2.0 / 3, 1)),
+            ScreenCropArea(name: "Bottom Right", points: rect(2.0 / 3, 0.5, 1, 1)),
+        ]),
         ScreenCropLayout(name: "50-50 Diagonal", areas: [
             ScreenCropArea(name: "Upper", points: [ScreenCropPoint(x: 0, y: 0), ScreenCropPoint(x: 1, y: 0),
                                                    ScreenCropPoint(x: 1, y: 1)]),

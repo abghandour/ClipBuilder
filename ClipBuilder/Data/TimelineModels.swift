@@ -686,6 +686,11 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// this clip's crop area, chosen by hand in the inspector. Nil lets the
     /// tracking camera frame the area. Always the area's aspect ratio.
     var areaWindow: FreeCropRect?
+    /// The part of the source (fractions of the frame) the tracking camera
+    /// may show in this clip's crop area: one feed of a multi-feed
+    /// recording. Nil lets it see the whole frame. Ignored with a window
+    /// or a camera path.
+    var areaRegion: FreeCropRect?
     var captions: String = "inherit"   // inherit | none | top | middle | bottom
     /// Wide clips only: reframe with the Center Stage tracking camera
     /// instead of a static crop.
@@ -713,6 +718,12 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         if let cameraPath, cameraPath.count >= 2 { return .custom }
         return centerStage ? .tracking : .fixed
     }
+    /// How a clip in a crop area is framed: a hand-placed window, the
+    /// tracking camera, or keyframes.
+    var areaFraming: Framing {
+        if let cameraPath, cameraPath.count >= 2 { return .custom }
+        return areaWindow == nil ? .tracking : .fixed
+    }
     /// Playback speed (nil = 1×). 0.5 = slow motion; `duration` is screen
     /// time, so the source span consumed is duration × speed.
     var speed: Double?
@@ -733,6 +744,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         freeCrops = nil
         screenCrop = nil
         areaWindow = nil
+        areaRegion = nil
         cropXFrac = nil
         position = nil
         // A bumper is never a cutaway: it owns the canvas outright.
@@ -774,6 +786,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         if coverAllAreas {
             screenCrop = nil
             areaWindow = nil
+            areaRegion = nil
             wide = false
             position = nil
         }
@@ -815,6 +828,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case freeCrops = "free_crops"
         case screenCrop = "screen_crop"
         case areaWindow = "area_window"
+        case areaRegion = "area_region"
         case centerStage = "center_stage"
         case cameraPath = "camera_path"
         case cameraPathSource = "camera_path_source"
@@ -856,6 +870,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         freeCrops = try container.decodeIfPresent([FreeCrop].self, forKey: .freeCrops)
         screenCrop = try container.decodeIfPresent(String.self, forKey: .screenCrop)
         areaWindow = try container.decodeIfPresent(FreeCropRect.self, forKey: .areaWindow)
+        areaRegion = try container.decodeIfPresent(FreeCropRect.self, forKey: .areaRegion)
         centerStage = try container.decodeIfPresent(Bool.self, forKey: .centerStage) ?? false
         if let path = try container.decodeIfPresent([CameraPathKeyframe].self, forKey: .cameraPath), path.count >= 2 {
             cameraPath = path
@@ -923,6 +938,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         }
         try encodeOrNull(screenCrop, in: &container, forKey: .screenCrop)
         if let areaWindow { try container.encode(areaWindow, forKey: .areaWindow) }
+        if let areaRegion { try container.encode(areaRegion, forKey: .areaRegion) }
         try container.encode(captions, forKey: .captions)
         try container.encode(centerStage, forKey: .centerStage)
         if let cameraPath, cameraPath.count >= 2 {
@@ -958,7 +974,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.position == rhs.position && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
             && lhs.centerStage == rhs.centerStage && lhs.speed == rhs.speed
             && lhs.effect == rhs.effect && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
-            && lhs.screenCrop == rhs.screenCrop && lhs.areaWindow == rhs.areaWindow
+            && lhs.screenCrop == rhs.screenCrop && lhs.areaWindow == rhs.areaWindow && lhs.areaRegion == rhs.areaRegion
     }
 
     var id: UUID { uid }

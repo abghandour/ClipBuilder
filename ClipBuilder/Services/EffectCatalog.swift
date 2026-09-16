@@ -73,6 +73,9 @@ nonisolated enum EffectCatalog {
         parameter("rgbsplit", "RGB split / glitch", "stylize", "px", 2, 20, 4, ["rgbashift"]) { "rgbashift=rh=\(Int($0.rounded())):bh=-\(Int($0.rounded()))" },
         fixed("vhs", "VHS", "stylize", "chromashift=cbh=4:crh=-4,noise=alls=14:allf=t+u,huesaturation=saturation=-0.2", ["chromashift", "noise", "huesaturation"]),
         fixed("edges", "Edges / cartoon", "stylize", "edgedetect=mode=colormix:high=0.4:low=0.2", ["edgedetect"]),
+        parameter("outline", "Outline", "stylize", "thickness", 2, 40, 12, ["drawbox"]) {
+            "drawbox=x=0:y=0:w=iw:h=ih:color=white@0.95:t=\(Int($0.rounded()))"
+        },
         fixed("mirror", "Mirror", "stylize", "crop=iw/2:ih:0:0,split[l][r];[r]hflip[rf];[l][rf]hstack", ["crop", "split", "hflip", "hstack"])
     ] + lutNames.map { name in
         Preset(id: "lut:\(name)", name: name.replacingOccurrences(of: "_", with: " ").capitalized,

@@ -280,11 +280,12 @@ actor CenterStageService {
     /// the render is just the hardware export.
     func reframeClip(source: URL, start: Double, duration: Double,
                      path: [CameraPathKeyframe],
+                     frame: CGSize? = nil,
                      log: (@Sendable (String) -> Void)? = nil) async throws -> URL {
         guard path.count >= 2 else {
             throw CenterStageError(message: "The stored camera path is too short to render.")
         }
-        let info = try await loadSource(source)
+        let info = try await loadSource(source, requireWide: frame == nil)
         let keyframes = path.map { keyframe in
             Keyframe(time: keyframe.t,
                      crop: CGRect(x: keyframe.x * info.size.width,
@@ -298,7 +299,7 @@ actor CenterStageService {
                          preferredTransform: info.preferredTransform,
                          displayOrigin: info.displayOrigin,
                          start: start, duration: duration,
-                         keyframes: keyframes, output: output)
+                         keyframes: keyframes, renderSize: frame ?? Self.defaultRenderSize, output: output)
         return output
     }
 

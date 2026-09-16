@@ -35,6 +35,29 @@ struct MultitrackRendererPlanningTests {
         #expect(plain.cameraPath == nil && plain.videoID == 1)
     }
 
+    @Test("a feed region reaches the render plan only when no window or path decides the cell")
+    func areaRegionPassthrough() throws {
+        var clip = Fixtures.timelineClip(sceneID: 1, sourceStart: 2, duration: 4)
+        clip.wide = true
+        clip.areaRegion = FreeCropRect(xFrac: 0.5, yFrac: 0, wFrac: 0.5, hFrac: 0.5)
+        var document = Fixtures.timelineDocument(clips: [clip])
+        document.cropBlocks = [CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"), startTime: 0, duration: 20)]
+        let scenes = [Fixtures.scene(id: 1, start: 0, end: 10)]
+        #expect(MultitrackRenderer.resolveClips(document: document, scenes: scenes).first?.areaRegion?.xFrac == 0.5)
+        document.videoTrack[0].areaWindow = FreeCropRect(xFrac: 0, yFrac: 0, wFrac: 0.5, hFrac: 0.5)
+        #expect(MultitrackRenderer.resolveClips(document: document, scenes: scenes).first?.areaRegion == nil)
+        document.videoTrack[0].areaWindow = nil
+        document.videoTrack[0].cameraPath = [CameraPathKeyframe(t: 0, x: 0, y: 0, w: 0.3, h: 0.5), CameraPathKeyframe(t: 4, x: 0, y: 0, w: 0.3, h: 0.5)]
+        #expect(MultitrackRenderer.resolveClips(document: document, scenes: scenes).first?.areaRegion == nil)
+        // The framing cache key tells a feed apart from the whole frame.
+        var plain = try #require(MultitrackRenderer.resolveClips(document: Fixtures.timelineDocument(clips: [clip]), scenes: scenes).first)
+        plain.framingIdentity = "fixture"
+        var whole = plain; whole.areaRegion = nil
+        let area = ScreenCropStore.builtIn[0].areas[0]
+        #expect(try MultitrackRenderer.prepassKey(plain, area: area, tuning: "balanced")
+                != MultitrackRenderer.prepassKey(whole, area: area, tuning: "balanced"))
+    }
+
     @Test("a clip's own camera path outranks its scene's and the file's, sliced to the clip's span")
     func explicitCameraPathWins() throws {
         var scene = Fixtures.scene(id: 1, start: 0, end: 10)
@@ -561,6 +584,7 @@ extension MultitrackRendererPlanningTests {
             "posterize": "lutrgb=r='trunc(val/64)*64':g='trunc(val/64)*64':b='trunc(val/64)*64'",
             "grain": "noise=alls=10:allf=t+u", "rgbsplit": "rgbashift=rh=4:bh=-4",
             "vhs": "chromashift=cbh=4:crh=-4,noise=alls=14:allf=t+u,huesaturation=saturation=-0.2",
+            "outline": "drawbox=x=0:y=0:w=iw:h=ih:color=white@0.95:t=12",
             "edges": "edgedetect=mode=colormix:high=0.4:low=0.2",
             "mirror": "crop=iw/2:ih:0:0,split[l][r];[r]hflip[rf];[l][rf]hstack"
         ]

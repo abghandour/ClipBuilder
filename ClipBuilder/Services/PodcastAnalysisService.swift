@@ -575,7 +575,7 @@ actor PodcastVisualAnalyzer {
                 splitHits += 1
             }
         }
-        let tiles = inferTiles(faceSets: faceSets)
+        let tiles = withFaceCenters(inferTiles(faceSets: faceSets), faceSets: faceSets)
         var layoutConfidence = available.isEmpty ? 0 : Double(splitHits) / Double(available.count)
         var layout: PodcastLayout = layoutConfidence >= 0.6 ? .splitHorizontal : .singleCamera
         // Three or more fixed feeds, or two stacked, is a grid: sides cannot
@@ -679,6 +679,19 @@ actor PodcastVisualAnalyzer {
         }
         tiles.sort { $0.y != $1.y ? $0.y < $1.y : $0.x < $1.x }
         return tiles.enumerated().map { index, tile in var t = tile; t.index = index; return t }
+    }
+
+    /// Each tile with the mean center of the faces seen inside it, so a
+    /// crop of the feed can sit on the person rather than the cell's middle.
+    nonisolated static func withFaceCenters(_ tiles: [PodcastTile], faceSets: [[CGRect]]) -> [PodcastTile] {
+        tiles.map { tile in
+            var tile = tile
+            let centers = faceSets.flatMap { $0 }.map { ($0.midX, $0.midY) }.filter { tile.contains(x: $0.0, y: $0.1) }
+            guard !centers.isEmpty else { return tile }
+            tile.faceX = (centers.map(\.0).reduce(0, +) / Double(centers.count) * 10000).rounded() / 10000
+            tile.faceY = (centers.map(\.1).reduce(0, +) / Double(centers.count) * 10000).rounded() / 10000
+            return tile
+        }
     }
 
     /// Fraction of sampled frames in which every tile showed a face.
