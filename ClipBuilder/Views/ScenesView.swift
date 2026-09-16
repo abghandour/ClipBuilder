@@ -871,6 +871,7 @@ struct SceneCard: View {
     var stackMembers: [SceneRecord]?
     /// Opens the stack picker (also reachable by long-pressing the card).
     var onPickFromStack: (() -> Void)?
+    @State private var hovering = false
 
     /// Actions broken out of this scene (it's a sequence when > 0).
     private var childCount: Int {
@@ -891,6 +892,7 @@ struct SceneCard: View {
         VStack(alignment: .leading, spacing: 6) {
             SceneInlinePlayer(scene: scene)
                 .aspectRatio(9 / 16, contentMode: .fit)
+                .sceneBlurbPanel(scene, hovering: hovering)
                 .overlay(alignment: .bottomTrailing) {
                     DurationBadge(seconds: scene.duration)
                         .allowsHitTesting(false)
@@ -940,6 +942,7 @@ struct SceneCard: View {
                     }
                 }
                 .opacity(scene.excluded ? 0.4 : 1)
+                .onHover { hovering = $0 }
 
             Text("\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)")
                 .font(.caption)

@@ -1245,7 +1245,28 @@ final class AppStore {
     @ObservationIgnored private var refreshInFlight = false
     @ObservationIgnored private var refreshQueued = false
 
+    /// Transcript rows per video for scene blurbs; dropped on every refresh.
+    private var blurbTranscripts: [Int64: [TranscriptRow]] = [:]
+
+    /// What a scene is about: its narrative, else the first words of its
+    /// transcript, else nothing.
+    func sceneBlurb(_ scene: SceneRecord) async -> SceneBlurb? {
+        if let narrative = scene.narrative, !narrative.trimmingCharacters(in: .whitespaces).isEmpty {
+            return SceneBlurb.fromNarrative(narrative)
+        }
+        guard let database else { return nil }
+        let rows: [TranscriptRow]
+        if let cached = blurbTranscripts[scene.videoID] {
+            rows = cached
+        } else {
+            rows = (try? await database.fetchTranscripts(videoID: scene.videoID)) ?? []
+            blurbTranscripts[scene.videoID] = rows
+        }
+        return SceneBlurb.fromTranscript(rows, start: scene.startTime, end: scene.endTime)
+    }
+
     func refreshAll() {
+        blurbTranscripts = [:]
         if refreshInFlight {
             refreshQueued = true
             return
@@ -2279,6 +2300,23 @@ final class AppStore {
                 await refreshAllNow()
             } catch {
                 presentError("Could not rename the analyze batch", error)
+            }
+        }
+    }
+
+    /// Delete every analyze batch of the given videos, with their scenes,
+    /// tags and grades; one refresh afterwards.
+    func deleteAnalysisRuns(forVideos videoIDs: Set<Int64>) {
+        guard let database else { return }
+        let runs = analysisRuns.filter { videoIDs.contains($0.videoID) }
+        guard !runs.isEmpty else { return }
+        Task {
+            do {
+                for run in runs { try await database.deleteAnalysisRun(id: run.id) }
+                appendLog(\.analysisLog, ["Removed \(runs.count) analyze batch(es) from \(videoIDs.count) video(s)"])
+                await refreshAllNow()
+            } catch {
+                presentError("Could not remove the analyze batches", error)
             }
         }
     }

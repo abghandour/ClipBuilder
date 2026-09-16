@@ -9,6 +9,8 @@ struct AnalyzeView: View {
     @State private var confirmingDriveUpload = false
     /// Videos queued for "Remove from Project"; non-empty shows the confirmation.
     @State private var pendingRemoval: Set<Int64> = []
+    /// Videos whose analyze batches are queued for removal; non-empty shows the confirmation.
+    @State private var pendingBatchRemoval: Set<Int64> = []
     @State private var showingDriveUpload = false
     @State private var pendingDriveUploads: [DriveMedia] = []
     @State private var skippedDriveUploads = 0
@@ -114,6 +116,18 @@ struct AnalyzeView: View {
             Button("Choose Folder…") { showingDriveUpload = true }
         } message: {
             Text("\(pendingDriveUploads.count) videos will upload. \(skippedDriveUploads) skipped (already in Drive). Uploads continue in the background.")
+        }
+        .confirmationDialog(
+            "Remove the analyze batches of \(pendingBatchRemoval.count == 1 ? "this video" : "\(pendingBatchRemoval.count) videos")?",
+            isPresented: Binding(get: { !pendingBatchRemoval.isEmpty }, set: { if !$0 { pendingBatchRemoval = [] } }),
+            titleVisibility: .visible
+        ) {
+            Button("Remove Analyze Batches", role: .destructive) {
+                store.deleteAnalysisRuns(forVideos: pendingBatchRemoval)
+                pendingBatchRemoval = []
+            }
+        } message: {
+            Text("Every analyze batch of the video goes, with its scenes, tags and grades. Transcripts, people and the video itself stay. Timelines that used those scenes lose them.")
         }
         .confirmationDialog(
             pendingRemoval.count == 1 ? "Remove this video from the project?"
@@ -491,6 +505,12 @@ struct AnalyzeView: View {
             Button("Generate Video…") {
                 selection = ids
                 showGenerateSheet = true
+            }
+            let batches = store.analysisRuns.filter { ids.contains($0.videoID) }.count
+            if batches > 0 {
+                Button(batches == 1 ? "Remove Analyze Batch" : "Remove \(batches) Analyze Batches", role: .destructive) {
+                    pendingBatchRemoval = ids
+                }
             }
             Divider()
             Button("Scan for Duplicates…") {

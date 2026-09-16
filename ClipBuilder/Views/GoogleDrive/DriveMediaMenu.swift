@@ -18,10 +18,17 @@ struct DriveMediaMenu: View {
     }
     private var uploadCandidates: [DriveMedia] { currentMedia.filter { $0.fileID == nil } }
     private var copies: [DriveMedia] { currentMedia.filter { $0.fileID != nil } }
-    /// Every Drive copy is absent from disk, whether offloaded or simply gone.
-    private var cloudOnly: Bool {
-        copies.allSatisfy { $0.offloaded || !FileManager.default.fileExists(atPath: $0.path) }
+    /// Drive copies absent from disk, whether offloaded or simply gone, and
+    /// the ones that are here: only the absent can be downloaded, only the
+    /// present removed.
+    private var absentCopies: [DriveMedia] {
+        copies.filter { $0.offloaded || !FileManager.default.fileExists(atPath: $0.path) }
     }
+    private var presentCopies: [DriveMedia] {
+        copies.filter { !$0.offloaded && FileManager.default.fileExists(atPath: $0.path) }
+    }
+    /// Every Drive copy is absent from disk.
+    private var cloudOnly: Bool { presentCopies.isEmpty }
     var body: some View {
         if compact && copies.isEmpty {
             EmptyView()
@@ -46,16 +53,19 @@ struct DriveMediaMenu: View {
                 if let item = copies.first, copies.count == 1, let link = item.link, let url = URL(string: link) {
                     Link("Open in Drive", destination: url)
                 }
-                if !copies.isEmpty {
-                    Button("Download Local Copy") {
+                let absent = absentCopies, present = presentCopies
+                if !absent.isEmpty {
+                    Button(absent.count == 1 ? "Download Local Copy" : "Download \(absent.count) Local Copies") {
                         let profile = store.activeProfile.profileName
                         Task {
                             do {
-                                for item in copies { _ = try await store.googleDrive.fetch(item, profile: profile) }
+                                for item in absent { _ = try await store.googleDrive.fetch(item, profile: profile) }
                             } catch { self.error = GoogleDriveError.message(for: error) }
                         }
                     }
-                    Button("Remove Local Copy…") { removing = true }
+                }
+                if !present.isEmpty {
+                    Button(present.count == 1 ? "Remove Local Copy…" : "Remove \(present.count) Local Copies…") { removing = true }
                         .disabled(
                             store.isAnalyzing || store.isBuilderRendering || store.isWizardRunning
                                 || store.isPipelineRunning)
@@ -79,16 +89,17 @@ struct DriveMediaMenu: View {
         .confirmationDialog("Remove local media copies?", isPresented: $removing) {
             Button("Remove Local Copies", role: .destructive) {
                 let profile = store.activeProfile.profileName
+                let present = presentCopies
                 Task {
                     do {
-                        try await store.googleDrive.offload(copies, profile: profile)
+                        try await store.googleDrive.offload(present, profile: profile)
                         store.refreshAll()
                     } catch { self.error = GoogleDriveError.message(for: error) }
                 }
             }
         } message: {
             Text(
-                copies.contains(where: \.shared)
+                presentCopies.contains(where: \.shared)
                     ? "Shared files may become unavailable if their owner removes access. Scenes, transcripts, thumbnails and timelines stay on this Mac."
                     : "Only the media files are removed. Scenes, transcripts, thumbnails and timelines stay. Media downloads again when needed."
             )

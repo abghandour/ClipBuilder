@@ -49,6 +49,9 @@ struct VideoThumbnail: View {
     let time: Double
     var cornerRadius: CGFloat = 6
     var contentMode: ContentMode = .fill
+    /// Only this part of the frame (fractions, top-left origin), scaled to
+    /// fill the view: a speaker's cell of a call, a tracked crop.
+    var window: FreeCropRect? = nil
 
     @State private var image: NSImage?
     @State private var loadedKey: String?
@@ -74,9 +77,20 @@ struct VideoThumbnail: View {
                 // view's own layout size the way a bare .fill image does.
                 Color.clear
                     .overlay {
-                        Image(nsImage: image)
-                            .resizable()
-                            .aspectRatio(contentMode: contentMode)
+                        if let window {
+                            GeometryReader { geo in
+                                let fullWidth = geo.size.width / max(0.01, window.wFrac)
+                                let fullHeight = geo.size.height / max(0.01, window.hFrac)
+                                Image(nsImage: image)
+                                    .resizable()
+                                    .frame(width: fullWidth, height: fullHeight)
+                                    .offset(x: -window.xFrac * fullWidth, y: -window.yFrac * fullHeight)
+                            }
+                        } else {
+                            Image(nsImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: contentMode)
+                        }
                     }
             } else {
                 Rectangle()
@@ -450,8 +464,10 @@ struct SceneInlinePlayer: View {
 
     var body: some View {
         ZStack {
-            // Stays underneath as the poster while the player gets ready.
-            VideoThumbnail(url: scene.videoURL, time: (scene.startTime + scene.endTime) / 2)
+            // Stays underneath as the poster while the player gets ready;
+            // talk footage opens on whoever is speaking at the scene's start.
+            let poster = scene.posterFrame(videoType: store.videos.first { $0.id == scene.videoID }?.type)
+            VideoThumbnail(url: scene.videoURL, time: poster.time, window: poster.window)
             if let player {
                 GeometryReader { proxy in
                     let size = proxy.size

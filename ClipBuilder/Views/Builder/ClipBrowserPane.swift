@@ -146,6 +146,15 @@ struct ClipBrowserPane: View {
         activeFilterCount > 0
     }
 
+    /// The exchange title under a podcast or interview scene card: the
+    /// narrative's title, else its first line.
+    private func talkTitle(for scene: SceneRecord) -> String? {
+        let type = store.videos.first { $0.id == scene.videoID }?.type
+        guard scene.isTalk(videoType: type), let narrative = scene.narrative else { return nil }
+        let blurb = SceneBlurb.fromNarrative(narrative)
+        return blurb.title ?? blurb.text
+    }
+
     nonisolated static func restoredTab(_ value: String) -> String {
         ["scenes", "files", "wizard", "scripts"].contains(value) ? value : "scenes"
     }
@@ -301,12 +310,10 @@ struct ClipBrowserPane: View {
                                              markTalker: $markTalker,
                                              stackMembers: stack,
                                              onPickFromStack: stack != nil
-                                                 ? { stackPickerSceneID = scene.id } : nil)
-                                .safeAreaInset(edge: .bottom) {
-                                    if let video = store.videos.first(where: { $0.id == scene.videoID }), video.driveFileID != nil {
-                                        DriveMediaMenu(media: [video.driveMedia], compact: true).font(.caption)
-                                    }
-                                }
+                                                 ? { stackPickerSceneID = scene.id } : nil,
+                                             driveMedia: store.videos.first { $0.id == scene.videoID && $0.driveFileID != nil }?.driveMedia,
+                                             talkTitle: talkTitle(for: scene),
+                                             poster: scene.posterFrame(videoType: store.videos.first { $0.id == scene.videoID }?.type))
                                 .popover(isPresented: Binding(
                                     get: { stackPickerSceneID == scene.id },
                                     set: { if !$0 { stackPickerSceneID = nil } })
@@ -369,12 +376,8 @@ struct ClipBrowserPane: View {
                                             onCompose: { recipe in
                                                 store.composeVideo(video, recipe: recipe, highlightTalker: markTalker)
                                             },
-                                            markTalker: $markTalker)
-                                .safeAreaInset(edge: .bottom) {
-                                    if video.driveFileID != nil {
-                                        DriveMediaMenu(media: [video.driveMedia], compact: true).font(.caption)
-                                    }
-                                }
+                                            markTalker: $markTalker,
+                                            driveMedia: video.driveFileID != nil ? video.driveMedia : nil)
                         }
                     }
                     .padding(Theme.spaceM)
@@ -479,6 +482,8 @@ struct BrowserFileCard: View {
     /// Lay the whole file out by a recipe at the playhead.
     var onCompose: ((CropRecipe.Kind) -> Void)? = nil
     var markTalker: Binding<Bool>? = nil
+    /// The file's Drive copy, shown as a cloud glyph at the end of the name row.
+    var driveMedia: DriveMedia? = nil
 
     private var detail: String {
         var parts = [video.duration.timecode]
@@ -506,9 +511,15 @@ struct BrowserFileCard: View {
                                   addHelp: "Add the whole file to the timeline at the playhead, or lay it out by a crop recipe")
                         .padding(Theme.spaceXS)
                 }
-            Text(video.filename)
-                .font(.caption)
-                .lineLimit(1)
+            HStack(spacing: Theme.spaceXS) {
+                Text(video.filename)
+                    .font(.caption)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if let driveMedia {
+                    DriveMediaMenu(media: [driveMedia], compact: true).font(.caption)
+                }
+            }
             Text(detail)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -599,11 +610,21 @@ struct BrowserSceneCard: View {
     /// Opens the stack picker (badge click or context menu — long-press is
     /// taken by dragging here).
     var onPickFromStack: (() -> Void)?
+    /// The file's Drive copy, shown as a cloud glyph at the end of the name row.
+    var driveMedia: DriveMedia? = nil
+    /// The exchange's title for podcast and interview scenes.
+    var talkTitle: String? = nil
+    /// The frame and crop the card shows: the speaker at the start of talk footage.
+    var poster: (time: Double, window: FreeCropRect?)? = nil
+    @State private var hovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceXS) {
-            VideoThumbnail(url: scene.videoURL, time: (scene.startTime + scene.endTime) / 2)
+            VideoThumbnail(url: scene.videoURL, time: poster?.time ?? (scene.startTime + scene.endTime) / 2,
+                           window: poster?.window)
                 .aspectRatio(9 / 16, contentMode: .fit)
+                // What the scene is about, while hovered; under every control.
+                .sceneBlurbPanel(scene, hovering: hovering)
                 // The drag handle covers the middle of the thumbnail but
                 // stays clear of the corner controls: the AppKit drag
                 // session captures every left-click inside its frame (z
@@ -651,10 +672,24 @@ struct BrowserSceneCard: View {
                                   addHelp: "Add to the timeline at the playhead, or lay the scene out by a crop recipe")
                         .padding(Theme.spaceXS)
                 }
-            Text(scene.videoFilename)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .onHover { hovering = $0 }
+            HStack(spacing: Theme.spaceXS) {
+                Text(scene.videoFilename)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if let driveMedia {
+                    DriveMediaMenu(media: [driveMedia], compact: true).font(.caption)
+                }
+            }
+            // Talk footage says what the exchange is about, always.
+            if let title = talkTitle {
+                Text(title)
+                    .font(.caption2)
+                    .lineLimit(1)
+                    .help(scene.narrative ?? title)
+            }
         }
         .contextMenu {
             Button("Add to Timeline") { onAdd() }
