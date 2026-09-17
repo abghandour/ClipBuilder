@@ -34,8 +34,10 @@ for tool in gh xcrun; do
     command -v "$tool" >/dev/null 2>&1 || { echo "error: $tool not found" >&2; exit 1; }
 done
 
+# The only place the unit tests run: a failing suite aborts the release
+# before any version bump, build or publish. There is no commit-time gate.
 step "Running unit tests"
-"$REPO_ROOT/scripts/test.sh"
+"$REPO_ROOT/scripts/test.sh" || { echo "error: unit tests failed — release aborted (nothing was bumped, built or published)" >&2; exit 1; }
 
 # ------------------------------------------------------------- version bump
 CURRENT=$(sed -n 's/.*MARKETING_VERSION = \([0-9.]*\);.*/\1/p' "$PBXPROJ" | head -1)

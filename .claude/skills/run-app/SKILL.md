@@ -5,6 +5,11 @@ description: Build and launch Clip Builder locally. Use when asked to run, build
 
 # Build and run Clip Builder
 
+Build only when the user asks to run, launch, screenshot or verify the app.
+Do not rebuild after every change: the unit tests and the Release build run
+inside `scripts/release.sh` (the release skill), which aborts on a failing
+test. A `build-for-testing` compile check is enough to know a change compiles.
+
 ## The one command that builds
 
 ```bash
