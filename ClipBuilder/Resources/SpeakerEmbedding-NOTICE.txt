@@ -1,0 +1,10 @@
+SpeakerEmbedding.mlpackage
+
+ECAPA-TDNN speaker-embedding model from SpeechBrain
+(speechbrain/spkrec-ecapa-voxceleb), converted to Core ML with
+scripts/convert_speaker_embedding.py. Input: 16 kHz mono audio; output: a
+unit-length 192-dimensional voice embedding. Used on-device to tell the
+people in a recording apart by voice.
+
+Copyright SpeechBrain contributors. Licensed under the Apache License,
+Version 2.0: http://www.apache.org/licenses/LICENSE-2.0

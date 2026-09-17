@@ -18,6 +18,8 @@ struct TranscriptToolsSheet: View {
     @State private var isWorking = false
     @State private var status = ""
     @State private var batchFallback = false
+    /// Cuts ticked for a batch decision.
+    @State private var selectedProposalIDs: Set<Int64> = []
 
     var body: some View {
         NavigationStack {
@@ -52,19 +54,28 @@ struct TranscriptToolsSheet: View {
                     }
                 }
 
-                Section("Proposed Cleanup Cuts") {
+                Section {
                     if proposals.isEmpty {
                         Text("No pauses or filler runs exceed the configured thresholds.")
                             .foregroundStyle(.secondary)
                     }
                     ForEach($proposals) { $proposal in
                         VStack(alignment: .leading, spacing: 6) {
-                            VideoThumbnail(
-                                url: video.url,
-                                time: (proposal.startTime + proposal.endTime) / 2,
-                                cornerRadius: 6
-                            )
-                            .frame(width: 120, height: 68)
+                            HStack(alignment: .top, spacing: 8) {
+                                Toggle(isOn: Binding(
+                                    get: { selectedProposalIDs.contains(proposal.id) },
+                                    set: { on in if on { selectedProposalIDs.insert(proposal.id) } else { selectedProposalIDs.remove(proposal.id) } })
+                                ) { EmptyView() }
+                                .toggleStyle(.checkbox)
+                                .labelsHidden()
+                                .help("Tick cuts to accept or reject them together")
+                                VideoThumbnail(
+                                    url: video.url,
+                                    time: (proposal.startTime + proposal.endTime) / 2,
+                                    cornerRadius: 6
+                                )
+                                .frame(width: 120, height: 68)
+                            }
                             Text(proposal.reason)
                             HStack {
                                 TextField("In", value: $proposal.startTime, format: .number)
@@ -79,6 +90,28 @@ struct TranscriptToolsSheet: View {
                         }
                         .onChange(of: proposal) { _, changed in saveProposal(changed) }
                     }
+                } header: {
+                    HStack {
+                        Text("Proposed Cleanup Cuts")
+                        Spacer()
+                        if !proposals.isEmpty {
+                            let pending = proposals.count { $0.decision == .pending }
+                            Button(selectedProposalIDs.count == proposals.count ? "Select None" : "Select All") {
+                                selectedProposalIDs = selectedProposalIDs.count == proposals.count ? [] : Set(proposals.map(\.id))
+                            }
+                            Button("Accept Selected") { decide(.accepted, ids: selectedProposalIDs) }
+                                .disabled(selectedProposalIDs.isEmpty)
+                            Button("Reject Selected") { decide(.rejected, ids: selectedProposalIDs) }
+                                .disabled(selectedProposalIDs.isEmpty)
+                            Button("Accept All Pending (\(pending))") {
+                                decide(.accepted, ids: Set(proposals.filter { $0.decision == .pending }.map(\.id)))
+                            }
+                            .disabled(pending == 0)
+                            .help("Accept every cut still marked Pending; accepted cuts are skipped when the Wizard builds from this video")
+                        }
+                    }
+                    .controlSize(.small)
+                    .textCase(nil)
                 }
 
                 Section("Caption Translation") {
@@ -144,11 +177,12 @@ struct TranscriptToolsSheet: View {
                 deadAirThreshold: settings.deadAirSeconds,
                 fillerRunThreshold: settings.fillerRunSeconds)
             let newTopics = TopicSegmenter.segment(result.features, videoID: video.id)
+            let decided = settings.cleanupCutPolicy.applied(to: result.proposals)
             do {
                 try await database.replaceTranscriptFeatures(
                     videoID: video.id,
                     features: result.features,
-                    proposals: result.proposals)
+                    proposals: decided)
                 try await database.replaceTopicRanges(videoID: video.id, topics: newTopics)
                 status = "Created \(newTopics.count) topics and \(result.proposals.count) cleanup proposals."
                 await load()
@@ -156,6 +190,24 @@ struct TranscriptToolsSheet: View {
                 store.presentError("Could not analyze transcript", error)
             }
             isWorking = false
+        }
+    }
+
+    /// One decision for several cuts at once, saved together.
+    private func decide(_ decision: EditProposal.Decision, ids: Set<Int64>) {
+        guard let database = store.database, !ids.isEmpty else { return }
+        for index in proposals.indices where ids.contains(proposals[index].id) {
+            proposals[index].decision = decision
+        }
+        let changed = proposals.filter { ids.contains($0.id) }
+        selectedProposalIDs = []
+        Task {
+            do {
+                for proposal in changed { try await database.updateEditProposal(proposal) }
+                status = "\(changed.count) cut\(changed.count == 1 ? "" : "s") \(decision == .accepted ? "accepted" : "rejected")."
+            } catch {
+                store.presentError("Could not save cut decisions", error)
+            }
         }
     }
 
@@ -169,102 +221,24 @@ struct TranscriptToolsSheet: View {
     }
 
     private func startTranslation() {
-        batchFallback = OnDevicePolicy.isEnabled(item: "translation-batch", config: store.settings.ai)
-        let original = transcripts.first { !$0.isTranslation }
-        let source = original.map { Locale.Language(identifier: $0.language) }
-        translationConfiguration = TranslationSession.Configuration(
-            source: source, target: Locale.Language(identifier: targetLanguage))
+        let originals = transcripts.filter { !$0.isTranslation }
+        translationConfiguration = TranscriptTranslator.configuration(originals: originals, target: targetLanguage)
         isWorking = true
         status = "Preparing on-device translation…"
     }
 
     private func translate(using session: TranslationSession) async {
-        guard let database = store.database else { return }
         let originals = transcripts.filter { !$0.isTranslation }
         do {
-            try await session.prepareTranslation()
-            let requests = originals.map {
-                TranslationSession.Request(sourceText: $0.text, clientIdentifier: String($0.id))
-            }
-            let responses = try await session.translations(from: requests)
-            let translated = Dictionary(
-                uniqueKeysWithValues: responses.compactMap { response in
-                    response.clientIdentifier.map { ($0, response.targetText) }
-                })
-            let missing = originals.filter { translated[String($0.id)] == nil }
-            if batchFallback && !missing.isEmpty {
-                await translateWithAI(missing, database: database, existing: originals.compactMap { row in
-                    guard let text = translated[String(row.id)] else { return nil }
-                    return TranscriptSegment(start: row.startTime, end: row.endTime, text: text, words: nil)
-                })
-                translationConfiguration = nil
-                isWorking = false
-                return
-            }
-            let segments = originals.compactMap { row -> TranscriptSegment? in
-                guard let text = translated[String(row.id)] else { return nil }
-                return TranscriptSegment(start: row.startTime, end: row.endTime, text: text, words: nil)
-            }
-            try await database.replaceTranscripts(
-                videoID: video.id, language: targetLanguage,
-                isTranslation: true, segments: segments,
-                provider: "apple", model: "Translation")
-            store.appendLog(\.pipelineLog, ["Translation answered by Apple Translation"])
-            status = "Translated \(segments.count) segments to \(targetLanguage) on device."
-            translationConfiguration = nil
+            let outcome = try await TranscriptTranslator.translate(videoID: video.id, originals: originals,
+                                                                   target: targetLanguage, session: session, store: store)
+            status = outcome.summary
             await load()
-        } catch {
-            status = "On-device translation was unavailable. Trying the configured AI provider…"
-            await translateWithAI(originals, database: database)
-        }
-        isWorking = false
-    }
-
-    private func translateWithAI(_ originals: [TranscriptRow], database: Database, existing: [TranscriptSegment] = []) async {
-        var segments: [TranscriptSegment] = []
-        var provenance: AIProvenance?
-        do {
-            if batchFallback {
-                let response = try await TranslationBatch.perform(
-                    texts: originals.map(\.text), language: targetLanguage, ai: store.ai)
-                provenance = response.provenance
-                let translated = TranslationBatch.parse(response.text, count: originals.count)
-                segments = originals.enumerated().compactMap { index, row in
-                    guard let text = translated[index] else { return nil }
-                    return TranscriptSegment(start: row.startTime, end: row.endTime, text: text, words: nil)
-                }
-                store.appendLog(\.pipelineLog, ["Translation fallback answered by model in one batch"])
-            } else {
-                for row in originals {
-                    let response = try await store.ai.call(
-                        prompt: "Translate this caption to \(targetLanguage). Preserve names and meaning. Return only the translation:\n\(row.text)",
-                        task: "translate", timeout: 60, log: { _ in })
-                    provenance = response.provenance
-                    segments.append(.init(start: row.startTime, end: row.endTime,
-                                          text: response.text.trimmingCharacters(in: .whitespacesAndNewlines), words: nil))
-                }
-                store.appendLog(\.pipelineLog, ["Translation fallback answered by model per row"])
-            }
         } catch {
             store.presentError("Caption translation failed", error)
-            return
         }
-        let answered = existing + segments
-        let unchanged = transcripts.filter { row in
-            row.isTranslation && row.language == targetLanguage && !answered.contains { $0.start == row.startTime && $0.end == row.endTime }
-        }.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: nil) }
-        segments = (answered + unchanged).sorted { $0.start < $1.start }
-        do {
-            try await database.replaceTranscripts(
-                videoID: video.id, language: targetLanguage,
-                isTranslation: true, segments: segments,
-                provider: provenance?.provider ?? "ai", model: provenance?.model,
-                technique: existing.isEmpty ? (batchFallback ? "numbered-translation-batch" : nil) : "apple-translation")
-            status = "Translated \(segments.count) segments to \(targetLanguage) with the configured AI provider."
-            await load()
-        } catch {
-            store.presentError("Could not save translation", error)
-        }
+        translationConfiguration = nil
+        isWorking = false
     }
 
     private func exportSRT() {

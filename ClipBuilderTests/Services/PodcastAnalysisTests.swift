@@ -495,7 +495,7 @@ struct PodcastAnalysisTests {
         #expect(ranges.map(\.start) == [0, 20])
         #expect(ranges.map(\.end) == [20, 40])
         let scenes = try await temp.database.fetchScenes().filter { $0.runID == runID }
-        let required = Set(["podcast", "question", "answer", "person:host", "person:guest", "podcast:split"])
+        let required = Set(["podcast", "q&a", "person:host", "person:guest", "podcast:split"])
         #expect(scenes.allSatisfy { required.isSubset(of: Set($0.tags)) })
         #expect(scenes.filter { $0.tags.contains("reel-highlight") }.map(\.startTime) == [0])
     }
@@ -644,4 +644,34 @@ struct PodcastAnalysisTests {
         }
     }
 
+
+    @Test("a topic holding two or more exchanges becomes a chapter spanning exactly those exchanges")
+    func chapters() {
+        func exchange(_ start: Double, _ end: Double, _ title: String, _ keys: [String], score: Double = 5) -> PodcastExchange {
+            PodcastExchange(start: start, end: end, title: title, summary: "", score: score, speakerKeys: keys)
+        }
+        let exchanges = [exchange(0, 30, "Origins", ["ann"], score: 4), exchange(30, 55, "The move", ["ann", "bob"], score: 8),
+                         exchange(60, 100, "The fight", ["bob"]), exchange(100, 130, "Aftermath", ["bob"])]
+        let topics = [TopicRange(id: 1, videoID: 1, title: "Where it started", startTime: 0, endTime: 58, summary: "", speakerKeys: []),
+                      TopicRange(id: 2, videoID: 1, title: "Lonely", startTime: 58, endTime: 99, summary: "", speakerKeys: []),
+                      TopicRange(id: 3, videoID: 1, title: "Tail", startTime: 99, endTime: 200, summary: "", speakerKeys: [])]
+        let chapters = PodcastAnalysisService.chapters(topics: topics, exchanges: exchanges)
+        #expect(chapters.count == 1)
+        let first = try! #require(chapters.first)
+        #expect(first.start == 0 && first.end == 55)
+        #expect(first.title == "Where it started")
+        #expect(first.exchanges.map(\.title) == ["Origins", "The move"])
+        #expect(first.speakerKeys == ["ann", "bob"])
+        #expect(first.score == 6)
+        #expect(first.narrative == "Where it started — Origins · The move")
+        let tags = PodcastAnalysisService.chapterTagRanges(chapters)
+        #expect(tags["chapter"]?.count == 1 && tags["podcast"]?.count == 1)
+        #expect(Set(tags.keys) == ["chapter", "podcast", "person:ann", "person:bob"])
+
+        // A chapter never stacks with the exchange it starts on.
+        var chapterScene = Fixtures.scene(id: 10, start: 0, end: 55); chapterScene.tags = ["podcast", "chapter"]
+        var beat = Fixtures.scene(id: 11, start: 0, end: 30); beat.tags = ["podcast", "q&a"]
+        let stacks = SceneStacks.group([chapterScene, beat], level: .standard)
+        #expect(stacks.count == 2)
+    }
 }

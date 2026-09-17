@@ -243,7 +243,10 @@ actor TranscriptionService {
         try Task.checkCancellation()
         try await database.replaceTranscriptFeatures(videoID: video.id,
                                                      features: analysis.features,
-                                                     proposals: analysis.proposals)
+                                                     proposals: settings.cleanupCutPolicy.applied(to: analysis.proposals))
+        // Topics are cheap and the Wizard plans with them: keep them current.
+        try await database.replaceTopicRanges(videoID: video.id,
+                                              topics: TopicSegmenter.segment(analysis.features, videoID: video.id))
     }
 
     private static func runSpeechTranscriber(audioURL: URL, locale: Locale) async throws

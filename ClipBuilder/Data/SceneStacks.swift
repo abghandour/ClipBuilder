@@ -72,8 +72,13 @@ nonisolated enum SceneStacks {
     /// segmentation can't creep a stack across the entire video, while
     /// re-analyzed duplicates of even a long sequence (same start, batch
     /// two) still land in the same stack.
+    ///
+    /// `matchChapters` lets podcast chapters stack too — for comparing
+    /// batches, where two batches' chapters of one topic are the same find;
+    /// on a grid a chapter is a container and stays its own card.
     static func group(_ scenes: [SceneRecord],
-                      level: SceneStackLevel = .standard) -> [[SceneRecord]] {
+                      level: SceneStackLevel = .standard,
+                      matchChapters: Bool = false) -> [[SceneRecord]] {
         guard level != .off else { return scenes.map { [$0] } }
         var openStacks: [Int64: (members: [SceneRecord], anchor: Double, maxEnd: Double)] = [:]
         var stacksByFirstID: [Int64: [SceneRecord]] = [:]
@@ -83,6 +88,12 @@ nonisolated enum SceneStacks {
         }
 
         for scene in scenes.sorted(by: { ($0.videoID, $0.startTime) < ($1.videoID, $1.startTime) }) {
+            // A podcast chapter spans its exchanges by design: it is a
+            // container, never a take of the same moment.
+            if !matchChapters, scene.tags.contains("chapter") {
+                stacksByFirstID[scene.id] = [scene]
+                continue
+            }
             if var open = openStacks[scene.videoID] {
                 if scene.startTime <= open.maxEnd + level.gapTolerance,
                    scene.startTime < open.anchor + level.maxStackSpan {

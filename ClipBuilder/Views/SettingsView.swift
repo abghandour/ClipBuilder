@@ -572,11 +572,23 @@ private struct GeneralSettingsTab: View {
                             .monospacedDigit()
                     }
                 }
+                Picker("Detected cuts", selection: $store.settings.podcast.cleanupCutPolicy) {
+                    ForEach(CleanupCutPolicy.allCases) { policy in
+                        Text(policy.label).tag(policy)
+                    }
+                }
+                .help(store.settings.podcast.cleanupCutPolicy.help)
                 Toggle("Review podcast cuts before rendering",
                        isOn: $store.settings.podcast.reviewCutsByDefault)
-                Text("Transcript Tools uses these thresholds for adjustable silence and filler-cut suggestions.")
+                Text("Pauses and filler runs are detected after every transcription with these thresholds. The Wizard skips accepted cuts; Transcript Tools shows every cut and lets you change any decision.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Picker("Translate captions automatically", selection: $store.settings.podcast.autoTranslateLanguage) {
+                    Text("Off").tag("")
+                    Text("Português (Brasil)").tag("pt-BR")
+                    Text("English (United States)").tag("en-US")
+                }
+                .help("Translate each new transcript to this language on the Mac in the background, so the SRT and translated captions are ready without a visit to Transcript Tools")
             }
 
             Section("Podcast highlights") {

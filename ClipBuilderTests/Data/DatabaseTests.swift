@@ -198,6 +198,85 @@ struct DatabaseTests {
         #expect(try await database.fetchAnalysisCheckpoint(videoID: videoID) == nil)
     }
 
+    @Test("a re-cut replaces the original-language rows, keeps translations, and Undo restores the transcriber's rows")
+    func transcriptRecutRoundTrip() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let videoID = try await temp.seedVideo()
+        let words = [TranscriptWord(word: "one", start: 0, end: 1), TranscriptWord(word: " two", start: 3, end: 4)]
+        try await database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+                                              segments: [.init(start: 0, end: 4, text: "one two", words: words)],
+                                              provider: "apple", model: "m", seconds: nil)
+        try await database.replaceTranscripts(videoID: videoID, language: "pt", isTranslation: true,
+                                              segments: [.init(start: 0, end: 4, text: "um dois", words: nil)],
+                                              provider: "claude", model: "m", seconds: nil)
+        let original = try await database.fetchTranscripts(videoID: videoID)
+        let source = try #require(original.first { !$0.isTranslation })
+        try await database.setTranscriptSpeaker(ids: [source.id], speaker: .person(key: "ann"))
+
+        let pieces = [
+            TranscriptSpeakerRecut.Piece(start: 0, end: 3, text: "one", words: [words[0]], sourceRowID: source.id, speakerKey: "ann", split: true),
+            TranscriptSpeakerRecut.Piece(start: 3, end: 4, text: "two", words: [words[1]], sourceRowID: source.id, speakerKey: "ann", split: true),
+        ]
+        try await database.recutTranscript(videoID: videoID, pieces: pieces)
+        #expect(try await database.hasTranscriptBackup(videoID: videoID))
+        let recut = try await database.fetchTranscripts(videoID: videoID)
+        let originals = recut.filter { !$0.isTranslation }
+        #expect(originals.map(\.text) == ["one", "two"])
+        #expect(originals.allSatisfy { $0.provider == "apple" && $0.language == "en" && $0.speaker == .person(key: "ann") })
+        #expect(originals[0].words?.map(\.word) == ["one"])
+        #expect(recut.filter(\.isTranslation).map(\.text) == ["um dois"])
+
+        // A second re-cut keeps the first backup: Undo returns to the transcriber's cut.
+        try await database.recutTranscript(videoID: videoID, pieces: [pieces[0]])
+        #expect(try await database.restoreTranscriptBackup(videoID: videoID))
+        let restored = try await database.fetchTranscripts(videoID: videoID).filter { !$0.isTranslation }
+        #expect(restored.map(\.text) == ["one two"])
+        #expect(restored[0].speaker == .person(key: "ann"))
+        #expect(!(try await database.hasTranscriptBackup(videoID: videoID)))
+        #expect(!(try await database.restoreTranscriptBackup(videoID: videoID)))
+    }
+
+    @Test("a re-cut keeps edit history on rows passed through, starts over from the backup only while nothing was corrected, and a new transcription drops the backup")
+    func transcriptRecutKeepsCorrections() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let videoID = try await temp.seedVideo()
+        try await database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+                                              segments: [.init(start: 0, end: 4, text: "one two", words: nil),
+                                                         .init(start: 4, end: 6, text: "three", words: nil)],
+                                              provider: "apple", model: "m", seconds: nil)
+        let rows = try await database.fetchTranscripts(videoID: videoID)
+        try await database.updateTranscriptText(id: rows[1].id, text: "tree")
+        let pieces = [
+            TranscriptSpeakerRecut.Piece(start: 0, end: 2, text: "one", words: nil, sourceRowID: rows[0].id, speakerKey: nil, split: true),
+            TranscriptSpeakerRecut.Piece(start: 2, end: 4, text: "two", words: nil, sourceRowID: rows[0].id, speakerKey: nil, split: true),
+            TranscriptSpeakerRecut.Piece(start: 4, end: 6, text: "tree", words: nil, sourceRowID: rows[1].id, speakerKey: nil, split: false),
+        ]
+        try await database.recutTranscript(videoID: videoID, pieces: pieces)
+        let recut = try await database.fetchTranscripts(videoID: videoID)
+        #expect(recut.map(\.text) == ["one", "two", "tree"])
+        #expect(recut[2].originalText == "three")
+
+        // Nothing corrected since: the base is the transcriber's cut again.
+        #expect(try await database.transcriptRecutBase(videoID: videoID).map(\.text) == ["one two", "tree"])
+        try await database.recutTranscript(videoID: videoID, pieces: pieces)
+        // A speaker set after the re-cut: the base keeps the current rows.
+        let again = try await database.fetchTranscripts(videoID: videoID)
+        try await database.setTranscriptSpeaker(ids: [again[0].id], speaker: .person(key: "ann"))
+        let base = try await database.transcriptRecutBase(videoID: videoID)
+        #expect(base.map(\.text) == ["one", "two", "tree"])
+        #expect(base[0].speakerKey == "ann")
+        #expect(try await database.hasTranscriptBackup(videoID: videoID))
+
+        // A fresh transcription cannot be undone into the old one.
+        try await database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+                                              segments: [.init(start: 0, end: 6, text: "fresh", words: nil)],
+                                              provider: "apple", model: "m", seconds: nil)
+        #expect(!(try await database.hasTranscriptBackup(videoID: videoID)))
+        #expect(try await database.fetchTranscripts(videoID: videoID).map(\.text) == ["fresh"])
+    }
+
     @Test("a database stamped with the current version skips the column migrations")
     func stampedDatabaseSkipsMigration() async throws {
         let temp = try TempDatabase()

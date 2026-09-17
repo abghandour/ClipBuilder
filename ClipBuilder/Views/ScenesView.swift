@@ -15,6 +15,14 @@ struct ScenesView: View {
     @State private var renameText = ""
     @State private var deletingRuns: [AnalysisRun] = []
     @State private var infoRun: AnalysisRun?
+    /// Two or more batches of one video to put side by side.
+    @State private var compareRequest: CompareRequest?
+
+    struct CompareRequest: Identifiable {
+        let id = UUID()
+        var runs: [AnalysisRun]
+        var video: VideoRecord
+    }
     @State private var showGenerateSheet = false
     @State private var editingScene: SceneRecord?
     @State private var sortByScore = false
@@ -64,6 +72,19 @@ struct ScenesView: View {
     private var selectedRun: AnalysisRun? {
         let runs = selectedRuns
         return runs.count == 1 ? runs[0] : nil
+    }
+
+    /// Two or more selected batches of the same video → they can be compared.
+    private var comparableRuns: [AnalysisRun]? {
+        let runs = selectedRuns
+        guard runs.count >= 2, let videoID = runs.first?.videoID,
+              runs.allSatisfy({ $0.videoID == videoID }) else { return nil }
+        return runs
+    }
+
+    private func compare(_ runs: [AnalysisRun]) {
+        guard let video = store.videos.first(where: { $0.id == runs[0].videoID }) else { return }
+        compareRequest = CompareRequest(runs: runs, video: video)
     }
 
     /// The grid's contents after filters and collapses: the visible cards,
@@ -124,10 +145,13 @@ struct ScenesView: View {
         }
         // Broken-down sequences show as ONE card by default — their action
         // beats collapse under the parent unless explicitly shown.
+        // Podcast chapters are containers, not sequences: their exchanges
+        // stay on show beside them.
         if !showSequenceParts {
             let visibleIDs = Set(result.map(\.id))
+            let chapterIDs = Set(result.filter { $0.tags.contains("chapter") }.map(\.id))
             result = result.filter { scene in
-                guard let parent = scene.parentSceneID else { return true }
+                guard let parent = scene.parentSceneID, !chapterIDs.contains(parent) else { return true }
                 return !visibleIDs.contains(parent)
             }
         }
@@ -232,6 +256,14 @@ struct ScenesView: View {
                     .help("All parameters and instructions used for this analyze batch")
                 }
             }
+            if let runs = comparableRuns {
+                ToolbarItem {
+                    Button("Compare \(runs.count) Batches", systemImage: "rectangle.split.2x1") {
+                        compare(runs)
+                    }
+                    .help("Put the selected analyze batches side by side: where they cut scenes, what each found, blind grading of the scenes only one found, and Keep or Merge")
+                }
+            }
             ToolbarItem {
                 Button {
                     showAskSheet = true
@@ -317,6 +349,9 @@ struct ScenesView: View {
         .sheet(item: $infoRun) { run in
             BatchInfoSheet(run: run)
         }
+        .sheet(item: $compareRequest) { request in
+            CompareBatchesSheet(runs: request.runs, video: request.video)
+        }
         .sheet(item: $editingScene) { scene in
             SceneEditSheet(sceneID: scene.id)
         }
@@ -398,6 +433,13 @@ struct ScenesView: View {
                             Button("Delete \(selectedRuns.count) Selected Analyze Batches…", role: .destructive) {
                                 deletingRuns = selectedRuns
                             }
+                        }
+                        if selectedRunIDs.contains(run.id), let runs = comparableRuns {
+                            Divider()
+                            Button("Compare \(runs.count) Selected Analyze Batches…") { compare(runs) }
+                        } else if let sibling = store.analysisRuns.first(where: { $0.videoID == run.videoID && $0.id != run.id }) {
+                            Divider()
+                            Button("Compare with \"\(sibling.name)\"…") { compare([run, sibling]) }
                         }
                         Divider()
                         Button("Transcript…") {

@@ -58,6 +58,11 @@ nonisolated struct PodcastSettings: Codable, Sendable {
     var reviewCutsByDefault = true
     var highlightThreshold = 7.0
     var speakerHoldSeconds = 1.5
+    /// What detected pauses and filler runs start as.
+    var cleanupCutPolicy = CleanupCutPolicy.acceptDeadAir
+    /// Captions are translated to this language on the Mac as soon as a
+    /// transcript lands; "" = only when asked in Transcript Tools.
+    var autoTranslateLanguage = ""
 
     enum CodingKeys: String, CodingKey {
         case deadAirSeconds = "dead_air_seconds"
@@ -65,6 +70,8 @@ nonisolated struct PodcastSettings: Codable, Sendable {
         case reviewCutsByDefault = "review_cuts_by_default"
         case highlightThreshold = "highlight_threshold"
         case speakerHoldSeconds = "speaker_hold_seconds"
+        case cleanupCutPolicy = "cleanup_cut_policy"
+        case autoTranslateLanguage = "auto_translate_language"
     }
 
     init() {}
@@ -76,6 +83,8 @@ nonisolated struct PodcastSettings: Codable, Sendable {
         reviewCutsByDefault = try container.decodeIfPresent(Bool.self, forKey: .reviewCutsByDefault) ?? true
         highlightThreshold = min(10, max(0, try container.decodeIfPresent(Double.self, forKey: .highlightThreshold) ?? 7))
         speakerHoldSeconds = min(5, max(0.5, try container.decodeIfPresent(Double.self, forKey: .speakerHoldSeconds) ?? 1.5))
+        cleanupCutPolicy = try container.decodeIfPresent(CleanupCutPolicy.self, forKey: .cleanupCutPolicy) ?? .acceptDeadAir
+        autoTranslateLanguage = try container.decodeIfPresent(String.self, forKey: .autoTranslateLanguage) ?? ""
     }
 }
 
@@ -265,7 +274,20 @@ nonisolated enum AICatalog {
         // Frame tagging: multimodal + cheap matters most — 30 images/video.
         "analysis": [("gemini", "gemini-2.5-flash"),
                      ("claude", "claude-sonnet-4-6"),
-                     ("claude", "claude-haiku-4-5-20251001")],
+                     ("claude", "claude-haiku-4-5-20251001"),
+                     ("codex", "gpt-5.6-sol")],
+        // People detection looks at a handful of frames: the same
+        // multimodal chain as tagging.
+        "people": [("gemini", "gemini-2.5-flash"),
+                   ("claude", "claude-sonnet-4-6"),
+                   ("claude", "claude-haiku-4-5-20251001"),
+                   ("codex", "gpt-5.6-sol")],
+        // Podcast exchanges group a transcript: text reasoning, no frames.
+        "exchanges": [("claude", "claude-sonnet-4-6"),
+                      ("gemini", "gemini-2.5-pro"),
+                      ("codex", "gpt-6-astra"),
+                      ("qwen", "qwen3-coder-plus"),
+                      ("kimi", "kimi-code/kimi-for-coding")],
         // Planning is the run's brain: strongest reasoning first — Fable at
         // maximum thinking (AIService raises the thinking budget for it).
         "wizard": [("claude", "claude-fable-5-1"),
@@ -461,7 +483,7 @@ nonisolated enum AICatalog {
         // (~/.codex/models_cache.json); the GPT-5 and o3 ids stay for
         // settings that still name them.
         Provider(key: "codex", label: "Codex CLI", bin: "codex",
-                 defaultModel: "gpt-5.6-luna", supportsImages: false,
+                 defaultModel: "gpt-5.6-luna", supportsImages: true,
                  models: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5", "gpt-6-astra",
                           "gpt-5-nano", "gpt-5-mini", "o3-mini", "gpt-5-codex", "o3", "gpt-5"]),
         Provider(key: "qwen", label: "Qwen Code", bin: "qwen",

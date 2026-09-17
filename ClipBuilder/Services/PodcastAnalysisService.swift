@@ -79,9 +79,11 @@ actor PodcastAnalysisService {
                    : " (" + visual.tiles.map { "\($0.index): \($0.personKey ?? "?")" }.joined(separator: ", ") + ")"))
         }
         progress(0.60, "tracking who is talking")
-        let resolved = try await Self.resolveTurns(video: video, audioTurns: turns, visual: visual,
-                                                   roster: roster, holdSeconds: holdSeconds, log: log)
+        let tracked = try await Self.resolveTurns(video: video, audioTurns: turns, visual: visual,
+                                                  roster: roster, holdSeconds: holdSeconds, log: log)
+        let resolved = Self.cleaned(tracked, words: segments.flatMap { $0.words ?? [] }, log: log)
         try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
+        await Self.recutTranscriptBySpeaker(video: video, database: database, turns: resolved, log: log)
         let podcastSettings = capturedSettings ?? SettingsStore.loadSettings().podcast
         let enrichment = TranscriptFeatureAnalyzer.analyze(
             segments: segments, videoID: video.id,
@@ -96,7 +98,13 @@ actor PodcastAnalysisService {
             fillerRunThreshold: podcastSettings.fillerRunSeconds)
         try await database.replaceTranscriptFeatures(videoID: video.id,
                                                      features: enrichment.features,
-                                                     proposals: enrichment.proposals)
+                                                     proposals: podcastSettings.cleanupCutPolicy.applied(to: enrichment.proposals))
+        let topics = TopicSegmenter.segment(enrichment.features, videoID: video.id)
+        try await database.replaceTopicRanges(videoID: video.id, topics: topics)
+        let accepted = enrichment.proposals.count { podcastSettings.cleanupCutPolicy.decision(for: $0.kind) == .accepted }
+        if accepted > 0 {
+            log("Cleanup cuts: \(accepted) of \(enrichment.proposals.count) accepted by the \(podcastSettings.cleanupCutPolicy.label.lowercased()) policy")
+        }
 
         progress(0.70, "grouping complete exchanges")
         let outcome: PodcastExchangeSegmenter.Outcome
@@ -113,8 +121,13 @@ actor PodcastAnalysisService {
             state.exchangesModel = outcome.provenance?.model
             await checkpointing?.save(state)
         }
-        let tagRanges = Self.exchangeTagRanges(outcome.exchanges, layout: visual.layout,
+        var tagRanges = Self.exchangeTagRanges(outcome.exchanges, layout: visual.layout,
                                                highlightThreshold: highlightThreshold)
+        let chapters = Self.chapters(topics: topics, exchanges: outcome.exchanges)
+        for (tag, ranges) in Self.chapterTagRanges(chapters) { tagRanges[tag, default: []].append(contentsOf: ranges) }
+        if !chapters.isEmpty {
+            log("Chapters: \(chapters.count) from the topic analysis, each holding two or more exchanges")
+        }
         let runID = try await database.saveAnalysis(
             videoID: video.id, runName: runName,
             instructions: "Transcript-first podcast analysis; whole question-and-answer exchanges",
@@ -125,6 +138,18 @@ actor PodcastAnalysisService {
 
         let sceneRows = try await database.sceneRanges(runID: runID)
         let encoder = JSONEncoder()
+        // Chapters: their story is their exchanges' titles; the exchanges
+        // inside become their beats.
+        for scene in sceneRows {
+            guard let chapter = chapters.first(where: {
+                abs($0.start - scene.start) < 0.02 && abs($0.end - scene.end) < 0.02
+            }) else { continue }
+            try await database.setSceneNarrative(scene.id, narrative: chapter.narrative, score: chapter.score)
+            for beat in sceneRows where beat.id != scene.id
+                && chapter.exchanges.contains(where: { abs($0.start - beat.start) < 0.02 && abs($0.end - beat.end) < 0.02 }) {
+                try await database.setSceneParent(beat.id, parentID: scene.id)
+            }
+        }
         for scene in sceneRows {
             guard let exchange = outcome.exchanges.first(where: {
                 abs($0.start - scene.start) < 0.02 && abs($0.end - scene.end) < 0.02
@@ -151,6 +176,35 @@ actor PodcastAnalysisService {
         return Result(runID: runID, newPeople: newPeople, suggestedFilename: suggestedFilename)
     }
 
+    /// The tracked turns with mid-sentence hops folded back into the
+    /// speaker around them (see SpeakerTurnCleanup).
+    static func cleaned(_ turns: [SpeakerTurn], words: [TranscriptWord],
+                        log: @Sendable (String) -> Void) -> [SpeakerTurn] {
+        let cleaned = SpeakerTurnCleanup.absorbInterjections(turns, words: words)
+        let absorbed = turns.count - cleaned.count
+        if absorbed > 0 {
+            log("Speaker turns: \(absorbed) short hop\(absorbed == 1 ? "" : "s") to another tile fell inside a sentence — kept with the speaker")
+        }
+        return cleaned
+    }
+
+    /// Once the turns are known, rows that straddle a speaker change are
+    /// split at the word gap so every row has one speaker (captions and the
+    /// transcript editor both read better). A failure only logs: the turns
+    /// are already saved and the rows still work unsplit.
+    static func recutTranscriptBySpeaker(video: VideoRecord, database: Database, turns: [SpeakerTurn],
+                                         log: @Sendable (String) -> Void) async {
+        guard !turns.isEmpty, let rows = try? await database.transcriptRecutBase(videoID: video.id) else { return }
+        let plan = TranscriptSpeakerRecut.plan(rows: rows, turns: turns)
+        guard plan.hasChanges else { return }
+        do {
+            try await database.recutTranscript(videoID: video.id, pieces: plan.pieces)
+            log("\(video.filename): transcript re-cut by speaker — \(plan.splitRows) row\(plan.splitRows == 1 ? "" : "s") split where the speaker changed")
+        } catch {
+            log("\(video.filename): could not re-cut the transcript by speaker — \(error.localizedDescription)")
+        }
+    }
+
     /// The speaker map alone, for talking footage the visual pipeline
     /// analyzes (interviews): voices from the transcript, the layout and its
     /// tiles from the picture, each turn placed and named, all persisted so
@@ -161,7 +215,7 @@ actor PodcastAnalysisService {
                             log: @escaping @Sendable (String) -> Void) async throws -> [SpeakerTurn] {
         let rows = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
         guard !rows.isEmpty else { return [] }
-        let segments = rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: nil) }
+        let segments = rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }
         let turns = try await PodcastSpeakerSeparator.separate(video: video, segments: segments)
         guard !turns.isEmpty else { return [] }
         let roster = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
@@ -169,9 +223,11 @@ actor PodcastAnalysisService {
         visual.tiles = PodcastVisualAnalyzer.named(visual.tiles, roster: roster)
         try await database.setPodcastLayout(videoID: video.id, layout: visual.layout, seamX: visual.seamX,
                                             confidence: visual.layoutConfidence, tiles: visual.tiles)
-        let resolved = try await resolveTurns(video: video, audioTurns: turns, visual: visual,
-                                              roster: roster, holdSeconds: holdSeconds, log: log)
+        let tracked = try await resolveTurns(video: video, audioTurns: turns, visual: visual,
+                                             roster: roster, holdSeconds: holdSeconds, log: log)
+        let resolved = cleaned(tracked, words: segments.flatMap { $0.words ?? [] }, log: log)
         try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
+        await recutTranscriptBySpeaker(video: video, database: database, turns: resolved, log: log)
         let named = Set(resolved.compactMap(\.personKey)).count
         log("Speaker map for \(video.filename): \(resolved.count) turns, layout \(visual.layout.label.lowercased())"
             + (visual.tiles.isEmpty ? "" : " with \(visual.tiles.count) tiles") + ", \(named) named speaker(s)")
@@ -195,6 +251,12 @@ actor PodcastAnalysisService {
             guard !outcome.turns.isEmpty else { return fallback }
             log(String(format: "Speaker tracking: %d voice(s) over %d slot(s), %d turns, margin %.2f",
                        outcome.clusterCount, visual.tiles.count, outcome.turns.count, outcome.margin))
+            if let enrollment = outcome.enrollment {
+                log(String(format: "Voices learned from the border: %d of %d tiles, separation %.2f — audio trusted %.0f%%",
+                           enrollment.slotCount, visual.tiles.count, enrollment.separation, enrollment.trust * 100))
+            } else {
+                log("Voices learned from the border: none — no tile was lit alone long enough, so the audio keeps its blind clustering")
+            }
             return outcome.turns
         } catch is CancellationError {
             throw CancellationError()
@@ -208,12 +270,27 @@ actor PodcastAnalysisService {
     static func trackSpeakers(video: VideoRecord, speech: [ClosedRange<Double>], tiles: [PodcastTile],
                               log: @escaping @Sendable (String) -> Void) async throws -> SpeakerTracker.Outcome {
         let audioURL = try await NormalizedAudioCache.shared.audio(source: video.url)
-        let windows = try SpeakerFeatures.windows(audioURL: audioURL, speech: speech)
+        // Neural voice embeddings when the bundled model loads; the
+        // spectral averages otherwise.
+        var windows: [SpeakerFeatures.Window] = []
+        var kind = SpeakerTracker.FeatureKind.spectral
+        if SpeakerEmbedder.isAvailable {
+            do {
+                windows = try SpeakerEmbedder.windows(audioURL: audioURL, speech: speech)
+                kind = .embedding
+                log("Voice embeddings: \(windows.count) windows through the on-device ECAPA-TDNN model")
+            } catch {
+                log("Voice embeddings unavailable (\(error.localizedDescription)) — using spectral voice features")
+            }
+        }
+        if windows.isEmpty {
+            windows = try SpeakerFeatures.windows(audioURL: audioURL, speech: speech)
+        }
         try Task.checkCancellation()
         let activity = try await VisualSpeechActivity.measure(url: video.url, tiles: tiles, duration: video.duration, log: log)
         try Task.checkCancellation()
         return SpeakerTracker.track(.init(audioWindows: windows, activity: activity, speech: speech,
-                                          tiles: tiles, duration: video.duration), videoID: video.id)
+                                          tiles: tiles, duration: video.duration, featureKind: kind), videoID: video.id)
     }
 
     /// saveAnalysis creates a scene per distinct range. Every tag must use the
@@ -223,7 +300,9 @@ actor PodcastAnalysisService {
         var tagRanges: [String: [(start: Double, end: Double)]] = [:]
         for exchange in exchanges {
             let range = (start: exchange.start, end: exchange.end)
-            for tag in ["podcast", "question", "answer", "podcast-exchange"] {
+            // One tag for the whole question-and-answer: the pair "question"
+            // + "answer" on a single scene read as if it had been split.
+            for tag in ["podcast", "q&a", "podcast-exchange"] {
                 tagRanges[tag, default: []].append(range)
             }
             if exchange.score >= highlightThreshold {
@@ -238,6 +317,50 @@ actor PodcastAnalysisService {
             for key in exchange.speakerKeys {
                 tagRanges["person:\(key)", default: []].append(range)
             }
+        }
+        return tagRanges
+    }
+
+    /// A chapter: a topic of the conversation holding two or more whole
+    /// exchanges, spanning exactly those exchanges so it never cuts an
+    /// answer. The exchanges become its beats (children) so the Scenes
+    /// screen and the Wizard can take the whole story or one exchange.
+    nonisolated struct Chapter: Sendable, Equatable {
+        var start: Double
+        var end: Double
+        var title: String
+        var exchanges: [PodcastExchange]
+        var speakerKeys: [String] { Array(Set(exchanges.flatMap(\.speakerKeys))).sorted() }
+        var score: Double { exchanges.isEmpty ? 0 : exchanges.reduce(0) { $0 + $1.score } / Double(exchanges.count) }
+        var narrative: String {
+            let beats = exchanges.map(\.title).filter { !$0.isEmpty }.joined(separator: " · ")
+            return beats.isEmpty ? title : "\(title) — \(beats)"
+        }
+    }
+
+    /// Chapters from the transcript's topics: each topic takes the
+    /// exchanges whose middle falls inside it; a topic with fewer than two
+    /// is no chapter (the exchange already is the scene).
+    nonisolated static func chapters(topics: [TopicRange], exchanges: [PodcastExchange]) -> [Chapter] {
+        var result: [Chapter] = []
+        for topic in topics.sorted(by: { $0.startTime < $1.startTime }) {
+            let inside = exchanges
+                .filter { ($0.start + $0.end) / 2 >= topic.startTime && ($0.start + $0.end) / 2 < topic.endTime }
+                .sorted { $0.start < $1.start }
+            guard inside.count >= 2, let first = inside.first, let last = inside.last else { continue }
+            result.append(Chapter(start: first.start, end: last.end, title: topic.title, exchanges: inside))
+        }
+        return result
+    }
+
+    /// Tag ranges for chapters: the same scene machinery, one scene per chapter.
+    nonisolated static func chapterTagRanges(_ chapters: [Chapter]) -> [String: [(start: Double, end: Double)]] {
+        var tagRanges: [String: [(start: Double, end: Double)]] = [:]
+        for chapter in chapters {
+            let range = (start: chapter.start, end: chapter.end)
+            tagRanges["podcast", default: []].append(range)
+            tagRanges["chapter", default: []].append(range)
+            for key in chapter.speakerKeys { tagRanges["person:\(key)", default: []].append(range) }
         }
         return tagRanges
     }

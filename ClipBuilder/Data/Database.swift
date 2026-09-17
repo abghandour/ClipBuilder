@@ -124,6 +124,12 @@ actor Database {
     );
     CREATE INDEX IF NOT EXISTS idx_person_markers_video ON person_markers(video_id);
 
+    CREATE TABLE IF NOT EXISTS transcript_backups (
+        video_id INTEGER PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+        json TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS analysis_checkpoints (
         video_id INTEGER PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
         json TEXT NOT NULL,
@@ -2788,9 +2794,14 @@ actor Database {
         // One transaction: long videos have thousands of segments, and the
         // delete + inserts must land atomically.
         try connection.transaction {
-            if !isTranslation, let seconds {
-                try connection.execute("UPDATE videos SET speech_seconds = ? WHERE id = ?",
-                                       [.real(seconds), .integer(videoID)])
+            if !isTranslation {
+                if let seconds {
+                    try connection.execute("UPDATE videos SET speech_seconds = ? WHERE id = ?",
+                                           [.real(seconds), .integer(videoID)])
+                }
+                // A new transcription replaces the rows a re-cut backed up:
+                // Undo must never bring an older transcription back.
+                try connection.execute("DELETE FROM transcript_backups WHERE video_id = ?", [.integer(videoID)])
             }
             try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND language = ? AND is_translation = ?",
                                    [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0)])
@@ -2827,6 +2838,94 @@ actor Database {
                           seconds: $0["seconds"]?.doubleValue,
                           speakerKey: $0["speaker_key"]?.stringValue)
         }
+    }
+
+    /// Replace a video's original-language rows with their per-speaker
+    /// re-cut. The rows as they were are kept in `transcript_backups` (the
+    /// first backup wins, so Undo always returns to the transcriber's cut);
+    /// translations are untouched.
+    func recutTranscript(videoID: Int64, pieces: [TranscriptSpeakerRecut.Piece]) throws {
+        let current = try fetchTranscripts(videoID: videoID).filter { !$0.isTranslation }
+        guard !current.isEmpty, !pieces.isEmpty else { return }
+        let byID = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+        let encoder = JSONEncoder()
+        let backup = String(decoding: try encoder.encode(current), as: UTF8.self)
+        try connection.transaction {
+            try connection.execute("INSERT OR IGNORE INTO transcript_backups (video_id, json) VALUES (?, ?)",
+                                   [.integer(videoID), .text(backup)])
+            try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND is_translation = 0", [.integer(videoID)])
+            for piece in pieces {
+                let source = byID[piece.sourceRowID]
+                let wordsJSON = piece.words.flatMap { try? encoder.encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
+                // A row passed through whole keeps its edit history; a split
+                // row never had one (edited rows are not split).
+                let originalText = piece.split ? nil : source?.originalText
+                try connection.execute("""
+                    INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, original_text,
+                                             words, provider, model, technique, seconds, speaker_key)
+                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, [.integer(videoID), .text(source?.language ?? ""),
+                          .real(piece.start), .real(piece.end), .text(piece.text),
+                          originalText.map(SQLValue.text) ?? .null,
+                          wordsJSON.map(SQLValue.text) ?? .null,
+                          source?.provider.map(SQLValue.text) ?? .null,
+                          source?.model.map(SQLValue.text) ?? .null,
+                          source?.technique.map(SQLValue.text) ?? .null,
+                          source?.seconds.map(SQLValue.real) ?? .null,
+                          piece.speakerKey.map(SQLValue.text) ?? .null])
+            }
+        }
+    }
+
+    func hasTranscriptBackup(videoID: Int64) throws -> Bool {
+        try !connection.query("SELECT 1 FROM transcript_backups WHERE video_id = ?", [.integer(videoID)]).isEmpty
+    }
+
+    /// The transcriber's rows as a re-cut backed them up; nil without one.
+    func transcriptBackup(videoID: Int64) throws -> [TranscriptRow]? {
+        guard let json = try connection.query("SELECT json FROM transcript_backups WHERE video_id = ?",
+                                              [.integer(videoID)]).first?["json"]?.stringValue else { return nil }
+        return try JSONDecoder().decode([TranscriptRow].self, from: Data(json.utf8))
+    }
+
+    /// The rows a re-cut should plan from. Cutting from the transcriber's
+    /// own rows keeps a second re-cut (better turns, a fix) from compounding
+    /// the first, so the backup is put back first — unless the user has
+    /// corrected text or speakers since, which the backup would erase: then
+    /// the current rows are the base and stay as they are.
+    func transcriptRecutBase(videoID: Int64) throws -> [TranscriptRow] {
+        let current = try fetchTranscripts(videoID: videoID)
+        if let backup = try transcriptBackup(videoID: videoID),
+           !TranscriptSpeakerRecut.hasEdits(current, beyond: backup) {
+            _ = try restoreTranscriptBackup(videoID: videoID)
+            return try fetchTranscripts(videoID: videoID)
+        }
+        return current
+    }
+
+    /// Put the transcriber's rows back and drop the backup. False when
+    /// there is nothing to restore.
+    func restoreTranscriptBackup(videoID: Int64) throws -> Bool {
+        guard let json = try connection.query("SELECT json FROM transcript_backups WHERE video_id = ?",
+                                              [.integer(videoID)]).first?["json"]?.stringValue else { return false }
+        let rows = try JSONDecoder().decode([TranscriptRow].self, from: Data(json.utf8))
+        try connection.transaction {
+            try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND is_translation = 0", [.integer(videoID)])
+            for row in rows {
+                try connection.execute("""
+                    INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, original_text,
+                                             words, provider, model, technique, seconds, speaker_key)
+                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, [.integer(videoID), .text(row.language), .real(row.startTime), .real(row.endTime),
+                          .text(row.text), row.originalText.map(SQLValue.text) ?? .null,
+                          row.wordsJSON.map(SQLValue.text) ?? .null,
+                          row.provider.map(SQLValue.text) ?? .null, row.model.map(SQLValue.text) ?? .null,
+                          row.technique.map(SQLValue.text) ?? .null, row.seconds.map(SQLValue.real) ?? .null,
+                          row.speakerKey.map(SQLValue.text) ?? .null])
+            }
+            try connection.execute("DELETE FROM transcript_backups WHERE video_id = ?", [.integer(videoID)])
+        }
+        return true
     }
 
     /// Set who says these lines (nil restores the automatic attribution).

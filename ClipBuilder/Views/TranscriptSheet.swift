@@ -58,6 +58,10 @@ struct TranscriptSheet: View {
     /// The file is not on this Mac (a Drive copy not downloaded), so the
     /// play buttons stay off.
     @State private var playbackUnavailable = false
+    /// A re-cut by speaker happened (the transcriber's rows are backed up).
+    @State private var hasRecut = false
+    /// What the last Re-cut did, shown briefly under the header.
+    @State private var recutNote: String?
 
     private var changedIDs: [Int64] {
         rows.compactMap { row in
@@ -170,6 +174,11 @@ struct TranscriptSheet: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
+                        if let recutNote {
+                            Text(recutNote)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         if !allLineTags.isEmpty {
                             // Narrow the transcript to the lines inside
                             // scenes carrying one tag (the reel picks, the
@@ -189,6 +198,21 @@ struct TranscriptSheet: View {
                     }
                 }
                 Spacer()
+                if !turns.isEmpty {
+                    // Split rows where the speaker changes mid-row, using the
+                    // words' timings; Undo puts the transcriber's rows back.
+                    Menu("Re-cut by Speaker") {
+                        Button("Re-cut by Speaker") { recut() }
+                            .disabled(hasChanges)
+                        if hasRecut {
+                            Button("Undo Re-cut") { undoRecut() }
+                                .disabled(hasChanges)
+                        }
+                    }
+                    .fixedSize()
+                    .help(hasChanges ? "Apply or discard your pending changes first"
+                          : "Split every row where the speaker changes, at the gap between words, so each row has one speaker" + (hasRecut ? " — or put the transcriber's original rows back" : ""))
+                }
                 Button("Topics, Cuts & Translation…") { showTools = true }
                     .disabled(rows.isEmpty)
                 Button("Re-transcribe") {
@@ -229,8 +253,9 @@ struct TranscriptSheet: View {
                                 // different scene, so a run of lines in one
                                 // exchange reads as one block under its tags.
                                 let previous = index > 0 ? sceneIDs(visible[index - 1]) : nil
+                                let sameSpeaker = index > 0 && speakerLabel(visible[index - 1]) == speakerLabel(row)
                                 segmentRow(row, showTags: index == 0 || previous != sceneIDs(row),
-                                           current: current == row.id)
+                                           current: current == row.id, repeatedSpeaker: sameSpeaker)
                                 Divider()
                             }
                         }
@@ -271,7 +296,7 @@ struct TranscriptSheet: View {
         }
     }
 
-    private func segmentRow(_ row: TranscriptRow, showTags: Bool, current: Bool) -> some View {
+    private func segmentRow(_ row: TranscriptRow, showTags: Bool, current: Bool, repeatedSpeaker: Bool) -> some View {
         let playing = self.playing?.rowID == row.id
         return HStack(alignment: .top, spacing: 10) {
             Button {
@@ -303,9 +328,13 @@ struct TranscriptSheet: View {
             .frame(width: 84, alignment: .leading)
             .padding(.top, 3)
 
+            // A run of rows by one speaker reads as a block: the name is
+            // bright on the first row and faint on the rest (the menu
+            // stays on every row).
             speakerMenu(row)
                 .frame(width: 108, alignment: .leading)
                 .padding(.top, 1)
+                .opacity(repeatedSpeaker ? 0.45 : 1)
 
             VStack(alignment: .leading, spacing: 4) {
                 TextField("Segment text", text: Binding(
@@ -561,6 +590,26 @@ struct TranscriptSheet: View {
         }
     }
 
+    // MARK: - Re-cut by speaker
+
+    private func recut() {
+        Task {
+            guard let split = await store.recutTranscriptBySpeaker(videoID: video.id) else { return }
+            recutNote = split == 0 ? "Every row already has one speaker."
+                : "\(split) row\(split == 1 ? "" : "s") split where the speaker changed."
+            await load()
+        }
+    }
+
+    private func undoRecut() {
+        Task {
+            if await store.undoTranscriptRecut(videoID: video.id) {
+                recutNote = "The transcriber's rows are back."
+                await load()
+            }
+        }
+    }
+
     // MARK: - Playback
 
     /// Play the line in the panel, or stop it when it is the one playing.
@@ -730,6 +779,7 @@ struct TranscriptSheet: View {
         speakerLabels = rows.reduce(into: [:]) { labels, row in
             labels[row.id] = TranscriptSpeakers.label(for: row, turns: turns, roster: roster, people: people)
         }
+        hasRecut = await store.hasTranscriptRecut(videoID: video.id)
         let scenes = store.scenes.filter { $0.videoID == video.id && !$0.ignored }
         lineScenes = rows.reduce(into: [:]) { result, row in
             let covering = Self.scenes(covering: row, in: scenes)

@@ -312,8 +312,19 @@ actor AIService {
         let candidates = dispatchCandidates(task: task, providerOverride: providerOverride,
                                             model: model, needsImages: frames?.isEmpty == false || video != nil, log: emit)
         guard !candidates.isEmpty else {
+            let label = AICatalog.taskLabels[task] ?? task
+            let key = providerOverride?.isEmpty == false ? providerOverride! : providerKey(forTask: task)
+            let needsImages = frames?.isEmpty == false || video != nil
+            if let provider = AICatalog.provider(key), needsImages, !provider.supportsImages {
+                throw AIError.notConfigured(
+                    "\(label) is routed to \(provider.label), which cannot take image frames, and no image-capable fallback is installed. Choose Claude Code, Gemini CLI or Codex CLI for \(label) in Settings → AI → Task Routing.")
+            }
+            if let provider = AICatalog.provider(key), binaryURL(for: provider) == nil {
+                throw AIError.notConfigured(
+                    "\(label) is routed to \(provider.label), whose CLI ('\(provider.bin)') is not installed, and no fallback is installed either. Install it or change the provider in Settings → AI.")
+            }
             throw AIError.notConfigured(
-                "No AI provider available for \(AICatalog.taskLabels[task] ?? task). Install the claude, gemini, codex, qwen, or kimi CLI, or check Settings → AI.")
+                "No AI provider available for \(label). Install the claude, gemini, codex, qwen, or kimi CLI, or check Settings → AI.")
         }
         var loadedFallbackFrames: [AIFrame]?
         var lastError: Error?
@@ -416,7 +427,7 @@ actor AIService {
             return try await callGemini(binary: binary, prompt: prompt, frames: effectiveFrames,
                                         video: video, model: model, timeout: timeout, log: emit)
         case "codex":
-            return try await callCodex(binary: binary, prompt: prompt,
+            return try await callCodex(binary: binary, prompt: prompt, frames: effectiveFrames,
                                        model: model, timeout: timeout, log: emit)
         case "qwen":
             return try await callQwen(binary: binary, prompt: prompt,
@@ -653,14 +664,38 @@ actor AIService {
 
     // MARK: - Codex (text-only)
 
-    private func callCodex(binary: URL, prompt: String, model: String?,
+    /// Codex attaches images to the prompt with `--image`, one file each,
+    /// in order; the prompt opens with the list of what each image is so
+    /// the model can tie a frame to its timestamp.
+    private func callCodex(binary: URL, prompt: String, frames: [AIFrame]?, model: String?,
                            timeout: TimeInterval,
                            log: @Sendable (String) -> Void) async throws -> String {
         let preparation = PerfSignpost.begin("AIInput", metadata: "codex")
         var arguments = ["exec"]
         if let model { arguments += ["--model", model] }
+        var fullPrompt = prompt
+        var temporaryDirectory: URL?
+        if let frames, !frames.isEmpty {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("cb_codex_\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            temporaryDirectory = dir
+            var legend: [String] = []
+            for (index, frame) in frames.enumerated() {
+                let file = dir.appendingPathComponent(String(format: "frame_%03d.jpg", index))
+                try frame.jpeg.write(to: file)
+                arguments += ["--image", file.path]
+                legend.append("Image \(index + 1): \(frame.label)")
+            }
+            fullPrompt = "The attached images, in order:\n" + legend.joined(separator: "\n") + "\n\n" + prompt
+        }
+        defer {
+            if let temporaryDirectory {
+                try? FileManager.default.removeItem(at: temporaryDirectory)
+            }
+        }
         arguments.append("-")
-        let stdin = Data(prompt.utf8)
+        let stdin = Data(fullPrompt.utf8)
         PerfSignpost.end(preparation)
         let result = try await runRequest(executable: binary, arguments: arguments,
                                                  stdin: stdin, timeout: timeout)

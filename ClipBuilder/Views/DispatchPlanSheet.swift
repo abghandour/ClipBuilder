@@ -419,6 +419,7 @@ struct DispatchPlanSheet: View {
                 // different model from tagging; runs here honor it immediately.
                 ModelPicker(title: AICatalog.taskLabels["people"] ?? "people",
                             task: "people", selection: binding(for: "people"),
+                            imageCapableOnly: true,
                             availableProviders: availableProviders)
                 ForEach(videos) { video in
                     let done = peopleDone(video)
@@ -584,8 +585,11 @@ struct DispatchPlanSheet: View {
                     }
                     DisclosureGroup("Advanced analysis options", isExpanded: $showAdvancedAnalysisOptions) {
                         ForEach(operation.aiTasks, id: \.self) { task in
+                            // Tagging and people detection send frames:
+                            // only providers that take images are offered.
                             ModelPicker(title: AICatalog.taskLabels[task] ?? task,
                                         task: task, selection: binding(for: task),
+                                        imageCapableOnly: task == "analysis" || task == "people",
                                         availableProviders: availableProviders)
                                 .help(Self.taskHelp[task] ?? "")
                         }
@@ -739,7 +743,31 @@ struct DispatchPlanSheet: View {
                     Text(store.settings.transcribeLanguage).tag(store.settings.transcribeLanguage)
                 }
             }
+            // The transcript tools' automatic parts, decided here as well
+            // as in Settings (the same stored values).
+            Picker("Detected cuts", selection: cleanupCutPolicyBinding) {
+                ForEach(CleanupCutPolicy.allCases) { policy in
+                    Text(policy.label).tag(policy)
+                }
+            }
+            .help(store.settings.podcast.cleanupCutPolicy.help)
+            Picker("Translate captions", selection: autoTranslateBinding) {
+                Text("Only when asked").tag("")
+                Text("Português (Brasil)").tag("pt-BR")
+                Text("English (United States)").tag("en-US")
+            }
+            .help("Translate the transcript to this language on the Mac as soon as it lands")
         }
+    }
+
+    private var cleanupCutPolicyBinding: Binding<CleanupCutPolicy> {
+        Binding(get: { store.settings.podcast.cleanupCutPolicy },
+                set: { store.settings.podcast.cleanupCutPolicy = $0 })
+    }
+
+    private var autoTranslateBinding: Binding<String> {
+        Binding(get: { store.settings.podcast.autoTranslateLanguage },
+                set: { store.settings.podcast.autoTranslateLanguage = $0 })
     }
 
     private var transcribeLanguageBinding: Binding<String> {

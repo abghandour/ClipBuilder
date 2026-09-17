@@ -695,8 +695,11 @@ struct SceneInlinePlayer: View {
 struct TagChip: View {
     let tag: String
 
+    /// Friendly labels for the tags the podcast pass writes.
+    static let labels: [String: String] = ["reel-highlight": "Reel", "q&a": "Q&A", "chapter": "Chapter"]
+
     var body: some View {
-        Text(tag == "reel-highlight" ? "Reel" : tag)
+        Text(Self.labels[tag] ?? tag)
             .font(.caption2)
             .fontWeight(tag == "reel-highlight" ? .semibold : .regular)
             .foregroundStyle(tag == "reel-highlight" ? Color.white : .primary)

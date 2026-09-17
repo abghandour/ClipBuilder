@@ -524,7 +524,7 @@ nonisolated struct MomentRecord: Identifiable, Sendable, Hashable {
     var dialog: String?
 }
 
-nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable {
+nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable, Codable {
     var id: Int64
     var videoID: Int64
     var language: String
@@ -852,7 +852,7 @@ nonisolated struct TranscriptSegment: Codable, Sendable {
     var words: [TranscriptWord]?
 }
 
-nonisolated struct TranscriptWord: Codable, Sendable {
+nonisolated struct TranscriptWord: Codable, Sendable, Equatable {
     var word: String
     var start: Double
     var end: Double

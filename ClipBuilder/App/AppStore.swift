@@ -773,6 +773,8 @@ final class AppStore {
         igBenchmarks = nil
         pendingComparison = nil
         comparisonQueue = []
+        autoTranslateQueue = []
+        autoTranslateInFlight = nil
         pendingPeopleReview = nil
         pendingRenameReview = nil
         pendingAnalyzeSetup = nil
@@ -1316,6 +1318,47 @@ final class AppStore {
         }
     }
 
+    /// Re-cut a video's transcript so every row belongs to one speaker, from
+    /// its stored speaker turns. Returns how many rows were split; nil when
+    /// the video has no turns or the write failed.
+    func recutTranscriptBySpeaker(videoID: Int64) async -> Int? {
+        guard let database else { return nil }
+        do {
+            let turns = try await database.fetchSpeakerTurns(videoID: videoID)
+            guard !turns.isEmpty else { return nil }
+            // The transcriber's rows when nothing was corrected since the
+            // last re-cut (so re-cuts never compound), else the current rows.
+            let rows = try await database.transcriptRecutBase(videoID: videoID)
+            let plan = TranscriptSpeakerRecut.plan(rows: rows, turns: turns)
+            if plan.hasChanges {
+                try await database.recutTranscript(videoID: videoID, pieces: plan.pieces)
+            }
+            blurbTranscripts[videoID] = nil
+            return plan.splitRows
+        } catch {
+            presentError("Could not re-cut the transcript", error)
+            return nil
+        }
+    }
+
+    /// Put the transcriber's own rows back after a re-cut.
+    func undoTranscriptRecut(videoID: Int64) async -> Bool {
+        guard let database else { return false }
+        do {
+            let restored = try await database.restoreTranscriptBackup(videoID: videoID)
+            if restored { blurbTranscripts[videoID] = nil }
+            return restored
+        } catch {
+            presentError("Could not restore the transcript", error)
+            return false
+        }
+    }
+
+    func hasTranscriptRecut(videoID: Int64) async -> Bool {
+        guard let database else { return false }
+        return (try? await database.hasTranscriptBackup(videoID: videoID)) ?? false
+    }
+
     /// A video's transcript rows, cached until the next refresh.
     func transcriptRows(videoID: Int64) async -> [TranscriptRow] {
         if let cached = blurbTranscripts[videoID] { return cached }
@@ -1785,6 +1828,7 @@ final class AppStore {
                         runID = result.runID
                         videoNewPeople = result.newPeople
                         suggestedFilename = result.suggestedFilename
+                        enqueueAutoTranslation(videoID: video.id)
                     } else {
                         let result = try await analyzer.analyzeVisual(
                             video: video, profile: profile, database: database,
@@ -1847,6 +1891,7 @@ final class AppStore {
                                     languageCode: language,
                                     log: logSink(\.analysisLog))
                                 appendLog(\.analysisLog, ["\(video.filename): transcript saved"])
+                                enqueueAutoTranslation(videoID: video.id)
                             } else {
                                 appendLog(\.analysisLog, ["\(video.filename): already has a transcript — keeping it"])
                             }
@@ -1952,6 +1997,43 @@ final class AppStore {
 
     func cancelAnalysis() {
         analysisTask?.cancel()
+    }
+
+    // MARK: - Automatic caption translation
+
+    /// Videos whose fresh transcript should be translated to the language
+    /// Settings names; a main window's translation runner drains it. Ids
+    /// belong to the open profile: the queue empties on a profile switch.
+    var autoTranslateQueue: [Int64] = []
+    /// The video a runner has claimed (checking or translating it), so two
+    /// windows' runners never work the same head.
+    private(set) var autoTranslateInFlight: Int64?
+
+    func enqueueAutoTranslation(videoID: Int64) {
+        guard !settings.podcast.autoTranslateLanguage.isEmpty, !autoTranslateQueue.contains(videoID) else { return }
+        autoTranslateQueue.append(videoID)
+    }
+
+    /// The head of the queue, claimed for one runner; nil while another
+    /// claim stands or the queue is empty. Synchronous on the main actor,
+    /// so overlapping runners cannot both take it.
+    func claimAutoTranslation() -> Int64? {
+        guard autoTranslateInFlight == nil, let videoID = autoTranslateQueue.first else { return nil }
+        autoTranslateInFlight = videoID
+        return videoID
+    }
+
+    /// A claimed video is done (translated, skipped or failed): drop it.
+    /// A stale claim — the profile changed underneath — is ignored.
+    func finishAutoTranslation(videoID: Int64) {
+        guard autoTranslateInFlight == videoID else { return }
+        autoTranslateInFlight = nil
+        autoTranslateQueue.removeAll { $0 == videoID }
+    }
+
+    /// Give a claim back without dropping the video (the runner went away).
+    func releaseAutoTranslation(videoID: Int64) {
+        if autoTranslateInFlight == videoID { autoTranslateInFlight = nil }
     }
 
     // MARK: - Model discovery
@@ -3645,6 +3727,7 @@ final class AppStore {
                                                        languageCode: language, force: force,
                                                        log: logSink(\.analysisLog))
                 appendLog(\.analysisLog, ["\(video.filename): transcription saved"])
+                enqueueAutoTranslation(videoID: video.id)
             } catch is CancellationError {
                 appendLog(\.analysisLog, ["\(video.filename): transcription stopped"])
             } catch {

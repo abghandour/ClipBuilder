@@ -108,4 +108,42 @@ struct SpeakerTrackerTests {
         #expect(real == [0, 1, 1, 1])
         #expect(SpeakerTracker.viterbi(scores: [[1, 0], [1, 0]], active: [true, false]) == [0, -1])
     }
+
+    @Test("long lit stretches teach each tile its voice; a well-separated profile is trusted, a muddled one is not")
+    func enrollmentFromBorder() {
+        // Two tiles; 0.25 s bins over 20 s. Tile 0 lit alone for 0–8 s, tile 1 for 10–18 s.
+        let binSeconds = 0.25
+        let bins = 80
+        let highlight: [[Double]] = [(0..<bins).map { $0 < 32 ? 1.0 : 0.0 }, (0..<bins).map { $0 >= 40 && $0 < 72 ? 1.0 : 0.0 }]
+        let speech = [Bool](repeating: true, count: bins)
+        // Voice windows of 1 s: tile 0's voice near +1, tile 1's near -1.
+        func window(_ start: Double, _ value: Double) -> SpeakerFeatures.Window {
+            SpeakerFeatures.Window(start: start, end: start + 1, vector: [value, value * 0.5, -value])
+        }
+        var windows: [SpeakerFeatures.Window] = []
+        for i in 0..<8 { windows.append(window(Double(i), 1.0 + Double(i % 3) * 0.05)) }
+        for i in 10..<18 { windows.append(window(Double(i), -1.0 - Double(i % 3) * 0.05)) }
+        let vectors = SpeakerClustering.standardize(windows.map(\.vector))
+        let enrollment = try! #require(SpeakerTracker.enroll(windows: windows, vectors: vectors, highlight: highlight,
+                                                              speech: speech, binSeconds: binSeconds, slots: 2))
+        #expect(enrollment.slotCount == 2)
+        #expect(enrollment.windowsPerSlot == [0: 8, 1: 8])
+        #expect(enrollment.separation > 1.8 && enrollment.trust == 1)
+        // A window that sounds like tile 0 is placed on tile 0.
+        let voice = SpeakerTracker.slotPosterior(vectors[0], enrollment: enrollment, slots: 2)
+        #expect(voice[0] > 0.9 && voice[1] < 0.1)
+
+        // Muddled voices: both tiles sound alike → low separation, no trust.
+        var alike: [SpeakerFeatures.Window] = []
+        for i in 0..<8 { alike.append(window(Double(i), Double(i % 4) * 0.5 - 0.75)) }
+        for i in 10..<18 { alike.append(window(Double(i), Double(i % 4) * 0.5 - 0.75)) }
+        let muddled = try! #require(SpeakerTracker.enroll(windows: alike, vectors: SpeakerClustering.standardize(alike.map(\.vector)),
+                                                          highlight: highlight, speech: speech, binSeconds: binSeconds, slots: 2))
+        #expect(muddled.separation < 0.8 && muddled.trust == 0)
+
+        // A stretch shorter than four seconds teaches nothing.
+        let brief: [[Double]] = [(0..<bins).map { $0 < 12 ? 1.0 : 0.0 }, (0..<bins).map { $0 >= 40 && $0 < 72 ? 1.0 : 0.0 }]
+        #expect(SpeakerTracker.enroll(windows: windows, vectors: vectors, highlight: brief, speech: speech,
+                                      binSeconds: binSeconds, slots: 2) == nil)
+    }
 }

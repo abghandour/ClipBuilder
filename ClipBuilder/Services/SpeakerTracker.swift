@@ -6,12 +6,21 @@ import Foundation
 /// evidence does. Slots are the layout's tiles; voices map onto slots by
 /// how their speech lines up with mouth motion over the whole recording.
 nonisolated enum SpeakerTracker {
+    /// What the audio windows hold: spectral averages (the fallback) or
+    /// neural voice embeddings, which separate voices far more cleanly and
+    /// so earn trust at a lower measured separation.
+    enum FeatureKind: Sendable {
+        case spectral
+        case embedding
+    }
+
     struct Input: Sendable {
         var audioWindows: [SpeakerFeatures.Window]
         var activity: VisualSpeechActivity.Activity
         var speech: [ClosedRange<Double>]
         var tiles: [PodcastTile]
         var duration: Double
+        var featureKind: FeatureKind = .spectral
     }
 
     struct Bin: Sendable, Equatable {
@@ -32,7 +41,40 @@ nonisolated enum SpeakerTracker {
         /// Diagnostics: the fused grid and the voice-to-slot affinities.
         var bins: [Bin] = []
         var affinity: [[Double]] = []
+        /// Voice profiles learned from the picture, when it taught enough.
+        var enrollment: Enrollment?
     }
+
+    /// Voice profiles per slot, learned where the picture was sure: long
+    /// stretches with one tile lit alone are labelled audio, so each slot
+    /// gets a centroid of its own voice. `separation` says how far apart
+    /// the profiles sit compared with how much each one wanders — below
+    /// about 1 the voices are not told apart and the audio is not trusted.
+    struct Enrollment: Sendable, Equatable {
+        var centroids: [Int: [Double]]
+        var windowsPerSlot: [Int: Int]
+        var separation: Double
+        var featureKind: FeatureKind = .spectral
+
+        var slotCount: Int { centroids.count }
+        /// How much the audio term may weigh. Spectral averages: nothing
+        /// below a separation of 0.8, everything from 1.8 up. Embeddings
+        /// earn it sooner: on a four-way call they measured 1.3 while
+        /// placing every clip on the right person.
+        var trust: Double {
+            switch featureKind {
+            case .spectral: min(1, max(0, (separation - 0.8) / 1.0))
+            case .embedding: min(1, max(0, (separation - 0.7) / 0.6))
+            }
+        }
+    }
+
+    /// A tile must be lit alone, over speech, at least this long to teach
+    /// its voice; and a slot needs this many windows to get a profile.
+    static let enrollmentStretch = 4.0
+    static let enrollmentWindows = 6
+    /// A trusted voice profile weighs about as much as the border.
+    static let enrolledAudioWeight = 1.5
 
     static let visualWeight = 0.55
     static let audioWeight = 0.45
@@ -104,6 +146,27 @@ nonisolated enum SpeakerTracker {
             let total = row.reduce(0, +)
             return row.map { total > 1e-9 ? max(0, $0 / total - 1 / Double(slots)) : 0 }
         }
+        // Voice profiles from the border: where the picture taught enough,
+        // each bin's audio is matched against the slots' own voices, and
+        // that match replaces the blind cluster preference in proportion to
+        // how well the profiles separate.
+        let standardized = SpeakerClustering.standardize(input.audioWindows.map(\.vector))
+        var enrollment = enroll(windows: input.audioWindows, vectors: standardized, highlight: highlightBins,
+                                speech: bins.map(\.speech), binSeconds: binSeconds, slots: slots)
+        enrollment?.featureKind = input.featureKind
+        let enrolledVoices: [[Double]] = bins.enumerated().map { b, bin in
+            guard let enrollment, bin.speech else { return [Double](repeating: 0, count: slots) }
+            let mid = bin.start + binSeconds / 2
+            let covering = input.audioWindows.indices.filter { input.audioWindows[$0].start <= mid && mid < input.audioWindows[$0].end }
+            guard !covering.isEmpty else { return [Double](repeating: 0, count: slots) }
+            var sum = [Double](repeating: 0, count: slots)
+            for i in covering {
+                let p = slotPosterior(standardized[i], enrollment: enrollment, slots: slots)
+                for s in 0..<slots { sum[s] += p[s] / Double(covering.count) }
+            }
+            return sum
+        }
+        let trust = enrollment?.trust ?? 0
         // Per-bin slot scores, then a smoothed path over the speech bins.
         let highlight = highlightBins
         let scores: [[Double]] = bins.enumerated().map { b, bin in
@@ -111,8 +174,9 @@ nonisolated enum SpeakerTracker {
                 let voice = (0..<clusterCount).reduce(0.0) { $0 + bin.voices[$1] * preference[$1][s] }
                 let mouth = bin.mouths[s]
                 let lit = highlight[safe: s]?[safe: b] ?? 0
-                return visualWeight * mouth + audioWeight * voice * Double(slots) / max(1, Double(slots) - 1)
-                    + highlightWeight * lit
+                let blind = audioWeight * voice * Double(slots) / max(1, Double(slots) - 1)
+                let enrolled = enrolledAudioWeight * (enrolledVoices[b][s] - 1 / Double(slots))
+                return visualWeight * mouth + (1 - trust) * blind + trust * enrolled + highlightWeight * lit
             }
         }
         let path = viterbi(scores: scores, active: bins.map(\.speech))
@@ -161,7 +225,71 @@ nonisolated enum SpeakerTracker {
         }
         let overall = margins.isEmpty ? 0 : margins.reduce(0, +) / Double(margins.count)
         return Outcome(turns: turns, clusterSlots: clusterSlots, clusterCount: clusterCount, margin: overall,
-                       bins: bins, affinity: affinity)
+                       bins: bins, affinity: affinity, enrollment: enrollment)
+    }
+
+    /// Learn a voice per slot from the stretches where that tile alone was
+    /// lit over speech for at least `enrollmentStretch`. Nil when fewer than
+    /// two slots taught enough.
+    static func enroll(windows: [SpeakerFeatures.Window], vectors: [[Double]], highlight: [[Double]],
+                       speech: [Bool], binSeconds: Double, slots: Int,
+                       minimumStretch: Double = enrollmentStretch,
+                       minimumWindows: Int = enrollmentWindows) -> Enrollment? {
+        guard slots >= 2, !windows.isEmpty, windows.count == vectors.count,
+              let binCount = highlight.first?.count, binCount > 0 else { return nil }
+        let needed = Int((minimumStretch / binSeconds).rounded(.up))
+        // Bins where exactly one slot is lit, and the stretch is long enough.
+        var owner = [Int](repeating: -1, count: binCount)
+        for b in 0..<binCount where b < speech.count && speech[b] {
+            let lit = (0..<slots).filter { (highlight[safe: $0]?[safe: b] ?? 0) >= 0.5 }
+            if lit.count == 1 { owner[b] = lit[0] }
+        }
+        var taught = [Int](repeating: -1, count: binCount)
+        var b = 0
+        while b < binCount {
+            let slot = owner[b]
+            var end = b
+            while end < binCount, owner[end] == slot { end += 1 }
+            if slot >= 0, end - b >= needed { for i in b..<end { taught[i] = slot } }
+            b = end
+        }
+        var members: [Int: [[Double]]] = [:]
+        for (index, window) in windows.enumerated() {
+            let mid = (window.start + window.end) / 2
+            let bin = Int(mid / binSeconds)
+            guard bin >= 0, bin < binCount, taught[bin] >= 0 else { continue }
+            // The whole window must sit inside the taught stretch.
+            let first = Int(window.start / binSeconds), last = Int(max(window.start, window.end - 0.01) / binSeconds)
+            guard first >= 0, last < binCount, taught[first] == taught[bin], taught[last] == taught[bin] else { continue }
+            members[taught[bin], default: []].append(vectors[index])
+        }
+        var centroids: [Int: [Double]] = [:]
+        var spreads: [Double] = []
+        for (slot, list) in members where list.count >= minimumWindows {
+            let dimension = list[0].count
+            let centroid = (0..<dimension).map { d in list.reduce(0) { $0 + $1[d] } / Double(list.count) }
+            centroids[slot] = centroid
+            spreads.append(list.reduce(0) { $0 + SpeakerClustering.distance($1, centroid) } / Double(list.count))
+        }
+        guard centroids.count >= 2 else { return nil }
+        let keys = centroids.keys.sorted()
+        var between: [Double] = []
+        for i in keys.indices { for j in keys.indices where j > i {
+            between.append(SpeakerClustering.distance(centroids[keys[i]]!, centroids[keys[j]]!))
+        } }
+        let within = spreads.reduce(0, +) / Double(spreads.count)
+        let separation = within > 1e-9 ? (between.reduce(0, +) / Double(between.count)) / within : 0
+        return Enrollment(centroids: centroids, windowsPerSlot: members.mapValues(\.count), separation: separation)
+    }
+
+    /// Which enrolled slot a window's voice is nearest, as a distribution
+    /// over all slots (unenrolled slots get nothing).
+    static func slotPosterior(_ vector: [Double], enrollment: Enrollment, slots: Int) -> [Double] {
+        let keys = enrollment.centroids.keys.sorted()
+        let p = SpeakerClustering.posterior(vector, centroids: keys.map { enrollment.centroids[$0]! })
+        var result = [Double](repeating: 0, count: slots)
+        for (index, slot) in keys.enumerated() where slot < slots { result[slot] = p[index] }
+        return result
     }
 
     /// The lit slot per bin with single-bin blips removed.

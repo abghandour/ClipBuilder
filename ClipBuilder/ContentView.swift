@@ -319,6 +319,7 @@ struct MainWindowView: View {
         .onChange(of: store.requestedSection) { _, requested in
             handleRequestedSection(requested)
         }
+        .modifier(AutoTranslationRunner())
         // Results first; a queued A/B comparison presents after it closes.
         .sheet(item: $store.wizardResults) { results in
             WizardResultsSheet(results: results)
