@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Clip_Builder
@@ -182,6 +183,44 @@ struct PodcastAnalysisTests {
         #expect(turns.isEmpty)
         #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID).isEmpty)
         #expect(try await temp.database.video(id: videoID)?.podcastLayout == nil)
+    }
+
+    @Test("a cell's picture bounds leave the black bars of a letterboxed feed out of the crop")
+    func pictureBounds() throws {
+        // A 320×180 frame: two cells side by side, each with picture only
+        // between 20% and 80% of its height; the right cell fills its cell.
+        let width = 320, height = 180
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        for y in 0..<height {
+            for x in 0..<width {
+                let leftCell = x < width / 2
+                let inPicture = !leftCell || (y >= 36 && y < 144)
+                let offset = (y * width + x) * 4
+                pixels[offset] = inPicture ? 120 : 6; pixels[offset + 1] = inPicture ? 110 : 6; pixels[offset + 2] = inPicture ? 100 : 6; pixels[offset + 3] = 255
+            }
+        }
+        let context = try #require(pixels.withUnsafeMutableBytes { buffer in
+            CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        })
+        let image = try #require(context.makeImage())
+        let jpeg = try #require(NSBitmapImageRep(cgImage: image).representation(using: .jpeg, properties: [.compressionFactor: 0.9]))
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1), PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1)]
+        let trimmed = PodcastVisualAnalyzer.withPictureBounds(tiles, frames: [jpeg, jpeg])
+        let left = try #require(trimmed[0].pictureY)
+        #expect(abs(left - 0.2) < 0.03 && abs((trimmed[0].pictureH ?? 0) - 0.6) < 0.04, "\(trimmed[0])")
+        #expect(trimmed[0].pictureX == 0 && abs((trimmed[0].pictureW ?? 0) - 0.5) < 0.02)
+        #expect(trimmed[1].pictureY == nil, "a full cell reports no trimming")
+        // Crops come from the picture, so the bars stay out.
+        let crop = CropRecipePlanner.crop(tile: trimmed[0], aspect: 0.5625, sourceAspect: 16.0 / 9.0)
+        #expect(crop.yFrac >= 0.19 && crop.yFrac + crop.hFrac <= 0.81)
+        let path = PodcastSpeakerTimelineResolver.tileCrop(trimmed[0], aspect: 16.0 / 9.0)
+        #expect(path.y >= 0.19 && path.y + path.h <= 0.81)
+        // The trimmed cell still names and locates the same feed.
+        #expect(trimmed[0].picture.contains(x: 0.25, y: 0.5) && !trimmed[0].picture.contains(x: 0.25, y: 0.1) && trimmed[0].contains(x: 0.25, y: 0.1))
+        let roundTrip = try JSONDecoder().decode([PodcastTile].self, from: JSONEncoder().encode(trimmed))
+        #expect(roundTrip == trimmed)
+        #expect(PodcastVisualAnalyzer.withPictureBounds(tiles, frames: []) == tiles)
     }
 
     @Test("tiles remember where their faces sit")

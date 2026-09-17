@@ -188,6 +188,10 @@ final class AppStore {
     /// Distinct people the people pass found per video; the Sources table
     /// shows them as soon as a detection finishes.
     var videoPeopleCounts: [Int64: Int] = [:] { didSet { videoPeopleVersion &+= 1 } }
+    /// Analyses that started and did not finish, by video — what Analyze
+    /// offers to resume and the Sources table marks. Mirrors the
+    /// `analysis_checkpoints` table.
+    var analysisCheckpoints: [Int64: AnalysisCheckpoint] = [:]
     private(set) var videoPeopleVersion = 0
     var people: [PersonRecord] = []
     /// Saved fight research by video id — the Analyze page's column and the
@@ -411,6 +415,9 @@ final class AppStore {
     /// Set by views (e.g. "Open in Builder") to ask the main window to switch
     /// sidebar sections; the window consumes and clears it.
     var requestedSection: SidebarSection?
+    /// The person the People screen should select when it next shows (set
+    /// with `requestedSection = .people`); the screen consumes and clears it.
+    var requestedPersonID: Int64?
 
     // Updates
     /// What an update check concluded; the main window presents it as one
@@ -694,6 +701,29 @@ final class AppStore {
 
     func dismissCurrentError() {
         if !errorQueue.isEmpty { errorQueue.removeFirst() }
+    }
+
+    private(set) var noticeQueue: [AppNotice] = []
+    var currentNotice: AppNotice? { noticeQueue.first }
+
+    /// Queue an informational alert (not an error: no report button).
+    func presentNotice(_ title: String, _ message: String) {
+        logEvent("notice", "\(title): \(message)")
+        noticeQueue.append(AppNotice(title: title, message: message))
+    }
+
+    func dismissCurrentNotice() {
+        if !noticeQueue.isEmpty { noticeQueue.removeFirst() }
+    }
+
+    /// "A, B and C" for a short list of names, "A and 4 more" past five.
+    nonisolated static func nameList(_ names: [String]) -> String {
+        let shown = names.prefix(5)
+        let rest = names.count - shown.count
+        var text = shown.count == 1 ? shown[0]
+            : shown.dropLast().joined(separator: ", ") + " and " + (shown.last ?? "")
+        if rest > 0 { text = shown.joined(separator: ", ") + " and \(rest) more" }
+        return text
     }
 
     // MARK: - Profiles
@@ -1254,19 +1284,47 @@ final class AppStore {
         if let narrative = scene.narrative, !narrative.trimmingCharacters(in: .whitespaces).isEmpty {
             return SceneBlurb.fromNarrative(narrative)
         }
-        guard let database else { return nil }
-        let rows: [TranscriptRow]
-        if let cached = blurbTranscripts[scene.videoID] {
-            rows = cached
-        } else {
-            rows = (try? await database.fetchTranscripts(videoID: scene.videoID)) ?? []
-            blurbTranscripts[scene.videoID] = rows
+        return SceneBlurb.fromTranscript(await transcriptRows(videoID: scene.videoID),
+                                         start: scene.startTime, end: scene.endTime)
+    }
+
+    private var blurbSpeakers: [Int64: (turns: [SpeakerTurn], roster: [VideoPersonRecord])] = [:]
+
+    /// A video's speaker turns and roster, cached until the next refresh.
+    func speakerTurns(videoID: Int64) async -> (turns: [SpeakerTurn], roster: [VideoPersonRecord]) {
+        if let cached = blurbSpeakers[videoID] { return cached }
+        guard let database else { return ([], []) }
+        let turns = (try? await database.fetchSpeakerTurns(videoID: videoID)) ?? []
+        let roster = (try? await database.fetchVideoPeople(videoID: videoID)) ?? []
+        blurbSpeakers[videoID] = (turns, roster)
+        return (turns, roster)
+    }
+
+    /// Set who says these transcript lines; the cached rows of the video
+    /// are dropped so the player sheet and blurbs pick the change up.
+    func setTranscriptSpeaker(rowIDs: [Int64], videoID: Int64,
+                              speaker: TranscriptRow.SpeakerAttribution) async {
+        guard let database else { return }
+        do {
+            try await database.setTranscriptSpeaker(ids: rowIDs, speaker: speaker)
+            blurbTranscripts[videoID] = nil
+        } catch {
+            presentError("Could not change who says these lines", error)
         }
-        return SceneBlurb.fromTranscript(rows, start: scene.startTime, end: scene.endTime)
+    }
+
+    /// A video's transcript rows, cached until the next refresh.
+    func transcriptRows(videoID: Int64) async -> [TranscriptRow] {
+        if let cached = blurbTranscripts[videoID] { return cached }
+        guard let database else { return [] }
+        let rows = (try? await database.fetchTranscripts(videoID: videoID)) ?? []
+        blurbTranscripts[videoID] = rows
+        return rows
     }
 
     func refreshAll() {
         blurbTranscripts = [:]
+        blurbSpeakers = [:]
         if refreshInFlight {
             refreshQueued = true
             return
@@ -1324,6 +1382,7 @@ final class AppStore {
         }
         if analysisRuns != snapshot.analysisRuns { analysisRuns = snapshot.analysisRuns }
         if videoPeopleCounts != snapshot.videoPeopleCounts { videoPeopleCounts = snapshot.videoPeopleCounts }
+        if analysisCheckpoints != snapshot.analysisCheckpoints { analysisCheckpoints = snapshot.analysisCheckpoints }
         if people != snapshot.people { people = snapshot.people }
         if generatedVideos != snapshot.generatedVideos { generatedVideos = snapshot.generatedVideos }
         if feedback != snapshot.feedback { feedback = snapshot.feedback }
@@ -1394,18 +1453,29 @@ final class AppStore {
         let folder = activeProfile.sourceFolderURL.standardizedFileURL
         Task.detached {
             var copied = 0
+            var alreadyThere: [String] = []
             var failures: [String] = []
-            for url in videos where url.deletingLastPathComponent().standardizedFileURL != folder {
+            for url in videos {
                 do {
-                    if try Self.copyIntoFolder(url, folder: folder) { copied += 1 }
+                    if try Self.copyDestination(for: url, folder: folder).existed {
+                        alreadyThere.append(url.lastPathComponent)
+                    } else {
+                        copied += 1
+                    }
                 } catch {
                     failures.append("\(url.lastPathComponent): \(error.userMessage)")
                 }
             }
-            await MainActor.run { [copied, failures] in
+            await MainActor.run { [copied, alreadyThere, failures] in
                 if copied > 0 {
                     self.appendLog(\.analysisLog, ["Added \(copied) video(s) to the Input folder"])
                     self.scanSourceFolder()
+                }
+                // Adding what is already here must say so, not do nothing.
+                if !alreadyThere.isEmpty {
+                    self.presentNotice(alreadyThere.count == 1 ? "Already in Sources" : "Already in Sources (\(alreadyThere.count))",
+                                       "\(Self.nameList(alreadyThere)) \(alreadyThere.count == 1 ? "is" : "are") already in the Input folder"
+                                       + (copied > 0 ? "; the other \(copied) \(copied == 1 ? "was" : "were") added." : ". Nothing was added."))
                 }
                 for failure in failures {
                     self.presentError("Could not add \(failure)")
@@ -1430,7 +1500,7 @@ final class AppStore {
                 for url in inputs {
                     do {
                         let destination = try Self.copyDestination(for: url, folder: folder)
-                        paths.append(destination.path)
+                        paths.append(destination.url.path)
                     } catch {
                         failures.append("\(url.lastPathComponent): \(error.userMessage)")
                     }
@@ -1443,9 +1513,19 @@ final class AppStore {
                 let matches = try await database.fetchVideos().filter {
                     normalized.contains($0.url.standardizedFileURL.path)
                 }
-                try await database.assignVideos(matches.map(\.id), to: projectID)
+                // Files the project already holds are reported, not re-added.
+                let inProject = Set(try await database.fetchVideos(projectID: projectID).map(\.id))
+                let duplicates = matches.filter { inProject.contains($0.id) }
+                let additions = matches.filter { !inProject.contains($0.id) }
+                try await database.assignVideos(additions.map(\.id), to: projectID)
                 refreshProjectCatalog()
                 if activeProjectID == projectID { refreshAll() }
+                if !duplicates.isEmpty {
+                    let names = duplicates.map(\.filename)
+                    presentNotice(names.count == 1 ? "Already in This Project" : "Already in This Project (\(names.count))",
+                                  "\(Self.nameList(names)) \(names.count == 1 ? "is" : "are") already in the project"
+                                  + (additions.isEmpty ? ". Nothing was added." : "; the other \(additions.count) \(additions.count == 1 ? "was" : "were") added."))
+                }
             } catch {
                 presentError("Could not add files to the project", error)
             }
@@ -1453,24 +1533,19 @@ final class AppStore {
         }
     }
 
-    /// Collision handling: an existing file with the same name and size is
-    /// treated as already imported; otherwise a numbered name is picked.
-    nonisolated private static func copyIntoFolder(_ url: URL, folder: URL) throws -> Bool {
-        let before = url.standardizedFileURL
-        let destination = try copyDestination(for: url, folder: folder)
-        return destination.standardizedFileURL != before
-    }
-
-    nonisolated private static func copyDestination(for url: URL, folder: URL) throws -> URL {
+    /// Collision handling: a file already inside the folder, or an existing
+    /// file with the same name and size, is already imported (`existed`);
+    /// otherwise the file is copied, under a numbered name on a name clash.
+    nonisolated static func copyDestination(for url: URL, folder: URL) throws -> (url: URL, existed: Bool) {
         let fm = FileManager.default
         if url.deletingLastPathComponent().standardizedFileURL == folder {
-            return url.standardizedFileURL
+            return (url.standardizedFileURL, true)
         }
         var destination = folder.appendingPathComponent(url.lastPathComponent)
         if fm.fileExists(atPath: destination.path) {
             let sourceSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
             let existingSize = try destination.resourceValues(forKeys: [.fileSizeKey]).fileSize
-            if sourceSize == existingSize { return destination.standardizedFileURL }
+            if sourceSize == existingSize { return (destination.standardizedFileURL, true) }
             let base = url.deletingPathExtension().lastPathComponent
             var counter = 2
             repeat {
@@ -1479,7 +1554,7 @@ final class AppStore {
             } while fm.fileExists(atPath: destination.path)
         }
         try fm.copyItem(at: url, to: destination)
-        return destination.standardizedFileURL
+        return (destination.standardizedFileURL, false)
     }
 
     // MARK: - Analysis
@@ -1572,6 +1647,16 @@ final class AppStore {
                 instructions = instructions.isEmpty ? filterLine : filterLine + "\n" + instructions
                 appendLog(\.analysisLog, ["Requiring people in every scene: \(names.joined(separator: ", "))"])
             }
+            // The plan a fresh video's checkpoint carries, so a resumed run
+            // keeps the settings it started with; the one-shot options were
+            // consumed above and cannot be re-read later.
+            let freshPlan = AnalysisCheckpoint.Plan(
+                instructions: instructions, sampleInterval: sampleInterval,
+                detectPeople: detectPeople, autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTags,
+                trimRange: trimRange.map { [$0.start, $0.end] }, requiredPeopleKeys: requiredPeopleKeys,
+                pastedNotes: pastedNotes, smartSampling: smartSampling,
+                includeTranscript: includeTranscript, includeFightScoring: includeFightScoring,
+                provider: provider, model: model)
             // People first seen anywhere in this batch — reviewed once at the
             // end. Later videos already treat them as known (people are
             // refetched per video), so keys never repeat across videos.
@@ -1586,6 +1671,37 @@ final class AppStore {
                 var video = video
                 let base = Double(index) / Double(targets.count)
                 let span = 1.0 / Double(targets.count)
+                // An interrupted run of this video carries on from its
+                // checkpoint, under the settings it started with; anything
+                // else starts a checkpoint of its own.
+                var checkpoint: AnalysisCheckpoint
+                var stopped = analysisCheckpoints[video.id]
+                if stopped == nil { stopped = (try? await database.fetchAnalysisCheckpoint(videoID: video.id)) ?? nil }
+                if let stopped {
+                    checkpoint = stopped
+                    checkpoint.lastError = nil
+                    appendLog(\.analysisLog, ["\(video.filename): resuming the analysis stopped at \(stopped.percent)%"
+                        + (stopped.stage.isEmpty ? "" : " (\(stopped.stage))") + " — keeping the settings of that run"])
+                } else {
+                    checkpoint = AnalysisCheckpoint(videoID: video.id, startedAt: .now, updatedAt: .now,
+                                                    runName: "", plan: freshPlan)
+                }
+                let plan = checkpoint.plan
+                let instructions = plan.instructions
+                let sampleInterval = plan.sampleInterval
+                let detectPeople = plan.detectPeople
+                let autoZoomUnframed = plan.autoZoomUnframed
+                let breakdownTags = plan.breakdownTags
+                let smartSampling = plan.smartSampling
+                let includeTranscript = plan.includeTranscript
+                let includeFightScoring = plan.includeFightScoring
+                let requiredPeopleKeys = plan.requiredPeopleKeys
+                let pastedNotes = plan.pastedNotes
+                let provider = plan.provider
+                let model = plan.model
+                let trimRange: (start: Double, end: Double)? = plan.trimRange.flatMap {
+                    $0.count == 2 && $0[1] > $0[0] ? (start: $0[0], end: $0[1]) : nil
+                }
                 do {
                     let transcriptFeatures = localClassification ? ((try? await database.fetchTranscriptFeatures(videoID: video.id)) ?? []) : []
                     let speechFraction = transcriptFeatures.isEmpty ? nil : transcriptFeatures.filter { $0.kind == .speech }.reduce(0) { $0 + $1.endTime - $1.startTime } / max(1, video.duration)
@@ -1619,19 +1735,36 @@ final class AppStore {
                     // additions are seen and the v-counter never repeats.
                     let existingBatches = ((try? await database.fetchAnalysisRuns()) ?? [])
                         .count { $0.videoID == video.id }
-                    let runName = Self.analysisRunName(for: video,
-                                                       existingBatchCount: existingBatches)
-                        + (trimRange.map { " (\($0.start.timecode)–\($0.end.timecode))" } ?? "")
+                    let runName = checkpoint.runName.isEmpty
+                        ? Self.analysisRunName(for: video, existingBatchCount: existingBatches)
+                            + (trimRange.map { " (\($0.start.timecode)–\($0.end.timecode))" } ?? "")
+                        : checkpoint.runName
+                    checkpoint.runName = runName
+                    await startAnalysisCheckpoint(checkpoint)
+                    let videoID = video.id
                     let progress: @Sendable (Double, String) -> Void = { fraction, stage in
                         Task { @MainActor in
                             self.analysisProgress = base + span * fraction
                             self.analysisStage = stage
+                            // Where the run is, for the resume prompt —
+                            // written when the stage changes, not per tick.
+                            if self.analysisCheckpoints[videoID]?.stage != stage {
+                                await self.updateAnalysisCheckpoint(videoID: videoID) {
+                                    $0.stage = stage
+                                    $0.fraction = fraction
+                                }
+                            }
                         }
                     }
                     let runID: Int64?
                     let videoNewPeople: [DetectedNewPerson]
                     let suggestedFilename: String?
-                    if video.type == .podcast {
+                    if let savedRunID = checkpoint.runID {
+                        appendLog(\.analysisLog, ["\(video.filename): the analyze batch was saved before the stop — finishing the remaining steps"])
+                        runID = savedRunID
+                        videoNewPeople = checkpoint.newPeople
+                        suggestedFilename = checkpoint.suggestedFilename
+                    } else if video.type == .podcast {
                         let result = try await podcastAnalysis.analyze(
                             video: video, profile: profile, database: database,
                             runName: runName, provider: provider, model: model,
@@ -1642,7 +1775,10 @@ final class AppStore {
                             transcription: transcription,
                             highlightThreshold: settings.podcast.highlightThreshold,
                             holdSeconds: settings.podcast.speakerHoldSeconds,
-                            log: logSink(\.analysisLog), progress: progress, useLocal: localPodcast)
+                            log: logSink(\.analysisLog), progress: progress, useLocal: localPodcast,
+                            checkpointing: PodcastCheckpointing(resume: checkpoint.podcast) { state in
+                                await self.updateAnalysisCheckpoint(videoID: videoID) { $0.podcast = state }
+                            })
                         runID = result.runID
                         videoNewPeople = result.newPeople
                         suggestedFilename = result.suggestedFilename
@@ -1661,12 +1797,26 @@ final class AppStore {
                             smartSampling: smartSampling,
                             cuts: cuts,
                             force: true,
+                            checkpointing: AnalysisCheckpointing(resume: checkpoint.visual) { state in
+                                await self.updateAnalysisCheckpoint(videoID: videoID) { $0.visual = state }
+                            },
                             log: logSink(\.analysisLog), progress: progress)
                         runID = result.runID
                         videoNewPeople = result.newPeople
                         suggestedFilename = result.suggestedFilename
                     }
-                    if let runID {
+                    if checkpoint.runID == nil {
+                        // The batch is on disk: from here only the later
+                        // stages remain, so the phase results can go.
+                        checkpoint = await updateAnalysisCheckpoint(videoID: videoID) {
+                            $0.runID = runID
+                            $0.newPeople = videoNewPeople
+                            $0.suggestedFilename = suggestedFilename
+                            $0.visual = nil
+                            $0.podcast = nil
+                        } ?? checkpoint
+                    }
+                    if let runID, checkpoint.runID == runID, !checkpoint.transcriptDone, !checkpoint.fightScoringDone {
                         try await database.saveAnalysisSettings(id: runID, settings: AnalysisRunSettings(
                             instructions: instructions, sampleInterval: sampleInterval ?? 0,
                             includeTranscript: includeTranscript || video.type == .podcast, language: video.type == .podcast ? "" : language,
@@ -1682,7 +1832,7 @@ final class AppStore {
                                                                   currentFilename: video.filename,
                                                                   suggestedName: suggestedFilename))
                     }
-                    if includeTranscript && video.type != .podcast {
+                    if includeTranscript && video.type != .podcast && !checkpoint.transcriptDone {
                         // A transcript failure shouldn't undo a good analysis
                         // — log it and keep going.
                         do {
@@ -1716,6 +1866,7 @@ final class AppStore {
                                     appendLog(\.analysisLog, ["\(video.filename): speaker map failed — \(error.userMessage)"])
                                 }
                             }
+                            await updateAnalysisCheckpoint(videoID: videoID) { $0.transcriptDone = true }
                         } catch is CancellationError {
                             break
                         } catch {
@@ -1724,7 +1875,7 @@ final class AppStore {
                     }
                     // Fight scoring: dense pass over the fight scenes so the
                     // pace/winning graphs light up right after analysis.
-                    if includeFightScoring {
+                    if includeFightScoring && !checkpoint.fightScoringDone {
                         do {
                             analysisStage = "scoring fight action"
                             let allScenes = (try? await database.fetchScenes(includeExcluded: true)) ?? []
@@ -1733,6 +1884,7 @@ final class AppStore {
                                 profile: profile, database: database,
                                 provider: provider, model: model,
                                 log: logSink(\.analysisLog))
+                            await updateAnalysisCheckpoint(videoID: videoID) { $0.fightScoringDone = true }
                         } catch is CancellationError {
                             break
                         } catch {
@@ -1740,6 +1892,7 @@ final class AppStore {
                         }
                     }
                     if let runID { try await database.updateAnalysisModels(id: runID) }
+                    await clearAnalysisCheckpoint(videoID: videoID)
                     analyzed += 1
                     appendLog(\.analysisLog, ["\(video.filename): done"])
                 } catch is CancellationError {
@@ -1747,6 +1900,8 @@ final class AppStore {
                 } catch let error as AIError {
                     failed += 1
                     appendLog(\.analysisLog, ["\(video.filename): \(error)"])
+                    let message = "\(error)"
+                    await updateAnalysisCheckpoint(videoID: video.id) { $0.lastError = message }
                     if case .quotaExhausted = error {
                         appendLog(\.analysisLog, ["Quota exhausted — stopping the run."])
                         break
@@ -1754,12 +1909,18 @@ final class AppStore {
                 } catch {
                     failed += 1
                     appendLog(\.analysisLog, ["\(video.filename): \(error.userMessage)"])
+                    let message = error.userMessage
+                    await updateAnalysisCheckpoint(videoID: video.id) { $0.lastError = message }
                 }
             }
             analyzingVideoIDs = []
             let elapsed = runStarted.duration(to: .now).seconds
             let clock = String(format: "%d:%02d", Int(elapsed) / 60, Int(elapsed) % 60)
             if Task.isCancelled {
+                let unfinished = targets.filter { analysisCheckpoints[$0.id] != nil }
+                if !unfinished.isEmpty {
+                    appendLog(\.analysisLog, ["Analysis stopped — \(unfinished.map(\.filename).joined(separator: ", ")) can resume from here: select and Analyze again."])
+                }
                 appendLog(\.analysisLog, ["Analysis stopped."])
                 analysisStage = "stopped"
                 analysisCompletion = AnalysisCompletion(summary: "Analysis stopped after \(clock) — \(analyzed) of \(targets.count) video\(targets.count == 1 ? "" : "s") finished.", failed: failed, stopped: true)
@@ -1788,6 +1949,40 @@ final class AppStore {
 
     func cancelAnalysis() {
         analysisTask?.cancel()
+    }
+
+    // MARK: - Analysis checkpoints
+
+    /// Record the start of a video's run; every later change goes through
+    /// `updateAnalysisCheckpoint`.
+    private func startAnalysisCheckpoint(_ checkpoint: AnalysisCheckpoint) async {
+        analysisCheckpoints[checkpoint.videoID] = checkpoint
+        try? await database?.saveAnalysisCheckpoint(checkpoint)
+    }
+
+    /// Apply a change to a video's checkpoint and write it through. The
+    /// in-memory copy is updated before the write, so callers on the main
+    /// actor never see a stale row between two updates.
+    @discardableResult
+    func updateAnalysisCheckpoint(videoID: Int64,
+                                  _ mutate: @Sendable (inout AnalysisCheckpoint) -> Void) async -> AnalysisCheckpoint? {
+        guard var checkpoint = analysisCheckpoints[videoID] else { return nil }
+        mutate(&checkpoint)
+        checkpoint.updatedAt = .now
+        analysisCheckpoints[videoID] = checkpoint
+        try? await database?.saveAnalysisCheckpoint(checkpoint)
+        return checkpoint
+    }
+
+    private func clearAnalysisCheckpoint(videoID: Int64) async {
+        analysisCheckpoints[videoID] = nil
+        try? await database?.deleteAnalysisCheckpoint(videoID: videoID)
+    }
+
+    /// The user chose to start these videos over: forget where their
+    /// interrupted runs got to.
+    func discardAnalysisCheckpoints(videoIDs: [Int64]) async {
+        for videoID in videoIDs { await clearAnalysisCheckpoint(videoID: videoID) }
     }
 
     // MARK: - Wizard Pipeline
@@ -2641,6 +2836,17 @@ final class AppStore {
             presentError("Could not delete the person marker", error)
         }
         return (try? await database.personMarkers(videoID: marker.videoID)) ?? []
+    }
+
+    /// The people pass's portrait of a person as a marker-shaped box plus
+    /// its video URL, for face avatars.
+    func personRosterPortrait(for personID: Int64) async -> (url: URL, marker: PersonMarker)? {
+        guard let database, let portrait = try? await database.rosterPortrait(personID: personID),
+              !portrait.videoPath.isEmpty else { return nil }
+        let marker = PersonMarker(id: 0, videoID: 0, atTime: portrait.time,
+                                  x: portrait.box.x, y: portrait.box.y,
+                                  width: portrait.box.w, height: portrait.box.h)
+        return (URL(fileURLWithPath: portrait.videoPath), marker)
     }
 
     /// The person's first marker plus its video URL, for face avatars.
@@ -5861,6 +6067,33 @@ final class AppStore {
         return (try? await database.fetchVideoPeople(videoID: videoID)) ?? []
     }
 
+    /// Every video in the library this person is known from: the people
+    /// pass's roster plus any scene tagged with them, in library order.
+    func personVideos(_ person: PersonRecord) async -> [VideoRecord] {
+        var ids = Set(scenes.filter { !$0.ignored && $0.tags.contains(person.tag) }.map(\.videoID))
+        if let database, let roster = try? await database.fetchVideoIDs(personID: person.id) {
+            ids.formUnion(roster)
+        }
+        return videos.filter { ids.contains($0.id) }
+    }
+
+    /// The on-screen ranges the people pass recorded for this person in a
+    /// video (empty when the pass only noted presence, or never ran).
+    func personRanges(videoID: Int64, key: String) async -> [ScriptTimeRange] {
+        guard let database,
+              let ranges = try? await database.fetchVideoPeopleRanges(videoID: videoID)
+        else { return [] }
+        return ranges.first { $0.key == key }?.ranges ?? []
+    }
+
+    /// Seconds this person is on record as speaking in a video, from the
+    /// podcast pass's speaker turns.
+    func personSpeakingSeconds(videoID: Int64, key: String) async -> Double {
+        guard let database, let turns = try? await database.fetchSpeakerTurns(videoID: videoID)
+        else { return 0 }
+        return turns.filter { $0.personKey == key }.reduce(0) { $0 + max(0, $1.end - $1.start) }
+    }
+
     /// Run (or re-run) the people-only AI pass for one video and return the
     /// fresh roster. Provider/model override the dispatcher's routing (the
     /// analyze sheet passes its picker's live choice).
@@ -5911,6 +6144,132 @@ final class AppStore {
                 if result.clips.isEmpty { presentError("The recipe placed nothing; the timeline has no room at the playhead.") }
             } catch {
                 presentError("Compose \(name) as \(kind.name)", error)
+            }
+        }
+    }
+
+    /// One part of a video's analysis that can run again on its own, for
+    /// instance with another model, without redoing the rest.
+    enum AnalysisStage: String, CaseIterable, Sendable {
+        /// Tagging for footage; the transcript-first pass for podcasts.
+        case analysis
+        /// The podcast pass: exchanges from the transcript (podcasts only).
+        case exchanges
+        case people
+        /// The transcript itself (on-device; no model to pick).
+        case transcript
+
+        var title: String {
+            switch self {
+            case .analysis: "Video analysis"
+            case .exchanges: "Podcast exchanges"
+            case .people: "People detection"
+            case .transcript: "Transcript"
+            }
+        }
+
+        /// The routing task whose model the stage uses; nil when nothing is picked.
+        var task: String? {
+            switch self {
+            case .analysis: "analysis"
+            case .exchanges: "exchanges"
+            case .people: "people"
+            case .transcript: nil
+            }
+        }
+
+        /// The stage behind a role name in the AI details sheet.
+        static func forRole(_ role: String, podcast: Bool) -> AnalysisStage? {
+            switch role {
+            case "Tagging", "Video analysis": podcast ? .exchanges : .analysis
+            case "Transcript", "Transcription": podcast ? .exchanges : .transcript
+            case "Podcast exchanges": .exchanges
+            case "People", "People detection": .people
+            default: nil
+            }
+        }
+    }
+
+    /// Run one stage of a video's analysis again with the given model. The
+    /// tagging and podcast stages land in a new analyze batch like a full
+    /// run; people detection and transcription update the video in place.
+    func rerun(_ stage: AnalysisStage, video: VideoRecord, provider: String? = nil, model: String? = nil) {
+        switch stage {
+        case .people:
+            detectPeople(in: [video], provider: provider, model: model)
+        case .transcript:
+            transcribe(video: video, force: true)
+        case .analysis, .exchanges:
+            guard let database, !isAnalyzing else { return }
+            let podcast = video.type == .podcast || stage == .exchanges
+            isAnalyzing = true
+            analysisCompletion = nil
+            analyzingVideoIDs = [video.id]
+            analysisProjectName = activeProject?.name
+            analysisLog = []
+            analysisProgress = 0
+            analysisStage = podcast ? "grouping exchanges" : "tagging"
+            let profile = activeProfile
+            let analyzer = analyzer
+            let transcription = transcription
+            let podcastAnalysis = podcastAnalysis
+            let settings = settings
+            let localPodcast = OnDevicePolicy.isEnabled(item: "podcast-exchanges", config: settings.ai)
+            appendLog(\.analysisLog, ["\(video.filename): running \(stage.title) again"
+                + (model.map { " with \($0)" } ?? "")])
+            analysisTask = Task {
+                await AIRunCapture.context.withValue(AIRunCapture()) {
+                    defer {
+                        isAnalyzing = false
+                        refreshAll()
+                    }
+                    do {
+                        let existingBatches = ((try? await database.fetchAnalysisRuns()) ?? []).count { $0.videoID == video.id }
+                        let runName = Self.analysisRunName(for: video, existingBatchCount: existingBatches)
+                        let progress: @Sendable (Double, String) -> Void = { fraction, stage in
+                            Task { @MainActor in
+                                self.analysisProgress = fraction
+                                self.analysisStage = stage
+                            }
+                        }
+                        let runID: Int64?
+                        if podcast {
+                            let result = try await podcastAnalysis.analyze(
+                                video: video, profile: profile, database: database,
+                                runName: runName, provider: provider, model: model,
+                                languageCode: "", analyzer: analyzer, transcription: transcription,
+                                highlightThreshold: settings.podcast.highlightThreshold,
+                                holdSeconds: settings.podcast.speakerHoldSeconds,
+                                log: logSink(\.analysisLog), progress: progress, useLocal: localPodcast,
+                                capturedSettings: settings.podcast)
+                            runID = result.runID
+                        } else {
+                            let knownPeople = (try? await database.fetchPeople()) ?? []
+                            let markers = (try? await database.personMarkers(videoID: video.id)) ?? []
+                            let notes = (try? await database.videoNotes(videoID: video.id)) ?? []
+                            let result = try await analyzer.analyzeVisual(
+                                video: video, profile: profile, database: database,
+                                runName: runName, provider: provider, model: model,
+                                notes: notes, knownPeople: knownPeople, personMarkers: markers,
+                                // People have their own stage; this one only tags.
+                                detectPeople: false, smartSampling: true, force: true,
+                                log: logSink(\.analysisLog), progress: progress)
+                            runID = result.runID
+                        }
+                        if let runID {
+                            try await database.saveAnalysisSettings(id: runID, settings: AnalysisRunSettings(
+                                includeTranscript: podcast, detectPeople: false, smartSampling: true,
+                                provider: provider, model: model, videoPath: video.path, sourceProfile: profile.profileName))
+                            try await database.updateAnalysisModels(id: runID)
+                        }
+                        appendLog(\.analysisLog, ["\(video.filename): \(stage.title) done"])
+                    } catch is CancellationError {
+                        appendLog(\.analysisLog, ["\(video.filename): \(stage.title) cancelled"])
+                    } catch {
+                        appendLog(\.analysisLog, ["\(video.filename): \(stage.title) failed — \(error.userMessage)"])
+                        presentError("\(stage.title) for \(video.filename)", error)
+                    }
+                }
             }
         }
     }

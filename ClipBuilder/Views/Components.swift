@@ -204,6 +204,16 @@ struct PersonFaceAvatar: View {
                                          faceBox: await Self.detectFace(in: portrait))
                 return
             }
+            // The people pass already cropped this person out of a frame:
+            // that box is the right face even when a scene shows several
+            // people (a podcast grid), where the largest face is anyone's.
+            if let portrait = await store.personRosterPortrait(for: person.id),
+               let frame = await ThumbnailService.jpegFrame(url: portrait.url, at: portrait.marker.atTime,
+                                                            maxDimension: 720),
+               let cropped = Analyzer.markerPortrait(from: frame, marker: portrait.marker) {
+                image = Self.avatarImage(from: cropped, faceBox: await Self.detectFace(in: cropped))
+                if image != nil { return }
+            }
             guard let scene = store.scenes.first(where: { $0.tags.contains(person.tag) })
             else { return }
             let time = (scene.startTime + scene.endTime) / 2
@@ -287,10 +297,14 @@ struct PlayerView: NSViewRepresentable {
     }
 }
 
-/// Modal player used by both the Library and the scene browser.
+/// Modal player used by both the Library and the scene browser. With a
+/// `transcriptVideoID` the transcript of the played range sits beside the
+/// picture, follows playback, and seeks on click.
 struct PlayerSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppStore.self) private var store
     let url: URL
+    var transcriptVideoID: Int64? = nil
     let title: String
     var startTime: Double = 0
     /// Stop playback here (e.g. a scene's end) instead of running on to the
@@ -303,11 +317,27 @@ struct PlayerSheet: View {
 
     @State private var player: AVPlayer?
     @State private var endObserver: NSObjectProtocol?
+    @State private var timeObserver: Any?
+    @State private var playbackTime: Double?
+    @State private var transcript: [TranscriptRow] = []
+    @State private var transcriptLoaded = false
+    @State private var speakerLabels: [Int64: String] = [:]
     @State private var markIn: Double?
     @State private var markOut: Double?
     @State private var markProblem: String?
 
     private var currentTime: Double { player?.currentTime().seconds ?? startTime }
+
+    /// The rows the played range touches, in order, original language only.
+    private var sceneTranscript: [TranscriptRow] {
+        transcript.filter { !$0.isTranslation && $0.endTime > startTime && $0.startTime < (endTime ?? .infinity) }
+            .sorted { $0.startTime < $1.startTime }
+    }
+
+    private var currentRow: TranscriptRow? {
+        let time = playbackTime ?? startTime
+        return sceneTranscript.last { $0.startTime <= time + 0.05 }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -321,8 +351,14 @@ struct PlayerSheet: View {
             }
             .padding()
 
-            PlayerView(player: player)
-                .frame(minWidth: 420, minHeight: 560)
+            HStack(spacing: 0) {
+                PlayerView(player: player)
+                    .frame(minWidth: 420, minHeight: 560)
+                if transcriptVideoID != nil {
+                    Divider()
+                    transcriptPanel
+                }
+            }
 
             if onMarkAsBRoll != nil {
                 HStack(spacing: Theme.spaceM) {
@@ -364,6 +400,14 @@ struct PlayerSheet: View {
             return .handled
         }
         .modalCloseButton { dismiss() }
+        .task(id: transcriptVideoID) {
+            guard let transcriptVideoID else { return }
+            transcript = await store.transcriptRows(videoID: transcriptVideoID)
+            transcriptLoaded = true
+            let speakers = await store.speakerTurns(videoID: transcriptVideoID)
+            speakerLabels = TranscriptSpeakers.labels(for: sceneTranscript, turns: speakers.turns,
+                                                      roster: speakers.roster, people: store.people)
+        }
         .task(id: url) {
             guard await DrivePlayback.prepare(url) else { return }
             guard let asset = try? await DriveLocalAsset.make(url) else { return }
@@ -396,16 +440,91 @@ struct PlayerSheet: View {
                                  toleranceBefore: .zero, toleranceAfter: .zero)
                 }
             }
+            if transcriptVideoID != nil {
+                timeObserver = player.addPeriodicTimeObserver(
+                    forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { time in
+                    Task { @MainActor in playbackTime = time.seconds }
+                }
+            }
             player.play()
             self.player = player
         }
         .onDisappear {
+            if let timeObserver { player?.removeTimeObserver(timeObserver) }
+            timeObserver = nil
             player?.pause()
             player = nil
             if let endObserver {
                 NotificationCenter.default.removeObserver(endObserver)
             }
         }
+    }
+
+    /// The whole transcript of the played range; the line being spoken is
+    /// highlighted and kept in view, and a click seeks to a line.
+    private var transcriptPanel: some View {
+        let rows = sceneTranscript
+        let current = currentRow?.id
+        return VStack(alignment: .leading, spacing: 0) {
+            Text("Transcript")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, Theme.spaceM)
+                .padding(.vertical, Theme.spaceS)
+            Divider()
+            if rows.isEmpty {
+                Text(transcriptLoaded ? "No transcript for this part. Transcribe the file from the Sources screen." : "Loading the transcript…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(Theme.spaceM)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(rows) { row in
+                                Button {
+                                    player?.seek(to: CMTime(seconds: row.startTime, preferredTimescale: 600),
+                                                 toleranceBefore: .zero, toleranceAfter: .zero)
+                                    playbackTime = row.startTime
+                                } label: {
+                                    HStack(alignment: .top, spacing: Theme.spaceS) {
+                                        Text(row.startTime.timecode)
+                                            .font(.caption.monospacedDigit())
+                                            .foregroundStyle(.secondary)
+                                            .frame(width: 40, alignment: .trailing)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            if let speaker = speakerLabels[row.id] {
+                                                Text(speaker)
+                                                    .font(.caption.weight(.semibold))
+                                                    .foregroundStyle(Color.accentColor)
+                                            }
+                                            Text(row.text)
+                                                .font(.callout)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                    .padding(.horizontal, Theme.spaceS)
+                                    .padding(.vertical, 4)
+                                    .background(row.id == current ? Color.accentColor.opacity(0.18) : Color.clear,
+                                                in: RoundedRectangle(cornerRadius: 6))
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .id(row.id)
+                                .help("Play from \(row.startTime.timecode)")
+                            }
+                        }
+                        .padding(Theme.spaceS)
+                    }
+                    .onChange(of: current) { _, id in
+                        if let id { withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) } }
+                    }
+                }
+            }
+        }
+        .frame(width: 320)
     }
 }
 

@@ -29,11 +29,27 @@ nonisolated struct PodcastTile: Codable, Sendable, Hashable, Identifiable {
     /// frame), from the frames the layout pass looked at.
     var faceX: Double? = nil
     var faceY: Double? = nil
+    /// The part of the cell that actually shows picture (fractions of the
+    /// source frame): call apps letterbox feeds inside their cells, and a
+    /// crop that spans the whole cell would carry the black bars along.
+    var pictureX: Double? = nil
+    var pictureY: Double? = nil
+    var pictureW: Double? = nil
+    var pictureH: Double? = nil
 
     var id: Int { index }
     var faceCenter: (x: Double, y: Double)? {
         guard let faceX, let faceY else { return nil }
         return (faceX, faceY)
+    }
+    /// The cell trimmed to its picture, or the cell itself when the layout
+    /// pass found no bars. Crops and feed regions come from this.
+    var picture: PodcastTile {
+        guard let pictureX, let pictureY, let pictureW, let pictureH, pictureW > 0, pictureH > 0 else { return self }
+        var trimmed = self
+        trimmed.x = pictureX; trimmed.y = pictureY; trimmed.w = pictureW; trimmed.h = pictureH
+        trimmed.pictureX = nil; trimmed.pictureY = nil; trimmed.pictureW = nil; trimmed.pictureH = nil
+        return trimmed
     }
     var centerX: Double { x + w / 2 }
     var centerY: Double { y + h / 2 }
@@ -81,7 +97,7 @@ nonisolated struct PodcastLanguageCandidate: Sendable, Hashable {
     var confidence: Double
 }
 
-nonisolated struct PodcastExchange: Sendable, Hashable {
+nonisolated struct PodcastExchange: Sendable, Hashable, Codable {
     var start: Double
     var end: Double
     var title: String

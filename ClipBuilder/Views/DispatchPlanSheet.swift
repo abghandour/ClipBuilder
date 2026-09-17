@@ -17,7 +17,10 @@ enum DispatchOperation: String {
     /// AI-dispatched stages, in pipeline order.
     var aiTasks: [String] {
         switch self {
-        case .analyze: return ["analysis"]
+        // Tagging, the people pass, and the transcript-first grouping of a
+        // podcast or interview each route on their own task, so each can
+        // run on a different model.
+        case .analyze: return ["analysis", "people", "exchanges"]
         // "research" is gone: the wizard now plans from the built-in MMA
         // playbook instead of an AI research call.
         case .generate: return ["wizard", "captions", "parse"]
@@ -150,14 +153,15 @@ struct DispatchPlanSheet: View {
         videos.isEmpty ? nil : videos[min(panelVideoIndex, videos.count - 1)]
     }
 
-    /// The picker's LIVE model choice for the shared "analysis" task — the
-    /// people pass honors it immediately (Start persists it for tagging).
-    private var analysisChoice: (provider: String?, model: String?) {
-        let tag = choices["analysis"] ?? recommendedTag(for: "analysis")
+    /// The picker's LIVE model choice for a task — the people pass honors
+    /// its own immediately (Start persists the analysis one for tagging).
+    private func liveChoice(for task: String) -> (provider: String?, model: String?) {
+        let tag = choices[task] ?? recommendedTag(for: task)
         let parts = tag.split(separator: "|", maxSplits: 1)
         guard parts.count == 2 else { return (nil, nil) }
         return (String(parts[0]), String(parts[1]))
     }
+    private var analysisChoice: (provider: String?, model: String?) { liveChoice(for: "analysis") }
 
     private func markerColor(_ marker: PersonMarker) -> Color {
         MarkerPalette.color(at: panelMarkers.firstIndex { $0.id == marker.id } ?? 0,
@@ -411,10 +415,10 @@ struct DispatchPlanSheet: View {
             .padding()
 
             Form {
-                // Same "analysis" model task as tag detection — one picker
-                // choice powers both passes; runs here honor it immediately.
-                ModelPicker(title: AICatalog.taskLabels["analysis"] ?? "analysis",
-                            task: "analysis", selection: binding(for: "analysis"),
+                // People detection routes on its own task, so it can use a
+                // different model from tagging; runs here honor it immediately.
+                ModelPicker(title: AICatalog.taskLabels["people"] ?? "people",
+                            task: "people", selection: binding(for: "people"),
                             availableProviders: availableProviders)
                 ForEach(videos) { video in
                     let done = peopleDone(video)
@@ -473,7 +477,7 @@ struct DispatchPlanSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                 Button(peopleGateSatisfied ? "Detect People Again" : "Detect People") {
-                    let choice = analysisChoice
+                    let choice = liveChoice(for: "people")
                     // Re-running once everything is done redoes every video;
                     // otherwise only the pending ones burn model calls.
                     let targets = peopleGateSatisfied ? videos : videos.filter { !peopleDone($0) }
@@ -583,7 +587,12 @@ struct DispatchPlanSheet: View {
                             ModelPicker(title: AICatalog.taskLabels[task] ?? task,
                                         task: task, selection: binding(for: task),
                                         availableProviders: availableProviders)
+                                .help(Self.taskHelp[task] ?? "")
                         }
+                        Text("Video analysis tags the footage (and attributes people inside that same call). People detection is the Identify people step. Podcast exchanges groups a podcast or interview transcript into question-and-answer scenes; who is speaking is worked out on this Mac. These choices become the defaults in Settings ▸ AI ▸ Task Routing.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         if analysisChoice.provider == "gemini" {
                             Text("Gemini watches the video natively when the file is under 300 MB and no section is trimmed; otherwise sampled frames are sent.")
                                 .font(.caption)
@@ -623,7 +632,7 @@ struct DispatchPlanSheet: View {
             .formStyle(.grouped)
             .frame(minHeight: CGFloat(operation.localStages.count + 2) * 44 + 60
                    + (operation == .analyze && showAdvancedAnalysisOptions
-                      ? (includeTranscript ? 176 : 88) + (autoBreakdown ? 160 : 0) + (smartSampling ? 72 : 44)
+                      ? (includeTranscript ? 176 : 88) + (autoBreakdown ? 160 : 0) + (smartSampling ? 72 : 44) + 132
                       : 0))
 
             if operation == .analyze && showAdvancedAnalysisOptions {
@@ -834,6 +843,13 @@ struct DispatchPlanSheet: View {
             }
         }
     }
+
+    /// What each model choice on the Tag scenes step is used for.
+    static let taskHelp: [String: String] = [
+        "analysis": "Tags the footage; people seen in those frames are attributed in the same call.",
+        "people": "The Identify people step: who appears where, with portraits. Also used when Detect People runs on its own.",
+        "exchanges": "Podcasts and interviews: groups the transcript into question-and-answer scenes with a title and a summary each. Who is speaking is tracked on this Mac, no model involved.",
+    ]
 
     private func start() {
         // One-shot hand-off: the analyze run consumes and clears these.

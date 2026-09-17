@@ -245,7 +245,8 @@ actor Analyzer {
     /// `heartbeat`, when given, receives a fresh status line every few seconds
     /// while the provider is working ("waiting for Claude Code · 43 frames ·
     /// 2:15 of up to 10:00"), so a long call never looks stalled.
-    private func callThinningFrames(prompt: String, auxiliary: [AIFrame], sampled: [AIFrame],
+    private func callThinningFrames(prompt: String, task: String = "analysis",
+                                    auxiliary: [AIFrame], sampled: [AIFrame],
                                     video: URL? = nil, lazySampled: AnalysisFrameSource? = nil,
                                     model: String?, provider: String?,
                                     progress: (@Sendable (Int) -> Void)? = nil,
@@ -292,7 +293,7 @@ actor Analyzer {
             }
             defer { pulse?.cancel() }
             do {
-                return try await ai.call(prompt: prompt, task: "analysis",
+                return try await ai.call(prompt: prompt, task: task,
                                          frames: auxiliary + frames, video: currentVideo,
                                          fallbackFrames: currentVideo == nil ? nil : fallbackFrames,
                                          model: model, provider: provider,
@@ -751,6 +752,25 @@ actor Analyzer {
         var sequences: [(start: Double, end: Double, narrative: String, score: Double)] = []
         var moments: [(at: Double, note: String, dialog: String?)] = []
         var activity = 0.0
+
+        init(window: (start: Double, end: Double)) { self.window = window }
+
+        /// A window restored from the checkpoint of an interrupted run.
+        init(_ saved: AnalysisCheckpoint.WindowResult) {
+            window = saved.window.tuple
+            tags = AnalysisCheckpoint.Range.decode(saved.tags)
+            sequences = saved.sequences.map(\.tuple)
+            moments = saved.moments.map(\.tuple)
+            activity = saved.activity
+        }
+
+        var checkpointResult: AnalysisCheckpoint.WindowResult {
+            AnalysisCheckpoint.WindowResult(window: AnalysisCheckpoint.Range(window),
+                                            tags: AnalysisCheckpoint.Range.encode(tags),
+                                            sequences: sequences.map { AnalysisCheckpoint.Sequence($0) },
+                                            moments: moments.map { AnalysisCheckpoint.Moment($0) },
+                                            activity: activity)
+        }
     }
 
     /// Coarse-map prompt: the full pass's tag/sequence/moment shape for one
@@ -818,10 +838,16 @@ actor Analyzer {
     private func coarseMapPass(url: URL, windows: [(start: Double, end: Double)], domain: String,
                                tags: [String: [String]], allTags: Set<String>, instructions: String,
                                provider: String?, model: String?,
+                               done: [AnalysisCheckpoint.WindowResult] = [],
+                               onWindow: (@Sendable (WindowMap) async -> Void)? = nil,
                                log: @escaping @Sendable (String) -> Void,
                                progress: @escaping @Sendable (Double, String) -> Void) async throws -> [WindowMap] {
         try await BoundedConcurrency.map(windows, limit: SmartSampling.coarseConcurrency) { index, window in
             try Task.checkCancellation()
+            // Mapped before the run stopped: the saved answer stands.
+            if let saved = done.first(where: { $0.window.matches(window) }) {
+                return WindowMap(saved)
+            }
             progress(0.3 + 0.25 * Double(index) / Double(max(1, windows.count)),
                      "mapping section \(index + 1) of \(windows.count)")
             let frames = await self.extractFrames(url: url, timestamps: SmartSampling.coarseTimestamps(window: window), log: log)
@@ -834,14 +860,33 @@ actor Analyzer {
                 let map = Self.parseWindowMap(response.text, window: window, allTags: allTags)
                 log(String(format: "Smart Sampling: %.0f–%.0fs mapped — activity %.0f, %d tag(s)",
                            window.start, window.end, map.activity, map.tags.count))
+                await onWindow?(map)
                 return map
             } catch is CancellationError {
                 throw CancellationError()
-            } catch {
+            } catch where Self.isSkippableWindowError(error) {
                 log(String(format: "Smart Sampling: %.0f–%.0fs failed — %@", window.start, window.end,
                            error.localizedDescription))
                 return WindowMap(window: window)
+            } catch {
+                // The provider itself is the problem (unreachable, signed
+                // out, out of quota): stop with the checkpoint intact
+                // rather than finish with silent holes in the map.
+                log(String(format: "Smart Sampling: %.0f–%.0fs failed — %@. Stopping here; Analyze again to resume.",
+                           window.start, window.end, error.localizedDescription))
+                throw error
             }
+        }
+    }
+
+    /// A window whose answer could not be used is skipped (the classic
+    /// pass already covers it); any other failure — the provider
+    /// unreachable, not signed in, out of quota — stops the run so it can
+    /// resume from its checkpoint.
+    nonisolated static func isSkippableWindowError(_ error: Error) -> Bool {
+        switch error as? AIError {
+        case .emptyResponse, .unusableResponse, .promptTooLong: true
+        default: false
         }
     }
 
@@ -975,7 +1020,7 @@ actor Analyzer {
                                            knownPeople: knownPeople, markers: namedMarkers,
                                            ignoreCount: ignoreFrames.count,
                                            filename: video.filename)
-        let response = try await callThinningFrames(prompt: prompt,
+        let response = try await callThinningFrames(prompt: prompt, task: "people",
                                                     auxiliary: profilePortraits + markerFrames + ignoreFrames,
                                                     sampled: frames,
                                                     model: model, provider: provider, log: log)
@@ -1461,10 +1506,18 @@ actor Analyzer {
                        smartSampling: Bool = false,
                        cuts: [Double]? = nil,
                        force: Bool = false,
+                       checkpointing: AnalysisCheckpointing? = nil,
                        log: @escaping @Sendable (String) -> Void,
                        progress: @escaping @Sendable (Double, String) -> Void) async throws
         -> (runID: Int64?, newPeople: [DetectedNewPerson], suggestedFilename: String?) {
         return try await AIRunCapture.context.withValue(AIRunCapture.current ?? AIRunCapture()) {
+        // Where an interrupted run got to: the whole-video answer and every
+        // finished window are reused, and each new piece is written as it
+        // lands so the next resume starts from here.
+        let saveCheckpoint: @Sendable (AnalysisCheckpoint.VisualState) async -> Void = checkpointing?.save ?? { @Sendable _ in }
+        let recorder = AnalysisCheckpointRecorder(state: checkpointing?.resume ?? AnalysisCheckpoint.VisualState(),
+                                                  save: saveCheckpoint)
+        let resumedWide = await recorder.state.wide
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let tags = profile.effectiveTags
         var allTags = Set(tags.values.flatMap { $0 })
@@ -1544,7 +1597,7 @@ actor Analyzer {
         }
         progress(0.05, nativeVideo == nil ? "extracting frames" : "preparing video references")
         let frames: [AIFrame]
-        if nativeVideo == nil {
+        if nativeVideo == nil, resumedWide == nil {
             frames = try await frameSource.frames()
         } else {
             frames = []
@@ -1646,8 +1699,10 @@ actor Analyzer {
                                             notesHaveReferenceFrames: !referenceFrames.isEmpty)
             tagsToRecord = Array(newTags)
             progress(0.25, "tagging \(newTags.count) new tags")
-            log(nativeVideo == nil ? "Extracted \(frames.count) frames, checking \(newTags.count) new tags..."
-                : "Checking \(newTags.count) new tags from native video...")
+            if resumedWide == nil {
+                log(nativeVideo == nil ? "Extracted \(frames.count) frames, checking \(newTags.count) new tags..."
+                    : "Checking \(newTags.count) new tags from native video...")
+            }
         } else {
             prompt = Self.fullAnalysisPrompt(domain: domain, duration: duration, tags: tags,
                                              instructions: instructions, notes: notes,
@@ -1661,13 +1716,44 @@ actor Analyzer {
                                              ignoreCount: ignoreFrames.count)
             tagsToRecord = Array(allTags)
             progress(0.25, nativeVideo == nil ? "tagging (\(frames.count) frames)" : "tagging native video")
-            log(nativeVideo == nil ? "Extracted \(frames.count) frames, sending for full analysis..."
-                : "Sending native video for full analysis...")
+            if resumedWide == nil {
+                log(nativeVideo == nil ? "Extracted \(frames.count) frames, sending for full analysis..."
+                    : "Sending native video for full analysis...")
+            }
         }
 
         // Structured child: overlaps the remote wait and is cancelled on scope exit.
         async let sourceLoudness = Self.cachedLoudnessCurve(url: video.url)
         let sampledEvidence = SampledFrameCache.current ?? SampledFrameCache()
+        var cleanTags: [String: [(start: Double, end: Double)]] = [:]
+        var detectedPeople: [(key: String, description: String,
+                              suggestedName: String?, correctedName: String?,
+                              firstSeen: (start: Double, end: Double))] = []
+        var outcome: (method: String, winner: String?, loser: String?, event: String?, round: Int?)?
+        var suggestedFilename: String?
+        let inferredType: VideoType?
+        var cleanMoments: [(at: Double, note: String, dialog: String?)] = []
+        var sequences: [(start: Double, end: Double, narrative: String, score: Double)] = []
+        // The provider that actually answered (after any failover) is the
+        // batch's provenance.
+        let attribution: (provider: String, model: String?)
+        if let wide = resumedWide {
+            log("Resuming \(video.filename): the whole-video pass is already done — reusing its answer")
+            progress(0.3, "resuming")
+            cleanTags = AnalysisCheckpoint.Range.decode(wide.tags)
+            cleanMoments = wide.moments.map(\.tuple)
+            sequences = wide.sequences.map(\.tuple)
+            detectedPeople = wide.people.map {
+                (key: $0.key, description: $0.description, suggestedName: $0.suggestedName,
+                 correctedName: $0.correctedName, firstSeen: $0.firstSeen.tuple)
+            }
+            outcome = wide.outcome.map {
+                (method: $0.method, winner: $0.winner, loser: $0.loser, event: $0.event, round: $0.round)
+            }
+            suggestedFilename = wide.suggestedFilename
+            inferredType = wide.inferredType.flatMap(VideoType.init(rawValue:))
+            attribution = (wide.provider ?? provider ?? "", wide.model)
+        } else {
         let response = try await callThinningFrames(
             prompt: prompt,
             auxiliary: referenceFrames + markerFrames + ignoreFrames + tasteFrames,
@@ -1681,7 +1767,6 @@ actor Analyzer {
         }
 
         // Clamp + validate ranges against the tag vocabulary.
-        var cleanTags: [String: [(start: Double, end: Double)]] = [:]
         if let rawTags = object["tags"] as? [String: Any] {
             for (tag, value) in rawTags {
                 guard allTags.contains(tag), let ranges = value as? [[String: Any]] else { continue }
@@ -1697,9 +1782,6 @@ actor Analyzer {
 
         // People breakdown: each detected person becomes a registry upsert
         // plus "person:<key>" tag ranges (searchable exactly like other tags).
-        var detectedPeople: [(key: String, description: String,
-                              suggestedName: String?, correctedName: String?,
-                              firstSeen: (start: Double, end: Double))] = []
         if detectPeople, !isIncremental, let rawPeople = object["people"] as? [[String: Any]] {
             var seenKeys = Set<String>()
             for entry in rawPeople {
@@ -1735,7 +1817,6 @@ actor Analyzer {
 
         // Fight result, when the model saw one — winner/loser keys validated
         // against the people it just reported.
-        var outcome: (method: String, winner: String?, loser: String?, event: String?, round: Int?)?
         if detectPeople, !isIncremental, let raw = object["outcome"] as? [String: Any],
            let method = (raw["method"] as? String)?.lowercased(),
            ["ko", "tko", "submission", "decision", "draw", "no-contest"].contains(method) {
@@ -1755,17 +1836,15 @@ actor Analyzer {
         // for descriptive names with a misspelled person/event (the prompt
         // gates it), sanitized here so it is always usable as a file name.
         // One per analysis — the full pass only.
-        var suggestedFilename: String?
         if !isIncremental, let raw = object["suggested_filename"] as? String {
             suggestedFilename = Self.sanitizedFilenameSuggestion(raw, currentFilename: video.filename)
         }
 
         // Whole-video classification — steers fight-only features and the
         // wizard. Saved further down, and only when the row has no type yet.
-        let inferredType = isIncremental ? nil
+        inferredType = isIncremental ? nil
             : (object["video_type"] as? String).flatMap { VideoType(rawValue: $0.lowercased()) }
 
-        var cleanMoments: [(at: Double, note: String, dialog: String?)] = []
         if let rawMoments = object["moments"] as? [[String: Any]] {
             for moment in rawMoments {
                 let at = ((moment["at"] as? NSNumber)?.doubleValue ?? -1).rounded(toPlaces: 1)
@@ -1776,7 +1855,6 @@ actor Analyzer {
 
         // Sequence understanding: the beat-by-beat story + entertainment
         // score per range, attached to the matching scenes after saving.
-        var sequences: [(start: Double, end: Double, narrative: String, score: Double)] = []
         for entry in object["sequences"] as? [[String: Any]] ?? [] {
             let start = max(clampStart, ((entry["start"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
             let end = min(clampEnd, ((entry["end"] as? NSNumber)?.doubleValue ?? 0).rounded(toPlaces: 1))
@@ -1785,6 +1863,22 @@ actor Analyzer {
             guard end > start, !narrative.isEmpty else { continue }
             let score = min(10, max(0, (entry["score"] as? NSNumber)?.doubleValue ?? 5))
             sequences.append((start, end, narrative, score))
+        }
+        attribution = (response.provider, response.model)
+        let wide = AnalysisCheckpoint.Wide(
+            tags: AnalysisCheckpoint.Range.encode(cleanTags),
+            moments: cleanMoments.map { AnalysisCheckpoint.Moment($0) },
+            sequences: sequences.map { AnalysisCheckpoint.Sequence($0) },
+            people: detectedPeople.map {
+                AnalysisCheckpoint.Person(key: $0.key, description: $0.description, suggestedName: $0.suggestedName,
+                                          correctedName: $0.correctedName, firstSeen: AnalysisCheckpoint.Range($0.firstSeen))
+            },
+            outcome: outcome.map {
+                AnalysisCheckpoint.Outcome(method: $0.method, winner: $0.winner, loser: $0.loser, event: $0.event, round: $0.round)
+            },
+            suggestedFilename: suggestedFilename, inferredType: inferredType?.rawValue,
+            provider: response.provider, model: response.model)
+        await recorder.record { $0.wide = wide }
         }
         // Smart Sampling — the coarse map. Long files get 5-minute windows
         // sampled every 15 s, in parallel, on top of the 30-frame pass above
@@ -1796,9 +1890,19 @@ actor Analyzer {
         if smart {
             let coarse = SmartSampling.coarseWindows(duration: duration)
             log("Smart Sampling: mapping \(coarse.count) section(s), one frame every \(Int(SmartSampling.coarseInterval))s…")
+            let doneCoarse = await recorder.state.coarse
+            if !doneCoarse.isEmpty {
+                log("Resuming: \(doneCoarse.count) of \(coarse.count) section(s) were mapped before the stop")
+            }
             let maps = try await coarseMapPass(url: video.url, windows: coarse, domain: domain, tags: tags,
                                                allTags: allTags, instructions: instructions,
-                                               provider: provider, model: model, log: log, progress: progress)
+                                               provider: provider, model: model,
+                                               done: doneCoarse,
+                                               onWindow: { map in
+                                                   let result = map.checkpointResult
+                                                   await recorder.record { $0.coarse.append(result) }
+                                               },
+                                               log: log, progress: progress)
             let before = cleanTags.values.reduce(0) { $0 + $1.count }
             for map in maps {
                 cleanTags = SmartSampling.merge(existing: cleanTags, incoming: map.tags)
@@ -1856,20 +1960,36 @@ actor Analyzer {
                 + (breakdownTags.isEmpty ? "" : " tagged \(breakdownTags.joined(separator: ", "))") + "…")
             typealias Breakdown = (tags: [String: [(start: Double, end: Double)]],
                                    sequences: [(start: Double, end: Double, narrative: String, score: Double)])
+            let doneDense = await recorder.state.dense
+            if !doneDense.isEmpty {
+                log("Resuming: \(doneDense.count) window(s) were broken down before the stop")
+            }
             let subs = try await BoundedConcurrency.map(windows, limit: SmartSampling.denseConcurrency) { index, window -> Breakdown in
                 try Task.checkCancellation()
+                if let saved = doneDense.first(where: { $0.window.matches(window) }) {
+                    return (AnalysisCheckpoint.Range.decode(saved.tags), saved.sequences.map(\.tuple))
+                }
                 progress(0.88 + 0.06 * Double(index) / Double(windows.count), "breaking down scenes")
                 do {
-                    return try await self.breakdownScene(url: video.url, window: window,
-                                                         domain: domain, tags: tags, allTags: allTags,
-                                                         instructions: instructions,
-                                                         provider: provider, model: model, log: log)
+                    let sub = try await self.breakdownScene(url: video.url, window: window,
+                                                            domain: domain, tags: tags, allTags: allTags,
+                                                            instructions: instructions,
+                                                            provider: provider, model: model, log: log)
+                    let result = AnalysisCheckpoint.WindowResult(
+                        window: AnalysisCheckpoint.Range(window), tags: AnalysisCheckpoint.Range.encode(sub.tags),
+                        sequences: sub.sequences.map { AnalysisCheckpoint.Sequence($0) })
+                    await recorder.record { $0.dense.append(result) }
+                    return sub
                 } catch is CancellationError {
                     throw CancellationError()
-                } catch {
+                } catch where Self.isSkippableWindowError(error) {
                     log(String(format: "Breakdown of %.1f–%.1fs failed — keeping the scene whole",
                                window.start, window.end))
                     return ([:], [])
+                } catch {
+                    log(String(format: "Breakdown of %.1f–%.1fs failed — %@. Stopping here; Analyze again to resume.",
+                               window.start, window.end, error.localizedDescription))
+                    throw error
                 }
             }
             for (window, sub) in zip(windows, subs) {
@@ -1954,9 +2074,6 @@ actor Analyzer {
                                   sampleTime: (person.firstSeen.start + person.firstSeen.end) / 2)
             }
         }
-        // The provider that actually answered (after any failover) is the
-        // batch's provenance.
-        let attribution = (provider: response.provider, model: response.model)
         // Notes live on the video and can change later — snapshot the set
         // this run actually used so the batch info stays truthful.
         let noteSnapshot = notes

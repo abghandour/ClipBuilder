@@ -336,6 +336,14 @@ struct MainWindowView: View {
         .sheet(item: $store.pendingRenameReview) { request in
             RenameReviewSheet(request: request)
         }
+        .alert(store.currentNotice?.title ?? "", isPresented: Binding(
+            get: { store.currentNotice != nil },
+            set: { if !$0 { store.dismissCurrentNotice() } }
+        ), presenting: store.currentNotice) { _ in
+            Button("OK", role: .cancel) {}
+        } message: { notice in
+            Text(notice.message)
+        }
         .alert("Error", isPresented: Binding(
             get: { store.currentError != nil },
             set: { if !$0 { store.dismissCurrentError() } }

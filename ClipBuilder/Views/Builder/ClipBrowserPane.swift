@@ -334,7 +334,7 @@ struct ClipBrowserPane: View {
             }
         }
         .sheet(item: $playingScene) { scene in
-            PlayerSheet(url: scene.videoURL,
+            PlayerSheet(url: scene.videoURL, transcriptVideoID: scene.videoID,
                         title: "\(scene.videoFilename) \(scene.startTime.timecode)–\(scene.endTime.timecode)",
                         startTime: scene.startTime,
                         endTime: scene.endTime,

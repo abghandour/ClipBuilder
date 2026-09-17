@@ -24,7 +24,12 @@ actor PodcastAnalysisService {
                  highlightThreshold: Double, holdSeconds: Double,
                  log: @escaping @Sendable (String) -> Void,
                  progress: @escaping @Sendable (Double, String) -> Void, useLocal: Bool = false,
-                 capturedSettings: PodcastSettings? = nil) async throws -> Result {
+                 capturedSettings: PodcastSettings? = nil,
+                 checkpointing: PodcastCheckpointing? = nil) async throws -> Result {
+        // An interrupted run's finished pieces: the people pass and the
+        // exchange grouping are the model calls worth not repeating (the
+        // transcript is cached on disk and the rest is local).
+        var state = checkpointing?.resume ?? AnalysisCheckpoint.PodcastState()
         progress(0.03, "transcribing podcast")
         let segments = try await transcription.transcribePodcast(
             video: video, database: database, languageCode: languageCode, log: log)
@@ -33,17 +38,32 @@ actor PodcastAnalysisService {
         let turns = try await PodcastSpeakerSeparator.separate(video: video, segments: segments)
 
         progress(0.43, "identifying speakers")
-        let peopleBefore = Set((try await database.fetchPeople()).map(\.key))
-        let peopleResult = try await analyzer.detectPeopleOnly(
-            video: video, profile: profile, database: database,
-            provider: provider, model: model,
-            sampleTimes: Self.identitySampleTimes(turns: turns, duration: video.duration), log: log)
-        let roster = peopleResult.roster
-        let newPeople = roster.filter { !peopleBefore.contains($0.key) }.map {
-            DetectedNewPerson(key: $0.key, descriptor: $0.descriptor,
-                              suggestedName: $0.name.isEmpty ? nil : $0.name,
-                              videoURL: video.url, videoFilename: video.filename,
-                              sampleTime: $0.portraitAt)
+        let roster: [VideoPersonRecord]
+        let newPeople: [DetectedNewPerson]
+        let suggestedFilename: String?
+        if state.peopleDone {
+            log("Resuming \(video.filename): the people pass is already done — reusing its roster")
+            roster = try await database.fetchVideoPeople(videoID: video.id)
+            newPeople = state.newPeople
+            suggestedFilename = state.suggestedFilename
+        } else {
+            let peopleBefore = Set((try await database.fetchPeople()).map(\.key))
+            let peopleResult = try await analyzer.detectPeopleOnly(
+                video: video, profile: profile, database: database,
+                provider: provider, model: model,
+                sampleTimes: Self.identitySampleTimes(turns: turns, duration: video.duration), log: log)
+            roster = peopleResult.roster
+            newPeople = roster.filter { !peopleBefore.contains($0.key) }.map {
+                DetectedNewPerson(key: $0.key, descriptor: $0.descriptor,
+                                  suggestedName: $0.name.isEmpty ? nil : $0.name,
+                                  videoURL: video.url, videoFilename: video.filename,
+                                  sampleTime: $0.portraitAt)
+            }
+            suggestedFilename = peopleResult.suggestedFilename
+            state.peopleDone = true
+            state.newPeople = newPeople
+            state.suggestedFilename = suggestedFilename
+            await checkpointing?.save(state)
         }
 
         progress(0.55, "reading speaker motion")
@@ -79,8 +99,20 @@ actor PodcastAnalysisService {
                                                      proposals: enrichment.proposals)
 
         progress(0.70, "grouping complete exchanges")
-        let outcome = try await PodcastExchangeSegmenter(ai: ai).segment(
-            segments: segments, turns: resolved, provider: provider, model: model, log: log, useLocal: useLocal)
+        let outcome: PodcastExchangeSegmenter.Outcome
+        if let exchanges = state.exchanges {
+            log("Resuming \(video.filename): the exchanges were grouped before the stop — reusing them")
+            outcome = PodcastExchangeSegmenter.Outcome(
+                exchanges: exchanges,
+                provenance: AIProvenance(provider: state.exchangesProvider, model: state.exchangesModel, task: "exchanges"))
+        } else {
+            outcome = try await PodcastExchangeSegmenter(ai: ai).segment(
+                segments: segments, turns: resolved, provider: provider, model: model, log: log, useLocal: useLocal)
+            state.exchanges = outcome.exchanges
+            state.exchangesProvider = outcome.provenance?.provider
+            state.exchangesModel = outcome.provenance?.model
+            await checkpointing?.save(state)
+        }
         let tagRanges = Self.exchangeTagRanges(outcome.exchanges, layout: visual.layout,
                                                highlightThreshold: highlightThreshold)
         let runID = try await database.saveAnalysis(
@@ -116,8 +148,7 @@ actor PodcastAnalysisService {
             }
         }
         progress(1, "podcast ready")
-        return Result(runID: runID, newPeople: newPeople,
-                      suggestedFilename: peopleResult.suggestedFilename)
+        return Result(runID: runID, newPeople: newPeople, suggestedFilename: suggestedFilename)
     }
 
     /// The speaker map alone, for talking footage the visual pipeline
@@ -484,9 +515,10 @@ nonisolated enum PodcastSpeakerTimelineResolver {
         return result
     }
 
-    /// The largest 9:16 crop that fits inside a tile, centered on it.
-    static func tileCrop(_ tile: PodcastTile, aspect: Double, canvasAspect: Double = 9.0 / 16.0)
+    /// The largest 9:16 crop that fits inside a tile's picture, centered on it.
+    static func tileCrop(_ cell: PodcastTile, aspect: Double, canvasAspect: Double = 9.0 / 16.0)
         -> (x: Double, y: Double, w: Double, h: Double) {
+        let tile = cell.picture
         // A crop of normalized height h is w = h × canvas ÷ source in normalized width.
         var h = tile.h
         var w = h * canvasAspect / aspect
@@ -575,7 +607,7 @@ actor PodcastVisualAnalyzer {
                 splitHits += 1
             }
         }
-        let tiles = withFaceCenters(inferTiles(faceSets: faceSets), faceSets: faceSets)
+        let tiles = withPictureBounds(withFaceCenters(inferTiles(faceSets: faceSets), faceSets: faceSets), frames: available)
         var layoutConfidence = available.isEmpty ? 0 : Double(splitHits) / Double(available.count)
         var layout: PodcastLayout = layoutConfidence >= 0.6 ? .splitHorizontal : .singleCamera
         // Three or more fixed feeds, or two stacked, is a grid: sides cannot
@@ -691,6 +723,83 @@ actor PodcastVisualAnalyzer {
             tile.faceX = (centers.map(\.0).reduce(0, +) / Double(centers.count) * 10000).rounded() / 10000
             tile.faceY = (centers.map(\.1).reduce(0, +) / Double(centers.count) * 10000).rounded() / 10000
             return tile
+        }
+    }
+
+    /// Each tile trimmed to the picture inside it: the bounding box of the
+    /// rows and columns that are not black, per frame, then the median edge
+    /// over the frames. A box under 40% of the cell is not trusted.
+    nonisolated static func withPictureBounds(_ tiles: [PodcastTile], frames: [Data]) -> [PodcastTile] {
+        guard !frames.isEmpty else { return tiles }
+        var decoded: [FramePixels] = []
+        for frame in frames { if let pixels = FramePixels(frame) { decoded.append(pixels) } }
+        guard !decoded.isEmpty else { return tiles }
+        func median(_ values: [Double]) -> Double { let sorted = values.sorted(); return sorted[sorted.count / 2] }
+        return tiles.map { tile -> PodcastTile in
+            var boxes: [CGRect] = []
+            for pixels in decoded { if let box = pixels.pictureBounds(within: tile) { boxes.append(box) } }
+            guard boxes.count >= max(1, decoded.count / 2) else { return tile }
+            let left: Double = median(boxes.map { Double($0.minX) })
+            let right: Double = median(boxes.map { Double($0.maxX) })
+            let top: Double = median(boxes.map { Double($0.minY) })
+            let bottom: Double = median(boxes.map { Double($0.maxY) })
+            let w: Double = right - left
+            let h: Double = bottom - top
+            guard w > 0, h > 0, w * h >= 0.4 * tile.w * tile.h else { return tile }
+            // No trimming to report when the picture fills the cell.
+            guard w < tile.w - 0.005 || h < tile.h - 0.005 else { return tile }
+            var trimmed = tile
+            trimmed.pictureX = (left * 10000).rounded() / 10000
+            trimmed.pictureY = (top * 10000).rounded() / 10000
+            trimmed.pictureW = (w * 10000).rounded() / 10000
+            trimmed.pictureH = (h * 10000).rounded() / 10000
+            return trimmed
+        }
+    }
+
+    /// A small RGBA copy of a frame for cheap scans.
+    nonisolated struct FramePixels {
+        let width: Int
+        let height: Int
+        let pixels: [UInt8]
+
+        init?(_ jpeg: Data) {
+            guard let source = CGImageSourceCreateWithData(jpeg as CFData, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil), image.width > 0, image.height > 0 else { return nil }
+            let width = 320
+            let height = max(2, Int((Double(image.height) / Double(image.width) * Double(width)).rounded()))
+            var pixels = [UInt8](repeating: 0, count: width * height * 4)
+            let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+                guard let context = CGContext(data: buffer.baseAddress, width: width, height: height,
+                                              bitsPerComponent: 8, bytesPerRow: width * 4,
+                                              space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+                context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+                return true
+            }
+            guard drawn else { return nil }
+            self.width = width; self.height = height; self.pixels = pixels
+        }
+
+        /// The bounding box (fractions of the frame, top-left origin) of the
+        /// rows and columns inside `tile` where at least a twentieth of the
+        /// pixels are brighter than near-black.
+        func pictureBounds(within tile: PodcastTile, threshold: UInt8 = 28) -> CGRect? {
+            // CGContext draws with a bottom-left origin: flip the rows.
+            let x0 = max(0, Int(tile.x * Double(width))), x1 = min(width, Int((tile.x + tile.w) * Double(width)))
+            let y0 = max(0, Int(tile.y * Double(height))), y1 = min(height, Int((tile.y + tile.h) * Double(height)))
+            guard x1 - x0 >= 4, y1 - y0 >= 4 else { return nil }
+            func bright(_ x: Int, _ y: Int) -> Bool {
+                let offset = ((height - 1 - y) * width + x) * 4
+                return max(pixels[offset], pixels[offset + 1], pixels[offset + 2]) > threshold
+            }
+            let rows = (y0..<y1).map { y in (x0..<x1).count { bright($0, y) } }
+            let columns = (x0..<x1).map { x in (y0..<y1).count { bright(x, $0) } }
+            let rowNeed = max(1, (x1 - x0) / 20), columnNeed = max(1, (y1 - y0) / 20)
+            guard let top = rows.firstIndex(where: { $0 >= rowNeed }), let bottom = rows.lastIndex(where: { $0 >= rowNeed }),
+                  let left = columns.firstIndex(where: { $0 >= columnNeed }), let right = columns.lastIndex(where: { $0 >= columnNeed }) else { return nil }
+            return CGRect(x: Double(x0 + left) / Double(width), y: Double(y0 + top) / Double(height),
+                          width: Double(right - left + 1) / Double(width), height: Double(bottom - top + 1) / Double(height))
         }
     }
 
@@ -865,7 +974,7 @@ actor PodcastExchangeSegmenter {
         Return only JSON: {"exchanges":[{"first_sentence":0,"last_sentence":1,"title":"...","summary":"...","score":7.5}]}
         """
         do {
-            let response = try await ai.call(prompt: prompt, task: "soundbites", model: model,
+            let response = try await ai.call(prompt: prompt, task: "exchanges", model: model,
                                              provider: provider, timeout: 240, log: log)
             guard let object = AIResponseParser.jsonObject(from: response.text),
                   let raw = object["exchanges"] as? [[String: Any]] else {

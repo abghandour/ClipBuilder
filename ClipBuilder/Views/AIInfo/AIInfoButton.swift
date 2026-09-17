@@ -8,6 +8,8 @@ struct AIInfoEntry: Identifiable {
     var settings: [String: JSONSetting]?
     var notes: String = ""
     var output: GeneratedVideoRecord?
+    /// The source video the entry describes, so a stage can run again.
+    var video: VideoRecord?
     static let notRecorded = "Settings not recorded for this run"
 }
 
@@ -35,7 +37,8 @@ struct AIInfoButton: View {
             name: run.name, roles: recorded,
             settings: AISettingsJSON.decode(AnalysisRunSettings.self, run.settingsJSON).map(
                 JSONSetting.dictionary),
-            notes: run.notesJSON ?? "")
+            notes: run.notesJSON ?? "",
+            video: store.videos.first { $0.id == run.videoID })
     }
     private var entries: [AIInfoEntry] {
         if let output {
@@ -72,6 +75,7 @@ struct AIInfoButton: View {
                 !recorded.contains { $0.role == candidate.role }
             }
             entry.notes = [scene.narrative, entry.notes].compactMap { $0 }.joined(separator: "\n")
+            entry.video = entry.video ?? store.videos.first { $0.id == scene.videoID }
             return [entry]
         }
         if let video {
@@ -82,7 +86,7 @@ struct AIInfoButton: View {
                     ("Tagging", video.visualAnalysisProvenance),
                     ("Transcript", video.transcriptionProvenance),
                     ("People", video.peopleProvenance), ("Naming", video.namingProvenance),
-                ]))
+                ]), video: video)
             return store.analysisRuns.filter { $0.videoID == video.id }.map(runEntry) + [summary]
         }
         return [AIInfoEntry(name: role ?? "AI details", roles: roles([(role ?? "AI", provenance)]))]

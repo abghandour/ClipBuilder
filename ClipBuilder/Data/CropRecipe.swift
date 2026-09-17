@@ -264,8 +264,9 @@ nonisolated enum CropRecipePlanner {
 
     /// The largest crop of `aspect` (output width ÷ height) inside a tile,
     /// centered on the face when known, else on the tile.
-    static func crop(tile: PodcastTile, aspect: Double, sourceAspect: Double,
+    static func crop(tile cell: PodcastTile, aspect: Double, sourceAspect: Double,
                      center: (x: Double, y: Double)? = nil) -> FreeCropRect {
+        let tile = cell.picture
         var h = tile.h
         var w = h * aspect / sourceAspect
         if w > tile.w { w = tile.w; h = w * sourceAspect / aspect }
@@ -444,8 +445,8 @@ nonisolated enum CropRecipePlanner {
                 if ref.isFullScreen {
                     var end = only; end.t = length
                     slot.path = [only, end]
-                } else if recipe.tracking, let tile = tiles.first(where: { $0.index == filled[0].tile }) {
-                    // A still cell: the tracking camera inside the feed.
+                } else if recipe.tracking, let tile = tiles.first(where: { $0.index == filled[0].tile })?.picture {
+                    // A still cell: the tracking camera inside the feed's picture.
                     slot.region = FreeCropRect(xFrac: tile.x, yFrac: tile.y, wFrac: tile.w, hFrac: tile.h)
                 } else {
                     slot.window = FreeCropRect(xFrac: only.x, yFrac: only.y, wFrac: only.w, hFrac: only.h)

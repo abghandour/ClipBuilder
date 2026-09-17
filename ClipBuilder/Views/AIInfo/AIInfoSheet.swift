@@ -11,7 +11,92 @@ struct AIInfoSheet: View {
     @State private var copied = false
     @State private var replaceBuilder = false
     @State private var showingQuality = false
+    /// Run Again: which role's popover is open, its model tag, and what
+    /// the machine can run.
+    @State private var rerunRole: String?
+    @State private var rerunTag = ""
+    @State private var availableProviders = Set(AICatalog.providers.map(\.key))
+    @State private var soundbitesVideo: VideoRecord?
+    @State private var namingVideo: VideoRecord?
     private var entry: AIInfoEntry { entries[min(selected, entries.count - 1)] }
+
+    /// What "Run Again" does for a role: a stage of the analysis, or one of
+    /// the sheets that already carry their own model picker.
+    private enum RerunAction {
+        case stage(AppStore.AnalysisStage)
+        case soundbites
+        case naming
+    }
+
+    private func rerunAction(for role: String) -> RerunAction? {
+        guard let video = entry.video else { return nil }
+        switch role {
+        case "Soundbite finding": return .soundbites
+        case "Naming", "File naming": return .naming
+        default: return AppStore.AnalysisStage.forRole(role, podcast: video.type == .podcast).map { .stage($0) }
+        }
+    }
+
+    @ViewBuilder
+    private func rerunControl(for item: AIRole) -> some View {
+        if let action = rerunAction(for: item.role), let video = entry.video {
+            switch action {
+            case .soundbites:
+                Button("Find Again…") { soundbitesVideo = video }
+                    .help("Open Find Soundbites for this file and pick the model there")
+            case .naming:
+                Button("Suggest Again…") { namingVideo = video }
+                    .help("Open the File Name Wizard for this file and pick the model there")
+            case .stage(let stage):
+                let busy = store.isAnalyzing || (stage == .people && store.isDetectingPeople)
+                Button(stage == .transcript ? "Transcribe Again" : "Run Again…") {
+                    if let task = stage.task {
+                        rerunTag = ModelPicker.bestAvailableTag(for: task, available: availableProviders)
+                        rerunRole = item.role
+                    } else {
+                        store.rerun(stage, video: video)
+                        dismiss()
+                    }
+                }
+                .disabled(busy)
+                .help(stage == .transcript
+                      ? "Transcribe this file again on this Mac; the other parts of the analysis stay"
+                      : "Run only \(stage.title) again for this file, with a model you pick; the other parts of the analysis stay")
+                .popover(isPresented: Binding(get: { rerunRole == item.role }, set: { if !$0 { rerunRole = nil } })) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("\(stage.title) again for \(video.filename)")
+                            .font(.headline)
+                        Text(stage == .people
+                             ? "Watches the video again and rebuilds who appears where. Scenes and the transcript stay."
+                             : stage == .exchanges
+                             ? "Groups the transcript into exchanges again, in a new analyze batch. Earlier batches stay until you delete them."
+                             : "Tags the footage again, in a new analyze batch. People and the transcript stay.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let task = stage.task {
+                            ModelPicker(title: "Model", task: task, selection: $rerunTag,
+                                        availableProviders: availableProviders)
+                        }
+                        HStack {
+                            Spacer()
+                            Button("Cancel") { rerunRole = nil }
+                            Button("Run") {
+                                let choice = ModelPicker.parse(rerunTag)
+                                store.rerun(stage, video: video, provider: choice.provider, model: choice.model)
+                                rerunRole = nil
+                                dismiss()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .keyboardShortcut(.defaultAction)
+                        }
+                    }
+                    .padding()
+                    .frame(width: 360)
+                }
+            }
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -34,7 +119,11 @@ struct AIInfoSheet: View {
                         HStack(alignment: .top) {
                             ProviderLogo(brand: item.provenance.brand, size: 18)
                             VStack(alignment: .leading) {
-                                Text(item.role).bold()
+                                HStack(spacing: 8) {
+                                    Text(item.role).bold()
+                                    rerunControl(for: item)
+                                        .controlSize(.small)
+                                }
                                 Text(item.provenance.shortLabel)
                                 Text(
                                     item.provenance.at?.formatted(
@@ -183,6 +272,9 @@ struct AIInfoSheet: View {
                     copied = false
                 } catch {}
             }
+            .task { availableProviders = await ModelPicker.probeAvailability(ai: store.ai) }
+            .sheet(item: $soundbitesVideo) { video in SoundbiteSheet(video: video) }
+            .sheet(item: $namingVideo) { video in FileNameWizardSheet(videos: [video]) }
     }
     private func readable(_ key: String) -> String {
         key.replacingOccurrences(of: "([a-z])([A-Z])", with: "$1 $2", options: .regularExpression)

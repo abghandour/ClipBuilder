@@ -26,6 +26,9 @@ struct AnalyzeView: View {
     @State private var soundbiteVideo: VideoRecord?
     @State private var showDuplicateScan = false
     @State private var showAnalyzeWizard = false
+    /// Analyze was pressed on videos whose last analysis did not finish:
+    /// the prompt asks whether to resume or start over.
+    @State private var resumePrompt: ResumePrompt?
     @State private var showingImporter = false
     @State private var showingProjectVideoPicker = false
     @State private var showingProjectFromSelection = false
@@ -34,6 +37,9 @@ struct AnalyzeView: View {
     /// The video the preview pane shows — follows `selection` one run-loop
     /// turn behind it (see `syncPreview`).
     @State private var previewVideoID: Int64?
+    /// Scene playing from the person popover (sheet owned here, not by the
+    /// split-view child).
+    @State private var previewScene: SceneRecord?
     /// Exactly one selected video → the preview pane shows it.
     private var previewVideo: VideoRecord? {
         guard let previewVideoID else { return nil }
@@ -101,7 +107,9 @@ struct AnalyzeView: View {
                     // constraint-loop guard (crash).
                     VideoPreviewPane(video: video,
                                      onResearch: { fightResearchTarget = video },
-                                     onNameWizard: { showNameWizard = true })
+                                     onNameWizard: { showNameWizard = true },
+                                     onPreviewScene: { previewScene = $0 },
+                                     onSelectVideo: { selection = [$0.id] })
                         .rememberedPaneWidth("pane.analyze.preview", min: 240, initial: 320, max: 440)
                         .frame(maxHeight: .infinity)
                 }
@@ -112,6 +120,26 @@ struct AnalyzeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .sheet(isPresented: $showingDriveBrowser) { GoogleDriveBrowserSheet() }
         .sheet(isPresented: $showingDriveUpload) { GoogleDriveBrowserSheet(uploadMedia: pendingDriveUploads) }
+        .confirmationDialog(
+            resumePrompt.map { $0.unfinished.count == 1 ? "Resume the analysis of \($0.unfinished[0].filename)?"
+                                                        : "Resume \($0.unfinished.count) unfinished analyses?" } ?? "",
+            isPresented: Binding(get: { resumePrompt != nil }, set: { if !$0 { resumePrompt = nil } }),
+            titleVisibility: .visible,
+            presenting: resumePrompt
+        ) { prompt in
+            Button("Resume") {
+                store.analyze(videos: prompt.videos)
+            }
+            Button("Start Over", role: .destructive) {
+                Task {
+                    await store.discardAnalysisCheckpoints(videoIDs: prompt.unfinished.map(\.id))
+                    presentPlan(for: prompt.videos)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { prompt in
+            Text(resumeMessage(prompt))
+        }
         .confirmationDialog("Upload selected videos to Google Drive?", isPresented: $confirmingDriveUpload) {
             Button("Choose Folder…") { showingDriveUpload = true }
         } message: {
@@ -219,6 +247,11 @@ struct AnalyzeView: View {
                 }
             }
         }
+        .sheet(item: $previewScene) { scene in
+            PlayerSheet(url: scene.videoURL, transcriptVideoID: scene.videoID,
+                        title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
+                        startTime: scene.startTime, endTime: scene.endTime)
+        }
         .sheet(item: $fightResearchTarget) { video in
             FightResearchSheet(video: video)
         }
@@ -282,8 +315,40 @@ struct AnalyzeView: View {
     /// A multi-selection runs back to back under one plan, one analyze batch
     /// per video; fine-trim only applies to single-video runs.
     private func startAnalysis(of videos: [VideoRecord]) {
+        let unfinished = videos.filter { store.analysisCheckpoints[$0.id] != nil }
+        if unfinished.isEmpty {
+            presentPlan(for: videos)
+        } else {
+            resumePrompt = ResumePrompt(videos: videos, unfinished: unfinished)
+        }
+    }
+
+    private func presentPlan(for videos: [VideoRecord]) {
         pendingDispatch = PendingDispatch(operation: .analyze, videos: videos,
                                           run: { store.analyze(videos: videos) })
+    }
+
+    struct ResumePrompt: Identifiable {
+        let id = UUID()
+        var videos: [VideoRecord]
+        var unfinished: [VideoRecord]
+    }
+
+    /// What the resume prompt says: where each unfinished run stopped.
+    private func resumeMessage(_ prompt: ResumePrompt) -> String {
+        let lines = prompt.unfinished.compactMap { video -> String? in
+            guard let checkpoint = store.analysisCheckpoints[video.id] else { return nil }
+            var line = "\(video.filename) stopped at \(checkpoint.percent)%"
+            if !checkpoint.stage.isEmpty { line += " while \(checkpoint.stage)" }
+            if let error = checkpoint.lastError { line += " — \(error)" }
+            return line + "."
+        }
+        var message = lines.joined(separator: "\n")
+        message += "\n\nResume keeps the settings of the stopped run and skips the work already done. Start Over discards that work and opens a fresh plan."
+        if prompt.videos.count > prompt.unfinished.count {
+            message += " The other selected videos run with the last-used plan."
+        }
+        return message
     }
 
     /// "16:9"-style label: snap to the common ratios, else reduce by GCD.
@@ -423,7 +488,19 @@ struct AnalyzeView: View {
                     // Fixed slots so the marks line up as columns down
                     // the table; empty slots keep their width.
                     HStack(spacing: 6) {
-                        if batches > 0 {
+                        if let checkpoint = store.analysisCheckpoints[video.id] {
+                            // Started and never finished: how far it got.
+                            // Analyze offers to resume from here.
+                            Label("\(checkpoint.percent)%", systemImage: "exclamationmark.arrow.circlepath")
+                                .foregroundStyle(.orange)
+                                .monospacedDigit()
+                                .frame(width: 58, alignment: .leading)
+                                .help("Analysis unfinished — stopped at \(checkpoint.percent)%"
+                                      + (checkpoint.stage.isEmpty ? "" : " while \(checkpoint.stage)")
+                                      + (checkpoint.lastError.map { " — \($0)" } ?? "")
+                                      + ". Analyze to resume or start over.")
+                                .accessibilityLabel("Analysis unfinished, stopped at \(checkpoint.percent) percent")
+                        } else if batches > 0 {
                             Label("\(scenes)", systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
                                 .monospacedDigit()
@@ -595,13 +672,27 @@ private struct VideoPreviewPane: View {
     /// Opens the File Name Wizard for this video — same parent-presented
     /// sheet rule.
     let onNameWizard: () -> Void
+    /// Plays a scene picked in the person popover — same rule.
+    let onPreviewScene: (SceneRecord) -> Void
+    /// Selects another video picked in the person popover.
+    let onSelectVideo: (VideoRecord) -> Void
 
     /// What the player area shows while there is no player.
     private enum Availability { case loading, downloading, ready, unavailable }
 
+    /// The registry record behind a roster entry (the popover reads the
+    /// hand-picked avatar and hidden flag from it); a roster row whose
+    /// person was deleted mid-session still opens on what the row knows.
+    private func person(for entry: VideoPersonRecord) -> PersonRecord {
+        store.people.first { $0.id == entry.personID }
+            ?? PersonRecord(id: entry.personID, key: entry.key, name: entry.name, descriptor: entry.descriptor)
+    }
+
     @State private var player: AVPlayer?
     @State private var availability = Availability.loading
     @State private var roster: [VideoPersonRecord] = []
+    /// Roster member whose detail popover is open.
+    @State private var detailPersonID: Int64?
     /// Whether any transcript rows exist for this video — shows the editor.
     @State private var hasTranscript = false
     @State private var showTranscript = false
@@ -782,16 +873,39 @@ private struct VideoPreviewPane: View {
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(alignment: .top, spacing: 8) {
                                     ForEach(roster) { entry in
-                                        VStack(spacing: 2) {
-                                            VideoPersonAvatar(record: entry, videoURL: video.url,
-                                                              size: 36)
-                                            Text(entry.displayName)
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
+                                        Button {
+                                            detailPersonID = entry.personID
+                                        } label: {
+                                            VStack(spacing: 2) {
+                                                VideoPersonAvatar(record: entry, videoURL: video.url,
+                                                                  size: 36)
+                                                Text(entry.displayName)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                            .frame(width: 48)
+                                            .contentShape(Rectangle())
                                         }
-                                        .frame(width: 48)
-                                        .help(entry.descriptor)
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel("Details for \(entry.displayName)")
+                                        .help(entry.descriptor.isEmpty
+                                              ? "Who this is, when they are on screen, and their videos and scenes"
+                                              : entry.descriptor)
+                                        .popover(isPresented: Binding(
+                                            get: { detailPersonID == entry.personID },
+                                            set: { if !$0 { detailPersonID = nil } }),
+                                            arrowEdge: .bottom
+                                        ) {
+                                            PersonDetailPopover(
+                                                person: person(for: entry), video: video, rosterEntry: entry,
+                                                onSeek: { time in
+                                                    player?.seek(to: CMTime(seconds: time, preferredTimescale: 600),
+                                                                 toleranceBefore: .zero, toleranceAfter: .zero)
+                                                },
+                                                onSelectVideo: onSelectVideo,
+                                                onPreviewScene: onPreviewScene)
+                                        }
                                     }
                                 }
                             }

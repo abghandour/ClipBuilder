@@ -2,6 +2,14 @@ import Foundation
 
 /// One alert-worthy problem. Queued in AppStore so a second failure doesn't
 /// silently replace the first while its alert is still up.
+/// Something the user should know that is not a failure: a file that was
+/// already there, work that had nothing to do. One OK button, no report.
+nonisolated struct AppNotice: Identifiable, Equatable, Sendable {
+    let id = UUID()
+    var title: String
+    var message: String
+}
+
 nonisolated struct AppError: Identifiable, Equatable, Sendable {
     let id = UUID()
     var message: String

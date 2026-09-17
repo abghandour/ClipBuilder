@@ -321,7 +321,7 @@ struct ScenesView: View {
             SceneEditSheet(sceneID: scene.id)
         }
         .sheet(item: $previewScene) { scene in
-            PlayerSheet(url: scene.videoURL,
+            PlayerSheet(url: scene.videoURL, transcriptVideoID: scene.videoID,
                         title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
                         startTime: scene.startTime, endTime: scene.endTime)
         }

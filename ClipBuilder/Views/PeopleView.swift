@@ -146,6 +146,13 @@ struct PeopleView: View {
                 }
             }
         }
+        // Another screen asked for a person (the avatar popover's Open in
+        // People): select them once, then forget the request.
+        .task(id: store.requestedPersonID) {
+            guard let requested = store.requestedPersonID else { return }
+            store.requestedPersonID = nil
+            if store.people.contains(where: { $0.id == requested }) { selectedPersonIDs = [requested] }
+        }
         .screenTitle("People", subtitle: hiddenPeople.isEmpty ? "\(projectPeople.count) \(store.isHomeProject ? "detected" : "in this project")" : "\(visiblePeople.count) \(store.isHomeProject ? "detected" : "in this project") · \(hiddenPeople.count) hidden")
         .toolbar {
             if selectedPeople.count > 1 {
@@ -180,7 +187,7 @@ struct PeopleView: View {
             }
         }
         .sheet(item: $previewScene) { scene in
-            PlayerSheet(url: scene.videoURL,
+            PlayerSheet(url: scene.videoURL, transcriptVideoID: scene.videoID,
                         title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
                         startTime: scene.startTime, endTime: scene.endTime)
         }
@@ -298,6 +305,11 @@ struct PeopleView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(person.displayName)
                             .font(.headline)
+                        if person.isUnnamed, person.keyName != nil {
+                            Text("Name read by the analyzer — confirm it in the list on the left")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
                         if !person.descriptor.isEmpty {
                             Text(person.descriptor)
                                 .font(.caption)
@@ -537,11 +549,18 @@ private struct PersonRow: View {
         HStack(spacing: 10) {
             PersonFaceAvatar(person: person, size: 52)
             VStack(alignment: .leading, spacing: 3) {
-                TextField("Name this person", text: $name)
+                // An unconfirmed person shows the name the analyzer read as
+                // the placeholder; typing (or submitting it) confirms it.
+                TextField(person.keyName.map { "\($0) — press Return to confirm" } ?? "Name this person",
+                          text: $name)
                     .textFieldStyle(.plain)
                     .font(.callout.weight(.medium))
                     .onSubmit {
-                        store.renamePerson(person, to: name)
+                        let typed = name.trimmingCharacters(in: .whitespaces)
+                        let confirmed = typed.isEmpty ? (person.keyName ?? "") : typed
+                        guard !confirmed.isEmpty else { return }
+                        name = confirmed
+                        store.renamePerson(person, to: confirmed)
                     }
                 Text("\(sceneCount) scene\(sceneCount == 1 ? "" : "s") · \(videoCount) video\(videoCount == 1 ? "" : "s")")
                     .font(.caption)

@@ -90,7 +90,7 @@ struct DatabaseTests {
                                 ("scenes", "favorite_provider"), ("scenes", "stack_choice"),
                                 ("video_notes", "provider"), ("fight_events", "model"),
                                 ("videos", "people_seconds"), ("videos", "speech_seconds"),
-                                ("transcripts", "seconds")] {
+                                ("transcripts", "seconds"), ("transcripts", "speaker_key")] {
             #expect(try raw.columnNames(of: table).contains(column), "\(table).\(column) missing after migration")
         }
         // The migrated file is usable, not just stamped.
@@ -117,6 +117,85 @@ struct DatabaseTests {
             (personID: alice.id, portraitAt: 1, portraitJSON: nil, rangesJSON: nil),
         ])
         #expect(try await database.fetchLibrarySnapshot().videoPeopleCounts == [first: 1])
+    }
+
+    @Test("a person's videos come from the people pass's roster, one row per video")
+    func videoIDsForPerson() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let first = try await temp.seedVideo()
+        let second = try await database.registerVideo(hash: "second", filename: "second.mp4", path: "/tmp/second.mp4",
+                                                      duration: 5, width: 1920, height: 1080, wide: true)
+        let alice = try await database.createPerson(name: "Alice")
+        let bob = try await database.createPerson(name: "Bob")
+        try await database.replaceVideoPeople(videoID: first, entries: [
+            (personID: alice.id, portraitAt: 1, portraitJSON: nil, rangesJSON: nil),
+            (personID: bob.id, portraitAt: 2, portraitJSON: nil, rangesJSON: nil),
+        ])
+        try await database.replaceVideoPeople(videoID: second, entries: [
+            (personID: alice.id, portraitAt: 1, portraitJSON: nil, rangesJSON: nil),
+        ])
+        #expect(Set(try await database.fetchVideoIDs(personID: alice.id)) == [first, second])
+        #expect(try await database.fetchVideoIDs(personID: bob.id) == [first])
+        // A re-run that drops Bob from the first video drops the video from Bob.
+        try await database.replaceVideoPeople(videoID: first, entries: [
+            (personID: alice.id, portraitAt: 1, portraitJSON: nil, rangesJSON: nil),
+        ])
+        #expect(try await database.fetchVideoIDs(personID: bob.id).isEmpty)
+    }
+
+    @Test("who says a transcript line is stored per line: a person, Unknown, or back to automatic")
+    func transcriptSpeakerAttribution() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let videoID = try await temp.seedVideo()
+        try await database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+                                              segments: [.init(start: 0, end: 2, text: "one"),
+                                                         .init(start: 2, end: 4, text: "two")],
+                                              provider: "apple", model: "m", seconds: nil)
+        var rows = try await database.fetchTranscripts(videoID: videoID)
+        #expect(rows.map(\.speaker) == [.automatic, .automatic])
+
+        try await database.setTranscriptSpeaker(ids: [rows[0].id], speaker: .person(key: "ann"))
+        try await database.setTranscriptSpeaker(ids: [rows[1].id], speaker: .unknown)
+        rows = try await database.fetchTranscripts(videoID: videoID)
+        #expect(rows.map(\.speaker) == [.person(key: "ann"), .unknown])
+
+        try await database.setTranscriptSpeaker(ids: rows.map(\.id), speaker: .automatic)
+        rows = try await database.fetchTranscripts(videoID: videoID)
+        #expect(rows.map(\.speakerKey) == [nil, nil])
+    }
+
+    @Test("an unfinished analysis is kept per video until the run finishes or the user starts over")
+    func analysisCheckpointRoundTrip() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let videoID = try await temp.seedVideo()
+        var checkpoint = AnalysisCheckpoint(videoID: videoID, startedAt: .now, updatedAt: .now,
+                                            runName: "fixture 09/17/26",
+                                            plan: AnalysisCheckpoint.Plan(instructions: "watch the corner", smartSampling: true))
+        checkpoint.stage = "mapping section 3 of 12"
+        checkpoint.fraction = 0.42
+        checkpoint.visual = AnalysisCheckpoint.VisualState(
+            wide: AnalysisCheckpoint.Wide(tags: ["striking": [.init(1, 4)]], provider: "claude", model: "m"),
+            coarse: [AnalysisCheckpoint.WindowResult(window: .init(0, 300), tags: ["striking": [.init(10, 20)]], activity: 7)])
+        try await database.saveAnalysisCheckpoint(checkpoint)
+        let stored = try #require(try await database.fetchAnalysisCheckpoint(videoID: videoID))
+        #expect(stored.runName == checkpoint.runName)
+        #expect(stored.plan.instructions == "watch the corner")
+        #expect(stored.percent == 42)
+        #expect(stored.visual?.coarseResult(for: (0, 300))?.activity == 7)
+        #expect(stored.visual?.coarseResult(for: (300, 600)) == nil)
+
+        // A later save replaces the row; the snapshot carries it.
+        checkpoint.runID = 9
+        checkpoint.transcriptDone = true
+        try await database.saveAnalysisCheckpoint(checkpoint)
+        #expect(try await database.fetchAnalysisCheckpoints()[videoID]?.runID == 9)
+        #expect(try await database.fetchLibrarySnapshot().analysisCheckpoints[videoID]?.transcriptDone == true)
+
+        try await database.deleteAnalysisCheckpoint(videoID: videoID)
+        #expect(try await database.fetchAnalysisCheckpoint(videoID: videoID) == nil)
     }
 
     @Test("a database stamped with the current version skips the column migrations")
@@ -672,7 +751,7 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 17)
+        #expect(Database.schemaVersion == 18)
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))

@@ -36,6 +36,61 @@ nonisolated struct SceneBlurb: Sendable, Equatable {
     }
 }
 
+/// Who is speaking during a transcript line, from the speaker turns: the
+/// person named on the turn that overlaps the line most, else the feed the
+/// turn was seen in, else the voice cluster.
+nonisolated enum TranscriptSpeakers {
+    static let unknownLabel = "Unknown"
+
+    /// The user's attribution wins; otherwise the person of the turn that
+    /// overlaps the line most, else its feed or voice cluster; nil when no
+    /// turn covers the line. `people` names a person the user attributed a
+    /// line to who is not in this video's roster.
+    static func label(for row: TranscriptRow, turns: [SpeakerTurn], roster: [VideoPersonRecord],
+                      people: [PersonRecord] = []) -> String? {
+        switch row.speaker {
+        case .unknown: return unknownLabel
+        case .person(let key): return name(forKey: key, roster: roster, people: people)
+        case .automatic: return automaticLabel(for: row, turns: turns, roster: roster)
+        }
+    }
+
+    static func name(forKey key: String, roster: [VideoPersonRecord], people: [PersonRecord]) -> String {
+        if let person = roster.first(where: { $0.key == key }) { return person.displayName }
+        if let person = people.first(where: { $0.key == key }) { return person.displayName }
+        return key
+    }
+
+    /// What the speaker turns say, ignoring the user's attribution.
+    static func automaticLabel(for row: TranscriptRow, turns: [SpeakerTurn], roster: [VideoPersonRecord]) -> String? {
+        var best: (turn: SpeakerTurn, overlap: Double)?
+        for turn in turns {
+            let overlap = min(turn.end, row.endTime) - max(turn.start, row.startTime)
+            guard overlap > 0, overlap > (best?.overlap ?? 0) else { continue }
+            best = (turn, overlap)
+        }
+        guard let turn = best?.turn else { return nil }
+        if let key = turn.personKey, let person = roster.first(where: { $0.key == key }) { return person.displayName }
+        if let key = turn.personKey { return key }
+        if let tile = turn.tile { return "Feed \(tile + 1)" }
+        return "Speaker \(turn.cluster + 1)"
+    }
+
+    /// Labels per row, blank where the speaker is the same as on the line
+    /// before, so a run of lines reads as one turn.
+    static func labels(for rows: [TranscriptRow], turns: [SpeakerTurn], roster: [VideoPersonRecord],
+                       people: [PersonRecord] = []) -> [Int64: String] {
+        var result: [Int64: String] = [:]
+        var previous: String?
+        for row in rows.sorted(by: { $0.startTime < $1.startTime }) {
+            let label = label(for: row, turns: turns, roster: roster, people: people)
+            if let label, label != previous { result[row.id] = label }
+            if let label { previous = label }
+        }
+        return result
+    }
+}
+
 /// Talk footage: a podcast or interview file, or a podcast exchange scene.
 extension SceneRecord {
     func isTalk(videoType: VideoType?) -> Bool {

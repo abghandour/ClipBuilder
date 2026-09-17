@@ -1,3 +1,4 @@
+import Foundation
 import CoreGraphics
 import Testing
 @testable import Clip_Builder
@@ -90,6 +91,12 @@ struct AnalyzerStaticTests {
         #expect(map.sequences.count == 1 && map.sequences.first?.score == 10)
         #expect(map.moments.count == 1 && map.moments.first?.at == 301.5)
         let garbage = Analyzer.parseWindowMap("not json", window: (0, 10), allTags: [])
+        // A saved window round-trips through the checkpoint unchanged.
+        let restored = Analyzer.WindowMap(map.checkpointResult)
+        #expect(restored.window == map.window)
+        #expect(restored.activity == map.activity)
+        #expect(restored.tags.mapValues { $0.map(\.start) } == map.tags.mapValues { $0.map(\.start) })
+        #expect(restored.sequences.map(\.narrative) == map.sequences.map(\.narrative))
         #expect(garbage.activity == 0 && garbage.tags.isEmpty)
         let prompt = Analyzer.windowMapPrompt(domain: "MMA", start: 300, end: 600,
                                               tags: ["action": ["striking"]], instructions: "")
@@ -105,5 +112,15 @@ struct AnalyzerStaticTests {
         #expect(result.contains(large))
         #expect(result.contains(separate))
         #expect(!result.contains(contained))
+    }
+
+    @Test("an unusable answer skips the window; a provider failure stops the run so it can resume")
+    func skippableWindowErrors() {
+        #expect(Analyzer.isSkippableWindowError(AIError.emptyResponse("x")))
+        #expect(Analyzer.isSkippableWindowError(AIError.unusableResponse("x")))
+        #expect(Analyzer.isSkippableWindowError(AIError.promptTooLong("x")))
+        #expect(!Analyzer.isSkippableWindowError(AIError.quotaExhausted("x")))
+        #expect(!Analyzer.isSkippableWindowError(AIError.notAuthenticated(provider: "claude", detail: "")))
+        #expect(!Analyzer.isSkippableWindowError(URLError(.notConnectedToInternet)))
     }
 }

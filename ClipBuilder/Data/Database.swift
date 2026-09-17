@@ -124,6 +124,12 @@ actor Database {
     );
     CREATE INDEX IF NOT EXISTS idx_person_markers_video ON person_markers(video_id);
 
+    CREATE TABLE IF NOT EXISTS analysis_checkpoints (
+        video_id INTEGER PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+        json TEXT NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS video_people (
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
         person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
@@ -658,7 +664,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 17
+    static let schemaVersion: Int64 = 18
 
     // MARK: - Script prerequisites (Library state, outside timeline snapshots)
 
@@ -1075,8 +1081,13 @@ actor Database {
         for column in ["speech_seconds", "people_seconds"] where !videoColumns.contains(column) {
             try connection.execute("ALTER TABLE videos ADD COLUMN \(column) REAL")
         }
-        if !(try connection.columnNames(of: "transcripts")).contains("seconds") {
+        let transcriptColumns = try connection.columnNames(of: "transcripts")
+        if !transcriptColumns.contains("seconds") {
             try connection.execute("ALTER TABLE transcripts ADD COLUMN seconds REAL")
+        }
+        // The user's say on who speaks a line: NULL automatic, '' unknown, else a person key.
+        if !transcriptColumns.contains("speaker_key") {
+            try connection.execute("ALTER TABLE transcripts ADD COLUMN speaker_key TEXT")
         }
         if !sceneColumns.contains("favorite") {
             try connection.execute("ALTER TABLE scenes ADD COLUMN favorite INTEGER DEFAULT 0")
@@ -2182,7 +2193,46 @@ actor Database {
                         lessons: try fetchLessons(),
                         fightResearch: ((try? fetchFightResearch()) ?? []).filter { videoIDs.contains($0.videoID) },
                         fightEvents: ((try? fetchFightEvents()) ?? []).filter { videoIDs.contains($0.videoID) },
-                        videoPeopleCounts: try fetchVideoPeopleCounts().filter { videoIDs.contains($0.key) })
+                        videoPeopleCounts: try fetchVideoPeopleCounts().filter { videoIDs.contains($0.key) },
+                        analysisCheckpoints: try fetchAnalysisCheckpoints().filter { videoIDs.contains($0.key) })
+    }
+
+    // MARK: - Analysis checkpoints (interrupted runs)
+
+    func saveAnalysisCheckpoint(_ checkpoint: AnalysisCheckpoint) throws {
+        let json = String(decoding: try JSONEncoder().encode(checkpoint), as: UTF8.self)
+        try connection.execute("""
+            INSERT INTO analysis_checkpoints (video_id, json, updated_at) VALUES (?, ?, datetime('now'))
+            ON CONFLICT(video_id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at
+            """, [.integer(checkpoint.videoID), .text(json)])
+    }
+
+    func fetchAnalysisCheckpoint(videoID: Int64) throws -> AnalysisCheckpoint? {
+        try fetchAnalysisCheckpoints()[videoID]
+    }
+
+    /// Every unfinished analysis, by video. A row that no longer decodes
+    /// (an older build's shape) is dropped rather than blocking the run.
+    func fetchAnalysisCheckpoints() throws -> [Int64: AnalysisCheckpoint] {
+        var result: [Int64: AnalysisCheckpoint] = [:]
+        for row in try connection.query("SELECT video_id, json FROM analysis_checkpoints") {
+            guard let videoID = row["video_id"]?.intValue, let json = row["json"]?.stringValue,
+                  let checkpoint = try? JSONDecoder().decode(AnalysisCheckpoint.self, from: Data(json.utf8))
+            else { continue }
+            result[videoID] = checkpoint
+        }
+        return result
+    }
+
+    func deleteAnalysisCheckpoint(videoID: Int64) throws {
+        try connection.execute("DELETE FROM analysis_checkpoints WHERE video_id = ?", [.integer(videoID)])
+    }
+
+    /// Videos whose people-pass roster lists this person, in roster order.
+    func fetchVideoIDs(personID: Int64) throws -> [Int64] {
+        try connection.query(
+            "SELECT video_id FROM video_people WHERE person_id = ? ORDER BY detected_at, video_id",
+            [.integer(personID)]).compactMap { $0["video_id"]?.intValue }
     }
 
     /// Distinct people per video from the people pass.
@@ -2580,19 +2630,28 @@ actor Database {
                 let marker = reference.marker
                 references.append((person.key, reference.videoPath, marker.atTime,
                                    .init(x: marker.x, y: marker.y, w: marker.width, h: marker.height)))
-            } else if let row = try connection.query("""
-                SELECT v.path, vp.portrait_at, vp.portrait_json FROM video_people vp
-                JOIN videos v ON v.id = vp.video_id
-                WHERE vp.person_id = ? AND vp.portrait_json IS NOT NULL
-                ORDER BY vp.video_id DESC LIMIT 1
-                """, [.integer(person.id)]).first,
-                let path = row["path"]?.stringValue,
-                let data = row["portrait_json"]?.stringValue?.data(using: .utf8),
-                let box = try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: data) {
-                references.append((person.key, path, row["portrait_at"]?.doubleValue ?? 0, box))
+            } else if let portrait = try rosterPortrait(personID: person.id) {
+                references.append((person.key, portrait.videoPath, portrait.time, portrait.box))
             }
         }
         return references
+    }
+
+    /// The people pass's portrait of a person: the frame and box its most
+    /// recent roster entry was cropped from. The face avatars use it before
+    /// guessing from a scene, where a grid of people gives the wrong face.
+    func rosterPortrait(personID: Int64) throws -> (videoPath: String, time: Double, box: VideoPersonRecord.PortraitBox)? {
+        guard let row = try connection.query("""
+            SELECT v.path, vp.portrait_at, vp.portrait_json FROM video_people vp
+            JOIN videos v ON v.id = vp.video_id
+            WHERE vp.person_id = ? AND vp.portrait_json IS NOT NULL
+            ORDER BY vp.video_id DESC LIMIT 1
+            """, [.integer(personID)]).first,
+            let path = row["path"]?.stringValue,
+            let data = row["portrait_json"]?.stringValue?.data(using: .utf8),
+            let box = try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: data)
+        else { return nil }
+        return (path, row["portrait_at"]?.doubleValue ?? 0, box)
     }
 
     func fetchPeople() throws -> [PersonRecord] {
@@ -2765,7 +2824,19 @@ actor Database {
                           wordsJSON: $0["words"]?.stringValue,
                           provider: $0["provider"]?.stringValue,
                           model: $0["model"]?.stringValue, technique: $0["technique"]?.stringValue,
-                          seconds: $0["seconds"]?.doubleValue)
+                          seconds: $0["seconds"]?.doubleValue,
+                          speakerKey: $0["speaker_key"]?.stringValue)
+        }
+    }
+
+    /// Set who says these lines (nil restores the automatic attribution).
+    func setTranscriptSpeaker(ids: [Int64], speaker: TranscriptRow.SpeakerAttribution) throws {
+        guard !ids.isEmpty else { return }
+        try connection.transaction {
+            for id in ids {
+                try connection.execute("UPDATE transcripts SET speaker_key = ? WHERE id = ?",
+                                       [speaker.stored.map(SQLValue.text) ?? .null, .integer(id)])
+            }
         }
     }
 

@@ -132,13 +132,37 @@ nonisolated struct PersonRecord: Identifiable, Sendable, Hashable {
     /// The scene tag the analyzer records for footage featuring this person.
     var tag: String { "person:\(key)" }
 
-    var displayName: String { name.isEmpty ? "Unnamed person" : name }
+    /// The name the user confirmed; else the name the analyzer read when it
+    /// minted the key ("marcello-spinelli" → "Marcello Spinelli"), so an
+    /// unconfirmed person is still called what the footage calls them;
+    /// else "Unnamed person" for a key that carries no name.
+    var displayName: String {
+        if !name.isEmpty { return name }
+        return keyName ?? "Unnamed person"
+    }
+
+    /// True until the user confirms or types a name.
+    var isUnnamed: Bool { name.isEmpty }
+
+    /// The key read as a name, nil for generic keys ("person-2", "speaker-1").
+    var keyName: String? { Self.keyName(key) }
+
+    nonisolated static func keyName(_ key: String) -> String? {
+        let words = key.split(separator: "-").map(String.init).filter { !$0.isEmpty }
+        guard !words.isEmpty, words.contains(where: { $0.contains { $0.isLetter } }) else { return nil }
+        let generic: Set<String> = ["person", "speaker", "unknown", "guest", "host", "man", "woman", "fighter"]
+        if words.count <= 2, let first = words.first?.lowercased(), generic.contains(first),
+           words.dropFirst().allSatisfy({ $0.allSatisfy(\.isNumber) }) {
+            return nil
+        }
+        return words.map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
+    }
 }
 
 /// A person first detected during the current analysis run — queued for the
 /// end-of-run review sheet where the user names them or folds them into an
 /// existing identity.
-nonisolated struct DetectedNewPerson: Identifiable, Sendable, Hashable {
+nonisolated struct DetectedNewPerson: Identifiable, Sendable, Hashable, Codable {
     var key: String
     var descriptor: String
     /// Name the analyzer lifted from the video filename, offered as a pre-fill.
@@ -514,6 +538,39 @@ nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable {
     var model: String?
     var technique: String? = nil
     var seconds: Double? = nil
+    /// Who says this line, as the user set it: nil = whoever the speaker
+    /// turns say, "" = nobody known (Unknown), else a person key.
+    var speakerKey: String? = nil
+
+    var speaker: SpeakerAttribution {
+        get { SpeakerAttribution(stored: speakerKey) }
+        set { speakerKey = newValue.stored }
+    }
+
+    /// A transcript line's speaker as the user set it.
+    nonisolated enum SpeakerAttribution: Sendable, Hashable {
+        /// Follow the speaker turns (the default).
+        case automatic
+        /// The user said nobody the app knows says this.
+        case unknown
+        case person(key: String)
+
+        init(stored: String?) {
+            switch stored {
+            case nil: self = .automatic
+            case "": self = .unknown
+            case let key?: self = .person(key: key)
+            }
+        }
+
+        var stored: String? {
+            switch self {
+            case .automatic: nil
+            case .unknown: ""
+            case .person(let key): key
+            }
+        }
+    }
 
     var provenance: AIProvenance? {
         var provenance = AIProvenance(provider: provider, model: model, task: "transcribe")
@@ -815,4 +872,6 @@ nonisolated struct LibrarySnapshot: Sendable {
     /// People the people pass found per video (distinct roster entries),
     /// present before any tag analysis has run.
     var videoPeopleCounts: [Int64: Int] = [:]
+    /// Analyses that started and did not finish, by video.
+    var analysisCheckpoints: [Int64: AnalysisCheckpoint] = [:]
 }
