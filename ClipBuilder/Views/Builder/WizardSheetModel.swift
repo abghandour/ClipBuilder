@@ -380,7 +380,7 @@ final class WizardSheetModel {
 
     /// Models the picker offers for a provider: its catalog entries, none for the local parser.
     static func availableModels(for provider: BuilderAgentProvider) -> [String] {
-        provider == .local ? [] : (AICatalog.provider(provider.rawValue)?.models ?? [])
+        provider == .local ? [] : AICatalog.models(for: provider.rawValue)
     }
 
     /// Keep a model only when the provider's catalog lists it; the local

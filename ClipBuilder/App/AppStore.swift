@@ -506,6 +506,9 @@ final class AppStore {
     @ObservationIgnored private var projectStateSaveTask: Task<Void, Never>?
 
     convenience init() {
+        // What the CLIs offer today, before any picker is built (a small
+        // file read; the Settings tab can ask again).
+        AICatalog.applyDiscovered(ModelDiscovery.discover())
         let settings = SettingsStore.loadSettings()
         let defaultProfile = ProfileStore.ensureDefaultProfile()
         var loaded = ProfileStore.listProfiles()
@@ -1949,6 +1952,17 @@ final class AppStore {
 
     func cancelAnalysis() {
         analysisTask?.cancel()
+    }
+
+    // MARK: - Model discovery
+
+    /// Bumped when the discovered model lists change, so Settings re-reads them.
+    var modelCatalogVersion = 0
+
+    /// Ask the installed CLIs again which models they offer.
+    func refreshDiscoveredModels() {
+        AICatalog.applyDiscovered(ModelDiscovery.discover())
+        modelCatalogVersion &+= 1
     }
 
     // MARK: - Analysis checkpoints

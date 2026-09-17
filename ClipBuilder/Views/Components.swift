@@ -858,7 +858,7 @@ struct ModelPicker: View {
         for provider in AICatalog.providers {
             if imageCapableOnly && !provider.supportsImages { continue }
             let installed = available.contains(provider.key)
-            for model in provider.models {
+            for model in AICatalog.models(for: provider.key) {
                 let optionTag = Self.tag(provider: provider.key, model: model)
                 var label = "\(provider.label) — \(AICatalog.modelDisplayName(model))"
                 if optionTag == top {

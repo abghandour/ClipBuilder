@@ -171,6 +171,10 @@ actor AIService {
     /// stamped into the DB for attribution, mirroring resolve_provider_model().
     /// Per-task model overrides (the dispatcher's choices) beat the
     /// provider-level default, but only for the task's own provider.
+    /// What a model alias resolved to on its last call ("fable" →
+    /// "claude-fable-5-1"), so provenance names the model that answered.
+    private var resolvedModels: [String: String] = [:]
+
     func resolveProviderModel(task: String, provider: String? = nil, model: String? = nil) -> (provider: String, model: String?) {
         let key = provider?.isEmpty == false ? provider! : providerKey(forTask: task)
         if let model, !model.isEmpty {
@@ -212,8 +216,24 @@ actor AIService {
         var result: [(provider: String, model: String?)] = []
         var cooling: [(provider: String, model: String?)] = []
         let active = activeCooldowns()
-        for (key, model) in raw {
+        for (key, requestedModel) in raw {
             guard !seen.contains(key), let provider = AICatalog.provider(key) else { continue }
+            // A model the CLI no longer lists (an old catalog entry, a stale
+            // setting) becomes the provider's default when that is offered,
+            // else the first model the CLI does list; nothing offered skips
+            // the provider rather than sending a call bound to fail.
+            var model = requestedModel
+            if let stale = requestedModel, !AICatalog.offers(provider: key, model: stale) {
+                let replacement = [config.providers[key]?.model, provider.defaultModel]
+                    .compactMap { $0 }.first { !$0.isEmpty && AICatalog.offers(provider: key, model: $0) }
+                    ?? AICatalog.models(for: key).first { AICatalog.offers(provider: key, model: $0) }
+                guard let replacement else {
+                    log?("Skipping \(provider.label): it no longer offers \(AICatalog.modelDisplayName(stale))")
+                    continue
+                }
+                log?("\(provider.label) no longer offers \(AICatalog.modelDisplayName(stale)) — using \(AICatalog.modelDisplayName(replacement))")
+                model = replacement
+            }
             seen.insert(key)
             if unavailableProviders.contains(key) {
                 if let log, loggedUnavailableProviders.insert(key).inserted {
@@ -330,7 +350,8 @@ actor AIService {
                 // anything produced after a failover.
                 cooldowns[candidate.provider] = nil
                 let response = AIResponse(text: text, provider: candidate.provider,
-                                  model: candidate.model ?? AICatalog.provider(candidate.provider)?.defaultModel,
+                                  model: candidate.model.map { resolvedModels[$0] ?? $0 }
+                                      ?? AICatalog.provider(candidate.provider)?.defaultModel,
                                   task: task, fellBack: index > 0,
                                   duration: (ContinuousClock.now - started).seconds)
                 AIRunCapture.current?.append(response.provenance, prompt: prompt)
@@ -507,6 +528,13 @@ actor AIService {
             for line in raw.split(separator: "\n") {
                 guard let data = line.trimmingCharacters(in: .whitespaces).data(using: .utf8),
                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                // The session's opening line names the model that actually
+                // answers, so an alias ("fable") is recorded as the real one.
+                if object["type"] as? String == "system", let requested = model,
+                   let actual = object["model"] as? String, !actual.isEmpty {
+                    resolvedModels[requested] = actual
+                    continue
+                }
                 if object["type"] as? String == "result", (object["is_error"] as? Bool) == true {
                     cliError = (object["result"] as? String) ?? "unknown error"
                     continue

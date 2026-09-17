@@ -59,6 +59,21 @@ struct SmallStaticsTests {
         #expect(AICatalog.provider("claude")?.key == "claude")
         #expect(AICatalog.modelDisplayName("claude-sonnet-4-6") == "Sonnet 4.6")
         #expect(AICatalog.modelDisplayName("some-unknown-model") == "some-unknown-model")
+        #expect(AICatalog.modelDisplayName("claude-fable-5-1") == "Fable 5.1")
+        #expect(AICatalog.modelDisplayName("gpt-6-astra") == "GPT-6 Astra")
+        // Every model a provider lists has a friendly name, and every
+        // recommended chain names a listed model.
+        for provider in AICatalog.providers {
+            for model in provider.models {
+                #expect(AICatalog.modelDisplayNames[model] != nil, "\(provider.key) \(model)")
+            }
+        }
+        for (task, chain) in AICatalog.recommendedChains {
+            for link in chain {
+                let listed = AICatalog.providers.first { $0.key == link.provider }?.models.contains(link.model) == true
+                #expect(listed, "\(task): \(link.provider) \(link.model)")
+            }
+        }
         #expect(AICatalog.provider("does-not-exist") == nil)
     }
 }

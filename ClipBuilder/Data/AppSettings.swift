@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// App-level (profile-independent) settings — mirrors data/app_settings.json
 /// from the Python app: analysis mode, transcription provider, AI routing.
@@ -260,17 +261,17 @@ nonisolated enum AICatalog {
     static let recommendedChains: [String: [(provider: String, model: String)]] = [
         "route": [("claude", "claude-haiku-4-5-20251001"),
                   ("gemini", "gemini-2.5-flash"),
-                  ("codex", "gpt-5-mini")],
+                  ("codex", "gpt-5.6-luna")],
         // Frame tagging: multimodal + cheap matters most — 30 images/video.
         "analysis": [("gemini", "gemini-2.5-flash"),
                      ("claude", "claude-sonnet-4-6"),
                      ("claude", "claude-haiku-4-5-20251001")],
         // Planning is the run's brain: strongest reasoning first — Fable at
         // maximum thinking (AIService raises the thinking budget for it).
-        "wizard": [("claude", "claude-fable-5"),
+        "wizard": [("claude", "claude-fable-5-1"),
                    ("claude", "claude-sonnet-4-6"),
                    ("gemini", "gemini-2.5-pro"),
-                   ("codex", "gpt-5"),
+                   ("codex", "gpt-6-astra"),
                    ("kimi", "kimi-code/kimi-for-coding"),
                    ("qwen", "qwen3-coder-plus")],
         // Post-render critique: a multimodal judge that watches the rendered
@@ -278,34 +279,34 @@ nonisolated enum AICatalog {
         // the planner isn't grading its own work.
         "critique": [("claude", "claude-sonnet-4-6"),
                      ("gemini", "gemini-2.5-pro"),
-                     ("claude", "claude-fable-5")],
+                     ("claude", "claude-fable-5-1")],
         "research": [("claude", "claude-sonnet-4-6"),
                      ("gemini", "gemini-2.5-flash"),
-                     ("codex", "gpt-5-mini"),
+                     ("codex", "gpt-5.6-luna"),
                      ("qwen", "qwen3-coder-flash"),
                      ("kimi", "kimi-code/kimi-for-coding")],
         // Fight research: turns crawled fan chatter into the reel's story —
         // strong summarization matters more than speed.
         "fight_research": [("claude", "claude-sonnet-4-6"),
                            ("gemini", "gemini-2.5-pro"),
-                           ("codex", "gpt-5"),
+                           ("codex", "gpt-6-astra"),
                            ("qwen", "qwen3-coder-plus"),
                            ("kimi", "kimi-code/kimi-for-coding")],
         // Structured extraction: fast + cheap is plenty.
         "parse": [("claude", "claude-haiku-4-5-20251001"),
                   ("gemini", "gemini-2.5-flash"),
-                  ("codex", "gpt-5-mini"),
+                  ("codex", "gpt-5.6-luna"),
                   ("qwen", "qwen3-coder-flash"),
                   ("kimi", "kimi-code/kimi-for-coding")],
         "captions": [("claude", "claude-haiku-4-5-20251001"),
                      ("gemini", "gemini-2.5-flash"),
-                     ("codex", "gpt-5-mini"),
+                     ("codex", "gpt-5.6-luna"),
                      ("qwen", "qwen3-coder-flash"),
                      ("kimi", "kimi-code/kimi-for-coding")],
-        "distill": [("claude", "claude-fable-5"),
+        "distill": [("claude", "claude-fable-5-1"),
                     ("claude", "claude-sonnet-4-6"),
                     ("gemini", "gemini-2.5-pro"),
-                    ("codex", "gpt-5"),
+                    ("codex", "gpt-6-astra"),
                     ("kimi", "kimi-code/kimi-for-coding"),
                     ("qwen", "qwen3-coder-plus")],
         // Reading overlay layout from one image: multimodal, precision over
@@ -317,26 +318,26 @@ nonisolated enum AICatalog {
         // fast + cheap is plenty.
         "naming": [("claude", "claude-haiku-4-5-20251001"),
                    ("gemini", "gemini-2.5-flash"),
-                   ("codex", "gpt-5-mini"),
+                   ("codex", "gpt-5.6-luna"),
                    ("qwen", "qwen3-coder-flash"),
                    ("kimi", "kimi-code/kimi-for-coding")],
         // AI Favorites judges scenes against the taste rubric — taste judgment,
         // not extraction, so a stronger text model leads.
         "curate": [("claude", "claude-sonnet-4-6"),
                    ("gemini", "gemini-2.5-pro"),
-                   ("codex", "gpt-5"),
+                   ("codex", "gpt-6-astra"),
                    ("qwen", "qwen3-coder-plus"),
                    ("kimi", "kimi-code/kimi-for-coding")],
         // Natural-language scene search: interactive, so latency wins.
         "search": [("claude", "claude-haiku-4-5-20251001"),
                    ("gemini", "gemini-2.5-flash"),
-                   ("codex", "gpt-5-mini"),
+                   ("codex", "gpt-5.6-luna"),
                    ("qwen", "qwen3-coder-flash"),
                    ("kimi", "kimi-code/kimi-for-coding")],
         // Quote extraction from a transcript: structured text work.
         "soundbites": [("claude", "claude-haiku-4-5-20251001"),
                        ("gemini", "gemini-2.5-flash"),
-                       ("codex", "gpt-5-mini"),
+                       ("codex", "gpt-5.6-luna"),
                        ("qwen", "qwen3-coder-flash"),
                        ("kimi", "kimi-code/kimi-for-coding")],
         // Cover frame picking looks at candidate frames: multimodal + cheap.
@@ -354,15 +355,15 @@ nonisolated enum AICatalog {
         // Content gap report reasons over the whole library's state.
         "gap": [("claude", "claude-sonnet-4-6"),
                 ("gemini", "gemini-2.5-pro"),
-                ("codex", "gpt-5"),
+                ("codex", "gpt-6-astra"),
                 ("qwen", "qwen3-coder-plus"),
                 ("kimi", "kimi-code/kimi-for-coding")],
         // Profile starter writes the brand's founding rubric — one-shot
         // quality matters most.
-        "onboard": [("claude", "claude-fable-5"),
+        "onboard": [("claude", "claude-fable-5-1"),
                     ("claude", "claude-sonnet-4-6"),
                     ("gemini", "gemini-2.5-pro"),
-                    ("codex", "gpt-5")],
+                    ("codex", "gpt-6-astra")],
     ]
 
     struct Provider: Sendable {
@@ -380,6 +381,7 @@ nonisolated enum AICatalog {
         "claude-sonnet-4-6": "Sonnet 4.6",
         "claude-opus-4-8": "Opus 4.8",
         "claude-fable-5": "Fable 5",
+        "claude-fable-5-1": "Fable 5.1",
         "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
         "gemini-2.5-flash": "Gemini 2.5 Flash",
         "gemini-2.0-flash": "Gemini 2.0 Flash",
@@ -390,26 +392,78 @@ nonisolated enum AICatalog {
         "gpt-5": "GPT-5",
         "o3-mini": "o3-mini",
         "o3": "o3",
+        "gpt-5.5": "GPT-5.5",
+        "gpt-5.6-luna": "GPT-5.6 Luna",
+        "gpt-5.6-terra": "GPT-5.6 Terra",
+        "gpt-5.6-sol": "GPT-5.6 Sol",
+        "gpt-6-astra": "GPT-6 Astra",
         "qwen3-coder-flash": "Qwen3 Coder Flash",
         "qwen3-coder-plus": "Qwen3 Coder Plus",
         "kimi-code/kimi-for-coding": "Kimi for Coding",
     ]
 
     static func modelDisplayName(_ model: String) -> String {
-        modelDisplayNames[model] ?? model
+        modelDisplayNames[model] ?? discoveredModel(model)?.name ?? model
+    }
+
+    /// The CLI's one-line description of a discovered model, for help text.
+    static func modelDescription(_ model: String) -> String? {
+        discoveredModel(model)?.description
+    }
+
+    // MARK: - Discovered models (what the CLIs offer right now)
+
+    /// What discovery found, by provider key; empty until the app asks.
+    private static let discoveredStore = Mutex<[String: DiscoveredProviderModels]>([:])
+
+    static var discovered: [String: DiscoveredProviderModels] {
+        discoveredStore.withLock { $0 }
+    }
+
+    static func applyDiscovered(_ found: [String: DiscoveredProviderModels]) {
+        discoveredStore.withLock { $0 = found }
+    }
+
+    private static func discoveredModel(_ id: String) -> DiscoveredModel? {
+        discoveredStore.withLock { store in
+            for entry in store.values {
+                if let model = entry.models.first(where: { $0.id == id }) { return model }
+            }
+            return nil
+        }
+    }
+
+    /// The models a picker offers for a provider: what its CLI lists now,
+    /// in the CLI's order, then the catalog's entries it did not mention
+    /// (kept so stored settings that name them stay selectable).
+    static func models(for providerKey: String) -> [String] {
+        let found = discovered[providerKey]?.models.map(\.id) ?? []
+        let catalog = provider(providerKey)?.models ?? []
+        return found + catalog.filter { !found.contains($0) }
+    }
+
+    /// False only when the provider's CLI gave a complete list and this
+    /// model is not on it — the dispatcher then swaps or skips it.
+    static func offers(provider providerKey: String, model: String) -> Bool {
+        guard let entry = discovered[providerKey], entry.authoritative else { return true }
+        return entry.models.contains { $0.id == model }
     }
 
     static let providers: [Provider] = [
         Provider(key: "claude", label: "Claude Code", bin: "claude",
                  defaultModel: "claude-haiku-4-5-20251001", supportsImages: true,
                  models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-8",
-                          "claude-fable-5"]),
+                          "claude-fable-5", "claude-fable-5-1"]),
         Provider(key: "gemini", label: "Gemini CLI", bin: "gemini",
                  defaultModel: "gemini-2.5-flash", supportsImages: true,
                  models: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]),
+        // The 5.6 family and Astra are what the installed Codex CLI lists
+        // (~/.codex/models_cache.json); the GPT-5 and o3 ids stay for
+        // settings that still name them.
         Provider(key: "codex", label: "Codex CLI", bin: "codex",
-                 defaultModel: "gpt-5-mini", supportsImages: false,
-                 models: ["gpt-5-nano", "gpt-5-mini", "o3-mini", "gpt-5-codex", "o3", "gpt-5"]),
+                 defaultModel: "gpt-5.6-luna", supportsImages: false,
+                 models: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol", "gpt-5.5", "gpt-6-astra",
+                          "gpt-5-nano", "gpt-5-mini", "o3-mini", "gpt-5-codex", "o3", "gpt-5"]),
         Provider(key: "qwen", label: "Qwen Code", bin: "qwen",
                  defaultModel: "qwen3-coder-plus", supportsImages: false,
                  models: ["qwen3-coder-flash", "qwen3-coder-plus"]),

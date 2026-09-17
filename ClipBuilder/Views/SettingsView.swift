@@ -777,12 +777,30 @@ private struct AISettingsTab: View {
                         get: { store.settings.ai.providers[provider.key]?.model ?? provider.defaultModel },
                         set: { store.settings.ai.providers[provider.key, default: AIProviderSettings()].model = $0 }
                     )) {
-                        ForEach(provider.models, id: \.self) { model in
+                        ForEach(AICatalog.models(for: provider.key), id: \.self) { model in
                             Text(AICatalog.modelDisplayName(model)).tag(model)
                         }
                     }
+                    if let entry = AICatalog.discovered[provider.key] {
+                        modelsRow(provider: provider, entry: entry)
+                    }
                 }
             }
+
+            Section("Models") {
+                Text("Codex CLI is asked which models it offers (its own models cache); Claude Code gets family aliases that always mean the latest model. Gemini, Qwen and Kimi publish no list, so their entries are the built-in ones.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Text(modelsSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Refresh Models") { store.refreshDiscoveredModels() }
+                        .help("Ask the installed CLIs again — after updating Codex, or when a new model appeared")
+                }
+            }
+            .id(store.modelCatalogVersion)
 
         }
         .formStyle(.grouped)
@@ -793,6 +811,33 @@ private struct AISettingsTab: View {
         .onChange(of: store.installingProviderCLIs) { _, installing in
             guard installing.isEmpty else { return }
             Task { availableProviders = await ModelPicker.probeAvailability(ai: store.ai) }
+        }
+    }
+}
+
+/// One line per provider that reported models: how many and which.
+private func modelsRowText(_ entry: DiscoveredProviderModels) -> String {
+    let names = entry.models.map(\.name)
+    return entry.authoritative
+        ? "Offers \(names.count): " + names.joined(separator: ", ")
+        : "Aliases: " + names.joined(separator: ", ")
+}
+
+private extension AISettingsTab {
+    var modelsSummary: String {
+        let found = AICatalog.discovered
+        guard let codex = found["codex"] else {
+            return "Codex CLI has not reported its models yet (no models cache found)."
+        }
+        return "Codex CLI offers \(codex.models.count) model\(codex.models.count == 1 ? "" : "s")."
+    }
+
+    func modelsRow(provider: AICatalog.Provider, entry: DiscoveredProviderModels) -> some View {
+        LabeledContent("Models") {
+            Text(modelsRowText(entry))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
         }
     }
 }
