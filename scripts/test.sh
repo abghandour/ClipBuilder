@@ -7,6 +7,13 @@ DERIVED_DATA="${CLIPBUILDER_TEST_DERIVED_DATA:-/private/tmp/clipbuilder-tests}"
 
 # Unit and integration tests. The integration suites disable themselves
 # when ffmpeg/ffprobe are not installed, so no -skip-testing here.
+# CLIPBUILDER_TEST_WORKERS caps the parallel test workers: the timing
+# tests (script timeouts, the main-thread watchdog) fail on a loaded Mac
+# when every suite runs at once.
+WORKERS=()
+if [[ -n "${CLIPBUILDER_TEST_WORKERS:-}" ]]; then
+    WORKERS=(-maximum-parallel-testing-workers "$CLIPBUILDER_TEST_WORKERS")
+fi
 exec xcodebuild \
     -quiet \
     -project "$REPO_ROOT/Clip Builder.xcodeproj" \
@@ -17,4 +24,5 @@ exec xcodebuild \
     CODE_SIGN_IDENTITY=- \
     test \
     -only-testing:ClipBuilderTests \
+    "${WORKERS[@]}" \
     "$@"
