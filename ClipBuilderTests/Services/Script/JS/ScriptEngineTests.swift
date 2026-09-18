@@ -21,9 +21,9 @@ struct ScriptEngineTests {
         let result = await evaluate(source, seconds: 1)
         #expect(result.diagnostic?.code == "timeout")
         // The JavaScriptCore limit counts the worker's CPU time; under the parallel
-        // suite one CPU-second can stretch to a few wall-seconds, so allow slack here.
-        // mainActorRemainsResponsive keeps the strict responsiveness bound.
-        #expect(start.duration(to: .now) < .seconds(5))
+        // suite one CPU-second stretched to 5.7 wall-seconds in a release run, so
+        // the slack is generous. mainActorRemainsResponsive keeps the strict bound.
+        #expect(start.duration(to: .now) < .seconds(10))
         let next = await evaluate("return 42;")
         #expect(next.diagnostic == nil)
         #expect(next.summary == Data("42".utf8))
