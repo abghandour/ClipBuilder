@@ -41,6 +41,16 @@ nonisolated enum SpeakerEmbedder {
 
     static var isAvailable: Bool { model() != nil }
 
+    /// Why the model is unavailable, when it is: a missing bundle resource
+    /// or a Core ML load failure. Nil when it loaded.
+    static var loadFailure: Error? {
+        _ = model()
+        return cached.withLock { slot in
+            if case .failure(let error)? = slot { return error }
+            return nil
+        }
+    }
+
     /// A unit-length embedding of 16 kHz mono samples.
     static func embed(_ samples: [Float]) throws -> [Double] {
         guard let model = model() else { throw ScriptError.invalid("The speaker embedding model is not available.") }

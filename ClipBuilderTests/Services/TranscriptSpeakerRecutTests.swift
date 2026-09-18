@@ -89,6 +89,12 @@ struct TranscriptSpeakerRecutTests {
         #expect(spans.map(\.speaker) == ["ann", "bob"])
         #expect(spans[0].start == 10 && spans[0].end == 15 && spans[1].end == 20)
         #expect(TranscriptSpeakerRecut.speakerSpans(for: line, turns: [], minimumTurn: 1).isEmpty)
+        // A long turn the row's edge clips to half a second is still a handover, not an interjection.
+        let clipped = TranscriptSpeakerRecut.speakerSpans(for: line, turns: [turn(8, 19.5, "ann"), turn(19.5, 30, "bob")], minimumTurn: 1)
+        #expect(clipped.map(\.speaker) == ["ann", "bob"] && clipped[1].start == 19.5)
+        // A genuinely short turn inside the row still folds.
+        let brief = TranscriptSpeakerRecut.speakerSpans(for: line, turns: [turn(8, 14, "ann"), turn(14, 14.5, "bob"), turn(14.5, 30, "ann")], minimumTurn: 1)
+        #expect(brief.map(\.speaker) == ["ann"])
         #expect(TranscriptSpeakerRecut.joined(["Olá", " tudo", "bem", "?"]) == "Olá tudo bem?")
     }
 

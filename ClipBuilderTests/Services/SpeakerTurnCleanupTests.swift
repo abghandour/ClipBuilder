@@ -46,6 +46,16 @@ struct SpeakerTurnCleanupTests {
             [turn(30, 37.3, "a"), turn(37.3, 39.3, "b"), turn(39.3, 45, "a")], words: []).count == 3)
     }
 
+    @Test("a hop the voice backs is a short answer and stands even mid-sentence")
+    func voiceBackedHopStands() {
+        let ws = words([("e", 36.9, 37.2), (" sim", 37.3, 37.6), (" claro", 37.7, 38.0), (" então", 39.4, 39.8)])
+        var hop = turn(37.3, 39.3, "b")
+        hop.confidence = 0.9
+        let turns = [turn(30, 37.3, "a"), hop, turn(39.3, 45, "a")]
+        #expect(SpeakerTurnCleanup.absorbInterjections(turns, words: ws).count == 1)
+        #expect(SpeakerTurnCleanup.absorbInterjections(turns, words: ws, supported: { $0.confidence >= 0.6 }).count == 3)
+    }
+
     @Test("the re-cut does not split a row at a hop the words show to be mid-sentence")
     func recutHonoursCleanup() {
         let ws = words([("a", 0, 0.4), (" b", 0.5, 0.9), (" c", 1.0, 1.4), (" d", 1.5, 1.9), (" e", 2.0, 2.4), (" f", 2.5, 2.9)])

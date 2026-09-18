@@ -79,9 +79,13 @@ actor PodcastAnalysisService {
                    : " (" + visual.tiles.map { "\($0.index): \($0.personKey ?? "?")" }.joined(separator: ", ") + ")"))
         }
         progress(0.60, "tracking who is talking")
+        let corrections = Self.voiceCorrections(
+            rows: (try? await database.fetchTranscripts(videoID: video.id)) ?? [], tiles: visual.tiles, log: log)
         let tracked = try await Self.resolveTurns(video: video, audioTurns: turns, visual: visual,
-                                                  roster: roster, holdSeconds: holdSeconds, log: log)
-        let resolved = Self.cleaned(tracked, words: segments.flatMap { $0.words ?? [] }, log: log)
+                                                  roster: roster, holdSeconds: holdSeconds,
+                                                  corrections: corrections, log: log)
+        let resolved = Self.cleaned(tracked.turns, words: segments.flatMap { $0.words ?? [] },
+                                    audioTrust: tracked.audioTrust, log: log)
         try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
         await Self.recutTranscriptBySpeaker(video: video, database: database, turns: resolved, log: log)
         let podcastSettings = capturedSettings ?? SettingsStore.loadSettings().podcast
@@ -178,14 +182,26 @@ actor PodcastAnalysisService {
 
     /// The tracked turns with mid-sentence hops folded back into the
     /// speaker around them (see SpeakerTurnCleanup).
-    static func cleaned(_ turns: [SpeakerTurn], words: [TranscriptWord],
+    /// With a trusted voice (`audioTrust` near 1) a hop the voice backs at
+    /// 60% or more is a short answer and stands.
+    static func cleaned(_ turns: [SpeakerTurn], words: [TranscriptWord], audioTrust: Double = 0,
                         log: @Sendable (String) -> Void) -> [SpeakerTurn] {
-        let cleaned = SpeakerTurnCleanup.absorbInterjections(turns, words: words)
+        let voiceBacked = audioTrust >= 0.9
+        let cleaned = SpeakerTurnCleanup.absorbInterjections(turns, words: words,
+                                                             supported: { voiceBacked && $0.confidence >= 0.6 })
         let absorbed = turns.count - cleaned.count
         if absorbed > 0 {
-            log("Speaker turns: \(absorbed) short hop\(absorbed == 1 ? "" : "s") to another tile fell inside a sentence — kept with the speaker")
+            log("Speaker turns: \(absorbed) short hop\(absorbed == 1 ? "" : "s") to another tile fell inside a sentence — kept with the speaker"
+                + (voiceBacked ? " (hops the voice backs were left alone)" : ""))
         }
         return cleaned
+    }
+
+    /// The turns the tracker resolved and how far its voice profiles are
+    /// trusted (0 when the picture alone decided).
+    struct Resolution: Sendable {
+        var turns: [SpeakerTurn]
+        var audioTrust: Double
     }
 
     /// Once the turns are known, rows that straddle a speaker change are
@@ -212,6 +228,7 @@ actor PodcastAnalysisService {
     /// them. Needs transcript rows; returns the turns it stored.
     @discardableResult
     static func mapSpeakers(video: VideoRecord, database: Database, holdSeconds: Double,
+                            outcomeSink: (@Sendable (SpeakerTracker.Outcome) -> Void)? = nil,
                             log: @escaping @Sendable (String) -> Void) async throws -> [SpeakerTurn] {
         let rows = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
         guard !rows.isEmpty else { return [] }
@@ -223,9 +240,12 @@ actor PodcastAnalysisService {
         visual.tiles = PodcastVisualAnalyzer.named(visual.tiles, roster: roster)
         try await database.setPodcastLayout(videoID: video.id, layout: visual.layout, seamX: visual.seamX,
                                             confidence: visual.layoutConfidence, tiles: visual.tiles)
+        let corrections = voiceCorrections(rows: rows, tiles: visual.tiles, log: log)
         let tracked = try await resolveTurns(video: video, audioTurns: turns, visual: visual,
-                                             roster: roster, holdSeconds: holdSeconds, log: log)
-        let resolved = cleaned(tracked, words: segments.flatMap { $0.words ?? [] }, log: log)
+                                             roster: roster, holdSeconds: holdSeconds,
+                                             corrections: corrections, outcomeSink: outcomeSink, log: log)
+        let resolved = cleaned(tracked.turns, words: segments.flatMap { $0.words ?? [] },
+                               audioTrust: tracked.audioTrust, log: log)
         try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
         await recutTranscriptBySpeaker(video: video, database: database, turns: resolved, log: log)
         let named = Set(resolved.compactMap(\.personKey)).count
@@ -240,24 +260,39 @@ actor PodcastAnalysisService {
     /// and the side/portrait resolution.
     static func resolveTurns(video: VideoRecord, audioTurns: [SpeakerTurn], visual: PodcastVisualAnalyzer.Result,
                              roster: [VideoPersonRecord], holdSeconds: Double,
-                             log: @escaping @Sendable (String) -> Void) async throws -> [SpeakerTurn] {
-        let fallback = PodcastSpeakerTimelineResolver.resolve(
+                             corrections: [SpeakerTracker.Correction] = [],
+                             outcomeSink: (@Sendable (SpeakerTracker.Outcome) -> Void)? = nil,
+                             log: @escaping @Sendable (String) -> Void) async throws -> Resolution {
+        let fallback = Resolution(turns: PodcastSpeakerTimelineResolver.resolve(
             audioTurns: audioTurns, picture: visual.talkers, layout: visual.layout,
-            roster: roster, minimumHold: holdSeconds, tiles: visual.tiles)
+            roster: roster, minimumHold: holdSeconds, tiles: visual.tiles), audioTrust: 0)
         guard visual.tiles.count >= 2, !audioTurns.isEmpty else { return fallback }
         do {
             let outcome = try await trackSpeakers(video: video, speech: audioTurns.map { $0.start...$0.end },
-                                                  tiles: visual.tiles, log: log)
+                                                  tiles: visual.tiles, corrections: corrections, log: log)
+            outcomeSink?(outcome)
             guard !outcome.turns.isEmpty else { return fallback }
             log(String(format: "Speaker tracking: %d voice(s) over %d slot(s), %d turns, margin %.2f",
                        outcome.clusterCount, visual.tiles.count, outcome.turns.count, outcome.margin))
             if let enrollment = outcome.enrollment {
-                log(String(format: "Voices learned from the border: %d of %d tiles, separation %.2f — audio trusted %.0f%%",
-                           enrollment.slotCount, visual.tiles.count, enrollment.separation, enrollment.trust * 100))
+                let accuracy = enrollment.heldOutAgreement.map {
+                    String(format: ", %.0f%% right on %d held-out windows", $0 * 100, enrollment.heldOutWindows)
+                } ?? ""
+                log(String(format: "Voices learned from the border%@: %d of %d tiles, separation %.2f%@ — audio trusted %.0f%%",
+                           enrollment.correctionWindows > 0 ? " and \(enrollment.correctionWindows) corrected windows" : "",
+                           enrollment.slotCount, visual.tiles.count, enrollment.separation, accuracy, enrollment.trust * 100))
+                let disagreement = outcome.disagreement
+                if disagreement.bins > 0 {
+                    log(String(format: "Voice vs border: the trusted voice named another tile than the lit one over %.1f s (%.1f s of it sure, %.1f s well inside a lit stretch) — the voice held %.0f%% of it",
+                               Double(disagreement.bins) * VisualSpeechActivity.binSeconds,
+                               Double(disagreement.confident) * VisualSpeechActivity.binSeconds,
+                               Double(disagreement.interior) * VisualSpeechActivity.binSeconds,
+                               Double(disagreement.followedAudio) / Double(disagreement.bins) * 100))
+                }
             } else {
                 log("Voices learned from the border: none — no tile was lit alone long enough, so the audio keeps its blind clustering")
             }
-            return outcome.turns
+            return Resolution(turns: outcome.turns, audioTrust: outcome.enrollment?.trust ?? 0)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -268,20 +303,27 @@ actor PodcastAnalysisService {
 
     @concurrent
     static func trackSpeakers(video: VideoRecord, speech: [ClosedRange<Double>], tiles: [PodcastTile],
+                              corrections: [SpeakerTracker.Correction] = [],
                               log: @escaping @Sendable (String) -> Void) async throws -> SpeakerTracker.Outcome {
         let audioURL = try await NormalizedAudioCache.shared.audio(source: video.url)
         // Neural voice embeddings when the bundled model loads; the
-        // spectral averages otherwise.
+        // spectral averages otherwise — and the log always says which.
         var windows: [SpeakerFeatures.Window] = []
         var kind = SpeakerTracker.FeatureKind.spectral
         if SpeakerEmbedder.isAvailable {
             do {
                 windows = try SpeakerEmbedder.windows(audioURL: audioURL, speech: speech)
-                kind = .embedding
-                log("Voice embeddings: \(windows.count) windows through the on-device ECAPA-TDNN model")
+                if windows.isEmpty {
+                    log("Voice embeddings: no speech range was long enough for a window — using spectral voice features")
+                } else {
+                    kind = .embedding
+                    log("Voice embeddings: \(windows.count) windows through the on-device ECAPA-TDNN model")
+                }
             } catch {
                 log("Voice embeddings unavailable (\(error.localizedDescription)) — using spectral voice features")
             }
+        } else {
+            log("Voice embedding model not loaded (\(SpeakerEmbedder.loadFailure?.localizedDescription ?? "unknown reason")) — using spectral voice features")
         }
         if windows.isEmpty {
             windows = try SpeakerFeatures.windows(audioURL: audioURL, speech: speech)
@@ -290,7 +332,26 @@ actor PodcastAnalysisService {
         let activity = try await VisualSpeechActivity.measure(url: video.url, tiles: tiles, duration: video.duration, log: log)
         try Task.checkCancellation()
         return SpeakerTracker.track(.init(audioWindows: windows, activity: activity, speech: speech,
-                                          tiles: tiles, duration: video.duration, featureKind: kind), videoID: video.id)
+                                          tiles: tiles, duration: video.duration, featureKind: kind,
+                                          corrections: corrections), videoID: video.id)
+    }
+
+    /// The rows the user attributed by hand, as the tracker's corrections:
+    /// each row whose person sits in a tile teaches that tile its voice.
+    nonisolated static func voiceCorrections(rows: [TranscriptRow], tiles: [PodcastTile],
+                                             log: (@Sendable (String) -> Void)? = nil) -> [SpeakerTracker.Correction] {
+        let slotByPerson = Dictionary(tiles.compactMap { tile in tile.personKey.map { ($0, tile.index) } },
+                                      uniquingKeysWith: { first, _ in first })
+        let corrections = rows.compactMap { row -> SpeakerTracker.Correction? in
+            guard !row.isTranslation, let key = row.speakerKey, !key.isEmpty, let slot = slotByPerson[key],
+                  row.endTime > row.startTime else { return nil }
+            return SpeakerTracker.Correction(range: row.startTime...row.endTime, slot: slot)
+        }
+        if !corrections.isEmpty {
+            let seconds = Int(corrections.reduce(0) { $0 + $1.range.upperBound - $1.range.lowerBound })
+            log?("Voice corrections: \(corrections.count) rows (\(seconds) s) attributed by hand teach the tracker")
+        }
+        return corrections
     }
 
     /// saveAnalysis creates a scene per distinct range. Every tag must use the
@@ -1163,9 +1224,11 @@ actor PodcastExchangeSegmenter {
         Array(Set(turns.filter { $0.end > start && $0.start < end }.compactMap(\.personKey))).sorted()
     }
 
+    /// Person, else tile, else voice cluster — the identity the cleanup
+    /// and the re-cut use, so two unnamed tiles on one cluster still count
+    /// as a change of speaker.
     private static func speakerChanged(_ first: SpeakerTurn, _ second: SpeakerTurn) -> Bool {
-        if let a = first.personKey, let b = second.personKey { return a != b }
-        return first.cluster != second.cluster
+        SpeakerTurnCleanup.identity(first) != SpeakerTurnCleanup.identity(second)
     }
 
     private static func turnIndex(_ segment: TranscriptSegment, turns: [SpeakerTurn]) -> Int? {

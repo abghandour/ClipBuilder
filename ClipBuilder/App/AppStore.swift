@@ -1341,6 +1341,27 @@ final class AppStore {
         }
     }
 
+    /// Run a talking video's speaker map again — the lines attributed by
+    /// hand teach the tracker their voices — and re-cut the rows by the
+    /// new turns. No model call. False when it failed.
+    func mapSpeakersAgain(video: VideoRecord) async -> Bool {
+        guard let database else { return false }
+        appendLog(\.analysisLog, ["\(video.filename): mapping speakers again"])
+        do {
+            try await PodcastAnalysisService.mapSpeakers(video: video, database: database,
+                                                         holdSeconds: settings.podcast.speakerHoldSeconds,
+                                                         log: logSink(\.analysisLog))
+            blurbSpeakers[video.id] = nil
+            blurbTranscripts[video.id] = nil
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            presentError("Could not map the speakers", error)
+            return false
+        }
+    }
+
     /// Put the transcriber's own rows back after a re-cut.
     func undoTranscriptRecut(videoID: Int64) async -> Bool {
         guard let database else { return false }

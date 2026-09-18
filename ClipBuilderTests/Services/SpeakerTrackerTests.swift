@@ -146,4 +146,71 @@ struct SpeakerTrackerTests {
         #expect(SpeakerTracker.enroll(windows: windows, vectors: vectors, highlight: brief, speech: speech,
                                       binSeconds: binSeconds, slots: 2) == nil)
     }
+
+    /// Two tiles over 0.25 s bins: tile 0 lit alone for 0–8 s and 18–26 s,
+    /// tile 1 for 10–18 s; a two-second border hop to tile 1 at 20–22 s.
+    /// One-second voice windows: tile 0's voice near +1, tile 1's near −1.
+    private func hopFixture(hopVoice: Double) -> SpeakerTracker.Input {
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "host"),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "guest")]
+        let bins = 104
+        var highlight = [[Double]](repeating: [Double](repeating: 0, count: bins), count: 2)
+        for b in 0..<bins {
+            let seconds = Double(b) * 0.25
+            let hop = seconds >= 20 && seconds < 22
+            if seconds < 8 || (seconds >= 18 && !hop) { highlight[0][b] = 1 }
+            if (seconds >= 10 && seconds < 18) || hop { highlight[1][b] = 1 }
+        }
+        func window(_ start: Double, _ value: Double) -> SpeakerFeatures.Window {
+            SpeakerFeatures.Window(start: start, end: start + 1, vector: [value, value * 0.5, -value])
+        }
+        var windows: [SpeakerFeatures.Window] = []
+        for i in 0..<8 { windows.append(window(Double(i), 1.0 + Double(i % 3) * 0.05)) }
+        for i in 10..<18 { windows.append(window(Double(i), -1.0 - Double(i % 3) * 0.05)) }
+        for i in 18..<26 {
+            let hop = i >= 20 && i < 22
+            windows.append(window(Double(i), (hop ? hopVoice : 1.0) + Double(i % 3) * 0.05))
+        }
+        let activity = VisualSpeechActivity.Activity(binSeconds: 0.25,
+            motion: [[Double]](repeating: [Double](repeating: 0, count: bins), count: 2), highlight: highlight)
+        return .init(audioWindows: windows, activity: activity, speech: [0...26], tiles: tiles, duration: 26)
+    }
+
+    @Test("a trusted voice holds the speaker through a border hop to another tile; a real handover still switches")
+    func trustedVoiceHoldsThroughBorderHop() {
+        let reaction = SpeakerTracker.track(hopFixture(hopVoice: 1.0), videoID: 1)
+        #expect(reaction.enrollment?.trust == 1)
+        #expect(reaction.turns.map(\.tile) == [0, 1, 0], "\(reaction.turns.map { ($0.start, $0.end, $0.tile) })")
+        #expect(reaction.disagreement.bins == 8 && reaction.disagreement.followedAudio == 8)
+        #expect(reaction.turns.last?.end == 26)
+        // With the voice trusted, confidence is the voice's support for the chosen tile.
+        // (The middle turn spans the unvoiced 8–10 s gap, so its support is lower.)
+        #expect(reaction.turns.allSatisfy { $0.confidence > 0.7 }, "\(reaction.turns.map(\.confidence))")
+
+        let handover = SpeakerTracker.track(hopFixture(hopVoice: -1.0), videoID: 1)
+        #expect(handover.turns.map(\.tile) == [0, 1, 0, 1, 0], "\(handover.turns.map { ($0.start, $0.end, $0.tile) })")
+        #expect(handover.disagreement.bins == 0)
+    }
+
+    @Test("rows attributed by hand teach the tiles their voices without any border")
+    func correctionsTeachVoices() {
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1), PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1)]
+        let bins = 72
+        func window(_ start: Double, _ value: Double) -> SpeakerFeatures.Window {
+            SpeakerFeatures.Window(start: start, end: start + 1, vector: [value, value * 0.5, -value])
+        }
+        var windows: [SpeakerFeatures.Window] = []
+        for i in 0..<8 { windows.append(window(Double(i), 1.0 + Double(i % 3) * 0.05)) }
+        for i in 10..<18 { windows.append(window(Double(i), -1.0 - Double(i % 3) * 0.05)) }
+        let activity = VisualSpeechActivity.Activity(binSeconds: 0.25,
+            motion: [[Double]](repeating: [Double](repeating: 0, count: bins), count: 2))
+        var input = SpeakerTracker.Input(audioWindows: windows, activity: activity, speech: [0...18], tiles: tiles, duration: 18)
+        #expect(SpeakerTracker.track(input, videoID: 1).enrollment == nil)
+        input.corrections = [.init(range: 0...8, slot: 0), .init(range: 10...18, slot: 1)]
+        let outcome = SpeakerTracker.track(input, videoID: 1)
+        let enrollment = try! #require(outcome.enrollment)
+        #expect(enrollment.slotCount == 2 && enrollment.trust == 1)
+        #expect(enrollment.correctionWindows == 16)
+        #expect(outcome.turns.map(\.tile) == [0, 1], "\(outcome.turns.map { ($0.start, $0.end, $0.tile) })")
+    }
 }

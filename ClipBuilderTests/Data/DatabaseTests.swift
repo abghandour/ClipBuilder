@@ -237,6 +237,26 @@ struct DatabaseTests {
         #expect(!(try await database.restoreTranscriptBackup(videoID: videoID)))
     }
 
+    @Test("merging and deleting people follow the lines attributed to them by hand")
+    func personMaintenanceKeepsSpeakerKeys() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo(sceneCount: 0)
+        try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+                                                   segments: [.init(start: 0, end: 4, text: "hi", words: nil)],
+                                                   provider: "apple", model: "m", seconds: nil)
+        try await temp.database.upsertPerson(key: "alpha", descriptor: "")
+        try await temp.database.upsertPerson(key: "beta", descriptor: "")
+        let people = try await temp.database.fetchPeople()
+        let alpha = try #require(people.first { $0.key == "alpha" })
+        let beta = try #require(people.first { $0.key == "beta" })
+        let row = try #require(try await temp.database.fetchTranscripts(videoID: videoID).first)
+        try await temp.database.setTranscriptSpeaker(ids: [row.id], speaker: .person(key: "alpha"))
+        try await temp.database.mergePeople(source: alpha, into: beta)
+        #expect(try await temp.database.fetchTranscripts(videoID: videoID).first?.speakerKey == "beta")
+        try await temp.database.deletePerson(beta)
+        #expect(try await temp.database.fetchTranscripts(videoID: videoID).first?.speakerKey == nil)
+    }
+
     @Test("a re-cut keeps edit history on rows passed through, starts over from the backup only while nothing was corrected, and a new transcription drops the backup")
     func transcriptRecutKeepsCorrections() async throws {
         let temp = try TempDatabase()

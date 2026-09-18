@@ -88,16 +88,19 @@ nonisolated enum VisualSpeechActivity {
                 let faces = (try? await faceRequest.perform(on: pixelBuffer, orientation: orientation)) ?? []
                 PerfSignpost.end(timing)
                 withExtendedLifetime(permit) {}
+                // The largest face in a slot this refresh is its person; a
+                // box from an earlier refresh never outranks it, so the
+                // mouth region follows someone who leans back or away.
+                var largest: [Int: CGRect] = [:]
                 for face in faces {
                     let rect = face.boundingBox.cgRect
                     let box = CGRect(x: rect.minX, y: 1 - rect.maxY, width: rect.width, height: rect.height)
                     if let slot = tiles.first(where: { $0.contains(x: box.midX, y: box.midY) })?.index {
-                        // The largest face in a slot is its person.
-                        if let known = faceBoxes[slot], known.width * known.height > box.width * box.height,
-                           nextFaces - faceRefreshSeconds > 0 { continue }
-                        faceBoxes[slot] = box
+                        if let known = largest[slot], known.width * known.height >= box.width * box.height { continue }
+                        largest[slot] = box
                     }
                 }
+                for (slot, box) in largest { faceBoxes[slot] = box }
             }
             let bin = min(binCount - 1, max(0, Int(time / binSeconds)))
             for (slot, tile) in tiles.enumerated() {
@@ -126,6 +129,11 @@ nonisolated enum VisualSpeechActivity {
                 previous[tile.index] = patch
                 previousEyes[tile.index] = eyePatch
             }
+        }
+        // A decode failure part-way must not pass off the empty bins after
+        // it as a quiet picture.
+        if reader.status == .failed {
+            throw reader.error ?? ScriptError.invalid("Could not read the video for speech activity.")
         }
         let motion = tiles.indices.map { slot in
             (0..<binCount).map { counts[slot][$0] > 0 ? sums[slot][$0] / Double(counts[slot][$0]) : 0 }

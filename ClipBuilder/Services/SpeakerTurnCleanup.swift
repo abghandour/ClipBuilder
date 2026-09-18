@@ -14,8 +14,13 @@ nonisolated enum SpeakerTurnCleanup {
     /// the hop may be a real, short handover.
     static let pause = 0.6
 
+    /// `supported` says a hop's own speaker is backed by the voice (the
+    /// tracker stores that as the turn's confidence once the voice is
+    /// trusted): such a hop is a short answer and stands, whatever the
+    /// words around it look like.
     static func absorbInterjections(_ turns: [SpeakerTurn], words: [TranscriptWord],
-                                    maximumInterjection: Double = maximumInterjection) -> [SpeakerTurn] {
+                                    maximumInterjection: Double = maximumInterjection,
+                                    supported: (SpeakerTurn) -> Bool = { _ in false }) -> [SpeakerTurn] {
         guard turns.count >= 3 else { return turns }
         let sorted = turns.sorted { $0.start < $1.start }
         let timed = words.sorted { $0.start < $1.start }
@@ -28,6 +33,7 @@ nonisolated enum SpeakerTurnCleanup {
                   let after = Optional(sorted[index + 1]),
                   speaker(before) == speaker(after), speaker(turn) != speaker(before),
                   turn.end - turn.start <= maximumInterjection,
+                  !supported(turn),
                   sentenceRunsAcross(start: turn.start, end: turn.end, words: timed)
             else {
                 result.append(turn)

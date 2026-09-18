@@ -2711,6 +2711,9 @@ actor Database {
         try connection.transaction {
             try connection.execute("UPDATE speaker_turns SET person_key = NULL WHERE person_key = ?",
                                    [.text(person.key)])
+            // Lines attributed to them by hand go back to the automatic label.
+            try connection.execute("UPDATE transcripts SET speaker_key = NULL WHERE speaker_key = ?",
+                                   [.text(person.key)])
             try connection.execute("DELETE FROM scene_tags WHERE tag = ?", [.text(person.tag)])
             try connection.execute("UPDATE person_markers SET person_id = NULL WHERE person_id = ?",
                                    [.integer(person.id)])
@@ -2723,6 +2726,8 @@ actor Database {
     func mergePeople(source: PersonRecord, into target: PersonRecord) throws {
         try connection.transaction {
             try connection.execute("UPDATE speaker_turns SET person_key = ? WHERE person_key = ?",
+                                   [.text(target.key), .text(source.key)])
+            try connection.execute("UPDATE transcripts SET speaker_key = ? WHERE speaker_key = ?",
                                    [.text(target.key), .text(source.key)])
             try connection.execute("UPDATE OR IGNORE scene_tags SET tag = ? WHERE tag = ?",
                                    [.text(target.tag), .text(source.tag)])

@@ -214,8 +214,24 @@ nonisolated enum SpeakerClustering {
     /// are on screen) keeps two similar voices apart; `threshold` is the
     /// average-linkage distance, in standard deviations per dimension, at
     /// which two voices are one.
-    static func cluster(_ windows: [[Double]], minimum: Int = 1, maximum: Int = 8, threshold: Double = 1.3) -> Result {
-        let vectors = standardize(windows)
+    /// How vectors compare. Spectral averages are standardized per
+    /// coordinate and compared by distance in standard deviations; neural
+    /// embeddings are unit vectors compared by cosine, the space the model
+    /// was trained to separate voices in (standardizing them amplifies
+    /// their quiet coordinates and blurs the voices together).
+    enum Geometry: Sendable {
+        case standardized
+        case cosine
+    }
+
+    /// Centroids whose cosine reaches this are one voice.
+    static let mergeCosine = 0.45
+    /// Softmax temperature over cosine: a 0.4 gap in cosine is about 55:1.
+    static let cosineTemperature = 10.0
+
+    static func cluster(_ windows: [[Double]], minimum: Int = 1, maximum: Int = 8, threshold: Double = 1.3,
+                        geometry: Geometry = .standardized) -> Result {
+        let vectors = geometry == .cosine ? windows.map(normalized) : standardize(windows)
         guard vectors.count > 1 else { return Result(labels: vectors.map { _ in 0 }, centroids: vectors.isEmpty ? [] : [vectors[0]], vectors: vectors) }
         let dimension = Double(vectors[0].count)
         let k = max(1, min(maximum, vectors.count / 3))
@@ -259,9 +275,15 @@ nonisolated enum SpeakerClustering {
                     // Centers closer than the threshold in per-dimension
                     // standard deviations are one voice; wide groups get
                     // a little more room.
-                    let d = distance(centers[a], centers[b]) / dimension.squareRoot()
-                    let spread = (radius(groups[a], centers[a]) + radius(groups[b], centers[b])) / 2
-                    let ratio = d / max(threshold, 1.2 * spread)
+                    let ratio: Double
+                    switch geometry {
+                    case .standardized:
+                        let d = distance(centers[a], centers[b]) / dimension.squareRoot()
+                        let spread = (radius(groups[a], centers[a]) + radius(groups[b], centers[b])) / 2
+                        ratio = d / max(threshold, 1.2 * spread)
+                    case .cosine:
+                        ratio = (1 - cosine(centers[a], centers[b])) / (1 - mergeCosine)
+                    }
                     if best == nil || ratio < best!.2 { best = (a, b, ratio) }
                 }
             }
@@ -277,10 +299,17 @@ nonisolated enum SpeakerClustering {
 
     /// How much each voice explains a vector: softmax over negative squared
     /// distances to the centroids, in per-dimension units.
-    static func posterior(_ vector: [Double], centroids: [[Double]]) -> [Double] {
+    static func posterior(_ vector: [Double], centroids: [[Double]],
+                          geometry: Geometry = .standardized) -> [Double] {
         guard !centroids.isEmpty else { return [] }
         let dimension = Double(vector.count)
-        let scores = centroids.map { -pow(distance(vector, $0) / dimension.squareRoot(), 2) * 2 }
+        let scores: [Double]
+        switch geometry {
+        case .standardized:
+            scores = centroids.map { -pow(distance(vector, $0) / dimension.squareRoot(), 2) * 2 }
+        case .cosine:
+            scores = centroids.map { cosine(vector, $0) * cosineTemperature }
+        }
         let peak = scores.max() ?? 0
         let weights = scores.map { exp($0 - peak) }
         let total = weights.reduce(0, +)
@@ -289,6 +318,17 @@ nonisolated enum SpeakerClustering {
 
     static func distance(_ a: [Double], _ b: [Double]) -> Double {
         sqrt(zip(a, b).reduce(0) { $0 + ($1.0 - $1.1) * ($1.0 - $1.1) })
+    }
+
+    static func cosine(_ a: [Double], _ b: [Double]) -> Double {
+        let dot = zip(a, b).reduce(0) { $0 + $1.0 * $1.1 }
+        let norms = sqrt(a.reduce(0) { $0 + $1 * $1 }) * sqrt(b.reduce(0) { $0 + $1 * $1 })
+        return norms > 1e-12 ? dot / norms : 0
+    }
+
+    static func normalized(_ vector: [Double]) -> [Double] {
+        let norm = sqrt(vector.reduce(0) { $0 + $1 * $1 })
+        return norm > 1e-12 ? vector.map { $0 / norm } : vector
     }
 
     static func standardize(_ vectors: [[Double]]) -> [[Double]] {

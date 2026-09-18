@@ -68,15 +68,25 @@ actor TranscriptionService {
                          log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
         log("Using cached transcript for \(video.filename)")
         try Task.checkCancellation()
-        try await database.replaceTranscripts(videoID: video.id, language: cached.detectedLanguage,
-                                              isTranslation: false, segments: cached.segments,
-                                              provider: Self.providerName, model: Self.modelName)
-        do { try await enrich(cached.segments, video: video, database: database) }
+        // The rows already stored are the user's: re-cut by speaker,
+        // corrected, attributed by hand. A cache hit only fills an empty
+        // transcript; otherwise the stored rows are the transcript.
+        let stored = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
+        let segments: [TranscriptSegment]
+        if stored.isEmpty {
+            try await database.replaceTranscripts(videoID: video.id, language: cached.detectedLanguage,
+                                                  isTranslation: false, segments: cached.segments,
+                                                  provider: Self.providerName, model: Self.modelName)
+            segments = cached.segments
+        } else {
+            segments = stored.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }
+        }
+        do { try await enrich(segments, video: video, database: database) }
         catch {
             if strictEnrichment { throw error }
             log("Transcript feature analysis failed: \(error)")
         }
-        return cached.segments
+        return segments
     }
 
     /// English and Brazilian Portuguese are the fast path. Installed
@@ -249,6 +259,16 @@ actor TranscriptionService {
                                               topics: TopicSegmenter.segment(analysis.features, videoID: video.id))
     }
 
+    /// One file through the on-device transcriber, for diagnostics
+    /// (TranscriptionDiagnosticTests compares recognizers on an excerpt).
+    static func transcribeFile(audioURL: URL, locale: Locale) async throws -> [TranscriptSegment] {
+        try await runSpeechTranscriber(audioURL: audioURL, locale: locale).segments
+    }
+
+    /// Name hints were tried here on September 18, 2026 —
+    /// AnalysisContext.contextualStrings through setContext and through the
+    /// file-based initializer — and changed nothing in pt-BR output, not
+    /// even names given verbatim ("Lyoto Machida" still came out "Lioto").
     private static func runSpeechTranscriber(audioURL: URL, locale: Locale) async throws
         -> (segments: [TranscriptSegment], confidence: Double) {
         let timing = PerfSignpost.begin("Transcription", metadata: locale.identifier)

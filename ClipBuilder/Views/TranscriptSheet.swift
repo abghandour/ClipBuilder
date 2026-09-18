@@ -62,6 +62,7 @@ struct TranscriptSheet: View {
     @State private var hasRecut = false
     /// What the last Re-cut did, shown briefly under the header.
     @State private var recutNote: String?
+    @State private var isMappingSpeakers = false
 
     private var changedIDs: [Int64] {
         rows.compactMap { row in
@@ -208,10 +209,14 @@ struct TranscriptSheet: View {
                             Button("Undo Re-cut") { undoRecut() }
                                 .disabled(hasChanges)
                         }
+                        Divider()
+                        Button(isMappingSpeakers ? "Mapping Speakers…" : "Map Speakers Again") { mapSpeakersAgain() }
+                            .disabled(hasChanges || isMappingSpeakers)
                     }
                     .fixedSize()
                     .help(hasChanges ? "Apply or discard your pending changes first"
-                          : "Split every row where the speaker changes, at the gap between words, so each row has one speaker" + (hasRecut ? " — or put the transcriber's original rows back" : ""))
+                          : "Split every row where the speaker changes, at the gap between words, so each row has one speaker" + (hasRecut ? " — or put the transcriber's original rows back" : "")
+                            + ". Map Speakers Again reruns who-is-talking from the picture and the voices; the lines you attributed by hand teach it their voices")
                 }
                 Button("Topics, Cuts & Translation…") { showTools = true }
                     .disabled(rows.isEmpty)
@@ -605,6 +610,17 @@ struct TranscriptSheet: View {
         Task {
             if await store.undoTranscriptRecut(videoID: video.id) {
                 recutNote = "The transcriber's rows are back."
+                await load()
+            }
+        }
+    }
+
+    private func mapSpeakersAgain() {
+        isMappingSpeakers = true
+        Task {
+            defer { isMappingSpeakers = false }
+            if await store.mapSpeakersAgain(video: video) {
+                recutNote = "Speakers mapped again and the rows re-cut."
                 await load()
             }
         }

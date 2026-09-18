@@ -96,11 +96,13 @@ nonisolated enum TranscriptSpeakerRecut {
 
     /// Who holds which part of the row: the overlapping turns in order,
     /// same-speaker neighbours merged, gaps given to the speaker before
-    /// them, and spans shorter than `minimumTurn` folded into a neighbour.
+    /// them, and spans shorter than `minimumTurn` folded into a neighbour —
+    /// unless the span is short only because the row's edge clipped a
+    /// longer turn, which is a real handover the next row continues.
     /// The first span starts at the row's start and the last ends at its end.
     static func speakerSpans(for row: TranscriptRow, turns: [SpeakerTurn],
                              minimumTurn: Double) -> [(start: Double, end: Double, speaker: String)] {
-        var spans: [(start: Double, end: Double, speaker: String)] = []
+        var spans: [(start: Double, end: Double, speaker: String, whole: Double)] = []
         var cursor = row.startTime
         for turn in turns.sorted(by: { $0.start < $1.start })
             where turn.end > row.startTime && turn.start < row.endTime {
@@ -110,8 +112,9 @@ nonisolated enum TranscriptSpeakerRecut {
             let speaker = SpeakerTurnCleanup.identity(turn)
             if let last = spans.last, last.speaker == speaker {
                 spans[spans.count - 1].end = end
+                spans[spans.count - 1].whole = max(last.whole, turn.end - turn.start)
             } else {
-                spans.append((start, end, speaker))
+                spans.append((start, end, speaker, turn.end - turn.start))
             }
             cursor = end
         }
@@ -124,7 +127,9 @@ nonisolated enum TranscriptSpeakerRecut {
         var changed = true
         while changed, spans.count > 1 {
             changed = false
-            if let short = spans.indices.first(where: { spans[$0].end - spans[$0].start < minimumTurn }) {
+            if let short = spans.indices.first(where: {
+                spans[$0].end - spans[$0].start < minimumTurn && spans[$0].whole < minimumTurn
+            }) {
                 let previousLength = short > 0 ? spans[short - 1].end - spans[short - 1].start : -1
                 let nextLength = short + 1 < spans.count ? spans[short + 1].end - spans[short + 1].start : -1
                 if previousLength >= nextLength, short > 0 {
@@ -135,17 +140,18 @@ nonisolated enum TranscriptSpeakerRecut {
                 spans.remove(at: short)
                 changed = true
             }
-            var merged: [(start: Double, end: Double, speaker: String)] = []
+            var merged: [(start: Double, end: Double, speaker: String, whole: Double)] = []
             for span in spans {
                 if let last = merged.last, last.speaker == span.speaker {
                     merged[merged.count - 1].end = span.end
+                    merged[merged.count - 1].whole = max(last.whole, span.whole)
                 } else {
                     merged.append(span)
                 }
             }
             if merged.count != spans.count { spans = merged; changed = true }
         }
-        return spans
+        return spans.map { ($0.start, $0.end, $0.speaker) }
     }
 
     /// True when the current rows carry corrections the backup does not:
