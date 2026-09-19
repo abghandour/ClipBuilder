@@ -76,6 +76,38 @@ nonisolated enum TranscriptSpeakers {
         return "Speaker \(turn.cluster + 1)"
     }
 
+    /// Lines the user attributed to a person that the speaker map does not
+    /// agree with: the turn covering the line most names someone else, a
+    /// bare tile, or nobody. Until the speakers are mapped again these
+    /// lines have taught the tracker nothing.
+    static func unlearnedCorrections(rows: [TranscriptRow], turns: [SpeakerTurn]) -> Int {
+        rows.count { row in
+            guard !row.isTranslation, case .person(let key) = row.speaker else { return false }
+            var best: (turn: SpeakerTurn, overlap: Double)?
+            for turn in turns {
+                let overlap = min(turn.end, row.endTime) - max(turn.start, row.startTime)
+                guard overlap > 0, overlap > (best?.overlap ?? 0) else { continue }
+                best = (turn, overlap)
+            }
+            return best?.turn.personKey != key
+        }
+    }
+
+    /// Lines whose speaker differs between two maps, with the label the
+    /// earlier map gave them ("no speaker" where it had none). Lines
+    /// attributed by hand never change. Empty when there is no earlier map.
+    static func changedLabels(rows: [TranscriptRow], before: [SpeakerTurn], after: [SpeakerTurn],
+                              roster: [VideoPersonRecord], people: [PersonRecord] = []) -> [Int64: String] {
+        guard !before.isEmpty else { return [:] }
+        var result: [Int64: String] = [:]
+        for row in rows where !row.isTranslation {
+            let old = label(for: row, turns: before, roster: roster, people: people)
+            let new = label(for: row, turns: after, roster: roster, people: people)
+            if old != new { result[row.id] = old ?? "no speaker" }
+        }
+        return result
+    }
+
     /// Labels per row, blank where the speaker is the same as on the line
     /// before, so a run of lines reads as one turn.
     static func labels(for rows: [TranscriptRow], turns: [SpeakerTurn], roster: [VideoPersonRecord],

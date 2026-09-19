@@ -1294,6 +1294,9 @@ final class AppStore {
     }
 
     private var blurbSpeakers: [Int64: (turns: [SpeakerTurn], roster: [VideoPersonRecord])] = [:]
+    /// The speaker turns a video had before its last Map Speakers Again,
+    /// for showing what the map changed and for putting it back.
+    var previousSpeakerMaps: [Int64: [SpeakerTurn]] = [:]
 
     /// A video's speaker turns and roster, cached until the next refresh.
     func speakerTurns(videoID: Int64) async -> (turns: [SpeakerTurn], roster: [VideoPersonRecord]) {
@@ -1344,13 +1347,17 @@ final class AppStore {
     /// Run a talking video's speaker map again — the lines attributed by
     /// hand teach the tracker their voices — and re-cut the rows by the
     /// new turns. No model call. False when it failed.
-    func mapSpeakersAgain(video: VideoRecord) async -> Bool {
+    func mapSpeakersAgain(video: VideoRecord, status: (@Sendable (String) -> Void)? = nil) async -> Bool {
         guard let database else { return false }
         appendLog(\.analysisLog, ["\(video.filename): mapping speakers again"])
+        let sink = logSink(\.analysisLog)
+        let log: @Sendable (String) -> Void = { line in sink(line); status?(line) }
         do {
+            let before = try await database.fetchSpeakerTurns(videoID: video.id)
             try await PodcastAnalysisService.mapSpeakers(video: video, database: database,
                                                          holdSeconds: settings.podcast.speakerHoldSeconds,
-                                                         log: logSink(\.analysisLog))
+                                                         log: log)
+            if !before.isEmpty { previousSpeakerMaps[video.id] = before }
             blurbSpeakers[video.id] = nil
             blurbTranscripts[video.id] = nil
             return true
@@ -1358,6 +1365,25 @@ final class AppStore {
             return false
         } catch {
             presentError("Could not map the speakers", error)
+            return false
+        }
+    }
+
+    /// Put the speaker map from before the last Map Speakers Again back,
+    /// and re-cut the rows to it.
+    func undoSpeakerMap(video: VideoRecord) async -> Bool {
+        guard let database, let before = previousSpeakerMaps[video.id] else { return false }
+        do {
+            try await database.replaceSpeakerTurns(videoID: video.id, turns: before)
+            await PodcastAnalysisService.recutTranscriptBySpeaker(video: video, database: database, turns: before,
+                                                                  log: logSink(\.analysisLog))
+            appendLog(\.analysisLog, ["\(video.filename): previous speaker map restored (\(before.count) turns)"])
+            previousSpeakerMaps[video.id] = nil
+            blurbSpeakers[video.id] = nil
+            blurbTranscripts[video.id] = nil
+            return true
+        } catch {
+            presentError("Could not restore the previous speaker map", error)
             return false
         }
     }

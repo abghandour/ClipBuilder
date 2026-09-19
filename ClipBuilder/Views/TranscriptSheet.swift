@@ -63,6 +63,17 @@ struct TranscriptSheet: View {
     /// What the last Re-cut did, shown briefly under the header.
     @State private var recutNote: String?
     @State private var isMappingSpeakers = false
+    /// Lines attributed by hand that the speaker map does not agree with.
+    @State private var unlearnedCorrections = 0
+    /// The map's latest log line while it runs.
+    @State private var mappingStatus: String?
+    /// Lines whose speaker the last Map Speakers Again changed, with the
+    /// name they had before.
+    @State private var changedByMap: [Int64: String] = [:]
+    /// Consecutive lines by one speaker read as one block.
+    @AppStorage("transcript.groupBySpeaker") private var groupBySpeaker = false
+
+    static let changedByMapFilter = "changed:map"
 
     private var changedIDs: [Int64] {
         rows.compactMap { row in
@@ -111,7 +122,24 @@ struct TranscriptSheet: View {
 
     /// The lines on show: all of them, or those under the tag filter.
     private var visibleRows: [TranscriptRow] {
-        tagFilter.isEmpty ? rows : rows.filter { lineTags[$0.id]?.contains(tagFilter) == true }
+        if tagFilter.isEmpty { return rows }
+        if tagFilter == Self.changedByMapFilter { return rows.filter { changedByMap[$0.id] != nil } }
+        return rows.filter { lineTags[$0.id]?.contains(tagFilter) == true }
+    }
+
+    /// Where each speaker block ends (the end time of its last visible
+    /// line), per visible row, for the grouped reading.
+    nonisolated static func blockEnds(_ rows: [TranscriptRow], sameSpeaker: (TranscriptRow, TranscriptRow) -> Bool) -> [Double] {
+        var ends = [Double](repeating: 0, count: rows.count)
+        var index = rows.count - 1
+        while index >= 0 {
+            let end = rows[index].endTime
+            var start = index
+            while start > 0, sameSpeaker(rows[start - 1], rows[start]) { start -= 1 }
+            for i in start...index { ends[i] = end }
+            index = start - 1
+        }
+        return ends
     }
 
     /// Every tag any line carries, Reel first, then alphabetical.
@@ -175,26 +203,62 @@ struct TranscriptSheet: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        if let recutNote {
+                        if isMappingSpeakers {
+                            ProgressView()
+                                .controlSize(.mini)
+                            Text(mappingStatus ?? "Mapping speakers…")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        } else if let recutNote {
                             Text(recutNote)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                        }
+                        if unlearnedCorrections > 0, !turns.isEmpty, !isMappingSpeakers {
+                            // Lines attributed by hand teach the tracker
+                            // only when the speakers are mapped again.
+                            let pending = unlearnedCorrections
+                            Label("\(pending) line\(pending == 1 ? "" : "s") attributed by hand — Map Speakers Again to teach the tracker \(pending == 1 ? "that voice" : "those voices") and fix the rest of this file",
+                                  systemImage: "waveform.badge.exclamationmark")
+                                .font(.caption)
+                                .foregroundStyle(Color.orange)
+                                .help("The speaker map still disagrees with these lines. Mapping again uses your attributions as ground truth, remaps every other line, and remembers the voices for other files.")
                         }
                         if !allLineTags.isEmpty {
                             // Narrow the transcript to the lines inside
                             // scenes carrying one tag (the reel picks, the
                             // questions…).
-                            Menu(tagFilter.isEmpty ? "All tags" : tagFilter) {
+                            Menu(tagFilter.isEmpty ? "All tags"
+                                 : tagFilter == Self.changedByMapFilter ? "Changed by the map" : tagFilter) {
                                 Button("All tags") { tagFilter = "" }
                                 Divider()
                                 ForEach(allLineTags, id: \.self) { tag in
                                     let count = rows.count { lineTags[$0.id]?.contains(tag) == true }
                                     Button("\(tag == "reel-highlight" ? "Reel" : tag) (\(count))") { tagFilter = tag }
                                 }
+                                if !changedByMap.isEmpty {
+                                    Divider()
+                                    Button("Changed by the map (\(changedByMap.count))") { tagFilter = Self.changedByMapFilter }
+                                }
                             }
                             .controlSize(.small)
                             .fixedSize()
-                            .help("Show only the lines inside scenes carrying a tag")
+                            .help("Show only the lines inside scenes carrying a tag, or the lines the last speaker map changed")
+                        } else if !changedByMap.isEmpty {
+                            Menu(tagFilter == Self.changedByMapFilter ? "Changed by the map" : "All lines") {
+                                Button("All lines") { tagFilter = "" }
+                                Button("Changed by the map (\(changedByMap.count))") { tagFilter = Self.changedByMapFilter }
+                            }
+                            .controlSize(.small)
+                            .fixedSize()
+                        }
+                        if rows.contains(where: { speakerLabels[$0.id] != nil }) {
+                            Toggle("Group by Speaker", isOn: $groupBySpeaker)
+                                .toggleStyle(.checkbox)
+                                .controlSize(.small)
+                                .help("Read each speaker's uninterrupted run as one block; every line still edits and attributes on its own")
                         }
                     }
                 }
@@ -212,11 +276,21 @@ struct TranscriptSheet: View {
                         Divider()
                         Button(isMappingSpeakers ? "Mapping Speakers…" : "Map Speakers Again") { mapSpeakersAgain() }
                             .disabled(hasChanges || isMappingSpeakers)
+                        if store.previousSpeakerMaps[video.id] != nil {
+                            Button("Undo Map Speakers Again") { undoMap() }
+                                .disabled(hasChanges || isMappingSpeakers)
+                        }
                     }
                     .fixedSize()
                     .help(hasChanges ? "Apply or discard your pending changes first"
                           : "Split every row where the speaker changes, at the gap between words, so each row has one speaker" + (hasRecut ? " — or put the transcriber's original rows back" : "")
                             + ". Map Speakers Again reruns who-is-talking from the picture and the voices; the lines you attributed by hand teach it their voices")
+                    if unlearnedCorrections > 0 {
+                        Button(isMappingSpeakers ? "Mapping Speakers…" : "Map Speakers Again") { mapSpeakersAgain() }
+                            .disabled(hasChanges || isMappingSpeakers)
+                            .buttonStyle(.borderedProminent)
+                            .help("Rerun who-is-talking with your attributions as ground truth")
+                    }
                 }
                 Button("Topics, Cuts & Translation…") { showTools = true }
                     .disabled(rows.isEmpty)
@@ -253,15 +327,25 @@ struct TranscriptSheet: View {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             let visible = visibleRows
                             let current = currentRowID
+                            let blockEnds = groupBySpeaker
+                                ? Self.blockEnds(visible) { speakerLabel($0) == speakerLabel($1) && $0.isTranslation == $1.isTranslation }
+                                : []
                             ForEach(Array(visible.enumerated()), id: \.element.id) { index, row in
                                 // Tags print where the line enters a
                                 // different scene, so a run of lines in one
                                 // exchange reads as one block under its tags.
                                 let previous = index > 0 ? sceneIDs(visible[index - 1]) : nil
                                 let sameSpeaker = index > 0 && speakerLabel(visible[index - 1]) == speakerLabel(row)
+                                    && visible[index - 1].isTranslation == row.isTranslation
+                                let grouped = groupBySpeaker && speakerLabel(row) != nil
                                 segmentRow(row, showTags: index == 0 || previous != sceneIDs(row),
-                                           current: current == row.id, repeatedSpeaker: sameSpeaker)
-                                Divider()
+                                           current: current == row.id, repeatedSpeaker: sameSpeaker,
+                                           grouped: grouped, blockEnd: grouped && !sameSpeaker ? blockEnds[index] : nil)
+                                if !(grouped && index + 1 < visible.count
+                                     && speakerLabel(visible[index + 1]) == speakerLabel(row)
+                                     && visible[index + 1].isTranslation == row.isTranslation) {
+                                    Divider()
+                                }
                             }
                         }
                     }
@@ -301,8 +385,13 @@ struct TranscriptSheet: View {
         }
     }
 
-    private func segmentRow(_ row: TranscriptRow, showTags: Bool, current: Bool, repeatedSpeaker: Bool) -> some View {
+    private func segmentRow(_ row: TranscriptRow, showTags: Bool, current: Bool, repeatedSpeaker: Bool,
+                            grouped: Bool = false, blockEnd: Double? = nil) -> some View {
         let playing = self.playing?.rowID == row.id
+        // Grouped: the block's first line carries the speaker and the
+        // block's whole range; the lines after it show only their own
+        // start, faintly, so the run reads as one paragraph.
+        let continuation = grouped && repeatedSpeaker
         return HStack(alignment: .top, spacing: 10) {
             Button {
                 Task { await togglePlayback(row) }
@@ -321,9 +410,23 @@ struct TranscriptSheet: View {
             .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(row.startTime.timecode)–\(row.endTime.timecode)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                if continuation {
+                    Text(row.startTime.timecode)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.quaternary)
+                } else if let blockEnd, blockEnd > row.endTime {
+                    Text("\(row.startTime.timecode)–\(blockEnd.timecode)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Text(row.endTime.timecode)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.quaternary)
+                        .help("This line ends here; the block runs to \(blockEnd.timecode)")
+                } else {
+                    Text("\(row.startTime.timecode)–\(row.endTime.timecode)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
                 if showsLanguage {
                     Text(row.isTranslation ? "\(row.language) · translation" : row.language)
                         .font(.caption2)
@@ -339,7 +442,7 @@ struct TranscriptSheet: View {
             speakerMenu(row)
                 .frame(width: 108, alignment: .leading)
                 .padding(.top, 1)
-                .opacity(repeatedSpeaker ? 0.45 : 1)
+                .opacity(continuation ? 0.2 : repeatedSpeaker ? 0.45 : 1)
 
             VStack(alignment: .leading, spacing: 4) {
                 TextField("Segment text", text: Binding(
@@ -360,7 +463,8 @@ struct TranscriptSheet: View {
             }
         }
         .padding(.horizontal)
-        .padding(.vertical, 6)
+        .padding(.top, continuation ? 1 : 6)
+        .padding(.bottom, grouped ? 2 : 6)
         .background(current || (drafts[row.id] ?? row.text) != row.text
                     ? Color.accentColor.opacity(current ? 0.16 : 0.08) : Color.clear)
     }
@@ -617,10 +721,33 @@ struct TranscriptSheet: View {
 
     private func mapSpeakersAgain() {
         isMappingSpeakers = true
+        mappingStatus = nil
         Task {
             defer { isMappingSpeakers = false }
-            if await store.mapSpeakersAgain(video: video) {
-                recutNote = "Speakers mapped again and the rows re-cut."
+            let mapped = await store.mapSpeakersAgain(video: video) { line in
+                Task { @MainActor in mappingStatus = Self.statusLine(line) }
+            }
+            if mapped {
+                await load()
+                let changed = changedByMap.count
+                recutNote = changed == 0 ? "Speakers mapped again — no line changed speaker."
+                    : "Speakers mapped again — \(changed) line\(changed == 1 ? "" : "s") changed speaker."
+            }
+        }
+    }
+
+    /// A log line as the header shows it: the filename prefix dropped.
+    nonisolated static func statusLine(_ line: String) -> String {
+        if let colon = line.firstIndex(of: ":"), line[..<colon].contains(".") {
+            return String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
+        }
+        return line
+    }
+
+    private func undoMap() {
+        Task {
+            if await store.undoSpeakerMap(video: video) {
+                recutNote = "The previous speaker map is back."
                 await load()
             }
         }
@@ -723,13 +850,25 @@ struct TranscriptSheet: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: overridden ? "person.fill.checkmark" : "person.fill")
-                    .font(.caption2)
-                Text(label ?? "Speaker?")
-                    .font(.caption.weight(label == nil ? .regular : .semibold))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 4) {
+                    Image(systemName: overridden ? "person.fill.checkmark" : "person.fill")
+                        .font(.caption2)
+                    Text(label ?? "Speaker?")
+                        .font(.caption.weight(label == nil ? .regular : .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                if let before = changedByMap[row.id], before != label {
+                    // What the previous map said, for judging the change.
+                    Text(before)
+                        .font(.caption2)
+                        .strikethrough()
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help("The previous speaker map said \(before)")
+                }
             }
             .foregroundStyle(label == nil ? AnyShapeStyle(.tertiary)
                              : label == TranscriptSpeakers.unknownLabel ? AnyShapeStyle(.secondary)
@@ -795,6 +934,10 @@ struct TranscriptSheet: View {
         speakerLabels = rows.reduce(into: [:]) { labels, row in
             labels[row.id] = TranscriptSpeakers.label(for: row, turns: turns, roster: roster, people: people)
         }
+        unlearnedCorrections = TranscriptSpeakers.unlearnedCorrections(rows: rows, turns: turns)
+        changedByMap = TranscriptSpeakers.changedLabels(rows: rows, before: store.previousSpeakerMaps[video.id] ?? [],
+                                                        after: turns, roster: roster, people: people)
+        if tagFilter == Self.changedByMapFilter, changedByMap.isEmpty { tagFilter = "" }
         hasRecut = await store.hasTranscriptRecut(videoID: video.id)
         let scenes = store.scenes.filter { $0.videoID == video.id && !$0.ignored }
         lineScenes = rows.reduce(into: [:]) { result, row in
