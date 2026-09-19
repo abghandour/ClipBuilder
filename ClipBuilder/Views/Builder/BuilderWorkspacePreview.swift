@@ -73,7 +73,7 @@ struct BuilderPreviewControls: View {
                 Button("Stop", systemImage: "stop.fill") { store.stopBuilderPreview() }
             } else {
                 if model.document.hasAnyEffect {
-                    LooksPreviewBadge()
+                    LooksPreviewBadge(inline: true)
                 }
                 if store.builderPreviewLastPlayed != nil {
                     Button("Replay", systemImage: "arrow.counterclockwise", action: store.replayBuilderPreview)
