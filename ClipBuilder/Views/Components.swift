@@ -297,6 +297,29 @@ struct PlayerView: NSViewRepresentable {
     }
 }
 
+/// One color per speaker name, stable across launches, so the outline on
+/// the picture and the name in the transcript column read as the same
+/// person. "Unknown" stays grey.
+enum SpeakerColors {
+    static let palette: [Color] = [.orange, .green, .pink, .cyan, .yellow, .purple, .mint, .indigo]
+
+    static func color(for label: String) -> Color {
+        if label == TranscriptSpeakers.unknownLabel { return .gray }
+        return palette[Int(SpeakerColors.index(for: label))]
+    }
+
+    /// FNV-1a over the label, folded into the palette — `hashValue` is
+    /// seeded per process and would shuffle the colors on every launch.
+    static func index(for label: String) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in label.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x0000_0100_0000_01b3
+        }
+        return hash % UInt64(palette.count)
+    }
+}
+
 /// Modal player used by both the Library and the scene browser. With a
 /// `transcriptVideoID` the transcript of the played range sits beside the
 /// picture, follows playback, and seeks on click.
@@ -322,6 +345,8 @@ struct PlayerSheet: View {
     @State private var transcript: [TranscriptRow] = []
     @State private var transcriptLoaded = false
     @State private var speakerLabels: [Int64: String] = [:]
+    @State private var speakerTurns: [SpeakerTurn] = []
+    @State private var speakerRoster: [VideoPersonRecord] = []
     @State private var markIn: Double?
     @State private var markOut: Double?
     @State private var markProblem: String?
@@ -354,6 +379,7 @@ struct PlayerSheet: View {
             HStack(spacing: 0) {
                 PlayerView(player: player)
                     .frame(minWidth: 420, minHeight: 560)
+                    .overlay { speakerOutline }
                 if transcriptVideoID != nil {
                     Divider()
                     transcriptPanel
@@ -405,6 +431,8 @@ struct PlayerSheet: View {
             transcript = await store.transcriptRows(videoID: transcriptVideoID)
             transcriptLoaded = true
             let speakers = await store.speakerTurns(videoID: transcriptVideoID)
+            speakerTurns = speakers.turns
+            speakerRoster = speakers.roster
             speakerLabels = TranscriptSpeakers.labels(for: sceneTranscript, turns: speakers.turns,
                                                       roster: speakers.roster, people: store.people)
         }
@@ -460,6 +488,54 @@ struct PlayerSheet: View {
         }
     }
 
+    /// The video the transcript belongs to, for its layout and tiles.
+    private var transcriptVideo: VideoRecord? {
+        guard let transcriptVideoID else { return nil }
+        return store.videos.first { $0.id == transcriptVideoID }
+    }
+
+    /// Who the speaker map says is talking right now, as an outline around
+    /// their cell (or side) of the picture with their name in the corner,
+    /// in the same color as their name in the transcript column. Draws the
+    /// stored map, so a wrong outline shows where the map is wrong.
+    @ViewBuilder
+    private var speakerOutline: some View {
+        if let video = transcriptVideo, !speakerTurns.isEmpty {
+            GeometryReader { geo in
+                let videoRect = AVMakeRect(
+                    aspectRatio: CGSize(width: max(1, video.width), height: max(1, video.height)),
+                    insideRect: CGRect(origin: .zero, size: geo.size))
+                let time = playbackTime ?? startTime
+                if let spot = SpeakerSpotlight.at(time, tiles: video.podcastTiles,
+                                                  layout: video.podcastLayout.flatMap(PodcastLayout.init(rawValue:)),
+                                                  seamX: video.podcastSeamX,
+                                                  turns: speakerTurns, roster: speakerRoster,
+                                                  people: store.people, row: currentRow) {
+                    let rect = CGRect(x: videoRect.minX + spot.x * videoRect.width,
+                                      y: videoRect.minY + spot.y * videoRect.height,
+                                      width: spot.w * videoRect.width,
+                                      height: spot.h * videoRect.height).insetBy(dx: 1.5, dy: 1.5)
+                    let color = SpeakerColors.color(for: spot.label)
+                    ZStack(alignment: .topLeading) {
+                        RoundedRectangle(cornerRadius: 4)
+                            .stroke(color, lineWidth: 3)
+                            .frame(width: rect.width, height: rect.height)
+                            .offset(x: rect.minX, y: rect.minY)
+                        Text(spot.label)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(color, in: RoundedRectangle(cornerRadius: 4))
+                            .offset(x: rect.minX + 6, y: rect.minY + 6)
+                    }
+                    .animation(.easeInOut(duration: 0.15), value: spot)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
     /// The whole transcript of the played range; the line being spoken is
     /// highlighted and kept in view, and a click seeks to a line.
     private var transcriptPanel: some View {
@@ -497,7 +573,7 @@ struct PlayerSheet: View {
                                             if let speaker = speakerLabels[row.id] {
                                                 Text(speaker)
                                                     .font(.caption.weight(.semibold))
-                                                    .foregroundStyle(Color.accentColor)
+                                                    .foregroundStyle(SpeakerColors.color(for: speaker))
                                             }
                                             Text(row.text)
                                                 .font(.callout)
