@@ -136,6 +136,16 @@ actor Database {
         updated_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS voice_profiles (
+        person_key TEXT NOT NULL,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        vector_json TEXT NOT NULL,
+        windows INTEGER NOT NULL,
+        correction_windows INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (person_key, video_id)
+    );
+
     CREATE TABLE IF NOT EXISTS video_people (
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
         person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
@@ -2156,6 +2166,39 @@ actor Database {
         }
     }
 
+    // MARK: - Voice profiles (what each file taught about a person's voice)
+
+    /// Replace what this video remembers about its people's voices.
+    func replaceVoiceProfiles(videoID: Int64, profiles: [VoiceProfile]) throws {
+        try connection.transaction {
+            try connection.execute("DELETE FROM voice_profiles WHERE video_id = ?", [.integer(videoID)])
+            for profile in profiles where profile.videoID == videoID {
+                let json = String(decoding: try JSONEncoder().encode(profile.vector), as: UTF8.self)
+                try connection.execute("""
+                    INSERT INTO voice_profiles (person_key, video_id, vector_json, windows, correction_windows)
+                    VALUES (?, ?, ?, ?, ?)
+                    """, [.text(profile.personKey), .integer(videoID), .text(json),
+                          .integer(Int64(profile.windows)), .integer(Int64(profile.correctionWindows))])
+            }
+        }
+    }
+
+    /// Every stored voice profile, leaving out one video's own so a re-map
+    /// of that video is not seeded with itself.
+    func fetchVoiceProfiles(excludingVideoID excluded: Int64? = nil) throws -> [VoiceProfile] {
+        try connection.query("""
+            SELECT person_key, video_id, vector_json, windows, correction_windows
+            FROM voice_profiles WHERE video_id != ? ORDER BY person_key, video_id
+            """, [.integer(excluded ?? -1)]).compactMap { row in
+                guard let key = row["person_key"]?.stringValue, let videoID = row["video_id"]?.intValue,
+                      let data = row["vector_json"]?.stringValue?.data(using: .utf8),
+                      let vector = try? JSONDecoder().decode([Double].self, from: data) else { return nil }
+                return VoiceProfile(personKey: key, videoID: videoID, vector: vector,
+                                    windows: Int(row["windows"]?.intValue ?? 0),
+                                    correctionWindows: Int(row["correction_windows"]?.intValue ?? 0))
+            }
+    }
+
     func fetchSpeakerTurns(videoID: Int64) throws -> [SpeakerTurn] {
         try connection.query("""
             SELECT * FROM speaker_turns WHERE video_id = ? ORDER BY start_time, id
@@ -2714,6 +2757,7 @@ actor Database {
             // Lines attributed to them by hand go back to the automatic label.
             try connection.execute("UPDATE transcripts SET speaker_key = NULL WHERE speaker_key = ?",
                                    [.text(person.key)])
+            try connection.execute("DELETE FROM voice_profiles WHERE person_key = ?", [.text(person.key)])
             try connection.execute("DELETE FROM scene_tags WHERE tag = ?", [.text(person.tag)])
             try connection.execute("UPDATE person_markers SET person_id = NULL WHERE person_id = ?",
                                    [.integer(person.id)])
@@ -2729,6 +2773,10 @@ actor Database {
                                    [.text(target.key), .text(source.key)])
             try connection.execute("UPDATE transcripts SET speaker_key = ? WHERE speaker_key = ?",
                                    [.text(target.key), .text(source.key)])
+            // The target's own voice from a file wins over the source's.
+            try connection.execute("UPDATE OR IGNORE voice_profiles SET person_key = ? WHERE person_key = ?",
+                                   [.text(target.key), .text(source.key)])
+            try connection.execute("DELETE FROM voice_profiles WHERE person_key = ?", [.text(source.key)])
             try connection.execute("UPDATE OR IGNORE scene_tags SET tag = ? WHERE tag = ?",
                                    [.text(target.tag), .text(source.tag)])
             // Rows whose retag collided with an existing target tag remain.

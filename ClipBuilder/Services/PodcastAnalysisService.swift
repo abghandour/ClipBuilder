@@ -81,10 +81,14 @@ actor PodcastAnalysisService {
         progress(0.60, "tracking who is talking")
         let corrections = Self.voiceCorrections(
             rows: (try? await database.fetchTranscripts(videoID: video.id)) ?? [], tiles: visual.tiles, log: log)
+        let voices = await Self.rememberedVoices(video: video, database: database, tiles: visual.tiles, log: log)
         let tracked = try await Self.resolveTurns(video: video, audioTurns: turns, visual: visual,
                                                   roster: roster, holdSeconds: holdSeconds,
-                                                  corrections: corrections, log: log)
-        let resolved = Self.cleaned(tracked.turns, words: segments.flatMap { $0.words ?? [] },
+                                                  corrections: corrections,
+                                                  priors: VoiceProfiles.priors(tiles: visual.tiles, voices: voices), log: log)
+        let learned = await Self.learnVoices(video: video, database: database, visual: visual,
+                                             turns: tracked.turns, enrollment: tracked.enrollment, voices: voices, log: log)
+        let resolved = Self.cleaned(learned, words: segments.flatMap { $0.words ?? [] },
                                     audioTrust: tracked.audioTrust, log: log)
         try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
         await Self.recutTranscriptBySpeaker(video: video, database: database, turns: resolved, log: log)
@@ -202,6 +206,61 @@ actor PodcastAnalysisService {
     struct Resolution: Sendable {
         var turns: [SpeakerTurn]
         var audioTrust: Double
+        var enrollment: SpeakerTracker.Enrollment? = nil
+    }
+
+    /// The voices the app remembers from other files, one per person.
+    static func rememberedVoices(video: VideoRecord, database: Database, tiles: [PodcastTile],
+                                 log: @escaping @Sendable (String) -> Void) async -> [String: VoiceProfiles.Voice] {
+        let voices = VoiceProfiles.combined((try? await database.fetchVoiceProfiles(excludingVideoID: video.id)) ?? [])
+        let seated = tiles.compactMap(\.personKey).filter { voices[$0] != nil }
+        if !seated.isEmpty {
+            log("Voices remembered from other files: \(seated.count) of \(tiles.count) tiles seeded (\(seated.joined(separator: ", ")))")
+        }
+        return voices
+    }
+
+    /// After the map: tiles the face pass left unnamed take the name of the
+    /// remembered voice that matches what this file taught about them (the
+    /// stored layout and the turns follow), and what this file taught
+    /// about each named person's voice is remembered for the next file.
+    static func learnVoices(video: VideoRecord, database: Database, visual: PodcastVisualAnalyzer.Result,
+                            turns: [SpeakerTurn], enrollment: SpeakerTracker.Enrollment?,
+                            voices: [String: VoiceProfiles.Voice],
+                            log: @escaping @Sendable (String) -> Void) async -> [SpeakerTurn] {
+        var tiles = visual.tiles
+        var turns = turns
+        let naming = VoiceProfiles.named(tiles: tiles, enrollment: enrollment, voices: voices)
+        if !naming.namings.isEmpty {
+            tiles = naming.tiles
+            for naming in naming.namings {
+                for i in turns.indices where turns[i].tile == naming.tile && turns[i].personKey == nil {
+                    turns[i].personKey = naming.personKey
+                }
+                log(String(format: "Tile %d named %@ by voice (cosine %.2f to the remembered profile)",
+                           naming.tile + 1, naming.personKey, naming.cosine))
+            }
+            do {
+                try await database.setPodcastLayout(videoID: video.id, layout: visual.layout, seamX: visual.seamX,
+                                                    confidence: visual.layoutConfidence, tiles: tiles)
+            } catch {
+                log("Could not store the tiles named by voice: \(error.localizedDescription)")
+            }
+        }
+        let profiles = VoiceProfiles.learned(videoID: video.id, tiles: tiles, enrollment: enrollment)
+        do {
+            try await database.replaceVoiceProfiles(videoID: video.id, profiles: profiles)
+            if profiles.isEmpty {
+                if let enrollment, enrollment.featureKind == .embedding, enrollment.trust < VoiceProfiles.storeTrust {
+                    log(String(format: "Voices not remembered: audio trusted %.0f%%, below the %.0f%% needed", enrollment.trust * 100, VoiceProfiles.storeTrust * 100))
+                }
+            } else {
+                log("Voices remembered for the next file: " + profiles.map { "\($0.personKey) (\($0.windows) windows)" }.joined(separator: ", "))
+            }
+        } catch {
+            log("Could not remember the voices: \(error.localizedDescription)")
+        }
+        return turns
     }
 
     /// Once the turns are known, rows that straddle a speaker change are
@@ -241,10 +300,15 @@ actor PodcastAnalysisService {
         try await database.setPodcastLayout(videoID: video.id, layout: visual.layout, seamX: visual.seamX,
                                             confidence: visual.layoutConfidence, tiles: visual.tiles)
         let corrections = voiceCorrections(rows: rows, tiles: visual.tiles, log: log)
+        let voices = await rememberedVoices(video: video, database: database, tiles: visual.tiles, log: log)
         let tracked = try await resolveTurns(video: video, audioTurns: turns, visual: visual,
                                              roster: roster, holdSeconds: holdSeconds,
-                                             corrections: corrections, outcomeSink: outcomeSink, log: log)
-        let resolved = cleaned(tracked.turns, words: segments.flatMap { $0.words ?? [] },
+                                             corrections: corrections,
+                                             priors: VoiceProfiles.priors(tiles: visual.tiles, voices: voices),
+                                             outcomeSink: outcomeSink, log: log)
+        let learned = await learnVoices(video: video, database: database, visual: visual,
+                                        turns: tracked.turns, enrollment: tracked.enrollment, voices: voices, log: log)
+        let resolved = cleaned(learned, words: segments.flatMap { $0.words ?? [] },
                                audioTrust: tracked.audioTrust, log: log)
         try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
         await recutTranscriptBySpeaker(video: video, database: database, turns: resolved, log: log)
@@ -261,6 +325,7 @@ actor PodcastAnalysisService {
     static func resolveTurns(video: VideoRecord, audioTurns: [SpeakerTurn], visual: PodcastVisualAnalyzer.Result,
                              roster: [VideoPersonRecord], holdSeconds: Double,
                              corrections: [SpeakerTracker.Correction] = [],
+                             priors: [SpeakerTracker.Prior] = [],
                              outcomeSink: (@Sendable (SpeakerTracker.Outcome) -> Void)? = nil,
                              log: @escaping @Sendable (String) -> Void) async throws -> Resolution {
         let fallback = Resolution(turns: PodcastSpeakerTimelineResolver.resolve(
@@ -269,7 +334,7 @@ actor PodcastAnalysisService {
         guard visual.tiles.count >= 2, !audioTurns.isEmpty else { return fallback }
         do {
             let outcome = try await trackSpeakers(video: video, speech: audioTurns.map { $0.start...$0.end },
-                                                  tiles: visual.tiles, corrections: corrections, log: log)
+                                                  tiles: visual.tiles, corrections: corrections, priors: priors, log: log)
             outcomeSink?(outcome)
             guard !outcome.turns.isEmpty else { return fallback }
             log(String(format: "Speaker tracking: %d voice(s) over %d slot(s), %d turns, margin %.2f",
@@ -278,8 +343,9 @@ actor PodcastAnalysisService {
                 let accuracy = enrollment.heldOutAgreement.map {
                     String(format: ", %.0f%% right on %d held-out windows", $0 * 100, enrollment.heldOutWindows)
                 } ?? ""
-                log(String(format: "Voices learned from the border%@: %d of %d tiles, separation %.2f%@ — audio trusted %.0f%%",
+                log(String(format: "Voices learned from the border%@%@: %d of %d tiles, separation %.2f%@ — audio trusted %.0f%%",
                            enrollment.correctionWindows > 0 ? " and \(enrollment.correctionWindows) corrected windows" : "",
+                           enrollment.priorSlots.isEmpty ? "" : " and \(enrollment.priorSlots.count) remembered voice(s)",
                            enrollment.slotCount, visual.tiles.count, enrollment.separation, accuracy, enrollment.trust * 100))
                 let disagreement = outcome.disagreement
                 if disagreement.bins > 0 {
@@ -292,7 +358,7 @@ actor PodcastAnalysisService {
             } else {
                 log("Voices learned from the border: none — no tile was lit alone long enough, so the audio keeps its blind clustering")
             }
-            return Resolution(turns: outcome.turns, audioTrust: outcome.enrollment?.trust ?? 0)
+            return Resolution(turns: outcome.turns, audioTrust: outcome.enrollment?.trust ?? 0, enrollment: outcome.enrollment)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -304,6 +370,7 @@ actor PodcastAnalysisService {
     @concurrent
     static func trackSpeakers(video: VideoRecord, speech: [ClosedRange<Double>], tiles: [PodcastTile],
                               corrections: [SpeakerTracker.Correction] = [],
+                              priors: [SpeakerTracker.Prior] = [],
                               log: @escaping @Sendable (String) -> Void) async throws -> SpeakerTracker.Outcome {
         let audioURL = try await NormalizedAudioCache.shared.audio(source: video.url)
         // Neural voice embeddings when the bundled model loads; the
@@ -331,9 +398,11 @@ actor PodcastAnalysisService {
         try Task.checkCancellation()
         let activity = try await VisualSpeechActivity.measure(url: video.url, tiles: tiles, duration: video.duration, log: log)
         try Task.checkCancellation()
+        // Remembered voices live in the embedding model's space; spectral
+        // averages cannot be compared with them.
         return SpeakerTracker.track(.init(audioWindows: windows, activity: activity, speech: speech,
                                           tiles: tiles, duration: video.duration, featureKind: kind,
-                                          corrections: corrections), videoID: video.id)
+                                          corrections: corrections, priors: kind == .embedding ? priors : []), videoID: video.id)
     }
 
     /// The rows the user attributed by hand, as the tracker's corrections:
@@ -1133,9 +1202,7 @@ actor PodcastExchangeSegmenter {
         guard !candidates.isEmpty else { return Outcome(exchanges: [], provenance: nil) }
         let locked = useLocal ? candidates.map { PodcastExchange(start: $0.start, end: $0.end, title: "", summary: "", score: 0, speakerKeys: $0.speakerKeys) }.filter { PodcastLocalRules.locked($0, segments: segments, turns: turns) } : []
         log(useLocal ? "Podcast boundaries locked where unambiguous — asking the model for scores and remaining boundaries" : "Podcast exchanges — asking the model")
-        let lines = segments.enumerated().map { index, sentence in
-            "[\(index)] \(sentence.start.timecode)-\(sentence.end.timecode): \(sentence.text)"
-        }.joined(separator: "\n")
+        let lines = Self.speakerLines(segments, turns: turns).joined(separator: "\n")
         let hints = candidates.map { candidate in
             let indices = segments.indices.filter {
                 segments[$0].end > candidate.start && segments[$0].start < candidate.end
@@ -1144,7 +1211,11 @@ actor PodcastExchangeSegmenter {
         }.joined(separator: ", ")
         let prompt = """
         You are editing a spoken podcast. The numbered rows below are word-safe sentence
-        or speaker-turn units; punctuation may be absent. Proposed exchanges: \(hints).
+        or speaker-turn units; punctuation may be absent. A row that names a speaker in
+        angle brackets starts that speaker's turn; the rows after it without a name are
+        the same speaker continuing. An answer normally runs until the speaker changes,
+        so keep a speaker's uninterrupted run together unless a new question clearly
+        begins inside it. Proposed exchanges: \(hints).
         Split proposed exchanges at listed sentence indices when a new question begins,
         and merge adjacent exchanges when needed to keep a question with its full answer.
         Return contiguous inclusive sentence-index ranges using first_sentence and last_sentence.
@@ -1329,6 +1400,25 @@ actor PodcastExchangeSegmenter {
 
     /// Keep punctuation boundaries, and recover word-safe units at speaker changes,
     /// long pauses, or the safety limit when SpeechTranscriber omits punctuation.
+    /// The numbered rows the model reads: each sentence with its index and
+    /// times, and the speaker named where their run begins — a run of
+    /// sentences by one speaker reads as one block, so the model sees
+    /// whole answers instead of anonymous fragments.
+    static func speakerLines(_ segments: [TranscriptSegment], turns: [SpeakerTurn]) -> [String] {
+        var previous: String?
+        return segments.enumerated().map { index, sentence in
+            let speaker = turnIndex(sentence, turns: turns).map { index -> String in
+                let turn = turns[index]
+                if let key = turn.personKey { return key }
+                if let tile = turn.tile { return "Feed \(tile + 1)" }
+                return "Speaker \(turn.cluster + 1)"
+            }
+            let name = speaker != nil && speaker != previous ? " <\(speaker!)>" : ""
+            if speaker != nil { previous = speaker }
+            return "[\(index)] \(sentence.start.timecode)-\(sentence.end.timecode)\(name): \(sentence.text)"
+        }
+    }
+
     static func sentenceSegments(_ segments: [TranscriptSegment], turns: [SpeakerTurn] = []) -> [TranscriptSegment] {
         segments.flatMap { segment -> [TranscriptSegment] in
             var words = segment.words ?? []

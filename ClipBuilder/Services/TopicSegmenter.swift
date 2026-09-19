@@ -3,8 +3,11 @@ import Foundation
 /// On-device topic boundary detection using pauses, questions, speaker turns,
 /// and a maximum chapter span. Titles are derived from the transcript itself.
 nonisolated enum TopicSegmenter {
+    /// A speaker's uninterrupted run stays in one topic up to this long.
+    static let speakerRunSpan = 75.0
+
     static func segment(_ features: [TranscriptFeatureSegment], videoID: Int64) -> [TopicRange] {
-        let speech = features.filter { $0.kind == .speech || $0.kind == .filler }
+        let speech = coalesced(features.filter { $0.kind == .speech || $0.kind == .filler })
         guard !speech.isEmpty else { return [] }
         var groups: [[TranscriptFeatureSegment]] = []
         var current: [TranscriptFeatureSegment] = []
@@ -52,5 +55,27 @@ nonisolated enum TopicSegmenter {
                     speakerKeys: Array(Set(group.compactMap(\.speakerKey))).sorted()))
         }
         return topics
+    }
+
+    /// Consecutive lines by one speaker, close together, joined into one
+    /// unit: a topic boundary then never lands in the middle of an answer.
+    /// Runs longer than `speakerRunSpan` are left as they come, so the
+    /// span rule can still cut a monologue.
+    static func coalesced(_ speech: [TranscriptFeatureSegment]) -> [TranscriptFeatureSegment] {
+        var result: [TranscriptFeatureSegment] = []
+        for segment in speech {
+            if let last = result.last, let speaker = last.speakerKey, speaker == segment.speakerKey,
+               segment.startTime - last.endTime < 3, segment.endTime - last.startTime <= speakerRunSpan {
+                var joined = last
+                joined.endTime = segment.endTime
+                joined.text = last.text.isEmpty ? segment.text : last.text + " " + segment.text
+                joined.energy = max(last.energy, segment.energy)
+                joined.kind = last.kind == .filler && segment.kind == .filler ? .filler : .speech
+                result[result.count - 1] = joined
+            } else {
+                result.append(segment)
+            }
+        }
+        return result
     }
 }

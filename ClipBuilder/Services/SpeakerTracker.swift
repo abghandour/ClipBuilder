@@ -24,11 +24,23 @@ nonisolated enum SpeakerTracker {
         /// Rows the user attributed by hand, as time ranges per slot: the
         /// tracker learns those voices ahead of anything the border says.
         var corrections: [Correction] = []
+        /// Voices remembered from other files for the people in the tiles:
+        /// they seed the slot's profile so the audio is trusted before the
+        /// border has taught anything here.
+        var priors: [Prior] = []
     }
 
     struct Correction: Sendable, Equatable {
         var range: ClosedRange<Double>
         var slot: Int
+    }
+
+    /// A stored voice for a slot: a unit centroid and how many windows
+    /// stand behind it.
+    struct Prior: Sendable, Equatable {
+        var slot: Int
+        var vector: [Double]
+        var windows: Int
     }
 
     /// Speech bins where a trusted voice profile named another tile than
@@ -83,6 +95,12 @@ nonisolated enum SpeakerTracker {
         var featureKind: FeatureKind = .spectral
         /// Windows the user's own attributions contributed.
         var correctionWindows = 0
+        var correctionWindowsPerSlot: [Int: Int] = [:]
+        /// The profiles this file taught on its own, without any prior —
+        /// what is worth remembering about a person from this file.
+        var fileCentroids: [Int: [Double]] = [:]
+        /// Slots a stored voice seeded.
+        var priorSlots: Set<Int> = []
         /// How often a window from one taught stretch lands on the right
         /// slot when the profiles are built from the other stretches —
         /// the profiles' accuracy on speech they did not learn from. Nil
@@ -118,6 +136,10 @@ nonisolated enum SpeakerTracker {
     static let embeddingEnrollmentWindows = 4
     /// A trusted voice profile weighs about as much as the border.
     static let enrolledAudioWeight = 1.5
+    /// A remembered voice counts as at most this many windows (about
+    /// twenty seconds of speech): enough to enroll a tile the border never
+    /// taught, while a file's own windows outvote it.
+    static let priorWindows = 40
 
     static let visualWeight = 0.55
     static let audioWeight = 0.45
@@ -205,7 +227,7 @@ nonisolated enum SpeakerTracker {
             : SpeakerClustering.standardize(input.audioWindows.map(\.vector))
         var enrollment = enroll(windows: input.audioWindows, vectors: standardized, highlight: highlightBins,
                                 speech: bins.map(\.speech), binSeconds: binSeconds, slots: slots,
-                                corrections: input.corrections, geometry: geometry,
+                                corrections: input.corrections, priors: input.priors, geometry: geometry,
                                 minimumWindows: input.featureKind == .embedding ? embeddingEnrollmentWindows : enrollmentWindows)
         enrollment?.featureKind = input.featureKind
         let enrolledVoices: [[Double]] = bins.enumerated().map { b, bin in
@@ -327,6 +349,7 @@ nonisolated enum SpeakerTracker {
     static func enroll(windows: [SpeakerFeatures.Window], vectors: [[Double]], highlight: [[Double]],
                        speech: [Bool], binSeconds: Double, slots: Int,
                        corrections: [Correction] = [],
+                       priors: [Prior] = [],
                        geometry: SpeakerClustering.Geometry = .standardized,
                        minimumStretch: Double = enrollmentStretch,
                        minimumWindows: Int = enrollmentWindows) -> Enrollment? {
@@ -377,6 +400,7 @@ nonisolated enum SpeakerTracker {
         var members: [Int: [[Double]]] = [:]
         var stretches: [Int: [Int]] = [:]
         var correctionWindows = 0
+        var correctionPerSlot: [Int: Int] = [:]
         for (index, window) in windows.enumerated() {
             let mid = (window.start + window.end) / 2
             let bin = Int(mid / binSeconds)
@@ -386,19 +410,36 @@ nonisolated enum SpeakerTracker {
             guard first >= 0, last < binCount, taught[first] == taught[bin], taught[last] == taught[bin] else { continue }
             members[taught[bin], default: []].append(vectors[index])
             stretches[taught[bin], default: []].append(stretchOf[bin])
-            if corrected[bin] { correctionWindows += 1 }
+            if corrected[bin] { correctionWindows += 1; correctionPerSlot[taught[bin], default: 0] += 1 }
         }
         func centroid(_ list: [[Double]]) -> [Double] {
             let dimension = list[0].count
             let mean = (0..<dimension).map { d in list.reduce(0) { $0 + $1[d] } / Double(list.count) }
             return geometry == .cosine ? SpeakerClustering.normalized(mean) : mean
         }
+        // Remembered voices: a capped run of virtual windows at the stored
+        // centroid, so a tile the border never taught still enrolls while
+        // the file's own windows outvote the memory. Only vectors of the
+        // file's own dimension can be compared.
+        let dimension = vectors.first?.count ?? 0
+        var priorMembers: [Int: [[Double]]] = [:]
+        for prior in priors where prior.slot >= 0 && prior.slot < slots && prior.vector.count == dimension {
+            let count = max(1, min(priorWindows, prior.windows))
+            priorMembers[prior.slot, default: []] += Array(repeating: prior.vector, count: count)
+        }
         var centroids: [Int: [Double]] = [:]
+        var fileCentroids: [Int: [Double]] = [:]
         var spreads: [Double] = []
-        for (slot, list) in members where list.count >= minimumWindows {
-            let center = centroid(list)
-            centroids[slot] = center
-            spreads.append(list.reduce(0) { $0 + SpeakerClustering.distance($1, center) } / Double(list.count))
+        for slot in Set(members.keys).union(priorMembers.keys) {
+            let own = members[slot] ?? []
+            let taughtEnough = own.count >= minimumWindows
+            guard taughtEnough || priorMembers[slot] != nil else { continue }
+            if taughtEnough {
+                let center = centroid(own)
+                fileCentroids[slot] = center
+                spreads.append(own.reduce(0) { $0 + SpeakerClustering.distance($1, center) } / Double(own.count))
+            }
+            centroids[slot] = centroid(own + (priorMembers[slot] ?? []))
         }
         guard centroids.count >= 2 else { return nil }
         // Held out: even-numbered stretches teach, odd-numbered ones test
@@ -414,6 +455,8 @@ nonisolated enum SpeakerTracker {
                 let fold = single ? index : labels[index]
                 if fold % 2 == 0 { training[slot, default: []].append(vector) } else { testing.append((slot, vector)) }
             }
+            // A remembered voice always teaches and is never tested.
+            if let prior = priorMembers[slot] { training[slot, default: []] += prior }
         }
         var agreement: Double?
         var heldOut = 0
@@ -433,13 +476,15 @@ nonisolated enum SpeakerTracker {
         for i in keys.indices { for j in keys.indices where j > i {
             between.append(SpeakerClustering.distance(centroids[keys[i]]!, centroids[keys[j]]!))
         } }
-        let within = spreads.reduce(0, +) / Double(spreads.count)
+        let within = spreads.isEmpty ? 0 : spreads.reduce(0, +) / Double(spreads.count)
         let apart = between.reduce(0, +) / Double(between.count)
         // Profiles with no spread at all are perfectly separated when they
         // differ, not indistinguishable.
         let separation = within > 1e-9 ? apart / within : (apart > 1e-9 ? 10 : 0)
         return Enrollment(centroids: centroids, windowsPerSlot: members.mapValues(\.count), separation: separation,
-                          correctionWindows: correctionWindows, heldOutAgreement: agreement, heldOutWindows: heldOut)
+                          correctionWindows: correctionWindows, correctionWindowsPerSlot: correctionPerSlot,
+                          fileCentroids: fileCentroids, priorSlots: Set(priorMembers.keys).intersection(centroids.keys),
+                          heldOutAgreement: agreement, heldOutWindows: heldOut)
     }
 
     /// Which enrolled slot a window's voice is nearest, as a distribution

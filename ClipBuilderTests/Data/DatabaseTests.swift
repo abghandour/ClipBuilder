@@ -4,6 +4,48 @@ import Testing
 
 @Suite("Database")
 struct DatabaseTests {
+    @Test("voice profiles round-trip per video, leave the video being mapped out, and follow person merges and deletes")
+    func voiceProfilesRoundTrip() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let first = try await temp.seedVideo()
+        let second = try await temp.seedVideo()
+        try await database.replaceVoiceProfiles(videoID: first, profiles: [
+            VoiceProfile(personKey: "a", videoID: first, vector: [1, 0], windows: 12, correctionWindows: 2),
+            VoiceProfile(personKey: "b", videoID: first, vector: [0, 1], windows: 8),
+            VoiceProfile(personKey: "stray", videoID: second, vector: [0, 1], windows: 8),
+        ])
+        try await database.replaceVoiceProfiles(videoID: second, profiles: [
+            VoiceProfile(personKey: "a", videoID: second, vector: [0.6, 0.8], windows: 5),
+        ])
+        let all = try await database.fetchVoiceProfiles()
+        #expect(all.map(\.personKey) == ["a", "a", "b"], "a profile of another video is not written under this one")
+        #expect(all.first { $0.videoID == first && $0.personKey == "a" }?.correctionWindows == 2)
+        let seeding = try await database.fetchVoiceProfiles(excludingVideoID: first)
+        #expect(seeding.map(\.videoID) == [second])
+        // A re-map replaces the video's own contribution.
+        try await database.replaceVoiceProfiles(videoID: first, profiles: [])
+        #expect(try await database.fetchVoiceProfiles().count == 1)
+        try await database.replaceVoiceProfiles(videoID: first, profiles: [
+            VoiceProfile(personKey: "a", videoID: first, vector: [1, 0], windows: 12),
+            VoiceProfile(personKey: "b", videoID: first, vector: [0, 1], windows: 8),
+        ])
+        try await database.replaceVoiceProfiles(videoID: second, profiles: [
+            VoiceProfile(personKey: "b", videoID: second, vector: [0, 1], windows: 3),
+        ])
+        // Merging b into a keeps a's own profile where both have one and moves the rest.
+        let a = try await database.createPerson(name: "a")
+        let b = try await database.createPerson(name: "b")
+        #expect(a.key == "a" && b.key == "b")
+        try await database.mergePeople(source: b, into: a)
+        let merged = try await database.fetchVoiceProfiles()
+        #expect(merged.map { ($0.personKey, $0.videoID) }.map { "\($0.0)@\($0.1)" } == ["a@\(first)", "a@\(second)"])
+        #expect(merged.first { $0.videoID == first }?.vector == [1, 0])
+        #expect(merged.first { $0.videoID == second }?.windows == 3)
+        try await database.deletePerson(a)
+        #expect(try await database.fetchVoiceProfiles().isEmpty)
+    }
+
     @Test("legacy shortlist marks migrate once and preserve favorite provenance")
     func favoriteMigration() async throws {
         let temp = try TempDatabase()

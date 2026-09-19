@@ -682,4 +682,22 @@ struct PodcastAnalysisTests {
         let stacks = SceneStacks.group([chapterScene, beat], level: .standard)
         #expect(stacks.count == 2)
     }
+
+    @Test("the exchange prompt names the speaker where their run begins and leaves the run's other sentences unnamed")
+    func speakerLines() {
+        func turn(_ start: Double, _ end: Double, key: String? = nil, tile: Int? = nil) -> SpeakerTurn {
+            var turn = SpeakerTurn(videoID: 1, start: start, end: end, cluster: 2, confidence: 1)
+            turn.personKey = key; turn.tile = tile
+            return turn
+        }
+        let sentences = [TranscriptSegment(start: 0, end: 3, text: "Como foi?", words: nil),
+                         TranscriptSegment(start: 3, end: 6, text: "Foi novo.", words: nil),
+                         TranscriptSegment(start: 6, end: 9, text: "Comecei cedo.", words: nil),
+                         TranscriptSegment(start: 9, end: 12, text: "E depois?", words: nil),
+                         TranscriptSegment(start: 12, end: 15, text: "Sem turno.", words: nil)]
+        let turns = [turn(0, 3, key: "host"), turn(3, 9, key: "guest"), turn(9, 12, tile: 1)]
+        let lines = PodcastExchangeSegmenter.speakerLines(sentences, turns: turns)
+        #expect(lines == ["[0] 0:00-0:03 <host>: Como foi?", "[1] 0:03-0:06 <guest>: Foi novo.", "[2] 0:06-0:09: Comecei cedo.",
+                          "[3] 0:09-0:12 <Feed 2>: E depois?", "[4] 0:12-0:15: Sem turno."])
+    }
 }

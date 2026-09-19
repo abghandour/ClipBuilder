@@ -213,4 +213,41 @@ struct SpeakerTrackerTests {
         #expect(enrollment.correctionWindows == 16)
         #expect(outcome.turns.map(\.tile) == [0, 1], "\(outcome.turns.map { ($0.start, $0.end, $0.tile) })")
     }
+
+    @Test("remembered voices enroll tiles the border never taught, never count as the file's own teaching, and follow the file's dimension")
+    func priorsSeedEnrollment() {
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1), PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1)]
+        let bins = 72
+        // Unit embeddings: tile 0's voice near e0, tile 1's near e1.
+        func window(_ start: Double, _ vector: [Double]) -> SpeakerFeatures.Window {
+            SpeakerFeatures.Window(start: start, end: start + 1, vector: SpeakerClustering.normalized(vector))
+        }
+        var windows: [SpeakerFeatures.Window] = []
+        for i in 0..<8 { windows.append(window(Double(i), [1, Double(i % 3) * 0.05, 0])) }
+        for i in 10..<18 { windows.append(window(Double(i), [Double(i % 3) * 0.05, 1, 0])) }
+        let activity = VisualSpeechActivity.Activity(binSeconds: 0.25,
+            motion: [[Double]](repeating: [Double](repeating: 0, count: bins), count: 2))
+        var input = SpeakerTracker.Input(audioWindows: windows, activity: activity, speech: [0...18], tiles: tiles,
+                                         duration: 18, featureKind: .embedding)
+        #expect(SpeakerTracker.track(input, videoID: 1).enrollment == nil)
+        input.priors = [.init(slot: 0, vector: [1, 0, 0], windows: 100), .init(slot: 1, vector: [0, 1, 0], windows: 100)]
+        let outcome = SpeakerTracker.track(input, videoID: 1)
+        let enrollment = try! #require(outcome.enrollment)
+        #expect(enrollment.priorSlots == [0, 1] && enrollment.slotCount == 2)
+        #expect(enrollment.fileCentroids.isEmpty, "nothing here taught a voice; the memory is not the file's own")
+        #expect(enrollment.trust == 1)
+        #expect(outcome.turns.map(\.tile) == [0, 1], "\(outcome.turns.map { ($0.start, $0.end, $0.tile) })")
+
+        // Tile 0 attributed by hand, tile 1 only remembered: the file teaches 0 alone.
+        input.corrections = [.init(range: 0...8, slot: 0)]
+        input.priors = [.init(slot: 1, vector: [0, 1, 0], windows: 100)]
+        let mixed = try! #require(SpeakerTracker.track(input, videoID: 1).enrollment)
+        #expect(Set(mixed.fileCentroids.keys) == [0] && mixed.priorSlots == [1])
+        #expect(mixed.correctionWindowsPerSlot[0] == 8)
+
+        // A memory of another dimension (an older model) is ignored.
+        input.corrections = []
+        input.priors = [.init(slot: 0, vector: [1, 0], windows: 100), .init(slot: 1, vector: [0, 1], windows: 100)]
+        #expect(SpeakerTracker.track(input, videoID: 1).enrollment == nil)
+    }
 }
