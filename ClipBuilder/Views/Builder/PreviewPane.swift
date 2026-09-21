@@ -129,7 +129,15 @@ struct PreviewPane: View {
             let settings = model.document.trackSettings[safe: clip.track] ?? TrackSettings()
             let cropped = clip.wide && (clip.cropXFrac ?? settings.defaultCropXFrac) != nil
             Group {
-                if let area {
+                if clip.isCutaway, clip.coverAllAreas, let window = clip.cutawaySourceWindow {
+                    let fullWidth = frame.width / max(0.01, window.wFrac)
+                    let fullHeight = frame.height / max(0.01, window.hFrac)
+                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                        .frame(width: fullWidth, height: fullHeight)
+                        .offset(x: -window.xFrac * fullWidth, y: -window.yFrac * fullHeight)
+                        .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+                        .clipped()
+                } else if let area {
                     let bounds = area.bounds
                     let box = CGRect(x: bounds.x * frame.width, y: bounds.y * frame.height,
                                      width: bounds.w * frame.width, height: bounds.h * frame.height)

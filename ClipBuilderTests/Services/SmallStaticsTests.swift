@@ -1,8 +1,43 @@
+import Foundation
 import Testing
 @testable import Clip_Builder
 
 @Suite("Small static helpers")
 struct SmallStaticsTests {
+    @Test("Pipeline falls back from recording recipes without losing per-video scope")
+    @MainActor
+    func pipelineRecipeFallback() throws {
+        let suiteName = "pipeline-recipe-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("podcast_highlights", forKey: "wizard.formatPreset")
+        var messages: [String] = []
+        var options = AppStore.wizardOptionsFromForm(transcriptsAvailable: true, defaults: defaults) {
+            messages.append($0)
+        }
+        #expect(options.formatPreset == "custom")
+        #expect(messages.count == 1)
+        #expect(messages.first?.contains("analyzed scenes") == true)
+        #expect(defaults.string(forKey: "wizard.formatPreset") == "podcast_highlights")
+        // The pipeline supplies these after reading the form, then runWizard neutralizes.
+        options.selectedRunIDs = [42]
+        options.favoritesOnly = true
+        options.projectID = 7
+        let dispatched = options.neutralized(for: try #require(ReelRecipe.recipe(id: options.formatPreset)))
+        #expect(dispatched.formatPreset == "custom")
+        #expect(dispatched.selectedRunIDs == [42])
+        #expect(dispatched.favoritesOnly)
+        #expect(dispatched.projectID == 7)
+
+        defaults.set("mma-finish", forKey: "wizard.formatPreset")
+        messages = []
+        let fight = AppStore.wizardOptionsFromForm(transcriptsAvailable: false, defaults: defaults) {
+            messages.append($0)
+        }
+        #expect(fight.formatPreset == "mma-finish")
+        #expect(messages.isEmpty)
+    }
+
     @Test("text markup and counts")
     func textOverlayMarkup() {
         let words = TextOverlayRenderer.parseMarkup("hello *bright world*")

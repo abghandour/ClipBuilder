@@ -75,7 +75,7 @@ private struct InstagramSettingsTab: View {
                             .foregroundStyle(.green)
                     }
                     Button("Disconnect") { store.disconnectInstagram() }
-                    Text("Reels for this account fetch through the official API with full insights (reach, saves, shares, watch time). If the token expires, fetches fall back to the public web API — reconnect here with a fresh token.")
+                    Text("Reels for this account fetch through the official API with full insights (reach, saves, shares, watch time). If the token expires or permissions change, reconnect here with a fresh token.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -87,7 +87,7 @@ private struct InstagramSettingsTab: View {
                     }
                     .disabled(graphToken.trimmingCharacters(in: .whitespaces).isEmpty
                               || store.isConnectingInstagram)
-                    Text("Paste a long-lived access token from a Meta app with instagram_basic and instagram_manage_insights (add instagram_content_publish to publish reels from the Library), for the Facebook page linked to your business/creator account. Stored in the Keychain, never in settings files.")
+                    Text("Paste a long-lived User token or the linked Facebook Page's own token from a Meta app. Include instagram_basic, instagram_manage_insights and pages_read_engagement; User tokens also need pages_show_list for account discovery. Add instagram_manage_comments for comment reports and instagram_content_publish to publish reels from the Library. The Page must link to your Instagram business/creator account. Stored in the Keychain, never in settings files.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -597,6 +597,12 @@ private struct GeneralSettingsTab: View {
                             in: 0...10, step: 0.5) {
                         Text(store.settings.podcast.highlightThreshold,
                              format: .number.precision(.fractionLength(1)))
+                            .monospacedDigit()
+                    }
+                }
+                LabeledContent("Maximum reel length") {
+                    Stepper(value: $store.settings.podcast.highlightMaxSeconds, in: 5...120, step: 1) {
+                        Text("\(store.settings.podcast.highlightMaxSeconds, format: .number)s")
                             .monospacedDigit()
                     }
                 }

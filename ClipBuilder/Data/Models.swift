@@ -581,6 +581,7 @@ nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable, Codable {
 }
 
 nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
+    var favorite = false
     var id: Int64
     var path: String
     var duration: Double

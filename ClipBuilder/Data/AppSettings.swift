@@ -57,6 +57,13 @@ nonisolated struct PodcastSettings: Codable, Sendable {
     var fillerRunSeconds = 2.0
     var reviewCutsByDefault = true
     var highlightThreshold = 7.0
+    var highlightMaxSeconds = 30.0 {
+        didSet { highlightMaxSeconds = Self.clampHighlightSeconds(highlightMaxSeconds) }
+    }
+
+    static func clampHighlightSeconds(_ value: Double) -> Double {
+        value.isFinite ? min(120, max(5, value)) : 30
+    }
     var speakerHoldSeconds = 1.5
     /// What detected pauses and filler runs start as.
     var cleanupCutPolicy = CleanupCutPolicy.acceptDeadAir
@@ -69,6 +76,7 @@ nonisolated struct PodcastSettings: Codable, Sendable {
         case fillerRunSeconds = "filler_run_seconds"
         case reviewCutsByDefault = "review_cuts_by_default"
         case highlightThreshold = "highlight_threshold"
+        case highlightMaxSeconds = "highlight_max_seconds"
         case speakerHoldSeconds = "speaker_hold_seconds"
         case cleanupCutPolicy = "cleanup_cut_policy"
         case autoTranslateLanguage = "auto_translate_language"
@@ -82,6 +90,7 @@ nonisolated struct PodcastSettings: Codable, Sendable {
         fillerRunSeconds = min(10, max(0.5, try container.decodeIfPresent(Double.self, forKey: .fillerRunSeconds) ?? 2))
         reviewCutsByDefault = try container.decodeIfPresent(Bool.self, forKey: .reviewCutsByDefault) ?? true
         highlightThreshold = min(10, max(0, try container.decodeIfPresent(Double.self, forKey: .highlightThreshold) ?? 7))
+        highlightMaxSeconds = Self.clampHighlightSeconds(try container.decodeIfPresent(Double.self, forKey: .highlightMaxSeconds) ?? 30)
         speakerHoldSeconds = min(5, max(0.5, try container.decodeIfPresent(Double.self, forKey: .speakerHoldSeconds) ?? 1.5))
         cleanupCutPolicy = try container.decodeIfPresent(CleanupCutPolicy.self, forKey: .cleanupCutPolicy) ?? .acceptDeadAir
         autoTranslateLanguage = try container.decodeIfPresent(String.self, forKey: .autoTranslateLanguage) ?? ""
@@ -212,7 +221,7 @@ nonisolated struct AIProviderSettings: Codable, Sendable {
 /// Static provider/task metadata ported from ai_cli.py.
 nonisolated enum AICatalog {
     // "wizard" stays the planning task's key for config back-compat.
-    static let tasks = ["analysis", "people", "exchanges", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay", "naming", "curate", "search", "soundbites", "cover", "dedupe", "trim", "gap", "onboard", "route"]
+    static let tasks = ["analysis", "people", "exchanges", "highlights", "broll", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay", "naming", "curate", "search", "soundbites", "cover", "dedupe", "trim", "gap", "onboard", "route"]
 
     static let taskLabels: [String: String] = [
         "builder_agent": "Builder editing",
@@ -220,6 +229,8 @@ nonisolated enum AICatalog {
         "analysis": "Video analysis",
         "people": "People detection",
         "exchanges": "Podcast exchanges",
+        "highlights": "Podcast highlights",
+        "broll": "B-roll placement",
         "wizard": "Reel planning",
         "critique": "Reel critique",
         "research": "Reels research",
@@ -244,6 +255,8 @@ nonisolated enum AICatalog {
         "analysis": "claude",
         "people": "claude",
         "exchanges": "claude",
+        "highlights": "claude",
+        "broll": "claude",
         "wizard": "claude",
         "critique": "claude",
         "research": "claude",
@@ -284,6 +297,16 @@ nonisolated enum AICatalog {
                    ("codex", "gpt-5.6-sol")],
         // Podcast exchanges group a transcript: text reasoning, no frames.
         "exchanges": [("claude", "claude-sonnet-4-6"),
+                      ("gemini", "gemini-2.5-pro"),
+                      ("codex", "gpt-6-astra"),
+                      ("qwen", "qwen3-coder-plus"),
+                      ("kimi", "kimi-code/kimi-for-coding")],
+        "broll": [("claude", "claude-sonnet-4-6"),
+                  ("gemini", "gemini-2.5-pro"),
+                  ("codex", "gpt-6-astra"),
+                  ("qwen", "qwen3-coder-plus"),
+                  ("kimi", "kimi-code/kimi-for-coding")],
+        "highlights": [("claude", "claude-sonnet-4-6"),
                       ("gemini", "gemini-2.5-pro"),
                       ("codex", "gpt-6-astra"),
                       ("qwen", "qwen3-coder-plus"),

@@ -451,3 +451,28 @@ extension BuilderRequestParserTests {
         }
     }
 }
+
+extension BuilderRequestParserTests {
+    @Test(arguments: ["make top 5 podcast highlights", "podcast highlights, at most 5 highlights",
+                      "podcast highlights, 5 highlights max", "podcast highlights top 5"])
+    func highlightCountRequests(_ text: String) {
+        #expect(BuilderRequestParser().parse(text, context: context()) == .podcastHighlights(maxSeconds: nil, maxCount: 5))
+    }
+
+    @Test func highlightCountAndLengthKeepRecordingAndRejectExtraEdits() {
+        let parser = BuilderRequestParser()
+        #expect(parser.podcastHighlights("podcast highlights for Modestino, 20 seconds max, top 5") == .podcastHighlights(maxSeconds: 20, maxCount: 5))
+        #expect(parser.podcastHighlights("podcast highlights, top 5, 20 seconds max") == .podcastHighlights(maxSeconds: 20, maxCount: 5))
+        #expect(parser.podcastHighlights("podcast highlights, top 5 and delete all clips") == nil)
+        #expect(parser.podcastHighlights("podcast highlights, 0 highlights max") == .podcastHighlights(maxSeconds: nil, maxCount: 0))
+    }
+
+    @Test(arguments: ["s", "sec", "secs", "second", "seconds"])
+    func atMostDurationParsesWithoutCount(_ unit: String) {
+        let parser = BuilderRequestParser()
+        #expect(parser.parse("make podcast highlights, at most 20 \(unit)", context: context())
+            == .podcastHighlights(maxSeconds: 20, maxCount: nil))
+        #expect(parser.parse("make podcast highlights, at most 5 highlights, at most 20 \(unit)", context: context())
+            == .podcastHighlights(maxSeconds: 20, maxCount: 5))
+    }
+}

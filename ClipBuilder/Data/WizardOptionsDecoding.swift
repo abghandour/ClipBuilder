@@ -40,6 +40,11 @@ nonisolated extension WizardOptions {
         templateLabel = try values.decodeIfPresent(String.self, forKey: .templateLabel)
         targetDurationSeconds = try values.decodeIfPresent(Int.self, forKey: .targetDurationSeconds)
         framingCamera = try values.decodeIfPresent(String.self, forKey: .framingCamera) ?? framingCamera
+        highlightFraming = try values.decodeIfPresent(String.self, forKey: .highlightFraming).flatMap(CropRecipe.Kind.init(rawValue:))
+        useBRoll = try values.decodeIfPresent(Bool.self, forKey: .useBRoll) ?? useBRoll
+        brollInstructions = try values.decodeIfPresent(String.self, forKey: .brollInstructions) ?? brollInstructions
+        highlightMaxCount = try values.decodeIfPresent(Int.self, forKey: .highlightMaxCount)
+        highlightMaxSeconds = try values.decodeIfPresent(Double.self, forKey: .highlightMaxSeconds).map(PodcastSettings.clampHighlightSeconds)
         podcastFraming = try values.decodeIfPresent(PodcastFramingMode.self, forKey: .podcastFraming) ?? podcastFraming
         screenCropLayouts = try values.decodeIfPresent([String].self, forKey: .screenCropLayouts) ?? screenCropLayouts
         allowedTransitions = try values.decodeIfPresent([String].self, forKey: .allowedTransitions)

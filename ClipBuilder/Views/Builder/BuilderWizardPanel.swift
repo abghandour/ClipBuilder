@@ -22,6 +22,17 @@ struct BuilderWizardPanel: View {
                                 openPicker(request)
                             })
                         }
+                        if !model.createdHighlights.isEmpty {
+                            GroupBox("Created \(model.createdHighlights.count) Podcast Highlights") {
+                                VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                                    Text("Ready in Timelines. Nothing has been rendered.").foregroundStyle(.secondary)
+                                    ForEach(Array(model.createdHighlights.enumerated()), id: \.offset) { _, name in
+                                        Text(name).textSelection(.enabled)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
                         BuilderWizardResults(model: model)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)

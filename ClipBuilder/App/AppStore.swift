@@ -267,6 +267,9 @@ final class AppStore {
     }
     /// Videos produced by the finished run, presented as the results sheet.
     var wizardResults: WizardRunResults?
+    var pendingPodcastHighlights: PodcastHighlightReviewRequest?
+    private var awaitingPodcastReviewDismissal = false
+    private var podcastResultsAfterDismissal: WizardRunResults?
     var pendingCutReview: ProposedCutReviewRequest?
     /// Options of the last run — "Retry" in the results sheet re-runs them.
     private(set) var lastWizardOptions: WizardOptions?
@@ -786,6 +789,8 @@ final class AppStore {
         pendingWizardTemplate = nil
         pendingWizardPrompt = nil
         pendingCutReview = nil
+        pendingPodcastHighlights = nil
+        podcastResultsAfterDismissal = nil
         wizardResults = nil
         wizardTask?.cancel()
         lastWizardOptions = nil
@@ -2423,7 +2428,7 @@ final class AppStore {
                     let storedScenes = (try? await database.fetchScenes(
                         videoID: current.id, projectID: pipelineProjectID
                     )) ?? []
-                    var wizard = Self.wizardOptionsFromForm(transcriptsAvailable: transcriptsAvailable)
+                    var wizard = Self.wizardOptionsFromForm(transcriptsAvailable: transcriptsAvailable, log: log)
                     wizard.projectID = pipelineProjectID
                     wizard.accountBenchmarks = igBenchmarks
                     wizard.selectedRunIDs = runIDs
@@ -2546,8 +2551,8 @@ final class AppStore {
     /// critique flag stay the pipeline's to decide; the source-people filter
     /// deliberately doesn't apply (a per-video run could end up with zero
     /// eligible scenes).
-    private static func wizardOptionsFromForm(transcriptsAvailable: Bool) -> WizardOptions {
-        let defaults = UserDefaults.standard
+    static func wizardOptionsFromForm(transcriptsAvailable: Bool, defaults: UserDefaults = .standard,
+                                      log: (String) -> Void = { _ in }) -> WizardOptions {
         WizardDefaults.migrateLegacy(defaults: defaults)
         var options = WizardOptions()
         let audio = WizardDefaults.audioMode(defaults: defaults)
@@ -2555,6 +2560,11 @@ final class AppStore {
         options.muteSource = audio.muteSource && options.useMusic
         options.musicFolder = options.useMusic ? WizardDefaults.musicFolder(defaults: defaults) : nil
         options.formatPreset = defaults.string(forKey: "wizard.formatPreset") ?? "custom"
+        let recipe = ReelRecipe.recipe(id: options.formatPreset) ?? .custom
+        if recipe.capabilities.sources != .scenes {
+            options.formatPreset = ReelRecipe.custom.id
+            log("Pipeline: using Custom because \(recipe.title) requires a recording; automated reels use each video's analyzed scenes.")
+        }
         let text = WizardDefaults.textMode(defaults: defaults)
             .output(transcriptsAvailable: transcriptsAvailable, recipe: options.formatPreset)
         options.addCaptions = text.captions
@@ -3929,6 +3939,22 @@ final class AppStore {
 
     // MARK: - Generated videos
 
+    func setGeneratedVideoFavorite(_ video: GeneratedVideoRecord, favorite: Bool) {
+        guard let database else { return }
+        let generation = profileGeneration
+        Task {
+            do {
+                try await database.setGeneratedVideoFavorite(video.id, favorite: favorite)
+                guard generation == profileGeneration,
+                      let index = generatedVideos.firstIndex(where: { $0.id == video.id }) else { return }
+                generatedVideos[index].favorite = favorite
+            } catch {
+                guard generation == profileGeneration else { return }
+                presentError("Could not save the favorite", error)
+            }
+        }
+    }
+
     func deleteGeneratedVideo(_ video: GeneratedVideoRecord, removeFile: Bool) {
         guard let database else { return }
         Task {
@@ -4207,7 +4233,8 @@ final class AppStore {
     func createTimeline(named name: String = "Untitled Timeline",
                         document: TimelineDocument? = nil,
                         projectID requestedProjectID: Int64? = nil,
-                        isWizardPlan: Bool = false, fixWithWizard: Bool = false) -> Task<Void, Never>? {
+                        isWizardPlan: Bool = false, fixWithWizard: Bool = false, open: Bool = true,
+                        onCreated: ((Int64) -> Void)? = nil) -> Task<Void, Never>? {
         guard let database, let projectID = requestedProjectID ?? activeProjectID else { return nil }
         let document = document ?? {
             var value = TimelineDocument()
@@ -4222,6 +4249,7 @@ final class AppStore {
                 let id = try await database.createTimeline(projectID: projectID,
                                                            name: name,
                                                            documentJSON: json)
+                onCreated?(id)
                 let updatedProjects = try await database.fetchProjects()
                 guard self.database === database, profileGeneration == generation else { return }
                 projects = updatedProjects
@@ -4229,7 +4257,7 @@ final class AppStore {
                 let updatedTimelines = try await database.fetchTimelines(projectID: projectID)
                 guard self.database === database, profileGeneration == generation, activeProjectID == projectID else { return }
                 timelines = updatedTimelines
-                if let timeline = timelines.first(where: { $0.id == id }) {
+                if open, let timeline = timelines.first(where: { $0.id == id }) {
                     openTimelineRecord(timeline)
                     builderPlanResult = isWizardPlan ? BuilderPlanResult(store: self, openRequested: fixWithWizard) : nil
                 }
@@ -4628,10 +4656,14 @@ final class AppStore {
         timelines[index].thumbnailVideoID = wizardThumbnail(builder.document)
     }
 
-    private func recordWizardTimelines(_ videos: [GeneratedVideoRecord], projectID: Int64,
-                                       formatName: String = "Wizard Run") async {
+    nonisolated static func wizardTimelineKey(_ video: GeneratedVideoRecord, formatName: String) -> String {
+        formatName == "podcast_highlights" ? "video-\(video.id)" : video.batchID ?? "video-\(video.id)"
+    }
+
+    func recordWizardTimelines(_ videos: [GeneratedVideoRecord], projectID: Int64,
+                                       formatName: String = "Wizard Run", timelineNames: [String: String] = [:]) async {
         guard let database else { return }
-        let groups = Dictionary(grouping: videos) { $0.batchID ?? "video-\($0.id)" }
+        let groups = Dictionary(grouping: videos) { Self.wizardTimelineKey($0, formatName: formatName) }
         for (runID, versions) in groups {
             guard let first = versions.sorted(by: { $0.id < $1.id }).first else { continue }
             let sceneID = first.timelineJSON.data(using: .utf8)
@@ -4645,7 +4677,7 @@ final class AppStore {
             }
             try? await database.ensureWizardTimeline(
                 projectID: projectID,
-                name: "Wizard · \(formatName)",
+                name: timelineNames[first.path] ?? (formatName == "podcast_highlights" ? first.url.deletingPathExtension().lastPathComponent : "Wizard · \(formatName)"),
                 documentJSON: first.timelineJSON,
                 sourceRunID: runID,
                 thumbnailVideoID: thumbnailVideoID
@@ -5276,7 +5308,8 @@ final class AppStore {
         let wizard = wizard
         do {
             let parsed = try await wizard.parseRequest(description: trimmed, profile: profile, emit: logSink(\.wizardLog),
-                                                       useLocal: OnDevicePolicy.isEnabled(item: "wizard-request", config: settings.ai))
+                                                       useLocal: OnDevicePolicy.isEnabled(item: "wizard-request", config: settings.ai),
+                                                       formatPreset: UserDefaults.standard.string(forKey: "wizard.formatPreset") ?? "custom")
             // The user may have dismissed or replaced the request meanwhile.
             guard pendingWizardPrompt?.description == trimmed else { return }
             pendingWizardPrompt?.parsed = parsed
@@ -5291,7 +5324,7 @@ final class AppStore {
 
     func runWizard(options: WizardOptions) {
         guard let database, !isWizardRunning else { return }
-        var options = options
+        var options = options.neutralized(for: ReelRecipe.recipe(id: options.formatPreset) ?? .custom)
         options.projectID = options.projectID ?? activeProjectID
         guard let projectID = options.projectID else { return }
         options.localHashtags = OnDevicePolicy.isEnabled(item: "hashtags", config: settings.ai)
@@ -5316,6 +5349,23 @@ final class AppStore {
                 wizardProjectID = nil
             }
             let previousIDs = Set(((try? await database.fetchGeneratedVideos(projectID: projectID)) ?? []).map(\.id))
+            if options.formatPreset == "podcast_highlights" {
+                do {
+                    var review = try await wizard.findPodcastHighlights(options: options, settings: settings.podcast,
+                                                                         database: database, emit: logSink(\.analysisLog), progress: { status, fraction in
+                        await MainActor.run {
+                            guard generation == self.profileGeneration, self.isWizardRunning else { return }
+                            self.wizardStatus = WizardRunStatus(stage: status, fraction: fraction)
+                        }
+                    })
+                    guard generation == profileGeneration else { return }
+                    review.profileGeneration = generation
+                    pendingPodcastHighlights = review
+                } catch is CancellationError {
+                    appendLog(\.wizardLog, ["Finding highlights stopped."])
+                } catch { presentError("Could not find podcast highlights", error) }
+                return
+            }
             if options.reviewProposedCuts {
                 do {
                     let prepared = try await wizard.plan(options: options, profile: profile,
@@ -5357,6 +5407,153 @@ final class AppStore {
             }
             queueComparisons(previousIDs: previousIDs)
         }
+        }
+    }
+
+    /// Both entry points use the same stored exchanges and sentence-safe finder.
+    func createPodcastHighlightTimelines(maxSeconds: Double?, maxCount: Int? = nil, requestText: String = "") async throws -> [String] {
+        guard let database, let projectID = activeProjectID else { throw AIError.unusableResponse("Open a project first.") }
+        let generation = profileGeneration
+        var options = WizardOptions()
+        options.projectID = projectID
+        options.formatPreset = "podcast_highlights"
+        options.highlightMaxSeconds = maxSeconds ?? settings.podcast.highlightMaxSeconds
+        options.highlightMaxCount = maxCount
+        let videos = try await database.fetchVideos(projectID: projectID)
+        let projectScenes = try await database.fetchScenes(projectID: projectID, includeExcluded: false)
+        let sourcePaths = Set(builder.document.videoTrack.filter { !$0.isCutaway }.compactMap { clip in
+            clip.videoFile ?? projectScenes.first { $0.id == clip.sceneID }?.videoPath
+        })
+        let podcastIDs = Set(projectScenes.filter { $0.tags.contains("podcast-exchange") }.map(\.videoID))
+        let podcastPaths = Set(videos.filter {
+            sourcePaths.contains($0.path) && ($0.type == .podcast || $0.type == .interview || podcastIDs.contains($0.id))
+        }.map(\.path))
+        if !podcastPaths.isEmpty { options.sourcesRestricted = true; options.sourceVideoPaths = podcastPaths }
+        let review = try await wizard.findPodcastHighlights(options: options, settings: settings.podcast,
+                                                            database: database, emit: logSink(\.analysisLog), requestText: requestText)
+        try Task.checkCancellation()
+        guard generation == profileGeneration, activeProjectID == projectID else { throw CancellationError() }
+        var names: [String] = []
+        for candidate in review.candidates {
+            try Task.checkCancellation()
+            guard generation == profileGeneration, activeProjectID == projectID else { throw CancellationError() }
+            let cuts = try await PodcastHighlightBRollPlacement.plan(candidate: candidate, video: review.video,
+                scenes: review.scenes, turns: review.turns, roster: review.roster, segments: review.segments,
+                options: review.options, threshold: review.highlightThreshold, ai: ai, people: review.people, log: logSink(\.analysisLog))
+            try Task.checkCancellation()
+            guard generation == profileGeneration else { throw CancellationError() }
+            let document = PodcastHighlightTimeline.build(candidate: candidate, video: review.video, scenes: review.scenes,
+                turns: review.turns, roster: review.roster, segments: review.segments, layouts: ScreenCropStore.all(),
+                settings: review.options.renderSettings, threshold: review.highlightThreshold, options: review.options, plannedCuts: cuts, people: review.people, log: logSink(\.analysisLog))
+            let name = "\(review.video.filename) — \(candidate.title)"
+            var created = false
+            guard let task = createTimeline(named: name, document: document, projectID: projectID, open: false,
+                                            onCreated: { _ in created = true }) else {
+                throw AIError.unusableResponse("Could not create the highlight timeline.")
+            }
+            await task.value
+            guard created else { throw AIError.unusableResponse("Could not save highlight timeline: \(name)") }
+            names.append(name)
+        }
+        return names
+    }
+
+    @discardableResult
+    func renderPodcastHighlights(_ request: PodcastHighlightReviewRequest, selected: Set<UUID>) -> Bool {
+        guard !isWizardRunning else {
+            wizardFailureMessage = "Another Builder run is active. Wait for it to finish before rendering these highlights."
+            return false
+        }
+        guard request.profileGeneration == profileGeneration else {
+            wizardFailureMessage = "The profile changed. Find highlights again in the current profile."
+            return false
+        }
+        guard let database, let projectID = request.options.projectID else {
+            wizardFailureMessage = "Open the project again before rendering highlights."
+            return false
+        }
+        let approved = request.candidates.filter { selected.contains($0.id) }
+        guard !approved.isEmpty else {
+            wizardFailureMessage = "Select at least one highlight to render."
+            return false
+        }
+        wizardFailureMessage = nil
+        awaitingPodcastReviewDismissal = pendingPodcastHighlights != nil
+        pendingPodcastHighlights = nil
+        isWizardRunning = true
+        wizardProjectID = projectID
+        wizardProjectName = projects.first { $0.id == projectID }?.name
+        let generation = profileGeneration
+        let profile = activeProfile
+        let batchID = UUID().uuidString
+        let renderer = multitrackRenderer
+        wizardTask = Task {
+            defer { isWizardRunning = false; wizardStatus = nil; wizardProjectID = nil }
+            var timelineNames: [String: String] = [:]
+            var reused: [GeneratedVideoRecord] = []
+            let layouts = ScreenCropStore.all()
+            do {
+                for (index, candidate) in approved.enumerated() {
+                    try Task.checkCancellation()
+                    guard generation == profileGeneration else { throw CancellationError() }
+                    wizardStatus = WizardRunStatus(stage: "Rendering highlight \(index + 1) of \(approved.count)",
+                                                   fraction: Double(index) / Double(approved.count))
+                    // Same recording, range, framing, B-roll pool, options, layouts and
+                    // brand as an earlier reel that is still on disk: open that one.
+                    let fingerprint = try? PodcastHighlightRenderKey.make(candidate: candidate, request: request, layouts: layouts,
+                        profile: profile, sourceFingerprint: SourceIdentityCache.shared.fingerprint(of: request.video.url))
+                    if let fingerprint,
+                       let existing = try await database.generatedVideo(projectID: projectID, renderFingerprint: fingerprint) {
+                        appendLog(\.wizardLog, ["Highlight \(index + 1) “\(candidate.title)” was already rendered with these settings: "
+                            + "opening \(URL(fileURLWithPath: existing.path).lastPathComponent) instead of rendering again."])
+                        reused.append(existing)
+                        continue
+                    }
+                    let result = try await AIRunCapture.context.withValue(AIRunCapture()) {
+                        let cuts = try await PodcastHighlightBRollPlacement.plan(candidate: candidate, video: request.video,
+                            scenes: request.scenes, turns: request.turns, roster: request.roster, segments: request.segments,
+                            options: request.options, threshold: request.highlightThreshold, ai: ai, people: request.people, log: logSink(\.analysisLog))
+                        try Task.checkCancellation()
+                        guard generation == profileGeneration else { throw CancellationError() }
+                        let document = PodcastHighlightTimeline.build(candidate: candidate, video: request.video, scenes: request.scenes,
+                            turns: request.turns, roster: request.roster, segments: request.segments, layouts: ScreenCropStore.all(),
+                            settings: request.options.renderSettings, threshold: request.highlightThreshold,
+                            options: request.options, plannedCuts: cuts, people: request.people, log: logSink(\.analysisLog))
+                        return try await renderer.render(document: document, scenes: request.scenes, profile: profile,
+                            database: database, projectID: projectID,
+                            outputName: MultitrackRenderer.outputBaseName(project: request.video.filename, timeline: candidate.title),
+                            batchID: batchID, wizardOptions: request.options, roles: request.roles + (AIRunCapture.current?.roles ?? []),
+                            renderFingerprint: fingerprint, emit: logSink(\.wizardLog))
+                    }
+                    timelineNames[result.url.path] = "\(request.video.filename) — \(candidate.title)"
+                }
+            } catch is CancellationError { appendLog(\.wizardLog, ["Highlight rendering stopped."]) }
+            catch { presentError("Could not render podcast highlights", error) }
+            guard generation == profileGeneration else { return }
+            await refreshAllNow()
+            let fresh = ((try? await database.fetchGeneratedVideos(projectID: projectID)) ?? []).filter { $0.batchID == batchID }
+            if !fresh.isEmpty {
+                await recordWizardTimelines(fresh, projectID: projectID, formatName: "podcast_highlights", timelineNames: timelineNames)
+                guard generation == profileGeneration else { return }
+            }
+            if !fresh.isEmpty || !reused.isEmpty {
+                let results = WizardRunResults(videos: fresh + reused)
+                if awaitingPodcastReviewDismissal {
+                    podcastResultsAfterDismissal = results
+                } else {
+                    wizardResults = results
+                }
+            }
+        }
+        return true
+    }
+
+    /// SwiftUI calls this after the review sheet's dismissal animation finishes.
+    func podcastHighlightReviewDidDismiss() {
+        awaitingPodcastReviewDismissal = false
+        if let results = podcastResultsAfterDismissal {
+            podcastResultsAfterDismissal = nil
+            wizardResults = results
         }
     }
 
@@ -6881,7 +7078,7 @@ final class AppStore {
     /// a timeline document. Opens the Builder immediately; App Log shows progress.
     func planIntoBuilder(options: WizardOptions) {
         guard let database, !isWizardRunning else { return }
-        var options = options
+        var options = options.neutralized(for: ReelRecipe.recipe(id: options.formatPreset) ?? .custom)
         options.accountBenchmarks = igBenchmarks
         options.projectID = options.projectID ?? activeProjectID
         guard let projectID = options.projectID else { return }

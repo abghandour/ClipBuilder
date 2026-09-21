@@ -680,7 +680,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 18
+    static let schemaVersion: Int64 = 19
 
     // MARK: - Script prerequisites (Library state, outside timeline snapshots)
 
@@ -1187,6 +1187,9 @@ actor Database {
             ON projects(profile_name) WHERE is_home = 1
             """)
         let generatedColumns = try connection.columnNames(of: "generated_videos")
+        if !generatedColumns.contains("favorite") {
+            try connection.execute("ALTER TABLE generated_videos ADD COLUMN favorite INTEGER DEFAULT 0")
+        }
         if !generatedColumns.contains("project_id") {
             try connection.execute("ALTER TABLE generated_videos ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL")
         }
@@ -3315,6 +3318,15 @@ actor Database {
         return output
     }
 
+    /// The newest reel rendered from exactly these inputs, if any is still
+    /// on disk. The caller decides whether to reuse it.
+    func generatedVideo(projectID: Int64?, renderFingerprint: String) throws -> GeneratedVideoRecord? {
+        try fetchGeneratedVideos(projectID: projectID)
+            .filter { AISettingsJSON.decode(WizardRunSettings.self, $0.settingsJSON)?.renderFingerprint == renderFingerprint }
+            .sorted { ($0.generatedAt ?? "") == ($1.generatedAt ?? "") ? $0.id > $1.id : ($0.generatedAt ?? "") > ($1.generatedAt ?? "") }
+            .first { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
     func fetchGeneratedVideos(projectID: Int64? = nil) throws -> [GeneratedVideoRecord] {
         let projectID = try scopedProjectID(projectID)
         var sql = """
@@ -3341,7 +3353,7 @@ actor Database {
     }
 
     private static func generatedVideoRecord(_ row: SQLRow) -> GeneratedVideoRecord {
-        GeneratedVideoRecord(id: row["id"]?.intValue ?? 0,
+        GeneratedVideoRecord(favorite: row["favorite"]?.boolValue ?? false, id: row["id"]?.intValue ?? 0,
                              path: row["path"]?.stringValue ?? "",
                              duration: row["duration"]?.doubleValue ?? 0,
                              timelineJSON: row["timeline_json"]?.stringValue ?? "[]",
@@ -3371,6 +3383,11 @@ actor Database {
                              driveOffloaded: row["drive_offloaded"]?.boolValue ?? false,
                              driveShared: row["drive_shared"]?.boolValue ?? false,
                              settingsJSON: row["settings_json"]?.stringValue, modelsJSON: row["models_json"]?.stringValue)
+    }
+
+    func setGeneratedVideoFavorite(_ id: Int64, favorite: Bool) throws {
+        try connection.execute("UPDATE generated_videos SET favorite = ? WHERE id = ?",
+                               [.integer(favorite ? 1 : 0), .integer(id)])
     }
 
     /// Remember the picked cover frame — the Library card renders its

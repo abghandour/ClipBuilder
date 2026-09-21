@@ -3,7 +3,7 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
+        case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
     }
 
     var localHashtags = false
@@ -56,6 +56,11 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var framingCamera = "balanced"
     /// Podcast-specific framing; each choice remains optional per generated
     /// timeline and can be changed again in the Builder.
+    var highlightMaxSeconds: Double? = nil
+    var highlightMaxCount: Int? = nil
+    var highlightFraming: CropRecipe.Kind? = nil
+    var useBRoll = true
+    var brollInstructions = ""
     var podcastFraming: PodcastFramingMode = .followSpeaker
     /// Screen-crop layouts (by name) the planner may use to show several
     /// scenes at once, each area framed by its own tracking camera. Empty =
@@ -128,6 +133,8 @@ nonisolated struct ParsedWizardRequest: Sendable, Equatable {
     var enableTextOverlays: Bool?
     var addCaptions: Bool?
     var useMusic: Bool?
+    var highlightFraming: CropRecipe.Kind?
+    var useBRoll: Bool?
     /// Exact music-library folder the user asked to pick a song from
     /// (validated against the folders that exist).
     var musicFolder: String?
@@ -366,6 +373,88 @@ actor WizardEngine {
         self.render = render
     }
 
+    func findPodcastHighlights(options: WizardOptions, settings: PodcastSettings, database: Database,
+                               emit: @escaping @Sendable (String) -> Void, requestText: String = "",
+                               progress: @Sendable (String, Double) async -> Void = { _, _ in }) async throws -> PodcastHighlightReviewRequest {
+        var options = options
+        options.highlightMaxSeconds = PodcastSettings.clampHighlightSeconds(options.highlightMaxSeconds ?? settings.highlightMaxSeconds)
+        options.highlightMaxCount = Self.podcastHighlightMaxCount(in: requestText) ?? options.highlightMaxCount
+        let controls = WizardRequestParser.parse(requestText, tags: [], templates: []).request
+        options.highlightFraming = controls.highlightFraming ?? options.highlightFraming
+        options.useBRoll = controls.useBRoll ?? options.useBRoll
+        options.formatPreset = ReelRecipe.podcastHighlights.id
+        options = options.neutralized(for: .podcastHighlights)
+        let scenes = try await database.fetchScenes(projectID: options.projectID, includeExcluded: false)
+            .filter { !$0.ignored }
+        let videos = try await database.fetchVideos(projectID: options.projectID)
+        var exchanges = scenes.filter { $0.tags.contains("podcast-exchange") }
+        if options.sourcesRestricted { exchanges = exchanges.filter { options.includesCopiedSource($0) } }
+        if !options.selectedRunIDs.isEmpty { exchanges = exchanges.filter { $0.runID.map(options.selectedRunIDs.contains) ?? false } }
+        if !options.sourcePeople.isEmpty {
+            let tags = Set(options.sourcePeople.map { "person:\($0)" })
+            exchanges = exchanges.filter { !tags.isDisjoint(with: $0.tags) }
+        }
+        let ids = Set(exchanges.map(\.videoID))
+        var eligible = videos.filter { ids.contains($0.id) }
+        if let fragment = Self.podcastRecordingFragment(in: requestText) {
+            eligible = eligible.filter { $0.filename.localizedStandardContains(fragment) }
+            guard !eligible.isEmpty else {
+                throw AIError.unusableResponse("No analyzed podcast matches ‘\(fragment)’. Available recordings: "
+                    + videos.filter { ids.contains($0.id) }.map(\.filename).sorted().joined(separator: ", "))
+            }
+        }
+        guard eligible.count == 1, let video = eligible.first else {
+            throw AIError.unusableResponse(eligible.isEmpty
+                ? "Choose an analyzed podcast or interview with stored exchanges and a transcript."
+                : "Choose a recording for highlights: \(eligible.map(\.filename).sorted().joined(separator: ", ")). Use ‘podcast highlights for <filename>’.")
+        }
+        exchanges = exchanges.filter { $0.videoID == video.id }
+        let rows = try await database.fetchTranscripts(videoID: video.id)
+        let segments = rows.filter { !$0.isTranslation }.map { row in
+            TranscriptSegment(start: row.startTime, end: row.endTime, text: row.text,
+                              words: row.wordsJSON?.data(using: .utf8).flatMap { try? JSONDecoder().decode([TranscriptWord].self, from: $0) })
+        }
+        guard !segments.isEmpty else { throw AIError.unusableResponse("This podcast needs a transcript before finding highlights.") }
+        let turns = try await database.fetchSpeakerTurns(videoID: video.id)
+        let roster = try await database.fetchVideoPeople(videoID: video.id)
+        let candidates = try await PodcastHighlightFinder.find(exchanges: exchanges.map {
+            PodcastExchange(start: $0.startTime, end: $0.endTime,
+                            title: $0.narrative?.components(separatedBy: " — ").first ?? "Podcast exchange",
+                            summary: $0.narrative ?? "A complete question-and-answer exchange.",
+                            score: $0.score ?? 0, speakerKeys: $0.tags.filter { $0.hasPrefix("person:") }.map { String($0.dropFirst(7)) })
+        }, segments: segments, turns: turns, roster: roster,
+            maxSeconds: options.highlightMaxSeconds ?? settings.highlightMaxSeconds,
+            threshold: settings.highlightThreshold, maxCount: options.highlightMaxCount, highlightFraming: options.highlightFraming, ai: ai, model: options.modelOverride, log: emit, progress: progress)
+        let people = try await database.fetchPeople()
+        return PodcastHighlightReviewRequest(video: video, candidates: candidates, scenes: scenes,
+                                             segments: segments, turns: turns, roster: roster, people: people, options: options,
+                                             roles: AIRunCapture.current?.roles ?? [], highlightThreshold: settings.highlightThreshold)
+    }
+
+    nonisolated static let podcastCountPattern = #"(?i)\b(?:top\s+(\d+)|at\s+most\s+(\d+)\s+(?:highlights?|reels)|(\d+)\s+highlights\s+max)\b"#
+
+    nonisolated static func podcastHighlightMaxCount(in request: String) -> Int? {
+        guard let regex = try? NSRegularExpression(pattern: podcastCountPattern),
+              let match = regex.firstMatch(in: request, range: NSRange(request.startIndex..., in: request)) else { return nil }
+        for index in 1..<match.numberOfRanges {
+            if let range = Range(match.range(at: index), in: request), let count = Int(request[range]) { return count }
+        }
+        return nil
+    }
+
+    /// A filename fragment follows "for"; optional duration controls follow a comma or number.
+    nonisolated static func podcastRecordingFragment(in request: String) -> String? {
+        let request = request.replacingOccurrences(of: WizardRequestParser.cameraPattern, with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: WizardRequestParser.noBRollPattern, with: "", options: [.regularExpression, .caseInsensitive])
+        let pattern = #"(?i)\bfor\s+(.+?)(?=,|\s+(?:top\s+\d+|at\s+most\s+\d+|\d+\s+highlights\s+max)\b|\s+(?:under\s+)?\d+(?:\.\d+)?\s*(?:seconds?|secs?|s)\b|$)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: request, range: NSRange(request.startIndex..., in: request)),
+              let range = Range(match.range(at: 1), in: request) else { return nil }
+        let fragment = request[range].trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        return fragment.isEmpty ? nil : fragment
+    }
+
     /// Music library: ~/Documents/ClipBuilder/assets/music (per-user, shared
     /// across profiles — the app-tree equivalent of the repo's assets/music).
     static var musicDirectory: URL {
@@ -497,10 +586,12 @@ actor WizardEngine {
     /// settings. Template and tag answers are validated against what actually
     /// exists; anything else the model claims is dropped, not trusted.
     func parseRequest(description: String, profile: BrandProfile,
-                      emit: @escaping @Sendable (String) -> Void, useLocal: Bool = false) async throws -> ParsedWizardRequest {
+                      emit: @escaping @Sendable (String) -> Void, useLocal: Bool = false,
+                      formatPreset: String = "custom") async throws -> ParsedWizardRequest {
         let templateNames = OverlayTemplateStore.list().map(\.name)
         let tagVocabulary = profile.effectiveTags.values.flatMap(\.self).sorted()
-        let local = useLocal ? WizardRequestParser.parse(description, tags: tagVocabulary, templates: templateNames) : nil
+        let local = useLocal ? WizardRequestParser.parse(description, tags: tagVocabulary, templates: templateNames,
+                                                        formatPreset: formatPreset) : nil
         if let local, local.confident {
             AIRunCapture.current?.append(.local(technique: "structured-request-parser"), prompt: description)
             emit("Wizard request answered by structured parsing")
@@ -546,7 +637,11 @@ actor WizardEngine {
         parsed.residualInstructions = (object["residual_instructions"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if local != nil { AIRunCapture.current?.annotateLast(technique: "structured-request-parser") }
-        return local.map { WizardRequestParser.merge(parsed, local: $0.request) } ?? parsed
+        if let local { return WizardRequestParser.merge(parsed, local: local.request) }
+        let controls = WizardRequestParser.parse(description, tags: [], templates: []).request
+        parsed.highlightFraming = controls.highlightFraming
+        parsed.useBRoll = controls.useBRoll
+        return parsed
     }
 
     // MARK: - Planning phase
@@ -1633,6 +1728,7 @@ actor WizardEngine {
              profile: BrandProfile,
              database: Database,
              emit: @escaping @Sendable (String) -> Void) async {
+        let options = options.neutralized(for: ReelRecipe.recipe(id: options.formatPreset) ?? .custom)
         await AIRunCapture.context.withValue(AIRunCapture.current ?? AIRunCapture()) {
         await RenderContext.$settings.withValue(options.renderSettings) {
             do {
@@ -2301,6 +2397,7 @@ actor WizardEngine {
               database: Database,
               emit: @escaping @Sendable (String) -> Void) async throws
         -> (plan: WizardPlan, sceneMap: [Int64: SceneRecord]) {
+        let options = options.neutralized(for: ReelRecipe.recipe(id: options.formatPreset) ?? .custom)
         let inputs = try await loadPlanningInputs(options: options, profile: profile,
                                                   database: database, emit: emit)
         emit("\nPhase 2: Planning the timeline...")
@@ -2317,6 +2414,7 @@ actor WizardEngine {
     func renderApprovedPlan(_ plan: WizardPlan, options: WizardOptions,
                             profile: BrandProfile, database: Database,
                             emit: @escaping @Sendable (String) -> Void) async throws {
+        let options = options.neutralized(for: ReelRecipe.recipe(id: options.formatPreset) ?? .custom)
         try await RenderContext.$settings.withValue(options.renderSettings) {
             let inputs = try await loadPlanningInputs(options: options, profile: profile,
                                                       database: database, emit: emit)
@@ -2324,9 +2422,10 @@ actor WizardEngine {
                 throw AIError.unusableResponse("Accept at least one proposed cut before rendering.")
             }
             emit("Phase 3: Assembling the approved cuts...")
+            var brollCache = WizardPodcastBRoll.Cache()
             let result = try await assemble(plan: plan, music: inputs.music, options: options,
                                             profile: profile, database: database,
-                                            sceneMap: inputs.sceneMap, emit: emit)
+                                            sceneMap: inputs.sceneMap, brollCache: &brollCache, emit: emit)
             let tags = Array(Set(plan.clips.flatMap { inputs.sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
             do {
                 emit(options.localHashtags ? "Caption hashtags prepared locally — asking the model" : "Caption — asking the model")
@@ -2372,6 +2471,7 @@ actor WizardEngine {
         var critiques: [ReelCritique] = []
         var critiqueFeedback: String?
         var producedCount = 0
+        var brollCache = WizardPodcastBRoll.Cache()
 
         for attempt in 1...maxVersions {
             try Task.checkCancellation()
@@ -2396,7 +2496,7 @@ actor WizardEngine {
             do {
                 result = try await assemble(plan: plan, music: inputs.music, options: options,
                                             profile: profile, database: database,
-                                            sceneMap: sceneMap, emit: emit)
+                                            sceneMap: sceneMap, brollCache: &brollCache, emit: emit)
             } catch where producedCount > 0 && !(error is CancellationError) {
                 // A later version failing to render shouldn't discard the
                 // versions already produced.
@@ -2963,6 +3063,40 @@ actor WizardEngine {
 
     // MARK: - Assembly
 
+    /// Extracted clips must keep the same resolved joins as concatenate,
+    /// including its default fade. Bumper joins keep their own transitions.
+    nonisolated static func preparedDocument(from document: TimelineDocument, clipURLs: [URL],
+                                             transitions: [String]) -> TimelineDocument {
+        var prepared = TimelineDocument()
+        prepared.renderSettings = document.renderSettings
+        let main = document.videoTrack.filter { $0.track == 0 && !$0.isCutaway }
+            .sorted { $0.startTime < $1.startTime }
+        var sourceIndex = 0
+        for (index, clip) in main.enumerated() {
+            if clip.bumper {
+                prepared.videoTrack.append(clip)
+                continue
+            }
+            guard sourceIndex < clipURLs.count else { continue }
+            var normalized = TimelineClip()
+            normalized.videoFile = clipURLs[sourceIndex].path
+            normalized.sourceStart = 0
+            normalized.sourceEnd = clip.duration
+            normalized.duration = clip.duration
+            normalized.startTime = clip.startTime
+            normalized.transIn = sourceIndex > 0 && main[safe: index - 1]?.bumper != true
+                ? (transitions[safe: sourceIndex - 1] ?? "fade") : clip.transIn
+            normalized.transOut = sourceIndex + 1 < clipURLs.count && main[safe: index + 1]?.bumper != true
+                ? (transitions[safe: sourceIndex] ?? "fade") : clip.transOut
+            normalized.captions = "none"
+            normalized.originKey = clip.originKey
+            prepared.videoTrack.append(normalized)
+            sourceIndex += 1
+        }
+        prepared.videoTrack += document.videoTrack.filter(\.isCutaway)
+        return prepared
+    }
+
     private struct AssemblyResult {
         var url: URL
         var duration: Double
@@ -2975,6 +3109,7 @@ actor WizardEngine {
                           profile: BrandProfile,
                           database: Database,
                           sceneMap: [Int64: SceneRecord],
+                          brollCache: inout WizardPodcastBRoll.Cache,
                           emit: @escaping @Sendable (String) -> Void) async throws -> AssemblyResult {
         let renderStarted = ContinuousClock.now
         emit("Wizard render start")
@@ -3092,35 +3227,22 @@ actor WizardEngine {
         let bumpers = try await database.bumpers()
         let bumperLog = BumperPlanner.apply(to: &document, bumpers: bumpers, options: options)
         bumperLog.forEach(emit)
+        if options.useBRoll && !options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            document = try await WizardPodcastBRoll.adding(to: document, options: options, database: database,
+                                                         ai: ai, cache: &brollCache, log: emit)
+        } else if !options.useBRoll, (ReelRecipe.recipe(id: options.formatPreset) ?? .custom).capabilities.bRoll {
+            emit("B-roll off")
+        }
+        let cutaways = document.videoTrack.filter(\.isCutaway)
         emit("Assembling \(clipURLs.count) segments...")
         let assembled = scratch.appendingPathComponent("assembled.mp4")
-        if !bumperLog.isEmpty {
+        if !bumperLog.isEmpty || !cutaways.isEmpty {
             // Ordinary clips already contain their captions/branding/layouts.
-            // Only the raw bumper is added here, using the same exclusive
+            // Bumpers and cutaways are added here, using the same exclusive
             // compositor as Builder. The editable document retains originals.
-            var prepared = TimelineDocument()
-            prepared.renderSettings = options.renderSettings
-            var sourceIndex = 0
-            for clip in document.videoTrack.filter({ $0.track == 0 }).sorted(by: { $0.startTime < $1.startTime }) {
-                if clip.bumper {
-                    prepared.videoTrack.append(clip)
-                } else {
-                    guard sourceIndex < clipURLs.count else { continue }
-                    var normalized = TimelineClip()
-                    normalized.videoFile = clipURLs[sourceIndex].path
-                    normalized.sourceStart = 0
-                    normalized.sourceEnd = clip.duration
-                    normalized.duration = clip.duration
-                    normalized.startTime = clip.startTime
-                    normalized.transIn = clip.transIn
-                    normalized.transOut = clip.transOut
-                    normalized.captions = "none"
-                    normalized.originKey = clip.originKey
-                    prepared.videoTrack.append(normalized)
-                    sourceIndex += 1
-                }
-            }
-            let result = try await MultitrackRenderer(render: render).render(document: prepared, scenes: [],
+            let prepared = Self.preparedDocument(from: document, clipURLs: clipURLs, transitions: clipTransitions)
+            let brollScenes = cutaways.isEmpty ? [] : try await database.fetchScenes(projectID: options.projectID, includeExcluded: false)
+            let result = try await MultitrackRenderer(render: render).render(document: prepared, scenes: brollScenes,
                 profile: profile, database: database, preview: true, emit: emit)
             defer { try? FileManager.default.removeItem(at: result.url) }
             try FileManager.default.copyItemReplacing(at: result.url, to: assembled)
@@ -3182,7 +3304,8 @@ actor WizardEngine {
                                                                settings: WizardRunSettings(options: options, stackLevel: options.stackLevel, sourceProfile: profile.profileName,
                                                                    sourceVideoPaths: Array(Set(plan.clips.compactMap { sceneMap[$0.sceneID]?.videoPath })).sorted(),
                                                                    sourceSceneIDs: plan.clips.map(\.sceneID), modelPrompts: AIRunCapture.current?.prompts ?? [:]),
-                                                               roles: plan.provenance.map { [AIRole(role: "Plan", provenance: $0)] } ?? [])
+                                                               roles: (plan.provenance.map { [AIRole(role: "Plan", provenance: $0)] } ?? [])
+                                                                   + (AIRunCapture.current?.roles.filter { $0.provenance.task == "broll" } ?? []))
         try await database.saveGeneratedTraits(videoID: recordID,
                                                traits: .derive(document: document,
                                                                scenes: Array(sceneMap.values),
@@ -3235,7 +3358,7 @@ actor WizardEngine {
                                                        start: clip.start, duration: sourceDuration)
         let contentIsWide = contentBox?.isWide ?? scene.wide
         let usesSavedFraming = contentIsWide && scene.centerStagePath != nil
-            && !(options.formatPreset == "podcast" && options.podcastFraming == .original)
+            && options.podcastFraming != .original
         var mode = usesSavedFraming ? "saved framing" : (contentIsWide ? "auto-crop" : "")
         if contentBox != nil { mode = mode.isEmpty ? "bars removed" : mode + ", bars removed" }
         emit("Extracting clip \(index + 1)/\(total) " +
@@ -3336,7 +3459,7 @@ actor WizardEngine {
         }
 
         let output = scratch.appendingPathComponent("clip_\(index).mp4")
-        if options.formatPreset == "podcast", options.podcastFraming == .splitZoom,
+        if options.podcastFraming == .splitZoom,
            scene.tags.contains("podcast:split") {
             let split = scratch.appendingPathComponent("clip_\(index)_split_zoom.mp4")
             try await PodcastFramingService.splitZoom(source: scene.videoURL, start: clip.start,

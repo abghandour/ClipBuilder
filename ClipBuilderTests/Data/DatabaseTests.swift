@@ -892,7 +892,7 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 18)
+        #expect(Database.schemaVersion == 19)
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))
@@ -923,5 +923,27 @@ struct SchemaVersionGateTests {
         try await reopened.replaceVideoPeople(videoID: videoID, entries: [],
                                               provenance: AIProvenance(provider: "gemini", duration: 1))
         #expect(try await reopened.video(id: videoID)?.peopleSeconds == 1)
+    }
+}
+
+extension DatabaseTests {
+    @Test func generatedVideoFavoriteMigratesAndRoundTrips() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let id = try await database.insertGeneratedVideo(path: "/tmp/favorite-output.mp4", duration: 10,
+            timelineJSON: "{}", wizardProvider: nil, wizardModel: nil)
+        #expect(try await database.fetchGeneratedVideos().first?.favorite == false)
+        // Simulate a version-18 database that has no generated-video favorite column.
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("ALTER TABLE generated_videos DROP COLUMN favorite")
+        try raw.execute("PRAGMA user_version = 18")
+        let reopened = try Database(path: temp.path)
+        #expect(try raw.columnNames(of: "generated_videos").contains("favorite"))
+        #expect(try await reopened.fetchGeneratedVideos().first?.favorite == false)
+        try await reopened.setGeneratedVideoFavorite(id, favorite: true)
+        let again = try Database(path: temp.path)
+        #expect(try await again.fetchGeneratedVideos().first?.favorite == true)
+        try await again.setGeneratedVideoFavorite(id, favorite: false)
+        #expect(try await reopened.fetchGeneratedVideos().first?.favorite == false)
     }
 }

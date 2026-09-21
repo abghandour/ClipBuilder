@@ -5,9 +5,17 @@ import Foundation
 /// Template analysis (Phase 2) builds on ensureDownloaded.
 actor InstagramService {
     private let ai: AIService
+    private let makeGraphProvider: @Sendable (String, InstagramSettings) -> GraphAPIProvider?
+    private let makeWebProvider: @Sendable (InstagramSettings) -> any InstagramProvider
 
-    init(ai: AIService) {
+    init(ai: AIService,
+         makeGraphProvider: @escaping @Sendable (String, InstagramSettings) -> GraphAPIProvider? = {
+             InstagramService.connectedGraphProvider(username: $0, settings: $1)
+         },
+         makeWebProvider: @escaping @Sendable (InstagramSettings) -> any InstagramProvider = { InstagramWebProvider(settings: $0) }) {
         self.ai = ai
+        self.makeGraphProvider = makeGraphProvider
+        self.makeWebProvider = makeWebProvider
     }
 
     /// Auto-refresh throttle — the tab opens instantly from cache and only
@@ -17,10 +25,14 @@ actor InstagramService {
     /// Graph API once connected AND the username matches the connected
     /// account; everything else goes through the public web API.
     private func provider(for username: String, settings: InstagramSettings) -> any InstagramProvider {
-        graphProvider(for: username, settings: settings) ?? InstagramWebProvider(settings: settings)
+        graphProvider(for: username, settings: settings) ?? makeWebProvider(settings)
     }
 
     private func graphProvider(for username: String, settings: InstagramSettings) -> GraphAPIProvider? {
+        makeGraphProvider(username, settings)
+    }
+
+    private nonisolated static func connectedGraphProvider(username: String, settings: InstagramSettings) -> GraphAPIProvider? {
         guard settings.isGraphConnected,
               settings.connectedUsername.caseInsensitiveCompare(username) == .orderedSame,
               let token = KeychainStore.read(account: KeychainStore.graphTokenAccount) else {
@@ -43,8 +55,8 @@ actor InstagramService {
 
     /// Fetch reels + stats for an account, upsert rows, and download any
     /// missing thumbnails. Returns the refreshed account id. A failing Graph
-    /// API connection (expired token, revoked permission) degrades to the
-    /// public web API instead of breaking the refresh.
+    /// API transport can fall back to the public web API. Account and
+    /// permission errors retain the Graph message and ask for reconnection.
     @discardableResult
     func refreshAccount(username: String, kind: String, database: Database,
                         settings: InstagramSettings, limit: Int,
@@ -54,8 +66,21 @@ actor InstagramService {
             return try await refreshAccount(using: primary, username: username, kind: kind,
                                             database: database, limit: limit, log: log)
         } catch let error where primary is GraphAPIProvider && !(error is CancellationError) {
+            if (error as? URLError)?.code == .cancelled { throw error }
+            guard InstagramError.isRecoverableTransport(error) else {
+                // A rate limit clears by itself; only token, permission and
+                // account-discovery failures are fixed by reconnecting.
+                if case .graphAPI(let code, _) = error as? InstagramError,
+                   [4, 17, 32, 613].contains(code ?? -1) {
+                    throw error
+                }
+                if error is InstagramError {
+                    throw InstagramError.reconnectRequired(String(describing: error))
+                }
+                throw error
+            }
             log("Graph API failed (\(error)) — falling back to the public web API")
-            return try await refreshAccount(using: InstagramWebProvider(settings: settings),
+            return try await refreshAccount(using: makeWebProvider(settings),
                                             username: username, kind: kind,
                                             database: database, limit: limit, log: log)
         }
@@ -66,6 +91,12 @@ actor InstagramService {
                                 limit: Int,
                                 log: @escaping @Sendable (String) -> Void) async throws -> Int64 {
         let profile = try await provider.fetchProfile(username: username, log: log)
+        // Discovery can recover a changed account ID; use it for media and reports too.
+        var provider = provider
+        if var graph = provider as? GraphAPIProvider {
+            graph.igUserID = profile.igUserID
+            provider = graph
+        }
         let accountID = try await database.upsertIGAccount(username: username, kind: kind,
                                                            displayName: profile.displayName,
                                                            igUserID: profile.igUserID,
@@ -107,8 +138,8 @@ actor InstagramService {
         log("Fetched \(items.count) reels for @\(username)")
 
         // Report data rides on the same Refresh. Failures here must not
-        // escape: the caller retries the whole refresh through the web
-        // provider on any Graph error, which would be wrong for reports.
+        // escape: reels have already refreshed successfully, independently
+        // of the extra permissions needed by reports.
         if let graph = provider as? GraphAPIProvider, let igUserID = profile.igUserID, !igUserID.isEmpty {
             do {
                 let reportProvider = await reportProvider(for: graph, igUserID: igUserID, log: log)

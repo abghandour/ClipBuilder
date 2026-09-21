@@ -6,7 +6,16 @@ nonisolated enum InstagramError: Error, CustomStringConvertible {
     case toolMissing(String)
     case fetchFailed(String)
     case parseFailed(String)
+    case graphAPI(code: Int?, message: String)
+    case nonJSONResponse(String)
+    case reconnectRequired(String)
     case notDownloaded
+
+    static func isRecoverableTransport(_ error: any Error) -> Bool {
+        if let error = error as? URLError { return error.code != .cancelled }
+        if case .nonJSONResponse = error as? InstagramError { return true }
+        return false
+    }
 
     var description: String {
         switch self {
@@ -18,6 +27,13 @@ nonisolated enum InstagramError: Error, CustomStringConvertible {
             return "Instagram fetch failed: \(detail)"
         case .parseFailed(let detail):
             return "Could not read Instagram's response: \(detail)"
+        case .graphAPI(_, let message):
+            return "Instagram fetch failed: \(message)"
+        case .nonJSONResponse(let detail):
+            return "Could not read Instagram's response: \(detail)"
+        case .reconnectRequired(let message):
+            return message.contains("Reconnect in Settings → Instagram")
+                ? message : "\(message) — Reconnect in Settings → Instagram"
         case .notDownloaded:
             return "The reel video hasn't been downloaded yet"
         }

@@ -201,13 +201,17 @@ actor MultitrackRenderer {
                 centerStageCamera: String = "balanced",
                 projectID: Int64? = nil,
                 outputName: String? = nil,
+                batchID: String? = nil,
+                wizardOptions: WizardOptions? = nil,
+                roles: [AIRole] = [],
+                renderFingerprint: String? = nil,
                 preview: Bool = false,
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         try await RenderContext.$settings.withValue(document.renderSettings) {
             try await renderConfigured(document: document, scenes: scenes, profile: profile,
                                        database: database, centerStageCamera: centerStageCamera,
-                                       projectID: projectID, outputName: outputName,
-                                       preview: preview, emit: emit)
+                                       projectID: projectID, outputName: outputName, batchID: batchID, wizardOptions: wizardOptions, roles: roles,
+                                       renderFingerprint: renderFingerprint, preview: preview, emit: emit)
         }
     }
 
@@ -252,7 +256,8 @@ actor MultitrackRenderer {
     private func renderConfigured(document: TimelineDocument, scenes: [SceneRecord],
                                   profile: BrandProfile, database: Database,
                                   centerStageCamera: String, projectID: Int64?,
-                                  outputName: String? = nil, preview: Bool,
+                                  outputName: String? = nil, batchID: String? = nil, wizardOptions: WizardOptions? = nil,
+                                  roles: [AIRole] = [], renderFingerprint: String? = nil, preview: Bool,
                                   emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         // Overlay blocks render as their flattened text/image items.
         let document = Self.removingMissingEdgeBumpers(document.expandingOverlayBlocks(), emit: emit)
@@ -690,10 +695,11 @@ actor MultitrackRenderer {
                                                                duration: (finalDuration * 10).rounded() / 10,
                                                                timelineJSON: timelineJSON,
                                                                wizardProvider: nil, wizardModel: nil,
-                                                               projectID: projectID,
-                                                               settings: WizardRunSettings(options: WizardOptions(renderSettings: document.renderSettings),
+                                                               projectID: projectID, batchID: batchID,
+                                                               settings: WizardRunSettings(options: wizardOptions ?? WizardOptions(renderSettings: document.renderSettings),
                                                                    sourceProfile: profile.profileName, sourceVideoPaths: Array(Set(scenes.map(\.videoPath))).sorted(),
-                                                                   sourceSceneIDs: scenes.map(\.id), builderDocumentJSON: timelineJSON))
+                                                                   sourceSceneIDs: scenes.map(\.id), builderDocumentJSON: timelineJSON,
+                                                                   renderFingerprint: renderFingerprint), roles: roles)
         try await database.saveGeneratedTraits(videoID: recordID,
                                                traits: .derive(document: document, scenes: scenes))
         await ReelTraitRecording.record(url: outputURL, id: recordID, database: database,
@@ -911,6 +917,16 @@ actor MultitrackRenderer {
         return CenterStageService.slice(absolute, from: from, duration: duration)
     }
 
+    /// Cover-all reaction footage keeps its own source crop while ordinary
+    /// cover-all B-roll retains the existing scale-to-fill behavior.
+    nonisolated static func reactionFilter(for clip: TimelineClip) -> String? {
+        guard clip.isCutaway, clip.coverAllAreas, let window = clip.cutawaySourceWindow else { return nil }
+        let canvas = ScreenCropArea(name: "Full Screen", points: [
+            ScreenCropPoint(x: 0, y: 0), ScreenCropPoint(x: 1, y: 0),
+            ScreenCropPoint(x: 1, y: 1), ScreenCropPoint(x: 0, y: 1)])
+        return AreaFramer.staticFilter(area: canvas, window: window)
+    }
+
     /// Port of the resolve/effective-settings pass in _generate_multitrack.
     nonisolated static func resolveClips(document: TimelineDocument,
                                          scenes: [SceneRecord]) -> [ResolvedClip] {
@@ -1003,7 +1019,7 @@ actor MultitrackRenderer {
                                          areaRegion: clip.areaWindow == nil && clip.cameraPath == nil ? clip.areaRegion : nil,
                                          captionsPosition: captionsResolved == "none" ? nil : captionsResolved,
                                          speed: clip.effectiveSpeed,
-                                         cameraPath: cameraPath, effectiveEffect: effectiveEffect))
+                                         cameraPath: cameraPath, staticAreaFilter: reactionFilter(for: clip), effectiveEffect: effectiveEffect))
         }
         return Self.applyCropBlocks(resolved, document: document).sorted {
             ($0.track, $0.startTime) < ($1.track, $1.startTime)

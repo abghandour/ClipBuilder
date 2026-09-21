@@ -11,6 +11,8 @@ struct LibraryView: View {
         case shortest = "Shortest"
     }
 
+    @State private var folders: [OutputFolder] = []
+    @State private var selectedFolder: String? = "all"
     @State private var driveSelection: Set<Int64> = []
     @State private var playing: GeneratedVideoRecord?
     @State private var deleting: GeneratedVideoRecord?
@@ -21,38 +23,33 @@ struct LibraryView: View {
     @State private var formatExportTarget: GeneratedVideoRecord?
 
     private var sorted: [GeneratedVideoRecord] {
+        let membership = OutputFolders.membership(for: selectedFolder, in: folders)
+        let videos = store.generatedVideos.filter { membership.contains($0.id) }
         switch SortOrder(rawValue: store.outputsSort) ?? .newest {
-        case .newest: return store.generatedVideos
-        case .longest: return store.generatedVideos.sorted { $0.duration > $1.duration }
-        case .shortest: return store.generatedVideos.sorted { $0.duration < $1.duration }
+        case .newest: return videos
+        case .longest: return videos.sorted { $0.duration > $1.duration }
+        case .shortest: return videos.sorted { $0.duration < $1.duration }
         }
     }
 
     var body: some View {
-        Group {
-            if store.generatedVideos.isEmpty {
-                ContentUnavailableView(
-                    "No Generated Videos",
-                    systemImage: "film.stack",
-                    description: Text("Finished videos from the AI Wizard and Builder will appear here."))
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 16, alignment: .top)], spacing: 16) {
-                        ForEach(sorted) { video in
-                            card(for: video)
-                                .id(video.id)
-                        }
-                    }
-                    .padding()
-                    .scrollTargetLayout()
-                }
-                .scrollPosition(id: Binding(
-                    get: { store.outputsScrollID },
-                    set: { store.outputsScrollID = $0 }
-                ))
-            }
+        HSplitView {
+            OutputFolderList(folders: folders, selection: $selectedFolder)
+                .rememberedPaneWidth("pane.outputs.folders", min: 190, initial: 240, max: 340)
+                .frame(maxHeight: .infinity)
+            outputGrid
+                .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .screenTitle("Outputs", subtitle: "\(store.generatedVideos.count) videos")
+        .onChange(of: store.generatedVideos, initial: true) { rebuildFolders() }
+        .onChange(of: store.scenesVersion) { rebuildFolders() }
+        .onChange(of: store.timelines) { rebuildFolders() }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in rebuildFolders() }
+        .onChange(of: selectedFolder) {
+            UserDefaults.standard.set(selectedFolder ?? "all", forKey: folderStorageKey)
+            driveSelection = []
+            store.outputsScrollID = nil
+        }
+        .screenTitle("Outputs", subtitle: "\(sorted.count) of \(store.generatedVideos.count) videos")
         .toolbar {
             ToolbarItem {
                 DriveMediaMenu(media: sorted.filter { driveSelection.contains($0.id) }.map(\.driveMedia))
@@ -83,8 +80,14 @@ struct LibraryView: View {
                 .help("Order the library's videos")
             }
         }
-        .onChange(of: store.activeProjectID) { driveSelection = [] }
-        .onChange(of: store.profileGeneration) { driveSelection = [] }
+        .onChange(of: store.activeProjectID) {
+            driveSelection = []
+            restoreFolder()
+        }
+        .onChange(of: store.profileGeneration) {
+            driveSelection = []
+            restoreFolder()
+        }
         .sheet(item: $playing) { video in
             PlayerSheet(url: video.url, title: video.filename)
         }
@@ -104,6 +107,7 @@ struct LibraryView: View {
         // clicking is too flaky to reach the review sheet, so screenshot
         // captures launch the app with this argument instead.
         .onAppear {
+            restoreFolder()
             if CommandLine.arguments.contains("--auto-open-review"), reviewTarget == nil {
                 reviewTarget = store.generatedVideos.first
             }
@@ -136,8 +140,50 @@ struct LibraryView: View {
         }
     }
 
+    private var folderStorageKey: String { "outputs.folder.\(store.activeProfile.profileName)" }
+
+    private func restoreFolder() {
+        selectedFolder = UserDefaults.standard.string(forKey: folderStorageKey) ?? "all"
+        rebuildFolders()
+    }
+
+    private func rebuildFolders() {
+        folders = OutputFolders.build(records: store.generatedVideos, scenes: store.scenes, timelines: store.timelines)
+        selectedFolder = OutputFolders.resolvedSelection(selectedFolder, in: folders)
+    }
+
+    @ViewBuilder private var outputGrid: some View {
+        if store.generatedVideos.isEmpty {
+            ContentUnavailableView("No Generated Videos", systemImage: "film.stack",
+                description: Text("Finished videos from the AI Wizard and Builder will appear here."))
+        } else if sorted.isEmpty {
+            ContentUnavailableView("No videos in this folder", systemImage: "folder",
+                description: Text(selectedFolder == "favorites" ? "Use the heart on a video to add it to Favorites." : "Choose another folder to browse your outputs."))
+        } else {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: Theme.spaceM, alignment: .top)], spacing: Theme.spaceM) {
+                    ForEach(sorted) { video in card(for: video).id(video.id) }
+                }
+                .padding(Theme.spaceM)
+                .scrollTargetLayout()
+            }
+            .scrollPosition(id: Binding(get: { store.outputsScrollID }, set: { store.outputsScrollID = $0 }))
+        }
+    }
+
     /// Opening in the Builder replaces whatever is on its timeline — confirm
     /// first unless the timeline is empty.
+    /// Share the rendered file through the system share sheet; the caption
+    /// rides along as the message body where the target shows one.
+    @ViewBuilder
+    private func shareLink(_ video: GeneratedVideoRecord) -> some View {
+        if video.caption.isEmpty {
+            ShareLink(item: video.url) { Label("Share", systemImage: "square.and.arrow.up") }
+        } else {
+            ShareLink(item: video.url, message: Text(video.caption)) { Label("Share", systemImage: "square.and.arrow.up") }
+        }
+    }
+
     private func openInBuilder(_ video: GeneratedVideoRecord) {
         if store.builder.document.videoTrack.isEmpty {
             store.openInBuilder(video)
@@ -175,6 +221,13 @@ struct LibraryView: View {
                     .font(.callout.weight(.medium))
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                Button(video.favorite ? "Remove from Favorites" : "Add to Favorites",
+                       systemImage: video.favorite ? "heart.fill" : "heart") {
+                    store.setGeneratedVideoFavorite(video, favorite: !video.favorite)
+                }
+                .labelStyle(.iconOnly).buttonStyle(.plain)
+                .foregroundStyle(video.favorite ? Color.accentColor : Color.secondary)
+                .help(video.favorite ? "Remove from Favorites" : "Add to Favorites")
                 AIInfoButton(output: video)
             }
 
@@ -215,6 +268,13 @@ struct LibraryView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
+                // The macOS share sheet: Messages, AirDrop, Mail and any
+                // share extension, with the caption as the message text.
+                shareLink(video)
+                    .disabled(!FileManager.default.fileExists(atPath: video.path))
+                    .help(FileManager.default.fileExists(atPath: video.path)
+                          ? "Send the rendered video with Messages, AirDrop, Mail or another app"
+                          : "The file is not on this Mac — download it from the Drive menu to share it")
                 Menu("More", systemImage: "ellipsis") {
                     driveSelectionAction(video)
                     Button("Open in Builder", systemImage: "timeline.selection") {
@@ -241,6 +301,7 @@ struct LibraryView: View {
                     Button("Show in Finder", systemImage: "folder") {
                         NSWorkspace.shared.activateFileViewerSelecting([video.url])
                     }
+                    shareLink(video)
                     Divider()
                     Button("Delete", systemImage: "trash", role: .destructive) {
                         deleting = video

@@ -20,6 +20,8 @@ import Foundation
         "tastePreset": "wizard.tastePreset",
         "captionLanguage": "wizard.captionLanguage",
         "reviewProposedCuts": "wizard.reviewProposedCuts",
+        "highlightFraming": "wizard.highlightFraming", "useBRoll": "wizard.useBRoll",
+        "brollInstructions": "wizard.brollInstructions",
         "podcastFraming": "wizard.podcastFraming", "critiqueLoop": "wizard.critiqueLoop",
         "favoritesOnly": "wizard.favoritesOnly",
         "modelOverride": "wizard.modelOverride", "stackLevel": SceneStacks.levelKey,
@@ -45,6 +47,9 @@ import Foundation
         }
         for (field, key) in wizardKeys {
             if let value = defaults.object(forKey: key) { result[field] = setting(value) }
+        }
+        if CropRecipe.Kind(rawValue: result["highlightFraming"]?.string ?? "") == nil {
+            result["highlightFraming"] = .null
         }
         if result["allowedTransitions"] == nil {
             result["allowedTransitions"] =

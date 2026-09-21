@@ -4,6 +4,26 @@ import Testing
 
 @Suite("Wizard engine")
 struct WizardEngineTests {
+    @Test("Builder draft neutralizes stale split zoom for fight recipes")
+    func fightDraftIgnoresPodcastFraming() {
+        var scene = Fixtures.scene(id: 1)
+        scene.tags = ["podcast:split"]
+        let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: 1)])
+        var persisted = WizardOptions()
+        persisted.formatPreset = ReelRecipe.mmaFinish.id
+        persisted.podcastFraming = .splitZoom
+        let options = persisted.neutralized(for: .mmaFinish)
+        let draft = WizardEngine.timelineDocument(from: plan, sceneMap: [1: scene],
+            renderSettings: options.renderSettings, pacing: options.pacing, podcastFraming: options.podcastFraming)
+        #expect(draft.videoTrack.count == 1)
+        #expect(draft.cropBlocks.isEmpty)
+        #expect(draft.videoTrack.allSatisfy { $0.track == 0 && $0.screenCrop == nil && !$0.centerStage })
+        // This source exercises split zoom when the recipe actually allows it.
+        let podcast = WizardEngine.timelineDocument(from: plan, sceneMap: [1: scene], podcastFraming: .splitZoom)
+        #expect(podcast.videoTrack.count == 2)
+        #expect(!podcast.cropBlocks.isEmpty)
+    }
+
     @Test("a favorite gets exactly one two-point boost and remains must-keep past the budget")
     func favoriteShortlist() {
         let ordinary = Fixtures.scene(id: 1, start: 0, end: 10)
@@ -59,6 +79,22 @@ struct WizardEngineTests {
         #expect(document.videoTrack[1].transIn == "wipeleft")
         #expect(document.soundTrack.first?.name == "track.wav")
         #expect(document.soundTrack.first?.duration == 5)
+    }
+
+    @Test func preparedClipsKeepResolvedConcatTransitions() {
+        let scenes = (1...3).map { Fixtures.scene(id: Int64($0)) }
+        let plan = Fixtures.plan(clips: scenes.map { Fixtures.planClip(sceneID: $0.id) }, transitions: ["wipeleft"])
+        let document = WizardEngine.timelineDocument(from: plan,
+            sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }))
+        let urls = scenes.map { URL(fileURLWithPath: "/tmp/extracted-\($0.id).mp4") }
+        for transitions in [["wipeleft", "fade"], ["cut", "fadeblack"], []] {
+            let prepared = WizardEngine.preparedDocument(from: document, clipURLs: urls, transitions: transitions)
+            let resolved = transitions.isEmpty ? ["fade", "fade"] : transitions
+            #expect(Array(prepared.videoTrack.dropFirst().map(\.transIn)) == resolved.map { Optional($0) })
+            #expect(Array(prepared.videoTrack.dropLast().map(\.transOut)) == resolved.map { Optional($0) })
+            #expect(prepared.videoTrack.first?.transIn == nil && prepared.videoTrack.last?.transOut == nil)
+            #expect(prepared.videoTrack.map(\.videoFile) == urls.map { Optional($0.path) })
+        }
     }
 
     @Test("style accents and output names are sanitized")
@@ -188,5 +224,28 @@ extension LearnedWizardPromptTests {
             options: WizardOptions(), learnedLibrary: library)
         #expect(frames.count == 1)
         #expect(frames.first?.label.contains("[Team - Studio]") == true)
+    }
+}
+
+extension WizardEngineTests {
+    @Test(arguments: ["top 5", "at most 5 highlights", "5 highlights max", "at most 5 highlight", "at most 5 reels"])
+    func podcastCountDoesNotBecomePartOfRecordingName(_ control: String) {
+        let request = "podcast highlights for Modestino \(control)"
+        #expect(WizardEngine.podcastHighlightMaxCount(in: request) == 5)
+        #expect(WizardEngine.podcastRecordingFragment(in: request) == "Modestino")
+    }
+
+    @Test(arguments: ["20 s", "20 sec", "20 secs", "20 second", "20 seconds"])
+    func podcastDurationIsNotAHighlightCount(_ duration: String) {
+        #expect(WizardEngine.podcastHighlightMaxCount(in: "at most \(duration)") == nil)
+        #expect(WizardEngine.podcastHighlightMaxCount(in: "top 5, at most \(duration)") == 5)
+    }
+
+    @Test func highlightCountOptionsRoundTripAndLegacyDefault() throws {
+        var options = WizardOptions()
+        options.highlightMaxCount = 5
+        let data = try JSONEncoder().encode(options)
+        #expect(try JSONDecoder().decode(WizardOptions.self, from: data).highlightMaxCount == 5)
+        #expect(try JSONDecoder().decode(WizardOptions.self, from: Data("{}".utf8)).highlightMaxCount == nil)
     }
 }

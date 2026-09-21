@@ -40,6 +40,7 @@ final class WizardSheetModel {
     var agentModel: String? = nil
     private(set) var agentEvents: [BuilderRunEvent] = []
     private(set) var agentSummary = ""
+    private(set) var createdHighlights: [String] = []
     private(set) var authoredScript: ScriptAuthorSubmission?
     var showingAuthoredScript = false
     var showingScriptParameters = false
@@ -623,6 +624,7 @@ final class WizardSheetModel {
         historyStore.add(runRequest, profile: profile)
         history = historyStore.requests(profile: profile)
         phase = .running
+        createdHighlights = []
         log = []
         appendLog("Collecting the current Library snapshot…")
         reasons = []; failure = nil; diff = nil; diffLines = []; results = []; resultReasons = [:]; findContext = nil; finding = false
@@ -648,7 +650,8 @@ final class WizardSheetModel {
                 await executeAgent(session: session, confirmed: [], token: token, mode: .author)
                 return
             }
-            if suppliedProgram == nil, routingEnabled, !runRequest.hasPrefix("[") {
+            if suppliedProgram == nil, routingEnabled, !runRequest.hasPrefix("["),
+               BuilderRequestParser().podcastHighlights(runRequest) == nil {
                 let capture = ScriptCapture(model: store.builder, library: library)
                 let scripts: [BuilderScriptRecord]
                 if scriptPreferences.preferSavedScripts {
@@ -694,7 +697,7 @@ final class WizardSheetModel {
             // Assisted finds take their own read-only agent path below.
             let isFind: Bool
             switch program {
-            case .find, .assistedFind: isFind = true
+            case .find, .assistedFind, .podcastHighlights: isFind = true
             default: isFind = false
             }
             if runProvider != .local, suppliedProgram == nil, !isFind {
@@ -716,6 +719,12 @@ final class WizardSheetModel {
             }
             appendLog("Parser finished in \(milliseconds(since: parseStarted)).")
             switch program {
+            case .podcastHighlights(let maxSeconds, let maxCount):
+                appendLog("Finding podcast highlights…")
+                createdHighlights = try await store.createPodcastHighlightTimelines(maxSeconds: maxSeconds, maxCount: maxCount, requestText: runRequest)
+                phase = .completed
+                if createdHighlights.isEmpty { reasons = ["No candidates met the highlight score and maximum length."] }
+                appendLog("Created \(createdHighlights.count) podcast highlight timelines. Ready in Timelines; no rendering requested.")
             case .unrecognised(let reasons):
                 self.reasons = reasons
                 phase = .unrecognised
@@ -849,7 +858,7 @@ final class WizardSheetModel {
                     appendLog("\(steps.count + index + 1). \(String(describing: outcome)) (\(Int(elapsed * 1000)) ms)")
                 }
             case .unrecognised(let reasons): reparseReasons = reasons
-            case .find, .assistedFind: reparseReasons = ["The refreshed request produced a find instead of timeline edits."]
+            case .find, .assistedFind, .podcastHighlights: reparseReasons = ["The refreshed request produced a find instead of timeline edits."]
             case .deferred: reparseReasons = ["Silence evidence is still unavailable after Library work. No timeline changes applied."]
             }
         }

@@ -324,6 +324,9 @@ struct MainWindowView: View {
         .sheet(item: $store.wizardResults) { results in
             WizardResultsSheet(results: results)
         }
+        .sheet(item: $store.pendingPodcastHighlights, onDismiss: store.podcastHighlightReviewDidDismiss) { request in
+            PodcastHighlightReviewSheet(request: request)
+        }
         .sheet(item: $store.pendingCutReview) { request in
             ProposedCutsSheet(request: request)
         }

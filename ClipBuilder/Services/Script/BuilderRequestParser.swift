@@ -5,6 +5,7 @@ import Foundation
 @MainActor
 struct BuilderRequestParser {
     static let supportedRequests = [
+        "make podcast highlights, 25 seconds max",
         "make track II black and white", "apply <preset name or id> to track N / this clip",
         "remove the look from track N / this clip",
         "remove (all) clips/scenes with <person>",
@@ -46,16 +47,34 @@ struct BuilderRequestParser {
                 "split this clip at 2 s", "trim this clip to 2 s", "mute this clip",
                 "unmute this clip", "cover all areas", "remove clips tagged \(tag) on track 1",
                 "make track 1 black and white", "apply sepia to this clip", "remove the look from track 1",
-                "add file \(file)", "add file \(file) as a grid", "add file \(file) as talker and rest with the talker highlighted"]
+                "add file \(file)", "add file \(file) as a grid", "add file \(file) as talker and rest with the talker highlighted",
+                "make podcast highlights, 25 seconds max"]
     }
 
     /// "this clip", "the selected scene", "the current clip": the timeline selection.
     static let selectedClip = #"(?:this|the selected|the current|selected|the) (?:clip|scene|video)"#
 
+    /// An anchored intent: extra edits or qualifiers must never be silently discarded.
+    func podcastHighlights(_ request: String) -> BuilderProgram? {
+        let normalized = Self.normalized(request)
+        let maxCount = WizardEngine.podcastHighlightMaxCount(in: normalized)
+        let text = normalized.replacingOccurrences(of: WizardRequestParser.cameraPattern, with: "", options: .regularExpression)
+            .replacingOccurrences(of: WizardRequestParser.noBRollPattern, with: "", options: .regularExpression)
+            .replacingOccurrences(of: WizardEngine.podcastCountPattern, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+,"#, with: ",", options: .regularExpression)
+            .replacingOccurrences(of: #",\s*,"#, with: ",", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+        guard let g = match(#"(?:make |create )?podcast highlights(?: for [^,]+?)?(?:,? (?:(?:under |at most )([0-9]+(?:\.[0-9]+)?)\s*(?:s|secs?|seconds?)|([0-9]+(?:\.[0-9]+)?)\s*(?:s|secs?|seconds?) max))?"#, text) else { return nil }
+        let value = Double(g.first(where: { !$0.isEmpty }) ?? "")
+        return .podcastHighlights(maxSeconds: value.map(PodcastSettings.clampHighlightSeconds), maxCount: maxCount)
+    }
+
     func parse(_ request: String, context: ParserContext) -> BuilderProgram {
         guard request.utf8.count <= 4096 else { return .unrecognised(["Request exceeds 4 KiB."]) }
         let text = Self.normalized(request)
         guard !text.isEmpty else { return .unrecognised(["Enter a request."]) }
+        if let highlights = podcastHighlights(text) { return highlights }
         do {
             if let g = match(#"make (?:track|area) (i|ii|iii|iv|v|vi|[1-6]) black and white"#, text) {
                 return .script([.init(.setTrackEffect(track: try track(g[0], context), effect: EffectSpec(preset: "bw")))])

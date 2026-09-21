@@ -85,4 +85,40 @@ extension WizardRequestParserTests {
         #expect(WizardRequestParser.parse("10 minutes", tags: [], templates: []).request.targetDurationSeconds == 180)
         #expect(WizardRequestParser.parse("5:00", tags: [], templates: []).request.targetDurationSeconds == 180)
     }
+
+    @Test func podcastCameraAndBRollControls() {
+        for (text, kind) in [("camera: grid", CropRecipe.Kind.grid), ("talker and the rest", .talkerAndRest),
+                             ("talker full screen", .talker), ("rotating others", .talkerAndRotation),
+                             ("talker and previous", .talkerAndPrevious)] {
+            let parsed = WizardRequestParser.parse(text + ", no b-roll", tags: [], templates: []).request
+            #expect(parsed.highlightFraming == kind && parsed.useBRoll == false)
+            #expect(!parsed.residualInstructions.contains(text))
+        }
+        #expect(WizardRequestParser.parse("without b-roll", tags: [], templates: []).request.useBRoll == false)
+        var model = ParsedWizardRequest()
+        model.useBRoll = true
+        let local = WizardRequestParser.parse("camera: grid, no b-roll", tags: [], templates: []).request
+        let merged = WizardRequestParser.merge(model, local: local)
+        #expect(merged.highlightFraming == .grid && merged.useBRoll == false)
+    }
+
+    @Test(arguments: ["no b-roll, punchy", "camera: grid, punchy"])
+    func podcastControlsOnlyCountAsStructuredForPodcastFormats(_ text: String) {
+        for format in ["custom", "fight", "compilation"] {
+            #expect(!WizardRequestParser.parse(text, tags: [], templates: [], formatPreset: format).confident)
+        }
+        for format in ["podcast_highlights", "podcast", "interview"] {
+            #expect(WizardRequestParser.parse(text, tags: [], templates: [], formatPreset: format).confident)
+        }
+    }
+
+    @Test func fightRequestWithNoBRollStillAsksModel() async throws {
+        let stub = try StubAI(response: #"{"residual_instructions":"punchy pacing"}"#)
+        let engine = WizardEngine(ai: stub.service, render: RenderEngine())
+        let parsed = try await engine.parseRequest(description: "no b-roll, punchy", profile: Fixtures.brand(),
+            emit: { _ in }, useLocal: true, formatPreset: "fight")
+        #expect(parsed.residualInstructions == "punchy pacing" && parsed.useBRoll == false)
+        #expect(try String(contentsOf: stub.calls, encoding: .utf8) == "call\n")
+    }
+
 }

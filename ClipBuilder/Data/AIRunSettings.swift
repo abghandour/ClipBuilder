@@ -58,6 +58,9 @@ nonisolated struct WizardRunSettings: Codable, Sendable {
     var sourceSceneIDs: [Int64] = []
     var modelPrompts: [String: AIPromptPreview] = [:]
     var builderDocumentJSON: String?
+    /// Hash of every input a podcast highlight render depends on; a later
+    /// Render with the same hash reuses this file instead of encoding again.
+    var renderFingerprint: String? = nil
 }
 
 nonisolated struct AIRole: Codable, Sendable, Hashable {
@@ -116,7 +119,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
         case .models: return ["modelOverride"]
         case .prompts:
             return [
-                "aiInstructions", "tastePreset", "templateJSON", "templateLabel",
+                "aiInstructions", "brollInstructions", "tastePreset", "templateJSON", "templateLabel",
                 "pinnedOverlayTemplate", "pinnedOverlayText",
             ]
         case .sources:
@@ -128,7 +131,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
             return [
                 "renderSettings", "pacing", "captionLanguage", "reviewProposedCuts", "muteSource",
                 "addCaptions", "enableTextOverlays", "useMusic", "musicFolder", "useFightResearch",
-                "targetDurationSeconds", "framingCamera", "podcastFraming", "screenCropLayouts",
+                "targetDurationSeconds", "framingCamera", "podcastFraming", "highlightFraming", "useBRoll", "screenCropLayouts",
                 "allowedTransitions", "formatPreset", "critiqueLoop", "includeWatermark",
                 "includeHeadline",
                 "includeOutro",

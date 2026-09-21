@@ -8,6 +8,7 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
     let token: String
     /// Known IG user id (cached in settings after connect) — skips discovery.
     var igUserID: String?
+    var session: URLSession = .shared
 
     var sourceName: String { "graph" }
 
@@ -38,26 +39,29 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
 
     /// Absolute-URL variant — `paging.next` links already carry the token.
     func getJSON(url: URL, label: String) async throws -> [String: Any] {
-        let (data, _) = try await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 30))
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw InstagramError.parseFailed("Graph API returned non-JSON for \(label)")
+        let (data, _) = try await session.data(for: URLRequest(url: url, timeoutInterval: 30))
+        guard let json = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) else {
+            throw InstagramError.nonJSONResponse("Graph API returned non-JSON for \(label)")
+        }
+        guard let object = json as? [String: Any] else {
+            throw InstagramError.parseFailed("Graph API returned an unexpected JSON value for \(label)")
         }
         if let error = object["error"] as? [String: Any] {
             let message = error["message"] as? String ?? "unknown error"
-            switch error["code"] as? Int {
+            let code = error["code"] as? Int
+            let detail: String
+            switch code {
             case 190:
-                throw InstagramError.fetchFailed(
-                    "Instagram access token expired or invalid — reconnect in Settings → Instagram. (\(message))")
+                detail = "Instagram access token expired or invalid — Reconnect in Settings → Instagram. (\(message))"
             case 4, 17, 32, 613:
-                throw InstagramError.fetchFailed(
-                    "Instagram rate limit reached (\(message)) — the next Refresh resumes where this one stopped")
+                detail = "Instagram rate limit reached (\(message)) — the next Refresh resumes where this one stopped"
             case 10, 200:
-                throw InstagramError.fetchFailed(
-                    "Instagram refused \(label): \(message) — the connected token may lack a permission "
-                    + "(instagram_manage_insights, instagram_manage_comments, pages_read_engagement)")
+                detail = "Instagram refused \(label): \(message) — the connected token may lack a permission "
+                    + "(instagram_manage_insights, instagram_manage_comments, pages_read_engagement)"
             default:
-                throw InstagramError.fetchFailed("Graph API: \(message)")
+                detail = "Graph API: \(message)"
             }
+            throw InstagramError.graphAPI(code: code, message: detail)
         }
         return object
     }
@@ -119,13 +123,17 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
         let object = try await getJSON("me/accounts", query: [
             "fields": "instagram_business_account{id,username,name,followers_count}",
         ])
-        let accounts = (object["data"] as? [[String: Any]] ?? []).compactMap { page -> ResolvedAccount? in
-            guard let account = page["instagram_business_account"] as? [String: Any],
-                  let id = account["id"] as? String,
-                  let igUsername = account["username"] as? String else { return nil }
-            return ResolvedAccount(id: id, username: igUsername,
-                                   name: account["name"] as? String,
-                                   followers: account["followers_count"] as? Int)
+        var accounts = (object["data"] as? [[String: Any]] ?? []).compactMap { page in
+            Self.account(from: page["instagram_business_account"] as? [String: Any])
+        }
+        if accounts.isEmpty {
+            // With a Page token, `me` is the Page itself, not a user with pages.
+            let page = try await getJSON("me", query: [
+                "fields": "instagram_business_account{id,username,name,followers_count}",
+            ])
+            if let account = Self.account(from: page["instagram_business_account"] as? [String: Any]) {
+                accounts.append(account)
+            }
         }
         guard !accounts.isEmpty else {
             throw InstagramError.fetchFailed(
@@ -144,9 +152,30 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
 
     // MARK: - InstagramProvider
 
+    private static func account(from object: [String: Any]?) -> ResolvedAccount? {
+        guard let object, let id = object["id"] as? String,
+              let username = object["username"] as? String else { return nil }
+        return ResolvedAccount(id: id, username: username, name: object["name"] as? String,
+                               followers: object["followers_count"] as? Int)
+    }
+
     func fetchProfile(username: String,
                       log: @escaping @Sendable (String) -> Void) async throws -> IGProfileInfo {
-        let account = try await resolveAccount(matching: username)
+        let account: ResolvedAccount
+        if let igUserID, !igUserID.isEmpty {
+            do {
+                let object = try await getJSON(igUserID, query: ["fields": "id,username,name,followers_count"])
+                guard let profile = Self.account(from: object) else {
+                    throw InstagramError.parseFailed("Graph API profile is missing id or username")
+                }
+                account = profile
+            } catch InstagramError.graphAPI(let code, let message) where [100, 10, 200].contains(code) {
+                log("Stored Instagram account \(igUserID) is unavailable (Graph \(code ?? 0): \(message)) — rediscovering the account")
+                account = try await resolveAccount(matching: username)
+            }
+        } else {
+            account = try await resolveAccount(matching: username)
+        }
         return IGProfileInfo(username: account.username, displayName: account.name,
                              igUserID: account.id, followers: account.followers)
     }
@@ -420,7 +449,7 @@ extension GraphAPIProvider {
     /// The same provider with a different token (the Page token for
     /// account-level insights and comments).
     func withToken(_ token: String) -> GraphAPIProvider {
-        GraphAPIProvider(token: token, igUserID: igUserID)
+        GraphAPIProvider(token: token, igUserID: igUserID, session: session)
     }
 
     static func shortcode(from permalink: String?) -> String? { IGShortcode.parse(permalink) }
@@ -438,6 +467,11 @@ extension GraphAPIProvider {
             "fields": "id,access_token,instagram_business_account{id}",
         ])
         let pages = object["data"] as? [[String: Any]] ?? []
+        if pages.isEmpty {
+            let page = try await getJSON("me", query: ["fields": "instagram_business_account{id}"])
+            let account = page["instagram_business_account"] as? [String: Any]
+            return account?["id"] as? String == igUserID ? token : nil
+        }
         let page = pages.first {
             (($0["instagram_business_account"] as? [String: Any])?["id"] as? String) == igUserID
         } ?? pages.first { $0["instagram_business_account"] != nil }

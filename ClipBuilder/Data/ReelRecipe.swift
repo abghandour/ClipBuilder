@@ -12,6 +12,55 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
     /// The "## FORMAT" block appended to the planner prompt; empty for Custom.
     let promptBlock: String
 
+    let capabilities: Capabilities
+
+    nonisolated struct Capabilities: Sendable, Equatable {
+        enum Sources: Sendable { case scenes, podcastRecording }
+        enum Length: Sendable { case targetDuration, maxSecondsAndCount, none }
+
+        let sources: Sources
+        let length: Length
+        let podcastFraming: Bool
+        let cameraFocus: Bool
+        let bRoll: Bool
+        let fightResearch: Bool
+        let audioMusic: Bool
+        let onScreenText: Bool
+        let critiqueLoop: Bool
+        let reviewProposedCuts: Bool
+        let styleReference: Bool
+        let layouts: Bool
+        let bumpers: Bool
+        let branding: Bool
+        let referenceTemplate: Bool
+        let models: [String]
+
+        static let fight = Capabilities(
+            sources: .scenes, length: .targetDuration, podcastFraming: false,
+            cameraFocus: false, bRoll: false, fightResearch: true, audioMusic: true,
+            onScreenText: true, critiqueLoop: true, reviewProposedCuts: true,
+            styleReference: true, layouts: true, bumpers: true, branding: true,
+            referenceTemplate: true, models: ["wizard", "critique", "captions"])
+        static let spoken = Capabilities(
+            sources: .scenes, length: .targetDuration, podcastFraming: true,
+            cameraFocus: false, bRoll: true, fightResearch: false, audioMusic: true,
+            onScreenText: true, critiqueLoop: true, reviewProposedCuts: true,
+            styleReference: true, layouts: false, bumpers: true, branding: true,
+            referenceTemplate: true, models: ["wizard", "critique", "captions"])
+        static let highlights = Capabilities(
+            sources: .podcastRecording, length: .maxSecondsAndCount, podcastFraming: false,
+            cameraFocus: true, bRoll: true, fightResearch: false, audioMusic: false,
+            onScreenText: false, critiqueLoop: false, reviewProposedCuts: false,
+            styleReference: false, layouts: false, bumpers: false, branding: false,
+            referenceTemplate: false, models: ["highlights"])
+        static let custom = Capabilities(
+            sources: .scenes, length: .targetDuration, podcastFraming: true,
+            cameraFocus: false, bRoll: true, fightResearch: true, audioMusic: true,
+            onScreenText: true, critiqueLoop: true, reviewProposedCuts: true,
+            styleReference: true, layouts: true, bumpers: true, branding: true,
+            referenceTemplate: true, models: ["wizard", "critique", "captions"])
+    }
+
     static let customID = "custom"
 
     /// No format rules; the plan follows instructions, research, and taste.
@@ -19,14 +68,14 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         id: customID,
         title: "Custom",
         summary: "No format rules. The plan follows your instructions, saved research, and learned taste.",
-        promptBlock: "")
+        promptBlock: "", capabilities: .custom)
 
     /// Menu order: Custom, then the MMA recipes, then the general ones.
     /// Each inner array is one menu section.
     static let menuSections: [[ReelRecipe]] = [
         [custom],
         [mmaFinish, mmaSubmission, mmaExchange, mmaTechnique],
-        [recap, compilation, interview, podcast],
+        [recap, compilation, interview, podcast, podcastHighlights],
     ]
 
     static let all: [ReelRecipe] = menuSections.flatMap(\.self)
@@ -52,7 +101,7 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         - Preserve the referee/crowd/commentator reaction after the finish. Use at most one slow-motion replay, and only for the decisive impact.
         - Text should be factual and minimal: fighter name, round, or verified finish method only. Never imply a result not in FIGHT OUTCOMES.
 
-        """)
+        """, capabilities: .fight)
 
     static let mmaSubmission = ReelRecipe(
         id: "mma-submission",
@@ -65,7 +114,7 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         - Favor source audio and commentary; use slower, deliberate cuts rather than aggressive transition effects.
         - Only call a submission/tap when FIGHT OUTCOMES or the analyzed scene explicitly confirms it.
 
-        """)
+        """, capabilities: .fight)
 
     static let mmaExchange = ReelRecipe(
         id: "mma-exchange",
@@ -78,7 +127,7 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         - Start with the most surprising strike or reaction, then return to the setup. Preserve crowd swell and commentator peak around the payoff.
         - Use hard cuts as the default; one action transition maximum for the decisive strike.
 
-        """)
+        """, capabilities: .fight)
 
     static let mmaTechnique = ReelRecipe(
         id: "mma-technique",
@@ -91,7 +140,7 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         - Use no more than three factual overlays: technique name, setup cue, and key detail. Do not invent technical terminology; use only what is visible or in user instructions.
         - Prefer clarity, clean framing, and source audio over rapid montage effects.
 
-        """)
+        """, capabilities: .fight)
 
     static let recap = ReelRecipe(
         id: "recap",
@@ -104,7 +153,7 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         - Set "headline" to the result (e.g. "MILES JOHNS BEATS GIANNI VAZQUEZ") from the FIGHT OUTCOMES block; use last names when the full line exceeds ~6 words.
         - Keep per-clip text overlays minimal — the headline carries the story.
 
-        """)
+        """, capabilities: .fight)
 
     static let compilation = ReelRecipe(
         id: "compilation",
@@ -117,7 +166,7 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         - Set "intro_title" to a punchy 3-6 word ALL-CAPS compilation title (e.g. "BEST KO & TKO'S").
         - Label clips from different fights with a short banner overlay naming the fighters (use the person: tags to know who is who).
 
-        """)
+        """, capabilities: .fight)
 
     static let interview = ReelRecipe(
         id: "interview",
@@ -130,11 +179,24 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         - One "lower-third" overlay naming the speaker on their first clip; put their role in "kicker". No other text overlays.
         - Keep source audio primary: quiet music at most.
 
-        """)
+        """, capabilities: .spoken)
+
+    static let podcastHighlights = ReelRecipe(
+        id: "podcast_highlights",
+        title: "Podcast highlights · Multiple reels",
+        summary: "Review every worthwhile exchange or sentence run, then make a separate reel for each selection. Plain footage with speaker framing and relevant B-roll.",
+        promptBlock: """
+
+        ## FORMAT: PODCAST HIGHLIGHTS (hard requirements)
+        - Use the dedicated highlight finder and review every candidate before rendering.
+        - Produce one plain-footage reel per approved candidate, preserving sentence boundaries and the maximum length.
+        - No captions, overlay templates, branding or music.
+
+        """, capabilities: .highlights)
 
     static let podcast = ReelRecipe(
         id: "podcast",
-        title: "Podcast highlights",
+        title: "Podcast clip · One reel",
         summary: "One complete question-and-answer exchange from the conversation, trimmed only at sentence ends, with a lower-third for each speaker. The voices stay primary.",
         promptBlock: """
 
@@ -143,5 +205,5 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         - When trimming an overlong exchange, preserve complete sentences; validation snaps every boundary to transcript sentence ends.
         - Add one "lower-third" overlay for each named speaker's first appearance; keep source audio primary and music quiet or absent.
 
-        """)
+        """, capabilities: .spoken)
 }

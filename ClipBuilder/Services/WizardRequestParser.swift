@@ -6,6 +6,9 @@ nonisolated enum WizardRequestParser {
         var confident: Bool
     }
 
+    static let cameraPattern = #"\b(?:camera\s*:\s*(?:grid|talker_and_rest|talker_and_previous|talker_and_rotation|talker)|everyone in a grid|talker and the rest|talker and previous|(?:talker and )?rotating others|talker full screen)\b"#
+    static let noBRollPattern = #"\b(?:no|without) b[- ]?rolls?\b"#
+
     static func similarity(_ lhs: String, _ rhs: String) -> Double {
         let a = Array(LocalTextMatcher.tokens(lhs).joined(separator: " "))
         let b = Array(LocalTextMatcher.tokens(rhs).joined(separator: " "))
@@ -21,7 +24,7 @@ nonisolated enum WizardRequestParser {
         return 1 - Double(previous[b.count]) / Double(max(a.count, b.count))
     }
 
-    static func parse(_ description: String, tags: [String], templates: [String]) -> Result {
+    static func parse(_ description: String, tags: [String], templates: [String], formatPreset: String = "custom") -> Result {
         var request = ParsedWizardRequest()
         var residual = description
         func consume(_ pattern: String, action: (NSTextCheckingResult, NSString) -> Void) {
@@ -36,6 +39,15 @@ nonisolated enum WizardRequestParser {
         consume(#"(?:caption|title|text|overlay|saying|that says|legenda|titulo|título|texto|dizendo)\s*[:=]?\s*["“‘']([^"”’']+)["”’']"#) { match, source in
             if request.overlayText == nil { request.overlayText = source.substring(with: match.range(at: 1)) }
         }
+        consume(cameraPattern) { match, source in
+            let value = source.substring(with: match.range).lowercased()
+            if value.contains("grid") { request.highlightFraming = .grid }
+            else if value.contains("rest") { request.highlightFraming = .talkerAndRest }
+            else if value.contains("previous") { request.highlightFraming = .talkerAndPrevious }
+            else if value.contains("rotat") { request.highlightFraming = .talkerAndRotation }
+            else { request.highlightFraming = .talker }
+        }
+        consume(noBRollPattern) { _, _ in request.useBRoll = false }
         let numbers = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"]
         let portuguese = ["um", "dois", "tres", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "doze", "treze", "catorze", "quinze", "dezesseis", "dezessete", "dezoito", "dezenove", "vinte"]
         consume(#"\b(\d{1,3}):([0-5]\d)\b"#) { match, source in
@@ -81,7 +93,9 @@ nonisolated enum WizardRequestParser {
         }
         if request.overlayText != nil || request.overlayTemplate != nil { request.enableTextOverlays = true }
         request.residualInstructions = residual.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
-        let structured = request.targetDurationSeconds != nil || request.overlayText != nil || request.overlayTemplate != nil || !request.contentTags.isEmpty || request.addCaptions != nil || request.useMusic != nil || request.enableTextOverlays != nil
+        let podcastControls = ["podcast_highlights", "podcast", "interview"].contains(formatPreset)
+            && (request.highlightFraming != nil || request.useBRoll != nil)
+        let structured = podcastControls || request.targetDurationSeconds != nil || request.overlayText != nil || request.overlayTemplate != nil || !request.contentTags.isEmpty || request.addCaptions != nil || request.useMusic != nil || request.enableTextOverlays != nil
         return Result(request: request, confident: structured && LocalTextMatcher.tokens(request.residualInstructions).count < 8)
     }
 
@@ -93,6 +107,8 @@ nonisolated enum WizardRequestParser {
         result.enableTextOverlays = result.enableTextOverlays ?? local.enableTextOverlays
         result.addCaptions = result.addCaptions ?? local.addCaptions
         result.useMusic = result.useMusic ?? local.useMusic
+        result.highlightFraming = local.highlightFraming ?? result.highlightFraming
+        result.useBRoll = local.useBRoll ?? result.useBRoll
         if result.contentTags.isEmpty { result.contentTags = local.contentTags }
         return result
     }
