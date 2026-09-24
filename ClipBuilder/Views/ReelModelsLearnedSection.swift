@@ -36,8 +36,10 @@ struct ReelModelsLearnedSection: View {
     /// Eligibility hashes the model artifact, so it is computed once per reload, off the main thread.
     @State private var eligibility: [ReelModelItem: ReelModelStore.Eligibility] = [:]
     @State private var available: [LearnedModelArtifact] = []
-    @State private var busy = false
-    @State private var status = ""
+    private var busy: Bool { store.jobs.running.contains { $0.kind == .evaluateReelModel } }
+    private var status: String {
+        store.jobs.latest(.evaluateReelModel)?.statusLine ?? ""
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -71,6 +73,12 @@ struct ReelModelsLearnedSection: View {
             if !status.isEmpty {
                 Text(status).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
             }
+            ForEach(store.jobs.running.filter { $0.kind == .evaluateReelModel }) { job in
+                Button("Stop \(job.title)") { store.jobs.cancel(job.id) }
+            }
+        }
+        .onChange(of: store.jobs.completionRevision(.evaluateReelModel)) {
+            Task { await reload() }
         }
         .task(id: "\(store.activeProfile.profileName)|\(reloadToken)") { await reload() }
     }
@@ -114,16 +122,7 @@ struct ReelModelsLearnedSection: View {
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 12) {
-                    Button("Evaluate") {
-                        busy = true
-                        Task {
-                            defer { busy = false }
-                            do {
-                                status = try await store.evaluateReelModel(item).summary
-                                await reload()
-                            } catch { status = error.localizedDescription }
-                        }
-                    }
+                    Button("Evaluate") { store.startModelEvaluation(item) }
                     .buttonStyle(.bordered).controlSize(.small).disabled(busy)
                     .help("Evaluate \(displayName(item)) against this profile's examples. Required before it can be switched on.")
                     Toggle("Use", isOn: requestBinding(item, state: state))
@@ -224,17 +223,6 @@ struct ReelModelsLearnedSection: View {
         }
     }
     private func adopt(_ model: LearnedModelArtifact) {
-        guard let destination = store.reelModelStore else { return }
-        let source = LearnedLibrary().directory.appendingPathComponent(model.contributor)
-            .appendingPathComponent("models/\(model.item.filename)-v\(model.version).\(model.item.artifactExtension)")
-        busy = true
-        Task {
-            defer { busy = false }
-            do {
-                try model.adopt(from: source, to: destination)
-                status = try await store.evaluateReelModel(model.item).summary
-            } catch { status = error.localizedDescription }
-            await reload()
-        }
+        store.startModelEvaluation(model.item, adopting: model)
     }
 }

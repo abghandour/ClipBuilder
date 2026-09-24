@@ -31,6 +31,7 @@ struct SceneEditSheet: View {
             }
         }
         .frame(width: 660, height: 780)
+        .appJobSetupPresentation()
         .modalCloseButton { dismiss() }
     }
 }
@@ -49,7 +50,8 @@ struct SceneEditor: View {
     @State private var editStart = 0.0
     @State private var editEnd = 0.0
     @State private var cameraPreset = "balanced"
-    @State private var isComputingPath = false
+    private var cameraJob: AppJob? { store.jobs.latest(.cameraPath, subjectGroupID: String(scene.id)) }
+    private var isComputingPath: Bool { cameraJob?.status == .running }
     @State private var hints: [CameraHint] = []
     @State private var suggestionCrop: CGRect?
     @State private var suggestionDraft: CGRect?
@@ -287,8 +289,9 @@ struct SceneEditor: View {
 
             if video?.wide == true {
                 if isComputingPath {
-                    ProgressView()
-                        .controlSize(.small)
+                    ProgressView().controlSize(.small)
+                    Text(cameraJob?.statusLine ?? "Tracking…").font(.caption).lineLimit(1)
+                    if let cameraJob { Button("Stop") { store.jobs.cancel(cameraJob.id) } }
                 } else if scene.centerStagePathJSON != nil {
                     Label("Center Stage ready", systemImage: "checkmark.seal.fill")
                         .font(.caption)
@@ -317,17 +320,8 @@ struct SceneEditor: View {
     }
 
     private func computeFraming() {
-        let sceneID = scene.id
-        let videoID = scene.videoID
-        let start = scene.startTime
-        let end = scene.endTime
-        let camera = cameraPreset
-        isComputingPath = true
-        Task {
-            await store.computeCameraPath(sceneID: sceneID, videoID: videoID,
-                                          start: start, end: end, camera: camera)
-            isComputingPath = false
-        }
+        store.startCameraPath(sceneID: scene.id, videoID: scene.videoID,
+                              start: scene.startTime, end: scene.endTime, camera: cameraPreset)
     }
 
     // MARK: - Player

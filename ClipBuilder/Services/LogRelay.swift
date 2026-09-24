@@ -13,13 +13,24 @@ nonisolated final class LogRelay: Sendable {
 
     private let pending = Mutex(Pending())
     private let deliver: @MainActor @Sendable ([String]) -> Void
+    private let includeProgress: Bool
 
-    init(deliver: @escaping @MainActor @Sendable ([String]) -> Void) {
+    init(includeProgress: Bool = false, deliver: @escaping @MainActor @Sendable ([String]) -> Void) {
+        self.includeProgress = includeProgress
         self.deliver = deliver
+    }
+
+    static func displayText(_ text: String) -> String? {
+        let lines = text.components(separatedBy: .newlines).filter {
+            !$0.trimmingCharacters(in: .whitespaces).hasPrefix("PROGRESS:")
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
     /// Queue a line; the first line of a burst schedules the flush.
     func post(_ line: String) {
+        let display: String? = includeProgress ? line : Self.displayText(line)
+        guard let line = display else { return }
         let schedule = pending.withLock { state -> Bool in
             state.lines.append(line)
             if state.scheduled { return false }
@@ -27,13 +38,16 @@ nonisolated final class LogRelay: Sendable {
             return true
         }
         guard schedule else { return }
-        Task { @MainActor in
-            let lines = self.pending.withLock { state -> [String] in
-                defer { state = Pending() }
-                return state.lines
-            }
-            if !lines.isEmpty { self.deliver(lines) }
+        Task { @MainActor in self.flush() }
+    }
+
+    /// A finishing job drains its final status before removing the running row.
+    @MainActor func flush() {
+        let lines = pending.withLock { state -> [String] in
+            defer { state = Pending() }
+            return state.lines
         }
+        if !lines.isEmpty { deliver(lines) }
     }
 
     /// `post` as a `@Sendable` closure, for services' `log:` parameters.

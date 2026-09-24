@@ -7,6 +7,7 @@ import SwiftUI
 /// Templates are inserted from the Builder's Text menu and offered to the AI
 /// Wizard, which rewrites only texts marked dynamic.
 struct OverlayTemplatesView: View {
+    @Environment(AppStore.self) private var store
     @State private var templates: [OverlayTemplate] = []
     @State private var selectedName: String?
     @State private var composition = OverlayComposition()
@@ -48,10 +49,7 @@ struct OverlayTemplatesView: View {
         .screenTitle("Overlays", subtitle: "\(templates.count) template\(templates.count == 1 ? "" : "s")")
         .toolbar { overlayToolbarContent }
         .sheet(isPresented: $showOverlayWizard) {
-            OverlayWizardSheet { name in
-                refresh()
-                selectedName = name
-            }
+            OverlayWizardSheet()
         }
         .alert("Rename Template", isPresented: $renamePrompt) {
             TextField("Name", text: $renameText)
@@ -72,6 +70,10 @@ struct OverlayTemplatesView: View {
         ) {
             Button("Move to Trash", role: .destructive, action: deleteConfirmed)
             Button("Cancel", role: .cancel) { deleteTarget = nil }
+        }
+        .onChange(of: store.createdOverlayName) { _, name in
+            refresh()
+            selectedName = name
         }
         .onAppear {
             try? FileManager.default.createDirectory(at: OverlayTemplateStore.directory,

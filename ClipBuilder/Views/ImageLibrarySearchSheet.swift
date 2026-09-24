@@ -8,13 +8,11 @@ struct ImageLibrarySearchSheet: View {
 
     let candidates: [AssetItem]
     let metadata: [String: LibraryAssetMetadata]
-    var onResults: ([String]) -> Void
+    let folder: [String]
 
     @State private var query = ""
     @State private var modelTag = ""
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
-    @State private var isRunning = false
-    @State private var errorMessage: String?
     @FocusState private var queryFocused: Bool
 
     var body: some View {
@@ -37,19 +35,17 @@ struct ImageLibrarySearchSheet: View {
             )
             .fixedSize()
 
-            if isRunning { ProgressView("Searching images…") }
-            if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
-
             HStack {
                 Spacer()
                 Button("Cancel", action: dismiss.callAsFunction)
                 Button("Search", action: run)
                     .buttonStyle(.borderedProminent)
-                    .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isRunning)
+                    .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20)
         .frame(width: 500)
+        .appJobSetupPresentation()
         .task {
             queryFocused = true
             availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
@@ -60,59 +56,19 @@ struct ImageLibrarySearchSheet: View {
     }
 
     private func run() {
-        guard !isRunning else { return }
-        let useLocal = OnDevicePolicy.isEnabled(item: "image-search", config: store.settings.ai)
-        if useLocal {
-            let rows = candidates.map { item in
-                let info = metadata[item.url.path]
-                return LocalTextMatcher.Row(id: item.url.path,
-                    fields: (info?.subjects ?? []) + (info?.tags ?? []),
-                    date: (try? item.url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast)
-            }
-            let paths = LocalImageMatcher.match(query: query, rows: rows)
-            if !paths.isEmpty {
-                store.appendLog(\.pipelineLog, ["Matched \(paths.count) images by keyword"])
-                onResults(paths)
-                dismiss()
-                return
-            }
-        }
-        store.appendLog(\.pipelineLog, [useLocal ? "Keyword match found nothing — asking the model" : "Image search — asking the model"])
-        let inventory = candidates.enumerated().map { index, item in
-            let info = metadata[item.url.path]
-            return
-                "- id \(index) | \(item.name) | subjects: \(info?.subjects.joined(separator: ", ") ?? "untagged") | tags: \(info?.tags.joined(separator: ", ") ?? "untagged")"
-        }.joined(separator: "\n")
-        let prompt = """
-            Rank the owned images which match this request: \(query)
-
-            \(inventory)
-
-            Return only JSON: {"ids":[0,1]}. Include only strong matches, best first. Never invent an id.
-            """
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        let store = store
+        let candidates = candidates, metadata = metadata
+        let folder = folder
         let (provider, model) = ModelPicker.parse(modelTag)
-        isRunning = true
-        errorMessage = nil
-        Task {
-            do {
-                let response = try await store.ai.call(
-                    prompt: prompt, task: "search",
-                    model: model, provider: provider,
-                    timeout: 120, log: { _ in })
-                let object = AIResponseParser.jsonObject(from: response.text)
-                let ids = object?["ids"] as? [Int] ?? []
-                let paths = ids.compactMap { candidates.indices.contains($0) ? candidates[$0].url.path : nil }
-                guard !paths.isEmpty else {
-                    errorMessage = "No tagged images matched that request."
-                    isRunning = false
-                    return
-                }
-                onResults(paths)
-                dismiss()
-            } catch {
-                errorMessage = error.userMessage
-            }
-            isRunning = false
+        store.jobs.start(.imageSearch, title: "Image Search — \(query)",
+                         project: store.activeProject, profileGeneration: store.profileGeneration) { log in
+            let paths = try await store.searchImages(query: query, candidates: candidates, metadata: metadata,
+                                                    provider: provider, model: model, log: log)
+            guard !paths.isEmpty else { throw AppJobEmptyResult(message: "No tagged images matched that request.") }
+            return .imageSearch(query: query, paths: paths, folder: folder)
         }
+        dismiss()
     }
 }

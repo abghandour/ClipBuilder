@@ -62,11 +62,12 @@ struct TranscriptSheet: View {
     @State private var hasRecut = false
     /// What the last Re-cut did, shown briefly under the header.
     @State private var recutNote: String?
-    @State private var isMappingSpeakers = false
+    private var mappingJob: AppJob? { store.jobs.latest(.mapSpeakers, subjectID: String(video.id)) }
+    private var isMappingSpeakers: Bool { mappingJob?.status == .running }
     /// Lines attributed by hand that the speaker map does not agree with.
     @State private var unlearnedCorrections = 0
     /// The map's latest log line while it runs.
-    @State private var mappingStatus: String?
+    private var mappingStatus: String? { mappingJob?.statusLine }
     /// Lines whose speaker the last Map Speakers Again changed, with the
     /// name they had before.
     @State private var changedByMap: [Int64: String] = [:]
@@ -211,6 +212,7 @@ struct TranscriptSheet: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                                 .truncationMode(.middle)
+                            if let mappingJob { Button("Stop") { store.jobs.cancel(mappingJob.id) } }
                         } else if let recutNote {
                             Text(recutNote)
                                 .font(.caption)
@@ -374,6 +376,10 @@ struct TranscriptSheet: View {
             if hasChanges { confirmDiscard = true } else { dismiss() }
         }
         .task { await load() }
+        .onChange(of: mappingJob?.status) { _, status in
+            if status == .done { Task { await refreshSpeakerMapping() } }
+        }
+        .appJobSetupPresentation()
         .onDisappear { stopPlayback(releasePlayer: true) }
         .sheet(isPresented: $showTools) { TranscriptToolsSheet(video: video) }
         .confirmationDialog("Discard unsaved transcript changes?", isPresented: $confirmDiscard) {
@@ -720,20 +726,15 @@ struct TranscriptSheet: View {
     }
 
     private func mapSpeakersAgain() {
-        isMappingSpeakers = true
-        mappingStatus = nil
-        Task {
-            defer { isMappingSpeakers = false }
-            let mapped = await store.mapSpeakersAgain(video: video) { line in
-                Task { @MainActor in mappingStatus = Self.statusLine(line) }
-            }
-            if mapped {
-                await load()
-                let changed = changedByMap.count
-                recutNote = changed == 0 ? "Speakers mapped again — no line changed speaker."
-                    : "Speakers mapped again — \(changed) line\(changed == 1 ? "" : "s") changed speaker."
-            }
-        }
+        store.startSpeakerMapping(video: video)
+    }
+
+    private func refreshSpeakerMapping() async {
+        await load()
+        guard mappingJob?.status == .done else { return }
+        let changed = changedByMap.count
+        recutNote = changed == 0 ? "Speakers mapped again — no line changed speaker."
+            : "Speakers mapped again — \(changed) line\(changed == 1 ? "" : "s") changed speaker."
     }
 
     /// A log line as the header shows it: the filename prefix dropped.

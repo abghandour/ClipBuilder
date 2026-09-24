@@ -8,6 +8,8 @@ struct AppStatusBar: View {
     @AppStorage("statusBar.logChannel") private var channelFilter = ""
     @AppStorage("log.verbose") private var verboseLog = false
 
+    @State private var publishToStop: UUID?
+
     private var lines: [AppLogLine] { AppLogChannels.lines(store.unifiedLog, channel: channelFilter) }
     private var activities: [StatusBarSummary.Activity] { StatusBarSummary.activities(store: store) }
 
@@ -25,6 +27,10 @@ struct AppStatusBar: View {
                 AnalysisCompletionNotice(completion: completion).padding(Theme.spaceS)
             }
             if logExpanded {
+                ScrollView(.horizontal) {
+                    HStack { ForEach(store.jobs.recoverable) { job in jobRecovery(job) } }
+                        .padding(.horizontal, Theme.spaceM)
+                }
                 if activities.count > 1 {
                     Divider()
                     ScrollView {
@@ -43,6 +49,17 @@ struct AppStatusBar: View {
             }
         }
         .background(.bar)
+        .confirmationDialog("Stop publishing this reel?", isPresented: Binding(
+            get: { publishToStop != nil }, set: { if !$0 { publishToStop = nil } }
+        )) {
+            Button("Stop Publishing", role: .destructive) {
+                if let id = publishToStop { store.jobs.cancel(id) }
+                publishToStop = nil
+            }
+            Button("Keep Publishing", role: .cancel) { publishToStop = nil }
+        } message: {
+            Text("This stops the upload or processing wait. If Instagram has already accepted the post, check the account before trying again.")
+        }
         .onChange(of: store.googleDrive.revision) { store.refreshAll() }
         .onChange(of: store.googleDrive.jobs.map { "\($0.id):\($0.status.rawValue)" }) { old, _ in
             for job in store.googleDrive.jobs where !old.contains("\(job.id):\(job.status.rawValue)") {
@@ -113,6 +130,7 @@ struct AppStatusBar: View {
 
     @ViewBuilder
     private var recoveryActions: some View {
+        ForEach(Array(store.jobs.recoverable.prefix(3))) { job in jobRecovery(job) }
         if !store.isPipelineRunning, !store.pipelineStage.isEmpty {
             if store.canResumePipeline {
                 Button("Resume Pipeline") { store.resumePipeline() }
@@ -150,6 +168,17 @@ struct AppStatusBar: View {
             .labelStyle(.iconOnly)
             .help("Copy Builder Wizard outcomes or the complete run details")
         }
+    }
+
+    @ViewBuilder private func jobRecovery(_ job: AppJob) -> some View {
+        if job.status == .done {
+            Button(job.projectID == nil || job.projectID == store.activeProjectID
+                   ? "Review \(job.kind.shortTitle)" : "Review in \(job.projectName)") {
+                store.jobs.requestReview(job.id)
+            }
+        }
+        Button("Dismiss") { store.jobs.dismiss(job.id) }
+            .help("Dismiss \(job.title)")
     }
 
     private func copy(_ text: String) {
@@ -193,7 +222,12 @@ struct AppStatusBar: View {
             for id in store.transcribingVideoIDs { store.cancelTranscription(videoID: id) }
         }
         default:
-            if let job = store.googleDrive.jobs.first(where: { "drive-\($0.id)" == activity.id }) {
+            if let job = store.jobs.running.first(where: { "job-\($0.id)" == activity.id }) {
+                Button("Stop") {
+                    if job.kind == .instagramPublish { publishToStop = job.id }
+                    else { store.jobs.cancel(job.id) }
+                }
+            } else if let job = store.googleDrive.jobs.first(where: { "drive-\($0.id)" == activity.id }) {
                 Button("Stop") { store.googleDrive.stop(job.id) }
             }
         }
@@ -202,10 +236,11 @@ struct AppStatusBar: View {
 
 /// Stable section names remain selectable even before the first message arrives.
 enum AppLogChannels {
-    static let known = ["app", "analysis", "wizard", "builder", "builder-wizard", "pipeline", "instagram", "instagram-analysis", "instagram-download", "instagram-reports", "builder-prefill", "builder-preview", "script-preview", "drive", "error"]
+    static let known = ["curate", "app", "analysis", "wizard", "builder", "builder-wizard", "pipeline", "instagram", "instagram-analysis", "instagram-download", "instagram-reports", "builder-prefill", "builder-preview", "script-preview", "drive", "error"]
 
     static func title(_ channel: String) -> String {
         switch channel {
+        case "curate": "AI Favorites"
         case "app": "App"
         case "analysis": "Analysis"
         case "wizard": "Generation"
@@ -266,12 +301,17 @@ struct StatusBarSummary: Equatable {
     @MainActor
     static func activities(store: AppStore) -> [Activity] {
         var rows: [Activity] = []
-        func add(_ id: String, _ channel: String, _ title: String, _ running: Bool,
+        @MainActor func add(_ id: String, _ channel: String, _ title: String, _ running: Bool,
                  progress: Double? = nil, project: String? = nil) {
             if running {
                 rows.append(Activity(id: id, channel: channel, project: project ?? store.activeProject?.name ?? "Project",
                                      detail: title, progress: progress))
             }
+        }
+        for job in store.jobs.running {
+            add("job-\(job.id)", job.channel,
+                job.statusLine.isEmpty ? job.title : "\(job.title) — \(job.statusLine)", true,
+                progress: job.progress, project: job.projectName)
         }
         add("builder-wizard", "builder-wizard", store.builderWizard?.statusText ?? "Running Wizard",
             store.builderWizard?.busy == true)
@@ -299,7 +339,6 @@ struct StatusBarSummary: Equatable {
         add("instagram-download", "instagram-download", "Downloading \(store.igDownloadingMediaIDs.count) reels", !store.igDownloadingMediaIDs.isEmpty)
         add("instagram-reports", "instagram-reports", "Building reports", store.isLoadingIGReport)
         add("instagram-connect", "instagram", "Connecting Instagram", store.isConnectingInstagram)
-        add("instagram-publish", "instagram", "Publishing to Instagram", store.isPublishingToInstagram)
         add("taste", "instagram", "Learning from reels", store.isStudyingTaste)
         add("performance", "instagram", "Distilling performance lessons", store.isDistillingPerformanceLessons)
         add("lessons", "wizard", "Distilling lessons", store.isDistillingLessons)
@@ -375,7 +414,6 @@ private struct AppLogDrawer: View {
         "\(clock.string(from: line.time)) [\(AppLogChannels.title(line.channel))] \(line.text)"
     }
 }
-
 
 /// A finished (or stopped) analysis stays visible until dismissed: the
 /// Sources row of an already analyzed video looks the same before and after

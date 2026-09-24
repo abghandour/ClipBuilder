@@ -38,6 +38,8 @@ final class AppStore {
             }
         }
     }
+    var createdOverlayName: String?
+    let jobs = AppJobs()
     let googleDrive = GoogleDriveTransfers.shared
     private(set) var database: Database?
 
@@ -133,7 +135,7 @@ final class AppStore {
     private(set) var isLoadingProject = false
     /// Projects with a job in flight — deleting one would strand its output.
     var busyProjectIDs: Set<Int64> {
-        var ids = Set<Int64>()
+        var ids = jobs.busyProjectIDs
         for job in googleDrive.jobs where job.profile == activeProfile.profileName && job.status != .complete {
             if let id = job.projectID { ids.insert(id) }
         }
@@ -308,7 +310,8 @@ final class AppStore {
     /// After an import: re-register fonts, drop cached layout listings, and
     /// reload profiles so the switcher and the active profile reflect the
     /// files on disk.
-    func resourcesDidChange(_ summary: ResourceImportSummary) {
+    func resourcesDidChange(_ summary: ResourceImportSummary) async {
+        let generation = profileGeneration
         if summary.imported + summary.replaced + summary.renamed > 0 {
             AssetStore.invalidateCatalog()
             OverlayTemplateStore.invalidateCache()
@@ -316,11 +319,16 @@ final class AppStore {
             // decoded-image cache is keyed by path, so drop it.
             ImageCache.removeAll()
         }
-        if summary.fontsChanged { AssetStore.registerFonts() }
+        if summary.fontsChanged { await Task.detached { AssetStore.registerFonts() }.value }
+        guard generation == profileGeneration else { return }
         if summary.screenCropsChanged { ScreenCropStore.invalidateListing() }
         if summary.profilesChanged {
-            profiles = ProfileStore.listProfiles()
-            if profiles.isEmpty { profiles = [ProfileStore.ensureDefaultProfile()] }
+            let loaded = await Task.detached {
+                let profiles = ProfileStore.listProfiles()
+                return profiles.isEmpty ? [ProfileStore.ensureDefaultProfile()] : profiles
+            }.value
+            guard generation == profileGeneration else { return }
+            profiles = loaded
             if let refreshed = profiles.first(where: { $0.profileName == activeProfile.profileName }) {
                 activeProfile = refreshed
             }
@@ -404,7 +412,7 @@ final class AppStore {
     var igStatus: IGSyncStatus?
     private var igImportTask: Task<Void, Never>?
     var isConnectingInstagram = false
-    var isPublishingToInstagram = false
+    var isPublishingToInstagram: Bool { jobs.hasLiveTask(kind: .instagramPublish) }
     /// A taste-exemplar study is running (one at a time).
     var isStudyingTaste = false
     private var igAnalyzeTasks: [Int64: Task<Void, Never>] = [:]
@@ -414,7 +422,11 @@ final class AppStore {
     /// "Generate Video" request from the Analyze/Scenes/People screens; the
     /// Wizard seeds its form from it and keeps it until the user dismisses
     /// its card.
-    var pendingWizardPrompt: WizardPromptHandoff?
+    var wizardPromptRequests: [Int64: WizardPromptHandoff] = [:]
+    var pendingWizardPrompt: WizardPromptHandoff? {
+        get { wizardPromptRequests[activeProjectID ?? 0] }
+        set { wizardPromptRequests[activeProjectID ?? 0] = newValue }
+    }
     /// Set by views (e.g. "Open in Builder") to ask the main window to switch
     /// sidebar sections; the window consumes and clears it.
     var requestedSection: SidebarSection?
@@ -549,6 +561,7 @@ final class AppStore {
         instagram = InstagramService(ai: ai)
         fightResearchService = FightResearchService(ai: ai)
         opensProfiles = openProfile
+        jobs.store = self
 
         builder.onTimelineAutosave = { [weak self] id, document in
             self?.saveTimeline(id: id, document: document)
@@ -587,6 +600,7 @@ final class AppStore {
     @ObservationIgnored private var unifiedLogSequence = 0
 
     func recordUnifiedLog(channel: String, text: String) {
+        guard let text = LogRelay.displayText(text) else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         for line in trimmed.components(separatedBy: .newlines) where !line.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -759,6 +773,7 @@ final class AppStore {
         SettingsStore.saveActiveProfileName(name)
         scriptPrerequisites?.cancelAll()
         profileGeneration &+= 1
+        jobs.profileDidChange()
         videos = []
         scenes = []
         analysisRuns = []
@@ -787,7 +802,7 @@ final class AppStore {
         igTemplatedMediaIDs = []
         igReport = nil
         pendingWizardTemplate = nil
-        pendingWizardPrompt = nil
+        wizardPromptRequests = [:]
         pendingCutReview = nil
         pendingPodcastHighlights = nil
         podcastResultsAfterDismissal = nil
@@ -1254,6 +1269,8 @@ final class AppStore {
 
     /// Append lines to a log in one write, trimming to the cap.
     func appendLog(_ keyPath: ReferenceWritableKeyPath<AppStore, [String]>, _ lines: [String], channel section: String? = nil) {
+        let lines = lines.compactMap { LogRelay.displayText($0) }
+        guard !lines.isEmpty else { return }
         if let channel = BugReporting.logChannel(for: keyPath) {
             for line in lines {
                 recordUnifiedLog(channel: section ?? channel, text: line)
@@ -1351,27 +1368,24 @@ final class AppStore {
 
     /// Run a talking video's speaker map again — the lines attributed by
     /// hand teach the tracker their voices — and re-cut the rows by the
-    /// new turns. No model call. False when it failed.
-    func mapSpeakersAgain(video: VideoRecord, status: (@Sendable (String) -> Void)? = nil) async -> Bool {
-        guard let database else { return false }
+    /// new turns. No model call; failures belong to the owning job.
+    func mapSpeakersAgain(video: VideoRecord, status: (@Sendable (String) -> Void)? = nil) async throws -> Bool {
+        guard let database else { throw AIError.notConfigured("No profile is open.") }
+        let generation = profileGeneration
         appendLog(\.analysisLog, ["\(video.filename): mapping speakers again"])
         let sink = logSink(\.analysisLog)
         let log: @Sendable (String) -> Void = { line in sink(line); status?(line) }
-        do {
-            let before = try await database.fetchSpeakerTurns(videoID: video.id)
-            try await PodcastAnalysisService.mapSpeakers(video: video, database: database,
-                                                         holdSeconds: settings.podcast.speakerHoldSeconds,
-                                                         log: log)
-            if !before.isEmpty { previousSpeakerMaps[video.id] = before }
-            blurbSpeakers[video.id] = nil
-            blurbTranscripts[video.id] = nil
-            return true
-        } catch is CancellationError {
-            return false
-        } catch {
-            presentError("Could not map the speakers", error)
-            return false
-        }
+        let holdSeconds = settings.podcast.speakerHoldSeconds
+        let before = try await database.fetchSpeakerTurns(videoID: video.id)
+        try await PodcastAnalysisService.mapSpeakers(video: video, database: database,
+                                                     holdSeconds: holdSeconds,
+                                                     log: log)
+        try Task.checkCancellation()
+        guard generation == profileGeneration else { throw CancellationError() }
+        if !before.isEmpty { previousSpeakerMaps[video.id] = before }
+        blurbSpeakers[video.id] = nil
+        blurbTranscripts[video.id] = nil
+        return true
     }
 
     /// Put the speaker map from before the last Map Speakers Again back,
@@ -2691,11 +2705,8 @@ final class AppStore {
     /// Returns the created template's name.
     func extractOverlayTemplate(from imageURL: URL, provider: String?, model: String?,
                                 log: @escaping @Sendable (String) -> Void) async throws -> String {
-        guard let imageData = try? Data(contentsOf: imageURL),
-              let image = NSImage(contentsOf: imageURL),
-              let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            throw AIError.notConfigured("Could not read the image.")
-        }
+        let imageData = try await AppJobWork.run { try Data(contentsOf: imageURL) }
+        try Task.checkCancellation()
         let prompt = """
         You are extracting the OVERLAY DESIGN from one frame of a social video so it can be recreated as a reusable overlay template.
 
@@ -2717,82 +2728,11 @@ final class AppStore {
         let frame = AIFrame(jpeg: imageData, label: "reference frame")
         let response = try await ai.call(prompt: prompt, task: "overlay", frames: [frame],
                                          model: model, provider: provider, timeout: 180, log: log)
-        guard let object = AIResponseParser.jsonObject(from: response.text),
-              let rawOverlays = object["overlays"] as? [[String: Any]], !rawOverlays.isEmpty else {
-            throw AIError.emptyResponse("overlay extraction (no overlays found)")
+        try Task.checkCancellation()
+        return try await AppJobWork.run {
+            try OverlayTemplateFiles.write(response: response.text, provenance: response.provenance,
+                                           imageData: imageData, imageURL: imageURL, log: log)
         }
-
-        var composition = OverlayComposition()
-        composition.provenance = response.provenance
-        var croppedCount = 0
-        for raw in rawOverlays {
-            let x = (raw["x"] as? NSNumber)?.doubleValue ?? 0.5
-            let y = (raw["y"] as? NSNumber)?.doubleValue ?? 0.5
-            let w = min(1, max(0.02, (raw["w"] as? NSNumber)?.doubleValue ?? 0.3))
-            let h = min(1, max(0.02, (raw["h"] as? NSNumber)?.doubleValue ?? 0.1))
-            if (raw["kind"] as? String) == "image" {
-                // Crop the mark out of the reference image into the library.
-                let pixelWidth = Double(cgImage.width)
-                let pixelHeight = Double(cgImage.height)
-                // Clamp the box to the image so a mark at the edge keeps
-                // its true size instead of a silently narrower crop.
-                let bounds = CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)
-                let rect = CGRect(x: (x - w / 2) * pixelWidth,
-                                  y: (y - h / 2) * pixelHeight,
-                                  width: w * pixelWidth,
-                                  height: h * pixelHeight).intersection(bounds).integral
-                guard !rect.isEmpty, let crop = cgImage.cropping(to: rect) else { continue }
-                let name = raw["description"] as? String ?? "overlay mark"
-                let sanitized = name.map { $0.isLetter || $0.isNumber ? $0 : "-" }
-                    .reduce(into: "") { if $1 != "-" || $0.last != "-" { $0.append($1) } }
-                    .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-                let directory = AssetKind.images.rootURL
-                try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                var fileURL = directory.appendingPathComponent("\(sanitized.isEmpty ? "overlay" : sanitized).png")
-                var counter = 2
-                while FileManager.default.fileExists(atPath: fileURL.path) {
-                    fileURL = directory.appendingPathComponent("\(sanitized.isEmpty ? "overlay" : sanitized)-\(counter).png")
-                    counter += 1
-                }
-                let rep = NSBitmapImageRep(cgImage: crop)
-                guard let png = rep.representation(using: .png, properties: [:]) else { continue }
-                try? png.write(to: fileURL)
-                AssetStore.invalidateCatalog(.images)
-                var item = ImageOverlayItem(path: fileURL.path, startTime: 0, endTime: 3)
-                item.xFrac = x
-                item.yFrac = y
-                item.wFrac = w
-                item.unbounded = true
-                composition.images.append(item)
-                croppedCount += 1
-            } else {
-                let text = (raw["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
-                var item = TextOverlayItem(text: text, startTime: 0, endTime: 3)
-                item.xFrac = x
-                item.yFrac = y
-                item.wFrac = w
-                item.hFrac = h
-                item.fontcolor = raw["fontcolor"] as? String ?? "white"
-                item.bold = raw["bold"] as? Bool ?? false
-                item.italic = raw["italic"] as? Bool ?? false
-                if let bg = raw["bgcolor"] as? String {
-                    item.bgcolor = bg
-                    item.boxOpacity = (raw["box_opacity"] as? NSNumber)?.doubleValue ?? 0.6
-                }
-                item.isDynamic = raw["dynamic"] as? Bool ?? false
-                item.unbounded = true
-                composition.texts.append(item)
-            }
-        }
-        guard !composition.isEmpty else {
-            throw AIError.emptyResponse("overlay extraction (nothing usable)")
-        }
-        let base = imageURL.deletingPathExtension().lastPathComponent
-        let name = OverlayTemplateStore.uniqueName(base: "Wizard – \(base)")
-        try OverlayTemplateStore.save(OverlayTemplate(name: name, composition: composition))
-        log("Created overlay template \"\(name)\": \(composition.texts.count) text(s), \(croppedCount) cropped image(s)")
-        return name
     }
 
     // MARK: - People
@@ -3179,16 +3119,19 @@ final class AppStore {
                           log: @escaping @Sendable (String) -> Void) async throws -> [RenameSuggestion] {
         let useLocal = OnDevicePolicy.isEnabled(item: "file-naming", config: settings.ai)
         guard let database else { throw AIError.notConfigured("No profile is open.") }
+        let research = fightResearch
         // Latest outcome per video, fetched once for the whole batch.
         let outcomes = (try? await database.fetchOutcomes()) ?? []
         var suggestions: [RenameSuggestion] = []
         var lastError: Error?
         for (index, video) in videos.enumerated() {
+            try Task.checkCancellation()
+            log("PROGRESS:\(Double(index) / Double(max(1, videos.count)))")
             log("Naming \(video.filename) (\(index + 1)/\(videos.count))…")
             let scenes = (try? await database.fetchScenes(videoID: video.id)) ?? []
             let people = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
             if useLocal, let stem = MetadataFileNamer.stem(people: people.map(\.name),
-                hasResearch: fightResearch[video.id] != nil, fightDate: fightResearch[video.id]?.fightDate) {
+                hasResearch: research[video.id] != nil, fightDate: research[video.id]?.fightDate) {
                 log("\(video.filename): named from people and fight date")
                 if let name = Analyzer.sanitizedFilenameSuggestion(stem, currentFilename: video.filename) {
                     suggestions.append(RenameSuggestion(videoID: video.id, currentFilename: video.filename,
@@ -3201,7 +3144,7 @@ final class AppStore {
             let transcripts = (try? await database.fetchTranscripts(videoID: video.id)) ?? []
             let prompt = FileNamer.prompt(video: video, scenes: scenes, people: people,
                                           outcome: outcomes.first { $0.videoID == video.id },
-                                          research: fightResearch[video.id],
+                                          research: research[video.id],
                                           moments: moments, transcripts: transcripts)
             do {
                 let response = try await ai.call(prompt: prompt, task: "naming",
@@ -3251,6 +3194,8 @@ final class AppStore {
         var provenance: AIProvenance?
         var start = 0
         while start < candidates.count {
+            try Task.checkCancellation()
+            log("PROGRESS:\(Double(start) / Double(max(1, candidates.count)))")
             let chunk = Array(candidates[start..<min(start + SceneCurator.batchSize, candidates.count)])
             if candidates.count > SceneCurator.batchSize {
                 log("Judging scenes \(start + 1)–\(start + chunk.count) of \(candidates.count)…")
@@ -3370,7 +3315,9 @@ final class AppStore {
         let times = CoverFramePicker.sampleTimes(duration: video.duration)
         log("Sampling \(times.count) frames…")
         var frames: [AIFrame] = []
-        for time in times {
+        for (index, time) in times.enumerated() {
+            try Task.checkCancellation()
+            log("PROGRESS:\(0.5 * Double(index) / Double(max(1, times.count)))")
             if let jpeg = await ThumbnailService.jpegFrame(url: video.url, at: time,
                                                           maxDimension: 768) {
                 sampledTimes.append(time)
@@ -3433,11 +3380,11 @@ final class AppStore {
 
     /// AI skim of the whole video proposing the section worth analyzing —
     /// fills the plan sheet's trim slider.
-    func suggestTrim(for video: VideoRecord) async throws
+    func suggestTrim(for video: VideoRecord, log: (@Sendable (String) -> Void)? = nil) async throws
         -> (start: Double, end: Double, reason: String, provenance: AIProvenance) {
         let useLocal = OnDevicePolicy.isEnabled(item: "trim", config: settings.ai)
         let detectors = useLocal ? await cachedDetectors(for: video) : nil
-        return try await analyzer.suggestTrim(video: video, log: logSink(\.analysisLog), useLocal: useLocal, detectors: detectors)
+        return try await analyzer.suggestTrim(video: video, log: log ?? logSink(\.analysisLog), useLocal: useLocal, detectors: detectors)
     }
 
     /// ffmpeg black/freeze/cut detectors for a video, computed once per file
@@ -3465,6 +3412,7 @@ final class AppStore {
         -> AIOutcome<[DuplicateFinder.Group]> {
         let useLocal = OnDevicePolicy.isEnabled(item: "duplicates", config: settings.ai)
         guard let database else { throw AIError.notConfigured("No profile is open.") }
+        let research = fightResearch
         guard videos.count >= 2 else {
             throw AIError.notConfigured("Fewer than two videos in the library — nothing to compare.")
         }
@@ -3485,13 +3433,15 @@ final class AppStore {
         log(useLocal ? "Local duplicate groups excluded — asking the model" : "Duplicate scan — asking the model")
         var lines: [String] = []
         var frames: [AIFrame] = []
-        for video in scoped {
+        for (index, video) in scoped.enumerated() {
+            try Task.checkCancellation()
+            log("PROGRESS:\(Double(index) / Double(max(1, scoped.count)))")
             let people = ((try? await database.fetchVideoPeople(videoID: video.id)) ?? [])
                 .map(\.displayName)
             var line = "- id \(video.id) | \(video.filename) | \(Int(video.duration))s | \(video.width)×\(video.height)"
             if let type = video.type?.label { line += " | \(type)" }
             if !people.isEmpty { line += " | people: \(people.joined(separator: ", "))" }
-            if let research = fightResearch[video.id] { line += " | fight: \(research.fightLabel)" }
+            if let research = research[video.id] { line += " | fight: \(research.fightLabel)" }
             lines.append(line)
             if let jpeg = await ThumbnailService.jpegFrame(url: video.url, at: video.duration / 2,
                                                           maxDimension: 512) {
@@ -3517,6 +3467,10 @@ final class AppStore {
                            log: @escaping @Sendable (String) -> Void) async throws
         -> AIOutcome<[GapReporter.Section]> {
         guard let database else { throw AIError.notConfigured("No profile is open.") }
+        // Keep the inventory on its originating project while the user keeps working.
+        let generatedVideos = generatedVideos, scenes = scenes, people = people
+        let activeProfile = activeProfile, igAccounts = igAccounts, igBenchmarks = igBenchmarks
+        let igReport = igReport, lessons = lessons
         var sceneCounts: [Int64: (total: Int, favorite: Int)] = [:]
         for scene in scenes where !scene.excluded {
             sceneCounts[scene.videoID, default: (0, 0)].total += 1
@@ -4072,12 +4026,17 @@ final class AppStore {
     /// or hand to another user.
     func exportWizardBrain(to url: URL) {
         guard let database else { return }
+        let profile = activeProfile
+        let generation = profileGeneration
         Task {
             do {
                 let lessons = try await database.fetchLessons()
-                let brain = WizardBrain.assemble(profile: activeProfile, lessons: lessons)
-                try brain.write(to: url)
-                wizardBrainStatus = "Exported \(lessons.count) lesson(s), \(activeProfile.tasteCategories.count) video type(s), taste rubric, and house style to \(url.lastPathComponent)"
+                try await AppJobWork.run {
+                    let brain = WizardBrain.assemble(profile: profile, lessons: lessons)
+                    try brain.write(to: url)
+                }
+                guard generation == profileGeneration else { return }
+                wizardBrainStatus = "Exported \(lessons.count) lesson(s), \(profile.tasteCategories.count) video type(s), taste rubric, and house style to \(url.lastPathComponent)"
             } catch {
                 presentError("Wizard Brain export failed", error)
             }
@@ -4091,9 +4050,12 @@ final class AppStore {
     /// nothing the user already has is overwritten.
     func importWizardBrain(from url: URL) {
         guard let database else { return }
+        let generation = profileGeneration
+        let profileName = activeProfile.profileName
         Task {
             do {
-                let brain = try WizardBrain.read(from: url)
+                let brain = try await AppJobWork.run { try WizardBrain.read(from: url) }
+                guard generation == profileGeneration else { return }
                 var notes: [String] = []
 
                 let existingTexts = Set((try await database.fetchLessons()).map {
@@ -4113,7 +4075,9 @@ final class AppStore {
                         evidence: lesson.evidence.isEmpty ? "imported" : "\(lesson.evidence) · imported")
                     addedLessons += 1
                 }
-                lessons = try await database.fetchLessons()
+                let refreshedLessons = try await database.fetchLessons()
+                guard generation == profileGeneration else { return }
+                lessons = refreshedLessons
                 notes.append("\(addedLessons) lesson(s) added"
                              + (skippedLessons > 0 ? " (\(skippedLessons) already present)" : ""))
 
@@ -4124,8 +4088,10 @@ final class AppStore {
                         skippedCategories += 1
                         continue
                     }
-                    let frames = writeImportedTasteFrames(category.exemplarFramesBase64,
-                                                          key: category.key)
+                    let frames = try await AppJobWork.run {
+                        Self.writeImportedTasteFrames(category.exemplarFramesBase64, key: category.key, profileName: profileName)
+                    }
+                    guard generation == profileGeneration else { return }
                     activeProfile.tasteCategories.append(
                         TasteCategory(key: category.key, label: category.label,
                                       rubric: category.rubric, exemplarFrames: frames,
@@ -4161,8 +4127,8 @@ final class AppStore {
     }
 
     /// Restore inlined exemplar frames to this profile's taste-frames folder.
-    private func writeImportedTasteFrames(_ framesBase64: [String], key: String) -> [String] {
-        let directory = SettingsStore.tasteFramesDirectory(profileName: activeProfile.profileName)
+    nonisolated private static func writeImportedTasteFrames(_ framesBase64: [String], key: String, profileName: String) -> [String] {
+        let directory = SettingsStore.tasteFramesDirectory(profileName: profileName)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let stamp = Int(Date().timeIntervalSince1970)
         var paths: [String] = []
@@ -5138,13 +5104,17 @@ final class AppStore {
         guard !fightResearchInFlight.contains(video.id) else {
             throw AIError.notConfigured("Research is already running for this video")
         }
+        let generation = profileGeneration
+        let projectID = activeProjectID
         fightResearchInFlight.insert(video.id)
         defer { fightResearchInFlight.remove(video.id) }
         let record = try await fightResearchService.run(video: video, identity: identity,
                                                         profile: activeProfile,
                                                         database: database, emit: log,
                                                         useLocal: OnDevicePolicy.isEnabled(item: "fight-queries", config: settings.ai))
-        fightResearch[video.id] = record
+        try Task.checkCancellation()
+        guard generation == profileGeneration else { throw CancellationError() }
+        if projectID == activeProjectID { fightResearch[video.id] = record }
         return record
     }
 
@@ -5263,22 +5233,10 @@ final class AppStore {
         guard !trimmed.isEmpty, !videos.isEmpty else { return }
         let unanalyzed = videos.filter { $0.visualAnalyzedAt == nil }
         let willAnalyze = !unanalyzed.isEmpty && !isAnalyzing
-        pendingWizardPrompt = WizardPromptHandoff(
-            description: trimmed,
-            videoIDs: Set(videos.map(\.id)),
-            statusMessage: willAnalyze
-                ? "Analyzing \(unanalyzed.count) video(s), then interpreting your request…"
-                : "Interpreting your request…")
-        requestedSection = .wizard
-        Task {
-            if willAnalyze {
-                analyze(videos: unanalyzed)
-                await analysisTask?.value
-                guard pendingWizardPrompt?.description == trimmed else { return }
-                pendingWizardPrompt?.statusMessage = "Interpreting your request…"
-            }
-            await interpretWizardPrompt(trimmed)
-        }
+        let handoff = WizardPromptHandoff(description: trimmed, videoIDs: Set(videos.map(\.id)),
+            statusMessage: willAnalyze ? "Analyzing \(unanalyzed.count) video(s), then interpreting your request…" : "Interpreting your request…")
+        if willAnalyze { analyze(videos: unanalyzed) }
+        startGenerateRequest(handoff, waitForAnalysis: willAnalyze || isAnalyzing)
     }
 
     /// "Generate Video" from the Scenes/People screens: the currently
@@ -5290,36 +5248,53 @@ final class AppStore {
                              personKeys: Set<String>, tags: [String]) {
         let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !scenes.isEmpty else { return }
-        pendingWizardPrompt = WizardPromptHandoff(
-            description: trimmed,
-            videoIDs: [],
-            runIDs: Set(scenes.compactMap(\.runID)),
-            personKeys: personKeys,
-            tags: tags,
+        let handoff = WizardPromptHandoff(description: trimmed, videoIDs: [],
+            runIDs: Set(scenes.compactMap(\.runID)), personKeys: personKeys, tags: tags,
             statusMessage: "Interpreting your request…")
-        requestedSection = .wizard
-        Task { await interpretWizardPrompt(trimmed) }
+        startGenerateRequest(handoff, waitForAnalysis: false)
     }
 
     /// AI-parse a "Generate Video" description into settings, updating the
     /// pending handoff in place.
-    private func interpretWizardPrompt(_ trimmed: String) async {
+    private func startGenerateRequest(_ handoff: WizardPromptHandoff, waitForAnalysis: Bool) {
+        let project = activeProject
+        let projectKey = activeProjectID ?? 0
+        let generation = profileGeneration
         let profile = activeProfile
         let wizard = wizard
-        do {
-            let parsed = try await wizard.parseRequest(description: trimmed, profile: profile, emit: logSink(\.wizardLog),
-                                                       useLocal: OnDevicePolicy.isEnabled(item: "wizard-request", config: settings.ai),
-                                                       formatPreset: UserDefaults.standard.string(forKey: "wizard.formatPreset") ?? "custom")
-            // The user may have dismissed or replaced the request meanwhile.
-            guard pendingWizardPrompt?.description == trimmed else { return }
-            pendingWizardPrompt?.parsed = parsed
-            pendingWizardPrompt?.statusMessage = nil
-        } catch {
-            guard pendingWizardPrompt?.description == trimmed else { return }
-            pendingWizardPrompt?.statusMessage = nil
-            pendingWizardPrompt?.parseFailed = true
-            appendLog(\.wizardLog, ["Could not interpret the request with AI — it will be passed to the wizard as-is. (\(error.userMessage))"])
+        let useLocal = OnDevicePolicy.isEnabled(item: "wizard-request", config: settings.ai)
+        let formatPreset = UserDefaults.standard.string(forKey: "wizard.formatPreset") ?? "custom"
+        for job in jobs.running where job.kind == .generateRequest && job.projectID == project?.id { jobs.cancel(job.id) }
+        wizardPromptRequests[projectKey] = handoff
+        requestedSection = .wizard
+        jobs.start(.generateRequest, title: "Generate Video Request", project: project,
+                   profileGeneration: generation) { [self] log in
+            var completed = handoff
+            log(handoff.statusMessage ?? "Interpreting your request…")
+            // Waiting is cancellable without cancelling the independent analysis task.
+            while waitForAnalysis && isAnalyzing { try await Task.sleep(for: .milliseconds(100)) }
+            try Task.checkCancellation()
+            guard generation == profileGeneration else { throw CancellationError() }
+            log("Interpreting your request…")
+            do {
+                completed.parsed = try await wizard.parseRequest(description: handoff.description, profile: profile,
+                    emit: log, useLocal: useLocal, formatPreset: formatPreset)
+            } catch {
+                try Task.checkCancellation()
+                completed.parseFailed = true
+                appendLog(\.wizardLog, ["Could not interpret the request with AI — it will be passed to the wizard as-is. (\(error.userMessage))"])
+            }
+            try Task.checkCancellation()
+            guard generation == profileGeneration else { throw CancellationError() }
+            completed.statusMessage = nil
+            wizardPromptRequests[projectKey] = completed
+            return .generateRequest(completed)
         }
+    }
+
+    func cancelGenerateRequest() {
+        for job in jobs.running where job.kind == .generateRequest && job.projectID == activeProjectID { jobs.cancel(job.id) }
+        pendingWizardPrompt = nil
     }
 
     func runWizard(options: WizardOptions) {
@@ -6352,10 +6327,10 @@ final class AppStore {
             if scene.centerStagePathJSON != nil, let stored = scene.centerStagePath {
                 // Ends by re-reading this one row, so the new path lands
                 // without a whole-library reload.
-                await computeCameraPath(sceneID: scene.id, videoID: scene.videoID,
+                startCameraPath(sceneID: scene.id, videoID: scene.videoID,
                                         start: clearing ? scene.originalStart : start,
                                         end: clearing ? scene.originalEnd : end,
-                                        camera: stored.camera)
+                                        camera: stored.camera, reportsFailure: false)
             }
         }
     }
@@ -6363,9 +6338,11 @@ final class AppStore {
     /// Compute (or refresh) one scene's Center Stage path over a range,
     /// honoring markers, ignores, and hints.
     func computeCameraPath(sceneID: Int64, videoID: Int64,
-                           start: Double, end: Double, camera: String) async {
+                           start: Double, end: Double, camera: String) async throws {
         guard let database, end > start,
-              let video = videos.first(where: { $0.id == videoID }) else { return }
+              let video = videos.first(where: { $0.id == videoID }) else { throw AIError.notConfigured("The source video is unavailable.") }
+        let generation = profileGeneration
+        let aspect = activeProfile.defaultRenderSettings.aspectRatio
         let centerStage = CenterStageService()
         let markers = (try? await database.personMarkers(videoID: videoID)) ?? []
         let named = markers.filter { $0.personID != nil && !$0.ignored }
@@ -6383,18 +6360,21 @@ final class AppStore {
                  crop: CGRect(x: hint.x, y: hint.y, width: hint.width, height: hint.height))
             }
         let trackingStarted = ContinuousClock.now
-        guard let result = try? await centerStage.cameraPath(
+        let result = try await centerStage.cameraPath(
                 source: video.url, start: start, duration: end - start,
                 focusPortraits: portraits, avoidPortraits: avoidPortraits,
                 hints: hints, tuning: .named(camera),
-                aspect: activeProfile.defaultRenderSettings.aspectRatio),
-              result.keyframes.count >= 2 else { return }
+                aspect: aspect)
+        try Task.checkCancellation()
+        guard generation == profileGeneration else { throw CancellationError() }
+        guard result.keyframes.count >= 2 else { throw AIError.unusableResponse("No usable camera path was found.") }
         let path = SceneCameraPath(camera: camera, keyframes: result.keyframes)
         if let data = try? JSONEncoder().encode(path),
            let json = String(data: data, encoding: .utf8) {
-            try? await database.setSceneCenterStagePath(
+            try await database.setSceneCenterStagePath(
                 sceneID, json: json, seconds: (ContinuousClock.now - trackingStarted).seconds)
         }
+        guard generation == profileGeneration else { throw CancellationError() }
         await replaceScene(id: sceneID)
     }
 
@@ -6992,11 +6972,11 @@ final class AppStore {
             throw InstagramError.fetchFailed(
                 "This reel failed the release-quality gate. Open it in Builder and render a corrected version before publishing.")
         }
-        guard !isPublishingToInstagram else {
-            throw InstagramError.fetchFailed("Another publish is already running")
-        }
-        isPublishingToInstagram = true
-        defer { isPublishingToInstagram = false }
+        let database = database
+        let generation = profileGeneration
+        let projectID = activeProjectID
+        let sourceScenes = scenes
+        let username = settings.instagram.connectedUsername
         let result = try await instagram.publishReel(file: video.url, caption: caption,
                                                      shareToFeed: shareToFeed,
                                                      settings: settings.instagram, log: log)
@@ -7009,12 +6989,13 @@ final class AppStore {
                let document = try? JSONDecoder().decode(TimelineDocument.self, from: data) {
                 try? await database.saveGeneratedTraits(
                     videoID: video.id,
-                    traits: .derive(document: document, scenes: scenes)
+                    traits: .derive(document: document, scenes: sourceScenes)
                 )
             }
-            generatedVideos = (try? await database.fetchGeneratedVideos(projectID: activeProjectID)) ?? generatedVideos
+            let refreshed = try? await database.fetchGeneratedVideos(projectID: projectID)
+            if generation == profileGeneration, projectID == activeProjectID, let refreshed { generatedVideos = refreshed }
         }
-        let username = settings.instagram.connectedUsername
+        guard generation == profileGeneration else { return result }
         if !username.isEmpty {
             refreshInstagram(username: username)
         }

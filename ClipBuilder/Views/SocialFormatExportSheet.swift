@@ -6,10 +6,6 @@ struct SocialFormatExportSheet: View {
     @Environment(\.dismiss) private var dismiss
     let video: GeneratedVideoRecord
 
-    @State private var isExporting = false
-    @State private var status = ""
-    private let exporter = SocialFormatExporter()
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Export Instagram Formats").font(.headline)
@@ -27,8 +23,6 @@ struct SocialFormatExportSheet: View {
                     "Export 5 Best-frame Stills…", systemImage: "rectangle.stack",
                     action: exportCarousel)
             }
-            if isExporting { ProgressView() }
-            if !status.isEmpty { Text(status).foregroundStyle(.secondary).textSelection(.enabled) }
             HStack {
                 Spacer()
                 Button("Done", action: dismiss.callAsFunction)
@@ -36,7 +30,7 @@ struct SocialFormatExportSheet: View {
         }
         .padding(20)
         .frame(width: 460)
-        .disabled(isExporting)
+        .appJobSetupPresentation()
     }
 
     private func exportVideo(_ preset: RenderPreset, suffix: String) {
@@ -44,17 +38,18 @@ struct SocialFormatExportSheet: View {
         panel.allowedContentTypes = [.mpeg4Movie]
         panel.nameFieldStringValue = "\(video.url.deletingPathExtension().lastPathComponent)-\(suffix).mp4"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        isExporting = true
-        status = "Exporting \(preset.label)…"
-        Task {
-            do {
-                var settings = store.activeProfile.defaultRenderSettings
-                settings.preset = preset
-                try await exporter.exportVideo(source: video.url, settings: settings, destination: url)
-                status = "Exported \(url.lastPathComponent)"
-            } catch { store.presentError("Could not export format", error) }
-            isExporting = false
+        let store = store
+        let video = video
+        var settings = store.activeProfile.defaultRenderSettings
+        settings.preset = preset
+        let renderSettings = settings
+        store.jobs.start(.socialExport, title: "Export \(preset.label)",
+                         project: store.activeProject, profileGeneration: store.profileGeneration) { log in
+            log("Exporting \(video.filename)…")
+            try await SocialFormatExporter().exportVideo(source: video.url, settings: renderSettings, destination: url)
+            return .socialExport(urls: [url])
         }
+        dismiss()
     }
 
     private func exportCarousel() {
@@ -67,17 +62,14 @@ struct SocialFormatExportSheet: View {
         let folder = root.appending(
             path: "\(video.url.deletingPathExtension().lastPathComponent)-carousel",
             directoryHint: .isDirectory)
-        isExporting = true
-        status = "Extracting carousel frames…"
-        Task {
-            do {
-                let files = try await exporter.exportCarousel(
-                    source: video.url,
-                    duration: video.duration,
-                    directory: folder)
-                status = "Exported \(files.count) slides to \(folder.path)"
-            } catch { store.presentError("Could not export carousel", error) }
-            isExporting = false
+        let store = store
+        let video = video
+        store.jobs.start(.socialExport, title: "Export Carousel — \(video.filename)",
+                         project: store.activeProject, profileGeneration: store.profileGeneration) { log in
+            log("Extracting carousel frames…")
+            let files = try await SocialFormatExporter().exportCarousel(source: video.url, duration: video.duration, directory: folder)
+            return .socialExport(urls: files)
         }
+        dismiss()
     }
 }

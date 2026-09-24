@@ -102,6 +102,20 @@ struct BuilderBRollPickerSheet: View {
     /// for, else the playhead.
     private var startTime: Double { model.brollRequest?.time ?? model.playhead }
 
+    private var suggestionKey: SuggestionKey {
+        SuggestionKey(revision: model.revision, track: track, time: startTime,
+                      scenes: store.scenesVersion, people: store.people, assets: imageAssets)
+    }
+
+    private struct SuggestionKey: Hashable {
+        let revision: Int
+        let track: Int
+        let time: Double
+        let scenes: Int
+        let people: [PersonRecord]
+        let assets: [LibraryAssetMetadata]
+    }
+
     // MARK: - Sources
 
     private var allSources: [Source] {
@@ -128,10 +142,7 @@ struct BuilderBRollPickerSheet: View {
     /// suggestion reuses the scene's own entry (same id, so selection, the
     /// remembered pick, the "used" mark and Enter all behave as usual) with
     /// the reason as its detail line; a photo becomes an item of its own.
-    private func makeSuggested() -> [Source] {
-        let scope = Self.suggestionScope(document: model.document, track: track, at: startTime)
-        let suggestions = scope.videoTrack.isEmpty ? [] : MediaSuggestionService.suggestions(
-            document: scope, scenes: store.scenes, people: store.people, assets: imageAssets)
+    private func makeSuggested(_ suggestions: [MediaSuggestion]) -> [Source] {
         let footage = Dictionary(uniqueKeysWithValues: allSources.map { ($0.id, $0) })
         var items: [Source] = []
         var seen = Set<String>()
@@ -254,7 +265,7 @@ struct BuilderBRollPickerSheet: View {
         .modalCloseButton { cancel() }
         .onAppear {
             isPresented = true
-            if wizardFind != nil { suggested = makeSuggested() }
+            suggested = Self.prioritizingFind(scenes: wizardFind?.scenes ?? [], request: wizardFind?.request ?? "", suggestions: [])
             restoreLastPick()
         }
         .task {
@@ -262,10 +273,22 @@ struct BuilderBRollPickerSheet: View {
             // made of; it is read once per opening.
             guard let database = store.database else { return }
             imageAssets = (try? await database.fetchAssetMetadata(kind: AssetKind.images.rawValue)) ?? []
-            suggested = makeSuggested()
         }
-        .onChange(of: track) { _, _ in suggested = makeSuggested() }
-        .onChange(of: startTime) { _, _ in suggested = makeSuggested() }
+        .task(id: suggestionKey) {
+            do {
+                try await Task.sleep(for: .milliseconds(180))
+                let scope = Self.suggestionScope(document: model.document, track: track, at: startTime)
+                let scenes = store.scenes, people = store.people, assets = imageAssets
+                let result = try await AppJobWork.run {
+                    scope.videoTrack.isEmpty ? [] : MediaSuggestionService.suggestions(
+                        document: scope, scenes: scenes, people: people, assets: assets)
+                }
+                try Task.checkCancellation()
+                suggested = makeSuggested(result)
+            } catch is CancellationError {
+                // A newer playhead or track takes over the suggestion request.
+            } catch { store.presentError("Could not suggest B-roll", error) }
+        }
         .onDisappear {
             isPresented = false
             loadTask?.cancel()

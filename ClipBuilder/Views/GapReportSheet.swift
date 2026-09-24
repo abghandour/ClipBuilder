@@ -1,29 +1,15 @@
 import SwiftUI
 
-/// Content gap report: a strategist's checklist over the whole pipeline —
-/// what to post next, what's sitting unused, what's blocking output —
-/// referencing the library's actual files.
 struct GapReportSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-
-    @State private var isRunning = false
-    @State private var statusLine = ""
-    @State private var errorMessage: String?
     @State private var modelTag = ""
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
-    @State private var sections: [GapReporter.Section]?
-    @State private var provenance: AIProvenance?
 
     var body: some View {
-        Group {
-            if let sections {
-                report(sections)
-            } else {
-                setup
-            }
-        }
-        .frame(minWidth: 520, idealWidth: 560, minHeight: 280, idealHeight: 440)
+        setup
+        .frame(minWidth: 520, idealWidth: 560, minHeight: 280)
+        .appJobSetupPresentation()
         .modalCloseButton { dismiss() }
         .task {
             availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
@@ -50,100 +36,25 @@ struct GapReportSheet: View {
                 Spacer()
             }
 
-            if isRunning {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(statusLine.isEmpty ? "Reading the pipeline…" : statusLine)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button(isRunning ? "Analyzing…" : "Build Report") { run() }
+                Button("Build Report") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isRunning)
             }
         }
         .padding(20)
     }
 
-    private func report(_ sections: [GapReporter.Section]) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("Content Gaps")
-                    .font(.headline)
-                if let provenance {
-                    AIInfoButton(provenance: provenance, style: .full, role: "Written by")
-                }
-            }
-            .padding()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(sections) { section in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(section.title)
-                                .font(.callout.bold())
-                            ForEach(section.items, id: \.self) { item in
-                                HStack(alignment: .top, spacing: 6) {
-                                    Text("•")
-                                        .foregroundStyle(.secondary)
-                                    Text(item)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                                .font(.callout)
-                            }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-            }
-
-            HStack {
-                Button("Copy Report", systemImage: "doc.on.doc") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(GapReporter.plainText(sections),
-                                                   forType: .string)
-                }
-                Spacer()
-                Button("Open AI Wizard") {
-                    store.requestedSection = .wizard
-                    dismiss()
-                }
-                .help("Jump to the Wizard to act on the report")
-            }
-            .padding()
-        }
-    }
-
     private func run() {
+        let store = store
         let (provider, model) = ModelPicker.parse(modelTag)
-        isRunning = true
-        errorMessage = nil
-        Task {
-            do {
-                let report = try await store.generateGapReport(
-                    provider: provider, model: model) { message in
-                    if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
-                }
-                sections = report.value
-                provenance = report.provenance
-            } catch {
-                errorMessage = error.userMessage
-            }
-            isRunning = false
+        store.jobs.start(.gapReport, title: "Content Gaps",
+                         project: store.activeProject, profileGeneration: store.profileGeneration) { log in
+            let result = try await store.generateGapReport(provider: provider, model: model, log: log)
+            return .gapReport(result.value, provenance: result.provenance)
         }
+        dismiss()
     }
 }

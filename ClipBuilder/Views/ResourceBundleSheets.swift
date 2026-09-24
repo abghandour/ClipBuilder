@@ -10,9 +10,6 @@ struct ResourceExportSheet: View {
     @State private var selected: Set<ResourceCategory> = Set(ResourceCategory.allCases)
     @State private var isLoading = true
     @State private var inventory: [ResourceCategory: [ResourceItem]] = [:]
-    @State private var status: String?
-    @State private var isRunning = false
-    @State private var exportedURL: URL?
 
     private var selectedBytes: Int64 {
         selected.reduce(0) { $0 + (inventory[$1] ?? []).reduce(0) { $0 + $1.bytes } }
@@ -50,39 +47,27 @@ struct ResourceExportSheet: View {
                         }
                     }
                     .toggleStyle(.checkbox)
-                    .disabled(isLoading || count == 0 || isRunning)
-                }
-            }
-
-            if let status {
-                HStack(spacing: Theme.spaceS) {
-                    if isRunning { ProgressView().controlSize(.small) }
-                    Text(status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .disabled(isLoading || count == 0)
                 }
             }
 
             HStack {
-                if let exportedURL {
-                    Button("Show in Finder") {
-                        NSWorkspace.shared.activateFileViewerSelecting([exportedURL])
-                    }
-                }
+
                 Spacer()
                 Text(selectedBytes > 0 ? ByteCountFormatter.string(fromByteCount: selectedBytes, countStyle: .file) : "")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
-                Button(exportedURL == nil ? "Cancel" : "Done") { dismiss() }
+                Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Export…") { export() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(isLoading || selected.isEmpty || isRunning || exportedURL != nil)
+                    .disabled(isLoading || selected.isEmpty)
             }
         }
         .padding(Theme.spaceL)
         .frame(width: 460)
+        .appJobSetupPresentation()
         .task {
             let loaded = await ResourceBundle.inventoryAsync()
             guard !Task.isCancelled else { return }
@@ -113,46 +98,28 @@ struct ResourceExportSheet: View {
         panel.canCreateDirectories = true
         panel.title = "Export Resources"
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        isRunning = true
-        status = "Preparing…"
+        let store = store
         let categories = selected
-        Task {
-            let metadata: [LibraryAssetMetadata]
+        let profile = store.activeProfile
+        let database = store.database
+        let benchmarks = store.igBenchmarks
+        store.jobs.start(.resourceExport, title: "Export Resources", project: nil,
+                         profileGeneration: store.profileGeneration) { log in
             let learned: [LearnedDocumentBuilder.Build]
-            do {
-                if categories.contains(.learned), let database = store.database {
-                    guard !store.activeProfile.learnedSharing.deviceNickname.isEmpty else {
-                        throw AIError.notConfigured("Enter a device nickname on AI Lessons before exporting learned preferences.")
-                    }
-                    learned = [try await LearnedDocumentBuilder.build(profile: store.activeProfile, database: database, benchmarks: store.igBenchmarks)]
-                } else { learned = [] }
-                metadata = categories.contains(.bumpers)
-                    ? try await store.database?.fetchAssetMetadata(kind: AssetKind.bumpers.rawValue) ?? [] : []
-            } catch {
-                isRunning = false
-                store.presentError("Could not prepare resource export", error)
-                return
-            }
-            let result: Result<Void, Error> = await Task.detached(priority: .userInitiated) {
-                do {
-                    try ResourceBundle.export(categories: categories, to: destination, bumperMetadata: metadata, learned: learned) { message in
-                        Task { @MainActor in status = message }
-                    }
-                    return .success(())
-                } catch {
-                    return .failure(error)
+            if categories.contains(.learned), let database {
+                guard !profile.learnedSharing.deviceNickname.isEmpty else {
+                    throw AIError.notConfigured("Enter a device nickname on AI Lessons before exporting learned preferences.")
                 }
-            }.value
-            isRunning = false
-            switch result {
-            case .success:
-                status = "Exported to \(destination.lastPathComponent)."
-                exportedURL = destination
-            case .failure(let error):
-                status = nil
-                store.presentError("Export failed", error)
+                learned = [try await LearnedDocumentBuilder.build(profile: profile, database: database, benchmarks: benchmarks)]
+            } else { learned = [] }
+            let metadata = categories.contains(.bumpers)
+                ? try await database?.fetchAssetMetadata(kind: AssetKind.bumpers.rawValue) ?? [] : []
+            try await AppJobWork.run {
+                try ResourceBundle.export(categories: categories, to: destination, bumperMetadata: metadata, learned: learned, progress: log)
             }
+            return .resourceExport(url: destination)
         }
+        dismiss()
     }
 }
 
@@ -167,9 +134,6 @@ struct ResourceImportSheet: View {
     @State private var preview: ResourceBundlePreview?
     @State private var selected: Set<ResourceCategory> = []
     @State private var policy: ResourceImportPolicy = .skip
-    @State private var status: String?
-    @State private var isRunning = false
-    @State private var summary: ResourceImportSummary?
     @State private var loadError: String?
 
     private var hasConflicts: Bool {
@@ -217,18 +181,17 @@ struct ResourceImportSheet: View {
                             }
                         }
                         .toggleStyle(.checkbox)
-                        .disabled(count == 0 || isRunning || summary != nil)
+                        .disabled(count == 0)
                     }
                 }
 
-                if summary == nil {
+                Group {
                     VStack(alignment: .leading, spacing: Theme.spaceXS) {
                         Picker("When an item already exists", selection: $policy) {
                             ForEach(ResourceImportPolicy.allCases) { choice in
                                 Text(choice.title).tag(choice)
                             }
                         }
-                        .disabled(isRunning)
                         Text(policy.detail)
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -248,32 +211,24 @@ struct ResourceImportSheet: View {
                 }
             }
 
-            if let status {
-                HStack(spacing: Theme.spaceS) {
-                    if isRunning { ProgressView().controlSize(.small) }
-                    Text(status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
             HStack {
                 Spacer()
-                Button(summary == nil ? "Cancel" : "Done") { dismiss() }
-                    .keyboardShortcut(summary == nil ? .cancelAction : .defaultAction)
-                if summary == nil {
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Group {
                     Button("Import") { runImport() }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
-                        .disabled(preview == nil || selected.isEmpty || isRunning)
+                        .disabled(preview == nil || selected.isEmpty)
                 }
             }
         }
         .padding(Theme.spaceL)
         .frame(width: 480)
+        .appJobSetupPresentation()
         .task { await load() }
         .onDisappear {
-            if let preview { ResourceBundle.discard(preview) }
+            if let preview { Task.detached { ResourceBundle.discard(preview) } }
         }
     }
 
@@ -284,6 +239,10 @@ struct ResourceImportSheet: View {
         }.value
         switch result {
         case .success(let loaded):
+            guard !Task.isCancelled else {
+                Task.detached { ResourceBundle.discard(loaded) }
+                return
+            }
             preview = loaded
             selected = Set(loaded.manifest.categories.filter { category in
                 category == .preferences ? loaded.preferenceKeys > 0 : !(loaded.items[category] ?? []).isEmpty
@@ -295,40 +254,31 @@ struct ResourceImportSheet: View {
 
     private func runImport() {
         guard let preview else { return }
-        isRunning = true
-        status = "Importing…"
-        let categories = selected
-        let chosenPolicy = policy
+        let store = store
+        let categories = selected, chosenPolicy = policy
+        let generation = store.profileGeneration
+        let database = store.database
         let learnedLibrary = LearnedLibrary(profile: store.activeProfile.profileName)
-        Task {
-            let result: Result<ResourceImportSummary, Error> = await Task.detached(priority: .userInitiated) {
-                do {
-                    return .success(try ResourceBundle.importBundle(preview, categories: categories,
-                                                                   policy: chosenPolicy, learnedLibrary: learnedLibrary) { message in
-                        Task { @MainActor in status = message }
-                    })
-                } catch {
-                    return .failure(error)
-                }
-            }.value
-            isRunning = false
-            switch result {
-            case .success(let done):
-                do {
-                    for metadata in done.bumperMetadata {
-                        try await store.database?.upsertAssetMetadata(metadata)
-                    }
-                } catch {
-                    store.presentError("Files imported, but bumper metadata could not be saved", error)
-                }
-                AssetCatalogChanges.publish()
-                summary = done
-                status = done.message
-                store.resourcesDidChange(done)
-            case .failure(let error):
-                status = nil
-                store.presentError("Import failed", error)
+        // Ownership moves to the job; closing setup must not delete its extracted files.
+        self.preview = nil
+        store.jobs.start(.resourceImport, title: "Import Resources", project: nil,
+                         profileGeneration: generation, cleanup: {
+                             Task.detached { ResourceBundle.discard(preview) }
+                         }) { log in
+            let done = try await AppJobWork.run {
+                return try ResourceBundle.importBundle(preview, categories: categories, policy: chosenPolicy,
+                                                        learnedLibrary: learnedLibrary, progress: log)
             }
+            do {
+                for metadata in done.bumperMetadata { try await database?.upsertAssetMetadata(metadata) }
+            } catch {
+                store.presentError("Files imported, but bumper metadata could not be saved", error)
+            }
+            AssetCatalogChanges.publish()
+            guard generation == store.profileGeneration else { throw CancellationError() }
+            await store.resourcesDidChange(done)
+            return .resourceImport(summary: done)
         }
+        dismiss()
     }
 }

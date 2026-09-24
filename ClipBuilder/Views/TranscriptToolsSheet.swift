@@ -15,7 +15,9 @@ struct TranscriptToolsSheet: View {
     @State private var transcripts: [TranscriptRow] = []
     @State private var targetLanguage = "pt-BR"
     @State private var translationConfiguration: TranslationSession.Configuration?
-    @State private var isWorking = false
+    @State private var isTranslating = false
+    private var analysisJob: AppJob? { store.jobs.latest(.transcriptAnalysis, subjectID: String(video.id)) }
+    private var isWorking: Bool { isTranslating || analysisJob?.status == .running }
     @State private var status = ""
     @State private var batchFallback = false
     /// Cuts ticked for a batch decision.
@@ -115,6 +117,8 @@ struct TranscriptToolsSheet: View {
                 }
 
                 Section("Caption Translation") {
+                    Text("Translation runs in this window. Closing it stops translation.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Picker("Target language", selection: $targetLanguage) {
                         Text("Português (Brasil)").tag("pt-BR")
                         Text("English (United States)").tag("en-US")
@@ -131,6 +135,14 @@ struct TranscriptToolsSheet: View {
                     .disabled(!transcripts.contains { $0.isTranslation && $0.language == targetLanguage })
                 }
 
+                if let job = analysisJob, job.status == .running {
+                    Section {
+                        HStack {
+                            Text(job.statusLine.isEmpty ? "Analyzing transcript…" : job.statusLine)
+                            Button("Stop") { store.jobs.cancel(job.id) }
+                        }
+                    }
+                }
                 if !status.isEmpty {
                     Section { Text(status).foregroundStyle(.secondary) }
                 }
@@ -144,6 +156,10 @@ struct TranscriptToolsSheet: View {
         }
         .frame(width: 720, height: 650)
         .task { await load() }
+        .appJobSetupPresentation()
+        .onChange(of: analysisJob?.status) { _, state in
+            if state == .done { Task { await load() } }
+        }
         .translationTask(translationConfiguration) { session in
             await translate(using: session)
         }
@@ -158,39 +174,7 @@ struct TranscriptToolsSheet: View {
     }
 
     private func analyzeTranscript() {
-        guard let database = store.database else { return }
-        isWorking = true
-        Task {
-            let original = transcripts.filter { !$0.isTranslation }
-            let segments = original.map {
-                TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: nil)
-            }
-            let people = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
-            let scenes = ((try? await database.fetchScenes(includeExcluded: true)) ?? [])
-                .filter { $0.videoID == video.id }
-            let settings = store.settings.podcast
-            let result = TranscriptFeatureAnalyzer.analyze(
-                segments: segments, videoID: video.id, speakerKeys: people.map(\.key),
-                mediaDuration: video.duration,
-                speakerHints: TranscriptFeatureAnalyzer.speakerHints(
-                    scenes: scenes, personKeys: people.map(\.key)),
-                deadAirThreshold: settings.deadAirSeconds,
-                fillerRunThreshold: settings.fillerRunSeconds)
-            let newTopics = TopicSegmenter.segment(result.features, videoID: video.id)
-            let decided = settings.cleanupCutPolicy.applied(to: result.proposals)
-            do {
-                try await database.replaceTranscriptFeatures(
-                    videoID: video.id,
-                    features: result.features,
-                    proposals: decided)
-                try await database.replaceTopicRanges(videoID: video.id, topics: newTopics)
-                status = "Created \(newTopics.count) topics and \(result.proposals.count) cleanup proposals."
-                await load()
-            } catch {
-                store.presentError("Could not analyze transcript", error)
-            }
-            isWorking = false
-        }
+        store.startTranscriptAnalysis(video: video)
     }
 
     /// One decision for several cuts at once, saved together.
@@ -223,7 +207,7 @@ struct TranscriptToolsSheet: View {
     private func startTranslation() {
         let originals = transcripts.filter { !$0.isTranslation }
         translationConfiguration = TranscriptTranslator.configuration(originals: originals, target: targetLanguage)
-        isWorking = true
+        isTranslating = true
         status = "Preparing on-device translation…"
     }
 
@@ -238,7 +222,7 @@ struct TranscriptToolsSheet: View {
             store.presentError("Caption translation failed", error)
         }
         translationConfiguration = nil
-        isWorking = false
+        isTranslating = false
     }
 
     private func exportSRT() {

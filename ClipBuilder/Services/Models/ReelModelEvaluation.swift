@@ -118,11 +118,13 @@ nonisolated struct ReelModelStore: Sendable {
 
 nonisolated enum ReelModelEvaluator {
   /// Evaluation owns neither AIConfig nor the user's override dictionary.
+  @concurrent
   static func evaluate(
     item: ReelModelItem, rows: [ReelModelRow], store: ReelModelStore,
     trainer: any ReelModelTrainer, adopted: Bool = false,
     preferences: [(ReelTraits, ReelTraits)] = []
   ) async throws -> ReelModelEvaluation {
+    try Task.checkCancellation()
     let ordered = rows.sorted { ($0.date, $0.id) < ($1.date, $1.id) }
     if item == .outcome && !adopted { try ReelOutcomeModel.requireEnough(ordered) }
     guard ordered.count >= 5 else {
@@ -148,7 +150,10 @@ nonisolated enum ReelModelEvaluator {
     } else {
       model = try await trainer.train(rows: train, item: item, destination: scratch)
     }
-    let predictions = try test.map { try model.predictor.predict($0.features) }
+    let predictions = try test.map {
+      try Task.checkCancellation()
+      return try model.predictor.predict($0.features)
+    }
     var metrics: [String: Double] = [:]
     var baseline = 0.0
     var passed = false
@@ -193,6 +198,7 @@ nonisolated enum ReelModelEvaluator {
         passed = precision > baseline
       }
     }
+    try Task.checkCancellation()
     if !adopted {
       try FileManager.default.createDirectory(at: store.root, withIntermediateDirectories: true)
       // Retain the model trained on the older 80%, exactly the artifact measured here.

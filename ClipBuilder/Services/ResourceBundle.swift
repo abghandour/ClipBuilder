@@ -129,7 +129,8 @@ nonisolated struct ResourceBundlePreview: Sendable {
     var preferenceKeys: Int
 }
 
-nonisolated struct ResourceImportSummary: Sendable {
+nonisolated struct ResourceImportSummary: Sendable, Equatable {
+    var stopped = false
     var imported = 0
     var replaced = 0
     var skipped = 0
@@ -147,7 +148,8 @@ nonisolated struct ResourceImportSummary: Sendable {
         if renamed > 0 { parts.append("\(renamed) kept alongside existing") }
         if skipped > 0 { parts.append("\(skipped) skipped") }
         if preferencesApplied > 0 { parts.append("\(preferencesApplied) preferences applied") }
-        return parts.isEmpty ? "Nothing to import." : parts.joined(separator: ", ") + "."
+        let detail = parts.isEmpty ? "Nothing to import." : parts.joined(separator: ", ") + "."
+        return stopped ? "Import stopped. " + detail : detail
     }
 }
 
@@ -259,6 +261,7 @@ nonisolated enum ResourceBundle {
         var counts: [String: Int] = [:]
         let imagesRoot = AssetKind.images.rootURL
         for category in ResourceCategory.allCases where categories.contains(category) {
+            try Task.checkCancellation()
             progress("Collecting \(category.title.lowercased())…")
             let folder = root.appendingPathComponent(category.folderName, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -269,6 +272,7 @@ nonisolated enum ResourceBundle {
             case .music, .fonts, .images, .bumpers, .screenCrops:
                 let items = files(in: category.localRoot!, category: category)
                 for item in items {
+                    try Task.checkCancellation()
                     let target = folder.appendingPathComponent(item.relativePath)
                     try FileManager.default.createDirectory(at: target.deletingLastPathComponent(),
                                                             withIntermediateDirectories: true)
@@ -293,6 +297,7 @@ nonisolated enum ResourceBundle {
                 let bundledImages = folder.appendingPathComponent("_images", isDirectory: true)
                 var count = 0
                 for template in OverlayTemplateStore.list() {
+                    try Task.checkCancellation()
                     var composition = template.composition
                     for index in composition.images.indices {
                         let path = composition.images[index].path
@@ -321,6 +326,7 @@ nonisolated enum ResourceBundle {
                 let logos = folder.appendingPathComponent("_logos", isDirectory: true)
                 var count = 0
                 for var profile in ProfileStore.listProfiles() {
+                    try Task.checkCancellation()
                     if let logo = profile.logoURL, FileManager.default.fileExists(atPath: logo.path) {
                         try FileManager.default.createDirectory(at: logos, withIntermediateDirectories: true)
                         let target = logos.appendingPathComponent(logo.lastPathComponent)
@@ -361,9 +367,16 @@ nonisolated enum ResourceBundle {
         encoder.dateEncodingStrategy = .iso8601
         try encoder.encode(manifest).write(to: root.appendingPathComponent("manifest.json"))
 
+        try Task.checkCancellation()
         progress("Compressing…")
-        try? FileManager.default.removeItem(at: destination)
-        try runDitto(["-c", "-k", "--sequesterRsrc", "--keepParent", root.path, destination.path])
+        let archive = staging.appendingPathComponent("resources.zip")
+        try runDitto(["-c", "-k", "--sequesterRsrc", "--keepParent", root.path, archive.path])
+        try Task.checkCancellation()
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: archive)
+        } else {
+            try FileManager.default.moveItem(at: archive, to: destination)
+        }
     }
 
     // MARK: - Import
@@ -436,8 +449,12 @@ nonisolated enum ResourceBundle {
                              progress: @escaping @Sendable (String) -> Void) throws -> ResourceImportSummary {
         var summary = ResourceImportSummary()
         let imagesRoot = AssetKind.images.rootURL
-        for category in preview.manifest.categories where categories.contains(category) {
+        categoriesLoop: for category in preview.manifest.categories where categories.contains(category) {
+            if Task.isCancelled { summary.stopped = true; break }
             progress("Importing \(category.title.lowercased())…")
+            if category == .fonts { summary.fontsChanged = true }
+            if category == .screenCrops { summary.screenCropsChanged = true }
+            if category == .profiles { summary.profilesChanged = true }
             let folder = preview.root.appendingPathComponent(category.folderName, isDirectory: true)
             switch category {
             case .learned:
@@ -454,6 +471,7 @@ nonisolated enum ResourceBundle {
                 let local = category.localRoot!
                 try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
                 for item in preview.items[category] ?? [] {
+                    if Task.isCancelled { summary.stopped = true; break categoriesLoop }
                     let source = folder.appendingPathComponent(item.relativePath)
                     let target = local.appendingPathComponent(item.relativePath)
                     let final = resolvedTarget(for: target, policy: policy)
@@ -469,13 +487,12 @@ nonisolated enum ResourceBundle {
                         summary.bumperMetadata.append(metadata)
                     }
                 }
-                if category == .fonts { summary.fontsChanged = true }
-                if category == .screenCrops { summary.screenCropsChanged = true }
             case .overlays:
                 let local = OverlayTemplateStore.directory
                 try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
                 let bundledImages = folder.appendingPathComponent("_images", isDirectory: true)
                 for item in preview.items[category] ?? [] {
+                    if Task.isCancelled { summary.stopped = true; break categoriesLoop }
                     let source = folder.appendingPathComponent(item.relativePath)
                     guard let data = try? Data(contentsOf: source),
                           var composition = try? JSONDecoder().decode(OverlayComposition.self, from: data) else { continue }
@@ -504,6 +521,7 @@ nonisolated enum ResourceBundle {
                 let local = ProfileStore.profilesDirectory
                 let logos = folder.appendingPathComponent("_logos", isDirectory: true)
                 for item in preview.items[category] ?? [] {
+                    if Task.isCancelled { summary.stopped = true; break categoriesLoop }
                     let source = folder.appendingPathComponent(item.relativePath)
                     guard let data = try? Data(contentsOf: source),
                           var profile = try? JSONDecoder().decode(BrandProfile.self, from: data) else { continue }
@@ -533,9 +551,9 @@ nonisolated enum ResourceBundle {
                     try place(rewritten, at: target, policy: policy, summary: &summary)
                     ProfileStore.ensureFolders(for: profile)
                 }
-                summary.profilesChanged = true
             }
         }
+        if Task.isCancelled { summary.stopped = true }
         return summary
     }
 
@@ -588,8 +606,15 @@ nonisolated enum ResourceBundle {
         let pipe = Pipe()
         process.standardError = pipe
         process.standardOutput = pipe
+        try Task.checkCancellation()
         try process.run()
+        // This synchronous helper runs on a worker; poll so Stop can terminate ditto.
+        while process.isRunning {
+            if Task.isCancelled { process.terminate(); break }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
         process.waitUntilExit()
+        try Task.checkCancellation()
         guard process.terminationStatus == 0 else {
             let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             throw ResourceBundleError.toolFailed(output.trimmingCharacters(in: .whitespacesAndNewlines))

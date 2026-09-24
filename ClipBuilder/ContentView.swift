@@ -297,6 +297,7 @@ struct MainWindowView: View {
 
     private var workspace: some View {
         @Bindable var store = store
+        @Bindable var jobs = store.jobs
         return NavigationSplitView {
             ProjectSidebarView()
                 .navigationSplitViewColumnWidth(min: 210, ideal: 240, max: 290)
@@ -320,6 +321,12 @@ struct MainWindowView: View {
             handleRequestedSection(requested)
         }
         .modifier(AutoTranslationRunner())
+        .onChange(of: jobReviewBlocked, initial: true) { _, blocked in
+            store.jobs.presentationBlocked = blocked
+        }
+        .sheet(item: $jobs.presentedReview, onDismiss: store.jobs.reviewDidDismiss) { job in
+            AppJobReviewSheet(job: job)
+        }
         // Results first; a queued A/B comparison presents after it closes.
         .sheet(item: $store.wizardResults) { results in
             WizardResultsSheet(results: results)
@@ -433,6 +440,14 @@ struct MainWindowView: View {
         // not a toolbar item (root toolbar items sort before a screen's own).
         .background(QATitlebarAccessoryInstaller(
             visible: BugReporting.qaButtonVisible(preference: showsQAButton, isDebug: BugReporting.isDebugBuild)))
+    }
+
+    private var jobReviewBlocked: Bool {
+        store.wizardResults != nil || store.pendingPodcastHighlights != nil
+            || store.pendingCutReview != nil || store.pendingComparison != nil
+            || store.pendingPeopleReview != nil || store.pendingRenameReview != nil
+            || store.showTrainingGuide || store.showResourceExport || store.resourceImportURL != nil
+            || store.currentError != nil || store.currentNotice != nil || store.isLoadingProject
     }
 
     private func checkForCrashesWhenReady() {

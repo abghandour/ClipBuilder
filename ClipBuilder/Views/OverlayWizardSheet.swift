@@ -8,16 +8,12 @@ import UniformTypeIdentifiers
 struct OverlayWizardSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    /// Called with the created template's name so the list can select it.
-    var onCreated: (String) -> Void = { _ in }
 
+    @State private var errorMessage: String?
     @State private var imageURL: URL?
     @State private var preview: NSImage?
     @State private var showImporter = false
     @State private var isDropTargeted = false
-    @State private var isRunning = false
-    @State private var statusLine = ""
-    @State private var errorMessage: String?
     // Model choice, dispatcher-style: configured task routing is the seed.
     @State private var modelTag = ""
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
@@ -31,6 +27,7 @@ struct OverlayWizardSheet: View {
                 .foregroundStyle(.secondary)
 
             dropZone
+            if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
 
             HStack {
                 ModelPicker(title: "Model", task: "overlay", selection: $modelTag,
@@ -39,33 +36,18 @@ struct OverlayWizardSheet: View {
                 Spacer()
             }
 
-            if isRunning {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(statusLine.isEmpty ? "Reading the overlay design…" : statusLine)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button(isRunning ? "Extracting…" : "Extract Overlay") { run() }
+                Button("Extract Overlay") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(imageURL == nil || isRunning)
+                    .disabled(imageURL == nil)
             }
         }
         .padding(20)
         .frame(width: 460)
+        .appJobSetupPresentation()
         .modalCloseButton { dismiss() }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.image]) { result in
             if case .success(let url) = result { setImage(url) }
@@ -125,21 +107,19 @@ struct OverlayWizardSheet: View {
 
     private func run() {
         guard let imageURL else { return }
+        let store = store
+        let generation = store.profileGeneration
         let (provider, model) = ModelPicker.parse(modelTag)
-        isRunning = true
-        errorMessage = nil
-        Task {
-            do {
-                let name = try await store.extractOverlayTemplate(
-                    from: imageURL, provider: provider, model: model) { message in
-                    if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
-                }
-                onCreated(name)
-                dismiss()
-            } catch {
-                errorMessage = error.userMessage
-            }
-            isRunning = false
+        store.jobs.start(.overlayTemplate, title: "Extract Overlay", project: nil,
+                         profileGeneration: generation) { log in
+            let name = try await store.extractOverlayTemplate(from: imageURL, provider: provider, model: model, log: log)
+            try Task.checkCancellation()
+            guard generation == store.profileGeneration else { throw CancellationError() }
+            store.createdOverlayName = name
+            AssetCatalogChanges.publish()
+            log(name)
+            return nil
         }
+        dismiss()
     }
 }

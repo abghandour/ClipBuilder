@@ -1096,9 +1096,29 @@ final class WizardSheetModel {
             guard let self, !self.dismissed, token == self.generation else { return }
             self.appendLog(text)
         }
-        if let executable = ProcessRunner.locate(runBinary ?? runProvider.rawValue) {
+        let binary = runBinary ?? runProvider.rawValue
+        let launch = await Task.detached {
+            (ProcessRunner.locate(binary), ProcessRunner.subprocessEnvironment(overrides: nil))
+        }.value
+        // A newer run owns its state; only this still-current run may clear it.
+        guard token == generation, agentRun === run else { return }
+        guard !Task.isCancelled, !dismissed, identityMatches else {
+            run.cancel()
+            session.discard()
+            agentRun = nil
+            if Task.isCancelled || dismissed {
+                phase = .discarded
+                appendLog("Wizard cancelled before launch.")
+            } else {
+                failure = .identityChanged
+                phase = .refused
+                appendLog(failureMessage ?? "The open timeline or profile changed.")
+            }
+            return
+        }
+        if let executable = launch.0 {
             await run.run(request: conversation.prompt(request: runRequest), executable: executable,
-                          parentEnvironment: ProcessRunner.subprocessEnvironment(overrides: nil))
+                          parentEnvironment: launch.1)
         } else {
             run.failBeforeLaunch("The selected agent CLI is not installed.")
         }

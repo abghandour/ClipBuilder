@@ -609,6 +609,7 @@ private struct InstagramDetailSheet: View {
                     } label: {
                         Label("Edit Video", systemImage: "timeline.selection")
                     }
+                    .disabled(store.isWizardRunning)
                     .help("Plan a timeline from this template and edit it manually")
                 }
                 Button("Analyze Reel Again") {

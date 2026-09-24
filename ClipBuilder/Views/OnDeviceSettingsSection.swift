@@ -28,15 +28,13 @@ struct OnDeviceSettingsSection: View {
             }
             ForEach(ReelModelItem.allCases, id: \.rawValue) { item in
                 Button("Evaluate " + item.rawValue.replacingOccurrences(of: "-", with: " ")) {
-                    comparing = true
-                    Task {
-                        defer { comparing = false }
-                        do { status = try await store.evaluateReelModel(item).summary }
-                        catch { status = error.localizedDescription }
-                    }
-                }.disabled(comparing)
+                    store.startModelEvaluation(item)
+                }.disabled(comparing || store.jobs.running.contains { $0.kind == .evaluateReelModel })
             }
             if comparing { ProgressView("Evaluating…") }
+            if let job = store.jobs.latest(.evaluateReelModel), job.status == .done {
+                Text(job.statusLine).font(.caption).textSelection(.enabled)
+            }
             if !status.isEmpty { Text(status).font(.caption).textSelection(.enabled) }
             if comparisonVisible {
                 Button("Compare on-device with model") {

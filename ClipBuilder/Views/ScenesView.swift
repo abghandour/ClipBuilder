@@ -335,10 +335,9 @@ struct ScenesView: View {
             GenerateVideoSheet(source: generateSource)
         }
         .sheet(isPresented: $showAskSheet) {
-            SceneSearchSheet(candidates: searchCandidates) { query, ids, provenance in
-                aiMatches = (query, ids, provenance)
-                selectedSceneIDs = []
-            }
+            SceneSearchSheet(candidates: searchCandidates,
+                context: SceneSearchContext(runIDs: selectedRunIDs, tag: tagFilter, text: searchText,
+                    minimumScore: minScore, showHidden: showHidden, favoritesOnly: favoritesOnly))
         }
         .sheet(isPresented: $showAIFavorites) {
             AIFavoritesSheet(candidates: favoriteCandidates)
@@ -361,8 +360,27 @@ struct ScenesView: View {
                         startTime: scene.startTime, endTime: scene.endTime)
         }
         .onAppear { restoreProjectState() }
-        .onChange(of: store.projectStateVersion) { restoreProjectState() }
+        .onChange(of: store.projectStateVersion) { aiMatches = nil; restoreProjectState(); applySearchResult() }
+        .onChange(of: searchJob, initial: true) { applySearchResult() }
         .onChange(of: persistedSceneState) { saveProjectState() }
+    }
+
+    private var searchJob: AppJob? {
+        store.jobs.latestFinished(.sceneSearch, projectID: store.activeProjectID)
+    }
+
+    private func applySearchResult() {
+        guard !store.isLoadingProject, let job = searchJob, !job.reviewed,
+              case let .sceneSearch(query, ids, provenance, context) = job.result else { return }
+        selectedRunIDs = context.runIDs
+        tagFilter = context.tag
+        searchText = context.text
+        minScore = context.minimumScore
+        showHidden = context.showHidden
+        favoritesOnly = context.favoritesOnly
+        aiMatches = (query, ids, provenance ?? .local(technique: "keyword-match"))
+        selectedSceneIDs = []
+        store.jobs.markReviewed(job.id)
     }
 
     /// Strip above the grid while an AI search filters it — says what was

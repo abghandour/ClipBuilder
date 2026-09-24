@@ -6,7 +6,7 @@ import Foundation
 /// reels later refines.
 nonisolated enum ProfileStarter {
 
-    struct Result: Sendable {
+    struct Result: Sendable, Equatable {
         var rubric: String
         var houseStyle: String
         var categories: [TasteCategory]

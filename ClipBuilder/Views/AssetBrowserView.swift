@@ -34,6 +34,11 @@ struct AssetBrowserView: View {
     @State private var analyzingPaths: Set<String> = []
     @State private var showingAskImages = false
     @State private var matchedImagePaths: Set<String>?
+    @State private var matchedImageQuery = ""
+
+    private var imageSearchJob: AppJob? {
+        store.jobs.latestFinished(.imageSearch, projectID: store.activeProjectID)
+    }
 
     // Music preview playback — one shared player, the playing row's id.
     @State private var player: AVPlayer?
@@ -83,6 +88,7 @@ struct AssetBrowserView: View {
                         Button("Clear AI Search", systemImage: "xmark.circle") {
                             matchedImagePaths = nil
                         }
+                        .help(matchedImageQuery)
                     }
                     Button("Tag Images with AI", systemImage: "sparkles") {
                         analyzeVisibleImages()
@@ -151,12 +157,12 @@ struct AssetBrowserView: View {
         }
         .sheet(isPresented: $showingAskImages) {
             ImageLibrarySearchSheet(
-                candidates: items.filter { !$0.isFolder }, metadata: metadata
-            ) { paths in
-                matchedImagePaths = Set(paths)
-            }
+                candidates: items.filter { !$0.isFolder }, metadata: metadata, folder: path
+            )
             .environment(store)
         }
+        .onChange(of: imageSearchJob, initial: true) { applyImageSearchResult() }
+        .onChange(of: store.projectStateVersion) { matchedImagePaths = nil; applyImageSearchResult() }
         .onAppear {
             AssetStore.ensureRoots()
             refresh()
@@ -175,6 +181,15 @@ struct AssetBrowserView: View {
             watcher?.watch(currentFolder)
         }
         .searchable(text: $searchText, prompt: "Name, fighter, event, or tag")
+    }
+
+    private func applyImageSearchResult() {
+        guard kind == .images, !store.isLoadingProject, let job = imageSearchJob, !job.reviewed,
+              case let .imageSearch(query, paths, folder) = job.result else { return }
+        path = folder
+        matchedImagePaths = Set(paths)
+        matchedImageQuery = query
+        store.jobs.markReviewed(job.id)
     }
 
     private var subtitle: String {

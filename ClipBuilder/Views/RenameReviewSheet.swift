@@ -45,6 +45,7 @@ struct RenameSuggestionEditor: View {
     let suggestions: [RenameSuggestion]
     /// Called after the checked renames are applied (dismiss the sheet).
     var onApplied: () -> Void
+    var onCancel: (() -> Void)? = nil
 
     /// videoID → edited name (pre-filled with the AI's proposal).
     @State private var names: [Int64: String] = [:]
@@ -86,7 +87,7 @@ struct RenameSuggestionEditor: View {
 
         HStack {
             Spacer()
-            Button("Cancel") { onApplied() }
+            Button("Cancel") { (onCancel ?? onApplied)() }
             Button("Rename") {
                 for suggestion in suggestions
                 where included[suggestion.videoID] ?? true {

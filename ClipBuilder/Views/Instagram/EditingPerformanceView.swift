@@ -3,13 +3,18 @@ import SwiftUI
 struct EditingPerformanceView: View {
     @Environment(AppStore.self) private var store
     @State private var insights: EditingPerformanceInsights?
+    @State private var exportingCSV = false
     @State private var athleteMetric = "Reach"
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceL) {
             if let insights {
                 SectionCard(title: "Suggested Setup", subtitle: "Learned from linked published reels") {
-                    Button("Export Reports as CSV…", systemImage: "tablecells", action: exportCSV)
+                    HStack {
+                        Button("Export Reports as CSV…", systemImage: "tablecells", action: exportCSV)
+                            .disabled(exportingCSV)
+                        if exportingCSV { ProgressView().controlSize(.small) }
+                    }
                     LabeledContent("Hook", value: insights.suggestedHook ?? "Not enough data")
                     LabeledContent("Screen type", value: insights.suggestedLayout ?? "Not enough data")
                     LabeledContent("Cadence") {
@@ -137,13 +142,17 @@ struct EditingPerformanceView: View {
         panel.prompt = "Export Here"
         guard panel.runModal() == .OK, let root = panel.url else { return }
         let folder = root.appending(path: "ClipBuilder-Reports", directoryHint: .isDirectory)
+        exportingCSV = true
+        let videos = store.generatedVideos
+        let report = store.igReport
         Task {
+            defer { exportingCSV = false }
             do {
                 let traits = try await database.fetchGeneratedTraits()
-                _ = try ReportCSVExporter.export(
-                    directory: folder, videos: store.generatedVideos,
-                    traits: traits, report: store.igReport,
-                    insights: insights)
+                _ = try await AppJobWork.run {
+                    try ReportCSVExporter.export(directory: folder, videos: videos,
+                                                 traits: traits, report: report, insights: insights)
+                }
                 NSWorkspace.shared.activateFileViewerSelecting([folder])
             } catch { store.presentError("Could not export CSV reports", error) }
         }

@@ -13,7 +13,7 @@ extension AppStore {
     guard let database, let modelStore = reelModelStore else {
       throw ReelModelError.unavailable("Open a profile first.")
     }
-    let profileName = activeProfile.profileName
+    let generation = profileGeneration
     let profile = activeProfile
     var rows: [ReelModelRow]
     var trainer: any ReelModelTrainer = CreateMLReelModelTrainer()
@@ -25,6 +25,8 @@ extension AppStore {
         let scenes = try await database.fetchScenes().filter { labeledIDs.contains(String($0.id)) }
         let videos = try await database.fetchVideos()
         for scene in scenes {
+          try Task.checkCancellation()
+          guard profileGeneration == generation else { throw CancellationError() }
           let detectors: VideoDetectors?
           if let video = videos.first(where: { $0.id == scene.videoID }) {
             detectors = await cachedDetectors(for: video)
@@ -61,7 +63,8 @@ extension AppStore {
           rows.filter { $0.date > cutoff }.compactMap { byID[$0.id]?.videoPath })
         for path in profile.tasteCategories.flatMap(\.exemplarFrames)
         where !heldOutPaths.contains(path) {
-          guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { continue }
+          try Task.checkCancellation()
+          guard let data = try await AppJobWork.run({ try? Data(contentsOf: URL(fileURLWithPath: path)) }) else { continue }
           exemplars.append(try await TasteSimilarity.printFeatures(data, printer: printer))
         }
         for url in try await database.topLiftReelFiles(before: cutoff) {
@@ -72,12 +75,12 @@ extension AppStore {
         trainer = TasteSimilarity.Trainer(exemplars: exemplars)
       }
     }
-    let adopted = modelStore.report(item)?.origin != nil
+    let adopted = try await AppJobWork.run { modelStore.report(item)?.origin != nil }
     let preferences = item == .outcome ? try await database.modelPreferencePairs() : []
     let report = try await ReelModelEvaluator.evaluate(
       item: item, rows: rows, store: modelStore,
       trainer: trainer, adopted: adopted, preferences: preferences)
-    if activeProfile.profileName == profileName {
+    if profileGeneration == generation, !Task.isCancelled {
       // Only measured numbers; this action never changes onDeviceOverrides.
       ReelModelEvaluator.recordAgreement(report, config: &settings.ai)
     }

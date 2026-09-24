@@ -8,14 +8,8 @@ struct SceneSearchSheet: View {
     @Environment(\.dismiss) private var dismiss
     /// Scenes in the current batch scope — what the query runs against.
     let candidates: [SceneRecord]
-    /// Delivers (query, ranked scene ids, the model that ranked them) back
-    /// to the grid.
-    var onResults: (String, [Int64], AIProvenance) -> Void
-
+    let context: SceneSearchContext
     @State private var query = ""
-    @State private var isRunning = false
-    @State private var statusLine = ""
-    @State private var errorMessage: String?
     @State private var modelTag = ""
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
     @FocusState private var queryFocused: Bool
@@ -42,34 +36,19 @@ struct SceneSearchSheet: View {
                 Spacer()
             }
 
-            if isRunning {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(statusLine.isEmpty ? "Searching…" : statusLine)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            if let errorMessage {
-                Text(errorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button(isRunning ? "Searching…" : "Search") { run() }
+                Button("Search") { run() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(query.trimmingCharacters(in: .whitespaces).isEmpty
-                              || candidates.isEmpty || isRunning)
+                              || candidates.isEmpty)
             }
         }
         .padding(20)
         .frame(width: 480)
+        .appJobSetupPresentation()
         .modalCloseButton { dismiss() }
         .task {
             queryFocused = true
@@ -82,27 +61,20 @@ struct SceneSearchSheet: View {
     }
 
     private func run() {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isRunning else { return }
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+        let store = store
+        let candidates = candidates
+        let context = context
         let (provider, model) = ModelPicker.parse(modelTag)
-        isRunning = true
-        errorMessage = nil
-        Task {
-            do {
-                let ids = try await store.findScenes(matching: trimmed, in: candidates,
-                                                     provider: provider, model: model) { message in
-                    if let line = AIProgressLine.from(message) { Task { @MainActor in statusLine = line } }
-                }
-                if ids.value.isEmpty {
-                    errorMessage = "No scenes match that — try describing what's visible, or name the people involved."
-                } else {
-                    onResults(trimmed, ids.value, ids.provenance)
-                    dismiss()
-                }
-            } catch {
-                errorMessage = error.userMessage
+        store.jobs.start(.sceneSearch, title: "Scene Search — \(query)",
+                         project: store.activeProject, profileGeneration: store.profileGeneration) { log in
+            let result = try await store.findScenes(matching: query, in: candidates, provider: provider, model: model, log: log)
+            guard !result.value.isEmpty else {
+                throw AppJobEmptyResult(message: "No scenes match that — try describing what's visible, or name the people involved.")
             }
-            isRunning = false
+            return .sceneSearch(query: query, ids: result.value, provenance: result.provenance, context: context)
         }
+        dismiss()
     }
 }

@@ -24,7 +24,8 @@ struct LearnedPreferencesView: View {
     @State private var dismissedExpanded = false
     @State private var rewriteText = ""
     @State private var rewriteError = ""
-    @State private var busy = false
+    @State private var editing = false
+    private var busy: Bool { editing || store.jobs.running.contains { $0.kind == .publishLessons } }
     @State private var status = ""
     @State private var modelsToken = UUID()
     /// Only the newest reload may publish; older results are dropped.
@@ -83,6 +84,9 @@ struct LearnedPreferencesView: View {
             LearnedFieldEditorSheet(edit: edit) { Task { await reload() } }
         }
         // Lesson writes on the store are fire-and-forget; the page follows them.
+        .onChange(of: store.jobs.completionRevision(.publishLessons, successfulOnly: true)) {
+            Task { await reload() }
+        }
         .onChange(of: store.lessons) { Task { await reload() } }
         .onChange(of: store.isDistillingLessons) { _, distilling in
             if !distilling { Task { await reload() } }
@@ -103,6 +107,12 @@ struct LearnedPreferencesView: View {
                     .buttonStyle(.bordered)
                     .help("The learning available to the Wizard, the last plan prompt it sent, and the document that leaves this Mac.")
                 syncState
+            }
+            if let job = store.jobs.latest(.publishLessons) {
+                HStack {
+                    Text(job.statusLine).font(.callout).foregroundStyle(.secondary)
+                    if job.status == .running { Button("Stop") { store.jobs.cancel(job.id) } }
+                }
             }
             if !status.isEmpty {
                 Text(status).font(.callout).foregroundStyle(.secondary)
@@ -688,15 +698,7 @@ struct LearnedPreferencesView: View {
         } catch { status = error.localizedDescription }
     }
     private func publish() {
-        busy = true
-        Task {
-            defer { busy = false }
-            do {
-                try await store.googleDrive.publishLearned(profile: store.activeProfile, benchmarks: store.igBenchmarks)
-                status = "Published \(Date().formatted(date: .abbreviated, time: .shortened))"
-                await reload()
-            } catch { status = error.localizedDescription }
-        }
+        store.startPublishingLessons()
     }
     @discardableResult
     /// `openedOn` is the profile the action was chosen on; the edit is
@@ -706,8 +708,8 @@ struct LearnedPreferencesView: View {
                       openedOn: String? = nil) async -> Bool {
         let profile = store.activeProfile
         guard let database = store.database, (openedOn ?? profile.profileName) == profile.profileName else { return false }
-        busy = true
-        defer { busy = false }
+        editing = true
+        defer { editing = false }
         do {
             let edited = try await LearnedEditing.editLesson(item.id, action: action, profile: profile, database: database)
             guard store.activeProfile.profileName == profile.profileName, database === store.database else { return false }

@@ -273,6 +273,7 @@ struct AIInfoSheet: View {
                 } catch {}
             }
             .task { availableProviders = await ModelPicker.probeAvailability(ai: store.ai) }
+            .appJobSetupPresentation()
             .sheet(item: $soundbitesVideo) { video in SoundbiteSheet(video: video) }
             .sheet(item: $namingVideo) { video in FileNameWizardSheet(videos: [video]) }
     }

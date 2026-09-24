@@ -1,29 +1,17 @@
 import SwiftUI
 
 /// Publish a Library video to the connected Instagram account as a Reel:
-/// edit the caption (pre-filled with the AI's), choose feed visibility,
-/// watch the upload/processing progress, and get the permalink when live.
+/// edit the caption and choose feed visibility. The store owns publishing
+/// after this setup closes and keeps the permalink for review.
 struct InstagramPublishSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     let video: GeneratedVideoRecord
 
-    private enum Phase: Equatable {
-        case idle
-        case publishing
-        case done(permalink: String?)
-        case failed(String)
-    }
-
     @State private var caption = ""
     @State private var shareToFeed = true
-    @State private var phase: Phase = .idle
-    @State private var progress: [String] = []
-    @State private var publishTask: Task<Void, Never>?
-    @State private var confirmStopPublishing = false
 
-    private var isPublishing: Bool { phase == .publishing }
     private var connected: Bool { store.settings.instagram.isGraphConnected }
 
     /// What the account's own numbers say about timing and hashtags.
@@ -41,7 +29,6 @@ struct InstagramPublishSheet: View {
                 HStack(spacing: 8) {
                     Button("Add Top Hashtags") { addTopHashtags(benchmarks) }
                         .controlSize(.small)
-                        .disabled(isPublishing)
                         .help("Appends the hashtags that ride this account's best-reaching posts")
                     Text(benchmarks.topHashtags.filter { $0.lift >= 1 }.prefix(5).map(\.tag).joined(separator: " "))
                         .font(.caption)
@@ -101,7 +88,6 @@ struct InstagramPublishSheet: View {
                         .frame(minHeight: 100, maxHeight: 160)
                         .padding(4)
                         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
-                        .disabled(isPublishing)
                     Text("\(caption.count)/2200")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(caption.count > 2200 ? AnyShapeStyle(.red)
@@ -109,42 +95,12 @@ struct InstagramPublishSheet: View {
                         .frame(maxWidth: .infinity, alignment: .trailing)
 
                     Toggle("Also show in the main feed", isOn: $shareToFeed)
-                        .disabled(isPublishing)
                         .help("Off = the reel appears only in the Reels tab, not the profile feed")
 
                     if let benchmarks = store.igBenchmarks {
                         publishTips(benchmarks)
                     }
 
-                    if !progress.isEmpty {
-                        VStack(alignment: .leading, spacing: 3) {
-                            ForEach(Array(progress.enumerated()), id: \.offset) { _, line in
-                                Text(line)
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 6))
-                    }
-
-                    switch phase {
-                    case .done(let permalink):
-                        HStack(spacing: 8) {
-                            Label("Published", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                            if let permalink, let url = URL(string: permalink) {
-                                Link("View on Instagram", destination: url)
-                            }
-                        }
-                    case .failed(let message):
-                        Label(message, systemImage: "xmark.octagon")
-                            .foregroundStyle(.red)
-                            .textSelection(.enabled)
-                    default:
-                        EmptyView()
-                    }
                     Spacer(minLength: 0)
                 }
             }
@@ -153,74 +109,30 @@ struct InstagramPublishSheet: View {
 
             Divider()
             HStack {
-                if case .done = phase {
-                    Spacer()
-                    Button("Done") { dismiss() }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut(.defaultAction)
-                } else {
-                    Spacer()
-                    Button {
-                        publish()
-                    } label: {
-                        if isPublishing {
-                            HStack(spacing: 6) {
-                                ProgressView().controlSize(.small)
-                                Text("Publishing…")
-                            }
-                        } else {
-                            Label("Publish Reel", systemImage: "paperplane.fill")
-                        }
-                    }
+                Spacer()
+                Button("Publish Reel", systemImage: "paperplane.fill", action: publish)
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
-                    .disabled(!connected || isPublishing || caption.count > 2200)
-                    .help("Upload this video to Instagram as a Reel with the caption above")
-                }
+                    .disabled(!connected || store.isPublishingToInstagram || caption.count > 2200)
             }
             .padding(16)
         }
         .frame(width: 620, height: 480)
-        // Everywhere else Esc/✕ is a harmless dismiss; here it would kill an
-        // upload in flight — confirm before aborting the one high-stakes
-        // operation in the app.
-        .modalCloseButton {
-            if isPublishing {
-                confirmStopPublishing = true
-            } else {
-                publishTask?.cancel()
-                dismiss()
-            }
-        }
-        .confirmationDialog("Stop publishing this reel?",
-                            isPresented: $confirmStopPublishing) {
-            Button("Stop Publishing", role: .destructive) {
-                publishTask?.cancel()
-                dismiss()
-            }
-            Button("Keep Publishing", role: .cancel) {}
-        } message: {
-            Text("The upload to Instagram is still in progress. Stopping abandons it — nothing will be posted.")
-        }
+        .appJobSetupPresentation()
+        .modalCloseButton { dismiss() }
         .onAppear { caption = video.caption }
-        .onDisappear { publishTask?.cancel() }
     }
 
     private func publish() {
-        phase = .publishing
-        progress = []
-        publishTask = Task {
-            do {
-                let result = try await store.publishReelToInstagram(
-                    video: video, caption: caption, shareToFeed: shareToFeed) { message in
-                    Task { @MainActor in progress.append(message) }
-                }
-                phase = .done(permalink: result.permalink)
-            } catch is CancellationError {
-                phase = .idle
-            } catch {
-                phase = .failed(error.userMessage)
-            }
+        let store = store
+        let video = video, caption = caption, shareToFeed = shareToFeed
+        store.jobs.start(.instagramPublish, title: "Publish to Instagram — \(video.filename)",
+                         project: store.activeProject, profileGeneration: store.profileGeneration,
+                         subjectID: "publish") { log in
+            let result = try await store.publishReelToInstagram(video: video, caption: caption,
+                                                                shareToFeed: shareToFeed, log: log)
+            return .instagramPublished(permalink: result.permalink.flatMap { URL(string: $0) })
         }
+        dismiss()
     }
 }

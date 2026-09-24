@@ -8,6 +8,7 @@ struct FightResearchSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let video: VideoRecord
+    var reviewJobID: UUID? = nil
 
     // Identity (user-confirmable before crawling).
     @State private var fighters = ""
@@ -25,8 +26,12 @@ struct FightResearchSheet: View {
     @State private var researchedAt: Date?
     @State private var provenance: AIProvenance?
 
-    @State private var running = false
-    @State private var progress: [String] = []
+    private var running: Bool { store.jobs.running.contains { $0.kind == .fightResearch && $0.subjectID == String(video.id) } }
+    private var progress: [String] {
+        guard let job = store.jobs.latest(.fightResearch, subjectID: String(video.id)), job.status == .running,
+              !job.statusLine.isEmpty else { return [] }
+        return [job.statusLine]
+    }
     @State private var errorMessage: String?
     @State private var loadedRecord = false
     @State private var didLoadInitialValues = false
@@ -151,6 +156,7 @@ struct FightResearchSheet: View {
         .frame(width: 640, height: 640)
         .modalCloseButton { requestDismissal() }
         .task { await load() }
+        .appJobSetupPresentation()
         .confirmationDialog("Discard unsaved fight research edits?", isPresented: $confirmDiscard) {
             Button("Discard", role: .destructive) { dismiss() }
             Button("Save and Close") { saveEdits() }
@@ -226,6 +232,7 @@ struct FightResearchSheet: View {
                                      fightDate: fightDate,
                                      summaryJSON: rebuiltSummaryJSON())
         savedFingerprint = draftFingerprint
+        if let reviewJobID { store.jobs.markReviewed(reviewJobID) }
         dismiss()
     }
 
@@ -261,22 +268,15 @@ struct FightResearchSheet: View {
     }
 
     private func run() {
-        errorMessage = nil
-        progress = []
-        running = true
-        let identity = FightResearchService.Identity(fighters: fighters, event: event,
-                                                     date: fightDate)
-        Task {
-            do {
-                let record = try await store.runFightResearch(video: video,
-                                                              identity: identity) { message in
-                    Task { @MainActor in progress.append(message) }
-                }
-                apply(record)
-            } catch {
-                errorMessage = error.userMessage
-            }
-            running = false
+        let store = store
+        let video = video
+        let identity = FightResearchService.Identity(fighters: fighters, event: event, date: fightDate)
+        store.jobs.start(.fightResearch, title: "Fight Research — \(video.filename)",
+                         project: store.activeProject, profileGeneration: store.profileGeneration,
+                         subjectID: String(video.id)) { log in
+            _ = try await store.runFightResearch(video: video, identity: identity, log: log)
+            return .fightResearch(video: video)
         }
+        dismiss()
     }
 }

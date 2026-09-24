@@ -23,50 +23,60 @@ struct BuilderView: View {
 
     var body: some View {
         let model = store.builder
-        HSplitView {
-            ClipBrowserPane(selectedTab: $browserTab, wizardModel: wizardModel,
-                            discardWizard: discardWizard, openWizardPicker: openWizardPicker)
-                .rememberedPaneWidth("pane.builder.browser", min: 250, initial: 300, max: 480)
-                .frame(maxHeight: .infinity, alignment: .top)
-            // Preview/inspector above, timeline below, with a draggable
-            // divider between them; the timeline's height is remembered.
-            VSplitView {
-                HSplitView {
-                    // The preview only needs room for its controls; the
-                    // inspector may take most of the width when someone is
-                    // editing settings rather than watching.
-                    BuilderWorkspacePreview(onAddClip: { showScenePicker = true })
-                        .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
-                        .layoutPriority(1)
-                    BuilderInspector()
-                        .rememberedPaneWidth("pane.builder.inspector", min: 240, initial: 310, max: 1200)
-                        .frame(maxHeight: .infinity)
-                }
-                .frame(minHeight: 220, maxHeight: .infinity)
-
-                VStack(spacing: 0) {
-                controlsBar
-                if let result = store.builderPlanResult, result.matches(store: store) {
-                    HStack {
-                        Text("Plan ready").font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Fix with Wizard…", systemImage: "wand.and.stars") {
-                            if let preview = result.makeWizard(store: store) { showWizard(preview) }
-                        }
-                        .labelStyle(.iconOnly)
-                        .help("Fix with Wizard… Preview an editing request on this planned timeline, then Apply manually.")
-                    }
-                    .padding(.horizontal, Theme.spaceM)
-                    .padding(.bottom, Theme.spaceS)
-                }
-                Divider()
-
-                TimelineView(onPlayClip: { playingClip = $0 })
-                    .frame(maxHeight: .infinity)
-                }
-                .rememberedPaneHeight("pane.builder.timeline", min: 180, initial: 300)
+        VStack(spacing: 0) {
+            if store.isPlanningIntoBuilder {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Preparing a timeline from the template… You can keep editing.")
+                    Spacer()
+                    Button("Stop") { store.cancelWizard() }
+                }.padding(12).background(.quinary)
             }
-            .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
+            HSplitView {
+                ClipBrowserPane(selectedTab: $browserTab, wizardModel: wizardModel,
+                                discardWizard: discardWizard, openWizardPicker: openWizardPicker)
+                    .rememberedPaneWidth("pane.builder.browser", min: 250, initial: 300, max: 480)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                // Preview/inspector above, timeline below, with a draggable
+                // divider between them; the timeline's height is remembered.
+                VSplitView {
+                    HSplitView {
+                        // The preview only needs room for its controls; the
+                        // inspector may take most of the width when someone is
+                        // editing settings rather than watching.
+                        BuilderWorkspacePreview(onAddClip: { showScenePicker = true })
+                            .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
+                            .layoutPriority(1)
+                        BuilderInspector()
+                            .rememberedPaneWidth("pane.builder.inspector", min: 240, initial: 310, max: 1200)
+                            .frame(maxHeight: .infinity)
+                    }
+                    .frame(minHeight: 220, maxHeight: .infinity)
+
+                    VStack(spacing: 0) {
+                    controlsBar
+                    if let result = store.builderPlanResult, result.matches(store: store) {
+                        HStack {
+                            Text("Plan ready").font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Fix with Wizard…", systemImage: "wand.and.stars") {
+                                if let preview = result.makeWizard(store: store) { showWizard(preview) }
+                            }
+                            .labelStyle(.iconOnly)
+                            .help("Fix with Wizard… Preview an editing request on this planned timeline, then Apply manually.")
+                        }
+                        .padding(.horizontal, Theme.spaceM)
+                        .padding(.bottom, Theme.spaceS)
+                    }
+                    Divider()
+
+                    TimelineView(onPlayClip: { playingClip = $0 })
+                        .frame(maxHeight: .infinity)
+                    }
+                    .rememberedPaneHeight("pane.builder.timeline", min: 180, initial: 300)
+                }
+                .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
@@ -81,7 +91,6 @@ struct BuilderView: View {
             .opacity(0)
             .accessibilityHidden(true)
         }
-        .disabled(store.isPlanningIntoBuilder)
         .screenTitle(store.openTimeline?.name ?? "Timeline", subtitle: "\(store.activeProject?.name ?? "Project") · \(model.document.videoTrack.count) clips · \(model.totalDuration.timecode)")
         .toolbar {
             // The open timeline's name is the switcher: every timeline in the

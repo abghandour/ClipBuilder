@@ -250,6 +250,7 @@ struct DispatchPlanSheet: View {
             }
         }
         .modalCloseButton { dismiss() }
+        .appJobSetupPresentation()
         .task {
             availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
             seedChoices()
@@ -994,7 +995,8 @@ private struct VideoNotesPanel: View {
     @State private var notes: [VideoNote] = []
     @State private var noteText = ""
     /// AI trim suggestion in flight / its outcome line under the slider.
-    @State private var isSuggestingTrim = false
+    private var trimJob: AppJob? { store.jobs.latest(.suggestTrim, subjectID: String(video.id)) }
+    private var isSuggestingTrim: Bool { trimJob?.status == .running }
     @State private var trimSuggestionNote: String?
     @State private var trimSuggestionProvenance: AIProvenance?
     @State private var clock = PlaybackClock()
@@ -1304,6 +1306,12 @@ private struct VideoNotesPanel: View {
                                     loudness: loudness) { time in
                         scrub(to: time)
                     }
+                    if let trimJob, trimJob.status == .running {
+                        HStack {
+                            Text(trimJob.statusLine).font(.caption).lineLimit(1)
+                            Button("Stop") { store.jobs.cancel(trimJob.id) }
+                        }
+                    }
                     if let trimSuggestionNote {
                         HStack(alignment: .firstTextBaseline, spacing: 4) {
                             if let trimSuggestionProvenance {
@@ -1446,6 +1454,7 @@ private struct VideoNotesPanel: View {
             Spacer(minLength: 0)
         }
         .padding()
+        .onChange(of: trimJob?.result, initial: true) { applyTrimSuggestion() }
         .task(id: video.id) {
             if let timeObserver, let player {
                 player.removeTimeObserver(timeObserver)
@@ -1514,24 +1523,16 @@ private struct VideoNotesPanel: View {
     /// AI skim of the whole video → the trim slider jumps to the proposed
     /// content window, with the model's reason (or the error) shown under it.
     private func suggestTrim() {
-        isSuggestingTrim = true
-        trimSuggestionNote = nil
-        trimSuggestionProvenance = nil
-        let target = video
-        Task {
-            do {
-                let suggestion = try await store.suggestTrim(for: target)
-                trimStart = suggestion.start
-                trimEnd = suggestion.end
-                trimSuggestionProvenance = suggestion.provenance
-                trimSuggestionNote = suggestion.reason.isEmpty
-                    ? "AI trim: \(suggestion.start.timecode)–\(suggestion.end.timecode)"
-                    : "AI trim: \(suggestion.start.timecode)–\(suggestion.end.timecode) — \(suggestion.reason)"
-            } catch {
-                trimSuggestionNote = error.userMessage
-            }
-            isSuggestingTrim = false
-        }
+        store.startTrimSuggestion(video: video)
+    }
+
+    private func applyTrimSuggestion() {
+        guard case let .trim(start, end, reason, provenance) = trimJob?.result else { return }
+        trimStart = start
+        trimEnd = end
+        trimSuggestionProvenance = provenance
+        trimSuggestionNote = reason.isEmpty ? "AI trim: \(start.timecode)–\(end.timecode)"
+            : "AI trim: \(start.timecode)–\(end.timecode) — \(reason)"
     }
 
     private func addNote() {

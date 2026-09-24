@@ -266,7 +266,12 @@ struct WizardView: View {
     }
 
     var body: some View {
-        configurationForm
+        VStack(spacing: 0) {
+            if store.pendingWizardPrompt?.statusMessage != nil || store.pendingWizardPrompt?.parseFailed == true {
+                generateRequestBanner
+            }
+            configurationForm
+        }
             .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
@@ -332,9 +337,6 @@ struct WizardView: View {
         }
         .sheet(item: $pendingDispatch) { pending in
             DispatchPlanSheet(operation: pending.operation, onStart: pending.run)
-        }
-        .sheet(isPresented: requestModalPresented) {
-            generateRequestModal
         }
         .task {
             migrateLegacySelections()
@@ -987,24 +989,16 @@ struct WizardView: View {
         }
     }
 
-    private var requestModalPresented: Binding<Bool> {
-        Binding(
-            get: {
-                guard let handoff = store.pendingWizardPrompt else { return false }
-                return handoff.statusMessage != nil || handoff.parseFailed
-            },
-            set: { presented in
-                if !presented { store.pendingWizardPrompt = nil }
-            }
-        )
-    }
-
-    private var generateRequestModal: some View {
+    private var generateRequestBanner: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label("Generate Video Request", systemImage: "wand.and.stars")
                 .font(.headline)
             Text("“\(store.pendingWizardPrompt?.description ?? "")”")
-            if let status = store.pendingWizardPrompt?.statusMessage {
+            if let pendingStatus = store.pendingWizardPrompt?.statusMessage {
+                let line = store.jobs.running.last(where: {
+                    $0.kind == .generateRequest && $0.projectID == store.activeProjectID
+                })?.statusLine ?? ""
+                let status = line.isEmpty ? pendingStatus : line
                 HStack(spacing: 8) {
                     ProgressView()
                         .controlSize(.small)
@@ -1019,12 +1013,14 @@ struct WizardView: View {
             }
             HStack {
                 Spacer()
-                Button("Close") { store.pendingWizardPrompt = nil }
+                Button(store.pendingWizardPrompt?.statusMessage != nil ? "Stop" : "Close") {
+                    store.cancelGenerateRequest()
+                }
             }
         }
-        .padding(20)
-        .frame(width: 440)
-        .modalCloseButton { store.pendingWizardPrompt = nil }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quinary)
     }
 
     private func applyPromptHandoff(_ handoff: WizardPromptHandoff) {

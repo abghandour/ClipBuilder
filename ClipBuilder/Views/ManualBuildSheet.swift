@@ -26,7 +26,11 @@ struct ManualBuildSheet: View {
     @State private var zoomWindowStart: Double = 0
     @State private var showFramingSheet = false
     /// Scene whose Center Stage path is being computed right now.
-    @State private var computingPathSceneID: Int64?
+    private var computingPathSceneID: Int64? {
+        guard let scene = model.currentScene,
+              store.jobs.latest(.cameraPath, subjectGroupID: String(scene.id))?.status == .running else { return nil }
+        return scene.id
+    }
     // Reel-preview column: the approved picks stitched into one looping
     // composition (cuts only — overlays/music/transitions render at generate).
     @State private var reelPlayer: AVPlayer?
@@ -39,7 +43,6 @@ struct ManualBuildSheet: View {
     // back to the live stitched approximation.
     @State private var exactPreviewURL: URL?
     @State private var exactPreviewTask: Task<Void, Never>?
-
 
     init(scenes: [SceneRecord], targetDuration: Int, includeOutro: Bool,
          batchNames: [Int64: String] = [:],
@@ -69,6 +72,7 @@ struct ManualBuildSheet: View {
         }
         .frame(minWidth: 1080, idealWidth: 1280, maxWidth: .infinity,
                minHeight: 660, idealHeight: 840, maxHeight: .infinity)
+        .appJobSetupPresentation()
         .onAppear {
             syncPlayer()
             refreshZoomWindow(force: true)
@@ -104,6 +108,18 @@ struct ManualBuildSheet: View {
         .onChange(of: model.editSpeed) {
             // Retime a playing preview on the spot — no reload needed.
             if previewPlaying, !isScrubbing { player?.rate = previewRate }
+        }
+        .onChange(of: store.jobs.completionRevision(.cameraPath, successfulOnly: true)) {
+            rebuildReelPreview()
+        }
+        .overlay(alignment: .topTrailing) {
+            if let sceneID = computingPathSceneID,
+               let job = store.jobs.latest(.cameraPath, subjectGroupID: String(sceneID)) {
+                HStack {
+                    Text(job.statusLine).font(.caption).lineLimit(1)
+                    Button("Stop Center Stage") { store.jobs.cancel(job.id) }
+                }.padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            }
         }
         .onChange(of: model.editCenterStage) { ensureCameraPath() }
         .sheet(isPresented: $showFramingSheet, onDismiss: {
@@ -885,22 +901,10 @@ struct ManualBuildSheet: View {
     private func ensureCameraPath() {
         guard model.step == .scenes, model.editCenterStage,
               let scene = model.currentScene, scene.wide,
-              freshScene(scene).centerStagePath == nil,
-              computingPathSceneID != scene.id else { return }
-        computingPathSceneID = scene.id
-        let camera = WizardDefaults.fallbackFramingCamera
-        let sceneID = scene.id
-        Task {
-            await store.computeCameraPath(sceneID: sceneID, videoID: scene.videoID,
-                                          start: scene.startTime, end: scene.endTime,
-                                          camera: camera)
-            if computingPathSceneID == sceneID { computingPathSceneID = nil }
-            // A freshly landed path may belong to an already-approved pick —
-            // restitch so the reel preview tracks with it.
-            if model.picks.contains(where: { $0.scene.id == sceneID }) {
-                rebuildReelPreview()
-            }
-        }
+              freshScene(scene).centerStagePath == nil else { return }
+        store.startCameraPath(sceneID: scene.id, videoID: scene.videoID,
+                              start: scene.startTime, end: scene.endTime,
+                              camera: WizardDefaults.fallbackFramingCamera, reportsFailure: false)
     }
 
     /// Follow a trim-handle drag: pause and show the frame under the handle,
