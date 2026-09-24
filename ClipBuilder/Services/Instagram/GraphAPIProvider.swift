@@ -128,11 +128,18 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
         }
         if accounts.isEmpty {
             // With a Page token, `me` is the Page itself, not a user with pages.
-            let page = try await getJSON("me", query: [
-                "fields": "instagram_business_account{id,username,name,followers_count}",
-            ])
-            if let account = Self.account(from: page["instagram_business_account"] as? [String: Any]) {
-                accounts.append(account)
+            do {
+                let page = try await getJSON("me", query: [
+                    "fields": "instagram_business_account{id,username,name,followers_count}",
+                ])
+                if let account = Self.account(from: page["instagram_business_account"] as? [String: Any]) {
+                    accounts.append(account)
+                }
+            } catch InstagramError.graphAPI(let code, _) where code == Self.nonexistingFieldCode {
+                // A User node has no instagram_business_account field: this is
+                // a User token whose page list came back empty. Say why.
+                throw InstagramError.fetchFailed(
+                    Self.noVisiblePagesMessage(missing: await missingPermissions()))
             }
         }
         guard !accounts.isEmpty else {
@@ -148,6 +155,40 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
                 "@\(username) is not among the token's Instagram accounts (found: \(found))")
         }
         return match
+    }
+
+    /// Graph error 100 on `me?fields=instagram_business_account`: the node is
+    /// a User, so the token is a User token that sees no Facebook Page.
+    static let nonexistingFieldCode = 100
+
+    /// Permissions a User token needs before any page (and the Instagram
+    /// account behind it) is visible to discovery.
+    static let discoveryPermissions = [
+        "pages_show_list", "pages_read_engagement", "instagram_basic", "instagram_manage_insights",
+    ]
+
+    /// Required permissions the token has not been granted, per
+    /// `me/permissions`. Empty when that call fails — the message then
+    /// falls back to the Page-role explanation.
+    func missingPermissions() async -> [String] {
+        guard let object = try? await getJSON("me/permissions", query: [:]) else { return [] }
+        let granted = Set((object["data"] as? [[String: Any]] ?? []).compactMap { entry -> String? in
+            guard entry["status"] as? String == "granted" else { return nil }
+            return entry["permission"] as? String
+        })
+        return Self.discoveryPermissions.filter { !granted.contains($0) }
+    }
+
+    static func noVisiblePagesMessage(missing: [String]) -> String {
+        let lead = "This User token can't see any Facebook Page, so the Instagram account behind it can't be found. "
+        if missing.isEmpty {
+            return lead + "It holds every required permission, so check that your Facebook user still has a role "
+                + "on the Page linked to the Instagram account and that the Page is still linked to it, "
+                + "or paste the Page's own token."
+        }
+        return lead + "It lacks \(missing.joined(separator: ", ")) — generate a new token that includes "
+            + "\(missing.count == 1 ? "it" : "them") (Graph API Explorer → Permissions), "
+            + "or paste the Page's own token."
     }
 
     // MARK: - InstagramProvider
@@ -468,9 +509,15 @@ extension GraphAPIProvider {
         ])
         let pages = object["data"] as? [[String: Any]] ?? []
         if pages.isEmpty {
-            let page = try await getJSON("me", query: ["fields": "instagram_business_account{id}"])
-            let account = page["instagram_business_account"] as? [String: Any]
-            return account?["id"] as? String == igUserID ? token : nil
+            do {
+                let page = try await getJSON("me", query: ["fields": "instagram_business_account{id}"])
+                let account = page["instagram_business_account"] as? [String: Any]
+                return account?["id"] as? String == igUserID ? token : nil
+            } catch InstagramError.graphAPI(let code, _) where code == Self.nonexistingFieldCode {
+                // A User token without page access: the reports run on the
+                // user token instead of failing the whole refresh.
+                return nil
+            }
         }
         let page = pages.first {
             (($0["instagram_business_account"] as? [String: Any])?["id"] as? String) == igUserID

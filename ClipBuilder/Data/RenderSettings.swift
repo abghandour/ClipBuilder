@@ -8,6 +8,35 @@ nonisolated struct RenderSettings: Codable, Sendable, Equatable, Hashable {
     var customHeight = 1920
     var quality: EncodeQuality = .balanced
     var customCRF = 20
+    /// Keep burned-in overlays and captions out of the chosen platforms'
+    /// buttons, header and description area.
+    var platformSafeArea = PlatformSafeAreaSettings()
+
+    init(preset: RenderPreset = .portrait1080, customWidth: Int = 1080, customHeight: Int = 1920,
+         quality: EncodeQuality = .balanced, customCRF: Int = 20,
+         platformSafeArea: PlatformSafeAreaSettings = PlatformSafeAreaSettings()) {
+        self.preset = preset
+        self.customWidth = customWidth
+        self.customHeight = customHeight
+        self.quality = quality
+        self.customCRF = customCRF
+        self.platformSafeArea = platformSafeArea
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case preset, customWidth, customHeight, quality, customCRF, platformSafeArea
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        preset = try container.decodeIfPresent(RenderPreset.self, forKey: .preset) ?? .portrait1080
+        customWidth = try container.decodeIfPresent(Int.self, forKey: .customWidth) ?? 1080
+        customHeight = try container.decodeIfPresent(Int.self, forKey: .customHeight) ?? 1920
+        quality = try container.decodeIfPresent(EncodeQuality.self, forKey: .quality) ?? .balanced
+        customCRF = try container.decodeIfPresent(Int.self, forKey: .customCRF) ?? 20
+        platformSafeArea = try container.decodeIfPresent(PlatformSafeAreaSettings.self, forKey: .platformSafeArea)
+            ?? PlatformSafeAreaSettings()
+    }
 
     var width: Int { preset.width ?? Self.even(customWidth) }
     var height: Int { preset.height ?? Self.even(customHeight) }

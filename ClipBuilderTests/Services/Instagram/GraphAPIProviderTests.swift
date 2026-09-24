@@ -80,6 +80,58 @@ struct GraphAPIProviderTests {
         #expect(transport.requests.count == 2)
     }
 
+    @Test("User token without visible pages names the missing permissions")
+    func userTokenWithoutPages() async throws {
+        let transport = InstagramTestTransport([
+            "me/accounts": .json(#"{"data":[]}"#),
+            "me": .json(#"{"error":{"code":100,"message":"(#100) Tried accessing nonexisting field (instagram_business_account)"}}"#),
+            "me/permissions": .json(#"{"data":[{"permission":"instagram_basic","status":"granted"},{"permission":"pages_show_list","status":"declined"},{"permission":"instagram_manage_insights","status":"granted"}]}"#),
+        ])
+        let graph = transport.provider(id: nil)
+        defer { transport.finish(graph) }
+        do {
+            _ = try await graph.resolveAccount(matching: nil)
+            Issue.record("Expected account discovery failure")
+        } catch InstagramError.fetchFailed(let detail) {
+            #expect(detail.contains("can't see any Facebook Page"))
+            #expect(detail.contains("lacks pages_show_list, pages_read_engagement"))
+            #expect(!detail.contains("instagram_basic"))
+            #expect(!detail.contains("nonexisting field"))
+        }
+        #expect(transport.requests.map { $0.url?.path } == ["/v23.0/me/accounts", "/v23.0/me", "/v23.0/me/permissions"])
+    }
+
+    @Test("User token with every permission points at the Page role")
+    func userTokenWithoutPageRole() async throws {
+        let transport = InstagramTestTransport([
+            "me/accounts": .json(#"{"data":[]}"#),
+            "me": .json(#"{"error":{"code":100,"message":"nonexisting field"}}"#),
+            "me/permissions": .json(#"{"data":[{"permission":"instagram_basic","status":"granted"},{"permission":"pages_show_list","status":"granted"},{"permission":"pages_read_engagement","status":"granted"},{"permission":"instagram_manage_insights","status":"granted"}]}"#),
+        ])
+        let graph = transport.provider(id: nil)
+        defer { transport.finish(graph) }
+        do {
+            _ = try await graph.resolveAccount(matching: nil)
+            Issue.record("Expected account discovery failure")
+        } catch InstagramError.fetchFailed(let detail) {
+            #expect(detail.contains("still has a role on the Page"))
+            #expect(!detail.contains("lacks"))
+        }
+    }
+
+    @Test("Page token lookup yields nil for a User token without pages")
+    func noPageTokenForUserToken() async throws {
+        let transport = InstagramTestTransport([
+            "me/accounts": .json(#"{"data":[]}"#),
+            "me": .json(#"{"error":{"code":100,"message":"nonexisting field"}}"#),
+        ])
+        let graph = transport.provider()
+        defer { transport.finish(graph) }
+        let token = try await graph.pageAccessToken(igUserID: "ig-123")
+        #expect(token == nil)
+        #expect(transport.requests.count == 2)
+    }
+
     @Test("Missing accounts retain the actionable discovery error")
     func missingAccount() async throws {
         let transport = InstagramTestTransport(["me/accounts": .json(#"{"data":[]}"#), "me": .json("{}")])

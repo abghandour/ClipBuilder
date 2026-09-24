@@ -18,6 +18,9 @@ nonisolated struct CaptionRenderer {
     var videoWidth: Int
     var videoHeight: Int
     var style: CaptionStyle
+    /// The canvas's platform safe area (from the render in progress), so
+    /// bottom captions sit above the description and top ones below the header.
+    var safeArea: PlatformSafeArea? = PlatformSafeArea.resolve(RenderContext.settings)
 
     // MARK: - Color / font resolution
 
@@ -160,10 +163,21 @@ nonisolated struct CaptionRenderer {
     func position(for caption: RenderedCaption, positionOverride: String? = nil) -> (x: Int, y: Int) {
         let marginV = max(40, videoHeight / 18)
         let x = (videoWidth - caption.width) / 2
+        let y: Int
         switch (positionOverride ?? style.position).lowercased() {
-        case "top": return (x, marginV)
-        case "middle": return (x, (videoHeight - caption.height) / 2)
-        default: return (x, videoHeight - caption.height - marginV)
+        case "top": y = marginV
+        case "middle": y = (videoHeight - caption.height) / 2
+        default: y = videoHeight - caption.height - marginV
         }
+        guard let safeArea else { return (x, y) }
+        // Inside the safe area the caption keeps a smaller margin, so the
+        // chrome-avoiding lift does not push it further than needed.
+        let inset = max(16, videoHeight / 60)
+        let origin = safeArea.clampedOrigin(
+            x: Double(x) / Double(videoWidth), y: Double(y) / Double(videoHeight),
+            width: Double(caption.width) / Double(videoWidth),
+            height: Double(caption.height + inset * 2) / Double(videoHeight))
+        return (Int((origin.x * Double(videoWidth)).rounded()),
+                Int((origin.y * Double(videoHeight)).rounded()) + inset)
     }
 }

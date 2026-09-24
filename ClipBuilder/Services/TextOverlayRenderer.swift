@@ -15,6 +15,15 @@ import UniformTypeIdentifiers
 nonisolated struct TextOverlayRenderer {
     var videoWidth = 1080
     var videoHeight = 1920
+    /// Platform chrome to stay clear of; every design clamps its box into it.
+    var safeArea: PlatformSafeArea? = PlatformSafeArea.resolve(RenderContext.settings)
+
+    /// A box centre (fractions of the frame) moved into the safe area.
+    private func clamped(centerX: Double, centerY: Double, width: Double, height: Double) -> (x: Double, y: Double) {
+        guard let safeArea else { return (centerX, centerY) }
+        return safeArea.clampedCenter(x: centerX, y: centerY,
+                                      width: width / Double(videoWidth), height: height / Double(videoHeight))
+    }
 
     // MARK: - Markup
 
@@ -165,9 +174,11 @@ nonisolated struct TextOverlayRenderer {
         default:
             if let wFrac = item.wFrac, let hFrac = item.hFrac,
                let xFrac = item.xFrac, let yFrac = item.yFrac, wFrac > 0, hFrac > 0 {
+                let center = clamped(centerX: Double(width) * xFrac, centerY: Double(height) * yFrac,
+                                     width: Double(width) * wFrac, height: Double(height) * hFrac)
                 drawFittedBox(in: context, item: item, words: words, visibleWords: visibleWords,
                               boxWidth: Int(Double(width) * wFrac), boxHeight: Int(Double(height) * hFrac),
-                              centerX: Int(Double(width) * xFrac), centerY: Int(Double(height) * yFrac))
+                              centerX: Int(center.x), centerY: Int(center.y))
             } else {
                 drawLegacy(in: context, item: item, words: words, visibleWords: visibleWords)
             }
@@ -277,6 +288,12 @@ nonisolated struct TextOverlayRenderer {
         }
         x = min(max(x, margin), CGFloat(videoWidth) - margin - width)
         top = min(max(top, margin), CGFloat(videoHeight) - margin - textHeight)
+        if safeArea != nil {
+            let center = clamped(centerX: x + width / 2, centerY: top + textHeight / 2,
+                                 width: width, height: textHeight)
+            x = center.x - width / 2
+            top = center.y - textHeight / 2
+        }
 
         if item.boxOpacity > 0 {
             fillRoundedBackground(in: context, item: item,
@@ -353,8 +370,9 @@ nonisolated struct TextOverlayRenderer {
         guard !words.isEmpty else { return }
         let boxWidth = Double(videoWidth) * (item.wFrac ?? 0.82)
         let boxHeight = Double(videoHeight) * (item.hFrac ?? 0.12)
-        let centerX = Double(videoWidth) * (item.xFrac ?? 0.5)
-        let centerY = Double(videoHeight) * (item.yFrac ?? 0.2)
+        let (centerX, centerY) = clamped(centerX: Double(videoWidth) * (item.xFrac ?? 0.5),
+                                         centerY: Double(videoHeight) * (item.yFrac ?? 0.2),
+                                         width: boxWidth, height: boxHeight)
 
         // Auto-fit the headline exactly like the fitted-box path.
         func metrics(for size: CGFloat) -> (font: CTFont, lines: [[Word]], lineHeight: CGFloat,
@@ -488,8 +506,9 @@ nonisolated struct TextOverlayRenderer {
         guard !words.isEmpty else { return }
         let maxWidth = Double(videoWidth) * (item.wFrac ?? 0.8)
         let maxHeight = Double(videoHeight) * (item.hFrac ?? 0.06)
-        let centerX = Double(videoWidth) * (item.xFrac ?? 0.5)
-        let centerY = Double(videoHeight) * (item.yFrac ?? 0.2)
+        let (centerX, centerY) = clamped(centerX: Double(videoWidth) * (item.xFrac ?? 0.5),
+                                         centerY: Double(videoHeight) * (item.yFrac ?? 0.2),
+                                         width: maxWidth, height: maxHeight)
         let plain = Self.plainText(words)
 
         var low = 6, high = Int(maxHeight), best = 6

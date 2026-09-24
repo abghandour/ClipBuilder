@@ -434,14 +434,18 @@ actor MultitrackRenderer {
         let textRenderer = TextOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
         let imageRenderer = ImageOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
         var overlays: [TimedOverlayPNG] = []
-        for item in document.imageOverlays {
+        let safeArea = PlatformSafeArea.resolve(RenderContext.settings)
+        if let safeArea {
+            emit("Overlays kept clear of \(safeArea.platforms.map(\.label).joined(separator: ", ")) buttons")
+        }
+        for item in document.imageOverlays.map({ $0.keptClear(of: safeArea, frameAspectRatio: RenderContext.settings.aspectRatio) }) {
             let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
             guard end > start, let png = try? imageRenderer.render(item, to: scratch) else { continue }
             let identity = try RenderSegmentCache.key(item) + SourceIdentityCache.shared.fingerprint(of: item.url)
             overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,
                 transIn: item.transIn, transOut: item.transOut, identity: identity))
         }
-        for item in document.textOverlays
+        for item in document.textOverlays.map({ $0.keptClear(of: safeArea) })
         where !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
             guard end > start, let png = try? textRenderer.render(item, to: scratch) else { continue }

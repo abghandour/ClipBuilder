@@ -27,10 +27,15 @@ struct WizardResultsSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
-                Text(results.videos.count == 1
-                     ? "Your video is ready"
-                     : "\(results.videos.count) videos are ready")
-                    .font(.headline)
+                HStack {
+                    Spacer()
+                    Text(results.videos.count == 1
+                         ? "Your video is ready"
+                         : "\(results.videos.count) videos are ready")
+                        .font(.headline)
+                    Spacer()
+                    PlatformChromePicker().fixedSize()
+                }
                 Text(results.videos.count > 1 && bestCritiquedID != nil
                      ? "The critic reviewed each version — its favorite is marked. Watch and rate; every rating trains the wizard."
                      : "Watch and rate — every rating trains the wizard. Not what you wanted? Retry runs the same settings again.")
@@ -106,6 +111,10 @@ struct WizardResultsSheet: View {
             PlayerView(player: players[video.id])
                 .frame(width: 210, height: 373)
                 .background(.black, in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    PlatformChromeLayer(size: CGSize(width: 210, height: 373),
+                                        safeAreaSettings: store.activeProfile.defaultRenderSettings.platformSafeArea)
+                }
 
             Text("\(video.filename) · \(video.duration.timecode)")
                 .font(.caption)

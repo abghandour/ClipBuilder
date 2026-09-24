@@ -24,6 +24,8 @@ nonisolated enum BrandRenderer {
     private static var canvasFrame: CGSize { CGSize(width: width, height: height) }
     /// The scaled design frame, for aspect-fit cards.
     private static var cardFrame: CGSize { CGSize(width: designWidth * scale, height: designHeight * scale) }
+    /// Platform chrome the corner elements stay clear of (nil = whole frame).
+    private static var safeArea: PlatformSafeArea? { PlatformSafeArea.resolve(RenderContext.settings) }
 
     // MARK: - Elements
 
@@ -32,10 +34,13 @@ nonisolated enum BrandRenderer {
         guard let logo = NSImage(contentsOf: logoURL) else { return nil }
         let s = scale
         let frame = canvasFrame
+        // Below the platform header when one is chosen; the left edge is
+        // never covered by a rail.
+        let top = max(52 * s, (safeArea?.topInset ?? 0) * Double(frame.height) + 24 * s)
         return draw(named: "brand_watermark", in: directory) { context in
             drawImage(logo, in: context,
                       rect: fittedRect(for: logo, width: 150 * s,
-                                       topLeft: CGPoint(x: 48 * s, y: 52 * s), frame: frame),
+                                       topLeft: CGPoint(x: 48 * s, y: top), frame: frame),
                       opacity: 0.85)
         }
     }
@@ -49,7 +54,8 @@ nonisolated enum BrandRenderer {
         return draw(named: "brand_headline", in: directory) { context in
             let accentColor = color(accent)
             let margin = 52.0 * s
-            var cursorY = 390.0 * s
+            // Above the platform's description area when one is chosen.
+            var cursorY = max(390.0 * s, (safeArea?.bottomInset ?? 0) * Double(frame.height) + 40 * s)
 
             // Headline: up to 2 lines, widest condensed face available.
             let font = titleFont(size: 54 * s)

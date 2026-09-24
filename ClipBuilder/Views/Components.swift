@@ -284,11 +284,14 @@ struct PersonFaceAvatar: View {
 /// directly also guarantees AVKit is linked into the process.
 struct PlayerView: NSViewRepresentable {
     let player: AVPlayer?
+    /// `.none` when the caller draws its own transport (the highlight trim
+    /// view), so the full-file scrubber cannot escape the reel's range.
+    var controlsStyle: AVPlayerViewControlsStyle = .inline
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
-        view.controlsStyle = .inline
-        view.showsFullScreenToggleButton = true
+        view.controlsStyle = controlsStyle
+        view.showsFullScreenToggleButton = controlsStyle != .none
         return view
     }
 
@@ -347,6 +350,8 @@ struct PlayerSheet: View {
     @State private var speakerLabels: [Int64: String] = [:]
     @State private var speakerTurns: [SpeakerTurn] = []
     @State private var speakerRoster: [VideoPersonRecord] = []
+    /// The played file's pixel size, so simulated platform chrome fits the picture.
+    @State private var videoSize: CGSize?
     @State private var markIn: Double?
     @State private var markOut: Double?
     @State private var markProblem: String?
@@ -371,6 +376,7 @@ struct PlayerSheet: View {
                     .font(.headline)
                     .lineLimit(1)
                 Spacer()
+                PlatformChromePicker().fixedSize()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
@@ -380,6 +386,7 @@ struct PlayerSheet: View {
                 PlayerView(player: player)
                     .frame(minWidth: 420, minHeight: 560)
                     .overlay { speakerOutline }
+                    .overlay { platformChrome }
                 if transcriptVideoID != nil {
                     Divider()
                     transcriptPanel
@@ -439,6 +446,11 @@ struct PlayerSheet: View {
         .task(id: url) {
             guard await DrivePlayback.prepare(url) else { return }
             guard let asset = try? await DriveLocalAsset.make(url) else { return }
+            if let track = try? await asset.loadTracks(withMediaType: .video).first,
+               let (natural, transform) = try? await track.load(.naturalSize, .preferredTransform) {
+                let size = natural.applying(transform)
+                videoSize = CGSize(width: abs(size.width), height: abs(size.height))
+            }
             let item = AVPlayerItem(asset: asset)
             if let endTime, endTime > startTime {
                 item.forwardPlaybackEndTime = CMTime(seconds: endTime, preferredTimescale: 600)
@@ -485,6 +497,20 @@ struct PlayerSheet: View {
             if let endObserver {
                 NotificationCenter.default.removeObserver(endObserver)
             }
+        }
+    }
+
+    /// The simulated platform's buttons over the picture (aspect-fit rect).
+    @ViewBuilder
+    private var platformChrome: some View {
+        if let videoSize, videoSize.width > 0, videoSize.height > 0 {
+            GeometryReader { geo in
+                let rect = AVMakeRect(aspectRatio: videoSize, insideRect: CGRect(origin: .zero, size: geo.size))
+                PlatformChromeLayer(size: rect.size,
+                                    safeAreaSettings: store.activeProfile.defaultRenderSettings.platformSafeArea)
+                    .offset(x: rect.minX, y: rect.minY)
+            }
+            .allowsHitTesting(false)
         }
     }
 

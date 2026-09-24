@@ -4,6 +4,9 @@ import SwiftUI
 struct PodcastHighlightScreeningKeys: NSViewRepresentable {
     let isActive: () -> Bool
     let rate: (PodcastHighlightScreeningState.Verdict) -> Void
+    /// Any other unmodified key outside a text field (the trim view's
+    /// Space, I and O). Returns true when it consumed the event.
+    var other: ((NSEvent) -> Bool)? = nil
 
     final class Coordinator {
         var monitor: Any?
@@ -21,11 +24,13 @@ struct PodcastHighlightScreeningKeys: NSViewRepresentable {
                 guard let view, let coordinator, let window = view.window,
                       window.isKeyWindow, event.window === window else { return false }
                 let editingText = window.firstResponder is NSText || window.firstResponder is NSTextField
-                guard let verdict = Self.verdict(for: event, isActive: coordinator.owner.isActive(), editingText: editingText) else {
-                    return false
+                if let verdict = Self.verdict(for: event, isActive: coordinator.owner.isActive(), editingText: editingText) {
+                    if !event.isARepeat { coordinator.owner.rate(verdict) }
+                    return true
                 }
-                if !event.isARepeat { coordinator.owner.rate(verdict) }
-                return true
+                guard let other = coordinator.owner.other, !editingText, !event.isARepeat,
+                      event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
+                return other(event)
             }
             return handled ? nil : event
         }

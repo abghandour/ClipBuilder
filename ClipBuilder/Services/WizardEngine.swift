@@ -3174,6 +3174,7 @@ actor WizardEngine {
         }
         var document = Self.timelineDocument(from: editPlan, sceneMap: sceneMap,
             renderSettings: options.renderSettings, pacing: options.pacing, podcastFraming: options.podcastFraming)
+            .keepingOverlaysClearOfPlatformChrome()
         for index in document.videoTrack.indices {
             document.videoTrack[index].muted = options.muteSource || document.videoTrack[index].muted
             document.videoTrack[index].captions = options.addCaptions ? "bottom" : "none"

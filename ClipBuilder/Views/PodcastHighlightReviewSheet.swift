@@ -5,11 +5,14 @@ struct PodcastHighlightReviewSheet: View {
     @Environment(\.dismiss) private var dismiss
     let request: PodcastHighlightReviewRequest
     @State private var rows: [Selection]
-    @State private var playing: HighlightCandidate?
+    /// The candidate open in the Play sheet (its id; edits go to `rows`).
+    @State private var playingID: UUID?
     @State private var renderFailure: String?
     @State private var screening: PodcastHighlightScreeningState
     @State private var isScreening = false
     @State private var hasScreened = false
+    /// The recording's words, for word-snapped trimming.
+    private let trim: PodcastHighlightTrim
 
     private struct Selection: Identifiable {
         var candidate: HighlightCandidate
@@ -21,6 +24,29 @@ struct PodcastHighlightReviewSheet: View {
         self.request = request
         _screening = State(initialValue: PodcastHighlightScreeningState(candidateIDs: request.candidates.map(\.id)))
         _rows = State(initialValue: request.candidates.map { Selection(candidate: $0) })
+        trim = PodcastHighlightTrim(segments: request.segments, turns: request.turns, roster: request.roster,
+                                    duration: request.video.duration)
+    }
+
+    /// The candidates as trimmed so far, for the screening view.
+    private var candidatesBinding: Binding<[HighlightCandidate]> {
+        Binding(get: { rows.map(\.candidate) },
+                set: { edited in
+                    for candidate in edited {
+                        if let index = rows.firstIndex(where: { $0.id == candidate.id }) { rows[index].candidate = candidate }
+                    }
+                })
+    }
+
+    private func original(for id: UUID) -> HighlightCandidate? {
+        request.candidates.first { $0.id == id }
+    }
+
+    /// The request with the trimmed ranges, so rendering cuts what was reviewed.
+    private var editedRequest: PodcastHighlightReviewRequest {
+        var edited = request
+        edited.candidates = rows.map(\.candidate)
+        return edited
     }
 
     var body: some View {
@@ -67,8 +93,8 @@ struct PodcastHighlightReviewSheet: View {
             }
             Divider()
             if isScreening {
-                PodcastHighlightScreeningView(url: request.video.url, candidates: request.candidates,
-                    state: $screening, isScreening: $isScreening)
+                PodcastHighlightScreeningView(url: request.video.url, candidates: candidatesBinding,
+                    originals: request.candidates, trim: trim, state: $screening, isScreening: $isScreening)
             } else if rows.isEmpty {
                 ContentUnavailableView("No highlights found", systemImage: "waveform",
                     description: Text("No sentence-safe candidates met the score threshold and maximum length. Try a longer maximum or another recording."))
@@ -79,9 +105,18 @@ struct PodcastHighlightReviewSheet: View {
                             HStack(alignment: .top, spacing: Theme.spaceM) {
                                 Toggle(row.candidate.title, isOn: $row.selected).labelsHidden()
                                     .accessibilityLabel("Include \(row.candidate.title)")
-                                PodcastHighlightDetails(candidate: row.candidate)
+                                PodcastHighlightDetails(candidate: row.candidate, original: original(for: row.id))
                                 Spacer()
-                                Button("Play", systemImage: "play.fill") { playing = row.candidate }
+                                if let original = original(for: row.id), row.candidate.isTrimmed(from: original) {
+                                    Button("Reset") {
+                                        row.candidate.sourceStart = original.sourceStart
+                                        row.candidate.sourceEnd = original.sourceEnd
+                                    }
+                                    .controlSize(.small)
+                                    .help("Return to the suggested \(original.sourceStart.timecode)–\(original.sourceEnd.timecode)")
+                                }
+                                Button("Play", systemImage: "play.fill") { playingID = row.id }
+                                    .help("Watch it and adjust where it starts and ends")
                             }
                             Divider()
                         }
@@ -90,15 +125,29 @@ struct PodcastHighlightReviewSheet: View {
             }
         }
         .padding(Theme.spaceM)
-        .frame(width: 820, height: 620)
-        .sheet(item: $playing) { candidate in
-            PlayerSheet(url: request.video.url, transcriptVideoID: request.video.id, title: candidate.title,
-                        startTime: candidate.sourceStart, endTime: candidate.sourceEnd)
+        .frame(width: isScreening ? PodcastHighlightTrimView.sheetWidth : 820,
+               height: isScreening ? PodcastHighlightTrimView.sheetHeight : 620)
+        .sheet(item: playingSelection) { row in
+            PodcastHighlightTrimSheet(url: request.video.url, candidate: playingBinding(for: row.id),
+                                      original: original(for: row.id) ?? row.candidate, trim: trim)
         }
     }
 
+    /// The row open in the Play sheet, or nil once it is dismissed.
+    private var playingSelection: Binding<Selection?> {
+        Binding(get: { playingID.flatMap { id in rows.first { $0.id == id } } },
+                set: { playingID = $0?.id })
+    }
+
+    private func playingBinding(for id: UUID) -> Binding<HighlightCandidate> {
+        Binding(get: { (rows.first { $0.id == id } ?? rows[0]).candidate },
+                set: { candidate in
+                    if let index = rows.firstIndex(where: { $0.id == id }) { rows[index].candidate = candidate }
+                })
+    }
+
     private func startScreening() {
-        playing = nil
+        playingID = nil
         if screening.isComplete { screening.restart() }
         isScreening = true
     }
@@ -111,14 +160,14 @@ struct PodcastHighlightReviewSheet: View {
     }
 
     private func cancel() {
-        playing = nil
+        playingID = nil
         isScreening = false
         store.pendingPodcastHighlights = nil
         dismiss()
     }
 
     private func render(selected: Set<UUID>) {
-        if store.renderPodcastHighlights(request, selected: selected) {
+        if store.renderPodcastHighlights(editedRequest, selected: selected) {
             isScreening = false
             dismiss()
         } else {

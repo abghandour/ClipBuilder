@@ -345,6 +345,30 @@ struct BuilderView: View {
                         Text(preset.label).tag(preset)
                     }
                 }
+                Toggle("Keep Clear of Platform Buttons", isOn: Binding(
+                    get: { model.document.renderSettings.platformSafeArea.enabled },
+                    set: { enabled in
+                        var settings = model.document.renderSettings
+                        settings.platformSafeArea.enabled = enabled
+                        model.setRenderSettings(settings)
+                    }))
+                Menu("Platforms") {
+                    ForEach(SocialPlatform.allCases) { platform in
+                        Toggle(platform.label, isOn: Binding(
+                            get: { model.document.renderSettings.platformSafeArea.platforms.contains(platform) },
+                            set: { on in
+                                var settings = model.document.renderSettings
+                                if on {
+                                    if !settings.platformSafeArea.platforms.contains(platform) {
+                                        settings.platformSafeArea.platforms.append(platform)
+                                    }
+                                } else {
+                                    settings.platformSafeArea.platforms.removeAll { $0 == platform }
+                                }
+                                model.setRenderSettings(settings)
+                            }))
+                    }
+                }
                 Picker("Quality", selection: Binding(
                     get: { model.document.renderSettings.quality },
                     set: { quality in

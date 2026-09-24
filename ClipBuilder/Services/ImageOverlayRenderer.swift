@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 nonisolated struct ImageOverlayRenderer {
     var videoWidth = 1080
     var videoHeight = 1920
+    var safeArea: PlatformSafeArea? = PlatformSafeArea.resolve(RenderContext.settings)
 
     enum RenderError: Error {
         case unreadableImage(String)
@@ -42,8 +43,13 @@ nonisolated struct ImageOverlayRenderer {
         context.setAlpha(item.opacity)
         // xFrac/yFrac are the item's center measured from the top-left;
         // Core Graphics' origin is bottom-left, so flip y.
-        let rect = CGRect(x: Double(videoWidth) * item.xFrac - width / 2,
-                          y: Double(videoHeight) * (1 - item.yFrac) - height / 2,
+        var center = (x: item.xFrac, y: item.yFrac)
+        if let safeArea {
+            center = safeArea.clampedCenter(x: item.xFrac, y: item.yFrac,
+                                            width: width / Double(videoWidth), height: height / Double(videoHeight))
+        }
+        let rect = CGRect(x: Double(videoWidth) * center.x - width / 2,
+                          y: Double(videoHeight) * (1 - center.y) - height / 2,
                           width: width, height: height)
         context.draw(image, in: rect)
 

@@ -78,8 +78,24 @@ nonisolated enum ReelQualityGate {
             checks.append("Risky wide framing is covered by saved scene framing")
         }
 
-        if options.enableTextOverlays && plan.clips.contains(where: { $0.textOverlay != nil }) {
-            checks.append("Hook/context text is rendered in the top safe area")
+        let hasOverlays = options.enableTextOverlays
+            && plan.clips.contains { $0.textOverlay != nil || !$0.speakerIntroductions.isEmpty }
+        let chrome = options.renderSettings.platformSafeArea
+        let covered = PlatformSafeArea.resolve(options.renderSettings)?.platforms ?? []
+        if hasOverlays || options.addCaptions {
+            if !covered.isEmpty {
+                checks.append("Text and captions kept clear of \(covered.map(\.shortLabel).joined(separator: ", ")) buttons and description")
+            } else if chrome.isActive {
+                checks.append("No chosen platform draws over this canvas")
+            } else {
+                let exposed = plan.clips.contains {
+                    $0.overlayStyle == "lower-third" || $0.overlayPlacement == "bottom" || !$0.speakerIntroductions.isEmpty
+                }
+                if exposed || options.addCaptions {
+                    score -= 8
+                    warnings.append("Lower thirds or captions sit where Reels, TikTok and Shorts draw their buttons and description; turn on “Keep clear of platform buttons” in the output settings.")
+                }
+            }
         }
         if options.addCaptions { checks.append("Spoken captions are burned in") }
         if plan.musicName != nil { checks.append("Music selected with beat-aware cut planning") }

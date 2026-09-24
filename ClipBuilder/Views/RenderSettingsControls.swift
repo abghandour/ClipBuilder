@@ -27,6 +27,13 @@ struct RenderSettingsControls: View {
             .fieldHelp(WizardFieldHelp.customSize)
         }
 
+        Toggle("Keep clear of platform buttons", isOn: $settings.platformSafeArea.enabled)
+            .fieldHelp(WizardFieldHelp.platformSafeArea)
+        if settings.platformSafeArea.enabled {
+            PlatformTargetsPicker(platforms: $settings.platformSafeArea.platforms)
+        }
+        FieldCaption(WizardFieldHelp.platformSafeArea)
+
         Picker("Encode quality", selection: $settings.quality) {
             ForEach(EncodeQuality.allCases) { quality in
                 Text(quality.label).tag(quality)
@@ -46,5 +53,27 @@ struct RenderSettingsControls: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Which platforms' chrome the safe area accounts for.
+struct PlatformTargetsPicker: View {
+    @Binding var platforms: [SocialPlatform]
+
+    var body: some View {
+        LabeledContent("Platforms") {
+            HStack(spacing: Theme.spaceM) {
+                ForEach(SocialPlatform.allCases) { platform in
+                    Toggle(platform.label, isOn: Binding(
+                        get: { platforms.contains(platform) },
+                        set: { on in
+                            if on { if !platforms.contains(platform) { platforms.append(platform) } }
+                            else { platforms.removeAll { $0 == platform } }
+                        }))
+                    .toggleStyle(.checkbox)
+                }
+            }
+        }
+        .help("The safe area is the part of the frame none of the chosen platforms cover")
     }
 }

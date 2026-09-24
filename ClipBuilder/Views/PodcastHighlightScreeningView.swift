@@ -2,7 +2,11 @@ import SwiftUI
 
 struct PodcastHighlightScreeningView: View {
     let url: URL
-    let candidates: [HighlightCandidate]
+    /// The candidates as edited so far; trims land here as they are made.
+    @Binding var candidates: [HighlightCandidate]
+    /// What the analysis suggested, for the Reset button.
+    let originals: [HighlightCandidate]
+    let trim: PodcastHighlightTrim
     @Binding var state: PodcastHighlightScreeningState
     @Binding var isScreening: Bool
 
@@ -14,8 +18,11 @@ struct PodcastHighlightScreeningView: View {
                 Spacer()
                 Text("\(state.approved.count) approved").foregroundStyle(.secondary)
             }
-            if let candidate = candidates.first(where: { $0.id == state.currentID }) {
-                PodcastHighlightRangePlayer(url: url, candidate: candidate)
+            if let index = candidates.firstIndex(where: { $0.id == state.currentID }) {
+                let candidate = candidates[index]
+                PodcastHighlightTrimView(url: url, candidate: $candidates[index],
+                                         original: originals.first { $0.id == candidate.id } ?? candidate,
+                                         trim: trim)
                     .id(candidate.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityLabel("Preview of \(candidate.title)")
@@ -39,7 +46,7 @@ struct PodcastHighlightScreeningView: View {
                 Button("Next") { state.next() }.disabled(state.isComplete)
                 Spacer()
                 if !state.isComplete {
-                    Text("↑ / U approve · ↓ / D reject").font(.caption).foregroundStyle(.secondary)
+                    Text("↑ / U approve · ↓ / D reject · Space play · I / O set start / end").font(.caption).foregroundStyle(.secondary)
                 }
             }
         }

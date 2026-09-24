@@ -20,6 +20,10 @@ nonisolated enum WizardFieldHelp {
     static let instructions = FieldHelp(
         "Tell the planner what the reel should achieve: the hook, the moments it must include, the mood.")
 
+    static let platformSafeArea = FieldHelp(
+        "Keep lower thirds, text, logos and captions out of the areas where the platform's own buttons, header and description cover the picture.",
+        caption: "Pick the platforms you post to. The safe area is what none of them cover; overlays that would sit under a button move inside it.")
+
     // Plan
     static let recipe = FieldHelp(
         "The reel's format: what it opens on, roughly how long it runs, and what text it carries.")

@@ -96,6 +96,10 @@ struct PreviewPane: View {
                         .frame(width: frame.width, height: frame.height)
                 }
             }
+            .overlay {
+                // The chosen platform's buttons and description, over still and playback alike.
+                PlatformChromeLayer(size: frame, safeAreaSettings: model.document.renderSettings.platformSafeArea)
+            }
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .frame(width: geo.size.width, height: geo.size.height)
         }
@@ -106,6 +110,17 @@ struct PreviewPane: View {
                     .padding(Theme.spaceS)
             }
         }
+        .overlay(alignment: .topTrailing) {
+            PlatformChromePicker()
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .padding(Theme.spaceS)
+        }
+    }
+
+    /// Fraction of the frame the chrome-avoiding drag keeps overlays inside.
+    static func safeArea(for document: TimelineDocument) -> PlatformSafeArea? {
+        PlatformSafeArea.resolve(document.renderSettings)
     }
 
     private func sampledTime(for clip: TimelineClip, at time: Double) -> Double {
@@ -458,8 +473,15 @@ private struct ImageOverlayLayer: View {
                         model.selection = .image(overlay.uid)
                     }
                     guard let start = dragStart else { return }
-                    let newX = min(max(start.x + value.translation.width / frame.width, 0), 1)
-                    let newY = min(max(start.y + value.translation.height / frame.height, 0), 1)
+                    var newX = min(max(start.x + value.translation.width / frame.width, 0), 1)
+                    var newY = min(max(start.y + value.translation.height / frame.height, 0), 1)
+                    if let safeArea = PreviewPane.safeArea(for: model.document) {
+                        // The flag holds the image inside the safe area while dragging.
+                        let center = safeArea.clampedCenter(x: newX, y: newY,
+                            width: width / frame.width, height: height / frame.height)
+                        newX = center.x
+                        newY = center.y
+                    }
                     model.updateImage(overlay.uid) {
                         $0.xFrac = newX
                         $0.yFrac = newY
@@ -540,8 +562,15 @@ private struct TextOverlayLayer: View {
                             model.selection = .text(overlay.uid)
                         }
                         guard let start = dragStart else { return }
-                        let newX = min(max(start.x + value.translation.width / frame.width, 0), 1)
-                        let newY = min(max(start.y + value.translation.height / frame.height, 0), 1)
+                        var newX = min(max(start.x + value.translation.width / frame.width, 0), 1)
+                        var newY = min(max(start.y + value.translation.height / frame.height, 0), 1)
+                        if let safeArea = PreviewPane.safeArea(for: model.document) {
+                            // The flag holds the text inside the safe area while dragging.
+                            let box = overlay.normalizedBox
+                            let center = safeArea.clampedCenter(x: newX, y: newY, width: box.width, height: box.height)
+                            newX = center.x
+                            newY = center.y
+                        }
                         model.updateText(overlay.uid) {
                             $0.xFrac = newX
                             $0.yFrac = newY
