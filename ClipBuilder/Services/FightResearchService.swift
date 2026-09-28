@@ -162,7 +162,7 @@ actor FightResearchService {
         Return ONLY the JSON object.
         """
         do {
-            let response = try await ai.call(prompt: prompt, task: "fight_research",
+            let response = try await ai.call(prompt: prompt, task: .fightResearch,
                                              model: modelOverride, timeout: 120, log: emit)
             guard let object = AIResponseParser.jsonObject(from: response.text) else { return fallback }
             let queries = (object["queries"] as? [String] ?? []).prefix(4)
@@ -626,7 +626,7 @@ actor FightResearchService {
         ## CRAWLED EXCERPTS
         \(excerpts)
         """
-        let response = try await ai.call(prompt: prompt, task: "fight_research",
+        let response = try await ai.call(prompt: prompt, task: .fightResearch,
                                          model: modelOverride, timeout: 300, log: emit)
         guard let data = AIResponseParser.jsonData(from: response.text),
               let json = String(data: data, encoding: .utf8),

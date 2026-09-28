@@ -1229,7 +1229,7 @@ actor PodcastExchangeSegmenter {
         Return only JSON: {"exchanges":[{"first_sentence":0,"last_sentence":1,"title":"...","summary":"...","score":7.5}]}
         """
         do {
-            let response = try await ai.call(prompt: prompt, task: "exchanges", model: model,
+            let response = try await ai.call(prompt: prompt, task: .exchanges, model: model,
                                              provider: provider, timeout: 240, log: log)
             guard let object = AIResponseParser.jsonObject(from: response.text),
                   let raw = object["exchanges"] as? [[String: Any]] else {

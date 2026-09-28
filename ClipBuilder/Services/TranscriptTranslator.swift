@@ -90,7 +90,7 @@ enum TranscriptTranslator {
             for row in originals {
                 let response = try await store.ai.call(
                     prompt: "Translate this caption to \(target). Preserve names and meaning. Return only the translation:\n\(row.text)",
-                    task: "translate", timeout: 60, log: { _ in })
+                    task: .translate, timeout: 60, log: { _ in })
                 provenance = response.provenance
                 segments.append(.init(start: row.startTime, end: row.endTime,
                                       text: response.text.trimmingCharacters(in: .whitespacesAndNewlines), words: nil))

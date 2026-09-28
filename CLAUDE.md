@@ -54,36 +54,50 @@ slices, verify with the compiler.
 
 ```
 ClipBuilder/
-  App/        AppStore (7.3k lines, the hub) + AppStore+<Feature> extensions,
-              AppJobs (background jobs), BuilderStore (timeline editing)
-  Data/       Models, Database (4.7k lines, SQLite), BrandProfile, settings,
-              recipes, AI provenance
-  Services/   107 files: Analyzer, MultitrackRenderer, WizardEngine (3.6k),
-              AIService (provider dispatch), ReelCritic, PodcastHighlight*,
-              GoogleDrive/, Instagram/, Models/ (on-device CreateML), Script/
-  Views/      106 files, one per sheet or pane; GoogleDrive/, AIInfo/ subfolders
-ClipBuilderTests/  mirrors the app folders; Support/ has fixtures
+  App/        AppStore.swift (state + core, 2k lines) and AppStore+<Feature>.swift
+              extensions (Projects, Analysis, WizardPipeline, Wizard, People,
+              AITools, Scenes, Timelines, FightResearch, Instagram, Jobs,
+              ImageSearch, ReelModels); AppJobs (background jobs);
+              BuilderStore (timeline editing)
+  Data/       Models, Database.swift (schema + migrations) and
+              Database+<TableGroup>.swift query extensions, BrandProfile,
+              settings, recipes, AI provenance
+  Services/   AITask (registry), AIService (dispatch), Analyzer,
+              MultitrackRenderer, WizardEngine, Wizard/ (pure plan rules),
+              ReelCritic, PodcastHighlight*, GoogleDrive/, Instagram/,
+              Models/ (on-device CreateML), Script/
+  Views/      one file per sheet or pane; GoogleDrive/, AIInfo/ subfolders
+ClipBuilderTests/  mirrors the app folders; Support/Fixtures.swift has builders
 docs/       plans and results; scripts/  release, test, benchmarks
 ```
+
+Every file over ~2k lines opens with a `// MAP` comment listing its sections
+or its extension files. Read that first, then jump to the section.
 
 Where to look first:
 
 | Topic | File |
 | --- | --- |
-| App-wide state and most actions | `App/AppStore.swift`, MARK sections listed at each `// MARK: -` |
+| App-wide stored state, services, profiles | `App/AppStore.swift` (feature state block near the top) |
+| A feature's actions | `App/AppStore+<Feature>.swift` |
 | Background jobs, review queue | `App/AppJobs.swift`, `App/AppStore+Jobs.swift` |
-| AI provider routing, task names | `Services/AIService.swift`, task catalog in `Data/AppSettings.swift` (`AICatalog`) |
-| Reel generation pipeline | `Services/WizardEngine.swift`; critique in `Services/ReelCritic.swift` |
+| What an AI task does and where its prompt lives | `Services/AITask.swift` |
+| AI provider routing per task | `Data/AppSettings.swift` (`AICatalog`), dispatch in `Services/AIService.swift` |
+| Reel generation pipeline | `Services/WizardEngine.swift`; pure rules in `Services/Wizard/WizardPlanRules.swift`; critique in `Services/ReelCritic.swift` |
 | Rendering | `Services/MultitrackRenderer.swift` |
 | Scene analysis | `Services/Analyzer.swift` |
 | Google Drive | `Services/GoogleDrive/GoogleDriveClient.swift`, `Views/GoogleDrive/GoogleDriveBrowserSheet.swift` |
-| DB schema and queries | `Data/Database.swift` |
+| DB schema | `Data/Database.swift`; queries in `Data/Database+<TableGroup>.swift` |
 | On-device models, agreement reports | `Services/Models/`, `App/AppStore+ReelModels.swift` |
 
-AI calls are one-shot: `ai.call(prompt:task:frames:)` with a task name string
-(29 of them, e.g. "wizard", "critique", "distill", "curate"). Each task has its
-own prompt builder and a provider chain in `AICatalog`. Responses are parsed
-with `AIResponseParser.jsonObject`.
+AI calls are one-shot: `ai.call(prompt:task:frames:)` where `task` is an
+`AITask` case (`.wizard`, `.critique`, `.distill`, `.curate`, ...). The enum
+documents each task's prompt builder; `AICatalog` holds its label, default
+provider, and recommended chain, keyed by the raw value, which is also the
+settings and provenance key. Responses are parsed with
+`AIResponseParser.jsonObject`. New logic that does not need the database or
+network goes in a `nonisolated enum` or struct under Services with a test
+next to it, not inline in a store or view.
 
 ## Runtime and verification
 

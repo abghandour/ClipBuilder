@@ -207,12 +207,93 @@ extension PodcastHighlightFinderTests {
         #expect(partial.includesQuestion && partial.sourceStart == 12 && partial.duration == 13)
     }
 
-    @Test func fallbackInsideLongQuestionIsIncluded() throws {
-        let item = try #require(PodcastHighlightFinder.fallback(exchange(), rows: rows, maxSeconds: 10, turns: questionTurns))
-        #expect(item.sourceStart == 0 && item.sourceEnd == 10 && item.includesQuestion)
+    /// The answer rule: a fallback run that would stop inside the question
+    /// (sentences 0–1 fit 10 s, the answer starts at 15 s) keeps the
+    /// question's tail and the first answer sentence instead.
+    @Test func fallbackNeverEndsOnTheQuestion() throws {
+        var logs: [String] = []
+        let item = try #require(PodcastHighlightFinder.fallback(exchange(), rows: rows, maxSeconds: 10, turns: questionTurns,
+                                                                log: { logs.append($0) }))
+        #expect(item.sourceStart == 10 && item.sourceEnd == 20 && item.includesQuestion)
+        #expect(logs.contains { $0.contains("question trimmed so the first answer sentence fits") })
+        // A later chunk with a 5 s limit: the question cannot fit, the answer sentence alone does.
         let later = try #require(PodcastHighlightFinder.fallback(exchange(), rows: Array(rows[1...]), maxSeconds: 5,
             turns: questionTurns, questionContext: rows))
-        #expect(later.sourceStart == 5 && later.sourceEnd == 10 && later.includesQuestion)
+        #expect(later.sourceStart == 15 && later.sourceEnd == 20 && !later.includesQuestion)
+    }
+
+    @Test func answerRowsStartAtTheFirstSpeakerChange() {
+        #expect(PodcastHighlightFinder.answerRows(rows, turns: questionTurns).map(\.start) == [15, 20, 25, 30, 35])
+        #expect(PodcastHighlightFinder.answerRows(rows, turns: []).isEmpty)
+        let oneSpeaker = [SpeakerTurn(videoID: 1, start: 0, end: 40, cluster: 0, confidence: 1)]
+        #expect(PodcastHighlightFinder.answerRows(rows, turns: oneSpeaker).isEmpty)
+    }
+
+    @Test func modelRunEndingOnQuestionIsExtendedTrimmedOrRejected() throws {
+        func run(_ first: Int, _ last: Int, limit: Double) -> (HighlightCandidate?, [String]) {
+            var logs: [String] = []
+            let raw: [[String: Any]] = [["first_sentence": first, "last_sentence": last, "score": 8.2, "title": "Setup", "reason": "Hook"]]
+            let item = PodcastHighlightFinder.validated(raw, exchange: exchange(), rows: rows, maxSeconds: limit,
+                                                        turns: questionTurns, log: { logs.append($0) }).first
+            return (item, logs)
+        }
+        // Question only (0–15 s) with room: extended to the first answer sentence.
+        let (extended, extendedLogs) = run(0, 2, limit: 30)
+        #expect(extended?.sourceStart == 0 && extended?.sourceEnd == 20 && extended?.includesQuestion == true)
+        #expect(extendedLogs.contains { $0.contains("extended to the first answer sentence") })
+        // No room for the whole question (5–15 s picked, limit 12): the head is dropped, the answer's first sentence stays.
+        let (trimmed, _) = run(1, 2, limit: 12)
+        #expect(trimmed?.sourceStart == 10 && trimmed?.sourceEnd == 20 && trimmed?.includesQuestion == true)
+        // Not even the last question sentence fits: answer only.
+        let (answerOnly, answerLogs) = run(2, 2, limit: 6)
+        #expect(answerOnly?.sourceStart == 15 && answerOnly?.sourceEnd == 20 && answerOnly?.includesQuestion == false)
+        #expect(answerLogs.contains { $0.contains("answer only") })
+        // The first answer sentence alone exceeds the limit: rejected with a reason.
+        var short = try #require(PodcastHighlightFinder.candidate(exchange(), rows: [rows[0]], kind: .subcut, turns: questionTurns))
+        short.sourceEnd = 4
+        var rejectedLogs: [String] = []
+        #expect(PodcastHighlightFinder.includingAnswer(short, rows: rows, maxSeconds: 4, turns: questionTurns,
+                                                        log: { rejectedLogs.append($0) }) == nil)
+        #expect(rejectedLogs.contains { $0.contains("rejected") && $0.contains("ends on the question") })
+        // A run already inside the answer is untouched.
+        let (inside, _) = run(3, 4, limit: 30)
+        #expect(inside?.sourceStart == 0 && inside?.sourceEnd == 25)
+    }
+
+    @Test func answerRuleIsInertWithoutSpeakerChanges() throws {
+        let raw: [[String: Any]] = [["first_sentence": 0, "last_sentence": 1, "score": 8.2, "title": "Setup", "reason": "Hook"]]
+        let noTurns = try #require(PodcastHighlightFinder.validated(raw, exchange: exchange(), rows: rows, maxSeconds: 30, turns: []).first)
+        #expect(noTurns.sourceStart == 0 && noTurns.sourceEnd == 10)
+        let oneSpeaker = [SpeakerTurn(videoID: 1, start: 0, end: 40, cluster: 0, confidence: 1)]
+        let single = try #require(PodcastHighlightFinder.validated(raw, exchange: exchange(), rows: rows, maxSeconds: 30, turns: oneSpeaker).first)
+        #expect(single.sourceStart == 0 && single.sourceEnd == 10)
+    }
+
+    /// Unnamed speakers on different video-call tiles can share a voice
+    /// cluster; the tile is still a speaker change (Codex review, Sep 28).
+    @Test func answerRuleSeesTileChangesWithSharedCluster() throws {
+        var host = SpeakerTurn(videoID: 1, start: 0, end: 15, cluster: 0, confidence: 1)
+        host.tile = 0
+        var guest = SpeakerTurn(videoID: 1, start: 15, end: 40, cluster: 0, confidence: 1)
+        guest.tile = 1
+        let tiles = [host, guest]
+        #expect(PodcastHighlightFinder.answerRows(rows, turns: tiles).first?.start == 15)
+        let fallback = try #require(PodcastHighlightFinder.fallback(exchange(), rows: rows, maxSeconds: 10, turns: tiles))
+        #expect(fallback.sourceStart == 10 && fallback.sourceEnd == 20)
+        let raw: [[String: Any]] = [["first_sentence": 0, "last_sentence": 2, "score": 8.2, "title": "Setup", "reason": "Hook"]]
+        let model = try #require(PodcastHighlightFinder.validated(raw, exchange: exchange(), rows: rows, maxSeconds: 30, turns: tiles).first)
+        #expect(model.sourceStart == 0 && model.sourceEnd == 20)
+        // A named person on one side and an unnamed tile on the other is a change too.
+        var named = host
+        named.personKey = "host"
+        #expect(PodcastHighlightFinder.answerRows(rows, turns: [named, guest]).first?.start == 15)
+    }
+
+    @Test func findWithoutProviderAppliesTheAnswerRule() async throws {
+        let found = try await PodcastHighlightFinder.find(exchanges: [exchange()], segments: rows,
+            turns: questionTurns, roster: [], maxSeconds: 12, threshold: 7)
+        #expect(found.count == 1)
+        #expect(found.first?.sourceStart == 10 && found.first?.sourceEnd == 20)
     }
 
     @Test func standaloneAssessmentIsPreservedAndMissingContextIsLogged() throws {

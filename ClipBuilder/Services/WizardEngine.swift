@@ -1,6 +1,21 @@
 import CoreGraphics
 import Foundation
 
+// MAP (3.5k lines). Top of file: WizardOptions, ParsedWizardRequest,
+// WizardPromptHandoff, WizardPlanClip, WizardTextStyle, WizardPlan. Then the
+// `WizardEngine` actor, by MARK section:
+//   Editorial playbook        the built-in MMA editing rules injected into prompts
+//   Request parsing           free text → ParsedWizardRequest (task .parse)
+//   Planning phase            planPrompt / legacyPlanPrompt, validatePlan (JSON → WizardPlan),
+//                             makePlan with one corrective re-plan, beat snapping
+//   Caption phase             captionPrompt (task .captions)
+//   Run                       run → runThrowing: plan → assemble → caption → critique loop
+//   Run report                the .md written next to each rendered reel
+//   House style / Lessons     distillation (task .distill)
+//   Builder pre-fill          plan → TimelineDocument for the Builder
+// Pure plan post-processing lives in Services/Wizard/WizardPlanRules.swift;
+// the critic in Services/ReelCritic.swift; assembly at the end of this file.
+
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
@@ -603,7 +618,7 @@ actor WizardEngine {
                                         templateNames: templateNames,
                                         tagVocabulary: tagVocabulary,
                                         musicFolders: musicFolders)
-        let response = try await ai.call(prompt: prompt, task: "parse", timeout: 120, log: emit)
+        let response = try await ai.call(prompt: prompt, task: .parse, timeout: 120, log: emit)
         guard let object = AIResponseParser.jsonObject(from: response.text) else {
             throw AIError.emptyResponse("request parsing (unparseable JSON)")
         }
@@ -1420,24 +1435,6 @@ actor WizardEngine {
         """
     }
 
-    /// The longest sub-range of [start, end] not covered by any used range,
-    /// or nil when the whole range is covered.
-    private func longestFreeGap(start: Double, end: Double,
-                                used: [(start: Double, end: Double)]) -> (start: Double, end: Double)? {
-        let blockers = used.filter { $0.end > start && $0.start < end }.sorted { $0.start < $1.start }
-        var best: (start: Double, end: Double)?
-        var cursor = start
-        for blocker in blockers {
-            if blocker.start > cursor, best == nil || blocker.start - cursor > best!.end - best!.start {
-                best = (cursor, blocker.start)
-            }
-            cursor = max(cursor, blocker.end)
-        }
-        if cursor < end, best == nil || end - cursor > best!.end - best!.start {
-            best = (cursor, end)
-        }
-        return best
-    }
 
     /// Parse + validate the AI's plan per wizard.py rules: clamp clips to
     /// scene bounds, drop sub-0.5s clips, drop or trim clips that re-cover
@@ -1501,7 +1498,7 @@ actor WizardEngine {
             let used = usedRanges[scene.videoID] ?? []
             let overlap = used.reduce(0.0) { $0 + max(0, min(end, $1.end) - max(start, $1.start)) }
             if overlap > 0.5 {
-                guard let gap = longestFreeGap(start: start, end: end, used: used),
+                guard let gap = WizardPlanRules.longestFreeGap(start: start, end: end, used: used),
                       gap.end - gap.start >= 1.5 else { continue }
                 (start, end) = gap
             }
@@ -2069,29 +2066,6 @@ actor WizardEngine {
         return frames
     }
 
-    /// Deterministic template-adherence checks: planned footage duration and
-    /// cut cadence against the reference reel. An explicit user duration
-    /// outranks the template, so the duration check skips then.
-    private func templateAdherenceFindings(_ plan: WizardPlan, options: WizardOptions) -> [String] {
-        guard let template = options.templateJSON.flatMap({ AIResponseParser.jsonObject(from: $0) })
-        else { return [] }
-        var findings: [String] = []
-        if options.targetDurationSeconds == nil,
-           let duration = (template["duration"] as? NSNumber)?.doubleValue, duration > 3 {
-            let screen = plan.clips.reduce(0.0) { $0 + ($1.end - $1.start) / max(0.1, $1.speed) }
-            if abs(screen - duration) / duration > 0.25 {
-                findings.append(String(format: "Planned footage runs %.1fs but the reference template runs %.1fs — match it within ~25%%.",
-                                       screen, duration))
-            }
-        }
-        if let cuts = (template["cut_count"] as? NSNumber)?.intValue, cuts > 1 {
-            let ratio = Double(plan.clips.count) / Double(cuts)
-            if ratio < 0.6 || ratio > 1.67 {
-                findings.append("The plan has \(plan.clips.count) clips but the reference template cuts \(cuts) times — match its cut cadence.")
-            }
-        }
-        return findings
-    }
 
     /// One prompt → AI call → validated plan, then a deterministic quality
     /// check with at most ONE corrective re-plan (weak hook, low-quality or
@@ -2141,7 +2115,7 @@ actor WizardEngine {
             let attempt = recorder.begin(prompt: prompt, frames: frames.map(\.label))
             let reply: AIResponse
             do {
-                reply = try await ai.call(prompt: prompt, task: "wizard",
+                reply = try await ai.call(prompt: prompt, task: .wizard,
                                           frames: frames.isEmpty ? nil : frames,
                                           model: options.modelOverride, timeout: 300, log: emit)
             } catch {
@@ -2158,7 +2132,7 @@ actor WizardEngine {
             var plan = validatePlan(rawPlan, scenes: inputs.sceneMap,
                                     musicNames: Set(inputs.music.map(\.name)), options: options,
                                     podcastSentenceEnds: inputs.podcastSentenceEnds)
-                .map { enforcePinnedOverlays($0, options: options) }
+                .map { WizardPlanRules.enforcePinnedOverlays($0, options: options) }
             plan?.provenance = reply.provenance
             return (plan, response)
         }
@@ -2182,7 +2156,7 @@ actor WizardEngine {
             let report = ReelQualityGate.evaluatePlan(validated, scenes: inputs.sceneMap,
                                                      options: options)
             var findings = report.failures + report.warnings
-            let templateFindings = templateAdherenceFindings(validated, options: options)
+            let templateFindings = WizardPlanRules.templateAdherenceFindings(validated, options: options)
             findings += templateFindings
             if report.verdict != .publishable || !templateFindings.isEmpty {
                 emit("Plan quality check: \(report.summary) — asking the planner to fix:")
@@ -2201,7 +2175,7 @@ actor WizardEngine {
                 if let retry = try? await requestPlan(retryPrompt), let retryPlan = retry.plan {
                     let retryReport = ReelQualityGate.evaluatePlan(retryPlan, scenes: inputs.sceneMap,
                                                                   options: options)
-                    let retryFindings = templateAdherenceFindings(retryPlan, options: options)
+                    let retryFindings = WizardPlanRules.templateAdherenceFindings(retryPlan, options: options)
                     if retryReport.score + (retryFindings.isEmpty ? 0 : -10)
                         >= report.score + (templateFindings.isEmpty ? 0 : -10) {
                         emit("Re-plan accepted: \(retryReport.summary)")
@@ -2222,7 +2196,7 @@ actor WizardEngine {
         saveRecord()
 
         if let validated = plan {
-            let titled = addAutomaticLowerThirds(validated, options: options,
+            let titled = WizardPlanRules.addAutomaticLowerThirds(validated, options: options,
                                                  people: inputs.people,
                                                  sceneMap: inputs.sceneMap,
                                                  speakerTurns: inputs.podcastSpeakerTurns)
@@ -2322,73 +2296,7 @@ actor WizardEngine {
         return plan
     }
 
-    /// The prompt asks for the user's pinned overlay choices; this guarantees
-    /// them. The named template replaces whatever style the model picked, and
-    /// the required text lands on the first overlay clip (or the first clip
-    /// when the model planned no overlays at all).
-    private func enforcePinnedOverlays(_ plan: WizardPlan, options: WizardOptions) -> WizardPlan {
-        guard options.enableTextOverlays,
-              options.pinnedOverlayTemplate != nil || options.pinnedOverlayText != nil,
-              !plan.clips.isEmpty else { return plan }
-        var plan = plan
-        if let name = options.pinnedOverlayTemplate {
-            for index in plan.clips.indices where plan.clips[index].textOverlay != nil {
-                plan.clips[index].overlayStyle = name
-            }
-        }
-        if let text = options.pinnedOverlayText {
-            let index = plan.clips.firstIndex { $0.textOverlay != nil } ?? 0
-            plan.clips[index].textOverlay = text
-            if let name = options.pinnedOverlayTemplate {
-                plan.clips[index].overlayStyle = name
-            }
-        }
-        return plan
-    }
 
-    private func addAutomaticLowerThirds(_ plan: WizardPlan, options: WizardOptions,
-                                         people: [PersonRecord],
-                                         sceneMap: [Int64: SceneRecord],
-                                         speakerTurns: [Int64: [SpeakerTurn]] = [:]) -> WizardPlan {
-        guard options.enableTextOverlays,
-              options.formatPreset == "interview" || options.formatPreset == "podcast" else { return plan }
-        var plan = plan
-        var introduced = Set<String>()
-        let named = people.filter { !$0.name.isEmpty && !$0.hidden }
-        for index in plan.clips.indices {
-            if options.formatPreset == "podcast",
-               let scene = sceneMap[plan.clips[index].sceneID] {
-                let clip = plan.clips[index]
-                for turn in speakerTurns[scene.videoID] ?? [] {
-                    guard turn.end > clip.start, turn.start < clip.end,
-                          let key = turn.personKey, !introduced.contains(key),
-                          let person = named.first(where: { $0.key == key }) else { continue }
-                    var introduction = WizardTextStyle.minimal.overlayItem(
-                        text: person.displayName, kicker: person.descriptor,
-                        placement: "bottom", textCase: "as_written")
-                    introduction.startTime = max(0, turn.start - clip.start) / clip.speed
-                    introduction.endTime = min((clip.end - clip.start) / clip.speed,
-                                                introduction.startTime + 3)
-                    introduction.unbounded = false
-                    introduction.transIn = "slide_left"
-                    plan.clips[index].speakerIntroductions.append(introduction)
-                    introduced.insert(key)
-                }
-                continue
-            }
-            guard plan.clips[index].textOverlay == nil,
-                  let scene = sceneMap[plan.clips[index].sceneID],
-                  let person = named.first(where: {
-                      !introduced.contains($0.key) && scene.tags.contains($0.tag)
-                  }) else { continue }
-            plan.clips[index].textOverlay = person.displayName
-            plan.clips[index].overlayStyle = "lower-third"
-            plan.clips[index].overlayKicker = person.descriptor.isEmpty ? "Guest" : person.descriptor
-            plan.clips[index].overlayAnimation = "slide_left"
-            introduced.insert(person.key)
-        }
-        return plan
-    }
 
     /// Plan-only entry for the Builder pre-fill path — research → AI plan →
     /// validation, no assembly, no captions.
@@ -2434,7 +2342,7 @@ actor WizardEngine {
                                           tags: tags, fightResearch: inputs.fightResearch,
                                           captionStyleReference: nil,
                                           benchmarks: options.accountBenchmarks, localHashtags: options.localHashtags, people: inputs.people),
-                    task: "captions", timeout: 60, log: emit)
+                    task: .captions, timeout: 60, log: emit)
                 var captionProvenance = caption.provenance
                 if options.localHashtags { captionProvenance.technique = "hashtag-candidates" }
                 try await database.updateGeneratedCaption(id: result.recordID,
@@ -2520,7 +2428,7 @@ actor WizardEngine {
                                           fightResearch: inputs.fightResearch,
                                           captionStyleReference: captionStyleReference,
                                           benchmarks: options.accountBenchmarks, localHashtags: options.localHashtags, people: inputs.people),
-                    task: "captions", timeout: 60, log: emit)
+                    task: .captions, timeout: 60, log: emit)
                 captionText = caption.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 var captionProvenance = caption.provenance
                 if options.localHashtags { captionProvenance.technique = "hashtag-candidates" }
@@ -2575,7 +2483,7 @@ actor WizardEngine {
             if critique.regenerate, attempt < maxVersions {
                 critique.notes.forEach { emit("  → note: \($0)") }
                 emit("The critic requests another version — re-planning with its notes.")
-                critiqueFeedback = Self.critiqueFeedbackBlock(critique, attempt: attempt,
+                critiqueFeedback = WizardPlanRules.critiqueFeedbackBlock(critique, attempt: attempt,
                                                               previousPlanJSON: outcome.response)
             } else if critique.regenerate {
                 emit("The critic would try again, but the \(maxVersions)-version cap is reached.")
@@ -2589,29 +2497,6 @@ actor WizardEngine {
         emit("\nAll done! Generated \(producedCount) video\(producedCount == 1 ? "" : "s")")
     }
 
-    /// The critic's review, phrased as binding instructions for the next
-    /// plan attempt — appended to the standard planning prompt.
-    private static func critiqueFeedbackBlock(_ critique: ReelCritique, attempt: Int,
-                                              previousPlanJSON: String) -> String {
-        var lines = ["\n\n## A CRITIC REVIEWED THE RENDERED VERSION \(attempt) — BUILD A BETTER ONE"]
-        lines.append("It watched the actual rendered frames and scored the reel \(critique.score)/100: \(critique.summary)")
-        if !critique.issues.isEmpty {
-            lines.append("Issues visible in the rendered video:")
-            lines.append(contentsOf: critique.issues.map { "- \($0)" })
-        }
-        if !critique.notes.isEmpty {
-            lines.append("Apply every one of these improvement notes:")
-            lines.append(contentsOf: critique.notes.map { "- \($0)" })
-        }
-        if !critique.strengths.isEmpty {
-            lines.append("Keep what already worked:")
-            lines.append(contentsOf: critique.strengths.map { "- \($0)" })
-        }
-        lines.append("Previous plan JSON (yours):")
-        lines.append(String(previousPlanJSON.prefix(4000)))
-        lines.append("Produce a NEW complete plan (same JSON schema as above) that fixes every issue — do not repeat the previous plan unchanged.")
-        return lines.joined(separator: "\n")
-    }
 
     /// Thread-safe accumulating log — the run's full emit stream, replayed
     /// into the run report.
@@ -2780,7 +2665,7 @@ actor WizardEngine {
 
         Return ONLY that text — no preamble, no markdown fences, no JSON.
         """
-        let response = try await ai.call(prompt: prompt, task: "distill", timeout: 180, log: emit)
+        let response = try await ai.call(prompt: prompt, task: .distill, timeout: 180, log: emit)
         let style = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !style.isEmpty else { throw AIError.emptyResponse("house style distillation") }
         return AIOutcome(value: style, provenance: response.provenance)
@@ -2834,7 +2719,7 @@ actor WizardEngine {
         Return ONLY JSON: {"lessons": [{"text": "...", "evidence": "..."}]}
         """
 
-        let response = try await ai.call(prompt: prompt, task: "distill", timeout: 180, log: emit)
+        let response = try await ai.call(prompt: prompt, task: .distill, timeout: 180, log: emit)
         guard let object = AIResponseParser.jsonObject(from: response.text),
               let rawLessons = object["lessons"] as? [[String: Any]] else {
             throw AIError.emptyResponse("lesson distillation (unparseable JSON)")

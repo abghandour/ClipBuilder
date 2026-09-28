@@ -30,14 +30,16 @@ nonisolated enum PodcastHighlightFinder {
 
     /// The question is the sentence span before the first speaker change.
     /// Always use the full exchange, including when the model sees a later chunk.
+    /// Speakers are told apart the way the exchange segmenter does
+    /// (`SpeakerTurnCleanup.identity`): named person, else video-call tile,
+    /// else voice cluster, so two unnamed tiles sharing a cluster still count
+    /// as a change.
     static func questionRows(_ rows: [TranscriptSegment], turns: [SpeakerTurn]) -> [TranscriptSegment] {
         guard let first = rows.first, let last = rows.last else { return [] }
         let covering = turns.filter { $0.end > first.start && $0.start < last.end }.sorted { $0.start < $1.start }
         guard let speaker = covering.first else { return [first] }
-        let change = covering.dropFirst().first { turn in
-            if let key = turn.personKey, let firstKey = speaker.personKey { return key != firstKey }
-            return turn.cluster != speaker.cluster
-        }?.start ?? last.end
+        let identity = SpeakerTurnCleanup.identity(speaker)
+        let change = covering.dropFirst().first { SpeakerTurnCleanup.identity($0) != identity }?.start ?? last.end
         return rows.filter { $0.start < change }
     }
 
@@ -70,6 +72,53 @@ nonisolated enum PodcastHighlightFinder {
         return item
     }
 
+    /// The answer is every sentence from the first speaker change on. Empty
+    /// when the turns show no change inside the exchange, or when there are
+    /// no turns at all (then `questionRows` only guessed one sentence).
+    static func answerRows(_ rows: [TranscriptSegment], turns: [SpeakerTurn]) -> [TranscriptSegment] {
+        guard let first = rows.first, let last = rows.last,
+              turns.contains(where: { $0.end > first.start && $0.start < last.end }) else { return [] }
+        let question = questionRows(rows, turns: turns)
+        guard question.count < rows.count else { return [] }
+        return Array(rows.dropFirst(question.count))
+    }
+
+    /// A highlight never ends on the question. A run that stops before the
+    /// first full answer sentence is extended to it; when that no longer
+    /// fits, the question's head is dropped instead (the answer's start is
+    /// what must survive); when even the first answer sentence alone exceeds
+    /// the limit, the candidate is rejected (nil). Runs that already reach
+    /// into the answer, and exchanges with no speaker change, pass through.
+    static func includingAnswer(_ candidate: HighlightCandidate, rows: [TranscriptSegment],
+                                maxSeconds: Double, turns: [SpeakerTurn],
+                                log: (String) -> Void = { _ in }) -> HighlightCandidate? {
+        guard let firstAnswer = answerRows(rows, turns: turns).first,
+              candidate.sourceStart < firstAnswer.start, candidate.sourceEnd < firstAnswer.end else { return candidate }
+        var item = candidate
+        let end = firstAnswer.end
+        let question = questionRows(rows, turns: turns)
+        if end - item.sourceStart <= maxSeconds {
+            item.sourceEnd = end
+            log("Podcast highlights · \(item.title): ended on the question; extended to the first answer sentence.")
+        } else if let start = question.first(where: { end - $0.start <= maxSeconds }) {
+            item.sourceStart = start.start
+            item.sourceEnd = end
+            item.includesQuestion = true
+            log("Podcast highlights · \(item.title): ended on the question; question trimmed so the first answer sentence fits.")
+        } else if end - firstAnswer.start <= maxSeconds {
+            item.sourceStart = firstAnswer.start
+            item.sourceEnd = end
+            item.includesQuestion = false
+            log("Podcast highlights · \(item.title): ended on the question and the question does not fit with the answer; answer only.")
+        } else {
+            log("Podcast highlights · \(item.title): rejected, ends on the question and the first answer sentence (\(Int(end - firstAnswer.start)) s) exceeds the \(Int(maxSeconds)) s limit.")
+            return nil
+        }
+        let keys = turns.filter { $0.end > item.sourceStart && $0.start < item.sourceEnd }.compactMap(\.personKey)
+        item.speakerKeys = Array(Set(item.speakerKeys + keys)).sorted()
+        return item
+    }
+
     static func logScores(_ raw: [Any], log: (String) -> Void) {
         let scores = raw.compactMap { ($0 as? [String: Any])?["score"] as? Double }.filter(\.isFinite).sorted()
         guard let low = scores.first, let high = scores.last else {
@@ -89,7 +138,11 @@ nonisolated enum PodcastHighlightFinder {
         for first in rows.indices {
             let run = Array(rows[first...].prefix { $0.end - rows[first].start <= maxSeconds })
             if let result = candidate(exchange, rows: run, kind: .subcut, turns: turns) {
-                return includingQuestion(result, rows: questionContext ?? rows, maxSeconds: maxSeconds, turns: turns, log: log)
+                let context = questionContext ?? rows
+                let withQuestion = includingQuestion(result, rows: context, maxSeconds: maxSeconds, turns: turns, log: log)
+                if let withAnswer = includingAnswer(withQuestion, rows: context, maxSeconds: maxSeconds, turns: turns, log: log) {
+                    return withAnswer
+                }
             }
         }
         return nil
@@ -138,6 +191,10 @@ nonisolated enum PodcastHighlightFinder {
                 ?? ((entry["rapid_exchange"] as? Bool ?? false) ? .talkerAndPrevious : .talker)
             item.standalone = entry["standalone"] as? Bool
             item = includingQuestion(item, rows: questionContext ?? rows, maxSeconds: maxSeconds, turns: turns, log: log)
+            guard let withAnswer = includingAnswer(item, rows: questionContext ?? rows, maxSeconds: maxSeconds, turns: turns, log: log) else {
+                return reject("ends on the question and the first answer sentence does not fit \(Int(maxSeconds)) s")
+            }
+            item = withAnswer
             if item.standalone == false, !item.includesQuestion {
                 log("Podcast highlights · \(item.title): model says needs context (standalone=false); question not included.")
             }
@@ -296,7 +353,8 @@ nonisolated enum PodcastHighlightFinder {
             if batch.count == 1, let entry = batch.first,
                entry.exchange.end - entry.exchange.start <= limit,
                let whole = candidate(entry.exchange, rows: entry.rows, kind: .whole, turns: turns) {
-                let item = includingQuestion(whole, rows: entry.rows, maxSeconds: limit, turns: turns, log: log)
+                let withQuestion = includingQuestion(whole, rows: entry.rows, maxSeconds: limit, turns: turns, log: log)
+                let item = includingAnswer(withQuestion, rows: entry.rows, maxSeconds: limit, turns: turns, log: log) ?? withQuestion
                 found.append(item)
                 log("Podcast highlights · \(entry.exchange.title): fits whole, \(describe(item))")
                 done.insert(entry.index)
@@ -327,6 +385,7 @@ nonisolated enum PodcastHighlightFinder {
             Each candidate must make sense to someone who did not hear the rest. Start with the question or the sentence
             that sets up the answer unless the answer is self-explanatory. Include the full question when it fits;
             otherwise include the longest tail of the question that fits, at least its last sentence, without trimming the answer's start.
+            Every range must include at least one full sentence of the answer; never end on the question.
             Give each a short title, one-line reason, decimal score 0–10, standalone boolean, and rapid_exchange=true only for rapid back-and-forth.
             Choose a framing id for every candidate from:
             \(CropRecipe.Kind.allCases.map { "\($0.rawValue): \($0.summary)" }.joined(separator: "\n"))
@@ -340,7 +399,7 @@ nonisolated enum PodcastHighlightFinder {
             """
             var perSlot: [[HighlightCandidate]]?
             do {
-                let response = try await ai.call(prompt: prompt, task: "highlights", model: model, timeout: 240, log: log).text
+                let response = try await ai.call(prompt: prompt, task: .highlights, model: model, timeout: 240, log: log).text
                 if let raw = AIResponseParser.jsonObject(from: response)?["highlights"] as? [Any] {
                     logScores(raw, log: log)
                     perSlot = validatedBatch(raw, batch: batch, maxSeconds: limit, turns: turns, log: log)

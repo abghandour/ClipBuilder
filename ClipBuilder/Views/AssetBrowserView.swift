@@ -606,7 +606,7 @@ struct AssetBrowserView: View {
                 Return only JSON: {"subjects":["person/event/topic"],"tags":["crowd|walkout|training|establishing-shot|action|portrait|graphic|other"],"is_broll":true|false}.
                 Match a known person only when visually confident. B-roll means a cutaway, atmosphere, training, walkout, crowd, or establishing visual.
                 """
-            let response = try await store.ai.call(prompt: prompt, task: "analyze",
+            let response = try await store.ai.call(prompt: prompt, task: .analyze,
                                                    frames: [AIFrame(jpeg: jpeg, label: item.name)],
                                                    timeout: 120, log: { _ in })
             guard let object = AIResponseParser.jsonObject(from: response.text) else {

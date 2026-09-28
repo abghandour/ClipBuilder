@@ -30,7 +30,7 @@ extension AppStore {
 
             Return only JSON: {"ids":[0,1]}. Include only strong matches, best first. Never invent an id.
             """
-        let response = try await ai.call(prompt: prompt, task: "search", model: model, provider: provider,
+        let response = try await ai.call(prompt: prompt, task: .search, model: model, provider: provider,
                                          timeout: 120, log: log)
         try Task.checkCancellation()
         let ids = AIResponseParser.jsonObject(from: response.text)?["ids"] as? [Int] ?? []

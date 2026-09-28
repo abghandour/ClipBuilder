@@ -2,6 +2,12 @@ import CoreGraphics
 import Foundation
 import Observation
 
+// MAP (2.1k lines), by MARK section: Undo · Load / persistence · Camera
+// paths · Crop recipes · Geometry helpers · Unified overlay lane · Clip
+// lookup · Clip mutations · Bumper rules · B-roll (cutaways) · Cropping row ·
+// Sound track · Text overlays · Overlay blocks. Timeline persistence itself
+// is in AppStore+Timelines.swift.
+
 /// What the clip browser puts on the pasteboard when a scene or a whole
 /// source file is dragged onto a lane. Option-drag asks for B-roll instead
 /// of a main clip.

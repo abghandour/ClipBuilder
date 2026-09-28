@@ -32,7 +32,7 @@ struct AIServiceTests {
         }
         let logs = AIServiceLogSink()
         do {
-            _ = try await service.call(prompt: "timeout fixture", task: "fixture",
+            _ = try await service.call(prompt: "timeout fixture", taskKey: "fixture",
                                        provider: "claude", timeout: 1, log: { logs.append($0) })
             Issue.record("Expected the process timeout")
         } catch let error as ProcessRunnerError {
@@ -89,7 +89,7 @@ struct AIServiceTests {
         let logs = AIServiceLogSink()
         // An unknown task has no fallback chain, exposing the classified error.
         do {
-            _ = try await service.call(prompt: "fixture", task: "fixture", provider: "gemini",
+            _ = try await service.call(prompt: "fixture", taskKey: "fixture", provider: "gemini",
                                        timeout: 5, log: { logs.append($0) })
             Issue.record("Expected unavailable-provider error")
         } catch let error as AIError {
@@ -107,7 +107,7 @@ struct AIServiceTests {
         let candidates = await service.dispatchCandidates(task: "analysis")
         #expect(!candidates.contains { $0.provider == "gemini" })
         for _ in 0..<2 {
-            let response = try await service.call(prompt: "fixture", task: "analysis",
+            let response = try await service.call(prompt: "fixture", task: .analysis,
                                                   timeout: 5, log: { logs.append($0) })
             #expect(response.provider == "claude")
         }
@@ -152,27 +152,27 @@ struct AIServiceTests {
             (try? String(contentsOfFile: failure.path + ".count", encoding: .utf8))?.split(separator: "\n").count ?? 0
         }
         // First call pays the failure and falls back.
-        let first = try await service.call(prompt: "fixture", task: "analysis", timeout: 5, log: { logs.append($0) })
+        let first = try await service.call(prompt: "fixture", task: .analysis, timeout: 5, log: { logs.append($0) })
         #expect(first.provider == "claude" && first.fellBack)
         #expect(try calls() == 1)
         #expect(await service.activeCooldowns()["gemini"] != nil)
         // Automatic dispatch now skips Gemini without calling it.
-        let second = try await service.call(prompt: "fixture", task: "analysis", timeout: 5, log: { logs.append($0) })
+        let second = try await service.call(prompt: "fixture", task: .analysis, timeout: 5, log: { logs.append($0) })
         #expect(second.provider == "claude" && !second.fellBack)
         #expect(try calls() == 1)
         #expect(logs.lines.contains { $0.hasPrefix("Skipping Gemini CLI: cooling down for 15 more minutes") })
         // An explicit choice still tries the provider.
-        _ = try? await service.call(prompt: "fixture", task: "fixture", provider: "gemini", timeout: 5, log: { logs.append($0) })
+        _ = try? await service.call(prompt: "fixture", taskKey: "fixture", provider: "gemini", timeout: 5, log: { logs.append($0) })
         #expect(try calls() == 2)
         // Clearing (sign-in) re-enables automatic dispatch; disabling the setting too.
         await service.clearCooldown(provider: "gemini")
         #expect(await service.activeCooldowns().isEmpty)
-        _ = try await service.call(prompt: "fixture", task: "analysis", timeout: 5, log: { logs.append($0) })
+        _ = try await service.call(prompt: "fixture", task: .analysis, timeout: 5, log: { logs.append($0) })
         #expect(try calls() == 3)
         config.providerCooldownMinutes = 0
         await service.updateConfig(config)
-        _ = try await service.call(prompt: "fixture", task: "analysis", timeout: 5, log: { logs.append($0) })
-        _ = try await service.call(prompt: "fixture", task: "analysis", timeout: 5, log: { logs.append($0) })
+        _ = try await service.call(prompt: "fixture", task: .analysis, timeout: 5, log: { logs.append($0) })
+        _ = try await service.call(prompt: "fixture", task: .analysis, timeout: 5, log: { logs.append($0) })
         #expect(try calls() == 5)
         // Request-specific failures never cool a provider down.
         #expect(!AIService.deservesCooldown(AIError.promptTooLong("x")))
@@ -225,7 +225,7 @@ struct AIServiceTests {
             return []
         }
         let response = try await service.call(
-            prompt: "Analyze video", task: "analysis", video: URL(fileURLWithPath: "/tmp/native.mp4"),
+            prompt: "Analyze video", task: .analysis, video: URL(fileURLWithPath: "/tmp/native.mp4"),
             fallbackFrames: { try await source.frames() }, provider: "gemini", timeout: 5)
         #expect(response.provider == "gemini")
         #expect(!response.fellBack)
@@ -254,7 +254,7 @@ struct AIServiceTests {
         let timeoutCounts = AIServiceLogSink()
         let response = try await AIRunCapture.context.withValue(capture) {
             try await service.call(
-                prompt: "Analyze video", task: "analysis", video: URL(fileURLWithPath: "/tmp/native.mp4"),
+                prompt: "Analyze video", task: .analysis, video: URL(fileURLWithPath: "/tmp/native.mp4"),
                 fallbackFrames: {
                     await counter.increment()
                     return [AIFrame(jpeg: Data("fixture".utf8), label: "1.0s")]
@@ -279,7 +279,7 @@ struct AIServiceTests {
         config.providers["gemini"] = AIProviderSettings(bin: "/nonexistent/clipbuilder-test-gemini", model: "fixture")
         let service = AIService(config: config)
         do {
-            _ = try await service.call(prompt: "Analyze", task: "analysis",
+            _ = try await service.call(prompt: "Analyze", task: .analysis,
                                        video: URL(fileURLWithPath: "/tmp/native.mp4"),
                                        provider: "claude", timeout: 5)
             Issue.record("Video-only request must fail without a capable provider or still fallback")

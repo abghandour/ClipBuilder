@@ -27,7 +27,7 @@ struct FakeAIProviderTests {
     func providerCall() async throws {
         let service = try makeService()
         let response = try await service.call(
-            prompt: "Write a caption", task: "captions", provider: "claude", timeout: 5
+            prompt: "Write a caption", task: .captions, provider: "claude", timeout: 5
         )
         #expect(response.provider == "claude")
         #expect(AIResponseParser.jsonObject(from: response.text)?["caption"] as? String == "Fixture caption")

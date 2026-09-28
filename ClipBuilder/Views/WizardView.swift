@@ -5,6 +5,8 @@ import SwiftUI
 /// rules live with the parts of the app that own those decisions.
 struct WizardView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.openSettings) private var openSettings
+    @AppStorage("settings.selectedTab") private var settingsTab = "profile"
 
     @AppStorage("wizard.aiInstructions") private var aiInstructions = ""
     @AppStorage("wizard.highlightMaxCount") private var highlightMaxCount = 0
@@ -300,9 +302,12 @@ struct WizardView: View {
             .help("See what to post next and what is blocking output")
 
             Button("Manage Learned Rules…", systemImage: "brain.head.profile") {
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                // The legacy showSettingsWindow: selector is ignored by
+                // current macOS; open the Settings scene on the Taste tab.
+                settingsTab = "taste"
+                openSettings()
             }
-            .help("Review and edit the rules the Wizard has learned, in Settings")
+            .help("Review and edit the rules the Wizard has learned, in Settings › Taste")
             Button("Training Guide", systemImage: "questionmark.circle") {
                 showTrainingGuide = true
             }

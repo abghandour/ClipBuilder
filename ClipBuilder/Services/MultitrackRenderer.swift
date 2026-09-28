@@ -1,6 +1,14 @@
 import Foundation
 import Synchronization
 
+// MAP (2.2k lines), by MARK section:
+//   Entry point        render(document:) — plans segments, caches, and drives the stages
+//   Clip resolution    timeline clips → concrete source ranges, crops, speeds
+//   Segment rendering  per-segment encodes and the segment cache
+//   FFmpeg stages      filter graphs, overlays, audio mix, final encode
+// Hardware encodes are not byte-deterministic: compare renders by timing,
+// audio, and per-frame SSIM (see MultitrackRenderTests.compareDecoded).
+
 /// Multi-track builder render pipeline — the Swift port of clip_builder.py's
 /// _generate_multitrack() + video.py's layered compositor. Slices the
 /// timeline at clip boundaries into constant-membership segments, composites

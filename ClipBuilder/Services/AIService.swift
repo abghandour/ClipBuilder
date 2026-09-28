@@ -286,8 +286,30 @@ actor AIService {
     /// dispatcher fails over down the recommended chain, logging the switch,
     /// so a single provider outage never kills a run. The reply carries the
     /// provider/model that actually answered, for provenance stamping.
+    /// Typed entry point: every production call names its task from the
+    /// registry (`AITask`). The string form below stays for dynamic keys
+    /// and test fixtures.
     func call(prompt: String,
-              task: String,
+              task: AITask,
+              frames: [AIFrame]? = nil,
+              video: URL? = nil,
+              fallbackFrames: (@Sendable () async throws -> [AIFrame])? = nil,
+              model: String? = nil,
+              provider providerOverride: String? = nil,
+              timeout: TimeInterval = 300,
+              timeoutForFrameCount: (@Sendable (Int) -> TimeInterval)? = nil,
+              webAccess: Bool = false,
+              maximumAttempts: Int? = nil,
+              log: (@Sendable (String) -> Void)? = nil,
+              waiting: (@Sendable (_ provider: String, _ timeout: TimeInterval) -> Void)? = nil) async throws -> AIResponse {
+        try await call(prompt: prompt, taskKey: task.rawValue, frames: frames, video: video,
+                       fallbackFrames: fallbackFrames, model: model, provider: providerOverride,
+                       timeout: timeout, timeoutForFrameCount: timeoutForFrameCount, webAccess: webAccess,
+                       maximumAttempts: maximumAttempts, log: log, waiting: waiting)
+    }
+
+    func call(prompt: String,
+              taskKey task: String,
               frames: [AIFrame]? = nil,
               video: URL? = nil,
               fallbackFrames: (@Sendable () async throws -> [AIFrame])? = nil,

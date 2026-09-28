@@ -78,7 +78,7 @@ nonisolated enum PodcastHighlightBRollPlacement {
         Available B-roll:
         \((sceneLines + reactions).joined(separator: "\n"))
         """
-        let response = try await ai.call(prompt: prompt, task: "broll", model: options.modelOverride, log: log).text
+        let response = try await ai.call(prompt: prompt, task: .broll, model: options.modelOverride, log: log).text
         let object = AIResponseParser.jsonObject(from: response)
         guard let raw = object?["placements"] as? [Any] else {
             throw AIError.unusableResponse("Expected a B-roll placements array.")

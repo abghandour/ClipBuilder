@@ -97,7 +97,7 @@ nonisolated enum ReelCritic {
                                                         sceneMap: sceneMap, options: options,
                                                         profile: profile, attempt: attempt,
                                                         previous: previous) + learnedBlock,
-                                         task: "critique", frames: frames,
+                                         task: .critique, frames: frames,
                                          timeout: 180, log: emit)
         guard let object = AIResponseParser.jsonObject(from: response.text) else {
             throw AIError.unusableResponse("The critic's response was not valid JSON.")

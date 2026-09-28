@@ -221,7 +221,7 @@ nonisolated struct AIProviderSettings: Codable, Sendable {
 /// Static provider/task metadata ported from ai_cli.py.
 nonisolated enum AICatalog {
     // "wizard" stays the planning task's key for config back-compat.
-    static let tasks = ["analysis", "people", "exchanges", "highlights", "broll", "wizard", "critique", "research", "fight_research", "parse", "captions", "distill", "overlay", "naming", "curate", "search", "soundbites", "cover", "dedupe", "trim", "gap", "onboard", "route"]
+    static let tasks = AITask.configurable.map(\.rawValue)
 
     static let taskLabels: [String: String] = [
         "builder_agent": "Builder editing",

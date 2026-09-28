@@ -351,7 +351,7 @@ actor InstagramService {
 
         log("Analyzing structure (\(frames.count) frames, \(cuts.count) detected cuts)...")
         let prompt = Self.templatePrompt(media: media, duration: duration, cuts: cuts)
-        let response = try await ai.call(prompt: prompt, task: "analysis", frames: frames,
+        let response = try await ai.call(prompt: prompt, task: .analysis, frames: frames,
                                          model: model, provider: provider,
                                          timeout: 300, log: log)
         guard let data = AIResponseParser.jsonData(from: response.text),

@@ -3,6 +3,17 @@ import Foundation
 import Synchronization
 import Vision
 
+// MAP (2.5k lines), by MARK section:
+//   Discovery                 finding source videos on disk
+//   Frame sampling            ffmpeg frame extraction and thinning
+//   Prompts                   the analysis prompts (verbatim from analyzer.py)
+//   Smart Sampling            scene-aware frame selection
+//   People-only pass          task .people
+//   Trim suggestion           task .trim
+//   Fight scoring pass        action scoring from tags
+//   Taste rubric distillation task .distill for the profile rubric
+// AI calls go through callThinningFrames(task:), which retries with fewer frames.
+
 /// Visual analysis pipeline — the Swift port of analyzer.py's visual mode:
 /// sample frames, ask the AI for tag time-ranges + moments, persist scenes.
 actor Analyzer {
@@ -245,7 +256,7 @@ actor Analyzer {
     /// `heartbeat`, when given, receives a fresh status line every few seconds
     /// while the provider is working ("waiting for Claude Code · 43 frames ·
     /// 2:15 of up to 10:00"), so a long call never looks stalled.
-    private func callThinningFrames(prompt: String, task: String = "analysis",
+    private func callThinningFrames(prompt: String, task: AITask = .analysis,
                                     auxiliary: [AIFrame], sampled: [AIFrame],
                                     video: URL? = nil, lazySampled: AnalysisFrameSource? = nil,
                                     model: String?, provider: String?,
@@ -959,7 +970,7 @@ actor Analyzer {
             a single-camera interview, or two equal Zoom feeds side by side.
             Fight is a competitive bout; training is practice; recap is an edited highlights package.
             Use interview for short press/talking-head material. Do not classify a bout as a podcast.
-            """, task: "analysis", frames: frames, model: model, provider: provider,
+            """, task: .analysis, frames: frames, model: model, provider: provider,
             timeout: 120, log: log)
         return (AIResponseParser.jsonObject(from: response.text)?["video_type"] as? String)
             .flatMap(VideoType.init(rawValue:))
@@ -1020,7 +1031,7 @@ actor Analyzer {
                                            knownPeople: knownPeople, markers: namedMarkers,
                                            ignoreCount: ignoreFrames.count,
                                            filename: video.filename)
-        let response = try await callThinningFrames(prompt: prompt, task: "people",
+        let response = try await callThinningFrames(prompt: prompt, task: .people,
                                                     auxiliary: profilePortraits + markerFrames + ignoreFrames,
                                                     sampled: frames,
                                                     model: model, provider: provider, log: log)
@@ -1139,7 +1150,7 @@ actor Analyzer {
         {"start": <seconds>, "end": <seconds>, "reason": "<at most 15 words on what was cut off>"}
         When the whole video is content, return the full range with reason "all content".
         """
-        let response = try await ai.call(prompt: prompt, task: "trim", frames: frames,
+        let response = try await ai.call(prompt: prompt, task: .trim, frames: frames,
                                          model: model, provider: provider,
                                          timeout: 180, log: log)
         guard let object = AIResponseParser.jsonObject(from: response.text),

@@ -10,7 +10,7 @@ struct CodexImagesTests {
         let frames = [AIFrame(jpeg: Data([0xFF, 0xD8, 0xFF]), label: "3.5s"),
                       AIFrame(jpeg: Data([0xFF, 0xD8, 0xFF]), label: "7.0s")]
         var logs: [String] = []
-        let response = try await stub.service.call(prompt: "Who is here?", task: "people", frames: frames,
+        let response = try await stub.service.call(prompt: "Who is here?", task: .people, frames: frames,
                                                    provider: "codex", timeout: 5, log: { logs.append($0) })
         #expect(response.provider == "codex")
         let prompt = try String(contentsOf: stub.prompts, encoding: .utf8)
@@ -32,7 +32,7 @@ struct CodexImagesTests {
         config.tasks["people"] = "qwen"
         let service = AIService(config: config)
         do {
-            _ = try await service.call(prompt: "x", task: "people",
+            _ = try await service.call(prompt: "x", task: .people,
                                        frames: [AIFrame(jpeg: Data([0xFF]), label: "1.0s")], timeout: 5)
             Issue.record("Expected no candidates")
         } catch let error as AIError {

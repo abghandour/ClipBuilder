@@ -54,7 +54,7 @@ actor ScriptRequestRouter {
             // escalates rather than spending additional routing calls on failover.
             let response = try await withThrowingTaskGroup(of: AIResponse.self) { group in
                 group.addTask {
-                    try await ai.call(prompt: prompt, task: "route", timeout: 20, maximumAttempts: 1)
+                    try await ai.call(prompt: prompt, task: .route, timeout: 20, maximumAttempts: 1)
                 }
                 group.addTask {
                     try await Task.sleep(for: .seconds(20))

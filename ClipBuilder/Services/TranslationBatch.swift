@@ -2,7 +2,7 @@ import Foundation
 
 nonisolated enum TranslationBatch {
     static func perform(texts: [String], language: String, ai: AIService) async throws -> AIResponse {
-        try await ai.call(prompt: prompt(texts: texts, language: language), task: "translate", timeout: 60, log: { _ in })
+        try await ai.call(prompt: prompt(texts: texts, language: language), task: .translate, timeout: 60, log: { _ in })
     }
     static func prompt(texts: [String], language: String) -> String {
         "Translate these captions to \(language). Preserve names and meaning. Return one numbered translation per input, using the same numbers.\n"
