@@ -16,6 +16,17 @@ struct GoogleDriveBrowserSheet: View {
     @State private var driveID: String?
     @State private var search = ""
     @State private var videosOnly = true
+    @State private var filter = DriveBrowserFilter()
+    @State private var flat = false
+    @State private var subtree: DriveSubtreeWalker.Result?
+    @State private var subtreeProgress: DriveSubtreeWalker.Progress?
+    @State private var subtreeError: String?
+    @State private var subtreeToken = UUID()
+    @State private var folderCache: CachingDriveFolderLister?
+    /// Derived from `subtree` and `filter`; rebuilt only when either changes
+    /// so rows never recompute them.
+    @State private var folderMatches: [String: Int]?
+    @State private var flatPaths: [String: String] = [:]
     @State private var selection: Set<String> = []
     @State private var alreadyHere: Set<String> = []
     @State private var nextPage: String?
@@ -54,9 +65,11 @@ struct GoogleDriveBrowserSheet: View {
         .onChange(of: location) {
             breadcrumbs = []
             driveID = nil
+            folderCache = nil
             reload()
         }
         .onChange(of: videosOnly) { reload() }
+        .task(id: subtreeKey) { await scanSubtree() }
         .task(id: search) {
             guard !profile.isEmpty else { return }
             do {
@@ -105,6 +118,7 @@ struct GoogleDriveBrowserSheet: View {
                     }
                 }
             }.buttonStyle(.plain).lineLimit(1)
+            if !isFolderPicker { filterBar }
             if let error {
                 HStack {
                     Text(error).foregroundStyle(.secondary).textSelection(.enabled)
@@ -125,7 +139,7 @@ struct GoogleDriveBrowserSheet: View {
                     }.buttonStyle(.plain)
                 }
             } else {
-                List(files, selection: $selection) { file in
+                List(shownFiles, selection: $selection) { file in
                     HStack(spacing: 10) {
                         if file.isFolder {
                             Image(systemName: "folder.fill").frame(width: 44)
@@ -139,10 +153,19 @@ struct GoogleDriveBrowserSheet: View {
                         }
                         VStack(alignment: .leading) {
                             Text(file.name).lineLimit(1)
-                            if alreadyHere.contains(file.id) {
-                                Label("Already here", systemImage: "cloud.fill").font(.caption).foregroundStyle(
-                                    .secondary)
+                            HStack(spacing: 8) {
+                                if alreadyHere.contains(file.id) {
+                                    Label("Already here", systemImage: "cloud.fill")
+                                }
+                                if flat, let path = flatPaths[file.id], !path.isEmpty {
+                                    Label(path, systemImage: "folder").lineLimit(1)
+                                }
+                                if let detail = Self.videoDetail(file) { Text(detail) }
+                                if file.isFolder, let count = folderMatches?[file.id] {
+                                    Text("\(count) matching")
+                                }
                             }
+                            .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         if !file.isFolder {
@@ -165,10 +188,17 @@ struct GoogleDriveBrowserSheet: View {
                     .tag(file.id)
                 }
                 .overlay {
-                    if files.isEmpty && !loading && error == nil {
-                        ContentUnavailableView(
-                            "No files", systemImage: "folder",
-                            description: Text("Choose another folder or change your search."))
+                    if shownFiles.isEmpty && !loading && error == nil {
+                        if files.isEmpty {
+                            ContentUnavailableView(
+                                "No files", systemImage: "folder",
+                                description: Text("Choose another folder or change your search."))
+                        } else {
+                            ContentUnavailableView(
+                                "No matching videos", systemImage: "line.3.horizontal.decrease.circle",
+                                description: Text(filterEmptyHint))
+                                .opacity(scanning ? 0 : 1)
+                        }
                     }
                 }
             }
@@ -178,6 +208,15 @@ struct GoogleDriveBrowserSheet: View {
                     Text("Loading…").foregroundStyle(.secondary)
                 }
                 if nextPage != nil { Button("Load More") { Task { await load(append: true) } }.disabled(loading) }
+                if scanning, let progress = subtreeProgress {
+                    ProgressView().controlSize(.small)
+                    Text("Scanning subfolders… \(progress.foldersScanned) folders, \(progress.filesFound) files")
+                        .foregroundStyle(.secondary).lineLimit(1)
+                } else if let subtreeError {
+                    Text(subtreeError).foregroundStyle(.secondary).lineLimit(1)
+                } else if filter.isActive || flat, !loading {
+                    Text(filterSummary).foregroundStyle(.secondary).lineLimit(1)
+                }
                 Spacer()
                 if isFolderPicker {
                     if let folder = currentFolder, !folder.canAddChildren {
@@ -200,12 +239,153 @@ struct GoogleDriveBrowserSheet: View {
         }
     }
 
-    private var selectedFiles: [DriveFile] {
-        files.filter {
-            selection.contains($0.id) && !$0.isFolder
-                && ($0.mimeType.hasPrefix("video/")
-                    || Analyzer.videoExtensions.contains(URL(fileURLWithPath: $0.name).pathExtension.lowercased()))
+    private var filterBar: some View {
+        HStack {
+            Picker("Shape", selection: $filter.shape) {
+                ForEach(DriveBrowserFilter.Shape.allCases, id: \.self) { Text($0.label) }
+            }.labelsHidden().frame(width: 150)
+            Picker("Size", selection: $filter.minimumSize) {
+                ForEach(DriveBrowserFilter.MinimumSize.allCases, id: \.self) { Text($0.label) }
+            }.labelsHidden().frame(width: 130)
+            Picker("Sort", selection: $filter.sort) {
+                ForEach(DriveBrowserFilter.Sort.allCases, id: \.self) { Text($0.label) }
+            }.frame(width: 160)
+            if filter.isActive {
+                Button("Clear") { filter = DriveBrowserFilter() }
+            }
+            Spacer()
+            Toggle("All files in subfolders", isOn: $flat)
+                .disabled(!search.isEmpty)
+                .help(search.isEmpty
+                    ? "List every file below this folder in one flat list, with its folder path."
+                    : "Search already looks across all of Drive.")
         }
+        .onChange(of: filter) { refreshDerived() }
+        .onChange(of: flat) { refreshDerived() }
+    }
+
+    // MARK: - Filtering, flat view, and folder hiding
+
+    /// The scan runs when the flat view is on or a filter must decide which
+    /// folders to hide. Any change to what is listed restarts it.
+    private struct SubtreeKey: Equatable {
+        var enabled: Bool
+        var seedIDs: [String]
+        var videosOnly: Bool
+        var driveID: String?
+    }
+    private var needsSubtree: Bool { !isFolderPicker && search.isEmpty && (flat || filter.isActive) }
+    private var subtreeKey: SubtreeKey {
+        SubtreeKey(enabled: needsSubtree, seedIDs: files.map(\.id), videosOnly: videosOnly, driveID: driveID)
+    }
+    private var scanning: Bool { needsSubtree && subtree == nil && subtreeError == nil }
+    /// Recomputes the per-folder match counts and flat-view paths, then drops
+    /// any selected file the new view no longer shows.
+    private func refreshDerived() {
+        if filter.isActive, !flat, let subtree {
+            folderMatches = DriveSubtreeWalker.matchesByTopFolder(subtree.files, filter: filter)
+        } else {
+            folderMatches = nil
+        }
+        if flat, let subtree {
+            flatPaths = Dictionary(subtree.files.map { ($0.id, $0.pathLabel) }, uniquingKeysWith: { a, _ in a })
+        } else {
+            flatPaths = [:]
+        }
+        selection = selection.filter { id in shownFiles.contains { $0.id == id } }
+    }
+    /// What the filter and sort see: the flat subtree, or the current folder.
+    private var candidateFiles: [DriveFile] {
+        if flat, let subtree { return subtree.files.map(\.file) }
+        if flat { return files.filter { !$0.isFolder } }
+        return files
+    }
+    private var filtered: DriveBrowserFilter.Result { filter.apply(to: candidateFiles) }
+    private var shownFiles: [DriveFile] {
+        let result = filtered.files
+        // A filtered folder view hides folders with nothing below them that
+        // matches. A truncated scan proves nothing about unscanned folders,
+        // so every folder stays visible and only the counts are shown.
+        guard let folderMatches, subtree?.truncated == false else { return result }
+        return result.filter { !$0.isFolder || folderMatches[$0.id, default: 0] > 0 }
+    }
+    private var filterSummary: String {
+        let videos = shownFiles.filter(\.isVideo).count
+        let total = candidateFiles.filter(\.isVideo).count
+        var text = flat ? "\(videos) of \(total) videos in subfolders" : "\(videos) of \(total) loaded videos"
+        if let folderMatches {
+            let inside = folderMatches.values.reduce(0, +)
+            let hidden = files.filter(\.isFolder).count - folderMatches.count
+            text += " · \(inside) more in \(folderMatches.count) folders"
+            if hidden > 0, subtree?.truncated == false { text += " · \(hidden) folders hidden" }
+        }
+        if filtered.unknownShapeHidden > 0 {
+            text += " · \(filtered.unknownShapeHidden) without dimensions yet"
+        }
+        if let subtree, subtree.truncated {
+            text += " · stopped after \(subtree.foldersScanned) folders (all folders kept), open a smaller folder"
+        }
+        if nextPage != nil { text += " · Load More to search further" }
+        return text
+    }
+    private var filterEmptyHint: String {
+        var hint = "No videos match the shape or size filter."
+        if filtered.unknownShapeHidden > 0 {
+            hint += " \(filtered.unknownShapeHidden) hidden because Drive hasn't reported their dimensions yet."
+        }
+        if nextPage != nil { hint += " Load More may find some." }
+        return hint
+    }
+    /// `.task(id:)` bodies keep running after the id changes, so every write
+    /// back checks the token taken at the start.
+    private func scanSubtree() async {
+        let token = UUID()
+        subtreeToken = token
+        subtree = nil
+        subtreeProgress = nil
+        subtreeError = nil
+        refreshDerived()
+        guard needsSubtree, let client else { return }
+        if folderCache == nil { folderCache = CachingDriveFolderLister(base: client) }
+        guard let lister = folderCache else { return }
+        let seed = files
+        let walker = DriveSubtreeWalker()
+        let videosOnly = videosOnly
+        let driveID = driveID
+        subtreeProgress = DriveSubtreeWalker.Progress()
+        do {
+            let result = try await walker.walk(seed: seed, lister: lister, videosOnly: videosOnly, driveID: driveID) {
+                progress in
+                Task { @MainActor in
+                    guard subtreeToken == token else { return }
+                    subtreeProgress = progress
+                }
+            }
+            guard subtreeToken == token else { return }
+            subtree = result
+            subtreeProgress = nil
+            refreshDerived()
+        } catch is CancellationError {
+        } catch {
+            guard subtreeToken == token else { return }
+            subtreeProgress = nil
+            subtreeError = "Couldn't read subfolders: \(GoogleDriveError.message(for: error))"
+        }
+    }
+    static func videoDetail(_ file: DriveFile) -> String? {
+        guard file.isVideo, let metadata = file.videoMediaMetadata else { return nil }
+        var parts: [String] = []
+        if let width = metadata.width, let height = metadata.height, width > 0, height > 0 {
+            parts.append("\(width)×\(height) \(metadata.shape.label.lowercased())")
+        }
+        if let seconds = metadata.durationSeconds {
+            parts.append(Duration.seconds(seconds).formatted(.time(pattern: .minuteSecond)))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private var selectedFiles: [DriveFile] {
+        candidateFiles.filter { selection.contains($0.id) && $0.isVideo }
     }
     private var currentFolder: DriveFile? {
         breadcrumbs.last

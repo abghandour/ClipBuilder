@@ -9,7 +9,8 @@ actor GoogleDriveClient {
     private let downloadChunkSize = 16 * 1024 * 1024
     static let fields =
         "id,name,mimeType,size,modifiedTime,thumbnailLink,webViewLink,shared,ownedByMe,md5Checksum,version,"
-        + "capabilities/canAddChildren"
+        + "capabilities/canAddChildren,videoMediaMetadata/width,videoMediaMetadata/height,"
+        + "videoMediaMetadata/durationMillis"
 
     init(auth: GoogleDriveAuth, profile: String, transport: any DriveTransport = URLSessionDriveTransport()) {
         self.auth = auth

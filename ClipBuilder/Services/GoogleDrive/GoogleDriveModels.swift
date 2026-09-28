@@ -48,12 +48,48 @@ nonisolated struct DriveFile: Codable, Identifiable, Hashable, Sendable {
     var version: String?
     var trashed: Bool?
     var capabilities: DriveCapabilities?
+    /// Drive fills this in after it has processed the upload; nil until then.
+    var videoMediaMetadata: DriveVideoMetadata?
     var isFolder: Bool { mimeType == "application/vnd.google-apps.folder" }
     var byteCount: Int64 { Int64(size ?? "") ?? 0 }
     var link: String { webViewLink ?? "https://drive.google.com/file/d/\(id)/view" }
     var isShared: Bool { shared == true || ownedByMe == false }
     /// Unknown capabilities (root, shared-drive stubs) are treated as writable; the server decides.
     var canAddChildren: Bool { capabilities?.canAddChildren != false }
+    var isVideo: Bool {
+        !isFolder
+            && (mimeType.hasPrefix("video/")
+                || Analyzer.videoExtensions.contains(URL(fileURLWithPath: name).pathExtension.lowercased()))
+    }
+    var durationSeconds: Double? { videoMediaMetadata?.durationSeconds }
+    var shape: DriveVideoShape { videoMediaMetadata?.shape ?? .unknown }
+}
+
+/// Drive reports durationMillis as a string; width and height as numbers.
+nonisolated struct DriveVideoMetadata: Codable, Hashable, Sendable {
+    var width: Int?
+    var height: Int?
+    var durationMillis: String?
+    var durationSeconds: Double? { durationMillis.flatMap(Double.init).map { $0 / 1000 } }
+    var shape: DriveVideoShape {
+        guard let width, let height, width > 0, height > 0 else { return .unknown }
+        let ratio = Double(width) / Double(height)
+        if ratio > 1.15 { return .wide }
+        if ratio < 0.87 { return .tall }
+        return .square
+    }
+}
+
+nonisolated enum DriveVideoShape: String, CaseIterable, Sendable {
+    case wide, tall, square, unknown
+    var label: String {
+        switch self {
+        case .wide: "Wide"
+        case .tall: "Tall"
+        case .square: "Square"
+        case .unknown: "Unknown"
+        }
+    }
 }
 
 nonisolated struct DriveCapabilities: Codable, Hashable, Sendable {
