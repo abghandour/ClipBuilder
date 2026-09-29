@@ -129,7 +129,8 @@ struct PodcastHighlightReviewSheet: View {
                height: isScreening ? PodcastHighlightTrimView.sheetHeight : 620)
         .sheet(item: playingSelection) { row in
             PodcastHighlightTrimSheet(url: request.video.url, candidate: playingBinding(for: row.id),
-                                      original: original(for: row.id) ?? row.candidate, trim: trim)
+                                      original: original(for: row.id) ?? row.candidate, trim: trim,
+                                      onDiscard: { discard(row.id) })
         }
     }
 
@@ -144,6 +145,12 @@ struct PodcastHighlightReviewSheet: View {
                 set: { candidate in
                     if let index = rows.firstIndex(where: { $0.id == id }) { rows[index].candidate = candidate }
                 })
+    }
+
+    /// Discard from the Play sheet: uncheck the row so Render leaves it out.
+    private func discard(_ id: UUID) {
+        if let index = rows.firstIndex(where: { $0.id == id }) { rows[index].selected = false }
+        playingID = nil
     }
 
     private func startScreening() {

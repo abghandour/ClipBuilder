@@ -335,12 +335,14 @@ struct PodcastHighlightTrimView: View {
         return Button {
             select(word)
         } label: {
+            // The word being spoken is unmistakable: yellow block, dark text.
             Text(word.text)
                 .font(.callout)
-                .fontWeight(spoken ? .semibold : .regular)
-                .foregroundStyle(inside ? Color.primary : Color.secondary)
+                .fontWeight(spoken ? .bold : .regular)
+                .foregroundStyle(spoken ? Color.black : inside ? Color.primary : Color.secondary)
                 .padding(.horizontal, 2)
-                .background(inside ? Color.accentColor.opacity(0.28) : Color.clear, in: RoundedRectangle(cornerRadius: 3))
+                .background(spoken ? Color.yellow : inside ? Color.accentColor.opacity(0.28) : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 3))
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -366,13 +368,15 @@ struct PodcastHighlightTrimView: View {
 }
 
 /// The Play button's sheet in the list view: the same trim surface with a
-/// Done button. Edits land on the bound candidate as they are made.
+/// Done button. Edits land on the bound candidate as they are made. Discard
+/// unchecks the highlight in the list so it is left out of the render.
 struct PodcastHighlightTrimSheet: View {
     @Environment(\.dismiss) private var dismiss
     let url: URL
     @Binding var candidate: HighlightCandidate
     let original: HighlightCandidate
     let trim: PodcastHighlightTrim
+    var onDiscard: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
@@ -382,6 +386,13 @@ struct PodcastHighlightTrimSheet: View {
                     Text(candidate.reason).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer()
+                if let onDiscard {
+                    Button("Discard", role: .destructive) {
+                        onDiscard()
+                        dismiss()
+                    }
+                    .help("Leave this highlight out — it stays in the list, unchecked, in case you change your mind")
+                }
                 Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
             }
             PodcastHighlightTrimView(url: url, candidate: $candidate, original: original, trim: trim)
