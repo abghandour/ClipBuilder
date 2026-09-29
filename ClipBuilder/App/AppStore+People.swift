@@ -233,6 +233,86 @@ extension AppStore {
         }
     }
 
+    /// File a person under a role on the People screen, or clear it.
+    func setPersonCategory(_ person: PersonRecord, category: PersonCategory?) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.setPersonCategory(id: person.id, category: category)
+                people = try await database.fetchPeople()
+            } catch {
+                presentError("Could not update the person", error)
+            }
+        }
+    }
+
+    /// File several people at once — the People Roles review's Apply.
+    func setPersonCategories(_ assignments: [(id: Int64, category: PersonCategory?)]) async throws {
+        guard let database else { return }
+        try await database.setPersonCategories(assignments)
+        people = try await database.fetchPeople()
+    }
+
+    /// People with no role yet whom the wizard can reason about — hidden
+    /// people are skipped, they were tucked away on purpose.
+    var uncategorizedPeople: [PersonRecord] {
+        people.filter { $0.category == nil && !$0.hidden }
+    }
+
+    /// People Roles wizard: gather what the footage says about each
+    /// uncategorized person and ask the model for a role per person. The
+    /// answer is a proposal list for the review sheet; nothing is written.
+    func inferPersonRoles(people targets: [PersonRecord], provider: String?, model: String?,
+                          log: @escaping @Sendable (String) -> Void) async throws
+        -> AIOutcome<[PersonRoleInference.Proposal]> {
+        guard let database else { throw AIError.notConfigured("No profile is open.") }
+        guard !targets.isEmpty else { throw AppJobEmptyResult(message: "Everyone already has a category.") }
+        let scenes = scenes, videos = videos, domain = activeProfile.effectiveDomain
+        let videosByID = Dictionary(uniqueKeysWithValues: videos.map { ($0.id, $0) })
+
+        log("Reading scenes and transcripts for \(targets.count) people…")
+        var dossiers: [PersonRoleInference.Dossier] = []
+        var transcriptCache: [Int64: (rows: [TranscriptRow], turns: [SpeakerTurn])] = [:]
+        for (index, person) in targets.enumerated() {
+            try Task.checkCancellation()
+            let theirScenes = scenes.filter { !$0.ignored && $0.tags.contains(person.tag) }
+            var videoIDs = Set(theirScenes.map(\.videoID))
+            videoIDs.formUnion(try await database.fetchVideoIDs(personID: person.id))
+            let videoLines = videoIDs.compactMap { videosByID[$0] }
+                .sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
+                .map { "\($0.filename) (\($0.type?.label ?? "untyped"))" }
+            let sceneLines = theirScenes.prefix(PersonRoleInference.maxScenesPerPerson).map { scene in
+                let tags = scene.tags.filter { !$0.hasPrefix("person:") && !$0.hasPrefix("vip:") }
+                let narrative = scene.narrative?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return "\(scene.videoFilename): [\(tags.joined(separator: ", "))]"
+                    + (narrative.isEmpty ? "" : " \(narrative.prefix(PersonRoleInference.maxQuoteLength))")
+            }
+            var quotes: [String] = []
+            for videoID in videoIDs.sorted() where quotes.count < PersonRoleInference.maxQuotesPerPerson {
+                if transcriptCache[videoID] == nil {
+                    transcriptCache[videoID] = (try await database.fetchTranscripts(videoID: videoID),
+                                                try await database.fetchSpeakerTurns(videoID: videoID))
+                }
+                let cached = transcriptCache[videoID]!
+                quotes += PersonRoleInference.quotes(for: person.key, transcripts: cached.rows, turns: cached.turns)
+            }
+            dossiers.append(.init(personID: person.id, name: person.displayName, descriptor: person.descriptor,
+                                  videos: videoLines, scenes: Array(sceneLines),
+                                  quotes: Array(quotes.prefix(PersonRoleInference.maxQuotesPerPerson))))
+            log("PROGRESS:\(Double(index + 1) / Double(targets.count) * 0.4)")
+        }
+
+        log("Asking the model for a role per person…")
+        let response = try await ai.call(prompt: PersonRoleInference.prompt(dossiers: dossiers, domain: domain),
+                                         task: .roles, model: model, provider: provider, timeout: 240, log: log)
+        let proposals = PersonRoleInference.parse(response.text, personIDs: targets.map(\.id))
+        guard !proposals.isEmpty else {
+            throw AIError.unusableResponse("No roles could be read from the model's reply.")
+        }
+        log("Proposed roles for \(proposals.count) of \(targets.count) people.")
+        return AIOutcome(value: proposals, provenance: response.provenance)
+    }
+
     /// Hand-pick a person's avatar frame — or reset to automatic with nils.
     /// The picked frame + face box render everywhere the avatar shows.
     func setPersonAvatar(_ person: PersonRecord, videoID: Int64?, time: Double?,

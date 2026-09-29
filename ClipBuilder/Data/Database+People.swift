@@ -50,8 +50,15 @@ extension Database {
                          hidden: (row["hidden"]?.intValue ?? 0) != 0,
                          avatarVideoID: row["avatar_video_id"]?.intValue,
                          avatarTime: row["avatar_time"]?.doubleValue,
-                         avatarBoxJSON: row["avatar_box"]?.stringValue)
+                         avatarBoxJSON: row["avatar_box"]?.stringValue,
+                         category: row["category"]?.stringValue.flatMap(PersonCategory.init(rawValue:)))
         }
+    }
+
+    /// File a person under a role (or clear it with nil).
+    func setPersonCategory(id: Int64, category: PersonCategory?) throws {
+        try connection.execute("UPDATE people SET category = ? WHERE id = ?",
+                               [category.map { .text($0.rawValue) } ?? .null, .integer(id)])
     }
 
     /// Save (or clear, with nils) a person's hand-picked avatar frame.
@@ -70,6 +77,17 @@ extension Database {
     func setPersonHidden(id: Int64, hidden: Bool) throws {
         try connection.execute("UPDATE people SET hidden = ? WHERE id = ?",
                                [.integer(hidden ? 1 : 0), .integer(id)])
+    }
+
+    /// File several people at once (the People Roles wizard's Apply).
+    func setPersonCategories(_ assignments: [(id: Int64, category: PersonCategory?)]) throws {
+        try connection.transaction {
+            for assignment in assignments {
+                try connection.execute("UPDATE people SET category = ? WHERE id = ?",
+                                       [assignment.category.map { .text($0.rawValue) } ?? .null,
+                                        .integer(assignment.id)])
+            }
+        }
     }
 
     /// Register a detected person, refreshing the visual descriptor with the

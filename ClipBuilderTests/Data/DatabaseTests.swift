@@ -4,6 +4,36 @@ import Testing
 
 @Suite("Database")
 struct DatabaseTests {
+    @Test func originalTranscriptAvailabilityReturnsDistinctVideoIDs() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        #expect(try await database.videoIDsWithOriginalTranscripts().isEmpty)
+        let original = try await temp.seedVideo(sceneCount: 0)
+        let translatedOnly = try await temp.seedVideo(sceneCount: 0)
+        let mixed = try await temp.seedVideo(sceneCount: 0)
+        _ = try await temp.seedVideo(sceneCount: 0) // No transcript at all.
+        let rows = [TranscriptSegment(start: 0, end: 1, text: "First.", words: nil),
+                    TranscriptSegment(start: 1, end: 2, text: "Second.", words: nil)]
+        try await database.replaceTranscripts(videoID: original, language: "fr", isTranslation: false,
+            segments: rows, provider: "test", model: "test")
+        try await database.replaceTranscripts(videoID: translatedOnly, language: "en", isTranslation: true,
+            segments: rows, provider: "test", model: "test")
+        try await database.replaceTranscripts(videoID: mixed, language: "en", isTranslation: false,
+            segments: rows, provider: "test", model: "test")
+        try await database.replaceTranscripts(videoID: mixed, language: "fr", isTranslation: true,
+            segments: rows, provider: "test", model: "test")
+        #expect(try await database.videoIDsWithOriginalTranscripts() == Set([original, mixed]))
+
+        // Translations alone must not keep a video ready after its original
+        // transcript is removed or replaced by an empty transcription.
+        try await database.replaceTranscripts(videoID: mixed, language: "en", isTranslation: false,
+            segments: [], provider: "test", model: "test")
+        #expect(try await database.videoIDsWithOriginalTranscripts() == Set([original]))
+        try await database.replaceTranscripts(videoID: original, language: "fr", isTranslation: false,
+            segments: [], provider: "test", model: "test")
+        #expect(try await database.videoIDsWithOriginalTranscripts().isEmpty)
+    }
+
     @Test("voice profiles round-trip per video, leave the video being mapped out, and follow person merges and deletes")
     func voiceProfilesRoundTrip() async throws {
         let temp = try TempDatabase()
@@ -132,7 +162,8 @@ struct DatabaseTests {
                                 ("scenes", "favorite_provider"), ("scenes", "stack_choice"),
                                 ("video_notes", "provider"), ("fight_events", "model"),
                                 ("videos", "people_seconds"), ("videos", "speech_seconds"),
-                                ("transcripts", "seconds"), ("transcripts", "speaker_key")] {
+                                ("transcripts", "seconds"), ("transcripts", "speaker_key"),
+                                ("people", "category")] {
             #expect(try raw.columnNames(of: table).contains(column), "\(table).\(column) missing after migration")
         }
         // The migrated file is usable, not just stamped.
@@ -277,6 +308,22 @@ struct DatabaseTests {
         #expect(restored[0].speaker == .person(key: "ann"))
         #expect(!(try await database.hasTranscriptBackup(videoID: videoID)))
         #expect(!(try await database.restoreTranscriptBackup(videoID: videoID)))
+    }
+
+    @Test("a person's category round-trips, clears with nil, and survives an unknown value")
+    func personCategoryRoundTrip() async throws {
+        let temp = try TempDatabase()
+        try await temp.database.upsertPerson(key: "alpha", descriptor: "")
+        let alpha = try #require(try await temp.database.fetchPeople().first)
+        #expect(alpha.category == nil)
+        try await temp.database.setPersonCategory(id: alpha.id, category: .trainer)
+        #expect(try await temp.database.fetchPeople().first?.category == .trainer)
+        try await temp.database.setPersonCategory(id: alpha.id, category: nil)
+        #expect(try await temp.database.fetchPeople().first?.category == nil)
+        // A value this build doesn't know (older/newer app) reads as uncategorized, not a crash.
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("UPDATE people SET category = 'astronaut' WHERE id = ?", [.integer(alpha.id)])
+        #expect(try await temp.database.fetchPeople().first?.category == nil)
     }
 
     @Test("merging and deleting people follow the lines attributed to them by hand")

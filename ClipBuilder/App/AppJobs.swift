@@ -6,6 +6,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case coverFrames, overlayTemplate, sceneSearch, imageSearch, fightResearch
     case generateRequest, instagramPublish, socialExport, resourceExport, resourceImport
     case mapSpeakers, suggestTrim, cameraPath, evaluateReelModel, publishLessons, transcriptAnalysis
+    case personRoles
 
     var postsNotice: Bool { self == .overlayTemplate }
 
@@ -33,6 +34,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .evaluateReelModel: "Evaluate Model"
         case .publishLessons: "Publish AI Lessons"
         case .transcriptAnalysis: "Transcript Analysis"
+        case .personRoles: "People Roles"
         }
     }
 
@@ -89,6 +91,7 @@ nonisolated enum AppJobResult: Equatable, Sendable {
     case socialExport(urls: [URL])
     case trim(start: Double, end: Double, reason: String, provenance: AIProvenance)
     case generateRequest(WizardPromptHandoff)
+    case personRoles(proposals: [PersonRoleInference.Proposal], provenance: AIProvenance?)
 
     var committedOnCancellation: Bool {
         switch self {

@@ -205,7 +205,8 @@ actor Database {
         key TEXT UNIQUE NOT NULL,
         name TEXT NOT NULL DEFAULT '',
         descriptor TEXT NOT NULL DEFAULT '',
-        created_at TEXT DEFAULT (datetime('now'))
+        created_at TEXT DEFAULT (datetime('now')),
+        category TEXT
     );
 
     CREATE TABLE IF NOT EXISTS analyzed_tags (
@@ -696,7 +697,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 19
+    static let schemaVersion: Int64 = 20
 
     // MARK: - Helpers
 

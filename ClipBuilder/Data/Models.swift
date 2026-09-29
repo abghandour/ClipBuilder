@@ -106,6 +106,48 @@ nonisolated enum VideoType: String, CaseIterable, Sendable {
     var supportsFightFeatures: Bool { self == .fight || self == .recap }
 }
 
+/// What role a person plays in the footage — the People screen groups and
+/// filters by it. User-assigned; nil until they pick one.
+nonisolated enum PersonCategory: String, CaseIterable, Sendable, Codable, Hashable {
+    case fighter, trainer, press, official, fan, staff, other
+
+    var label: String {
+        switch self {
+        case .fighter: "Fighter"
+        case .trainer: "Trainer"
+        case .press: "Press"
+        case .official: "Official"
+        case .fan: "Fan"
+        case .staff: "Staff"
+        case .other: "Other"
+        }
+    }
+
+    var pluralLabel: String {
+        switch self {
+        case .fighter: "Fighters"
+        case .trainer: "Trainers"
+        case .press: "Press"
+        case .official: "Officials"
+        case .fan: "Fans"
+        case .staff: "Staff"
+        case .other: "Other"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .fighter: "figure.boxing"
+        case .trainer: "figure.cross.training"
+        case .press: "mic"
+        case .official: "flag.checkered"
+        case .fan: "hands.clap"
+        case .staff: "person.badge.key"
+        case .other: "person"
+        }
+    }
+}
+
 /// A distinct person the analyzer detected across the profile's footage.
 /// Identity is the AI-assigned `key` (matched visually across videos via the
 /// descriptor); the user gives them a real name in the People section.
@@ -123,6 +165,8 @@ nonisolated struct PersonRecord: Identifiable, Sendable, Hashable {
     var avatarVideoID: Int64? = nil
     var avatarTime: Double? = nil
     var avatarBoxJSON: String? = nil
+    /// The role the user filed this person under; nil = not categorized yet.
+    var category: PersonCategory? = nil
 
     var avatarBox: VideoPersonRecord.PortraitBox? {
         avatarBoxJSON?.data(using: .utf8)
@@ -143,6 +187,10 @@ nonisolated struct PersonRecord: Identifiable, Sendable, Hashable {
 
     /// True until the user confirms or types a name.
     var isUnnamed: Bool { name.isEmpty }
+
+    /// Still waiting on the user: no confirmed name yet. The People screen
+    /// files these under Unknown until a name is confirmed.
+    var needsConfirmation: Bool { isUnnamed }
 
     /// The key read as a name, nil for generic keys ("person-2", "speaker-1").
     var keyName: String? { Self.keyName(key) }

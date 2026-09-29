@@ -471,6 +471,10 @@ extension Database {
         }
         // Hand-picked avatar: frame (video + time) and normalized face box.
         // NULL = automatic (marker portrait, else the first scene's face).
+        // Role filed by the user (fighter, trainer, press…); NULL = none yet.
+        if !peopleColumns.contains("category") {
+            try connection.execute("ALTER TABLE people ADD COLUMN category TEXT")
+        }
         if !peopleColumns.contains("avatar_video_id") {
             try connection.execute("ALTER TABLE people ADD COLUMN avatar_video_id INTEGER")
             try connection.execute("ALTER TABLE people ADD COLUMN avatar_time REAL")

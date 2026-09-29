@@ -27,6 +27,8 @@ struct AppJobReviewSheet: View {
                 CoverFrameReviewSheet(jobID: job.id, video: video, candidates: candidates, provenance: provenance)
             case .fightResearch(let video):
                 FightResearchReviewSheet(jobID: job.id, video: video)
+            case let .personRoles(proposals, provenance):
+                PersonRolesReviewSheet(jobID: job.id, proposals: proposals, provenance: provenance)
             default:
                 simple
             }

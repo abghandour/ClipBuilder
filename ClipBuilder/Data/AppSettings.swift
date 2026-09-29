@@ -228,6 +228,7 @@ nonisolated enum AICatalog {
         "route": "Wizard routing",
         "analysis": "Video analysis",
         "people": "People detection",
+        "roles": "People roles",
         "exchanges": "Podcast exchanges",
         "highlights": "Podcast highlights",
         "broll": "B-roll placement",
@@ -254,6 +255,7 @@ nonisolated enum AICatalog {
         "route": "claude",
         "analysis": "claude",
         "people": "claude",
+        "roles": "claude",
         "exchanges": "claude",
         "highlights": "claude",
         "broll": "claude",
@@ -397,6 +399,12 @@ nonisolated enum AICatalog {
         "trim": [("gemini", "gemini-2.5-flash"),
                  ("claude", "claude-sonnet-4-6"),
                  ("claude", "claude-haiku-4-5-20251001")],
+        // People roles reads scene tags and quotes per person — text only.
+        "roles": [("claude", "claude-sonnet-4-6"),
+                  ("gemini", "gemini-2.5-pro"),
+                  ("codex", "gpt-6-astra"),
+                  ("qwen", "qwen3-coder-plus"),
+                  ("kimi", "kimi-code/kimi-for-coding")],
         // Content gap report reasons over the whole library's state.
         "gap": [("claude", "claude-sonnet-4-6"),
                 ("gemini", "gemini-2.5-pro"),

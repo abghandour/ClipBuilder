@@ -18,6 +18,9 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     case analysis
     /// Finds people in a handful of frames. Prompt: `Analyzer` people pass.
     case people
+    /// People Roles wizard: proposes a category (fighter, press…) per person
+    /// from their scenes and speech. Prompt: `PersonRoleInference`.
+    case roles
     /// One-off image or asset analysis with frames attached (asset
     /// browser, image library captions). Prompt inline at the call site.
     case analyze
@@ -111,7 +114,7 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// Tasks the user can route in Settings (provider and model pickers).
     /// Order is the Settings order.
     static let configurable: [AITask] = [
-        .analysis, .people, .exchanges, .highlights, .broll, .wizard, .critique, .research, .fightResearch,
+        .analysis, .people, .roles, .exchanges, .highlights, .broll, .wizard, .critique, .research, .fightResearch,
         .parse, .captions, .distill, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
         .gap, .onboard, .route,
     ]

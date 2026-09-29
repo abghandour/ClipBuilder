@@ -8,12 +8,16 @@ struct PeopleView: View {
     @Environment(AppStore.self) private var store
 
     @State private var selectedPersonIDs: Set<Int64> = []
+    /// Which bucket the list shows — every category, one role, the people
+    /// still waiting on a confirmed name, or the Hidden bucket.
+    @State private var bucketFilter: PeopleBucket = .all
     @State private var tagFilter = ""            // empty = all tags
     @State private var searchText = ""
     @State private var confirmDelete: PersonRecord?
     @State private var reassignScene: SceneRecord?
     @State private var newPersonName = ""
     @State private var showGenerateSheet = false
+    @State private var showRolesWizard = false
     @State private var mergeRequest: MergeRequest?
     /// Person whose avatar picker sheet is open.
     @State private var avatarPickerPerson: PersonRecord?
@@ -55,6 +59,64 @@ struct PeopleView: View {
 
     private var hiddenPeople: [PersonRecord] {
         projectPeople.filter(\.hidden)
+    }
+
+    /// The list's buckets: every role the user has filed people under,
+    /// Unknown (no confirmed name yet) and Hidden.
+    enum PeopleBucket: Hashable {
+        case all
+        case category(PersonCategory)
+        case uncategorized
+        case unknown
+        case hidden
+
+        var label: String {
+            switch self {
+            case .all: "All People"
+            case .category(let category): category.pluralLabel
+            case .uncategorized: "Uncategorized"
+            case .unknown: "Unknown"
+            case .hidden: "Hidden"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .all: "person.2"
+            case .category(let category): category.systemImage
+            case .uncategorized: "person.crop.circle.dashed"
+            case .unknown: "person.fill.questionmark"
+            case .hidden: "eye.slash"
+            }
+        }
+
+        /// Every bucket a picker offers, in list order.
+        static var pickerCases: [PeopleBucket] {
+            [.all] + PersonCategory.allCases.map(PeopleBucket.category) + [.uncategorized, .unknown, .hidden]
+        }
+    }
+
+    /// Visible (non-hidden) people that belong in a bucket. Unknown holds
+    /// everyone still waiting on a confirmed name, whatever their role.
+    private func people(in bucket: PeopleBucket) -> [PersonRecord] {
+        switch bucket {
+        case .all: visiblePeople
+        case .category(let category):
+            visiblePeople.filter { $0.category == category && !$0.needsConfirmation }
+        case .uncategorized:
+            visiblePeople.filter { $0.category == nil && !$0.needsConfirmation }
+        case .unknown: visiblePeople.filter(\.needsConfirmation)
+        case .hidden: hiddenPeople
+        }
+    }
+
+    /// The sections the list shows for the current filter: All groups by
+    /// role and appends Unknown and Hidden; a single bucket shows just it.
+    private var listSections: [(bucket: PeopleBucket, people: [PersonRecord])] {
+        let buckets: [PeopleBucket] = bucketFilter == .all
+            ? PersonCategory.allCases.map(PeopleBucket.category) + [.uncategorized, .unknown, .hidden]
+            : [bucketFilter]
+        return buckets.map { ($0, people(in: $0)) }.filter { !$0.people.isEmpty }
     }
 
     /// Detail only follows an explicit list selection. Falling back to the
@@ -165,6 +227,13 @@ struct PeopleView: View {
                 .help("These are the same person — pick the main record and combine their scenes under one identity")
             }
             Button {
+                showRolesWizard = true
+            } label: {
+                ToolbarBubbleLabel(text: "Infer Roles", systemImage: "person.crop.circle.badge.questionmark")
+            }
+            .disabled(store.uncategorizedPeople.isEmpty)
+            .help("Propose a category for everyone without one, from the scenes they appear in and what they say — you confirm each before it's saved")
+            Button {
                 showGenerateSheet = true
             } label: {
                 ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
@@ -177,6 +246,9 @@ struct PeopleView: View {
                 store.mergePeople(request.people, into: main, renamingTo: name)
                 selectedPersonIDs = [main.id]
             }
+        }
+        .sheet(isPresented: $showRolesWizard) {
+            PersonRolesWizardSheet()
         }
         .sheet(isPresented: $showGenerateSheet) {
             if let person = selectedPerson {
@@ -231,21 +303,66 @@ struct PeopleView: View {
     // MARK: - People list
 
     private var peopleList: some View {
-        List(selection: $selectedPersonIDs) {
-            ForEach(visiblePeople) { person in
-                personRow(person)
+        VStack(spacing: 0) {
+            Picker("Show", selection: $bucketFilter) {
+                ForEach(PeopleBucket.pickerCases, id: \.self) { bucket in
+                    Label {
+                        Text(bucket.label)
+                    } icon: {
+                        Image(systemName: bucket.systemImage)
+                    }
+                    .tag(bucket)
+                }
             }
-            // Officials, one-off bystanders, joke detections — out of the
-            // way but never deleted, so their identity keeps working.
-            if !hiddenPeople.isEmpty {
-                Section("Hidden People") {
-                    ForEach(hiddenPeople) { person in
-                        personRow(person)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .help("Show one role, the people whose name still needs confirming, or the Hidden bucket")
+            Divider()
+            List(selection: $selectedPersonIDs) {
+                // Roles first, then the people still waiting on a confirmed
+                // name, then Hidden: officials, one-off bystanders, joke
+                // detections — out of the way but never deleted, so their
+                // identity keeps working.
+                ForEach(listSections, id: \.bucket) { section in
+                    Section {
+                        ForEach(section.people) { person in
+                            personRow(person)
+                        }
+                    } header: {
+                        Label(sectionTitle(section.bucket), systemImage: section.bucket.systemImage)
                     }
                 }
             }
+            .listStyle(.inset)
+            .overlay {
+                if listSections.isEmpty {
+                    ContentUnavailableView(
+                        "No \(bucketFilter.label.lowercased())",
+                        systemImage: bucketFilter.systemImage,
+                        description: Text(emptyBucketHint))
+                }
+            }
         }
-        .listStyle(.inset)
+    }
+
+    private func sectionTitle(_ bucket: PeopleBucket) -> String {
+        switch bucket {
+        case .unknown: "Unknown — needs confirmation"
+        case .hidden: "Hidden People"
+        default: bucket.label
+        }
+    }
+
+    private var emptyBucketHint: String {
+        switch bucketFilter {
+        case .all: "Analyze videos and distinct people are detected automatically."
+        case .category(let category):
+            "Right-click a person and choose Category › \(category.label) to file them here."
+        case .uncategorized: "Every confirmed person has a category."
+        case .unknown: "Every detected person has a confirmed name."
+        case .hidden: "Right-click a person and choose Hide to tuck them away here."
+        }
     }
 
     private func personRow(_ person: PersonRecord) -> some View {
@@ -272,6 +389,7 @@ struct PeopleView: View {
                     avatarPickerPerson = person
                 }
                 .help("Pick which face is this person's avatar — the automatic crop can grab the wrong face when two people share the frame")
+                categoryMenu(for: person)
                 Button(person.hidden ? "Unhide" : "Hide") {
                     store.setPersonHidden(person, hidden: !person.hidden)
                 }
@@ -282,6 +400,24 @@ struct PeopleView: View {
                     confirmDelete = person
                 }
             }
+    }
+
+    /// Category submenu: one entry per role plus None; the current one is checked.
+    private func categoryMenu(for person: PersonRecord) -> some View {
+        Menu("Category") {
+            ForEach(PersonCategory.allCases, id: \.self) { category in
+                Toggle(isOn: Binding(
+                    get: { person.category == category },
+                    set: { store.setPersonCategory(person, category: $0 ? category : nil) })
+                ) {
+                    Label(category.label, systemImage: category.systemImage)
+                }
+            }
+            Divider()
+            Button("None") { store.setPersonCategory(person, category: nil) }
+                .disabled(person.category == nil)
+        }
+        .help("File this person under a role — the list groups and filters by it")
     }
 
     // MARK: - Detail
@@ -303,8 +439,25 @@ struct PeopleView: View {
                     .accessibilityLabel("Choose avatar for \(person.displayName)")
                     .help("Choose which face is this person's avatar")
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(person.displayName)
-                            .font(.headline)
+                        HStack(spacing: 8) {
+                            Text(person.displayName)
+                                .font(.headline)
+                            Picker("Category", selection: Binding(
+                                get: { person.category },
+                                set: { store.setPersonCategory(person, category: $0) })
+                            ) {
+                                Text("No category").tag(PersonCategory?.none)
+                                Divider()
+                                ForEach(PersonCategory.allCases, id: \.self) { category in
+                                    Label(category.label, systemImage: category.systemImage)
+                                        .tag(PersonCategory?.some(category))
+                                }
+                            }
+                            .labelsHidden()
+                            .controlSize(.small)
+                            .fixedSize()
+                            .help("File this person under a role — the list groups and filters by it")
+                        }
                         if person.isUnnamed, person.keyName != nil {
                             Text("Name read by the analyzer — confirm it in the list on the left")
                                 .font(.caption2)
@@ -562,7 +715,8 @@ private struct PersonRow: View {
                         name = confirmed
                         store.renamePerson(person, to: confirmed)
                     }
-                Text("\(sceneCount) scene\(sceneCount == 1 ? "" : "s") · \(videoCount) video\(videoCount == 1 ? "" : "s")")
+                Text((person.category.map { "\($0.label) · " } ?? "")
+                     + "\(sceneCount) scene\(sceneCount == 1 ? "" : "s") · \(videoCount) video\(videoCount == 1 ? "" : "s")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 if !person.descriptor.isEmpty {

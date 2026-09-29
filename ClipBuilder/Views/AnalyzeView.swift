@@ -878,13 +878,13 @@ private struct VideoPreviewPane: View {
                                         } label: {
                                             VStack(spacing: 2) {
                                                 VideoPersonAvatar(record: entry, videoURL: video.url,
-                                                                  size: 36)
+                                                                  size: 54)
                                                 Text(entry.displayName)
                                                     .font(.caption2)
                                                     .foregroundStyle(.secondary)
                                                     .lineLimit(1)
                                             }
-                                            .frame(width: 48)
+                                            .frame(width: 72)
                                             .contentShape(Rectangle())
                                         }
                                         .buttonStyle(.plain)
