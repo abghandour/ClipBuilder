@@ -177,6 +177,9 @@ nonisolated struct WizardPromptHandoff: Sendable, Equatable {
     var statusMessage: String?
     /// AI interpretation failed — the raw description rides as instructions.
     var parseFailed = false
+    /// Idea entry proposes footage only; even an empty proposal must be reviewed.
+    var proposesFootage = false
+    var proposedSceneIDs: Set<Int64>?
 }
 
 nonisolated struct WizardPlanClip: Sendable {
@@ -390,13 +393,18 @@ actor WizardEngine {
 
     func findPodcastHighlights(options: WizardOptions, settings: PodcastSettings, database: Database,
                                emit: @escaping @Sendable (String) -> Void, requestText: String = "",
+                               interpretRequest: Bool = true,
                                progress: @Sendable (String, Double) async -> Void = { _, _ in }) async throws -> PodcastHighlightReviewRequest {
         var options = options
         options.highlightMaxSeconds = PodcastSettings.clampHighlightSeconds(options.highlightMaxSeconds ?? settings.highlightMaxSeconds)
-        options.highlightMaxCount = Self.podcastHighlightMaxCount(in: requestText) ?? options.highlightMaxCount
-        let controls = WizardRequestParser.parse(requestText, tags: [], templates: []).request
-        options.highlightFraming = controls.highlightFraming ?? options.highlightFraming
-        options.useBRoll = controls.useBRoll ?? options.useBRoll
+        // The form already shows explicit controls. Its brief is rules, not
+        // another hidden settings override; command entry still parses text.
+        if interpretRequest {
+            options.highlightMaxCount = Self.podcastHighlightMaxCount(in: requestText) ?? options.highlightMaxCount
+            let controls = WizardRequestParser.parse(requestText, tags: [], templates: []).request
+            options.highlightFraming = controls.highlightFraming ?? options.highlightFraming
+            options.useBRoll = controls.useBRoll ?? options.useBRoll
+        }
         options.formatPreset = ReelRecipe.podcastHighlights.id
         options = options.neutralized(for: .podcastHighlights)
         let scenes = try await database.fetchScenes(projectID: options.projectID, includeExcluded: false)
@@ -411,7 +419,7 @@ actor WizardEngine {
         }
         let ids = Set(exchanges.map(\.videoID))
         var eligible = videos.filter { ids.contains($0.id) }
-        if let fragment = Self.podcastRecordingFragment(in: requestText) {
+        if interpretRequest, let fragment = Self.podcastRecordingFragment(in: requestText) {
             eligible = eligible.filter { $0.filename.localizedStandardContains(fragment) }
             guard !eligible.isEmpty else {
                 throw AIError.unusableResponse("No analyzed podcast matches ‘\(fragment)’. Available recordings: "
@@ -439,7 +447,7 @@ actor WizardEngine {
                             score: $0.score ?? 0, speakerKeys: $0.tags.filter { $0.hasPrefix("person:") }.map { String($0.dropFirst(7)) })
         }, segments: segments, turns: turns, roster: roster,
             maxSeconds: options.highlightMaxSeconds ?? settings.highlightMaxSeconds,
-            threshold: settings.highlightThreshold, maxCount: options.highlightMaxCount, highlightFraming: options.highlightFraming, ai: ai, model: options.modelOverride, log: emit, progress: progress)
+            threshold: settings.highlightThreshold, maxCount: options.highlightMaxCount, highlightFraming: options.highlightFraming, instructions: requestText, ai: ai, model: options.modelOverride, log: emit, progress: progress)
         let people = try await database.fetchPeople()
         return PodcastHighlightReviewRequest(video: video, candidates: candidates, scenes: scenes,
                                              segments: segments, turns: turns, roster: roster, people: people, options: options,
@@ -546,6 +554,22 @@ actor WizardEngine {
     ]
 
     // MARK: - Request parsing
+
+    /// Reuses scene search on an immutable project snapshot. No recipe or
+    /// render settings are selected by this operation.
+    func proposeFootage(description: String, scenes: [SceneRecord], people: [PersonRecord],
+                        emit: @escaping @Sendable (String) -> Void) async throws -> [Int64] {
+        let candidates = Array(scenes.filter { !$0.excluded && !$0.ignored }
+            .sorted { $0.id > $1.id }.prefix(SceneFinder.maxCandidates))
+        guard !candidates.isEmpty else { return [] }
+        emit("Matching footage from \(candidates.count) scenes…")
+        let response = try await ai.call(prompt: SceneFinder.prompt(query: description, scenes: candidates, people: people),
+                                         task: .search, timeout: 120, log: emit)
+        guard AIResponseParser.jsonObject(from: response.text)?["matches"] is [Any] else {
+            throw AIError.unusableResponse("Footage search did not return a matches list.")
+        }
+        return SceneFinder.parse(response.text, validIDs: Set(candidates.map(\.id)))
+    }
 
     private func parseRequestPrompt(description: String, templateNames: [String],
                                     tagVocabulary: [String], musicFolders: [String] = []) -> String {

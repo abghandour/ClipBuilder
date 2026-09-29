@@ -14,10 +14,40 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
 
     let capabilities: Capabilities
 
+    enum Workflow: String, CaseIterable, Sendable, Identifiable {
+        case oneReel, highlights
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .oneReel: "Create one reel"
+            case .highlights: "Find highlights to review"
+            }
+        }
+    }
+
+    var workflow: Workflow { capabilities.workflow }
+
+    var briefPrompt: String {
+        switch id {
+        case "podcast_highlights": "Rules for choosing highlights"
+        case "interview", "podcast": "What the reel should say"
+        case "mma-finish", "mma-exchange", "mma-submission", "mma-technique": "The hook or must-have moment"
+        default: "Describe the outcome, hook, or must-have moments"
+        }
+    }
+
+    static func menuSections(workflow: Workflow, preferredSources: Capabilities.Sources) -> [[ReelRecipe]] {
+        let choices = menuSections.map { $0.filter { $0.workflow == workflow } }
+        let preferred = choices.map { $0.filter { $0.capabilities.sources == preferredSources } }
+        let remaining = choices.map { $0.filter { $0.capabilities.sources != preferredSources } }
+        return (preferred + remaining).filter { !$0.isEmpty }
+    }
+
     nonisolated struct Capabilities: Sendable, Equatable {
         enum Sources: Sendable { case scenes, podcastRecording }
         enum Length: Sendable { case targetDuration, maxSecondsAndCount, none }
 
+        let workflow: Workflow
         let sources: Sources
         let length: Length
         let podcastFraming: Bool
@@ -36,25 +66,25 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         let models: [String]
 
         static let fight = Capabilities(
-            sources: .scenes, length: .targetDuration, podcastFraming: false,
+            workflow: .oneReel, sources: .scenes, length: .targetDuration, podcastFraming: false,
             cameraFocus: false, bRoll: false, fightResearch: true, audioMusic: true,
             onScreenText: true, critiqueLoop: true, reviewProposedCuts: true,
             styleReference: true, layouts: true, bumpers: true, branding: true,
             referenceTemplate: true, models: ["wizard", "critique", "captions"])
         static let spoken = Capabilities(
-            sources: .scenes, length: .targetDuration, podcastFraming: true,
+            workflow: .oneReel, sources: .scenes, length: .targetDuration, podcastFraming: true,
             cameraFocus: false, bRoll: true, fightResearch: false, audioMusic: true,
             onScreenText: true, critiqueLoop: true, reviewProposedCuts: true,
             styleReference: true, layouts: false, bumpers: true, branding: true,
             referenceTemplate: true, models: ["wizard", "critique", "captions"])
         static let highlights = Capabilities(
-            sources: .podcastRecording, length: .maxSecondsAndCount, podcastFraming: false,
+            workflow: .highlights, sources: .podcastRecording, length: .maxSecondsAndCount, podcastFraming: false,
             cameraFocus: true, bRoll: true, fightResearch: false, audioMusic: false,
             onScreenText: false, critiqueLoop: false, reviewProposedCuts: false,
             styleReference: false, layouts: false, bumpers: false, branding: false,
             referenceTemplate: false, models: ["highlights"])
         static let custom = Capabilities(
-            sources: .scenes, length: .targetDuration, podcastFraming: true,
+            workflow: .oneReel, sources: .scenes, length: .targetDuration, podcastFraming: true,
             cameraFocus: false, bRoll: true, fightResearch: true, audioMusic: true,
             onScreenText: true, critiqueLoop: true, reviewProposedCuts: true,
             styleReference: true, layouts: true, bumpers: true, branding: true,

@@ -3,6 +3,19 @@ import Foundation
 extension Database {
     // MARK: - Transcripts
 
+    /// Availability only: return one ID per video without materializing
+    /// transcript text, word timestamps, or translated rows.
+    func videoIDsWithOriginalTranscripts() throws -> Set<Int64> {
+        let rows = try connection.query("""
+            SELECT v.id AS video_id FROM videos v
+            WHERE EXISTS (
+                SELECT 1 FROM transcripts t
+                WHERE t.video_id = v.id AND t.is_translation = 0
+            )
+            """)
+        return Set(rows.compactMap { $0["video_id"]?.intValue })
+    }
+
     /// `seconds` is how long the pass that produced these segments took; it
     /// is stamped on every row and, for the original language, on the video.
     func replaceTranscripts(videoID: Int64, language: String, isTranslation: Bool,

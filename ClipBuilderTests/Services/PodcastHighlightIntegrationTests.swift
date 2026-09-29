@@ -54,6 +54,28 @@ struct PodcastHighlightIntegrationTests {
         #expect(!FileManager.default.fileExists(atPath: stub.calls.path))
     }
 
+    @Test func formBriefDoesNotSilentlyOverrideConfirmedControls() async throws {
+        let temp = try TempDatabase()
+        let profile = Fixtures.brand(name: "PodcastFormRulesTests")
+        let input = try await seed(temp, profile: profile)
+        let stub = try StubAI(response: "{}")
+        let engine = WizardEngine(ai: stub.service, render: RenderEngine())
+        var options = WizardOptions()
+        options.projectID = input.project
+        options.sourcesRestricted = true
+        options.sourceVideoPaths = [input.video.path]
+        options.highlightMaxSeconds = 25
+        options.highlightMaxCount = 2
+        options.useBRoll = true
+        let review = try await engine.findPodcastHighlights(options: options, settings: PodcastSettings(),
+            database: temp.database, emit: { _ in },
+            requestText: "Top 1 for a new audience, no B-roll", interpretRequest: false)
+        #expect(review.video.id == input.video.id)
+        #expect(review.options.highlightMaxCount == 2)
+        #expect(review.options.useBRoll)
+        #expect(review.candidates.count == 2)
+    }
+
     @Test func builderCreatesSeparateTimelinesWithoutRenderingOrReplacingOpenDocument() async throws {
         let temp = try TempDatabase()
         let profile = Fixtures.brand(name: "PodcastBuilderTests")

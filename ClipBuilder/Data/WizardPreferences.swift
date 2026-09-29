@@ -202,6 +202,15 @@ nonisolated enum WizardBrandingOverride: String, CaseIterable, Sendable {
 /// Keeping the keys here prevents the execution form from becoming the owner
 /// of asset, branding, and rendering preferences again.
 nonisolated enum WizardDefaults {
+    /// One resolution policy for the controls and the submitted run.
+    static func resolvedPacing(run: EditPacing?, copied: WizardOptions?, profile: EditPacing) -> EditPacing {
+        run ?? copied?.pacing ?? profile
+    }
+
+    static func resolvedRenderSettings(run: RenderSettings?, copied: WizardOptions?, profile: RenderSettings) -> RenderSettings {
+        run ?? copied?.renderSettings ?? profile
+    }
+
     static let audioModeKey = "wizard.audioMode"
     static let textModeKey = "wizard.textMode"
     static let durationModeKey = "wizard.durationMode"

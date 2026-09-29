@@ -4,6 +4,25 @@ import Testing
 
 @Suite("Reel recipes")
 struct ReelRecipeTests {
+    @Test func workflowAndBriefPrompts() {
+        for recipe in ReelRecipe.all {
+            #expect(recipe.workflow == (recipe.id == "podcast_highlights" ? .highlights : .oneReel))
+            #expect(!recipe.briefPrompt.isEmpty)
+        }
+        #expect(ReelRecipe.custom.briefPrompt == "Describe the outcome, hook, or must-have moments")
+        #expect(ReelRecipe.mmaFinish.briefPrompt == "The hook or must-have moment")
+        #expect(ReelRecipe.mmaExchange.briefPrompt == ReelRecipe.mmaSubmission.briefPrompt)
+        #expect(ReelRecipe.mmaTechnique.briefPrompt == ReelRecipe.mmaFinish.briefPrompt)
+        #expect(ReelRecipe.podcastHighlights.briefPrompt == "Rules for choosing highlights")
+        #expect(ReelRecipe.interview.briefPrompt == "What the reel should say")
+        #expect(ReelRecipe.podcast.briefPrompt == ReelRecipe.interview.briefPrompt)
+        let highlights = ReelRecipe.menuSections(workflow: .highlights, preferredSources: .podcastRecording).flatMap(\.self)
+        #expect(highlights == [.podcastHighlights])
+        let scenes = ReelRecipe.menuSections(workflow: .oneReel, preferredSources: .scenes).flatMap(\.self)
+        #expect(scenes.count == ReelRecipe.all.count - 1)
+        #expect(scenes.allSatisfy { $0.workflow == .oneReel })
+    }
+
     @Test("Every recipe has a unique id, a title, and a summary; all but Custom carry a format block")
     func catalogInvariants() {
         let ids = ReelRecipe.all.map(\.id)

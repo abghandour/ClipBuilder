@@ -301,9 +301,14 @@ nonisolated enum PodcastHighlightFinder {
                item.sourceEnd.timecode, item.duration, item.score)
     }
 
+    static func userRulesBlock(_ instructions: String) -> String {
+        let rules = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        return rules.isEmpty ? "" : "\n\nUSER RULES\n" + rules
+    }
+
     static func find(exchanges: [PodcastExchange], segments: [TranscriptSegment], turns: [SpeakerTurn],
                      roster: [VideoPersonRecord], maxSeconds: Double, threshold: Double, maxCount: Int? = nil, highlightFraming: CropRecipe.Kind? = nil,
-                     ai: AIService? = nil, model: String? = nil,
+                     instructions: String = "", ai: AIService? = nil, model: String? = nil,
                      log: @escaping @Sendable (String) -> Void = { _ in },
                      progress: @Sendable (String, Double) async -> Void = { _, _ in }) async throws -> [HighlightCandidate] {
         let limit = min(120, max(5, maxSeconds))
@@ -396,7 +401,7 @@ nonisolated enum PodcastHighlightFinder {
             An empty highlights array is valid when nothing is worthwhile.
 
             \(numbered.body)
-            """
+            """ + userRulesBlock(instructions)
             var perSlot: [[HighlightCandidate]]?
             do {
                 let response = try await ai.call(prompt: prompt, task: .highlights, model: model, timeout: 240, log: log).text

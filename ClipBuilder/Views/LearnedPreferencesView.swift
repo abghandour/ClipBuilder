@@ -6,6 +6,7 @@ struct LearnedPreferencesView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.openSettings) private var openSettings
     @AppStorage("settings.selectedTab") private var settingsTab = "profile"
+    @State private var showGapReport = false
     @State private var document: LearnedPreferences?
     @State private var sharingExpanded = false
     @State private var localFrames: [String: Data] = [:]
@@ -67,6 +68,18 @@ struct LearnedPreferencesView: View {
             .padding(24)
             .frame(maxWidth: .infinity)
         }
+        .toolbar {
+            ToolbarItemGroup {
+                Button("Content Gaps", systemImage: "checklist") { showGapReport = true }
+                    .help("See what to post next and what is blocking output")
+                Button("Manage Learned Rules…", systemImage: "brain.head.profile") {
+                    settingsTab = "taste"
+                    openSettings()
+                }
+                .help("Review and edit learned rules in Settings › Taste")
+            }
+        }
+        .sheet(isPresented: $showGapReport) { GapReportSheet() }
         .task(id: profileName) { await reload() }
         .onChange(of: store.activeProfile) { Task { await reload() } }
         .onChange(of: profileName) {

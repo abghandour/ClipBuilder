@@ -17,6 +17,19 @@ struct PodcastHighlightFinderTests {
         PodcastExchange(start: 0, end: end, title: "A surprising lesson", summary: "A quotable answer.", score: score, speakerKeys: [])
     }
 
+    @Test func userRulesAreIncludedOnlyWhenNonempty() async throws {
+        for rules in ["Never end a scene with a question.", "", "  \n "] {
+            let stub = try StubAI(response: #"{"highlights":[]}"#)
+            _ = try await PodcastHighlightFinder.find(exchanges: [exchange()], segments: rows,
+                turns: [], roster: [], maxSeconds: 12, threshold: 7,
+                instructions: rules, ai: stub.service)
+            let prompt = try String(contentsOf: stub.prompts, encoding: .utf8)
+            let hasRules = !rules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            #expect(prompt.contains("USER RULES") == hasRules)
+            if hasRules { #expect(prompt.contains(rules)) }
+        }
+    }
+
     @Test func wholeExchangeNeedsNoAI() async throws {
         let stub = try StubAI(response: "invalid")
         let found = try await PodcastHighlightFinder.find(exchanges: [exchange(end: 20)], segments: rows,

@@ -20,6 +20,13 @@ nonisolated enum WizardFieldHelp {
     static let instructions = FieldHelp(
         "Tell the planner what the reel should achieve: the hook, the moments it must include, the mood.")
 
+    static func instructions(for recipe: ReelRecipe) -> FieldHelp {
+        if recipe.workflow == .highlights {
+            return FieldHelp("Give the highlight finder rules for choosing sentence runs from the selected recording.")
+        }
+        return FieldHelp(recipe.briefPrompt + ".")
+    }
+
     static let platformSafeArea = FieldHelp(
         "Keep lower thirds, text, logos and captions out of the areas where the platform's own buttons, header and description cover the picture.",
         caption: "Pick the platforms you post to. The safe area is what none of them cover; overlays that would sit under a button move inside it.")

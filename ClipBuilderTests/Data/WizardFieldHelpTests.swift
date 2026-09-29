@@ -33,6 +33,14 @@ struct WizardFieldHelpTests {
         }
     }
 
+    @Test func briefHelpFollowsTheRecipe() {
+        #expect(WizardFieldHelp.instructions(for: .podcastHighlights).tooltip.contains("highlight finder"))
+        #expect(WizardFieldHelp.instructions(for: .interview).tooltip == "What the reel should say.")
+        for recipe in ReelRecipe.all {
+            #expect(WizardFieldHelp.instructions(for: recipe).tooltip.hasSuffix("."))
+        }
+    }
+
     @Test("Captions name every option of the pickers they explain")
     func captionsCoverOptions() throws {
         let audio = try #require(WizardFieldHelp.audio.caption)

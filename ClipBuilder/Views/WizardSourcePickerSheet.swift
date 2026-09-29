@@ -109,7 +109,7 @@ struct WizardSourcePickerSheet: View {
                     if scope == .batches {
                         VStack(alignment: .leading, spacing: Theme.spaceS) {
                             HStack(spacing: Theme.spaceS) {
-                                TextField("Filter batches", text: $batchFilter)
+                                TextField("Filter videos or batches", text: $batchFilter)
                                     .textFieldStyle(.roundedBorder)
                                 Button("Select All") { select(filteredRuns.map(\.id), on: true) }
                                     .controlSize(.small)
@@ -128,9 +128,8 @@ struct WizardSourcePickerSheet: View {
                                     .foregroundStyle(.secondary)
                             } else {
                                 VStack(spacing: 0) {
-                                    ForEach(filteredRuns) { run in
-                                        batchRow(run)
-                                        if run.id != filteredRuns.last?.id { Divider() }
+                                    ForEach(groupedRuns, id: \.videoID) { group in
+                                        videoRow(group.runs)
                                     }
                                 }
                                 .background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
@@ -203,7 +202,7 @@ struct WizardSourcePickerSheet: View {
     private var sourceExplanation: String {
         switch scope {
         case .all:
-            "The wizard can choose any analyzed scene in this profile."
+            "The wizard can choose any analyzed scene in this project."
         case .favorites:
             "Only scenes you or AI Favorites have favorited are eligible."
         case .batches:
@@ -239,6 +238,43 @@ struct WizardSourcePickerSheet: View {
         var people = selectedPeople
         if people.contains(key) { people.remove(key) } else { people.insert(key) }
         sourcePeopleRaw = people.sorted().joined(separator: ",")
+    }
+
+    private var groupedRuns: [(videoID: Int64, runs: [AnalysisRun])] {
+        let groups = Dictionary(grouping: filteredRuns, by: \.videoID)
+        var seen = Set<Int64>()
+        return filteredRuns.compactMap { run in
+            guard seen.insert(run.videoID).inserted else { return nil }
+            return (run.videoID, groups[run.videoID] ?? [])
+        }
+    }
+
+    @ViewBuilder private func videoRow(_ runs: [AnalysisRun]) -> some View {
+        if let first = runs.first {
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: Binding(
+                    get: { runs.contains { selectedRunIDs.contains($0.id) } },
+                    set: { on in
+                        // A video selects its newest batch; exact older batch
+                        // choices remain available in the disclosure below.
+                        if on {
+                            let latest = runs.max { ($0.createdAt ?? "") < ($1.createdAt ?? "") } ?? first
+                            select([latest.id], on: true)
+                        } else { select(runs.map(\.id), on: false) }
+                    })) {
+                    HStack(spacing: 8) {
+                        VideoThumbnail(url: first.videoURL, time: 1, cornerRadius: 3)
+                            .frame(width: 40, height: 24)
+                        Text(first.videoFilename).lineLimit(1)
+                    }
+                }
+                DisclosureGroup("Analyze batches · \(runs.count)") {
+                    ForEach(runs) { run in batchRow(run) }
+                }
+                .font(.caption)
+            }
+            .padding(Theme.spaceS)
+        }
     }
 
     private func batchRow(_ run: AnalysisRun) -> some View {

@@ -338,6 +338,17 @@ extension AppStore {
         startGenerateRequest(handoff, waitForAnalysis: false)
     }
 
+    /// Idea entry stops at a footage proposal. The form owns the second,
+    /// explicit action that starts planning or finding highlights.
+    func proposeFootage(for description: String) {
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var handoff = WizardPromptHandoff(description: trimmed, videoIDs: [],
+                                         statusMessage: "Interpreting your idea…")
+        handoff.proposesFootage = true
+        startGenerateRequest(handoff, waitForAnalysis: false)
+    }
+
     /// AI-parse a "Generate Video" description into settings, updating the
     /// pending handoff in place.
     private func startGenerateRequest(_ handoff: WizardPromptHandoff, waitForAnalysis: Bool) {
@@ -345,6 +356,8 @@ extension AppStore {
         let projectKey = activeProjectID ?? 0
         let generation = profileGeneration
         let profile = activeProfile
+        let proposalScenes = scenes
+        let proposalPeople = people
         let wizard = wizard
         let useLocal = OnDevicePolicy.isEnabled(item: "wizard-request", config: settings.ai)
         let formatPreset = UserDefaults.standard.string(forKey: "wizard.formatPreset") ?? "custom"
@@ -367,6 +380,33 @@ extension AppStore {
                 try Task.checkCancellation()
                 completed.parseFailed = true
                 appendLog(\.wizardLog, ["Could not interpret the request with AI — it will be passed to the wizard as-is. (\(error.userMessage))"])
+            }
+            try Task.checkCancellation()
+            guard generation == profileGeneration else { throw CancellationError() }
+            if handoff.proposesFootage {
+                do {
+                    let candidates = formatPreset == ReelRecipe.podcastHighlights.id
+                        ? proposalScenes.filter { $0.tags.contains("podcast-exchange") } : proposalScenes
+                    let ids = try await wizard.proposeFootage(description: handoff.description,
+                        scenes: candidates, people: proposalPeople, emit: log)
+                    completed.proposedSceneIDs = Set(ids)
+                    // The finder handles one recording; the highest-ranked
+                    // matched scene proposes that recording for confirmation.
+                    if formatPreset == ReelRecipe.podcastHighlights.id,
+                       let first = ids.first, let scene = candidates.first(where: { $0.id == first }) {
+                        completed.videoIDs = [scene.videoID]
+                    } else {
+                        let selectedIDs = Set(ids)
+                        completed.videoIDs = Set(candidates.filter { selectedIDs.contains($0.id) }.map(\.videoID))
+                    }
+                    log(ids.isEmpty ? "No matching footage. Edit Sources to choose footage."
+                        : "Footage ready to review in AI Wizard. Confirm before generating.")
+                } catch {
+                    try Task.checkCancellation()
+                    completed.parseFailed = true
+                    completed.proposedSceneIDs = []
+                    log("Could not propose footage: \(error.userMessage). Choose sources in AI Wizard.")
+                }
             }
             try Task.checkCancellation()
             guard generation == profileGeneration else { throw CancellationError() }
@@ -411,7 +451,8 @@ extension AppStore {
             if options.formatPreset == "podcast_highlights" {
                 do {
                     var review = try await wizard.findPodcastHighlights(options: options, settings: settings.podcast,
-                                                                         database: database, emit: logSink(\.analysisLog), progress: { status, fraction in
+                                                                         database: database, emit: logSink(\.analysisLog),
+                                                                         requestText: options.aiInstructions, interpretRequest: false, progress: { status, fraction in
                         await MainActor.run {
                             guard generation == self.profileGeneration, self.isWizardRunning else { return }
                             self.wizardStatus = WizardRunStatus(stage: status, fraction: fraction)

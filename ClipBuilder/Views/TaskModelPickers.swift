@@ -18,6 +18,16 @@ struct TaskModelPickers: View {
         .task { availableProviders = await ModelPicker.probeAvailability(ai: store.ai) }
     }
 
+    static func routingSummary(task: String, config: AIConfig) -> String {
+        let configured = config.tasks[task]
+        let provider = configured.flatMap { AICatalog.provider($0) != nil ? $0 : nil }
+            ?? AICatalog.taskDefaults[task] ?? "claude"
+        let taskModel = config.taskModels[task].flatMap { $0.isEmpty ? nil : $0 }
+        let providerModel = (config.providers[provider]?.model).flatMap { $0.isEmpty ? nil : $0 }
+        let model = taskModel ?? providerModel ?? AICatalog.provider(provider)?.defaultModel ?? "Automatic"
+        return "\(AICatalog.provider(provider)?.label ?? provider) · \(AICatalog.modelDisplayName(model))"
+    }
+
     private static let help: [String: String] = [
         "highlights": "Finds the reel-worthy runs inside long exchanges and titles them. Same setting as Settings → AI.",
         "wizard": "Plans the reel from the scenes. Same setting as Settings → AI.",

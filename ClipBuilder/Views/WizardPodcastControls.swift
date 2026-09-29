@@ -20,8 +20,7 @@ struct WizardPodcastControls: View {
         if plan.capabilities.bRoll {
             Toggle("Use B-roll", isOn: $useBRoll)
             if useBRoll {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("B-roll instructions").font(.callout)
+                DisclosureGroup("B-roll instructions") {
                     TextEditor(text: $instructions)
                         .frame(minHeight: 70, maxHeight: 130)
                         .accessibilityLabel("B-roll instructions")
