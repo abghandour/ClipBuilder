@@ -251,3 +251,53 @@ run were performed in the Codex sandbox. Claude must build-for-testing, run the
 named affected suites (including `PodcastHighlightIntegrationTests`), and check
 Peace Grappler at 360pt. The original AppStorage keys and source-picker bindings
 are preserved; the protected People work and registries were not edited.
+
+## Addendum, September 29, 2026: the iterate-until-approved outcome
+
+Approved by the user after 1.90 shipped. Depends on `docs/Critic-Brief-Plan.md`
+phases 1–3 landing first, so the critic that drives retries is grounded in the
+owner's own reels. Implementation: Codex; build, tests and review: Claude.
+
+### 11. "Iterate until the critic approves" as an Outcome
+
+The critique loop already exists (`WizardEngine` render → `ReelCritic` →
+re-plan with `WizardPlanRules.critiqueFeedbackBlock`, up to 3 versions) but is
+hidden as the Quality picker inside Editing and appearance, with the pass mark
+(85) and the cap (3) hard-coded in `ReelCritic.swift` and `WizardEngine.swift`.
+
+- `ReelRecipe.Workflow` gains `.iterate` ("Create one reel, iterate until
+  approved"). It is not a recipe property: every `.oneReel` recipe is valid
+  under it. `menuSections(workflow:preferredSources:)` treats `.iterate` as
+  `.oneReel` for recipe filtering; `ReelRecipe.workflow` stays `.oneReel` for
+  those recipes and the form tracks the chosen outcome in
+  `@AppStorage("wizard.outcome")` ("oneReel" | "iterate" | "highlights").
+- Choosing `.iterate` sets `critiqueLoop = true`; choosing `.oneReel` sets it
+  false. The Quality picker is removed; its help text moves to the outcome row.
+- Two new run options on `WizardOptions` (and `AIRunSettings` copy keys):
+  `critiqueTargetScore: Int = 85` and `critiqueMaxVersions: Int = 3`. Shown
+  directly under the Outcome picker only when `.iterate` is chosen: a "Target
+  score" stepper (60…95, step 5) and an "Attempts" stepper (2…5). Persisted in
+  `@AppStorage("wizard.critiqueTargetScore")` / `("wizard.critiqueMaxVersions")`.
+- `ReelCritic` receives the target: the "regenerate only if score < 85" line in
+  the prompt and the post-parse clamp (`if critique.score >= 85 { regenerate =
+  false }`) use `options.critiqueTargetScore`. `WizardEngine` uses
+  `options.critiqueMaxVersions` in place of the literal 3.
+- The run summary line (item 9) reads "One 20s reel from 24 scenes, up to 4
+  versions until the critic scores 80+". The primary action title stays
+  "Generate reel".
+- Every version keeps its critique as today. When the loop ends because the cap
+  was reached, the log states the best score and which version holds it.
+
+### 12. Best version pick and discard
+
+When an iterate run finishes with more than one version, the results sheet
+(`WizardResultsSheet`) marks the highest-scoring version "Best" (ties: the
+latest) and offers "Keep best only", which deletes the other versions of the
+same `batchID` through the existing generated-video delete path, with the
+standard confirmation. Nothing is deleted automatically. `GeneratedVideoRecord`
+needs no new column: "best" is derived from `critique.score` within the batch.
+
+Tests: `WizardFormPlanTests` (outcome ↔ critiqueLoop mapping, summary text),
+`ReelCriticPromptTests` (target score appears in the prompt and clamp),
+`WizardEngineTests` (cap honored), a pure `WizardBatchRanking` helper test for
+the best-version pick with ties.
