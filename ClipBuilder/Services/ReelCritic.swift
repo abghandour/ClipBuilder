@@ -22,6 +22,7 @@ nonisolated struct ReelCritique: Codable, Sendable, Hashable {
     /// Which judge produced this review.
     var provider: String?
     var model: String?
+    var briefKey: String? = nil
 
     var shortLabel: String {
         "AI critique \(score)/100" + (forecast.map { " · forecast \($0)" } ?? "")
@@ -67,7 +68,8 @@ nonisolated enum ReelCritic {
                          attempt: Int, previous: [ReelCritique],
                          ai: AIService,
                          emit: @escaping @Sendable (String) -> Void,
-                         database: Database? = nil, generatedID: Int64? = nil) async throws -> ReelCritique {
+                         database: Database? = nil, generatedID: Int64? = nil,
+                         brief: CriticBrief? = nil, referenceFrames: [AIFrame] = []) async throws -> ReelCritique {
         var frames: [AIFrame] = []
         for time in sampleTimes(duration: duration) {
             if let jpeg = await ThumbnailService.jpegFrame(url: video, at: time,
@@ -93,13 +95,29 @@ nonisolated enum ReelCritic {
             } catch { emit("Trained scoring unavailable: \(error.localizedDescription)") }
         }
         let learnedBlock = learnedLines.isEmpty ? "" : "\n" + learnedLines.joined(separator: "\n")
+        if let brief {
+            let references: [AIFrame]
+            if referenceFrames.isEmpty {
+                references = try await AppJobWork.run { try CriticBriefStore(profile: profile).frames(for: brief) }
+            } else { references = referenceFrames }
+            frames[0].label = "REEL UNDER REVIEW — " + frames[0].label
+            frames = references + frames
+        }
         let response = try await ai.call(prompt: prompt(duration: duration, plan: plan,
                                                         sceneMap: sceneMap, options: options,
                                                         profile: profile, attempt: attempt,
-                                                        previous: previous) + learnedBlock,
+                                                        previous: previous, brief: brief) + learnedBlock,
                                          task: .critique, frames: frames,
                                          timeout: 180, log: emit)
-        guard let object = AIResponseParser.jsonObject(from: response.text) else {
+        var critique = try parse(response.text, options: options, provider: response.provider,
+                                 model: response.model, briefKey: brief?.key)
+        critique.strengths += learnedLines
+        return critique
+    }
+
+    static func parse(_ text: String, options: WizardOptions, provider: String? = nil,
+                      model: String? = nil, briefKey: String? = nil) throws -> ReelCritique {
+        guard let object = AIResponseParser.jsonObject(from: text) else {
             throw AIError.unusableResponse("The critic's response was not valid JSON.")
         }
         func strings(_ key: String) -> [String] {
@@ -117,11 +135,14 @@ nonisolated enum ReelCritic {
             forecast: options.accountBenchmarks == nil ? nil
                 : (object["engagement_forecast"] as? NSNumber).map { max(0, min(100, $0.intValue)) },
             forecastReasons: strings("forecast_reasons").isEmpty ? nil : strings("forecast_reasons"),
-            provider: response.provider,
-            model: response.model)
+            provider: provider,
+            model: model, briefKey: briefKey)
+        if briefKey != nil {
+            critique.notes += strings("reference_gap").map { "Reference gap: \($0)" }
+        }
         // A judge that likes the reel doesn't get to demand a rebuild, and a
         // rebuild request without notes gives the planner nothing to fix.
-        if critique.score >= 85 { critique.regenerate = false }
+        if critique.score >= options.critiqueTargetScore { critique.regenerate = false }
         if critique.regenerate && critique.notes.isEmpty && critique.issues.isEmpty {
             critique.regenerate = false
         }
@@ -133,14 +154,13 @@ nonisolated enum ReelCritic {
         if let forecast = critique.forecast, forecast < 55, critique.score < 92, !critique.notes.isEmpty {
             critique.regenerate = true
         }
-        critique.strengths += learnedLines
         return critique
     }
 
-    private static func prompt(duration: Double, plan: WizardPlan,
+    static func prompt(duration: Double, plan: WizardPlan,
                                sceneMap: [Int64: SceneRecord],
                                options: WizardOptions, profile: BrandProfile,
-                               attempt: Int, previous: [ReelCritique]) -> String {
+                               attempt: Int, previous: [ReelCritique], brief: CriticBrief? = nil) -> String {
         var lines: [String] = []
         lines.append("""
         You are a ruthless short-form editor reviewing a rendered Instagram fight reel \
@@ -171,6 +191,17 @@ nonisolated enum ReelCritic {
             lines.append("\n## The owner's taste (judge against THIS, not your own)")
             lines.append(profile.tasteRubric)
         }
+        if let brief {
+            lines.append("\n## Reference reels (the owner's own good ones — COMPARE, do not reward copying)")
+            lines.append("""
+            The REFERENCE images are reels this owner rates highly. Judge the reel under
+            review by the standard they set: hook choice, cut rhythm, framing, text use,
+            ending. A reel that does the same things is not automatically good; a reel that
+            breaks their pattern needs a reason.
+            """)
+            lines.append(brief.rules)
+            lines.append(contentsOf: brief.exemplars.map(\.summary))
+        }
         if !profile.houseStyle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             lines.append("\n## House style")
             lines.append(profile.houseStyle)
@@ -196,11 +227,16 @@ nonisolated enum ReelCritic {
           "strengths": ["<what genuinely works>"],
           "issues": ["<specific problems visible in the rendered frames>"],
           "notes": ["<concrete, actionable instructions for the planner's next attempt — name clips by number>"],
-          "regenerate": <true only if score < 85 AND the issues are fixable by re-planning from the same footage>,
+          "regenerate": <true only if score < \(options.critiqueTargetScore) AND the issues are fixable by re-planning from the same footage>,
           "engagement_forecast": <0-100: how THIS account's audience will respond (saves, shares, watch-through), judged against the account benchmarks above — 50 = a typical reel for the account, 75+ = top quartile; omit when no benchmarks were given>,
           "forecast_reasons": ["<what in the rendered reel drives or drags the forecast, tied to the top/bottom-quartile traits — specific, actionable for the planner>"]
         }
         """)
+        if brief != nil {
+            // Only the brief path changes the answer schema. The legacy prompt stays byte-identical.
+            let last = lines.count - 1
+            lines[last] = lines[last].replacingOccurrences(of: "\n  \"forecast_reasons\":", with: "\n  \"reference_gap\": [\"<what the reel under review lacks vs. the references, specific>\"],\n  \"forecast_reasons\":")
+        }
         return lines.joined(separator: "\n")
     }
 }

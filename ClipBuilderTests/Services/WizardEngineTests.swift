@@ -249,3 +249,20 @@ extension WizardEngineTests {
         #expect(try JSONDecoder().decode(WizardOptions.self, from: Data("{}".utf8)).highlightMaxCount == nil)
     }
 }
+
+extension WizardEngineTests {
+    @Test func critiqueAttemptLimitUsesRunOptions() {
+        var options = WizardOptions()
+        for cap in 2...5 {
+            options.critiqueMaxVersions = cap
+            #expect(WizardEngine.versionLimit(options: options) == cap)
+        }
+        options.critiqueLoop = false
+        #expect(WizardEngine.versionLimit(options: options) == 1)
+        options.critiqueLoop = true
+        options.critiqueMaxVersions = 0
+        #expect(WizardEngine.versionLimit(options: options) == 2)
+        options.critiqueMaxVersions = 100
+        #expect(WizardEngine.versionLimit(options: options) == 5)
+    }
+}

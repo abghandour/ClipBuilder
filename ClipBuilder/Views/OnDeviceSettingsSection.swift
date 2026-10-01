@@ -3,6 +3,8 @@ import SwiftUI
 struct OnDeviceSettingsSection: View {
     @Environment(AppStore.self) private var store
     @State private var comparing = false
+    @State private var confirmingCriticEvaluation = false
+    @State private var criticDefault = "Default: without brief until agreement improves"
     @State private var status = ""
 
     private var comparisonVisible: Bool {
@@ -30,6 +32,30 @@ struct OnDeviceSettingsSection: View {
                 Button("Evaluate " + item.rawValue.replacingOccurrences(of: "-", with: " ")) {
                     store.startModelEvaluation(item)
                 }.disabled(comparing || store.jobs.running.contains { $0.kind == .evaluateReelModel })
+            }
+            Button("Evaluate Critic…") { confirmingCriticEvaluation = true }
+                .lineLimit(1).fixedSize()
+                .disabled(store.database == nil || store.jobs.running.contains { $0.kind == .evaluateCritic })
+                .confirmationDialog("Evaluate Critic?", isPresented: $confirmingCriticEvaluation) {
+                    Button("Evaluate Critic") { store.startCriticEvaluation() }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Up to 48 critique calls, about 12 frames each, plus reference contact sheets. Compares the same held-out reels without and with the brief.")
+                }
+            Text(criticDefault).font(.caption).foregroundStyle(.secondary)
+                .task(id: "\(store.profileGeneration):\(store.jobs.completionRevision(.evaluateCritic)):\(store.jobs.completionRevision(.criticBrief))") {
+                    let generation = store.profileGeneration
+                    let profile = store.activeProfile
+                    let enabled = (try? await AppJobWork.run {
+                        let cache = CriticBriefStore(profile: profile)
+                        return cache.load().map { cache.enabledByDefault($0) } ?? false
+                    }) ?? false
+                    guard !Task.isCancelled, generation == store.profileGeneration else { return }
+                    criticDefault = enabled ? "Default: with critic brief (agreement improved)"
+                        : "Default: without brief until agreement improves"
+                }
+            if let job = store.jobs.latest(.evaluateCritic), job.status == .done {
+                Text(job.statusLine).font(.caption).textSelection(.enabled)
             }
             if comparing { ProgressView("Evaluating…") }
             if let job = store.jobs.latest(.evaluateReelModel), job.status == .done {

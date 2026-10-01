@@ -7,8 +7,9 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case generateRequest, instagramPublish, socialExport, resourceExport, resourceImport
     case mapSpeakers, suggestTrim, cameraPath, evaluateReelModel, publishLessons, transcriptAnalysis
     case personRoles
+    case criticBrief, evaluateCritic
 
-    var postsNotice: Bool { self == .overlayTemplate }
+    var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief }
 
     var shortTitle: String {
         switch self {
@@ -35,6 +36,8 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .publishLessons: "Publish AI Lessons"
         case .transcriptAnalysis: "Transcript Analysis"
         case .personRoles: "People Roles"
+        case .criticBrief: "Critic Brief"
+        case .evaluateCritic: "Evaluate Critic"
         }
     }
 
@@ -46,6 +49,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .socialExport: "builder"
         case .profileStarter, .overlayTemplate, .imageSearch, .resourceExport, .resourceImport,
              .evaluateReelModel, .publishLessons: "app"
+        case .criticBrief, .evaluateCritic: "wizard"
         default: "analysis"
         }
     }

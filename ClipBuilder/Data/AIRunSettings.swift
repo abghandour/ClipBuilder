@@ -132,7 +132,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
                 "renderSettings", "pacing", "captionLanguage", "reviewProposedCuts", "muteSource",
                 "addCaptions", "enableTextOverlays", "useMusic", "musicFolder", "useFightResearch",
                 "targetDurationSeconds", "framingCamera", "podcastFraming", "highlightFraming", "useBRoll", "screenCropLayouts",
-                "allowedTransitions", "formatPreset", "critiqueLoop", "includeWatermark",
+                "allowedTransitions", "formatPreset", "critiqueLoop", "critiqueTargetScore", "critiqueMaxVersions", "includeWatermark",
                 "includeHeadline",
                 "includeOutro",
             ]

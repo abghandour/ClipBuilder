@@ -23,6 +23,7 @@ import Foundation
         "highlightFraming": "wizard.highlightFraming", "useBRoll": "wizard.useBRoll",
         "brollInstructions": "wizard.brollInstructions",
         "podcastFraming": "wizard.podcastFraming", "critiqueLoop": "wizard.critiqueLoop",
+        "critiqueTargetScore": "wizard.critiqueTargetScore", "critiqueMaxVersions": "wizard.critiqueMaxVersions",
         "favoritesOnly": "wizard.favoritesOnly",
         "modelOverride": "wizard.modelOverride", "stackLevel": SceneStacks.levelKey,
     ]
@@ -145,6 +146,11 @@ import Foundation
         } else {
             defaults.set(AISettingsJSON.encode(result), forKey: snapshotKey)
             defaults.set(sourceName, forKey: sourceNameKey)
+            if scopes.contains(.options) {
+                let recipe = ReelRecipe.recipe(id: defaults.string(forKey: "wizard.formatPreset") ?? "custom") ?? .custom
+                let outcome = WizardFormPlan.outcome(recipe: recipe, critiqueLoop: defaults.bool(forKey: "wizard.critiqueLoop"))
+                defaults.set(outcome.rawValue, forKey: "wizard.outcome")
+            }
             if scopes.contains(.sources) {
                 defaults.set(list("selectedRunIDs"), forKey: "wizard.selectedRunIDs")
                 defaults.set(!list("selectedRunIDs").isEmpty, forKey: "wizard.limitToSelection")

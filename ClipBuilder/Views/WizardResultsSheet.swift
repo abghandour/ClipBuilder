@@ -15,13 +15,19 @@ struct WizardResultsSheet: View {
     @State private var builderTarget: GeneratedVideoRecord?
     @State private var feedbackDrafts: [Int64: String] = [:]
 
-    /// The critic's favorite among this run's versions — badged "Best".
-    private var bestCritiquedID: Int64? {
-        let scored = results.videos.compactMap { video in
-            video.critique.map { (video.id, $0.score) }
-        }
-        guard scored.count > 1 else { return nil }
-        return scored.max { $0.1 < $1.1 }?.0
+    @State private var keepingBest: GeneratedVideoRecord?
+    @State private var removedVideoIDs: Set<Int64> = []
+
+    private var visibleVideos: [GeneratedVideoRecord] {
+        results.videos.filter { !removedVideoIDs.contains($0.id) }
+    }
+
+    private var bestCritiquedIDs: Set<Int64> {
+        let videos = visibleVideos
+        return Set(Set(videos.compactMap(\.batchID)).compactMap { batch -> Int64? in
+            guard videos.filter({ $0.batchID == batch }).count > 1 else { return nil }
+            return WizardBatchRanking.best(in: videos, batchID: batch)?.id
+        })
     }
 
     var body: some View {
@@ -29,14 +35,14 @@ struct WizardResultsSheet: View {
             VStack(spacing: 4) {
                 HStack {
                     Spacer()
-                    Text(results.videos.count == 1
+                    Text(visibleVideos.count == 1
                          ? "Your video is ready"
-                         : "\(results.videos.count) videos are ready")
+                         : "\(visibleVideos.count) videos are ready")
                         .font(.headline)
                     Spacer()
                     PlatformChromePicker().fixedSize()
                 }
-                Text(results.videos.count > 1 && bestCritiquedID != nil
+                Text(visibleVideos.count > 1 && !bestCritiquedIDs.isEmpty
                      ? "The critic reviewed each version — its favorite is marked. Watch and rate; every rating trains the wizard."
                      : "Watch and rate — every rating trains the wizard. Not what you wanted? Retry runs the same settings again.")
                     .font(.caption)
@@ -46,7 +52,7 @@ struct WizardResultsSheet: View {
 
             ScrollView(.horizontal) {
                 HStack(alignment: .top, spacing: 16) {
-                    ForEach(results.videos) { video in
+                    ForEach(visibleVideos) { video in
                         videoCard(video)
                     }
                 }
@@ -62,7 +68,7 @@ struct WizardResultsSheet: View {
                 }
                 .help("Generate again with the same settings — a new plan, new videos")
 
-                DriveMediaMenu(media: results.videos.map(\.driveMedia))
+                DriveMediaMenu(media: visibleVideos.map(\.driveMedia))
                 Spacer()
 
                 Button("Done") { dismiss() }
@@ -82,6 +88,20 @@ struct WizardResultsSheet: View {
         .onDisappear {
             for player in players.values { player.pause() }
             players = [:]
+        }
+        .onChange(of: store.profileGeneration) { _, _ in dismiss() }
+        .onChange(of: store.activeProjectID) { _, _ in dismiss() }
+        .confirmationDialog(
+            "Keep the best version only?",
+            isPresented: Binding(get: { keepingBest != nil }, set: { if !$0 { keepingBest = nil } })
+        ) {
+            Button("Remove from Library and Delete Files", role: .destructive) {
+                discardOtherVersions(removeFiles: true)
+            }
+            Button("Remove from Library Only") { discardOtherVersions(removeFiles: false) }
+            Button("Cancel", role: .cancel) { keepingBest = nil }
+        } message: {
+            Text("Keep \(keepingBest?.filename ?? "the best version") and remove the other versions from this run. No other batch is affected.")
         }
         .sheet(item: $reviewTarget) { video in
             ReviewSheet(video: video)
@@ -122,7 +142,12 @@ struct WizardResultsSheet: View {
                 .lineLimit(1)
 
             if let critique = video.critique {
-                critiqueLine(critique, isBest: video.id == bestCritiquedID)
+                critiqueLine(critique, isBest: bestCritiquedIDs.contains(video.id))
+                if bestCritiquedIDs.contains(video.id) {
+                    Button("Keep best only") { keepingBest = video }
+                        .lineLimit(1).fixedSize()
+                        .controlSize(.small)
+                }
             }
 
             if let rationale = video.rationale, !rationale.isEmpty {
@@ -236,6 +261,19 @@ struct WizardResultsSheet: View {
             lines.append("Judged by \(judge.shortLabel)")
         }
         return lines.isEmpty ? critique.summary : lines.joined(separator: "\n")
+    }
+
+    private func discardOtherVersions(removeFiles: Bool) {
+        guard let best = keepingBest else { return }
+        let discards = WizardBatchRanking.discards(in: visibleVideos, keeping: best)
+        for video in discards {
+            players[video.id]?.pause()
+            store.deleteGeneratedVideo(video, removeFile: removeFiles) {
+                removedVideoIDs.insert(video.id)
+                players[video.id] = nil
+            }
+        }
+        keepingBest = nil
     }
 
     private func saveFeedback(for video: GeneratedVideoRecord) {

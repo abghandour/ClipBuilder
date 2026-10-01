@@ -21,20 +21,33 @@ extension AppStore {
         }
     }
 
-    func deleteGeneratedVideo(_ video: GeneratedVideoRecord, removeFile: Bool) {
+    func deleteGeneratedVideo(_ video: GeneratedVideoRecord, removeFile: Bool,
+                              onDeleted: (@MainActor () -> Void)? = nil) {
         guard let database else { return }
+        let generation = profileGeneration
         Task {
             do {
                 try await database.deleteGeneratedVideo(id: video.id)
             } catch {
+                guard generation == profileGeneration else { return }
                 presentError("Could not delete the video", error)
                 return
             }
             if removeFile {
                 try? FileManager.default.removeItem(at: video.url)
             }
+            guard generation == profileGeneration else { return }
+            onDeleted?()
             generatedVideos.removeAll { $0.id == video.id }
             feedback.removeAll { $0.generatedVideoID == video.id }
+            comparisonQueue = comparisonQueue.compactMap { batch in
+                let remaining = batch.videos.filter { $0.id != video.id }
+                return remaining.count > 1 ? ComparisonBatch(id: batch.id, videos: remaining) : nil
+            }
+            if let pendingComparison {
+                self.pendingComparison = comparisonQueue.first { $0.id == pendingComparison.id }
+                    ?? comparisonQueue.first
+            }
         }
     }
 

@@ -15,12 +15,13 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
     let capabilities: Capabilities
 
     enum Workflow: String, CaseIterable, Sendable, Identifiable {
-        case oneReel, highlights
+        case oneReel, highlights, iterate
         var id: String { rawValue }
         var title: String {
             switch self {
             case .oneReel: "Create one reel"
             case .highlights: "Find highlights to review"
+            case .iterate: "Create one reel, iterate until approved"
             }
         }
     }
@@ -37,7 +38,8 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
     }
 
     static func menuSections(workflow: Workflow, preferredSources: Capabilities.Sources) -> [[ReelRecipe]] {
-        let choices = menuSections.map { $0.filter { $0.workflow == workflow } }
+        let recipeWorkflow: Workflow = workflow == .iterate ? .oneReel : workflow
+        let choices = menuSections.map { $0.filter { $0.workflow == recipeWorkflow } }
         let preferred = choices.map { $0.filter { $0.capabilities.sources == preferredSources } }
         let remaining = choices.map { $0.filter { $0.capabilities.sources != preferredSources } }
         return (preferred + remaining).filter { !$0.isEmpty }

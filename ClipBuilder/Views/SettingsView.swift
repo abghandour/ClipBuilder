@@ -770,6 +770,7 @@ private struct AISettingsTab: View {
                     Text("Skip it for 1 hour").tag(60)
                 }
                 .help("When a provider fails to sign in, is out of quota or returns a CLI error, automatic fallback skips it for this long instead of paying the failed call on every video. Picking a provider explicitly still uses it, and changing these settings clears the wait.")
+            Section("Critic Brief") { CriticBriefControls(showsUsePicker: true) }
             }
 
             Section("Learning") {

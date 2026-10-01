@@ -26,6 +26,9 @@ struct WizardView: View {
     @AppStorage(WizardDefaults.textModeKey) private var textModeRaw = WizardTextMode.automatic.rawValue
     @AppStorage("wizard.useFightResearch") private var useFightResearch = true
     @AppStorage("wizard.critiqueLoop") private var critiqueLoop = true
+    @AppStorage("wizard.outcome") private var outcomeRaw = "oneReel"
+    @AppStorage("wizard.critiqueTargetScore") private var critiqueTargetScore = 85
+    @AppStorage("wizard.critiqueMaxVersions") private var critiqueMaxVersions = 3
     @AppStorage("wizard.captionLanguage") private var captionLanguage = ""
     @AppStorage("wizard.reviewProposedCuts") private var reviewProposedCuts = false
     @AppStorage("wizard.highlightFraming") private var highlightFramingRaw = ""
@@ -316,8 +319,14 @@ struct WizardView: View {
         !store.isWizardRunning && !readiness.contains(where: \.isBlocking)
     }
 
+    private var workflow: ReelRecipe.Workflow {
+        recipe.workflow == .highlights ? .highlights : (ReelRecipe.Workflow(rawValue: outcomeRaw) == .iterate ? .iterate : .oneReel)
+    }
+
     private var workflowBinding: Binding<ReelRecipe.Workflow> {
-        Binding(get: { recipe.workflow }, set: { workflow in
+        Binding(get: { workflow }, set: { workflow in
+            outcomeRaw = workflow.rawValue
+            critiqueLoop = workflow == .iterate
             formatPreset = workflow == .highlights ? ReelRecipe.podcastHighlights.id
                 : WizardFormPlan.recipeForSceneHandoff(current: recipe, lastSceneRecipeID: lastSceneRecipeID).id
         })
@@ -497,8 +506,19 @@ struct WizardView: View {
                         Text(workflow.title).tag(workflow)
                     }
                 }
+                .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                .help("Choose one render, or let the critic request better versions. Every version is kept for review.")
+                if workflow == .iterate {
+                    Stepper("Target score: \(critiqueTargetScore)", value: $critiqueTargetScore, in: 60...95, step: 5)
+                        .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                    Stepper("Attempts: \(critiqueMaxVersions)", value: $critiqueMaxVersions, in: 2...5)
+                        .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                    Text("The critic can request a better version until it approves or the attempt limit is reached. Every version is kept in the Library.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if WizardFormPlan.showsCriticBriefControls(outcome: workflow) { CriticBriefControls() }
                 Picker("Recipe", selection: $formatPreset) {
-                    ForEach(Array(ReelRecipe.menuSections(workflow: recipe.workflow, preferredSources: capabilities.sources).enumerated()), id: \.offset) { index, section in
+                    ForEach(Array(ReelRecipe.menuSections(workflow: workflow, preferredSources: capabilities.sources).enumerated()), id: \.offset) { index, section in
                         if index > 0 { Divider() }
                         ForEach(section) { recipe in
                             Text(recipe.title).tag(recipe.id)
@@ -510,9 +530,15 @@ struct WizardView: View {
                         lastSceneRecipeID = previous.id
                     }
                     if (ReelRecipe.recipe(id: newValue) ?? .custom).capabilities.sources == .podcastRecording {
+                        outcomeRaw = ReelRecipe.Workflow.highlights.rawValue
+                        critiqueLoop = false
                         highlightMaxSeconds = store.settings.podcast.highlightMaxSeconds
                         highlightVideoPath = podcastHighlightVideos.first?.path ?? ""
                     } else {
+                        if outcomeRaw == ReelRecipe.Workflow.highlights.rawValue {
+                            outcomeRaw = ReelRecipe.Workflow.oneReel.rawValue
+                            critiqueLoop = false
+                        }
                         lastSceneRecipeID = newValue
                     }
                 }
@@ -687,22 +713,12 @@ struct WizardView: View {
                     }
                 }
 
-                if capabilities.critiqueLoop {
-                    Picker("Quality", selection: $critiqueLoop) {
-                        Text("Standard — one render").tag(false)
-                        Text("Best — up to 3 versions").tag(true)
-                    }
-                    .fieldHelp(WizardFieldHelp.quality)
-                    Text(critiqueLoop
-                         ? "The critic can request up to two better alternatives; every version is kept in the Library."
-                         : "Renders the first planned version only.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
                 if capabilities.reviewProposedCuts {
                     Toggle("Review proposed cuts before rendering", isOn: $reviewProposedCuts)
                         .fieldHelp(WizardFieldHelp.reviewProposedCuts)
+                    if let caption = WizardFormPlan.reviewedCutsCaption(outcome: workflow, reviewProposedCuts: reviewProposedCuts) {
+                        Text(caption).font(.caption).foregroundStyle(.secondary)
+                    }
                     FieldCaption(WizardFieldHelp.reviewProposedCuts)
                 }
                 if !pastedSnapshot.isEmpty, capabilities.sources == .scenes {
@@ -955,7 +971,8 @@ struct WizardView: View {
             targetSeconds: durationMode.duration ?? (durationMode == .custom ? customDuration : nil),
             highlightCount: highlightMaxCount, highlightSeconds: highlightMaxSeconds,
             captions: textMode.output(transcriptsAvailable: transcriptsAvailable, recipe: formatPreset).captions,
-            critique: critiqueLoop, reviewProposedCuts: reviewProposedCuts)
+            critique: workflow == .iterate, reviewProposedCuts: reviewProposedCuts,
+            critiqueTargetScore: critiqueTargetScore, critiqueMaxVersions: critiqueMaxVersions)
     }
 
     private func bumperToggle(_ title: String, placement: BumperPlacement, value: Binding<Bool>) -> some View {
@@ -1034,7 +1051,7 @@ struct WizardView: View {
                     Button {
                         startGeneration()
                     } label: {
-                        Label(needsFootageProposal ? "Find footage" : formPlan.primaryActionTitle(reviewProposedCuts: reviewProposedCuts), systemImage: "wand.and.stars")
+                        Label(needsFootageProposal ? "Find footage" : (workflow == .iterate ? "Generate reel" : formPlan.primaryActionTitle(reviewProposedCuts: reviewProposedCuts)), systemImage: "wand.and.stars")
                     }
                     .controlSize(.large)
                     .lineLimit(1).fixedSize()
@@ -1233,6 +1250,12 @@ struct WizardView: View {
     private func migrateLegacySelections() {
         let defaults = UserDefaults.standard
         WizardDefaults.migrateLegacy(defaults: defaults)
+        if defaults.string(forKey: "wizard.outcome") == nil {
+            outcomeRaw = WizardFormPlan.outcome(recipe: recipe, critiqueLoop: critiqueLoop).rawValue
+        }
+        critiqueLoop = workflow == .iterate
+        critiqueTargetScore = min(95, max(60, critiqueTargetScore))
+        critiqueMaxVersions = min(5, max(2, critiqueMaxVersions))
         audioModeRaw = WizardDefaults.audioMode(defaults: defaults).rawValue
         textModeRaw = WizardDefaults.textMode(defaults: defaults).rawValue
         durationModeRaw = WizardDefaults.durationMode(defaults: defaults).rawValue
@@ -1439,7 +1462,9 @@ struct WizardView: View {
         options.useBRoll = useBRoll
         options.brollInstructions = brollInstructions
         options.podcastFraming = PodcastFramingMode(rawValue: podcastFramingRaw) ?? .followSpeaker
-        options.critiqueLoop = critiqueLoop
+        options = WizardFormPlan.applyingOutcome(workflow, to: options)
+        options.critiqueTargetScore = critiqueTargetScore
+        options.critiqueMaxVersions = critiqueMaxVersions
         options.tastePreset = tastePreset.isEmpty ? nil : tastePreset
         options.includeWatermark = pasted?.includeWatermark ?? branding.includeWatermark
         options.includeHeadline = pasted?.includeHeadline ?? branding.includeHeadline

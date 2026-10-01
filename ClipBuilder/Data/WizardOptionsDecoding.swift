@@ -52,6 +52,8 @@ nonisolated extension WizardOptions {
         pinnedOverlayText = try values.decodeIfPresent(String.self, forKey: .pinnedOverlayText)
         formatPreset = try values.decodeIfPresent(String.self, forKey: .formatPreset) ?? formatPreset
         critiqueLoop = try values.decodeIfPresent(Bool.self, forKey: .critiqueLoop) ?? critiqueLoop
+        critiqueTargetScore = try values.decodeIfPresent(Int.self, forKey: .critiqueTargetScore) ?? critiqueTargetScore
+        critiqueMaxVersions = try values.decodeIfPresent(Int.self, forKey: .critiqueMaxVersions) ?? critiqueMaxVersions
         includeWatermark = try values.decodeIfPresent(Bool.self, forKey: .includeWatermark) ?? includeWatermark
         includeHeadline = try values.decodeIfPresent(Bool.self, forKey: .includeHeadline) ?? includeHeadline
         includeOutro = try values.decodeIfPresent(Bool.self, forKey: .includeOutro) ?? includeOutro

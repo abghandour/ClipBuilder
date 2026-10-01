@@ -4,6 +4,20 @@ import Testing
 
 @Suite("Wizard form plan")
 struct WizardFormPlanTests {
+    @Test func criticBriefControlsOnlyAppearForIterateOutcome() {
+        #expect(WizardFormPlan.showsCriticBriefControls(outcome: .iterate))
+        #expect(!WizardFormPlan.showsCriticBriefControls(outcome: .oneReel))
+        #expect(!WizardFormPlan.showsCriticBriefControls(outcome: .highlights))
+    }
+
+    @Test func reviewedCutsCaptionExplainsOnlyApprovedCutIterations() {
+        #expect(WizardFormPlan.reviewedCutsCaption(outcome: .iterate, reviewProposedCuts: true)
+            == "Your approved cuts are version 1; later versions re-plan from the critique.")
+        #expect(WizardFormPlan.reviewedCutsCaption(outcome: .iterate, reviewProposedCuts: false) == nil)
+        #expect(WizardFormPlan.reviewedCutsCaption(outcome: .oneReel, reviewProposedCuts: true) == nil)
+        #expect(WizardFormPlan.reviewedCutsCaption(outcome: .highlights, reviewProposedCuts: true) == nil)
+    }
+
     @Test func ordinarySceneRunsKeepLiveFiltersWhenCopied() throws {
         let plan = WizardFormPlan(recipe: .custom)
         var options = WizardOptions()
@@ -149,7 +163,7 @@ struct WizardFormPlanTests {
         let scenes = WizardFormPlan(recipe: .custom)
         #expect(scenes.runSummary(sceneCount: 24, source: "of Jack Della Maddalena", targetSeconds: 20,
             highlightCount: 5, highlightSeconds: 30, captions: true, critique: true,
-            reviewProposedCuts: false) == "One 20s reel from 24 scenes of Jack Della Maddalena, captions on, best of 3")
+            reviewProposedCuts: false) == "One 20s reel from 24 scenes of Jack Della Maddalena, up to 3 versions until the critic scores 85+")
         #expect(scenes.runSummary(sceneCount: 2, source: "in this project", targetSeconds: nil,
             highlightCount: 0, highlightSeconds: 30, captions: false, critique: false,
             reviewProposedCuts: true).hasSuffix("cuts reviewed before render"))
@@ -172,7 +186,7 @@ struct WizardFormPlanTests {
         let custom = WizardFormPlan(recipe: .custom)
         #expect(custom.unsupportedOptions.isEmpty)
         #expect(custom.editingSummary(audio: .mix, captions: true, headlines: false,
-            critique: true, branding: "Brand default", useBRoll: false) == "Mix · Captions · Best of 3 · Brand default")
+            critique: true, branding: "Brand default", useBRoll: false) == "Mix · Captions · Brand default")
     }
 
     @Test func runEditsBeatCopiedSettingsWhichBeatProfileDefaults() {
@@ -211,5 +225,52 @@ struct WizardFormPlanTests {
         #expect(HoverScrubThumbnail.next(after: 1, duration: 60) == 11)
         #expect(HoverScrubThumbnail.next(after: 51, duration: 60) == 1)
         #expect(WizardSourceGrid.collapsedTitle(["A.mp4", "B.mov"]) == "A.mp4, B.mov")
+    }
+}
+
+extension WizardFormPlanTests {
+    @Test func iterateOutcomeMapsToLoopWithoutChangingRecipe() {
+        for recipe in ReelRecipe.all where recipe.workflow == .oneReel {
+            #expect(WizardFormPlan.outcome(recipe: recipe, critiqueLoop: true) == .iterate)
+            #expect(WizardFormPlan.outcome(recipe: recipe, critiqueLoop: false) == .oneReel)
+        }
+        for outcome in ReelRecipe.Workflow.allCases {
+            let options = WizardFormPlan.applyingOutcome(outcome, to: WizardOptions())
+            #expect(options.critiqueLoop == (outcome == .iterate))
+            #expect(options.formatPreset == "custom")
+        }
+        #expect(WizardFormPlan.outcome(recipe: .podcastHighlights, critiqueLoop: true) == .highlights)
+        #expect(ReelRecipe.menuSections(workflow: .iterate, preferredSources: .scenes)
+            == ReelRecipe.menuSections(workflow: .oneReel, preferredSources: .scenes))
+    }
+
+    @Test func iterateSummaryNamesTargetAndAttempts() {
+        let summary = WizardFormPlan(recipe: .custom).runSummary(sceneCount: 24, source: "", targetSeconds: 20,
+            highlightCount: 0, highlightSeconds: 30, captions: false, critique: true, reviewProposedCuts: false,
+            critiqueTargetScore: 80, critiqueMaxVersions: 4)
+        #expect(summary == "One 20s reel from 24 scenes, up to 4 versions until the critic scores 80+")
+    }
+
+    @Test @MainActor func iterationOptionsRoundTripAndPaste() throws {
+        let legacy = try JSONDecoder().decode(WizardOptions.self, from: Data("{}".utf8))
+        #expect(legacy.critiqueTargetScore == 85 && legacy.critiqueMaxVersions == 3)
+        var options = legacy
+        options.critiqueTargetScore = 80; options.critiqueMaxVersions = 4; options.critiqueLoop = true
+        let decoded = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(options))
+        #expect(decoded.critiqueTargetScore == 80 && decoded.critiqueMaxVersions == 4)
+        let name = "CriticIteration-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        AISettingsPreferences.write(JSONSetting.dictionary(options), kind: .wizard,
+            scopes: [.options], defaults: defaults)
+        #expect(defaults.integer(forKey: "wizard.critiqueTargetScore") == 80)
+        #expect(defaults.integer(forKey: "wizard.critiqueMaxVersions") == 4)
+        #expect(defaults.string(forKey: "wizard.outcome") == "iterate")
+        let copy = AISettingsPreferences.wizard(defaults: defaults, profile: Fixtures.brand())
+        #expect(copy["critiqueTargetScore"] == .number(80) && copy["critiqueMaxVersions"] == .number(4))
+        options.critiqueLoop = false
+        AISettingsPreferences.write(JSONSetting.dictionary(options), kind: .wizard,
+            scopes: [.options], defaults: defaults)
+        #expect(defaults.string(forKey: "wizard.outcome") == "oneReel")
     }
 }

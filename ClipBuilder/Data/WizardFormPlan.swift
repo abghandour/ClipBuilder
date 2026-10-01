@@ -9,6 +9,25 @@ nonisolated struct WizardFormPlan: Sendable {
         capabilities = recipe.capabilities
     }
 
+    static func outcome(recipe: ReelRecipe, critiqueLoop: Bool) -> ReelRecipe.Workflow {
+        recipe.workflow == .highlights ? .highlights : (critiqueLoop ? .iterate : .oneReel)
+    }
+
+    static func applyingOutcome(_ outcome: ReelRecipe.Workflow, to options: WizardOptions) -> WizardOptions {
+        var options = options
+        options.critiqueLoop = outcome == .iterate
+        return options
+    }
+
+    static func showsCriticBriefControls(outcome: ReelRecipe.Workflow) -> Bool {
+        outcome == .iterate
+    }
+
+    static func reviewedCutsCaption(outcome: ReelRecipe.Workflow, reviewProposedCuts: Bool) -> String? {
+        guard outcome == .iterate, reviewProposedCuts else { return nil }
+        return "Your approved cuts are version 1; later versions re-plan from the critique."
+    }
+
     /// Ordinary runs retain their live filters (and any explicit pasted
     /// restriction). Only an idea match pins an exact set of scene IDs.
     func applyingIdeaSources(to options: WizardOptions, proposedSceneIDs: Set<Int64>?) -> WizardOptions {
@@ -133,15 +152,17 @@ nonisolated struct WizardFormPlan: Sendable {
 
     func runSummary(sceneCount: Int, source: String, targetSeconds: Int?,
                     highlightCount: Int, highlightSeconds: Double, captions: Bool,
-                    critique: Bool, reviewProposedCuts: Bool) -> String {
+                    critique: Bool, reviewProposedCuts: Bool,
+                    critiqueTargetScore: Int = 85, critiqueMaxVersions: Int = 3) -> String {
         if capabilities.sources == .podcastRecording {
             let count = highlightCount > 0 ? "Up to \(highlightCount) highlights" : "Highlights with no count limit"
             return "\(count), up to \(Int(highlightSeconds))s each, from \(source), reviewed before render"
         }
         let length = targetSeconds.map { "\($0)s " } ?? ""
-        var summary = "One \(length)reel from \(sceneCount) scenes \(source)"
-        if capabilities.onScreenText { summary += captions ? ", captions on" : ", captions off" }
-        if capabilities.critiqueLoop && critique { summary += ", best of 3" }
+        var summary = "One \(length)reel from \(sceneCount) scenes" + (source.isEmpty ? "" : " \(source)")
+        if capabilities.critiqueLoop && critique {
+            summary += ", up to \(critiqueMaxVersions) versions until the critic scores \(critiqueTargetScore)+"
+        } else if capabilities.onScreenText { summary += captions ? ", captions on" : ", captions off" }
         if capabilities.reviewProposedCuts && reviewProposedCuts { summary += ", cuts reviewed before render" }
         return summary
     }
@@ -187,7 +208,6 @@ nonisolated struct WizardFormPlan: Sendable {
             if headlines { parts.append("Headlines") }
             if !captions && !headlines { parts.append("No text") }
         }
-        if capabilities.critiqueLoop { parts.append(critique ? "Best of 3" : "One render") }
         if capabilities.branding { parts.append(branding) }
         if capabilities.bRoll && useBRoll { parts.append("B-roll") }
         return parts.isEmpty ? "Plain footage" : parts.joined(separator: " · ")

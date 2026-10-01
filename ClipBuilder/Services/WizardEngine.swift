@@ -18,6 +18,7 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
+        case critiqueTargetScore, critiqueMaxVersions
         case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, reviewProposedCuts, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
     }
 
@@ -116,8 +117,10 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var formatPreset = "custom"
     /// After each render, an AI critic reviews the rendered reel; when it
     /// recommends a retry the wizard re-plans with the critic's notes and
-    /// renders again — up to 3 versions total, all kept with their reviews.
+    /// renders again up to the selected attempt limit, all kept with their reviews.
     var critiqueLoop = true
+    var critiqueTargetScore: Int = 85
+    var critiqueMaxVersions: Int = 3
     /// Brand-kit elements burned into the render (need profile assets).
     var includeWatermark = true
     var includeHeadline = true
@@ -2348,6 +2351,14 @@ actor WizardEngine {
                             emit: @escaping @Sendable (String) -> Void) async throws {
         let options = options.neutralized(for: ReelRecipe.recipe(id: options.formatPreset) ?? .custom)
         try await RenderContext.$settings.withValue(options.renderSettings) {
+            if options.critiqueLoop {
+                guard !plan.clips.isEmpty else {
+                    throw AIError.unusableResponse("Accept at least one proposed cut before rendering.")
+                }
+                try await runThrowing(options: options, profile: profile, database: database,
+                                      initialPlan: plan, emit: emit)
+                return
+            }
             let inputs = try await loadPlanningInputs(options: options, profile: profile,
                                                       database: database, emit: emit)
             guard !plan.clips.isEmpty else {
@@ -2382,9 +2393,14 @@ actor WizardEngine {
         }
     }
 
+    nonisolated static func versionLimit(options: WizardOptions) -> Int {
+        options.critiqueLoop ? min(5, max(2, options.critiqueMaxVersions)) : 1
+    }
+
     private func runThrowing(options: WizardOptions,
                              profile: BrandProfile,
                              database: Database,
+                             initialPlan: WizardPlan? = nil,
                              emit rawEmit: @escaping @Sendable (String) -> Void) async throws {
         // Every log line is also recorded for the per-video run report.
         let recorder = LogRecorder()
@@ -2397,10 +2413,13 @@ actor WizardEngine {
         let sceneMap = inputs.sceneMap
 
         // The critique loop: render, have the critic watch the result, and
-        // when it recommends a retry re-plan with its notes — up to 3
-        // versions total. Every version is kept with its review.
-        let maxVersions = options.critiqueLoop ? 3 : 1
+        // when it recommends a retry re-plan with its notes up to the chosen
+        // attempt limit. Every version is kept with its review.
+        let maxVersions = Self.versionLimit(options: options)
+        let batchID = UUID().uuidString
         var critiques: [ReelCritique] = []
+        var criticBrief: CriticBriefContext?
+        var attemptedBrief = false
         var critiqueFeedback: String?
         var producedCount = 0
         var brollCache = WizardPodcastBRoll.Cache()
@@ -2411,8 +2430,18 @@ actor WizardEngine {
                 emit("\n══════ Version \(attempt) — rebuilding from the critique ══════")
             }
             emit("\nPhase 2: Planning the timeline...")
-            let outcome = try await makePlan(inputs: inputs, options: options, profile: profile, database: database,
-                                             critiqueFeedback: critiqueFeedback, emit: emit)
+            let outcome: (plan: WizardPlan?, prompt: String, response: String)
+            if attempt == 1, let initialPlan {
+                let clips: [[String: Any]] = initialPlan.clips.map {
+                    ["scene_id": $0.sceneID, "start": $0.start, "end": $0.end,
+                     "speed": $0.speed, "reason": $0.reason ?? "User-approved cut"]
+                }
+                let data = try JSONSerialization.data(withJSONObject: ["clips": clips, "rationale": initialPlan.rationale])
+                outcome = (initialPlan, "User-approved cuts", String(decoding: data, as: UTF8.self))
+            } else {
+                outcome = try await makePlan(inputs: inputs, options: options, profile: profile, database: database,
+                                            critiqueFeedback: critiqueFeedback, emit: emit)
+            }
             guard let plan = outcome.plan else {
                 if producedCount > 0 {
                     emit("Re-plan failed — keeping the \(producedCount) version(s) already rendered.")
@@ -2428,7 +2457,7 @@ actor WizardEngine {
             do {
                 result = try await assemble(plan: plan, music: inputs.music, options: options,
                                             profile: profile, database: database,
-                                            sceneMap: sceneMap, brollCache: &brollCache, emit: emit)
+                                            sceneMap: sceneMap, brollCache: &brollCache, batchID: batchID, emit: emit)
             } catch where producedCount > 0 && !(error is CancellationError) {
                 // A later version failing to render shouldn't discard the
                 // versions already produced.
@@ -2483,13 +2512,28 @@ actor WizardEngine {
             guard options.critiqueLoop else { break }
             emit("\nPhase 4: AI critique of version \(attempt)...")
             let critique: ReelCritique
+            if !attemptedBrief {
+                attemptedBrief = true
+                do {
+                    criticBrief = try await CriticBriefContext.loadForRun(database: database, profile: profile,
+                        generatedID: result.recordID, ai: ai, emit: emit)
+                } catch is CancellationError { throw CancellationError() }
+                catch { emit("Critic brief unavailable (\(error.userMessage)); reviewing without brief.") }
+            } else if let criticBrief {
+                do {
+                    try await criticBrief.logStaleness(database: database, profile: profile,
+                                                       generatedID: result.recordID, emit: emit)
+                } catch is CancellationError { throw CancellationError() }
+                catch { emit("Critic brief freshness unavailable; retaining this run's judge.") }
+            }
             do {
                 critique = try await ReelCritic.critique(video: result.url,
                                                          duration: result.duration,
                                                          plan: plan, sceneMap: sceneMap,
                                                          options: options, profile: profile,
                                                          attempt: attempt, previous: critiques,
-                                                         ai: ai, emit: emit, database: database, generatedID: result.recordID)
+                                                         ai: ai, emit: emit, database: database, generatedID: result.recordID,
+                                                         brief: criticBrief?.brief, referenceFrames: criticBrief?.frames ?? [])
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -2510,7 +2554,10 @@ actor WizardEngine {
                 critiqueFeedback = WizardPlanRules.critiqueFeedbackBlock(critique, attempt: attempt,
                                                               previousPlanJSON: outcome.response)
             } else if critique.regenerate {
-                emit("The critic would try again, but the \(maxVersions)-version cap is reached.")
+                let best = critiques.enumerated().max {
+                    $0.element.score == $1.element.score ? $0.offset < $1.offset : $0.element.score < $1.element.score
+                }
+                emit("The critic would try again, but the \(maxVersions)-version cap is reached. Best: version \((best?.offset ?? 0) + 1), \(best?.element.score ?? 0)/100.")
                 break
             } else {
                 emit("The critic is satisfied — no further versions.")
@@ -3019,6 +3066,7 @@ actor WizardEngine {
                           database: Database,
                           sceneMap: [Int64: SceneRecord],
                           brollCache: inout WizardPodcastBRoll.Cache,
+                          batchID: String? = nil,
                           emit: @escaping @Sendable (String) -> Void) async throws -> AssemblyResult {
         let renderStarted = ContinuousClock.now
         emit("Wizard render start")
@@ -3208,7 +3256,7 @@ actor WizardEngine {
                                                                wizardProvider: attribution.provider,
                                                                wizardModel: attribution.model,
                                                                projectID: options.projectID,
-                                                               rationale: plan.rationale,
+                                                               rationale: plan.rationale, batchID: batchID,
                                                                qualityJSON: qualityJSON,
                                                                planClipsJSON: planClipsJSON,
                                                                settings: WizardRunSettings(options: options, stackLevel: options.stackLevel, sourceProfile: profile.profileName,
