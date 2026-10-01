@@ -7,15 +7,24 @@ actor InstagramService {
     private let ai: AIService
     private let makeGraphProvider: @Sendable (String, InstagramSettings) -> GraphAPIProvider?
     private let makeWebProvider: @Sendable (InstagramSettings) -> any InstagramProvider
+    private let persistTokenRefresh: (@Sendable (InstagramTokenRefresh, InstagramSettings, String) async throws -> Bool)?
+    private let now: @Sendable () -> Date
+    private var refreshTasks: [String: Task<GraphAPIProvider, Never>] = [:]
+    private var loggedRefreshFailures: Set<String> = []
+    private var lastRefresh: (previousToken: String, settings: InstagramSettings, value: InstagramTokenRefresh)?
 
     init(ai: AIService,
          makeGraphProvider: @escaping @Sendable (String, InstagramSettings) -> GraphAPIProvider? = {
              InstagramService.connectedGraphProvider(username: $0, settings: $1)
          },
-         makeWebProvider: @escaping @Sendable (InstagramSettings) -> any InstagramProvider = { InstagramWebProvider(settings: $0) }) {
+         makeWebProvider: @escaping @Sendable (InstagramSettings) -> any InstagramProvider = { InstagramWebProvider(settings: $0) },
+         persistTokenRefresh: (@Sendable (InstagramTokenRefresh, InstagramSettings, String) async throws -> Bool)? = nil,
+         now: @escaping @Sendable () -> Date = { Date() }) {
         self.ai = ai
         self.makeGraphProvider = makeGraphProvider
         self.makeWebProvider = makeWebProvider
+        self.persistTokenRefresh = persistTokenRefresh
+        self.now = now
     }
 
     /// Auto-refresh throttle — the tab opens instantly from cache and only
@@ -24,12 +33,73 @@ actor InstagramService {
 
     /// Graph API once connected AND the username matches the connected
     /// account; everything else goes through the public web API.
-    private func provider(for username: String, settings: InstagramSettings) -> any InstagramProvider {
-        graphProvider(for: username, settings: settings) ?? makeWebProvider(settings)
+    private func provider(for username: String, settings: InstagramSettings,
+                          log: @escaping @Sendable (String) -> Void) async -> any InstagramProvider {
+        if let graph = await graphProvider(for: username, settings: settings, log: log) { return graph }
+        return makeWebProvider(settings)
     }
 
-    private func graphProvider(for username: String, settings: InstagramSettings) -> GraphAPIProvider? {
-        makeGraphProvider(username, settings)
+    private func graphProvider(for username: String, settings: InstagramSettings,
+                               log: @escaping @Sendable (String) -> Void) async -> GraphAPIProvider? {
+        guard let graph = makeGraphProvider(username, settings) else { return nil }
+        return await refreshTokenIfNeeded(graph: graph, settings: settings, log: log)
+    }
+
+    /// Used by every service entry point that acquires a Graph provider.
+    func refreshTokenIfNeeded(settings: InstagramSettings,
+                              log: @escaping @Sendable (String) -> Void) async -> GraphAPIProvider? {
+        await graphProvider(for: settings.connectedUsername, settings: settings, log: log)
+    }
+
+    private func refreshTokenIfNeeded(graph: GraphAPIProvider, settings: InstagramSettings,
+                                      log: @escaping @Sendable (String) -> Void) async -> GraphAPIProvider {
+        guard settings.tokenFlavor == InstagramTokenFlavor.instagram.rawValue,
+              graph.flavor == .instagram, let persistTokenRefresh else { return graph }
+        var graph = graph
+        var effective = settings
+        // A fetch can carry an older settings snapshot after another fetch refreshed it.
+        if let cached = lastRefresh,
+           cached.settings.connectedIGUserID == settings.connectedIGUserID,
+           cached.settings.connectedUsername == settings.connectedUsername,
+           settings.tokenRefreshedAt == cached.settings.tokenRefreshedAt,
+           graph.token == cached.previousToken || graph.token == cached.value.token {
+            graph = graph.withToken(cached.value.token)
+            effective.tokenRefreshedAt = cached.value.refreshedAt
+            effective.tokenExpiresAt = cached.value.expiresAt
+        }
+        let instant = now()
+        // PLAN-VERIFY: refresh requires an unexpired token older than 24 hours.
+        guard let refreshedAt = effective.tokenRefreshedAt,
+              instant.timeIntervalSince(refreshedAt) > 24 * 3600,
+              effective.tokenExpiresAt.map({ $0 > instant && $0.timeIntervalSince(instant) <= 14 * 86400 }) ?? true
+        else { return graph }
+        let oldToken = graph.token
+        // Key by connection snapshot: a concurrent fetch may already read the
+        // replacement Keychain token while the persistence callback is returning.
+        let refreshKey = "\(settings.connectedIGUserID):\(settings.connectedUsername):\(settings.tokenRefreshedAt?.timeIntervalSince1970 ?? 0)"
+        if let pending = refreshTasks[refreshKey] { return await pending.value }
+        let currentGraph = graph
+        let refreshSettings = effective
+        let task = Task { () -> GraphAPIProvider in
+            do {
+                let refresh = try await currentGraph.refreshAccessToken(now: instant)
+                // The MainActor callback checks the current connection before writing either token or dates.
+                guard try await persistTokenRefresh(refresh, refreshSettings, oldToken) else { return currentGraph }
+                self.lastRefresh = (oldToken, refreshSettings, refresh)
+                self.loggedRefreshFailures.remove(oldToken)
+                return currentGraph.withToken(refresh.token)
+            } catch {
+                if !(error is CancellationError), (error as? URLError)?.code != .cancelled,
+                   self.loggedRefreshFailures.insert(oldToken).inserted {
+                    log("Instagram token refresh failed — continuing with the current token; reconnect if the fetch fails.")
+                }
+                return currentGraph
+            }
+        }
+        refreshTasks[refreshKey] = task
+        let refreshed = await task.value
+        refreshTasks.removeValue(forKey: refreshKey)
+        return refreshed
     }
 
     private nonisolated static func connectedGraphProvider(username: String, settings: InstagramSettings) -> GraphAPIProvider? {
@@ -40,7 +110,8 @@ actor InstagramService {
         }
         return GraphAPIProvider(token: token,
                                 igUserID: settings.connectedIGUserID.isEmpty
-                                    ? nil : settings.connectedIGUserID)
+                                    ? nil : settings.connectedIGUserID,
+                                flavor: InstagramTokenFlavor(rawValue: settings.tokenFlavor) ?? .facebook)
     }
 
     private func thumbnailDestination(username: String, mediaID: String) -> URL {
@@ -61,7 +132,7 @@ actor InstagramService {
     func refreshAccount(username: String, kind: String, database: Database,
                         settings: InstagramSettings, limit: Int,
                         log: @escaping @Sendable (String) -> Void) async throws -> Int64 {
-        let primary = provider(for: username, settings: settings)
+        let primary = await provider(for: username, settings: settings, log: log)
         do {
             return try await refreshAccount(using: primary, username: username, kind: kind,
                                             database: database, limit: limit, log: log)
@@ -235,7 +306,7 @@ actor InstagramService {
             throw InstagramError.fetchFailed(
                 "No Instagram account is connected — connect one in Settings → Instagram first")
         }
-        guard let provider = graphProvider(for: settings.connectedUsername, settings: settings) else {
+        guard let provider = await graphProvider(for: settings.connectedUsername, settings: settings, log: log) else {
             throw InstagramError.fetchFailed(
                 "The Instagram access token is missing from the Keychain — reconnect in Settings → Instagram")
         }
@@ -264,7 +335,7 @@ actor InstagramService {
             var item = IGMediaItem(mediaID: media.mediaID)
             item.permalink = media.permalink
             do {
-                try await provider(for: account.username, settings: settings)
+                try await provider(for: account.username, settings: settings, log: log)
                     .downloadVideo(item, to: destination, log: log)
             } catch {
                 // The Graph API returns no media_url for plenty of reels
@@ -282,7 +353,7 @@ actor InstagramService {
             // the Graph API first (official, no cookies); otherwise — or if
             // that misses — use the web path (direct CDN, then yt-dlp).
             var downloaded = false
-            if let graph = graphProvider(for: account.username, settings: settings) {
+            if let graph = await graphProvider(for: account.username, settings: settings, log: log) {
                 do {
                     try await graph.downloadVideo(shortcode: media.mediaID,
                                                   to: destination, log: log)

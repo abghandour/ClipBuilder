@@ -74,6 +74,22 @@ private struct InstagramSettingsTab: View {
                               systemImage: "checkmark.seal.fill")
                             .foregroundStyle(.green)
                     }
+                    if store.settings.instagram.tokenFlavor == "instagram" {
+                        // PLAN-VERIFY: automatic refresh and the initial 60-day expiry await the token spike.
+                        if let expiry = store.settings.instagram.tokenExpiresAt {
+                            Text("Instagram Login · refreshes automatically · expires \(expiry.formatted(.dateTime.month(.abbreviated).day()))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Instagram Login · refreshes automatically · expiry unknown")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("Facebook Login · Page tokens never expire; User tokens must be extended manually")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Button("Disconnect") { store.disconnectInstagram() }
                     Text("Reels for this account fetch through the official API with full insights (reach, saves, shares, watch time). If the token expires or permissions change, reconnect here with a fresh token.")
                         .font(.caption)
@@ -88,6 +104,10 @@ private struct InstagramSettingsTab: View {
                     .disabled(graphToken.trimmingCharacters(in: .whitespaces).isEmpty
                               || store.isConnectingInstagram)
                     Text("Paste a long-lived User token or the linked Facebook Page's own token from a Meta app. Include instagram_basic, instagram_manage_insights and pages_read_engagement; User tokens also need pages_show_list for account discovery. Add instagram_manage_comments for comment reports and instagram_content_publish to publish reels from the Library. The Page must link to your Instagram business/creator account. Stored in the Keychain, never in settings files.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    // PLAN-VERIFY: confirm the dashboard's Generate token route and tester-invite labels.
+                    Text("Or use Instagram Login: in your Meta app's Instagram product, open API setup with Instagram login and add the account as an Instagram Tester. Accept the invite in the Instagram app under Settings → Apps and websites → Tester invites, then click Generate token in the Meta app and paste it here. Use a Business or Creator account. No Facebook Page needed. Include instagram_business_basic, instagram_business_manage_insights, instagram_business_manage_comments and instagram_business_content_publish for insights, comments and publishing.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -750,6 +770,7 @@ private struct AISettingsTab: View {
     var body: some View {
         @Bindable var store = store
         Form {
+            Section("Critic Brief") { CriticBriefControls(showsUsePicker: true) }
             OnDeviceSettingsSection()
             Section("Task Routing") {
                 ForEach(AICatalog.tasks, id: \.self) { task in
@@ -770,7 +791,6 @@ private struct AISettingsTab: View {
                     Text("Skip it for 1 hour").tag(60)
                 }
                 .help("When a provider fails to sign in, is out of quota or returns a CLI error, automatic fallback skips it for this long instead of paying the failed call on every video. Picking a provider explicitly still uses it, and changing these settings clears the wait.")
-            Section("Critic Brief") { CriticBriefControls(showsUsePicker: true) }
             }
 
             Section("Learning") {

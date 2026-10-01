@@ -676,10 +676,14 @@ final class AppStore {
         podcastAnalysis = PodcastAnalysisService(ai: ai)
         wizard = WizardEngine(ai: ai, render: renderEngine)
         multitrackRenderer = MultitrackRenderer(render: renderEngine)
-        instagram = InstagramService(ai: ai)
+        let instagramPersistence = InstagramTokenPersistence()
+        instagram = InstagramService(ai: ai, persistTokenRefresh: { refresh, settings, token in
+            try await instagramPersistence.save(refresh, settings: settings, replacing: token)
+        })
         fightResearchService = FightResearchService(ai: ai)
         opensProfiles = openProfile
         jobs.store = self
+        instagramPersistence.store = self
 
         builder.onTimelineAutosave = { [weak self] id, document in
             self?.saveTimeline(id: id, document: document)
@@ -1669,25 +1673,71 @@ final class AppStore {
 
     /// Validate a Meta Graph API token, store it in the Keychain, and mark
     /// the discovered account as connected. Runs from Settings → Instagram.
-    func connectInstagram(token: String) {
+    @discardableResult
+    func connectInstagram(token: String, session: URLSession = .shared,
+                          saveToken: @escaping (String, String) throws -> Void = { try KeychainStore.save($0, account: $1) },
+                          now: Date = Date()) -> Task<Void, Never>? {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isConnectingInstagram else { return }
+        guard !trimmed.isEmpty, !isConnectingInstagram else { return nil }
         isConnectingInstagram = true
-        Task {
+        let generation = profileGeneration
+        return Task {
+            defer { isConnectingInstagram = false }
             do {
-                let account = try await GraphAPIProvider(token: trimmed, igUserID: nil)
-                    .resolveAccount(matching: nil)
-                try KeychainStore.save(trimmed, account: KeychainStore.graphTokenAccount)
+                var flavor = InstagramTokenFlavor.detect(trimmed)
+                let account: GraphAPIProvider.ResolvedAccount
+                do {
+                    account = try await GraphAPIProvider(token: trimmed, igUserID: nil, session: session, flavor: flavor)
+                        .resolveAccount(matching: nil)
+                } catch {
+                    let detectedError = error
+                    try Task.checkCancellation()
+                    do {
+                        account = try await GraphAPIProvider(token: trimmed, igUserID: nil, session: session, flavor: flavor.other)
+                            .resolveAccount(matching: nil)
+                        flavor = flavor.other
+                    } catch {
+                        try Task.checkCancellation()
+                        throw detectedError
+                    }
+                }
+                try Task.checkCancellation()
+                guard generation == profileGeneration else { return }
+                try saveToken(trimmed, KeychainStore.graphTokenAccount)
                 settings.instagram.connectedUsername = account.username
                 settings.instagram.connectedIGUserID = account.id
+                settings.instagram.tokenFlavor = flavor.rawValue
+                // PLAN-VERIFY: dashboard-generated Instagram Login tokens initially last 60 days.
+                settings.instagram.tokenRefreshedAt = flavor == .instagram ? now : nil
+                settings.instagram.tokenExpiresAt = flavor == .instagram ? now.addingTimeInterval(60 * 86400) : nil
                 saveSettings()
                 // Make the connected account browsable right away.
                 addInstagramAccount(handle: account.username)
             } catch {
+                guard generation == profileGeneration else { return }
                 presentError("Could not connect the Instagram account", error)
             }
-            isConnectingInstagram = false
         }
+    }
+
+    /// Commit on the main actor so reconnect/disconnect cannot interleave between
+    /// the identity check, Keychain write and settings update.
+    @discardableResult
+    func applyInstagramTokenRefresh(_ refresh: InstagramTokenRefresh, settings original: InstagramSettings,
+                                    replacing token: String,
+                                    readToken: (String) -> String? = { KeychainStore.read(account: $0) },
+                                    saveToken: (String, String) throws -> Void = { try KeychainStore.save($0, account: $1) }) throws -> Bool {
+        let current = settings.instagram
+        guard current.isGraphConnected, current.tokenFlavor == "instagram",
+              current.connectedUsername == original.connectedUsername,
+              current.connectedIGUserID == original.connectedIGUserID,
+              current.tokenRefreshedAt == original.tokenRefreshedAt,
+              readToken(KeychainStore.graphTokenAccount) == token else { return false }
+        try saveToken(refresh.token, KeychainStore.graphTokenAccount)
+        settings.instagram.tokenRefreshedAt = refresh.refreshedAt
+        settings.instagram.tokenExpiresAt = refresh.expiresAt
+        saveSettings()
+        return true
     }
 
     /// Publish a Library video to the connected Instagram account as a Reel.
@@ -1736,6 +1786,9 @@ final class AppStore {
         KeychainStore.delete(account: KeychainStore.graphTokenAccount)
         settings.instagram.connectedUsername = ""
         settings.instagram.connectedIGUserID = ""
+        settings.instagram.tokenFlavor = "facebook"
+        settings.instagram.tokenExpiresAt = nil
+        settings.instagram.tokenRefreshedAt = nil
         saveSettings()
     }
 

@@ -137,6 +137,9 @@ nonisolated struct InstagramSettings: Codable, Sendable {
     var fetchLimit: Int = 12
     var connectedUsername: String = ""    // Graph API account, set on Connect
     var connectedIGUserID: String = ""    // its IG user id — skips discovery
+    var tokenFlavor: String = "facebook"
+    var tokenExpiresAt: Date?
+    var tokenRefreshedAt: Date?
     /// Checkout of the peace-grappler repo whose committed reports backfill
     /// the Reports tab's history (empty = ~/repos/peace-grappler if present).
     var peaceGrapplerRepoPath: String = ""
@@ -151,6 +154,9 @@ nonisolated struct InstagramSettings: Codable, Sendable {
         case fetchLimit = "fetch_limit"
         case connectedUsername = "connected_username"
         case connectedIGUserID = "connected_ig_user_id"
+        case tokenFlavor = "token_flavor"
+        case tokenExpiresAt = "token_expires_at"
+        case tokenRefreshedAt = "token_refreshed_at"
         case peaceGrapplerRepoPath = "peace_grappler_repo_path"
     }
 
@@ -165,6 +171,9 @@ nonisolated struct InstagramSettings: Codable, Sendable {
         fetchLimit = try container.decodeIfPresent(Int.self, forKey: .fetchLimit) ?? 12
         connectedUsername = try container.decodeIfPresent(String.self, forKey: .connectedUsername) ?? ""
         connectedIGUserID = try container.decodeIfPresent(String.self, forKey: .connectedIGUserID) ?? ""
+        tokenFlavor = try container.decodeIfPresent(String.self, forKey: .tokenFlavor) ?? "facebook"
+        tokenExpiresAt = try container.decodeIfPresent(Date.self, forKey: .tokenExpiresAt)
+        tokenRefreshedAt = try container.decodeIfPresent(Date.self, forKey: .tokenRefreshedAt)
         peaceGrapplerRepoPath = try container.decodeIfPresent(String.self, forKey: .peaceGrapplerRepoPath) ?? ""
     }
 }

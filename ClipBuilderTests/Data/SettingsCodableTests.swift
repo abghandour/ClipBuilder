@@ -29,4 +29,33 @@ struct SettingsCodableTests {
         #expect(low.xfadeDuration == 0.1)
         #expect(high.xfadeDuration == 1)
     }
+
+    @Test("Existing Instagram settings default to Facebook without token dates")
+    func legacyInstagram() throws {
+        let json = #"{"instagram":{"connected_username":"peacegrappler","connected_ig_user_id":"ig-123","fetch_limit":24}}"#
+        let settings = try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8)).instagram
+        #expect(settings.connectedUsername == "peacegrappler")
+        #expect(settings.connectedIGUserID == "ig-123")
+        #expect(settings.fetchLimit == 24)
+        #expect(settings.tokenFlavor == "facebook")
+        #expect(settings.tokenExpiresAt == nil)
+        #expect(settings.tokenRefreshedAt == nil)
+    }
+
+    @Test("Instagram token metadata round trips with snake-case keys")
+    func instagramTokenMetadata() throws {
+        var settings = InstagramSettings()
+        settings.tokenFlavor = "instagram"
+        settings.tokenRefreshedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        settings.tokenExpiresAt = settings.tokenRefreshedAt?.addingTimeInterval(60 * 86400)
+        let data = try JSONEncoder().encode(settings)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["token_flavor"] as? String == "instagram")
+        #expect(object["token_expires_at"] != nil)
+        #expect(object["token_refreshed_at"] != nil)
+        let decoded = try JSONDecoder().decode(InstagramSettings.self, from: data)
+        #expect(decoded.tokenFlavor == "instagram")
+        #expect(decoded.tokenExpiresAt == settings.tokenExpiresAt)
+        #expect(decoded.tokenRefreshedAt == settings.tokenRefreshedAt)
+    }
 }

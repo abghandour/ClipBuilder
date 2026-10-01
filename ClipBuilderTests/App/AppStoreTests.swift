@@ -265,4 +265,154 @@ struct AppStoreTests {
         #expect(store.activeProjectID == homeID)
         #expect(store.activeProject?.isHome == true)
     }
+
+    @Test("Connect confirms flavor and stores the appropriate token dates", arguments: ["IGtest-token", "EAAtest-token"])
+    func instagramConnect(token: String) async throws {
+        let transport = InstagramTestTransport([
+            "graph.instagram.com/me": .json(#"{"user_id":"ig-123","id":"app-scoped","username":"peacegrappler","account_type":"BUSINESS"}"#),
+            "graph.facebook.com/me/accounts": .json(#"{"data":[{"instagram_business_account":{"id":"ig-123","username":"peacegrappler"}}]}"#),
+        ])
+        let graph = transport.provider(accessToken: token)
+        defer { transport.finish(graph) }
+        let store = makeStore()
+        // Connecting a Facebook token also clears any previous Instagram lifecycle dates.
+        store.settings.instagram.tokenFlavor = "instagram"
+        store.settings.instagram.tokenRefreshedAt = .distantPast
+        store.settings.instagram.tokenExpiresAt = .distantFuture
+        let instant = Date(timeIntervalSince1970: 1_800_000_000)
+        var writes: [(String, String)] = []
+        let task = try #require(store.connectInstagram(token: " \(token)\n", session: graph.session,
+            saveToken: { value, account in writes.append((value, account)) }, now: instant))
+        await task.value
+        let isInstagram = token.hasPrefix("IG")
+        #expect(store.currentError == nil)
+        #expect(!store.isConnectingInstagram)
+        #expect(store.settings.instagram.connectedUsername == "peacegrappler")
+        #expect(store.settings.instagram.connectedIGUserID == "ig-123")
+        #expect(store.settings.instagram.tokenFlavor == (isInstagram ? "instagram" : "facebook"))
+        #expect(store.settings.instagram.tokenRefreshedAt == (isInstagram ? instant : nil))
+        #expect(store.settings.instagram.tokenExpiresAt == (isInstagram ? instant.addingTimeInterval(60 * 86400) : nil))
+        #expect(writes.count == 1)
+        #expect(writes.first?.0 == token)
+        #expect(writes.first?.1 == "instagram_graph_token")
+        #expect(transport.requests.map { $0.url?.host } == [isInstagram ? "graph.instagram.com" : "graph.facebook.com"])
+    }
+
+    @Test("Connect recovers a misleading token prefix with one other-host probe", arguments: ["IGmis-prefixed", "EAAmis-prefixed"])
+    func instagramConnectSecondProbe(token: String) async throws {
+        let firstInstagram = token.hasPrefix("IG")
+        let denied = InstagramTestTransport.Reply.json(#"{"error":{"code":190,"message":"Wrong host"}}"#)
+        let transport = InstagramTestTransport([
+            "graph.instagram.com/me": firstInstagram ? denied : .json(#"{"user_id":"ig-123","username":"peacegrappler","account_type":"MEDIA_CREATOR"}"#),
+            "graph.facebook.com/me/accounts": firstInstagram ? .json(#"{"data":[{"instagram_business_account":{"id":"ig-123","username":"peacegrappler"}}]}"#) : denied,
+        ])
+        let graph = transport.provider(accessToken: token)
+        defer { transport.finish(graph) }
+        let store = makeStore()
+        let instant = Date(timeIntervalSince1970: 1_800_000_000)
+        await store.connectInstagram(token: token, session: graph.session, saveToken: { _, _ in }, now: instant)?.value
+        #expect(store.currentError == nil)
+        #expect(store.settings.instagram.tokenFlavor == (firstInstagram ? "facebook" : "instagram"))
+        #expect(store.settings.instagram.tokenRefreshedAt == (firstInstagram ? nil : instant))
+        #expect(store.settings.instagram.tokenExpiresAt == (firstInstagram ? nil : instant.addingTimeInterval(60 * 86400)))
+        #expect(transport.requests.map { $0.url?.host } == (firstInstagram
+            ? ["graph.instagram.com", "graph.facebook.com"] : ["graph.facebook.com", "graph.instagram.com"]))
+    }
+
+    @Test("Two failed probes report the detected-flavor error and never persist")
+    func instagramConnectBothFail() async throws {
+        let transport = InstagramTestTransport([
+            "graph.instagram.com/me": .json(#"{"user_id":"ig-123","username":"personal","account_type":"PERSONAL"}"#),
+            "graph.facebook.com/me/accounts": .json(#"{"error":{"code":190,"message":"Wrong Facebook host"}}"#),
+        ])
+        let graph = transport.provider()
+        defer { transport.finish(graph) }
+        let store = makeStore()
+        await store.connectInstagram(token: "IGpersonal", session: graph.session,
+            saveToken: { _, _ in Issue.record("Failed probes must not persist") })?.value
+        #expect(!store.settings.instagram.isGraphConnected)
+        #expect(!store.isConnectingInstagram)
+        #expect(store.currentError?.message.contains("switch it to Business or Creator") == true)
+        #expect(store.currentError?.message.contains("Wrong Facebook host") == false)
+        #expect(transport.requests.count == 2)
+    }
+
+    @Test("Refresh writes the same Keychain account and persists both live dates")
+    func instagramRefreshPersistence() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        var original = InstagramSettings()
+        original.connectedUsername = "peacegrappler"
+        original.connectedIGUserID = "ig-123"
+        original.tokenFlavor = "instagram"
+        original.tokenRefreshedAt = Date(timeIntervalSince1970: 1_799_000_000)
+        store.settings.instagram = original
+        let instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let refresh = InstagramTokenRefresh(token: "IGnew", refreshedAt: instant,
+                                            expiresAt: instant.addingTimeInterval(123456))
+        var keychain = "IGold"
+        let saved = try store.applyInstagramTokenRefresh(refresh, settings: original, replacing: "IGold",
+            readToken: { account in
+                #expect(account == "instagram_graph_token")
+                return keychain
+            }, saveToken: { value, account in
+                #expect(account == "instagram_graph_token")
+                keychain = value
+            })
+        #expect(saved)
+        #expect(keychain == "IGnew")
+        #expect(store.settings.instagram.tokenRefreshedAt == instant)
+        #expect(store.settings.instagram.tokenExpiresAt == refresh.expiresAt)
+        let persisted = SettingsStore.loadSettings().instagram
+        #expect(persisted.tokenRefreshedAt == instant)
+        #expect(persisted.tokenExpiresAt == refresh.expiresAt)
+    }
+
+    @Test("A stale refresh cannot overwrite a disconnected or replaced connection", arguments: ["disconnect", "account", "reconnect", "token"])
+    func instagramStaleRefresh(change: String) throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        var original = InstagramSettings()
+        original.connectedUsername = "peacegrappler"
+        original.connectedIGUserID = "ig-123"
+        original.tokenFlavor = "instagram"
+        original.tokenRefreshedAt = .distantPast
+        store.settings.instagram = original
+        switch change {
+        case "disconnect": store.settings.instagram.connectedUsername = ""
+        case "account": store.settings.instagram.connectedIGUserID = "other-id"
+        case "reconnect": store.settings.instagram.tokenRefreshedAt = Date()
+        default: break
+        }
+        let refresh = InstagramTokenRefresh(token: "IGnew", refreshedAt: Date(), expiresAt: .distantFuture)
+        let saved = try store.applyInstagramTokenRefresh(refresh, settings: original, replacing: "IGold",
+            readToken: { _ in change == "token" ? "IGanother" : "IGold" },
+            saveToken: { _, _ in Issue.record("Stale refresh must not write the Keychain") })
+        #expect(!saved)
+        #expect(store.settings.instagram.tokenExpiresAt == nil)
+    }
+
+    @Test("Refresh Keychain errors leave both dates untouched")
+    func instagramRefreshWriteFailure() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        var original = InstagramSettings()
+        original.connectedUsername = "peacegrappler"
+        original.connectedIGUserID = "ig-123"
+        original.tokenFlavor = "instagram"
+        original.tokenRefreshedAt = .distantPast
+        store.settings.instagram = original
+        let refresh = InstagramTokenRefresh(token: "IGnew", refreshedAt: Date(), expiresAt: .distantFuture)
+        do {
+            _ = try store.applyInstagramTokenRefresh(refresh, settings: original, replacing: "IGold",
+                readToken: { _ in "IGold" }, saveToken: { _, _ in throw InstagramError.fetchFailed("Keychain denied") })
+            Issue.record("Expected a Keychain error")
+        } catch {}
+        #expect(store.settings.instagram.tokenRefreshedAt == original.tokenRefreshedAt)
+        #expect(store.settings.instagram.tokenExpiresAt == nil)
+    }
+
 }

@@ -3,7 +3,7 @@ import Foundation
 /// Official Instagram Graph API access for the user's own business/creator
 /// account — real insights (reach, saves, shares, watch time) and stable
 /// downloads. The long-lived token lives in the Keychain; account discovery
-/// goes through the token's Facebook pages (graph.facebook.com).
+/// uses Facebook Pages or the Instagram professional account, per flavor.
 nonisolated struct GraphAPIProvider: InstagramProvider {
     let token: String
     /// Known IG user id (cached in settings after connect) — skips discovery.
@@ -12,7 +12,32 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
 
     var sourceName: String { "graph" }
 
-    private static let base = "https://graph.facebook.com/v23.0"
+    let flavor: InstagramTokenFlavor
+
+    init(token: String, igUserID: String? = nil, session: URLSession = .shared,
+         flavor: InstagramTokenFlavor = .facebook) {
+        self.token = token
+        self.igUserID = igUserID
+        self.session = session
+        self.flavor = flavor
+    }
+
+    private var base: String {
+        flavor == .instagram ? "https://graph.instagram.com/v23.0" : "https://graph.facebook.com/v23.0"
+    }
+
+    private var expiredTokenMessage: String {
+        flavor == .instagram
+            ? "Instagram Login token expired or was revoked; generate a new one in the Meta app dashboard"
+            : "Instagram access token expired or invalid — Reconnect in Settings → Instagram."
+    }
+
+    private var permissionNames: String {
+        // PLAN-VERIFY: confirm Instagram Login scope names with the live token spike.
+        flavor == .instagram
+            ? "instagram_business_basic, instagram_business_manage_insights, instagram_business_manage_comments, instagram_business_content_publish"
+            : "instagram_manage_insights, instagram_manage_comments, pages_read_engagement"
+    }
 
     /// Graph timestamps look like "2026-07-11T13:00:38+0000".
     private static let dateFormatter: DateFormatter = {
@@ -25,7 +50,7 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
     // MARK: - Requests
 
     private func getJSON(_ path: String, query: [String: String]) async throws -> [String: Any] {
-        guard var components = URLComponents(string: "\(Self.base)/\(path)") else {
+        guard var components = URLComponents(string: "\(base)/\(path)") else {
             throw InstagramError.fetchFailed("Invalid Graph API path: \(path)")
         }
         components.queryItems = query
@@ -52,12 +77,12 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
             let detail: String
             switch code {
             case 190:
-                detail = "Instagram access token expired or invalid — Reconnect in Settings → Instagram. (\(message))"
+                detail = "\(expiredTokenMessage) (\(message))"
             case 4, 17, 32, 613:
                 detail = "Instagram rate limit reached (\(message)) — the next Refresh resumes where this one stopped"
             case 10, 200:
                 detail = "Instagram refused \(label): \(message) — the connected token may lack a permission "
-                    + "(instagram_manage_insights, instagram_manage_comments, pages_read_engagement)"
+                    + "(\(permissionNames))"
             default:
                 detail = "Graph API: \(message)"
             }
@@ -67,7 +92,7 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
     }
 
     private func postJSON(_ path: String, form: [String: String]) async throws -> [String: Any] {
-        guard let url = URL(string: "\(Self.base)/\(path)") else {
+        guard let url = URL(string: "\(base)/\(path)") else {
             throw InstagramError.fetchFailed("Invalid Graph API path: \(path)")
         }
         var request = URLRequest(url: url, timeoutInterval: 60)
@@ -75,7 +100,7 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
         request.setValue("application/x-www-form-urlencoded; charset=utf-8",
                          forHTTPHeaderField: "Content-Type")
         request.httpBody = Self.formEncode(form.merging(["access_token": token]) { current, _ in current })
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, _) = try await session.data(for: request)
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw InstagramError.parseFailed("Graph API returned non-JSON for \(path)")
         }
@@ -84,11 +109,13 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
             switch error["code"] as? Int {
             case 190:
                 throw InstagramError.fetchFailed(
-                    "Instagram access token expired or invalid — reconnect in Settings → Instagram. (\(message))")
+                    "\(expiredTokenMessage) (\(message))")
             case 200, 10:
+                let permission = flavor == .instagram
+                    ? "instagram_business_content_publish" : "instagram_content_publish"
                 throw InstagramError.fetchFailed(
                     "Instagram refused the request: \(message) — the connected token likely lacks the "
-                    + "instagram_content_publish permission; reconnect in Settings → Instagram with a token that includes it")
+                    + "\(permission) permission; reconnect in Settings → Instagram with a token that includes it")
             default:
                 throw InstagramError.fetchFailed("Graph API: \(message)")
             }
@@ -120,6 +147,27 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
     /// The IG business/creator account behind the token's pages, matched to
     /// `username` when given (else the first one found — used by Connect).
     func resolveAccount(matching username: String?) async throws -> ResolvedAccount {
+        if flavor == .instagram {
+            // PLAN-VERIFY: use user_id, not app-scoped id, for Instagram Login paths.
+            let object = try await getJSON("me", query: [
+                "fields": "user_id,username,name,account_type,followers_count",
+            ])
+            guard let id = object["user_id"] as? String, !id.isEmpty,
+                  let found = object["username"] as? String else {
+                throw InstagramError.parseFailed("Instagram Login profile is missing user_id or username")
+            }
+            // PLAN-VERIFY: confirm BUSINESS / MEDIA_CREATOR account_type values.
+            guard ["BUSINESS", "MEDIA_CREATOR"].contains(object["account_type"] as? String ?? "") else {
+                throw InstagramError.fetchFailed(
+                    "@\(found) is a personal account; switch it to Business or Creator in the Instagram app")
+            }
+            if let username, found.caseInsensitiveCompare(username) != .orderedSame {
+                throw InstagramError.fetchFailed(
+                    "@\(username) is not among the token's Instagram accounts (found: @\(found))")
+            }
+            return ResolvedAccount(id: id, username: found, name: object["name"] as? String,
+                                   followers: object["followers_count"] as? Int)
+        }
         let object = try await getJSON("me/accounts", query: [
             "fields": "instagram_business_account{id,username,name,followers_count}",
         ])
@@ -171,6 +219,8 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
     /// `me/permissions`. Empty when that call fails — the message then
     /// falls back to the Page-role explanation.
     func missingPermissions() async -> [String] {
+        // PLAN-VERIFY: Instagram Login has no me/permissions endpoint.
+        guard flavor == .facebook else { return [] }
         guard let object = try? await getJSON("me/permissions", query: [:]) else { return [] }
         let granted = Set((object["data"] as? [[String: Any]] ?? []).compactMap { entry -> String? in
             guard entry["status"] as? String == "granted" else { return nil }
@@ -180,15 +230,40 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
     }
 
     static func noVisiblePagesMessage(missing: [String]) -> String {
+        let alternative = " Or generate an Instagram Login token for the account instead (no Facebook Page needed)."
         let lead = "This User token can't see any Facebook Page, so the Instagram account behind it can't be found. "
         if missing.isEmpty {
             return lead + "It holds every required permission, so check that your Facebook user still has a role "
                 + "on the Page linked to the Instagram account and that the Page is still linked to it, "
-                + "or paste the Page's own token."
+                + "or paste the Page's own token." + alternative
         }
         return lead + "It lacks \(missing.joined(separator: ", ")) — generate a new token that includes "
             + "\(missing.count == 1 ? "it" : "them") (Graph API Explorer → Permissions), "
-            + "or paste the Page's own token."
+            + "or paste the Page's own token." + alternative
+    }
+
+    /// Refresh an unexpired long-lived Instagram Login token without an app secret.
+    func refreshAccessToken(now: Date) async throws -> InstagramTokenRefresh {
+        guard flavor == .instagram else {
+            throw InstagramError.fetchFailed("Only Instagram Login tokens support automatic refresh")
+        }
+        // PLAN-VERIFY: unversioned endpoint, grant_type and expires_in units need the live spike.
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "graph.instagram.com"
+        components.path = "/refresh_access_token"
+        components.queryItems = [URLQueryItem(name: "grant_type", value: "ig_refresh_token"),
+                                 URLQueryItem(name: "access_token", value: token)]
+        guard let url = components.url else {
+            throw InstagramError.fetchFailed("Invalid Instagram token refresh URL")
+        }
+        let object = try await getJSON(url: url, label: "refresh_access_token")
+        guard let refreshed = object["access_token"] as? String, !refreshed.isEmpty,
+              let expiresIn = object["expires_in"] as? Double, expiresIn.isFinite, expiresIn > 0 else {
+            throw InstagramError.parseFailed("Instagram token refresh is missing access_token or expires_in")
+        }
+        return InstagramTokenRefresh(token: refreshed, refreshedAt: now,
+                                     expiresAt: now.addingTimeInterval(expiresIn))
     }
 
     // MARK: - InstagramProvider
@@ -209,7 +284,10 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
                 guard let profile = Self.account(from: object) else {
                     throw InstagramError.parseFailed("Graph API profile is missing id or username")
                 }
-                account = profile
+                var resolved = profile
+                // PLAN-VERIFY: Instagram Login's response id may be app-scoped; retain user_id from connect.
+                if flavor == .instagram { resolved.id = igUserID }
+                account = resolved
             } catch InstagramError.graphAPI(let code, let message) where [100, 10, 200].contains(code) {
                 log("Stored Instagram account \(igUserID) is unavailable (Graph \(code ?? 0): \(message)) — rediscovering the account")
                 account = try await resolveAccount(matching: username)
@@ -262,6 +340,7 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
 
         var stats = IGStats(likes: node["like_count"] as? Int,
                             comments: node["comments_count"] as? Int)
+        // PLAN-VERIFY: Instagram Login accepts the same reel metric names as Facebook Login.
         if let insights = try? await getJSON("\(item.mediaID)/insights", query: [
             "metric": "views,reach,likes,comments,shares,saved,ig_reels_avg_watch_time",
         ]) {
@@ -375,6 +454,7 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
             throw InstagramError.fetchFailed("\(file.lastPathComponent) is missing or empty")
         }
 
+        // PLAN-VERIFY: Instagram Login supports this same resumable container/upload/publish sequence.
         log("Creating the reel container…")
         let container = try await postJSON("\(userID)/media", form: [
             "media_type": "REELS",
@@ -397,7 +477,7 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
         request.setValue("OAuth \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("0", forHTTPHeaderField: "offset")
         request.setValue(String(fileSize), forHTTPHeaderField: "file_size")
-        let (uploadData, _) = try await URLSession.shared.upload(for: request, fromFile: file)
+        let (uploadData, _) = try await session.upload(for: request, fromFile: file)
         let uploadObject = (try? JSONSerialization.jsonObject(with: uploadData)) as? [String: Any] ?? [:]
         guard uploadObject["success"] as? Bool == true else {
             let detail = (uploadObject["debug_info"] as? [String: Any])?["message"] as? String
@@ -490,7 +570,7 @@ extension GraphAPIProvider {
     /// The same provider with a different token (the Page token for
     /// account-level insights and comments).
     func withToken(_ token: String) -> GraphAPIProvider {
-        GraphAPIProvider(token: token, igUserID: igUserID, session: session)
+        GraphAPIProvider(token: token, igUserID: igUserID, session: session, flavor: flavor)
     }
 
     static func shortcode(from permalink: String?) -> String? { IGShortcode.parse(permalink) }
@@ -504,6 +584,7 @@ extension GraphAPIProvider {
     /// uses it for every IG call; account insights and comments are the ones
     /// that need it. Nil when the token has no page access.
     func pageAccessToken(igUserID: String) async throws -> String? {
+        guard flavor == .facebook else { return nil }
         let object = try await getJSON("me/accounts", query: [
             "fields": "id,access_token,instagram_business_account{id}",
         ])
@@ -577,6 +658,7 @@ extension GraphAPIProvider {
     /// Per-media insight values (current totals). Missing metrics are
     /// simply absent — older posts lack some.
     func fetchMediaInsights(mediaID: String, metrics: [String]) async throws -> [String: Double] {
+        // PLAN-VERIFY: requested media metrics have the same names on both hosts.
         let object = try await getJSON("\(mediaID)/insights", query: ["metric": metrics.joined(separator: ",")])
         var values: [String: Double] = [:]
         for metric in object["data"] as? [[String: Any]] ?? [] {
@@ -595,6 +677,7 @@ extension GraphAPIProvider {
     func fetchAccountInsights(userID: String, metrics: [String], period: String = "day",
                               since: Date, until: Date, breakdown: String? = nil) async throws
         -> [IGGraphInsightValue] {
+        // PLAN-VERIFY: account metrics and breakdowns have the same names on both hosts.
         var query: [String: String] = [
             "metric": metrics.joined(separator: ","),
             "period": period,
@@ -626,6 +709,7 @@ extension GraphAPIProvider {
 
     /// Daily `follower_count` values (date → value), up to 30 days back.
     func fetchFollowerCountSeries(userID: String, since: Date) async throws -> [(date: String, value: Double)] {
+        // PLAN-VERIFY: follower_count is available for Instagram Login.
         let object = try await getJSON("\(userID)/insights", query: [
             "metric": "follower_count",
             "period": "day",
@@ -647,6 +731,7 @@ extension GraphAPIProvider {
     /// breakdown dimension and timeframe.
     func fetchDemographics(userID: String, metric: String, breakdown: String,
                            timeframe: String) async throws -> [(value: String, count: Int)] {
+        // PLAN-VERIFY: demographic metric names and breakdowns also apply to Instagram Login.
         let object = try await getJSON("\(userID)/insights", query: [
             "metric": metric,
             "period": "lifetime",

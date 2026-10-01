@@ -17,11 +17,14 @@ nonisolated final class InstagramTestTransport: @unchecked Sendable {
 
     init(_ replies: [String: Reply]) { self.replies = replies }
 
-    func provider(id: String? = "ig-123") -> GraphAPIProvider {
+    func provider(id: String? = "ig-123", flavor: InstagramTokenFlavor = .facebook,
+                  accessToken: String? = nil) -> GraphAPIProvider {
         InstagramTestURLProtocol.transports.withLock { $0[token] = self }
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [InstagramTestURLProtocol.self]
-        return GraphAPIProvider(token: token, igUserID: id, session: URLSession(configuration: config))
+        config.httpAdditionalHeaders = ["X-Instagram-Test-Transport": token]
+        return GraphAPIProvider(token: accessToken ?? token, igUserID: id,
+                                session: URLSession(configuration: config), flavor: flavor)
     }
 
     func finish(_ provider: GraphAPIProvider) {
@@ -31,8 +34,13 @@ nonisolated final class InstagramTestTransport: @unchecked Sendable {
 
     func respond(to request: URLRequest) throws -> Data {
         recorded.withLock { $0.append(request) }
-        let path = request.url?.path.replacingOccurrences(of: "/v23.0/", with: "") ?? ""
-        switch replies[path] {
+        let rawPath = request.url?.path ?? ""
+        let path = rawPath.hasPrefix("/v23.0/")
+            ? String(rawPath.dropFirst("/v23.0/".count))
+            : rawPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let hostPath = "\(request.url?.host ?? "")/\(path)"
+        let method = request.httpMethod ?? "GET"
+        switch replies["\(method) \(hostPath)"] ?? replies[hostPath] ?? replies["\(method) \(path)"] ?? replies[path] {
         case .json(let json): return Data(json.utf8)
         case .failure(let code): throw URLError(code)
         case nil:
@@ -51,7 +59,7 @@ nonisolated private final class InstagramTestURLProtocol: URLProtocol, @unchecke
     override func startLoading() {
         do {
             let url = try #require(request.url)
-            let token = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            let token = request.value(forHTTPHeaderField: "X-Instagram-Test-Transport") ?? URLComponents(url: url, resolvingAgainstBaseURL: false)?
                 .queryItems?.first { $0.name == "access_token" }?.value ?? ""
             let transport = try #require(Self.transports.withLock { $0[token] })
             let data = try transport.respond(to: request)
