@@ -43,6 +43,8 @@ struct AnalyzeWizardSheet: View {
     @AppStorage("pipeline.generate") private var generate = true
     @AppStorage("pipeline.critique") private var critique = true
     @AppStorage("pipeline.coverFrame") private var coverFrame = true
+    /// The saved Wizard form, read once: it lists the music folder on disk.
+    @State private var wizardForm = WizardOptions()
 
     private var options: PipelineOptions {
         PipelineOptions(detectPeople: detectPeople, transcribe: transcribe,
@@ -83,34 +85,41 @@ struct AnalyzeWizardSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
-                    taskRow($detectPeople, "Detect people",
+                    taskRow(.detectPeople, $detectPeople, "Detect people",
                             "Who's who per video: roster and portraits — ground truth for tagging and framing.")
-                    taskRow($transcribe, "Transcribe",
+                    taskRow(.transcribe, $transcribe, "Transcribe",
                             "Speech to text — feeds analysis, captions, and soundbites. Skipped when a transcript already exists.")
-                    taskRow($analyze, "Analyze tags",
+                    taskRow(.analyze, $analyze, "Analyze tags",
                             "The full scene analysis: tags, stories, scores, people ranges — one new analyze batch per video.")
-                    taskRow($fightScoring, "Fight scoring",
+                    taskRow(.fightScoring, $fightScoring, "Fight scoring",
                             "Scored actions behind the pace and who-is-winning graphs. Skips non-fight videos on its own.")
-                    taskRow($fightResearch, "Fight research",
+                    taskRow(.fightResearch, $fightResearch, "Fight research",
                             "Crawls fan reaction to the fight and distills the story angle for planning and captions. Fights only.")
-                    taskRow($proposeNames, "Rename files",
+                    taskRow(.proposeNames, $proposeNames, "Rename files",
                             "Descriptive filenames built from everything found — applied automatically at the end of the run; derived analyze-batch names follow.")
-                    taskRow($curate, "AI Favorites",
+                    taskRow(.curate, $curate, "AI Favorites",
                             "Judges the fresh scenes against your taste rubric and promotes the keepers to Favorites — generation then plans from them.")
-                    taskRow($framing, "Framing detection",
+                    taskRow(.framing, $framing, "Framing detection",
                             "The 9:16 Center Stage framing pass over each new batch's scenes.")
-                    taskRow($generate, "Generate video",
+                    taskRow(.generate, $generate, "Generate video",
                             "One reel per video via the AI Wizard, using your current Wizard settings (format, branding, audio).")
-                    taskRow($critique, "Critique & auto-retry",
-                            "The AI critic reviews each render and re-plans until satisfied (up to 3 versions).")
+                    taskRow(.critique, $critique, "Critique & auto-retry",
+                            "The AI critic reviews each render and re-plans until satisfied (up to 3 versions).",
+                            enabled: generate)
                         .disabled(!generate)
                         .padding(.leading, 18)
-                    taskRow($coverFrame, "Pick cover frames",
-                            "The AI picks each finished reel's Library thumbnail.")
+                    taskRow(.coverFrame, $coverFrame, "Pick cover frames",
+                            "The AI picks each finished reel's Library thumbnail.", enabled: generate)
                         .disabled(!generate)
                         .padding(.leading, 18)
                 }
             }
+
+            Text("Model choices are shared with Settings → AI and the AI Wizard, and saved as soon as you pick them.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
             HStack {
                 Spacer()
@@ -125,11 +134,13 @@ struct AnalyzeWizardSheet: View {
             }
         }
         .padding(20)
-        .frame(minWidth: 520, idealWidth: 560, minHeight: 480, idealHeight: 620)
+        .frame(minWidth: 720, idealWidth: 760, minHeight: 480, idealHeight: 720)
         .modalCloseButton { dismiss() }
+        .onAppear { wizardForm = AppStore.wizardOptionsFromForm(transcriptsAvailable: false) }
     }
 
-    private func taskRow(_ isOn: Binding<Bool>, _ title: String, _ subtitle: String) -> some View {
+    private func taskRow(_ phase: PipelinePhase, _ isOn: Binding<Bool>, _ title: String,
+                         _ subtitle: String, enabled: Bool = true) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Toggle("", isOn: isOn)
                 .labelsHidden()
@@ -137,12 +148,38 @@ struct AnalyzeWizardSheet: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
                     .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if isOn.wrappedValue && enabled {
+                    if let engine = phase.onDeviceEngine {
+                        Text("Runs on this Mac (\(engine)) — no model to choose")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 4)
+                    } else {
+                        VStack(alignment: .leading, spacing: 4) {
+                            TaskModelPickers(tasks: modelTasks(for: phase), labelWidth: Self.modelLabelWidth)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .controlSize(.small)
+                        .padding(.top, 4)
+                    }
+                }
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// Wide enough for the longest task label at caption size.
+    private static let modelLabelWidth: CGFloat = 130
+
+    private func modelTasks(for phase: PipelinePhase) -> [String] {
+        phase.aiTasks(recipe: ReelRecipe.recipe(id: wizardForm.formatPreset) ?? .custom,
+                      useBRoll: wizardForm.useBRoll, brollInstructions: wizardForm.brollInstructions)
     }
 }

@@ -112,6 +112,7 @@ nonisolated enum ProcessRunner {
                     stdin: Data? = nil,
                     timeout: TimeInterval? = nil,
                     environment: [String: String]? = nil,
+                    currentDirectory: URL? = nil,
                     capture: Capture = .full,
                     mediaResource: MediaWorkScheduler.Resource? = nil) async throws -> ProcessResult {
         let toolName = executable.lastPathComponent
@@ -137,6 +138,7 @@ nonisolated enum ProcessRunner {
                     process.executableURL = executable
                     process.arguments = arguments
                     process.environment = subprocessEnvironment(overrides: environment)
+                    if let currentDirectory { process.currentDirectoryURL = currentDirectory }
 
                     let stdoutPipe = Pipe()
                     let stderrPipe = Pipe()

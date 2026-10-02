@@ -41,8 +41,8 @@ nonisolated enum ProviderAuth {
     // MARK: - Status
 
     /// Ask the CLI itself. Claude and Codex have status commands; Gemini
-    /// and Qwen keep an OAuth credential file we can look for; Kimi offers
-    /// neither. Never throws — an unreadable answer is `.unknown`.
+    /// and Qwen keep an OAuth credential file we can look for; Antigravity
+    /// and Kimi offer neither. An unreadable answer is `.unknown`.
     static func status(provider key: String, binary: URL?, timeout: TimeInterval = 20) async -> State {
         switch key {
         case "claude":
@@ -62,6 +62,8 @@ nonisolated enum ProviderAuth {
             return credentialFileState(".gemini/oauth_creds.json")
         case "qwen":
             return credentialFileState(".qwen/oauth_creds.json")
+        case "antigravity":
+            return .unknown
         default:
             return .unknown
         }
@@ -103,6 +105,7 @@ nonisolated enum ProviderAuth {
         case "codex": "codex login"
         // These prompt for sign-in on first launch.
         case "gemini": "gemini"
+        case "antigravity": "agy"
         case "qwen": "qwen"
         case "kimi": "kimi"
         default: nil

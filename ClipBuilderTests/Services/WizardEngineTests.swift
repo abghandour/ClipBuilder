@@ -129,6 +129,101 @@ struct WizardEngineTests {
         #expect(plan.transitions.isEmpty)
     }
 
+    @Test("podcast validation keeps the answer from a multi-clip planner response")
+    func podcastValidationKeepsAnswer() async throws {
+        let engine = WizardEngine(ai: AIService(config: AppSettings().ai), render: RenderEngine())
+        var scene = Fixtures.scene(id: 670)
+        scene.startTime = 1419.7
+        scene.endTime = 1450.8
+        var options = WizardOptions()
+        options.formatPreset = "podcast"
+        options.targetDurationSeconds = 15
+        let raw: [String: Any] = ["clips": [
+            ["scene_id": 670, "start": 1419.7, "end": 1423.5, "speed": 2, "replay": true],
+            ["scene_id": 670, "start": 1423.5, "end": 1427.7],
+            ["scene_id": 999, "start": 2, "end": 6],
+            ["scene_id": 670, "start": 1427.7, "end": 1431.7],
+            ["scene_id": 670, "start": 1431.7, "end": 1435.7],
+        ], "transitions": ["fade", "fade", "fade", "fade"]]
+        let turns = [SpeakerTurn(videoID: scene.videoID, start: 1419.7, end: 1423.5, cluster: 0, confidence: 1),
+                     SpeakerTurn(videoID: scene.videoID, start: 1423.5, end: 1450.8, cluster: 1, confidence: 1)]
+        let plan = try #require(await engine.validatePlan(raw,
+            scenes: [670: scene, 999: Fixtures.scene(id: 999)], musicNames: [], options: options,
+            podcastSentenceEnds: [670: [1423.5, 1427.7, 1431.7, 1435.7, 1441.7]],
+            podcastSpeakerTurns: [scene.videoID: turns]))
+        #expect(plan.clips.count == 1)
+        #expect(plan.clips[0].sceneID == 670)
+        #expect(plan.clips[0].start == 1419.7)
+        #expect(plan.clips[0].end == 1431.7)
+        #expect(plan.clips[0].speed == 1 && !plan.clips[0].replay)
+        #expect(plan.clips[0].layout == nil && plan.clips[0].screenCrop == nil && plan.clips[0].areaClips.isEmpty)
+        #expect(plan.transitions.isEmpty)
+    }
+
+    @Test("podcast validation uses later proposals and cuts between complete stretches")
+    func podcastValidationKeepsClosingJump() async throws {
+        let engine = WizardEngine(ai: AIService(config: AppSettings().ai), render: RenderEngine())
+        var scene = Fixtures.scene()
+        scene.startTime = 100
+        scene.endTime = 131
+        var options = WizardOptions()
+        options.formatPreset = "podcast"
+        options.targetDurationSeconds = 15
+        let raw: [String: Any] = ["target_duration": 15, "clips": [
+            ["scene_id": 1, "start": 100, "end": 104],
+            ["scene_id": 2, "start": 2, "end": 6],
+            ["scene_id": 1, "start": 125, "end": 130],
+        ], "transitions": ["fade", "fade"]]
+        let plan = try #require(await engine.validatePlan(raw,
+            scenes: [1: scene, 2: Fixtures.scene(id: 2)], musicNames: [], options: options,
+            podcastSentenceEnds: [1: [104, 110, 120, 125, 130]]))
+        #expect(plan.clips.map(\.sceneID) == [1, 1])
+        #expect(plan.clips.map(\.start) == [100, 125])
+        #expect(plan.clips.map(\.end) == [110, 130])
+        #expect(plan.transitions == ["cut"])
+        #expect(plan.targetDuration == 15)
+    }
+
+    @Test("podcast validation keeps an over-target answer at its exact sentence boundary")
+    func podcastValidationExceedsTargetForAnswer() async throws {
+        let engine = WizardEngine(ai: AIService(config: AppSettings().ai), render: RenderEngine())
+        let scene = Fixtures.scene(start: 100, end: 131)
+        var options = WizardOptions()
+        options.formatPreset = "podcast"
+        options.targetDurationSeconds = 15
+        let raw: [String: Any] = ["clips": [["scene_id": 1, "start": 105, "end": 108]]]
+        let plan = try #require(await engine.validatePlan(raw, scenes: [1: scene], musicNames: [], options: options,
+            podcastSentenceEnds: [1: [112, 120.123, 125]]))
+        #expect(plan.clips[0].start == 100)
+        #expect(plan.clips[0].end == 120.123)
+        #expect(plan.targetDuration > 15)
+    }
+
+    @Test("podcast prompt shows dialogue and gives completeness priority over length")
+    func podcastPromptShowsTranscript() async {
+        let engine = WizardEngine(ai: AIService(config: AppSettings().ai), render: RenderEngine())
+        var options = WizardOptions()
+        options.formatPreset = "podcast"
+        options.targetDurationSeconds = 15
+        let dialogue = "    [2.0–4.0] Host: Why?\n    [4.0–6.0] Guest: Here is why."
+        let prompt = await engine.legacyPlanPrompt(profile: BrandProfile(name: "Test"), research: [:],
+            scenes: [Fixtures.scene()], musicNames: ["music.wav"], signals: .init(), people: [], outcomes: [],
+            podcastTranscripts: [1: dialogue], options: options)
+        #expect(prompt.contains(dialogue))
+        #expect(prompt.contains("at most three"))
+        #expect(prompt.contains("answer's opening to its closing sentences"))
+        #expect(prompt.contains("Completeness takes priority over Length"))
+        #expect(!prompt.contains("1.5-5"))
+        #expect(!prompt.contains("REQUIRED DURATION (HARD CONSTRAINT)"))
+        options.formatPreset = "custom"
+        let ordinary = await engine.legacyPlanPrompt(profile: BrandProfile(name: "Test"), research: [:],
+            scenes: [Fixtures.scene()], musicNames: [], signals: .init(), people: [], outcomes: [],
+            podcastTranscripts: [1: dialogue], options: options)
+        #expect(!ordinary.contains(dialogue))
+        #expect(ordinary.contains("each clip duration should be 1.5-5 seconds"))
+        #expect(ordinary.contains("REQUIRED DURATION (HARD CONSTRAINT)"))
+    }
+
     @Test("planning sees only the current project's scenes while Home sees every scene")
     func projectScope() async throws {
         let temp = try TempDatabase()

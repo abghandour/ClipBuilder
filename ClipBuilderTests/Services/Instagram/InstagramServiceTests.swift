@@ -181,10 +181,10 @@ struct InstagramServiceTests {
                 return true
             }, now: { instant })
         var settings = connectedSettings()
-        settings.tokenFlavor = "instagram"
-        settings.tokenRefreshedAt = instant.addingTimeInterval(-ageHours * 3600)
-        settings.tokenExpiresAt = expiryDays.map { instant.addingTimeInterval($0 * 86400) }
-        let provider = await service.refreshTokenIfNeeded(settings: settings, log: { _ in })
+        settings.connections[0].tokenFlavor = "instagram"
+        settings.connections[0].tokenRefreshedAt = instant.addingTimeInterval(-ageHours * 3600)
+        settings.connections[0].tokenExpiresAt = expiryDays.map { instant.addingTimeInterval($0 * 86400) }
+        let provider = await service.refreshTokenIfNeeded(account: "peacegrappler", settings: settings, log: { _ in })
         let expected = ageHours > 24 && (expiryDays.map { $0 > 0 && $0 <= 14 } ?? true)
         #expect(transport.requests.count == (expected ? 1 : 0))
         #expect(provider?.token == (expected ? "IGrefreshed" : graph.token))
@@ -211,10 +211,10 @@ struct InstagramServiceTests {
         let service = InstagramService(ai: AIService(config: AIConfig()), makeGraphProvider: { _, _ in graph },
             persistTokenRefresh: { _, _, _ in Issue.record("Unexpected token write"); return true }, now: { instant })
         var settings = connectedSettings()
-        settings.tokenFlavor = flavor.rawValue
-        settings.tokenRefreshedAt = flavor == .facebook ? instant.addingTimeInterval(-48 * 3600) : nil
-        settings.tokenExpiresAt = instant.addingTimeInterval(86400)
-        _ = await service.refreshTokenIfNeeded(settings: settings, log: { _ in })
+        settings.connections[0].tokenFlavor = flavor.rawValue
+        settings.connections[0].tokenRefreshedAt = flavor == .facebook ? instant.addingTimeInterval(-48 * 3600) : nil
+        settings.connections[0].tokenExpiresAt = instant.addingTimeInterval(86400)
+        _ = await service.refreshTokenIfNeeded(account: "peacegrappler", settings: settings, log: { _ in })
         #expect(transport.requests.isEmpty)
     }
 
@@ -231,9 +231,9 @@ struct InstagramServiceTests {
         let writes = Mutex<[(String, InstagramTokenRefresh)]>([])
         let keychain = Mutex(graph.token)
         var settings = connectedSettings()
-        settings.tokenFlavor = "instagram"
-        settings.tokenRefreshedAt = instant.addingTimeInterval(-48 * 3600)
-        settings.tokenExpiresAt = instant.addingTimeInterval(86400)
+        settings.connections[0].tokenFlavor = "instagram"
+        settings.connections[0].tokenRefreshedAt = instant.addingTimeInterval(-48 * 3600)
+        settings.connections[0].tokenExpiresAt = instant.addingTimeInterval(86400)
         var appSettings = AppSettings()
         appSettings.instagram = settings
         let profile = Fixtures.brand(name: "Instagram refresh test")
@@ -241,9 +241,9 @@ struct InstagramServiceTests {
                              ai: AIService(config: appSettings.ai))
         let service = InstagramService(ai: AIService(config: AIConfig()), makeGraphProvider: { _, _ in graph.withToken(keychain.withLock { $0 }) },
             persistTokenRefresh: { refresh, original, token in
-                try await store.applyInstagramTokenRefresh(refresh, settings: original, replacing: token,
+                try await store.applyInstagramTokenRefresh(refresh, connection: original, replacing: token,
                     readToken: { account in
-                        #expect(account == "instagram_graph_token")
+                        #expect(account == "instagram_graph_token:ig-123")
                         return keychain.withLock { $0 }
                     }, saveToken: { value, account in
                         keychain.withLock { $0 = value }
@@ -251,23 +251,23 @@ struct InstagramServiceTests {
                     })
             }, now: { instant })
         let snapshot = settings
-        async let first = service.refreshTokenIfNeeded(settings: snapshot, log: { _ in })
-        async let second = service.refreshTokenIfNeeded(settings: snapshot, log: { _ in })
+        async let first = service.refreshTokenIfNeeded(account: "peacegrappler", settings: snapshot, log: { _ in })
+        async let second = service.refreshTokenIfNeeded(account: "peacegrappler", settings: snapshot, log: { _ in })
         let (a, b) = await (first, second)
-        let third = await service.refreshTokenIfNeeded(settings: snapshot, log: { _ in })
+        let third = await service.refreshTokenIfNeeded(account: "peacegrappler", settings: snapshot, log: { _ in })
         #expect(a?.token == "IGnew-token" && b?.token == "IGnew-token" && third?.token == "IGnew-token")
         _ = try await a?.fetchProfile(username: "peacegrappler", log: { _ in })
         #expect(transport.requests.filter { $0.url?.path == "/refresh_access_token" }.count == 1)
         #expect(transport.requests.allSatisfy { $0.url?.host == "graph.instagram.com" })
         let values = writes.withLock { $0 }
         #expect(values.count == 1)
-        #expect(values.first?.0 == "instagram_graph_token")
+        #expect(values.first?.0 == "instagram_graph_token:ig-123")
         #expect(values.first?.1.token == "IGnew-token")
         #expect(values.first?.1.refreshedAt == instant)
         #expect(values.first?.1.expiresAt == instant.addingTimeInterval(123456))
         #expect(keychain.withLock { $0 } == "IGnew-token")
-        #expect(store.settings.instagram.tokenRefreshedAt == instant)
-        #expect(store.settings.instagram.tokenExpiresAt == instant.addingTimeInterval(123456))
+        #expect(store.settings.instagram.connections[0].tokenRefreshedAt == instant)
+        #expect(store.settings.instagram.connections[0].tokenExpiresAt == instant.addingTimeInterval(123456))
         let profileURL = try #require(transport.requests.last?.url)
         #expect(URLComponents(url: profileURL, resolvingAgainstBaseURL: false)?.queryItems?
             .first { $0.name == "access_token" }?.value == "IGnew-token")
@@ -292,9 +292,9 @@ struct InstagramServiceTests {
             persistTokenRefresh: { _, _, _ in Issue.record("Failed refresh must not write the Keychain"); return true },
             now: { instant })
         var settings = connectedSettings()
-        settings.tokenFlavor = "instagram"
-        settings.tokenRefreshedAt = instant.addingTimeInterval(-48 * 3600)
-        settings.tokenExpiresAt = instant.addingTimeInterval(86400)
+        settings.connections[0].tokenFlavor = "instagram"
+        settings.connections[0].tokenRefreshedAt = instant.addingTimeInterval(-48 * 3600)
+        settings.connections[0].tokenExpiresAt = instant.addingTimeInterval(86400)
         let temp = try TempDatabase()
         let existingID = try await temp.database.upsertIGAccount(username: "peacegrappler", kind: "own",
                                                               displayName: nil, igUserID: "ig-123", followers: nil)
@@ -303,7 +303,7 @@ struct InstagramServiceTests {
         let accountID = try await service.refreshAccount(username: "peacegrappler", kind: "own",
             database: temp.database, settings: settings, limit: 4, log: { message in logs.withLock { $0.append(message) } })
         #expect(accountID > 0)
-        _ = await service.refreshTokenIfNeeded(settings: settings, log: { message in logs.withLock { $0.append(message) } })
+        _ = await service.refreshTokenIfNeeded(account: "peacegrappler", settings: settings, log: { message in logs.withLock { $0.append(message) } })
         #expect(logs.withLock { $0.filter { $0.contains("token refresh failed") }.count } == 1)
         #expect(transport.requests.contains { $0.url?.path == "/v23.0/ig-123/media" })
         #expect(transport.requests.allSatisfy { request in
@@ -326,9 +326,9 @@ struct InstagramServiceTests {
             persistTokenRefresh: { _, _, _ in throw InstagramError.fetchFailed("Keychain write failed") },
             now: { instant })
         var settings = connectedSettings()
-        settings.tokenFlavor = "instagram"
-        settings.tokenRefreshedAt = instant.addingTimeInterval(-48 * 3600)
-        let provider = await service.refreshTokenIfNeeded(settings: settings, log: { _ in })
+        settings.connections[0].tokenFlavor = "instagram"
+        settings.connections[0].tokenRefreshedAt = instant.addingTimeInterval(-48 * 3600)
+        let provider = await service.refreshTokenIfNeeded(account: "peacegrappler", settings: settings, log: { _ in })
         #expect(provider?.token == graph.token)
     }
 
@@ -345,13 +345,13 @@ struct InstagramServiceTests {
         let service = InstagramService(ai: AIService(config: AIConfig()), makeGraphProvider: { _, _ in graph },
             persistTokenRefresh: { _, _, _ in writes.withLock { $0 += 1 }; return true }, now: { instant })
         var settings = connectedSettings()
-        settings.tokenFlavor = "instagram"
-        settings.tokenRefreshedAt = instant.addingTimeInterval(-48 * 3600)
+        settings.connections[0].tokenFlavor = "instagram"
+        settings.connections[0].tokenRefreshedAt = instant.addingTimeInterval(-48 * 3600)
         let file = FileManager.default.temporaryDirectory.appendingPathComponent("instagram-service-publish-\(UUID().uuidString).mp4")
         try Data([1]).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
         do {
-            _ = try await service.publishReel(file: file, caption: "", shareToFeed: true, settings: settings, log: { _ in })
+            _ = try await service.publishReel(file: file, caption: "", shareToFeed: true, account: "peacegrappler", settings: settings, log: { _ in })
             Issue.record("Expected the publish permission error")
         } catch {
             #expect(String(describing: error).contains("instagram_business_content_publish"))
@@ -361,6 +361,97 @@ struct InstagramServiceTests {
         #expect(transport.requests.allSatisfy { $0.url?.host == "graph.instagram.com" })
     }
 
+    @Test("Each connection routes through its own host and keyed token")
+    func multipleConnectionRouting() async throws {
+        let transport = InstagramTestTransport([
+            "graph.facebook.com/ig-123": .json(#"{"id":"ig-123","username":"peacegrappler"}"#),
+            "graph.instagram.com/ig-456": .json(#"{"id":"ig-456","username":"podcast"}"#),
+        ])
+        let graph = transport.provider()
+        defer { transport.finish(graph) }
+        let tokens = ["instagram_graph_token:ig-123": "EAAfirst", "instagram_graph_token:ig-456": "IGsecond"]
+        let service = InstagramService(ai: AIService(config: AIConfig()),
+            readToken: { tokens[$0] }, session: graph.session)
+        var settings = connectedSettings()
+        settings.connections.append(InstagramConnection(username: "podcast", igUserID: "ig-456", tokenFlavor: "instagram"))
+        let facebook = try #require(await service.refreshTokenIfNeeded(account: "PEACEGRAPPLER", settings: settings, log: { _ in }))
+        let instagram = try #require(await service.refreshTokenIfNeeded(account: "PODCAST", settings: settings, log: { _ in }))
+        #expect(facebook.token == "EAAfirst")
+        #expect(instagram.token == "IGsecond")
+        _ = try await facebook.fetchProfile(username: "peacegrappler", log: { _ in })
+        _ = try await instagram.fetchProfile(username: "podcast", log: { _ in })
+        #expect(transport.requests.map { $0.url?.host } == ["graph.facebook.com", "graph.instagram.com"])
+        #expect(transport.requests.map { request in
+            request.url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }?
+                .queryItems?.first { $0.name == "access_token" }?.value
+        } == ["EAAfirst", "IGsecond"])
+    }
+
+    @Test("An unconnected username uses web without reading any Graph token")
+    func unconnectedUsesWeb() async throws {
+        let web = InstagramWebSpy()
+        let service = InstagramService(ai: AIService(config: AIConfig()),
+            readToken: { _ in Issue.record("Unconnected accounts must not read the Keychain"); return nil },
+            makeWebProvider: { _ in web })
+        let temp = try TempDatabase()
+        _ = try await service.refreshAccount(username: "public-account", kind: "public", database: temp.database,
+                                             settings: connectedSettings(), limit: 4, log: { _ in })
+        #expect(web.profileCalls == 1)
+    }
+
+    @Test("Publishing never substitutes another connected account")
+    func unconnectedPublish() async throws {
+        let service = InstagramService(ai: AIService(config: AIConfig()),
+            readToken: { _ in Issue.record("Unconnected publish must not read the Keychain"); return nil })
+        do {
+            _ = try await service.publishReel(file: URL(fileURLWithPath: "/unused.mp4"), caption: "", shareToFeed: true,
+                                               account: "missing", settings: connectedSettings(), log: { _ in })
+            Issue.record("Expected an unconnected account error")
+        } catch {
+            #expect(String(describing: error).contains("@missing is not connected"))
+        }
+    }
+
+    @Test("Refreshing one account preserves the other, and both retain their refresh cache")
+    @MainActor
+    func independentRefreshes() async throws {
+        let instant = Date(timeIntervalSince1970: 1_800_000_000)
+        let transport = InstagramTestTransport([
+            "refresh_access_token": .json(#"{"access_token":"IGreplacement","expires_in":5184000}"#),
+        ])
+        let graph = transport.provider()
+        defer { transport.finish(graph) }
+        let first = InstagramConnection(username: "first", igUserID: "first-id", tokenFlavor: "instagram",
+                                        tokenExpiresAt: instant.addingTimeInterval(86400),
+                                        tokenRefreshedAt: instant.addingTimeInterval(-48 * 3600))
+        var second = first
+        second.username = "second"
+        second.igUserID = "second-id"
+        var settings = AppSettings()
+        settings.instagram.connections = [first, second]
+        let snapshot = settings.instagram
+        let profile = Fixtures.brand()
+        let store = AppStore(settings: settings, profiles: [profile], active: profile, ai: AIService(config: settings.ai))
+        let tokens = Mutex(["instagram_graph_token:first-id": "IGfirst", "instagram_graph_token:second-id": "IGsecond"])
+        let service = InstagramService(ai: AIService(config: AIConfig()), readToken: { key in tokens.withLock { $0[key] } },
+            session: graph.session, persistTokenRefresh: { refresh, original, token in
+                try await store.applyInstagramTokenRefresh(refresh, connection: original, replacing: token,
+                    readToken: { key in tokens.withLock { $0[key] } },
+                    saveToken: { value, key in tokens.withLock { $0[key] = value } })
+            }, now: { instant })
+        _ = await service.refreshTokenIfNeeded(account: "first", settings: snapshot, log: { _ in })
+        #expect(store.settings.instagram.connections[0].tokenRefreshedAt == instant)
+        #expect(store.settings.instagram.connections[1] == second)
+        #expect(tokens.withLock { $0["instagram_graph_token:second-id"] } == "IGsecond")
+        _ = await service.refreshTokenIfNeeded(account: "second", settings: snapshot, log: { _ in })
+        let firstAgain = await service.refreshTokenIfNeeded(account: "first", settings: snapshot, log: { _ in })
+        let secondAgain = await service.refreshTokenIfNeeded(account: "second", settings: snapshot, log: { _ in })
+        #expect(firstAgain?.token == "IGreplacement")
+        #expect(secondAgain?.token == "IGreplacement")
+        #expect(transport.requests.count == 2)
+        #expect(store.settings.instagram.connections.allSatisfy { $0.tokenRefreshedAt == instant })
+    }
+
     private func makeService(graph: GraphAPIProvider, web: InstagramWebSpy) -> InstagramService {
         InstagramService(ai: AIService(config: AIConfig()), makeGraphProvider: { _, _ in graph },
                          makeWebProvider: { _ in web })
@@ -368,8 +459,7 @@ struct InstagramServiceTests {
 
     private func connectedSettings() -> InstagramSettings {
         var settings = InstagramSettings()
-        settings.connectedUsername = "peacegrappler"
-        settings.connectedIGUserID = "ig-123"
+        settings.connections = [InstagramConnection(username: "peacegrappler", igUserID: "ig-123", tokenFlavor: "facebook")]
         return settings
     }
 }

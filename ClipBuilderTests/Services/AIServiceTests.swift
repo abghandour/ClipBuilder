@@ -21,14 +21,14 @@ struct AIServiceTests {
         // kill the child before its first shell statement, so a child-written
         // count file cannot reliably prove how many attempts the service made.
         let attempts = AIServiceLogSink()
-        let service = AIService(config: config) { executable, arguments, stdin, timeout, environment in
+        let service = AIService(config: config) { executable, arguments, stdin, timeout, environment, currentDirectory in
             attempts.append(executable.path)
             #expect(timeout == 1)
             if beforeScriptStarts {
                 throw ProcessRunnerError.timedOut(executable.lastPathComponent)
             }
             return try await ProcessRunner.run(executable: executable, arguments: arguments,
-                                                stdin: stdin, timeout: timeout, environment: environment)
+                                                stdin: stdin, timeout: timeout, environment: environment, currentDirectory: currentDirectory)
         }
         let logs = AIServiceLogSink()
         do {
@@ -247,6 +247,7 @@ struct AIServiceTests {
         }
         var config = AIConfig()
         config.providers["gemini"] = AIProviderSettings(bin: failure.path, model: "native-fixture")
+        config.providers["antigravity"] = AIProviderSettings(bin: "/nonexistent/clipbuilder-test-agy", model: nil)
         config.providers["claude"] = AIProviderSettings(bin: success.path, model: "still-fixture")
         let service = AIService(config: config)
         let capture = AIRunCapture()

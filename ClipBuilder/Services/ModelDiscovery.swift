@@ -21,7 +21,8 @@ nonisolated struct DiscoveredProviderModels: Codable, Sendable, Hashable {
 /// Asks each provider what it offers, where a provider can be asked at all:
 /// Codex keeps a models cache on disk; Claude Code takes family aliases
 /// that always mean the latest model. Gemini, Qwen and Kimi publish nothing
-/// locally and stay on the catalog.
+/// locally and stay on the catalog. Antigravity is queried only on manual
+/// refresh so its process never holds up app launch.
 nonisolated enum ModelDiscovery {
     /// Codex's own cache of the models its account can use (refreshed by
     /// the CLI itself). Not a documented interface: read tolerantly and
@@ -39,6 +40,37 @@ nonisolated enum ModelDiscovery {
         }
         result["claude"] = DiscoveredProviderModels(models: claudeAliases, authoritative: false)
         return result
+    }
+
+    /// Settings refresh may launch a CLI; keep both PATH lookup and the
+    /// process off MainActor, leaving launch's local-only discovery alone.
+    @concurrent
+    static func refresh(antigravityBinary: String, codexCache: URL = codexCacheURL) async -> [String: DiscoveredProviderModels] {
+        var found = discover(codexCache: codexCache)
+        if let binary = ProcessRunner.locate(antigravityBinary),
+           let result = try? await ProcessRunner.run(executable: binary, arguments: ["models"], timeout: 20),
+           result.exitCode == 0 {
+            let models = antigravityModels(output: result.stdoutText)
+            if !models.isEmpty {
+                found["antigravity"] = DiscoveredProviderModels(models: models, authoritative: true)
+            }
+        }
+        return found
+    }
+
+    /// `agy models` prints a progress line, then tab-separated ids and names.
+    static func antigravityModels(output: String) -> [DiscoveredModel] {
+        var seen = Set<String>()
+        return output.components(separatedBy: .newlines).compactMap { line in
+            let line = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !line.hasPrefix("Fetching") else { return nil }
+            let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else { return nil }
+            let id = parts[0].trimmingCharacters(in: .whitespaces)
+            let name = parts[1].trimmingCharacters(in: .whitespaces)
+            guard !id.isEmpty, !name.isEmpty, seen.insert(id).inserted else { return nil }
+            return DiscoveredModel(provider: "antigravity", id: id, name: name, description: nil)
+        }
     }
 
     /// The visible entries of Codex's models cache, in the cache's order.

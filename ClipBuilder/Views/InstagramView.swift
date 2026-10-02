@@ -63,7 +63,7 @@ struct InstagramView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .screenTitle(tab == .posts ? "Instagram — Posts" : "Instagram — Reports", subtitle: tab == .posts ? subtitle : "Performance insights")
+        .screenTitle(tab == .posts ? "Instagram — Posts" : "Instagram — Reports", subtitle: subtitle)
         .toolbar { toolbarContent }
         .sheet(isPresented: $addingAccount) { addAccountSheet }
         .sheet(item: $detailMedia) { media in
@@ -133,9 +133,12 @@ struct InstagramView: View {
                     }
                 }
             } label: {
-                Text("Accounts")
+                // Name the account on screen; the menu switches it.
+                Text(selectedAccount.map { "@\($0.username)" } ?? "Accounts")
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            .help("Switch, add, or remove accounts")
+            .help("The account shown. Switch, add, or remove accounts")
         }
         if tab == .posts {
             ToolbarItem {

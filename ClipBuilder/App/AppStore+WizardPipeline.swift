@@ -71,6 +71,9 @@ extension AppStore {
         let total = Double(max(1, totalUnits))
 
         pipelineTask = Task {
+            // Settings saves enqueue an actor update; Start and Resume must
+            // apply the latest routing before any phase can dispatch AI.
+            await ai.updateConfig(settings.ai)
             // The operation closure is nonisolated by type; pin it to the main
             // actor so the nested helpers that touch pipeline state are too.
             await SampledFrameCache.$current.withValue(SampledFrameCache()) { @MainActor in
@@ -415,6 +418,8 @@ extension AppStore {
             .output(transcriptsAvailable: transcriptsAvailable, recipe: options.formatPreset)
         options.addCaptions = text.captions
         options.enableTextOverlays = text.headlines
+        options.highlightFraming = defaults.string(forKey: "wizard.highlightFraming").flatMap(CropRecipe.Kind.init(rawValue:))
+        options.podcastFraming = PodcastFramingMode(rawValue: defaults.string(forKey: "wizard.podcastFraming") ?? "") ?? .followSpeaker
         options.framingCamera = WizardDefaults.fallbackFramingCamera
         let layoutMode = WizardLayoutMode(rawValue: defaults.string(forKey: WizardDefaults.layoutModeKey) ?? "")
             ?? .automatic

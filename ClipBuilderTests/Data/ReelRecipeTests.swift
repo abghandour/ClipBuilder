@@ -68,6 +68,8 @@ struct ReelRecipeTests {
         #expect(c.length == (highlights ? .maxSecondsAndCount : .targetDuration))
         #expect(c.podcastFraming == (spoken || custom))
         #expect(c.cameraFocus == highlights)
+        #expect(c.offersCameraFocus == (spoken || custom || highlights))
+        #expect(c.offersOriginalFraming == (spoken || custom))
         #expect(c.bRoll == (spoken || custom || highlights))
         #expect(c.fightResearch == (!spoken && !highlights))
         #expect(c.layouts == (!spoken && !highlights))
@@ -153,7 +155,7 @@ struct ReelRecipeTests {
             expected["tastePreset"] = .string("none")
             expected["pacing"] = try json(WizardOptions())["pacing"]
         } else {
-            expected.removeValue(forKey: "highlightFraming")
+            if fight { expected.removeValue(forKey: "highlightFraming") }
             expected.removeValue(forKey: "highlightMaxSeconds")
             expected.removeValue(forKey: "highlightMaxCount")
         }

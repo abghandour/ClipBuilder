@@ -46,6 +46,10 @@ nonisolated extension WizardOptions {
         highlightMaxCount = try values.decodeIfPresent(Int.self, forKey: .highlightMaxCount)
         highlightMaxSeconds = try values.decodeIfPresent(Double.self, forKey: .highlightMaxSeconds).map(PodcastSettings.clampHighlightSeconds)
         podcastFraming = try values.decodeIfPresent(PodcastFramingMode.self, forKey: .podcastFraming) ?? podcastFraming
+        if podcastFraming == .splitZoom {
+            highlightFraming = .grid
+            podcastFraming = .followSpeaker
+        }
         screenCropLayouts = try values.decodeIfPresent([String].self, forKey: .screenCropLayouts) ?? screenCropLayouts
         allowedTransitions = try values.decodeIfPresent([String].self, forKey: .allowedTransitions)
         pinnedOverlayTemplate = try values.decodeIfPresent(String.self, forKey: .pinnedOverlayTemplate)

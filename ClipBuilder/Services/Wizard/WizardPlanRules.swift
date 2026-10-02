@@ -6,6 +6,105 @@ import Foundation
 /// these between validation and assembly.
 nonisolated enum WizardPlanRules {
 
+    /// Keep the question and a complete answer sentence before considering
+    /// length or optional jumps to the exchange's closing sentences.
+    static func podcastExchangeCuts(scene: ClosedRange<Double>, sentenceEnds: [Double],
+                                    turns: [SpeakerTurn], proposed: [ClosedRange<Double>],
+                                    targetSeconds: Int?) -> (cuts: [ClosedRange<Double>], exceededTarget: Bool) {
+        guard let targetSeconds, scene.upperBound - scene.lowerBound > Double(targetSeconds) else {
+            return ([scene], false)
+        }
+        let target = Double(targetSeconds)
+        let boundaries = Array(Set([scene.lowerBound, scene.upperBound] + sentenceEnds.filter {
+            $0.isFinite && scene.contains($0)
+        })).sorted()
+        let covering = turns.filter { $0.end > scene.lowerBound && $0.start < scene.upperBound }
+            .sorted { $0.start < $1.start }
+        let speaker = covering.first { $0.start <= scene.lowerBound }
+        let answerStart = speaker.flatMap { first in
+            covering.first {
+                $0.start > scene.lowerBound
+                    && SpeakerTurnCleanup.identity($0) != SpeakerTurnCleanup.identity(first)
+            }?.start
+        } ?? boundaries.first { $0 > scene.lowerBound } ?? scene.upperBound
+        let answerEnd = boundaries.first { $0 > answerStart } ?? scene.upperBound
+        let filledEnd = boundaries.last { $0 <= scene.lowerBound + target } ?? scene.lowerBound
+        let openingEnd = max(answerEnd, filledEnd)
+        var cuts = [scene.lowerBound...openingEnd]
+        var duration = openingEnd - scene.lowerBound
+        guard duration <= target else { return (cuts, true) }
+
+        // Expand proposals to whole sentences, then merge before rejecting
+        // short fragments: several adjacent fragments may form one sentence.
+        let snapped = proposed.compactMap { range -> ClosedRange<Double>? in
+            let start = max(scene.lowerBound, range.lowerBound)
+            let end = min(scene.upperBound, range.upperBound)
+            guard start.isFinite, end.isFinite, end > start else { return nil }
+            let lower = boundaries.last { $0 <= start } ?? scene.lowerBound
+            let upper = boundaries.first { $0 >= end } ?? scene.upperBound
+            return lower...upper
+        }.sorted { $0.lowerBound < $1.lowerBound }
+        var merged: [ClosedRange<Double>] = []
+        for range in snapped {
+            if let last = merged.last, range.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound...max(last.upperBound, range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
+        for range in merged where range.upperBound - range.lowerBound >= 1 {
+            guard cuts.count < 3 else { break }
+            guard let last = cuts.last, range.lowerBound > last.upperBound else { continue }
+            let extra = range.upperBound - range.lowerBound
+            guard duration + extra <= target else { continue }
+            cuts.append(range)
+            duration += extra
+        }
+        return (cuts, false)
+    }
+
+    /// Bounded source-time dialogue for planning, retaining both ends of a
+    /// long exchange so its question and closing point remain visible.
+    static func podcastTranscriptText(scene: ClosedRange<Double>, segments: [TranscriptSegment],
+                                      turns: [SpeakerTurn], speakerNames: [String: String],
+                                      characterLimit: Int = 1500) -> String {
+        let marker = "[… transcript truncated …]"
+        guard characterLimit >= marker.count else { return String(marker.prefix(max(0, characterLimit))) }
+        let lines = PodcastExchangeSegmenter.sentenceSegments(segments, turns: turns)
+            .filter { $0.end > scene.lowerBound && $0.start < scene.upperBound }
+            .sorted { $0.start < $1.start }.map { row in
+                let midpoint = (max(row.start, scene.lowerBound) + min(row.end, scene.upperBound)) / 2
+                let key = turns.first { $0.start <= midpoint && $0.end > midpoint }?.personKey
+                let name = key.flatMap { speakerNames[$0] }.map { " \($0):" } ?? ""
+                let prefix = String(format: "    [%.1f–%.1f]%@ ",
+                                    max(row.start, scene.lowerBound), min(row.end, scene.upperBound), name)
+                let text = row.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                let budget = max(0, min(360, characterLimit) - prefix.count - marker.count)
+                if text.count > budget + marker.count {
+                    return prefix + String(text.prefix(budget * 2 / 3)) + marker + String(text.suffix(budget - budget * 2 / 3))
+                }
+                return prefix + text
+            }
+        let full = lines.joined(separator: "\n")
+        guard full.count > characterLimit else { return full }
+        let budget = characterLimit - marker.count - 2
+        var head: [String] = []
+        var tail: [String] = []
+        var headCount = 0
+        var tailCount = 0
+        for line in lines {
+            guard headCount + line.count + 1 <= budget * 2 / 3 else { break }
+            head.append(line)
+            headCount += line.count + 1
+        }
+        for line in lines.dropFirst(head.count).reversed() {
+            guard tailCount + line.count + 1 <= budget - headCount else { break }
+            tail.insert(line, at: 0)
+            tailCount += line.count + 1
+        }
+        return (head + [marker] + tail).joined(separator: "\n")
+    }
+
     /// The longest stretch inside `start..<end` not covered by `used`.
     static func longestFreeGap(start: Double, end: Double,
                                used: [(start: Double, end: Double)]) -> (start: Double, end: Double)? {

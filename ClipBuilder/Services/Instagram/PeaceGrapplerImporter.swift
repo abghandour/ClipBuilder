@@ -41,6 +41,15 @@ nonisolated enum PeaceGrapplerImporter {
         }
     }
 
+    /// The account whose committed reports the checkout holds. Importing them
+    /// into any other account mixes two accounts' history.
+    static let accountHandle = "peacegrappler"
+
+    static func historyBelongs(to username: String) -> Bool {
+        username.trimmingCharacters(in: CharacterSet(charactersIn: "@ \n\t"))
+            .caseInsensitiveCompare(accountHandle) == .orderedSame
+    }
+
     /// Default checkout location, used when the setting is empty.
     static func defaultRepoPath() -> String? {
         let path = NSHomeDirectory() + "/repos/peace-grappler"

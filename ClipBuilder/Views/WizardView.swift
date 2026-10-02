@@ -1,5 +1,8 @@
 import SwiftUI
 
+// MAP: saved form state; source/layout controls; main Recipe / Length / Camera focus
+// form; Editing and appearance; run summary; handoffs and WizardOptions.
+
 /// Footage and idea entry converge on one reviewable run configuration.
 struct WizardView: View {
     @Environment(AppStore.self) private var store
@@ -513,8 +516,7 @@ struct WizardView: View {
                         .lineLimit(1).fixedSize(horizontal: false, vertical: true)
                     Stepper("Attempts: \(critiqueMaxVersions)", value: $critiqueMaxVersions, in: 2...5)
                         .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                    Text("The critic can request a better version until it approves or the attempt limit is reached. Every version is kept in the Library.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    FormCaption("The critic can request a better version until it approves or the attempt limit is reached. Every version is kept in the Library.")
                 }
                 if WizardFormPlan.showsCriticBriefControls(outcome: workflow) { CriticBriefControls() }
                 Picker("Recipe", selection: $formatPreset) {
@@ -545,9 +547,7 @@ struct WizardView: View {
                 .fieldHelp(WizardFieldHelp.recipe)
 
                 if let recipe = ReelRecipe.recipe(id: formatPreset) {
-                    Text(recipe.summary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    FormCaption(recipe.summary)
                 }
 
                 if capabilities.length == .maxSecondsAndCount {
@@ -561,8 +561,7 @@ struct WizardView: View {
                     Stepper(value: $highlightMaxSeconds, in: 5...120, step: 1) {
                         Text("Maximum reel length: \(highlightMaxSeconds, format: .number)s")
                     }
-                    Text("Every candidate is reviewed before rendering. No captions, branding or music.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    FormCaption("Every candidate is reviewed before rendering. No captions, branding or music.")
                 }
 
                 if capabilities.length == .targetDuration {
@@ -571,8 +570,8 @@ struct WizardView: View {
                             Text(mode.title).tag(mode)
                         }
                     }
-                    .fieldHelp(WizardFieldHelp.length)
-                    FieldCaption(WizardFieldHelp.length)
+                    .fieldHelp(WizardFormPlan.lengthHelp(recipe: recipe))
+                    FieldCaption(WizardFormPlan.lengthHelp(recipe: recipe))
 
                     EditPacingControls(pacing: pacingBinding)
                     HStack {
@@ -607,34 +606,25 @@ struct WizardView: View {
                         }
                     }
                 }
+                if capabilities.offersCameraFocus {
+                    WizardCameraFocusPicker(selection: cameraFocusBinding, allowsOriginal: capabilities.offersOriginalFraming)
+                }
                 if !fromIdea { briefFields }
             }
 
             DisclosureGroup {
-                if capabilities.cameraFocus || capabilities.bRoll {
-                    WizardPodcastControls(plan: formPlan,
-                        framing: $highlightFramingRaw, useBRoll: $useBRoll, instructions: $brollInstructions)
-                }
-
-                if capabilities.podcastFraming {
-                    Picker("Framing", selection: $podcastFramingRaw) {
-                        ForEach(PodcastFramingMode.allCases) { mode in
-                            Text(mode.label).tag(mode.rawValue)
-                        }
-                    }
-                    .fieldHelp(WizardFieldHelp.podcastFraming)
-                    Text("Follow speaker uses the saved talker timeline. Split Zoom feeds pins each source half into a 50/50 reel.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if capabilities.bRoll {
+                    WizardPodcastControls(plan: formPlan, useBRoll: $useBRoll, instructions: $brollInstructions)
                 }
 
                 if capabilities.fightResearch {
                     Toggle("Fight research and learned rules", isOn: fightResearchBinding)
                 }
                 if !formPlan.unsupportedOptions.isEmpty {
-                    Text("Not used by \(recipe.title): \(formPlan.unsupportedOptions.joined(separator: ", "))")
-                        .font(.caption).foregroundStyle(.secondary)
+                    FormCaption("Not used by \(recipe.title): \(formPlan.unsupportedOptions.joined(separator: ", "))")
                 }
+
+                FormGroupHeader("Output")
                 RenderSettingsControls(settings: renderSettingsBinding)
                 HStack {
                     Text(settingOrigin(edited: runRenderSettings != nil, copied: copiedOptions?.renderSettings != nil))
@@ -647,6 +637,9 @@ struct WizardView: View {
                     .controlSize(.small).lineLimit(1).fixedSize()
                 }
 
+                if capabilities.audioMusic || capabilities.onScreenText {
+                    FormGroupHeader("Sound and text")
+                }
                 if capabilities.audioMusic {
                     Picker("Audio", selection: audioModeBinding) {
                         ForEach(WizardAudioMode.allCases, id: \.self) { mode in
@@ -695,9 +688,7 @@ struct WizardView: View {
                     FieldCaption(WizardFieldHelp.onScreenText)
 
                     if (textMode == .captions || textMode == .both), !transcriptsAvailable {
-                        Text("No transcript is available in these sources, so captions will be skipped.")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                        FormCaption("No transcript is available in these sources, so captions will be skipped.", tone: .warning)
                     }
 
                     if textMode == .captions || textMode == .both {
@@ -713,11 +704,14 @@ struct WizardView: View {
                     }
                 }
 
+                if capabilities.reviewProposedCuts || capabilities.styleReference || capabilities.layouts {
+                    FormGroupHeader("Planning")
+                }
                 if capabilities.reviewProposedCuts {
                     Toggle("Review proposed cuts before rendering", isOn: $reviewProposedCuts)
                         .fieldHelp(WizardFieldHelp.reviewProposedCuts)
                     if let caption = WizardFormPlan.reviewedCutsCaption(outcome: workflow, reviewProposedCuts: reviewProposedCuts) {
-                        Text(caption).font(.caption).foregroundStyle(.secondary)
+                        FormCaption(caption)
                     }
                     FieldCaption(WizardFieldHelp.reviewProposedCuts)
                 }
@@ -761,25 +755,22 @@ struct WizardView: View {
                     if layoutMode == .selected {
                         layoutChecklist
                     } else {
-                        Text(layoutMode == .singleScene
+                        FormCaption(layoutMode == .singleScene
                              ? "Every clip fills the frame on its own."
                              : "Layouts approved under Resources → Screen Crop may be used.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                 }
 
                 if capabilities.bumpers {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Bumpers").font(.headline)
-                        bumperToggle("Include an intro", placement: .intro, value: $includeIntroBumper)
-                        bumperToggle("Include an outro", placement: .outro, value: $includeOutroBumper)
-                        bumperToggle("Include one at random in the middle", placement: .anywhere, value: $includeMiddleBumper)
-                    }
+                    FormGroupHeader("Bumpers")
+                    bumperToggle("Include an intro", placement: .intro, value: $includeIntroBumper)
+                    bumperToggle("Include an outro", placement: .outro, value: $includeOutroBumper)
+                    bumperToggle("Include one at random in the middle", placement: .anywhere, value: $includeMiddleBumper)
                 }
 
                 if capabilities.branding {
-                    Picker("Branding", selection: brandingOverrideBinding) {
+                    FormGroupHeader("Branding")
+                    Picker("Brand elements", selection: brandingOverrideBinding) {
                         ForEach(WizardBrandingOverride.allCases, id: \.self) { option in
                             Text(option.title).tag(option)
                         }
@@ -788,16 +779,12 @@ struct WizardView: View {
                     FieldCaption(WizardFieldHelp.branding)
                     if store.activeProfile.logoPath.isEmpty,
                        resolvedBranding.includeWatermark || resolvedBranding.includeOutro {
-                        Text("No brand logo is set. Add one in Settings → Profile to use the watermark or outro.")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
+                        FormCaption("No brand logo is set. Add one in Settings → Profile to use the watermark or outro.", tone: .warning)
                     }
                 }
 
                 if capabilities.fightResearch {
-                    Text("Saved scene framing, approved transition effects, fight research, and learned rules apply automatically. Manage them in Analyze, Assets, and Settings.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    FormCaption("Saved scene framing, approved transition effects, fight research, and learned rules apply automatically. Manage them in Analyze, Assets, and Settings.")
                 }
             } label: {
                 VStack(alignment: .leading, spacing: 3) {
@@ -811,8 +798,7 @@ struct WizardView: View {
                 TextField("Model override", text: $copiedModelOverride, prompt: Text("Automatic"))
                     .textFieldStyle(.roundedBorder)
                     .fieldHelp(WizardFieldHelp.modelOverride)
-                Text("Routing rows are shared defaults saved to Settings. Model override applies to this run only.")
-                    .font(.caption).foregroundStyle(.secondary)
+                FormCaption("Routing rows are shared defaults saved to Settings. Model override applies to this run only.")
             } label: {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("AI settings")
@@ -962,6 +948,17 @@ struct WizardView: View {
         }
     }
 
+    private var cameraFocusBinding: Binding<String> {
+        Binding(get: {
+            capabilities.offersOriginalFraming && podcastFramingRaw == PodcastFramingMode.original.rawValue
+                ? WizardCameraFocus.original : highlightFramingRaw
+        }, set: { value in
+            podcastFramingRaw = value == WizardCameraFocus.original
+                ? PodcastFramingMode.original.rawValue : PodcastFramingMode.followSpeaker.rawValue
+            if value != WizardCameraFocus.original { highlightFramingRaw = value }
+        })
+    }
+
     private var runSummary: String {
         let names = projectPeople.filter { selectedSourcePeople.contains($0.key) }.map(\.displayName)
         let source = capabilities.sources == .podcastRecording
@@ -973,6 +970,7 @@ struct WizardView: View {
             captions: textMode.output(transcriptsAvailable: transcriptsAvailable, recipe: formatPreset).captions,
             critique: workflow == .iterate, reviewProposedCuts: reviewProposedCuts,
             critiqueTargetScore: critiqueTargetScore, critiqueMaxVersions: critiqueMaxVersions)
+            + (capabilities.offersCameraFocus ? " · " + WizardCameraFocus.name(cameraFocusBinding.wrappedValue) : "")
     }
 
     private func bumperToggle(_ title: String, placement: BumperPlacement, value: Binding<Bool>) -> some View {
@@ -987,15 +985,14 @@ struct WizardView: View {
         case .outro: WizardFieldHelp.bumperOutro
         case .anywhere: WizardFieldHelp.bumperMiddle
         }
-        return VStack(alignment: .leading, spacing: 2) {
+        return Group {
             Toggle(title, isOn: value).disabled(count == 0)
                 .onChange(of: value.wrappedValue) { _, enabled in
                     updateCopiedOption(optionKey, .bool(enabled))
                 }
                 .fieldHelp(help)
-            Text(count == 0 ? "No bumpers allow this placement. Add one in Resources → Bumpers."
-                 : "\(count) bumper\(count == 1 ? "" : "s") allow this placement.")
-                .font(.caption).foregroundStyle(.secondary)
+            FormCaption(count == 0 ? "No bumpers allow this placement. Add one in Resources → Bumpers."
+                        : "\(count) bumper\(count == 1 ? "" : "s") allow\(count == 1 ? "s" : "") this placement.")
         }
     }
 
@@ -1372,7 +1369,8 @@ struct WizardView: View {
             customDuration = min(180, max(3, duration))
             durationModeRaw = WizardDurationMode.custom.rawValue
         }
-        if capabilities.cameraFocus, let framing = parsed.highlightFraming {
+        if capabilities.offersCameraFocus, let framing = parsed.highlightFraming {
+            podcastFramingRaw = PodcastFramingMode.followSpeaker.rawValue
             highlightFramingRaw = framing.rawValue
         }
         if capabilities.bRoll, let enabled = parsed.useBRoll { useBRoll = enabled }

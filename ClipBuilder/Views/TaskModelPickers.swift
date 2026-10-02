@@ -7,13 +7,32 @@ import SwiftUI
 struct TaskModelPickers: View {
     @Environment(AppStore.self) private var store
     let tasks: [String]
+    /// Outside a Form nothing lines the rows up: a fixed label column and a
+    /// fixed menu width keep every dropdown on the same two edges.
+    var labelWidth: CGFloat?
+    var menuWidth: CGFloat = 330
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
 
     var body: some View {
         ForEach(tasks, id: \.self) { task in
-            ModelPicker(title: AICatalog.taskLabels[task] ?? task, task: task,
-                        selection: routingBinding(for: task), availableProviders: availableProviders)
-                .help(Self.help[task] ?? "The provider and model for this task; the same setting as Settings → AI → Task Routing.")
+            let title = AICatalog.taskLabels[task] ?? task
+            let help = Self.help[task] ?? "The provider and model for this task; the same setting as Settings → AI → Task Routing."
+            if let labelWidth {
+                HStack(spacing: 8) {
+                    Text(title)
+                        .lineLimit(1)
+                        .frame(width: labelWidth, alignment: .leading)
+                    ModelPicker(title: title, task: task,
+                                selection: routingBinding(for: task), availableProviders: availableProviders)
+                        .labelsHidden()
+                        .frame(width: menuWidth)
+                }
+                .help(help)
+            } else {
+                ModelPicker(title: title, task: task,
+                            selection: routingBinding(for: task), availableProviders: availableProviders)
+                    .help(help)
+            }
         }
         .task { availableProviders = await ModelPicker.probeAvailability(ai: store.ai) }
     }
@@ -47,11 +66,9 @@ struct TaskModelPickers: View {
             },
             set: {
                 let parsed = ModelPicker.parse($0)
-                store.settings.ai.tasks[task] = parsed.provider
-                store.settings.ai.taskModels[task] = parsed.model
                 // Settings saves when its screen closes; here the choice is
                 // saved at once so it survives a quit from the Wizard.
-                store.saveSettings()
+                store.setTaskModel(task: task, provider: parsed.provider, model: parsed.model)
             }
         )
     }

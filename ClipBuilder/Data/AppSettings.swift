@@ -135,8 +135,9 @@ nonisolated struct InstagramSettings: Codable, Sendable {
     var cookieSource: String = "none"     // none | safari | chrome | firefox | file
     var cookieFilePath: String = ""
     var fetchLimit: Int = 12
-    var connectedUsername: String = ""    // Graph API account, set on Connect
-    var connectedIGUserID: String = ""    // its IG user id — skips discovery
+    var connections: [InstagramConnection] = []
+    var connectedUsername: String = ""    // Legacy migration only
+    var connectedIGUserID: String = ""    // Legacy migration only
     var tokenFlavor: String = "facebook"
     var tokenExpiresAt: Date?
     var tokenRefreshedAt: Date?
@@ -144,7 +145,11 @@ nonisolated struct InstagramSettings: Codable, Sendable {
     /// the Reports tab's history (empty = ~/repos/peace-grappler if present).
     var peaceGrapplerRepoPath: String = ""
 
-    var isGraphConnected: Bool { !connectedUsername.isEmpty }
+    var isGraphConnected: Bool { !connections.isEmpty }
+
+    func connection(for username: String) -> InstagramConnection? {
+        connections.first { $0.username.caseInsensitiveCompare(username) == .orderedSame }
+    }
 
     enum CodingKeys: String, CodingKey {
         case metaAppID = "meta_app_id"
@@ -152,6 +157,7 @@ nonisolated struct InstagramSettings: Codable, Sendable {
         case cookieSource = "cookie_source"
         case cookieFilePath = "cookie_file_path"
         case fetchLimit = "fetch_limit"
+        case connections
         case connectedUsername = "connected_username"
         case connectedIGUserID = "connected_ig_user_id"
         case tokenFlavor = "token_flavor"
@@ -169,12 +175,32 @@ nonisolated struct InstagramSettings: Codable, Sendable {
         cookieSource = try container.decodeIfPresent(String.self, forKey: .cookieSource) ?? "none"
         cookieFilePath = try container.decodeIfPresent(String.self, forKey: .cookieFilePath) ?? ""
         fetchLimit = try container.decodeIfPresent(Int.self, forKey: .fetchLimit) ?? 12
+        connections = try container.decodeIfPresent([InstagramConnection].self, forKey: .connections) ?? []
         connectedUsername = try container.decodeIfPresent(String.self, forKey: .connectedUsername) ?? ""
         connectedIGUserID = try container.decodeIfPresent(String.self, forKey: .connectedIGUserID) ?? ""
         tokenFlavor = try container.decodeIfPresent(String.self, forKey: .tokenFlavor) ?? "facebook"
         tokenExpiresAt = try container.decodeIfPresent(Date.self, forKey: .tokenExpiresAt)
         tokenRefreshedAt = try container.decodeIfPresent(Date.self, forKey: .tokenRefreshedAt)
         peaceGrapplerRepoPath = try container.decodeIfPresent(String.self, forKey: .peaceGrapplerRepoPath) ?? ""
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(metaAppID, forKey: .metaAppID)
+        try container.encode(redirectURI, forKey: .redirectURI)
+        try container.encode(cookieSource, forKey: .cookieSource)
+        try container.encode(cookieFilePath, forKey: .cookieFilePath)
+        try container.encode(fetchLimit, forKey: .fetchLimit)
+        try container.encode(connections, forKey: .connections)
+        try container.encode(peaceGrapplerRepoPath, forKey: .peaceGrapplerRepoPath)
+        // Keep a failed Keychain migration retryable until it succeeds.
+        if connections.isEmpty, !connectedUsername.isEmpty {
+            try container.encode(connectedUsername, forKey: .connectedUsername)
+            try container.encode(connectedIGUserID, forKey: .connectedIGUserID)
+            try container.encode(tokenFlavor, forKey: .tokenFlavor)
+            try container.encodeIfPresent(tokenExpiresAt, forKey: .tokenExpiresAt)
+            try container.encodeIfPresent(tokenRefreshedAt, forKey: .tokenRefreshedAt)
+        }
     }
 }
 
@@ -290,142 +316,169 @@ nonisolated enum AICatalog {
     /// The smart dispatcher's preferred chains: best first, each a
     /// concrete (provider, model). The dispatcher walks a chain skipping
     /// providers whose CLI isn't installed; the same order drives mid-run
-    /// failover when a provider errors out.
+    /// failover when a provider errors out. Antigravity uses the subscription;
+    /// Gemini CLI stays last as the API-key fallback.
     static let recommendedChains: [String: [(provider: String, model: String)]] = [
         "route": [("claude", "claude-haiku-4-5-20251001"),
-                  ("gemini", "gemini-2.5-flash"),
-                  ("codex", "gpt-5.6-luna")],
-        // Frame tagging: multimodal + cheap matters most — 30 images/video.
-        "analysis": [("gemini", "gemini-2.5-flash"),
-                     ("claude", "claude-sonnet-4-6"),
+                  ("antigravity", "gemini-3.8-flash-medium"),
+                  ("codex", "gpt-5.6-luna"),
+                  ("gemini", "gemini-3.8-flash")],
+        // Frame tagging: multimodal with low thinking — 30 images/video.
+        "analysis": [("antigravity", "gemini-3.8-flash-low"),
+                     ("claude", "claude-sonnet-5-5"),
                      ("claude", "claude-haiku-4-5-20251001"),
-                     ("codex", "gpt-5.6-sol")],
+                     ("codex", "gpt-5.6-sol"),
+                     ("gemini", "gemini-3.8-flash")],
         // People detection looks at a handful of frames: the same
         // multimodal chain as tagging.
-        "people": [("gemini", "gemini-2.5-flash"),
-                   ("claude", "claude-sonnet-4-6"),
+        "people": [("antigravity", "gemini-3.8-flash-low"),
+                   ("claude", "claude-sonnet-5-5"),
                    ("claude", "claude-haiku-4-5-20251001"),
-                   ("codex", "gpt-5.6-sol")],
+                   ("codex", "gpt-5.6-sol"),
+                   ("gemini", "gemini-3.8-flash")],
         // Podcast exchanges group a transcript: text reasoning, no frames.
-        "exchanges": [("claude", "claude-sonnet-4-6"),
-                      ("gemini", "gemini-2.5-pro"),
+        "exchanges": [("claude", "claude-sonnet-5-5"),
+                      ("antigravity", "gemini-3.1-pro-high"),
                       ("codex", "gpt-6-astra"),
                       ("qwen", "qwen3-coder-plus"),
-                      ("kimi", "kimi-code/kimi-for-coding")],
-        "broll": [("claude", "claude-sonnet-4-6"),
-                  ("gemini", "gemini-2.5-pro"),
+                      ("kimi", "kimi-code/kimi-for-coding"),
+                      ("gemini", "gemini-3.1-pro-preview")],
+        "broll": [("claude", "claude-sonnet-5-5"),
+                  ("antigravity", "gemini-3.1-pro-high"),
                   ("codex", "gpt-6-astra"),
                   ("qwen", "qwen3-coder-plus"),
-                  ("kimi", "kimi-code/kimi-for-coding")],
-        "highlights": [("claude", "claude-sonnet-4-6"),
-                      ("gemini", "gemini-2.5-pro"),
-                      ("codex", "gpt-6-astra"),
-                      ("qwen", "qwen3-coder-plus"),
-                      ("kimi", "kimi-code/kimi-for-coding")],
+                  ("kimi", "kimi-code/kimi-for-coding"),
+                  ("gemini", "gemini-3.1-pro-preview")],
+        "highlights": [("claude", "claude-sonnet-5-5"),
+                       ("antigravity", "gemini-3.1-pro-high"),
+                       ("codex", "gpt-6-astra"),
+                       ("qwen", "qwen3-coder-plus"),
+                       ("kimi", "kimi-code/kimi-for-coding"),
+                       ("gemini", "gemini-3.1-pro-preview")],
         // Planning is the run's brain: strongest reasoning first — Fable at
         // maximum thinking (AIService raises the thinking budget for it).
         "wizard": [("claude", "claude-fable-5-1"),
-                   ("claude", "claude-sonnet-4-6"),
-                   ("gemini", "gemini-2.5-pro"),
+                   ("claude", "claude-opus-5-5"),
+                   ("antigravity", "gemini-3.1-pro-high"),
                    ("codex", "gpt-6-astra"),
                    ("kimi", "kimi-code/kimi-for-coding"),
-                   ("qwen", "qwen3-coder-plus")],
+                   ("qwen", "qwen3-coder-plus"),
+                   ("gemini", "gemini-3.1-pro-preview")],
         // Post-render critique: a multimodal judge that watches the rendered
         // frames. Deliberately leads with a DIFFERENT model than planning so
         // the planner isn't grading its own work.
-        "critique": [("claude", "claude-sonnet-4-6"),
-                     ("gemini", "gemini-2.5-pro"),
-                     ("claude", "claude-fable-5-1")],
-        "research": [("claude", "claude-sonnet-4-6"),
-                     ("gemini", "gemini-2.5-flash"),
+        "critique": [("claude", "claude-sonnet-5-5"),
+                     ("antigravity", "gemini-3.1-pro-high"),
+                     ("claude", "claude-fable-5-1"),
+                     ("gemini", "gemini-3.1-pro-preview")],
+        "research": [("claude", "claude-sonnet-5-5"),
+                     ("antigravity", "gemini-3.8-flash-medium"),
                      ("codex", "gpt-5.6-luna"),
                      ("qwen", "qwen3-coder-flash"),
-                     ("kimi", "kimi-code/kimi-for-coding")],
+                     ("kimi", "kimi-code/kimi-for-coding"),
+                     ("gemini", "gemini-3.8-flash")],
         // Fight research: turns crawled fan chatter into the reel's story —
         // strong summarization matters more than speed.
-        "fight_research": [("claude", "claude-sonnet-4-6"),
-                           ("gemini", "gemini-2.5-pro"),
+        "fight_research": [("claude", "claude-sonnet-5-5"),
+                           ("antigravity", "gemini-3.1-pro-high"),
                            ("codex", "gpt-6-astra"),
                            ("qwen", "qwen3-coder-plus"),
-                           ("kimi", "kimi-code/kimi-for-coding")],
+                           ("kimi", "kimi-code/kimi-for-coding"),
+                           ("gemini", "gemini-3.1-pro-preview")],
         // Structured extraction: fast + cheap is plenty.
         "parse": [("claude", "claude-haiku-4-5-20251001"),
-                  ("gemini", "gemini-2.5-flash"),
+                  ("antigravity", "gemini-3.8-flash-medium"),
                   ("codex", "gpt-5.6-luna"),
                   ("qwen", "qwen3-coder-flash"),
-                  ("kimi", "kimi-code/kimi-for-coding")],
+                  ("kimi", "kimi-code/kimi-for-coding"),
+                  ("gemini", "gemini-3.8-flash")],
         "captions": [("claude", "claude-haiku-4-5-20251001"),
-                     ("gemini", "gemini-2.5-flash"),
+                     ("antigravity", "gemini-3.8-flash-medium"),
                      ("codex", "gpt-5.6-luna"),
                      ("qwen", "qwen3-coder-flash"),
-                     ("kimi", "kimi-code/kimi-for-coding")],
+                     ("kimi", "kimi-code/kimi-for-coding"),
+                     ("gemini", "gemini-3.8-flash")],
         "distill": [("claude", "claude-fable-5-1"),
-                    ("claude", "claude-sonnet-4-6"),
-                    ("gemini", "gemini-2.5-pro"),
+                    ("claude", "claude-sonnet-5-5"),
+                    ("antigravity", "gemini-3.1-pro-high"),
                     ("codex", "gpt-6-astra"),
                     ("kimi", "kimi-code/kimi-for-coding"),
-                    ("qwen", "qwen3-coder-plus")],
+                    ("qwen", "qwen3-coder-plus"),
+                    ("gemini", "gemini-3.1-pro-preview")],
         // Reading overlay layout from one image: multimodal, precision over
         // speed — a stronger model gets positions and colors right.
-        "overlay": [("claude", "claude-sonnet-4-6"),
-                    ("gemini", "gemini-2.5-pro"),
-                    ("gemini", "gemini-2.5-flash")],
+        "overlay": [("claude", "claude-sonnet-5-5"),
+                    ("antigravity", "gemini-3.1-pro-high"),
+                    ("antigravity", "gemini-3.8-flash-medium"),
+                    ("gemini", "gemini-3.1-pro-preview"),
+                    ("gemini", "gemini-3.8-flash")],
         // File Name Wizard: one short name from stored metadata — text-only,
         // fast + cheap is plenty.
         "naming": [("claude", "claude-haiku-4-5-20251001"),
-                   ("gemini", "gemini-2.5-flash"),
+                   ("antigravity", "gemini-3.8-flash-medium"),
                    ("codex", "gpt-5.6-luna"),
                    ("qwen", "qwen3-coder-flash"),
-                   ("kimi", "kimi-code/kimi-for-coding")],
+                   ("kimi", "kimi-code/kimi-for-coding"),
+                   ("gemini", "gemini-3.8-flash")],
         // AI Favorites judges scenes against the taste rubric — taste judgment,
         // not extraction, so a stronger text model leads.
-        "curate": [("claude", "claude-sonnet-4-6"),
-                   ("gemini", "gemini-2.5-pro"),
+        "curate": [("claude", "claude-sonnet-5-5"),
+                   ("antigravity", "gemini-3.1-pro-high"),
                    ("codex", "gpt-6-astra"),
                    ("qwen", "qwen3-coder-plus"),
-                   ("kimi", "kimi-code/kimi-for-coding")],
+                   ("kimi", "kimi-code/kimi-for-coding"),
+                   ("gemini", "gemini-3.1-pro-preview")],
         // Natural-language scene search: interactive, so latency wins.
         "search": [("claude", "claude-haiku-4-5-20251001"),
-                   ("gemini", "gemini-2.5-flash"),
+                   ("antigravity", "gemini-3.8-flash-medium"),
                    ("codex", "gpt-5.6-luna"),
                    ("qwen", "qwen3-coder-flash"),
-                   ("kimi", "kimi-code/kimi-for-coding")],
+                   ("kimi", "kimi-code/kimi-for-coding"),
+                   ("gemini", "gemini-3.8-flash")],
         // Quote extraction from a transcript: structured text work.
         "soundbites": [("claude", "claude-haiku-4-5-20251001"),
-                       ("gemini", "gemini-2.5-flash"),
+                       ("antigravity", "gemini-3.8-flash-medium"),
                        ("codex", "gpt-5.6-luna"),
                        ("qwen", "qwen3-coder-flash"),
-                       ("kimi", "kimi-code/kimi-for-coding")],
+                       ("kimi", "kimi-code/kimi-for-coding"),
+                       ("gemini", "gemini-3.8-flash")],
         // Cover frame picking looks at candidate frames: multimodal + cheap.
-        "cover": [("gemini", "gemini-2.5-flash"),
-                  ("claude", "claude-sonnet-4-6"),
-                  ("claude", "claude-haiku-4-5-20251001")],
+        "cover": [("antigravity", "gemini-3.8-flash-medium"),
+                  ("claude", "claude-sonnet-5-5"),
+                  ("claude", "claude-haiku-4-5-20251001"),
+                  ("gemini", "gemini-3.8-flash")],
         // Duplicate detection compares sampled frames across videos.
-        "dedupe": [("gemini", "gemini-2.5-flash"),
-                   ("claude", "claude-sonnet-4-6"),
-                   ("gemini", "gemini-2.5-pro")],
+        "dedupe": [("antigravity", "gemini-3.8-flash-medium"),
+                   ("claude", "claude-sonnet-5-5"),
+                   ("antigravity", "gemini-3.1-pro-high"),
+                   ("gemini", "gemini-3.8-flash"),
+                   ("gemini", "gemini-3.1-pro-preview")],
         // Trim suggestion skims sparse frames for filler vs. content.
-        "trim": [("gemini", "gemini-2.5-flash"),
-                 ("claude", "claude-sonnet-4-6"),
-                 ("claude", "claude-haiku-4-5-20251001")],
+        "trim": [("antigravity", "gemini-3.8-flash-medium"),
+                 ("claude", "claude-sonnet-5-5"),
+                 ("claude", "claude-haiku-4-5-20251001"),
+                 ("gemini", "gemini-3.8-flash")],
         // People roles reads scene tags and quotes per person — text only.
-        "roles": [("claude", "claude-sonnet-4-6"),
-                  ("gemini", "gemini-2.5-pro"),
+        "roles": [("claude", "claude-sonnet-5-5"),
+                  ("antigravity", "gemini-3.1-pro-high"),
                   ("codex", "gpt-6-astra"),
                   ("qwen", "qwen3-coder-plus"),
-                  ("kimi", "kimi-code/kimi-for-coding")],
+                  ("kimi", "kimi-code/kimi-for-coding"),
+                  ("gemini", "gemini-3.1-pro-preview")],
         // Content gap report reasons over the whole library's state.
-        "gap": [("claude", "claude-sonnet-4-6"),
-                ("gemini", "gemini-2.5-pro"),
+        "gap": [("claude", "claude-sonnet-5-5"),
+                ("antigravity", "gemini-3.1-pro-high"),
                 ("codex", "gpt-6-astra"),
                 ("qwen", "qwen3-coder-plus"),
-                ("kimi", "kimi-code/kimi-for-coding")],
+                ("kimi", "kimi-code/kimi-for-coding"),
+                ("gemini", "gemini-3.1-pro-preview")],
         // Profile starter writes the brand's founding rubric — one-shot
         // quality matters most.
         "onboard": [("claude", "claude-fable-5-1"),
-                    ("claude", "claude-sonnet-4-6"),
-                    ("gemini", "gemini-2.5-pro"),
-                    ("codex", "gpt-6-astra")],
+                    ("claude", "claude-sonnet-5-5"),
+                    ("antigravity", "gemini-3.1-pro-high"),
+                    ("codex", "gpt-6-astra"),
+                    ("gemini", "gemini-3.1-pro-preview")],
     ]
 
     struct Provider: Sendable {
@@ -444,6 +497,16 @@ nonisolated enum AICatalog {
         "claude-opus-4-8": "Opus 4.8",
         "claude-fable-5": "Fable 5",
         "claude-fable-5-1": "Fable 5.1",
+        "claude-sonnet-5-5": "Sonnet 5.5",
+        "claude-opus-5-5": "Opus 5.5",
+        "gemini-3.8-flash": "Gemini 3.8 Flash",
+        "gemini-3.8-flash-high": "Gemini 3.8 Flash (High)",
+        "gemini-3.8-flash-medium": "Gemini 3.8 Flash (Medium)",
+        "gemini-3.8-flash-low": "Gemini 3.8 Flash (Low)",
+        "gemini-3.1-pro-high": "Gemini 3.1 Pro (High)",
+        "gemini-3.1-pro-low": "Gemini 3.1 Pro (Low)",
+        "gemini-3.5-flash": "Gemini 3.5 Flash",
+        "gemini-3.1-pro-preview": "Gemini 3.1 Pro (preview)",
         "gemini-2.5-flash-lite": "Gemini 2.5 Flash Lite",
         "gemini-2.5-flash": "Gemini 2.5 Flash",
         "gemini-2.0-flash": "Gemini 2.0 Flash",
@@ -514,11 +577,17 @@ nonisolated enum AICatalog {
     static let providers: [Provider] = [
         Provider(key: "claude", label: "Claude Code", bin: "claude",
                  defaultModel: "claude-haiku-4-5-20251001", supportsImages: true,
-                 models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-8",
-                          "claude-fable-5", "claude-fable-5-1"]),
+                 models: ["claude-haiku-4-5-20251001", "claude-sonnet-5-5", "claude-opus-5-5",
+                          "claude-fable-5-1", "claude-sonnet-4-6", "claude-opus-4-8", "claude-fable-5"]),
+        // Gemini 4 (Argon, September 30, 2026) has no public model id yet.
         Provider(key: "gemini", label: "Gemini CLI", bin: "gemini",
-                 defaultModel: "gemini-2.5-flash", supportsImages: true,
-                 models: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]),
+                 defaultModel: "gemini-3.8-flash", supportsImages: true,
+                 models: ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-3.5-flash", "gemini-3.8-flash",
+                          "gemini-2.0-flash", "gemini-2.5-pro", "gemini-3.1-pro-preview"]),
+        Provider(key: "antigravity", label: "Antigravity CLI", bin: "agy",
+                 defaultModel: "gemini-3.8-flash-medium", supportsImages: true,
+                 models: ["gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+                          "gemini-3.1-pro-high", "gemini-3.1-pro-low"]),
         // The 5.6 family and Astra are what the installed Codex CLI lists
         // (~/.codex/models_cache.json); the GPT-5 and o3 ids stay for
         // settings that still name them.

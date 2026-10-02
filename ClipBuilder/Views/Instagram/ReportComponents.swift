@@ -79,7 +79,8 @@ struct StatCard: View {
             }
         }
         .padding(Theme.spaceM)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // Fill the grid row so cards with and without a third line match.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
     }
 }

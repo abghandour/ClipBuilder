@@ -72,13 +72,34 @@ extension AppStore {
         }
     }
 
-    /// The connected (else first own) account's benchmarks, plus the
-    /// audience scores of published reels for critic calibration.
+    /// The profile's audience model uses one primary account.
+    var primaryInstagramAccount: IGAccountRecord? {
+        let ownHandle = activeProfile.socials["instagram"]?.handle
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@ \n\t")) ?? ""
+        return igAccounts.first { $0.username.caseInsensitiveCompare(ownHandle) == .orderedSame }
+            ?? igAccounts.first { isGraphAccount($0) }
+            ?? igAccounts.first(where: \.isOwn)
+    }
+
+    var instagramPublishAccounts: [IGAccountRecord] {
+        igAccounts.filter { isGraphAccount($0) }
+    }
+
+    var defaultInstagramPublishAccount: IGAccountRecord? {
+        let accounts = instagramPublishAccounts
+        if let remembered = activeProfile.instagramPublishAccount,
+           let account = accounts.first(where: { $0.username.caseInsensitiveCompare(remembered) == .orderedSame }) {
+            return account
+        }
+        if let primary = primaryInstagramAccount, accounts.contains(where: { $0.id == primary.id }) {
+            return primary
+        }
+        return accounts.first
+    }
+
+    /// The primary account's benchmarks, plus audience scores for critic calibration.
     func reloadIGBenchmarks(reuseInputs: Bool = false) async {
-        guard let database else { igBenchmarks = nil; return }
-        let connected = settings.instagram.connectedUsername
-        guard let account = igAccounts.first(where: { $0.username.caseInsensitiveCompare(connected) == .orderedSame })
-            ?? igAccounts.first(where: \.isOwn) else {
+        guard let database, let account = primaryInstagramAccount else {
             igBenchmarks = nil
             return
         }
@@ -185,13 +206,12 @@ extension AppStore {
     /// Whether the account fetches through the Graph API — the only path
     /// that yields report data.
     func isGraphAccount(_ account: IGAccountRecord) -> Bool {
-        settings.instagram.isGraphConnected
-            && settings.instagram.connectedUsername.caseInsensitiveCompare(account.username) == .orderedSame
+        settings.instagram.connection(for: account.username) != nil
     }
 
     /// Backfill report history from the peace-grappler checkout (Settings →
-    /// Instagram → Report History). Targets the connected account, else the
-    /// selected own account.
+    /// Instagram → Report History). Targets only the account the checkout's
+    /// reports were generated for.
     func importPeaceGrapplerReports() {
         guard let database, !isImportingPeaceGrappler else { return }
         let configured = settings.instagram.peaceGrapplerRepoPath.trimmingCharacters(in: .whitespaces)
@@ -199,11 +219,8 @@ extension AppStore {
             igImportStatus = "Choose the peace-grappler checkout folder first"
             return
         }
-        let connected = settings.instagram.connectedUsername
-        guard let account = igAccounts.first(where: { $0.username.caseInsensitiveCompare(connected) == .orderedSame })
-            ?? igAccounts.first(where: { $0.id == igSelectedAccountID && $0.isOwn })
-            ?? igAccounts.first(where: \.isOwn) else {
-            igImportStatus = "Add your own Instagram account on the Instagram screen first"
+        guard let account = igAccounts.first(where: { PeaceGrapplerImporter.historyBelongs(to: $0.username) }) else {
+            igImportStatus = "This history belongs to @\(PeaceGrapplerImporter.accountHandle) — add that account on the Instagram screen first"
             return
         }
         isImportingPeaceGrappler = true
@@ -285,7 +302,7 @@ extension AppStore {
         let ownHandle = activeProfile.socials["instagram"]?.handle
             .trimmingCharacters(in: CharacterSet(charactersIn: "@ ")) ?? ""
         let isOwn = username.caseInsensitiveCompare(ownHandle) == .orderedSame
-            || username.caseInsensitiveCompare(settings.instagram.connectedUsername) == .orderedSame
+            || settings.instagram.connection(for: username) != nil
         let kind = isOwn ? "own" : "public"
         guard let database else { return }
         Task {
@@ -322,10 +339,9 @@ extension AppStore {
     /// Only cancellation escapes — an import failure logs and the live
     /// refresh proceeds (it retries on the next refresh).
     private func autoImportPeaceGrapplerIfNeeded(username: String, database: Database) async throws {
-        guard !isImportingPeaceGrappler,
+        guard !isImportingPeaceGrappler, PeaceGrapplerImporter.historyBelongs(to: username),
               let account = igAccounts.first(where: { $0.username.caseInsensitiveCompare(username) == .orderedSame }),
-              account.isOwn || settings.instagram.connectedUsername
-                  .caseInsensitiveCompare(username) == .orderedSame else { return }
+              account.isOwn || settings.instagram.connection(for: username) != nil else { return }
         let configured = settings.instagram.peaceGrapplerRepoPath.trimmingCharacters(in: .whitespaces)
         guard let repoPath = configured.isEmpty ? PeaceGrapplerImporter.defaultRepoPath() : configured else { return }
         let state = (try? await database.igSyncState(accountID: account.id)) ?? [:]

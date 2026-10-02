@@ -38,11 +38,11 @@ nonisolated struct AIFrame: Sendable {
 }
 
 /// Provider-agnostic AI dispatch — the Swift port of ai_cli.py. Talks to the
-/// locally installed `claude` (stream-json protocol), `gemini`, `codex`,
+/// locally installed `claude` (stream-json protocol), `gemini`, `agy`, `codex`,
 /// `qwen`, and `kimi` CLIs so it reuses whatever auth the user already has.
 actor AIService {
     /// Instance-scoped process boundary for testing dispatch and retry behavior.
-    typealias ProcessExecutor = @Sendable (URL, [String], Data?, TimeInterval?, [String: String]?) async throws -> ProcessResult
+    typealias ProcessExecutor = @Sendable (URL, [String], Data?, TimeInterval?, [String: String]?, URL?) async throws -> ProcessResult
 
     private let executeProcess: ProcessExecutor
     private var unavailableProviders = Set<String>()
@@ -58,9 +58,9 @@ actor AIService {
     }
     private var cooldowns: [String: Cooldown] = [:]
 
-    init(config: AIConfig, executeProcess: @escaping ProcessExecutor = { executable, arguments, stdin, timeout, environment in
+    init(config: AIConfig, executeProcess: @escaping ProcessExecutor = { executable, arguments, stdin, timeout, environment, currentDirectory in
         try await ProcessRunner.run(executable: executable, arguments: arguments,
-                                    stdin: stdin, timeout: timeout, environment: environment)
+                                    stdin: stdin, timeout: timeout, environment: environment, currentDirectory: currentDirectory)
     }) {
         self.config = config
         self.executeProcess = executeProcess
@@ -339,14 +339,14 @@ actor AIService {
             let needsImages = frames?.isEmpty == false || video != nil
             if let provider = AICatalog.provider(key), needsImages, !provider.supportsImages {
                 throw AIError.notConfigured(
-                    "\(label) is routed to \(provider.label), which cannot take image frames, and no image-capable fallback is installed. Choose Claude Code, Gemini CLI or Codex CLI for \(label) in Settings → AI → Task Routing.")
+                    "\(label) is routed to \(provider.label), which cannot take image frames, and no image-capable fallback is installed. Choose Claude Code, Antigravity CLI, Gemini CLI or Codex CLI for \(label) in Settings → AI → Task Routing.")
             }
             if let provider = AICatalog.provider(key), binaryURL(for: provider) == nil {
                 throw AIError.notConfigured(
                     "\(label) is routed to \(provider.label), whose CLI ('\(provider.bin)') is not installed, and no fallback is installed either. Install it or change the provider in Settings → AI.")
             }
             throw AIError.notConfigured(
-                "No AI provider available for \(label). Install the claude, gemini, codex, qwen, or kimi CLI, or check Settings → AI.")
+                "No AI provider available for \(label). Install the claude, agy, gemini, codex, qwen, or kimi CLI, or check Settings → AI.")
         }
         var loadedFallbackFrames: [AIFrame]?
         var lastError: Error?
@@ -448,6 +448,9 @@ actor AIService {
             }
             return try await callGemini(binary: binary, prompt: prompt, frames: effectiveFrames,
                                         video: video, model: model, timeout: timeout, log: emit)
+        case "antigravity":
+            return try await callAntigravity(binary: binary, prompt: prompt, frames: effectiveFrames,
+                                             model: model, timeout: timeout, log: emit)
         case "codex":
             return try await callCodex(binary: binary, prompt: prompt, frames: effectiveFrames,
                                        model: model, timeout: timeout, log: emit)
@@ -463,10 +466,11 @@ actor AIService {
     }
 
     private func runRequest(executable: URL, arguments: [String], stdin: Data? = nil,
-                            timeout: TimeInterval?, environment: [String: String]? = nil) async throws -> ProcessResult {
+                            timeout: TimeInterval?, environment: [String: String]? = nil,
+                            currentDirectory: URL? = nil) async throws -> ProcessResult {
         let timing = PerfSignpost.begin("AIRemoteWait", metadata: executable.lastPathComponent)
         defer { PerfSignpost.end(timing) }
-        return try await executeProcess(executable, arguments, stdin, timeout, environment)
+        return try await executeProcess(executable, arguments, stdin, timeout, environment, currentDirectory)
     }
 
     // MARK: - Claude (stream-json protocol)
@@ -657,7 +661,11 @@ actor AIService {
 
         PerfSignpost.end(preparation)
         preparation = nil
-        let result = try await runRequest(executable: binary, arguments: arguments, timeout: timeout)
+        // Headless Gemini refuses to run outside a trusted folder, and a GUI
+        // app's working directory ("/") never is one. The call only sends a
+        // prompt and reads the reply, so trusting the workspace is safe.
+        let result = try await runRequest(executable: binary, arguments: arguments, timeout: timeout,
+                                          environment: ["GEMINI_CLI_TRUST_WORKSPACE": "true"])
         if result.exitCode != 0 {
             let rawError = result.stderrText + "\n" + result.stdoutText
             let error = Self.firstCLIErrorLine(rawError)
@@ -682,6 +690,49 @@ actor AIService {
         }
         guard !text.isEmpty else { throw AIError.emptyResponse("Gemini") }
         return text
+    }
+
+    // MARK: - Antigravity (sandboxed JSON output)
+
+    private func callAntigravity(binary: URL, prompt: String, frames: [AIFrame]?,
+                                 model: String?, timeout: TimeInterval,
+                                 log: @Sendable (String) -> Void) async throws -> String {
+        var preparation = PerfSignpost.begin("AIInput", metadata: "antigravity")
+        defer { PerfSignpost.end(preparation) }
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cb_antigravity_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let frames = frames ?? []
+        let request = AntigravityRequest(prompt: prompt, frameLabels: frames.map(\.label),
+                                         model: model, timeout: timeout)
+        for (frame, name) in zip(frames, request.frameNames) {
+            try frame.jpeg.write(to: directory.appendingPathComponent(name))
+        }
+        PerfSignpost.end(preparation)
+        preparation = nil
+        let result = try await runRequest(executable: binary, arguments: request.arguments,
+                                          timeout: timeout, currentDirectory: directory)
+        do {
+            return try AntigravityResponse.parse(stdout: result.stdoutText, stderr: result.stderrText,
+                                                 exitCode: result.exitCode)
+        } catch let failure as AntigravityResponse.Failure {
+            let rawError = failure.description + "\n" + result.stderrText + "\n" + result.stdoutText
+            let error = Self.firstCLIErrorLine(rawError)
+            if Self.isProviderUnavailable(rawError) {
+                unavailableProviders.insert("antigravity")
+                log("Antigravity CLI error: \(error)")
+                throw AIError.notConfigured("Antigravity CLI is unavailable for this account: \(error)")
+            }
+            if Self.isQuotaError(rawError) { throw AIError.quotaExhausted(String(error.prefix(200))) }
+            if Self.isPromptTooLong(rawError) { throw AIError.promptTooLong("Antigravity") }
+            if let auth = await Self.authFailure(provider: "antigravity", binary: binary, raw: rawError, log: log) {
+                throw auth
+            }
+            log("Antigravity CLI error: \(error)")
+            if failure == .emptyResponse { throw AIError.emptyResponse("Antigravity") }
+            throw AIError.notConfigured("Antigravity CLI: \(error)")
+        }
     }
 
     // MARK: - Codex (text-only)

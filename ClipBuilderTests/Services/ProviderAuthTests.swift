@@ -58,7 +58,14 @@ struct ProviderAuthTests {
         }
         #expect(ProviderAuth.loginCommand(provider: "claude") == "claude auth login")
         #expect(ProviderAuth.loginCommand(provider: "codex") == "codex login")
+        #expect(ProviderAuth.loginCommand(provider: "antigravity") == "agy")
         #expect(ProviderAuth.loginCommand(provider: "nope") == nil)
+    }
+
+    @Test("Antigravity has no status command and never reports signed out by guessing")
+    func antigravityStatus() async {
+        #expect(await ProviderAuth.status(provider: "antigravity", binary: URL(fileURLWithPath: "/bin/false")) == .unknown)
+        #expect(await ProviderAuth.status(provider: "antigravity", binary: nil) == .unknown)
     }
 
     @Test("the sign-in script runs the located binary in a login shell and waits")

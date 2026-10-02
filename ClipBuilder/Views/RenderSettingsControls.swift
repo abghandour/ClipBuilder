@@ -49,9 +49,7 @@ struct RenderSettingsControls: View {
                 }
             }
             .fieldHelp(WizardFieldHelp.customCRF)
-            Text("Lower CRF is higher quality and creates a larger file.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            FormCaption("Lower CRF is higher quality and creates a larger file.")
         }
     }
 }

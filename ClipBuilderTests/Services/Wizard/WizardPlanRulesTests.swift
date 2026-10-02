@@ -4,6 +4,136 @@ import Testing
 @testable import Clip_Builder
 
 struct WizardPlanRulesTests {
+    private func podcastTurns(start: Double = 100, answer: Double = 104, end: Double = 131) -> [SpeakerTurn] {
+        [SpeakerTurn(videoID: 1, start: start, end: answer, cluster: 0, confidence: 1, tile: 0),
+         SpeakerTurn(videoID: 1, start: answer, end: end, cluster: 0, confidence: 1, tile: 1)]
+    }
+
+    @Test func podcastKeepsWholeExchangeWithoutTargetOrWhenItFits() {
+        for target: Int? in [nil, 31, 45] {
+            let result = WizardPlanRules.podcastExchangeCuts(scene: 100...131, sentenceEnds: [104, 108],
+                turns: podcastTurns(), proposed: [110...114], targetSeconds: target)
+            #expect(result.cuts == [100...131])
+            #expect(!result.exceededTarget)
+        }
+    }
+
+    @Test func podcastContiguousPlannerFragmentsKeepTheAnswer() {
+        let result = WizardPlanRules.podcastExchangeCuts(scene: 1419.7...1450.8,
+            sentenceEnds: [1423.5, 1427.7, 1431.7, 1435.7, 1441.7],
+            turns: podcastTurns(start: 1419.7, answer: 1423.5, end: 1450.8),
+            proposed: [1419.7...1423.7, 1423.7...1427.7, 1427.7...1431.7, 1431.7...1435.7],
+            targetSeconds: 15)
+        #expect(result.cuts == [1419.7...1431.7])
+        #expect(!result.exceededTarget)
+    }
+
+    @Test func podcastCompletenessOverridesLength() {
+        let result = WizardPlanRules.podcastExchangeCuts(scene: 100...131, sentenceEnds: [112, 120, 125],
+            turns: podcastTurns(answer: 112), proposed: [100...104], targetSeconds: 15)
+        #expect(result.cuts == [100...120])
+        #expect(result.exceededTarget)
+    }
+
+    @Test func podcastMissingOrSingleSpeakerFallsBackToFirstSentence() {
+        let single = [SpeakerTurn(videoID: 1, start: 100, end: 131, cluster: 0, confidence: 1)]
+        for turns in [[], single] {
+            let result = WizardPlanRules.podcastExchangeCuts(scene: 100...131, sentenceEnds: [104, 111, 125],
+                turns: turns, proposed: [100...104], targetSeconds: 6)
+            #expect(result.cuts == [100...111])
+            #expect(result.exceededTarget)
+        }
+        let unknown = WizardPlanRules.podcastExchangeCuts(scene: 100...131, sentenceEnds: [],
+            turns: [], proposed: [100...104], targetSeconds: 15)
+        #expect(unknown.cuts == [100...131])
+        #expect(unknown.exceededTarget)
+    }
+
+    @Test func podcastClosingJumpSurvivesOnlyWhenItFits() {
+        for target in [14, 15] {
+            let result = WizardPlanRules.podcastExchangeCuts(scene: 100...131,
+                sentenceEnds: [104, 110, 120, 125, 130], turns: podcastTurns(),
+                proposed: [100...104, 125...130], targetSeconds: target)
+            #expect(result.cuts == (target == 15 ? [100...110, 125...130] : [100...110]))
+            #expect(!result.exceededTarget)
+        }
+    }
+
+    @Test func podcastMidSceneProposalStillStartsWithQuestion() {
+        let result = WizardPlanRules.podcastExchangeCuts(scene: 100...131, sentenceEnds: [104, 110, 120, 125],
+            turns: podcastTurns(), proposed: [112...118], targetSeconds: 15)
+        #expect(result.cuts == [100...110])
+    }
+
+    @Test func podcastSnapsMergesClampsAndLimitsCutsInSourceOrder() {
+        let ends: [Double] = [2, 4, 5, 20, 22, 23, 25, 26, 28, 29, 29.5, 29.8]
+        let result = WizardPlanRules.podcastExchangeCuts(scene: 0...30, sentenceEnds: ends,
+            turns: podcastTurns(start: 0, answer: 2, end: 30),
+            proposed: [28...29, 25.2...25.8, 20.1...21, 21...22, 22...23,
+                       -10...2, 29.5...40, 29...29.5], targetSeconds: 15)
+        #expect(result.cuts == [0...5, 20...23, 25...26])
+        #expect(result.cuts.count <= 3)
+        for cut in result.cuts {
+            #expect(([0, 30] + ends).contains(cut.lowerBound))
+            #expect(([0, 30] + ends).contains(cut.upperBound))
+            #expect(cut.lowerBound >= 0 && cut.upperBound <= 30)
+        }
+        for (first, second) in zip(result.cuts, result.cuts.dropFirst()) {
+            #expect(first.upperBound < second.lowerBound)
+        }
+        #expect(result.cuts.last!.upperBound > 2)
+    }
+
+    @Test func podcastDropsShortClosingFragments() {
+        let result = WizardPlanRules.podcastExchangeCuts(scene: 0...30,
+            sentenceEnds: [2, 4, 5, 20, 20.4, 25, 26],
+            turns: podcastTurns(start: 0, answer: 2, end: 30),
+            proposed: [20...20.4, 25...26], targetSeconds: 15)
+        #expect(result.cuts == [0...5, 25...26])
+    }
+
+    @Test func podcastClampsClosingProposalToSceneEdgeAndIgnoresOutsideRanges() {
+        let result = WizardPlanRules.podcastExchangeCuts(scene: 0...30, sentenceEnds: [2, 5, 20, 28],
+            turns: podcastTurns(start: 0, answer: 2, end: 30),
+            proposed: [-10 ... -2, 28...40, 40...50], targetSeconds: 15)
+        #expect(result.cuts == [0...5, 28...30])
+        #expect(!result.exceededTarget)
+    }
+
+    @Test func podcastTranscriptShowsSourceTimesSpeakersAndBothEndsWithinCap() {
+        var segments = [TranscriptSegment(start: 100, end: 104, text: "Why did you start?", words: nil)]
+        for index in 0..<24 {
+            let start = 104 + Double(index)
+            segments.append(TranscriptSegment(start: start, end: start + 1,
+                text: "Answer \(index): " + String(repeating: "detail ", count: 25) + ".", words: nil))
+        }
+        segments.append(TranscriptSegment(start: 128, end: 131, text: "That is the key point.", words: nil))
+        var turns = podcastTurns()
+        turns[0].personKey = "host"
+        turns[1].personKey = "guest"
+        let text = WizardPlanRules.podcastTranscriptText(scene: 100...131, segments: segments,
+            turns: turns, speakerNames: ["host": "Host", "guest": "Guest"])
+        #expect(text.count <= 1500)
+        #expect(text.contains("[100.0–104.0] Host: Why did you start?"))
+        #expect(text.contains("[… transcript truncated …]"))
+        #expect(text.contains("[128.0–131.0] Guest: That is the key point."))
+    }
+
+    @Test func podcastTranscriptClampsToSceneAndCapsASingleLongSentence() {
+        let segments = [TranscriptSegment(start: 0, end: 10, text: "Outside.", words: nil),
+                        TranscriptSegment(start: 100, end: 131,
+                            text: "Opening " + String(repeating: "word ", count: 1000) + "closing.", words: nil)]
+        let text = WizardPlanRules.podcastTranscriptText(scene: 102...130, segments: segments,
+            turns: [], speakerNames: [:])
+        #expect(text.count <= 1500)
+        #expect(text.contains("[102.0–130.0]"))
+        #expect(text.contains("[… transcript truncated …]"))
+        #expect(text.contains("Opening") && text.contains("closing."))
+        #expect(!text.contains("Outside"))
+        #expect(WizardPlanRules.podcastTranscriptText(scene: 102...130, segments: [],
+            turns: [], speakerNames: [:]).isEmpty)
+    }
+
     private func scene(id: Int64, tags: [String]) -> SceneRecord {
         var scene = Fixtures.scene(id: id)
         scene.tags = tags

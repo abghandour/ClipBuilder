@@ -28,6 +28,7 @@ nonisolated struct ProviderStatusItem: Identifiable, Sendable {
         switch id {
         case "claude": "sparkle"
         case "gemini": "diamond"
+        case "antigravity": "a.circle"
         case "codex": "chevron.left.forwardslash.chevron.right"
         case "qwen": "q.circle"
         case "kimi": "k.circle"

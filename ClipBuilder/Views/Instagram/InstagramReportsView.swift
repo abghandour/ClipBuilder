@@ -78,12 +78,18 @@ struct InstagramReportsView: View {
         ContentUnavailableView {
             Label("No report data yet", systemImage: "chart.bar.xaxis")
         } description: {
-            Text("Press Refresh to fetch @\(account.username)'s posts, insights and comments. To see history from before today, import the peace-grappler reports in Settings → Instagram → Report History.")
+            if PeaceGrapplerImporter.historyBelongs(to: account.username) {
+                Text("Press Refresh to fetch @\(account.username)'s posts, insights and comments. To see history from before today, import the peace-grappler reports in Settings → Instagram → Report History.")
+            } else {
+                Text("Press Refresh to fetch @\(account.username)'s posts, insights and comments.")
+            }
         } actions: {
             HStack {
                 Button("Refresh") { store.refreshInstagram(username: account.username) }
                     .buttonStyle(.borderedProminent)
-                Button("Import Report History") { store.importPeaceGrapplerReports() }
+                if PeaceGrapplerImporter.historyBelongs(to: account.username) {
+                    Button("Import Report History") { store.importPeaceGrapplerReports() }
+                }
             }
         }
     }
@@ -103,8 +109,9 @@ struct InstagramReportsView: View {
     private func content(_ report: InstagramReport, account: IGAccountRecord) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Theme.spaceL) {
-                header(report)
+                header(report, account: account)
                 if report.importedThrough == nil, store.canImportPeaceGrapplerHistory,
+                   PeaceGrapplerImporter.historyBelongs(to: account.username),
                    !store.isImportingPeaceGrappler {
                     importBanner
                 }
@@ -147,15 +154,30 @@ struct InstagramReportsView: View {
         .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius).strokeBorder(ReportColors.accent.opacity(0.3)))
     }
 
-    private func header(_ report: InstagramReport) -> some View {
+    private func header(_ report: InstagramReport, account: IGAccountRecord) -> some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
+            // Every number below belongs to this account.
+            HStack(spacing: Theme.spaceS) {
+                Label("@\(account.username)",
+                      systemImage: store.isGraphAccount(account) ? "checkmark.seal.fill" : "person.crop.circle")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(store.isGraphAccount(account) ? ReportColors.accent : .primary)
+                    .lineLimit(1)
+                    .fixedSize()
+                Text(store.isGraphAccount(account) ? "Connected · official API" : "Not connected · stored data only")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+            }
             HStack {
+                // Intrinsic width: a capped frame clips the first segment.
                 Picker("Page", selection: $page) {
                     ForEach(Page.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 420)
+                .fixedSize()
                 Spacer()
                 Picker("Period", selection: Binding(
                     get: { store.igReportPeriod.id },

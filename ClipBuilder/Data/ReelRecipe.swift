@@ -67,6 +67,9 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         let referenceTemplate: Bool
         let models: [String]
 
+        var offersCameraFocus: Bool { cameraFocus || podcastFraming }
+        var offersOriginalFraming: Bool { podcastFraming }
+
         static let fight = Capabilities(
             workflow: .oneReel, sources: .scenes, length: .targetDuration, podcastFraming: false,
             cameraFocus: false, bRoll: false, fightResearch: true, audioMusic: true,

@@ -12,7 +12,13 @@ struct InstagramPublishSheet: View {
     @State private var caption = ""
     @State private var shareToFeed = true
 
-    private var connected: Bool { store.settings.instagram.isGraphConnected }
+    @State private var selectedAccountID: Int64?
+
+    private var accounts: [IGAccountRecord] { store.instagramPublishAccounts }
+    private var selectedAccount: IGAccountRecord? {
+        accounts.first { $0.id == selectedAccountID } ?? store.defaultInstagramPublishAccount
+    }
+    private var connected: Bool { selectedAccount != nil }
 
     /// What the account's own numbers say about timing and hashtags.
     @ViewBuilder
@@ -28,12 +34,15 @@ struct InstagramPublishSheet: View {
             if benchmarks.topHashtags.contains(where: { $0.lift >= 1 }) {
                 HStack(spacing: 8) {
                     Button("Add Top Hashtags") { addTopHashtags(benchmarks) }
+                        .lineLimit(1)
+                        .fixedSize()
                         .controlSize(.small)
                         .help("Appends the hashtags that ride this account's best-reaching posts")
                     Text(benchmarks.topHashtags.filter { $0.lift >= 1 }.prefix(5).map(\.tag).joined(separator: " "))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -53,11 +62,24 @@ struct InstagramPublishSheet: View {
             HStack {
                 Label("Publish to Instagram", systemImage: "paperplane")
                     .font(.headline)
+                    .lineLimit(1)
+                    .fixedSize()
                 Spacer()
-                if connected {
-                    Label("@\(store.settings.instagram.connectedUsername)",
-                          systemImage: "person.crop.circle.badge.checkmark")
+                if accounts.count > 1 {
+                    Picker("Account", selection: $selectedAccountID) {
+                        ForEach(accounts) { account in
+                            Text("@\(account.username)").tag(Optional(account.id))
+                        }
+                    }
+                    .labelsHidden()
+                    .lineLimit(1)
+                    .fixedSize()
+                    .help("The account this reel publishes to")
+                } else if let account = selectedAccount {
+                    Label("@\(account.username)", systemImage: "person.crop.circle.badge.checkmark")
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
                         .help("The connected account this reel publishes to")
                 }
             }
@@ -73,7 +95,11 @@ struct InstagramPublishSheet: View {
                     }
 
                 VStack(alignment: .leading, spacing: 10) {
-                    if !connected {
+                    if !connected, store.settings.instagram.isGraphConnected {
+                        Label("Add a connected account on the Instagram screen first to publish from this profile.",
+                              systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    } else if !connected {
                         Label("No Instagram account is connected. Connect a business/creator account in Settings → Instagram (the token needs the instagram_content_publish permission).",
                               systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
@@ -97,7 +123,8 @@ struct InstagramPublishSheet: View {
                     Toggle("Also show in the main feed", isOn: $shareToFeed)
                         .help("Off = the reel appears only in the Reels tab, not the profile feed")
 
-                    if let benchmarks = store.igBenchmarks {
+                    if let benchmarks = store.igBenchmarks,
+                       selectedAccount?.username.caseInsensitiveCompare(benchmarks.username) == .orderedSame {
                         publishTips(benchmarks)
                     }
 
@@ -111,6 +138,8 @@ struct InstagramPublishSheet: View {
             HStack {
                 Spacer()
                 Button("Publish Reel", systemImage: "paperplane.fill", action: publish)
+                    .lineLimit(1)
+                    .fixedSize()
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!connected || store.isPublishingToInstagram || caption.count > 2200)
@@ -120,17 +149,24 @@ struct InstagramPublishSheet: View {
         .frame(width: 620, height: 480)
         .appJobSetupPresentation()
         .modalCloseButton { dismiss() }
-        .onAppear { caption = video.caption }
+        .onAppear {
+            caption = video.caption
+            selectedAccountID = store.defaultInstagramPublishAccount?.id
+        }
+        .onChange(of: accounts.map(\.id)) {
+            selectedAccountID = selectedAccount?.id
+        }
     }
 
     private func publish() {
+        guard let account = selectedAccount else { return }
         let store = store
         let video = video, caption = caption, shareToFeed = shareToFeed
         store.jobs.start(.instagramPublish, title: "Publish to Instagram — \(video.filename)",
                          project: store.activeProject, profileGeneration: store.profileGeneration,
                          subjectID: "publish") { log in
             let result = try await store.publishReelToInstagram(video: video, caption: caption,
-                                                                shareToFeed: shareToFeed, log: log)
+                                                                shareToFeed: shareToFeed, account: account, log: log)
             return .instagramPublished(permalink: result.permalink.flatMap { URL(string: $0) })
         }
         dismiss()

@@ -113,14 +113,20 @@ extension AppStore {
     /// Continue a reviewed Wizard plan in the Builder, where owned photo and
     /// B-roll suggestions can be accepted before the final render.
     func openReviewedPlanInBuilder(_ plan: WizardPlan, request: ProposedCutReviewRequest, fixWithWizard: Bool = false) {
-        let document = WizardEngine.timelineDocument(
-            from: plan, sceneMap: request.sceneMap,
-            renderSettings: request.options.renderSettings,
-            pacing: request.options.pacing
-        )
-        createTimeline(named: "Reviewed Plan", document: document, projectID: request.options.projectID,
-                       isWizardPlan: true, fixWithWizard: fixWithWizard)
+        guard let database else { return }
+        let generation = profileGeneration
         pendingCutReview = nil
+        Task {
+            do {
+                let document = try await WizardEngine.timelineDocument(from: plan, sceneMap: request.sceneMap,
+                    options: request.options, database: database, log: logSink(\.wizardLog))
+                guard self.database === database, generation == profileGeneration, !Task.isCancelled else { return }
+                createTimeline(named: "Reviewed Plan", document: document, projectID: request.options.projectID,
+                               isWizardPlan: true, fixWithWizard: fixWithWizard)
+            } catch {
+                presentError("Could not lay out the reviewed cuts", error)
+            }
+        }
     }
 
     /// Load a generated video's saved timeline back into the builder.

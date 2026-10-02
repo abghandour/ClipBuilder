@@ -9,6 +9,14 @@ nonisolated struct WizardFormPlan: Sendable {
         capabilities = recipe.capabilities
     }
 
+    static func lengthHelp(recipe: ReelRecipe) -> FieldHelp {
+        let help = WizardFieldHelp.length
+        guard recipe.id == "podcast" else { return help }
+        let exception = "A complete question and answer is kept even if it runs longer."
+        return FieldHelp(help.tooltip + " " + exception,
+                         caption: (help.caption.map { $0 + " " } ?? "") + exception)
+    }
+
     static func outcome(recipe: ReelRecipe, critiqueLoop: Bool) -> ReelRecipe.Workflow {
         recipe.workflow == .highlights ? .highlights : (critiqueLoop ? .iterate : .oneReel)
     }

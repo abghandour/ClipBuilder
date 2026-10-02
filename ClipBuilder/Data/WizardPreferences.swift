@@ -230,6 +230,7 @@ nonisolated enum WizardDefaults {
     static let allowedTransitionsKey = "wizard.allowedTransitions"
 
     static func migrateLegacy(defaults: UserDefaults = .standard) {
+        WizardCameraFocus.migrate(defaults: defaults)
         if let oldValue = defaults.object(forKey: "wizard.curatedOnly") {
             if defaults.object(forKey: "wizard.favoritesOnly") == nil {
                 defaults.set(oldValue, forKey: "wizard.favoritesOnly")

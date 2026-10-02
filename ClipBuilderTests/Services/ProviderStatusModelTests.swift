@@ -27,7 +27,7 @@ struct ProviderStatusModelTests {
         let model = ProviderStatusModel(
             locate: { name in
                 switch name {
-                case "/custom/claude", "codex", "kimi": URL(fileURLWithPath: name)
+                case "/custom/claude", "agy", "codex", "kimi": URL(fileURLWithPath: name)
                 default: nil
                 }
             },
@@ -35,7 +35,7 @@ struct ProviderStatusModelTests {
                 switch key {
                 case "claude": return binary.path == "/custom/claude" ? .signedIn : .unknown
                 case "codex": return .signedOut
-                case "kimi": return .unknown
+                case "antigravity", "kimi": return .unknown
                 default:
                     Issue.record("Probed an uninstalled provider: \(key)")
                     return .unknown
@@ -43,8 +43,8 @@ struct ProviderStatusModelTests {
             }
         )
         await model.refresh(binaries: ["claude": "/custom/claude"])
-        #expect(model.items.map { $0.id } == ["claude", "codex", "kimi"])
-        #expect(model.items.map { $0.state } == [.signedIn, .signedOut, .unknown])
+        #expect(model.items.map { $0.id } == ["claude", "antigravity", "codex", "kimi"])
+        #expect(model.items.map { $0.state } == [.signedIn, .unknown, .signedOut, .unknown])
     }
 
     @Test("No installed providers produces an empty row")

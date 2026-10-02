@@ -49,6 +49,7 @@ struct SettingsView: View {
 
 private struct InstagramSettingsTab: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.openURL) private var openURL
     @State private var testResult: String?
     @State private var testing = false
     @State private var graphToken = ""
@@ -57,60 +58,87 @@ private struct InstagramSettingsTab: View {
     var body: some View {
         @Bindable var store = store
         Form {
-            Section("Account") {
+            Section("Primary Account") {
                 TextField("Instagram handle", text: Binding(
                     get: { store.activeProfile.socials["instagram"]?.handle ?? "" },
                     set: { store.activeProfile.socials["instagram", default: SocialSlot()].handle = $0 }
                 ), prompt: Text("@yourbrand"))
-                Text("The profile's own handle — used as the default account for fetches and tests. Saved with the profile.")
+                Text("The profile's main handle — the default for benchmarks, the wizard and test fetches. Saved with the profile. Add the profile's other accounts on the Instagram screen.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Own Account (Graph API)") {
-                if store.settings.instagram.isGraphConnected {
-                    LabeledContent("Connected") {
-                        Label("@\(store.settings.instagram.connectedUsername)",
-                              systemImage: "checkmark.seal.fill")
-                            .foregroundStyle(.green)
-                    }
-                    if store.settings.instagram.tokenFlavor == "instagram" {
-                        // PLAN-VERIFY: automatic refresh and the initial 60-day expiry await the token spike.
-                        if let expiry = store.settings.instagram.tokenExpiresAt {
-                            Text("Instagram Login · refreshes automatically · expires \(expiry.formatted(.dateTime.month(.abbreviated).day()))")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("Instagram Login · refreshes automatically · expiry unknown")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+            Section("Own Accounts (Graph API)") {
+                ForEach(store.settings.instagram.connections) { connection in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label("@\(connection.username)", systemImage: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if connection.tokenFlavor == "instagram" {
+                                // PLAN-VERIFY: automatic refresh and the initial 60-day expiry await the token spike.
+                                if let expiry = connection.tokenExpiresAt {
+                                    Text("Instagram Login · refreshes automatically · expires \(expiry.formatted(.dateTime.month(.abbreviated).day()))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("Instagram Login · refreshes automatically · expiry unknown")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            } else {
+                                Text("Facebook Login · Page tokens never expire; User tokens must be extended manually")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                    } else {
-                        Text("Facebook Login · Page tokens never expire; User tokens must be extended manually")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button("Disconnect") { store.disconnectInstagram(connection) }
+                            .lineLimit(1)
+                            .fixedSize()
                     }
-                    Button("Disconnect") { store.disconnectInstagram() }
-                    Text("Reels for this account fetch through the official API with full insights (reach, saves, shares, watch time). If the token expires or permissions change, reconnect here with a fresh token.")
+                }
+                if !store.settings.instagram.isGraphConnected {
+                    Text("No accounts connected yet. Connect as many as you need, one token per account; each one is listed here with its own Disconnect.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
-                    SecureField("Access token", text: $graphToken,
-                                prompt: Text("Long-lived Meta access token"))
-                    Button(store.isConnectingInstagram ? "Connecting…" : "Connect") {
-                        store.connectInstagram(token: graphToken)
-                        graphToken = ""
-                    }
-                    .disabled(graphToken.trimmingCharacters(in: .whitespaces).isEmpty
-                              || store.isConnectingInstagram)
-                    Text("Paste a long-lived User token or the linked Facebook Page's own token from a Meta app. Include instagram_basic, instagram_manage_insights and pages_read_engagement; User tokens also need pages_show_list for account discovery. Add instagram_manage_comments for comment reports and instagram_content_publish to publish reels from the Library. The Page must link to your Instagram business/creator account. Stored in the Keychain, never in settings files.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    // PLAN-VERIFY: confirm the dashboard's Generate token route and tester-invite labels.
-                    Text("Or use Instagram Login: in your Meta app's Instagram product, open API setup with Instagram login and add the account as an Instagram Tester. Accept the invite in the Instagram app under Settings → Apps and websites → Tester invites, then click Generate token in the Meta app and paste it here. Use a Business or Creator account. No Facebook Page needed. Include instagram_business_basic, instagram_business_manage_insights, instagram_business_manage_comments and instagram_business_content_publish for insights, comments and publishing.")
+                    Text("Reels for connected accounts fetch through the official API with full insights (reach, saves, shares, watch time). If a token expires or permissions change, paste a fresh token below to reconnect that account. Paste another account's token to add it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                SecureField("Access token", text: $graphToken,
+                            prompt: Text("Long-lived Meta access token"))
+                TextField("Meta app ID", text: $store.settings.instagram.metaAppID,
+                          prompt: Text("Optional"))
+                // With no token pasted, the button fetches one instead.
+                let needsToken = graphToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                Button(store.isConnectingInstagram ? "Connecting…" : needsToken ? "Get Token…" : "Connect Account") {
+                    if needsToken {
+                        openURL(InstagramTokenPage.url(metaAppID: store.settings.instagram.metaAppID))
+                    } else {
+                        store.connectInstagram(token: graphToken)
+                        graphToken = ""
+                    }
+                }
+                .lineLimit(1)
+                .fixedSize()
+                .disabled(store.isConnectingInstagram)
+                .help(needsToken ? "Opens the Meta dashboard page where the token is generated"
+                                 : "Connects the account this token belongs to")
+                Text("Get Token opens your Meta app's Instagram Login page in the browser: click Generate token next to the account, copy it, and paste it above. With a Meta app ID it opens that app directly; without one, your app list.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Paste a long-lived User token or the linked Facebook Page's own token from a Meta app. Include instagram_basic, instagram_manage_insights and pages_read_engagement; User tokens also need pages_show_list for account discovery. Add instagram_manage_comments for comment reports and instagram_content_publish to publish reels from the Library. The Page must link to your Instagram business/creator account. Stored in the Keychain, never in settings files.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                // PLAN-VERIFY: confirm the dashboard's Generate token route and tester-invite labels.
+                Text("Or use Instagram Login: in your Meta app's Instagram product, open API setup with Instagram login and add the account as an Instagram Tester. Accept the invite in the Instagram app under Settings → Apps and websites → Tester invites, then click Generate token in the Meta app and paste it here. Use a Business or Creator account. No Facebook Page needed. Include instagram_business_basic, instagram_business_manage_insights, instagram_business_manage_comments and instagram_business_content_publish for insights, comments and publishing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -827,7 +855,7 @@ private struct AISettingsTab: View {
             }
 
             Section("Models") {
-                Text("Codex CLI is asked which models it offers (its own models cache); Claude Code gets family aliases that always mean the latest model. Gemini, Qwen and Kimi publish no list, so their entries are the built-in ones.")
+                Text("Codex CLI is asked which models it offers (its own models cache); Claude Code gets family aliases that always mean the latest model. Refresh Models asks Antigravity CLI for its current list. Gemini, Qwen and Kimi publish no list, so their entries are the built-in ones.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {
@@ -835,8 +863,11 @@ private struct AISettingsTab: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Refresh Models") { store.refreshDiscoveredModels() }
-                        .help("Ask the installed CLIs again — after updating Codex, or when a new model appeared")
+                    Button(store.refreshingModels ? "Refreshing…" : "Refresh Models") { store.refreshDiscoveredModels() }
+                        .lineLimit(1)
+                        .fixedSize()
+                        .disabled(store.refreshingModels)
+                        .help("Ask the installed CLIs again — after updating a CLI, or when a new model appeared")
                 }
             }
             .id(store.modelCatalogVersion)

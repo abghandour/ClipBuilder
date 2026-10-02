@@ -36,7 +36,7 @@ extension WizardOptions {
             options.useBRoll = false
             options.brollInstructions = ""
         }
-        if !capabilities.cameraFocus { options.highlightFraming = nil }
+        if !capabilities.offersCameraFocus { options.highlightFraming = nil }
         if !capabilities.podcastFraming { options.podcastFraming = .followSpeaker }
         if !capabilities.referenceTemplate {
             options.templateJSON = nil

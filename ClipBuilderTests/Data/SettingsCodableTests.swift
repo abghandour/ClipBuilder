@@ -37,25 +37,34 @@ struct SettingsCodableTests {
         #expect(settings.connectedUsername == "peacegrappler")
         #expect(settings.connectedIGUserID == "ig-123")
         #expect(settings.fetchLimit == 24)
+        #expect(settings.connections.isEmpty)
+        #expect(!settings.isGraphConnected)
         #expect(settings.tokenFlavor == "facebook")
         #expect(settings.tokenExpiresAt == nil)
         #expect(settings.tokenRefreshedAt == nil)
     }
 
-    @Test("Instagram token metadata round trips with snake-case keys")
+    @Test("Two Instagram connections round trip without legacy single-account keys")
     func instagramTokenMetadata() throws {
         var settings = InstagramSettings()
-        settings.tokenFlavor = "instagram"
-        settings.tokenRefreshedAt = Date(timeIntervalSince1970: 1_800_000_000)
-        settings.tokenExpiresAt = settings.tokenRefreshedAt?.addingTimeInterval(60 * 86400)
+        let instant = Date(timeIntervalSince1970: 1_800_000_000)
+        settings.connections = [
+            InstagramConnection(username: "peacegrappler", igUserID: "ig-123", tokenFlavor: "facebook"),
+            InstagramConnection(username: "podcast", igUserID: "ig-456", tokenFlavor: "instagram",
+                                tokenExpiresAt: instant.addingTimeInterval(60 * 86400), tokenRefreshedAt: instant),
+        ]
         let data = try JSONEncoder().encode(settings)
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        #expect(object["token_flavor"] as? String == "instagram")
-        #expect(object["token_expires_at"] != nil)
-        #expect(object["token_refreshed_at"] != nil)
+        let rows = try #require(object["connections"] as? [[String: Any]])
+        #expect(rows.count == 2)
+        #expect(Set(rows[1].keys) == ["username", "ig_user_id", "token_flavor", "token_expires_at", "token_refreshed_at"])
+        for key in ["connected_username", "connected_ig_user_id", "token_flavor", "token_expires_at", "token_refreshed_at"] {
+            #expect(object[key] == nil)
+        }
         let decoded = try JSONDecoder().decode(InstagramSettings.self, from: data)
-        #expect(decoded.tokenFlavor == "instagram")
-        #expect(decoded.tokenExpiresAt == settings.tokenExpiresAt)
-        #expect(decoded.tokenRefreshedAt == settings.tokenRefreshedAt)
+        #expect(decoded.connections == settings.connections)
+        #expect(decoded.isGraphConnected)
+        #expect(decoded.connection(for: "PODCAST") == settings.connections[1])
+        #expect(decoded.connection(for: "unconnected") == nil)
     }
 }

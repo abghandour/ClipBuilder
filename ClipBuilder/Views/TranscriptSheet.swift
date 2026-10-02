@@ -20,6 +20,9 @@ struct TranscriptSheet: View {
     @State private var isSaving = false
     @State private var confirmDiscard = false
     @State private var showTools = false
+    @State private var confirmRetranscribe = false
+    @State private var showsQA = false
+    @State private var videoScenes: [SceneRecord] = []
     /// Who is talking: the podcast pass's speaker turns and this video's
     /// roster, for the speaker column and its menu.
     @State private var turns: [SpeakerTurn] = []
@@ -192,129 +195,18 @@ struct TranscriptSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading) {
-                    Text("Transcript — \(video.filename)")
-                        .font(.headline)
-                    HStack(spacing: 8) {
-                        AIInfoButton(video: video)
-                        if !rows.isEmpty {
-                            Text(tagFilter.isEmpty ? "\(rows.count) segments"
-                                 : "\(visibleRows.count) of \(rows.count) segments")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if isMappingSpeakers {
-                            ProgressView()
-                                .controlSize(.mini)
-                            Text(mappingStatus ?? "Mapping speakers…")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            if let mappingJob { Button("Stop") { store.jobs.cancel(mappingJob.id) } }
-                        } else if let recutNote {
-                            Text(recutNote)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        if unlearnedCorrections > 0, !turns.isEmpty, !isMappingSpeakers {
-                            // Lines attributed by hand teach the tracker
-                            // only when the speakers are mapped again.
-                            let pending = unlearnedCorrections
-                            Label("\(pending) line\(pending == 1 ? "" : "s") attributed by hand — Map Speakers Again to teach the tracker \(pending == 1 ? "that voice" : "those voices") and fix the rest of this file",
-                                  systemImage: "waveform.badge.exclamationmark")
-                                .font(.caption)
-                                .foregroundStyle(Color.orange)
-                                .help("The speaker map still disagrees with these lines. Mapping again uses your attributions as ground truth, remaps every other line, and remembers the voices for other files.")
-                        }
-                        if !allLineTags.isEmpty {
-                            // Narrow the transcript to the lines inside
-                            // scenes carrying one tag (the reel picks, the
-                            // questions…).
-                            Menu(tagFilter.isEmpty ? "All tags"
-                                 : tagFilter == Self.changedByMapFilter ? "Changed by the map" : tagFilter) {
-                                Button("All tags") { tagFilter = "" }
-                                Divider()
-                                ForEach(allLineTags, id: \.self) { tag in
-                                    let count = rows.count { lineTags[$0.id]?.contains(tag) == true }
-                                    Button("\(tag == "reel-highlight" ? "Reel" : tag) (\(count))") { tagFilter = tag }
-                                }
-                                if !changedByMap.isEmpty {
-                                    Divider()
-                                    Button("Changed by the map (\(changedByMap.count))") { tagFilter = Self.changedByMapFilter }
-                                }
-                            }
-                            .controlSize(.small)
-                            .fixedSize()
-                            .help("Show only the lines inside scenes carrying a tag, or the lines the last speaker map changed")
-                        } else if !changedByMap.isEmpty {
-                            Menu(tagFilter == Self.changedByMapFilter ? "Changed by the map" : "All lines") {
-                                Button("All lines") { tagFilter = "" }
-                                Button("Changed by the map (\(changedByMap.count))") { tagFilter = Self.changedByMapFilter }
-                            }
-                            .controlSize(.small)
-                            .fixedSize()
-                        }
-                        if rows.contains(where: { speakerLabels[$0.id] != nil }) {
-                            Toggle("Group by Speaker", isOn: $groupBySpeaker)
-                                .toggleStyle(.checkbox)
-                                .controlSize(.small)
-                                .help("Read each speaker's uninterrupted run as one block; every line still edits and attributes on its own")
-                        }
-                    }
-                }
-                Spacer()
-                if !turns.isEmpty {
-                    // Split rows where the speaker changes mid-row, using the
-                    // words' timings; Undo puts the transcriber's rows back.
-                    Menu("Re-cut by Speaker") {
-                        Button("Re-cut by Speaker") { recut() }
-                            .disabled(hasChanges)
-                        if hasRecut {
-                            Button("Undo Re-cut") { undoRecut() }
-                                .disabled(hasChanges)
-                        }
-                        Divider()
-                        Button(isMappingSpeakers ? "Mapping Speakers…" : "Map Speakers Again") { mapSpeakersAgain() }
-                            .disabled(hasChanges || isMappingSpeakers)
-                        if store.previousSpeakerMaps[video.id] != nil {
-                            Button("Undo Map Speakers Again") { undoMap() }
-                                .disabled(hasChanges || isMappingSpeakers)
-                        }
-                    }
-                    .fixedSize()
-                    .help(hasChanges ? "Apply or discard your pending changes first"
-                          : "Split every row where the speaker changes, at the gap between words, so each row has one speaker" + (hasRecut ? " — or put the transcriber's original rows back" : "")
-                            + ". Map Speakers Again reruns who-is-talking from the picture and the voices; the lines you attributed by hand teach it their voices")
-                    if unlearnedCorrections > 0 {
-                        Button(isMappingSpeakers ? "Mapping Speakers…" : "Map Speakers Again") { mapSpeakersAgain() }
-                            .disabled(hasChanges || isMappingSpeakers)
-                            .buttonStyle(.borderedProminent)
-                            .help("Rerun who-is-talking with your attributions as ground truth")
-                    }
-                }
-                Button("Topics, Cuts & Translation…") { showTools = true }
-                    .disabled(rows.isEmpty)
-                Button("Re-transcribe") {
-                    store.transcribe(video: video, force: true)
-                    dismiss()
-                }
-                .help("Discard this transcript and run the transcriber again")
-                Button(hasChanges ? "Apply" : "Done") {
-                    if hasChanges { save(thenDismiss: false) } else { dismiss() }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(isSaving)
-                .help(hasChanges ? "Save every edited line and speaker change at once" : "Close")
-            }
-            .padding()
+            header
+                .padding()
 
             Divider()
 
             if isLoading {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if showsQA, !qaSections.isEmpty {
+                TranscriptQAView(video: video, sections: qaSections, rows: rows, labels: qaLabels) { scene, start, end in
+                    store.setSceneEditRange(scene, start: start, end: end)
+                }
             } else if rows.isEmpty {
                 ContentUnavailableView(
                     "No Transcript",
@@ -379,15 +271,189 @@ struct TranscriptSheet: View {
         .onChange(of: mappingJob?.status) { _, status in
             if status == .done { Task { await refreshSpeakerMapping() } }
         }
+        .onChange(of: showsQA) { _, active in
+            if active { stopPlayback(releasePlayer: true) }
+        }
+        .onChange(of: currentVideoScenes) { _, scenes in
+            refreshSceneMapping(scenes)
+        }
         .appJobSetupPresentation()
         .onDisappear { stopPlayback(releasePlayer: true) }
         .sheet(isPresented: $showTools) { TranscriptToolsSheet(video: video) }
+        .confirmationDialog("Re-transcribe this video?", isPresented: $confirmRetranscribe) {
+            Button("Discard Transcript and Re-transcribe", role: .destructive) {
+                store.transcribe(video: video, force: true)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This discards the current transcript and any unsaved changes, runs the transcriber again, and closes this sheet.")
+        }
         .confirmationDialog("Discard unsaved transcript changes?", isPresented: $confirmDiscard) {
             Button("Discard", role: .destructive) { dismiss() }
             Button("Apply and Close") { save(thenDismiss: true) }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(changeSummary + " not applied yet.")
+        }
+    }
+
+    private var qaLabels: [Int64: String] {
+        rows.reduce(into: [:]) { result, row in result[row.id] = speakerLabel(row) }
+    }
+
+    private var qaSections: [TranscriptQASections.Section] {
+        TranscriptQASections.sections(scenes: videoScenes, rows: rows, labels: qaLabels)
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Transcript — \(video.filename)")
+                    .font(.headline).truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help("Transcript — \(video.filename)")
+                AIInfoButton(video: video)
+                Spacer(minLength: 8)
+                Button(hasChanges ? "Apply" : "Done") {
+                    if hasChanges { save(thenDismiss: false) } else { dismiss() }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(isSaving)
+                .fixedSize()
+                .help(hasChanges ? "Save every edited line and speaker change at once" : "Close")
+            }
+            HStack(spacing: 8) {
+                Picker("View", selection: $showsQA) {
+                    Text("Transcript").tag(false)
+                    if !qaSections.isEmpty { Text("Q&A (\(qaSections.count))").tag(true) }
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                if !showsQA { transcriptFilters }
+                if !rows.isEmpty {
+                    Text(showsQA || tagFilter.isEmpty ? "\(rows.count) segments"
+                         : "\(visibleRows.count) of \(rows.count) segments")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                speakerActions
+                Menu("More") {
+                    Button("Topics, Cuts & Translation…") { showTools = true }
+                        .disabled(rows.isEmpty)
+                    Button("Re-transcribe…") { confirmRetranscribe = true }
+                        .help("Discard this transcript and run the transcriber again")
+                }
+                .fixedSize()
+            }
+            statusStrip
+        }
+        .lineLimit(1)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private var transcriptFilters: some View {
+        if !allLineTags.isEmpty {
+            // Narrow the transcript to the lines inside
+            // scenes carrying one tag (the reel picks, the
+            // questions…).
+            Menu(tagFilter.isEmpty ? "All tags"
+                 : tagFilter == Self.changedByMapFilter ? "Changed by the map" : tagFilter) {
+                Button("All tags") { tagFilter = "" }
+                Divider()
+                ForEach(allLineTags, id: \.self) { tag in
+                    let count = rows.count { lineTags[$0.id]?.contains(tag) == true }
+                    Button("\(tag == "reel-highlight" ? "Reel" : tag) (\(count))") { tagFilter = tag }
+                }
+                if !changedByMap.isEmpty {
+                    Divider()
+                    Button("Changed by the map (\(changedByMap.count))") { tagFilter = Self.changedByMapFilter }
+                }
+            }
+            .controlSize(.small)
+            .lineLimit(1)
+            .fixedSize()
+            .help("Show only the lines inside scenes carrying a tag, or the lines the last speaker map changed")
+        } else if !changedByMap.isEmpty {
+            Menu(tagFilter == Self.changedByMapFilter ? "Changed by the map" : "All lines") {
+                Button("All lines") { tagFilter = "" }
+                Button("Changed by the map (\(changedByMap.count))") { tagFilter = Self.changedByMapFilter }
+            }
+            .controlSize(.small)
+            .lineLimit(1)
+            .fixedSize()
+        }
+        if rows.contains(where: { speakerLabels[$0.id] != nil }) {
+            Toggle("Group by Speaker", isOn: $groupBySpeaker)
+                .toggleStyle(.checkbox)
+                .fixedSize()
+                .controlSize(.small)
+                .lineLimit(1)
+                .help("Read each speaker's uninterrupted run as one block; every line still edits and attributes on its own")
+        }
+    }
+
+    @ViewBuilder
+    private var speakerActions: some View {
+        if !turns.isEmpty {
+            // Split rows where the speaker changes mid-row, using the
+            // words' timings; Undo puts the transcriber's rows back.
+            Menu("Speakers") {
+                Button("Re-cut by Speaker") { recut() }
+                    .disabled(hasChanges)
+                if hasRecut {
+                    Button("Undo Re-cut") { undoRecut() }
+                        .disabled(hasChanges)
+                }
+                Divider()
+                Button(isMappingSpeakers ? "Mapping Speakers…" : "Map Speakers Again") { mapSpeakersAgain() }
+                    .disabled(hasChanges || isMappingSpeakers)
+                if store.previousSpeakerMaps[video.id] != nil {
+                    Button("Undo Map Speakers Again") { undoMap() }
+                        .disabled(hasChanges || isMappingSpeakers)
+                }
+            }
+            .fixedSize()
+            .help(hasChanges ? "Apply or discard your pending changes first"
+                  : "Split every row where the speaker changes, at the gap between words, so each row has one speaker" + (hasRecut ? " — or put the transcriber's original rows back" : "")
+                    + ". Map Speakers Again reruns who-is-talking from the picture and the voices; the lines you attributed by hand teach it their voices")
+        }
+    }
+
+    @ViewBuilder
+    private var statusStrip: some View {
+        if isMappingSpeakers {
+            let message = mappingStatus ?? "Mapping speakers…"
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.mini)
+                Text(message).foregroundStyle(.secondary)
+                    .truncationMode(.tail).help(message)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let mappingJob {
+                    Button("Stop") { store.jobs.cancel(mappingJob.id) }
+                        .fixedSize().help("Stop mapping speakers")
+                }
+            }
+            .font(.caption).lineLimit(1)
+        } else if unlearnedCorrections > 0, !turns.isEmpty {
+            let pending = unlearnedCorrections
+            let message = "\(pending) line\(pending == 1 ? "" : "s") attributed by hand — Map Speakers Again to teach the tracker \(pending == 1 ? "that voice" : "those voices") and fix the rest of this file"
+            HStack(spacing: 8) {
+                Label(message, systemImage: "waveform.badge.exclamationmark")
+                    .foregroundStyle(Color.orange).truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(message + ". The speaker map still disagrees with these lines. Mapping again uses your attributions as ground truth, remaps every other line, and remembers the voices for other files.")
+                Button("Map Speakers Again") { mapSpeakersAgain() }
+                    .disabled(hasChanges || isMappingSpeakers)
+                    .controlSize(.small).fixedSize()
+                    .help("Rerun who-is-talking with your attributions as ground truth")
+            }
+            .font(.caption).lineLimit(1)
+        } else if let recutNote {
+            Text(recutNote).font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.tail).help(recutNote)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -773,6 +839,8 @@ struct TranscriptSheet: View {
         stopPlayback(releasePlayer: false)
         await player.seek(to: CMTime(seconds: start, preferredTimescale: 600),
                           toleranceBefore: .zero, toleranceAfter: .zero)
+        // A pending preview must not start behind the Q&A player.
+        guard !showsQA else { stopPlayback(releasePlayer: true); return }
         if let end {
             let stopAt = CMTime(seconds: max(end, start + 0.2), preferredTimescale: 600)
             boundaryObserver = player.addBoundaryTimeObserver(forTimes: [NSValue(time: stopAt)], queue: .main) {
@@ -940,13 +1008,22 @@ struct TranscriptSheet: View {
                                                         after: turns, roster: roster, people: people)
         if tagFilter == Self.changedByMapFilter, changedByMap.isEmpty { tagFilter = "" }
         hasRecut = await store.hasTranscriptRecut(videoID: video.id)
-        let scenes = store.scenes.filter { $0.videoID == video.id && !$0.ignored }
+        refreshSceneMapping(currentVideoScenes)
+        isLoading = false
+    }
+
+    private var currentVideoScenes: [SceneRecord] {
+        store.scenes.filter { $0.videoID == video.id && !$0.ignored }
+    }
+
+    private func refreshSceneMapping(_ scenes: [SceneRecord]) {
+        videoScenes = scenes
         lineScenes = rows.reduce(into: [:]) { result, row in
             let covering = Self.scenes(covering: row, in: scenes)
             if !covering.isEmpty { result[row.id] = covering }
         }
         lineTags = lineScenes.mapValues { Self.lineTags($0.flatMap(\.tags)) }
-        isLoading = false
+        if !scenes.contains(where: { $0.tags.contains("q&a") }) { showsQA = false }
     }
 
     /// Apply: every edited line and every staged speaker change, in one go.

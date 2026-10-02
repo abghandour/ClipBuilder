@@ -97,7 +97,7 @@ struct ScriptRequestRouterTests {
         let explicitRoute = await stub.service.resolveProviderModel(task: "route")
         #expect(explicitRoute.model == "claude-sonnet-4-6")
         #expect(AICatalog.tasks.contains("route") && AICatalog.taskLabels["route"] == "Wizard routing")
-        #expect(AICatalog.recommendedChains["route"]?.map(\.provider) == ["claude", "gemini", "codex"])
+        #expect(AICatalog.recommendedChains["route"]?.map(\.provider) == ["claude", "antigravity", "codex", "gemini"])
         #expect(callCount(stub) == 0)
     }
 

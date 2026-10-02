@@ -147,6 +147,13 @@ import Foundation
             defaults.set(AISettingsJSON.encode(result), forKey: snapshotKey)
             defaults.set(sourceName, forKey: sourceNameKey)
             if scopes.contains(.options) {
+                // Pasted legacy split-feed settings need the same mapping even
+                // after this installation has migrated its own preferences.
+                if result["podcastFraming"]?.string == PodcastFramingMode.splitZoom.rawValue {
+                    defaults.set(CropRecipe.Kind.grid.rawValue, forKey: "wizard.highlightFraming")
+                    defaults.set(PodcastFramingMode.followSpeaker.rawValue, forKey: "wizard.podcastFraming")
+                }
+                defaults.set(true, forKey: WizardCameraFocus.migrationKey)
                 let recipe = ReelRecipe.recipe(id: defaults.string(forKey: "wizard.formatPreset") ?? "custom") ?? .custom
                 let outcome = WizardFormPlan.outcome(recipe: recipe, critiqueLoop: defaults.bool(forKey: "wizard.critiqueLoop"))
                 defaults.set(outcome.rawValue, forKey: "wizard.outcome")

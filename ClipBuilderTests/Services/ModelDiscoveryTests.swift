@@ -4,6 +4,53 @@ import Testing
 
 @Suite("Model discovery")
 struct ModelDiscoveryTests {
+    @Test("Antigravity models skip progress, blank and malformed lines and preserve CLI order")
+    func antigravityModels() {
+        let models = ModelDiscovery.antigravityModels(output: """
+        Fetching available models...
+
+        gemini-3.8-flash-high\tGemini 3.8 Flash (High)
+        gemini-3.1-pro-low\tGemini 3.1 Pro (Low)
+        claude-sonnet-4-6\tClaude Sonnet 4.6
+        gpt-oss-120b-medium\tGPT OSS 120B (Medium)
+        gemini-3.8-flash-high\tDuplicate
+        malformed line
+        \tMissing id
+        missing-name\t
+        """)
+        #expect(models.map(\.id) == ["gemini-3.8-flash-high", "gemini-3.1-pro-low", "claude-sonnet-4-6", "gpt-oss-120b-medium"])
+        #expect(models.first?.name == "Gemini 3.8 Flash (High)")
+        #expect(models.allSatisfy { $0.provider == "antigravity" && $0.description == nil })
+        #expect(ModelDiscovery.antigravityModels(output: "Fetching available models...\n\n").isEmpty)
+        #expect(ModelDiscovery.antigravityModels(output: "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\r\n").count == 1)
+    }
+
+    @Test("Manual refresh uses the configured Antigravity CLI and only trusts a successful nonempty list")
+    func antigravityDiscovery() async throws {
+        let directory = try TempDirectory(prefix: "AntigravityModels")
+        let script = directory.url.appendingPathComponent("agy")
+        let missingCache = directory.url.appendingPathComponent("missing.json")
+        for (output, exitCode, authoritative) in [
+            ("Fetching available models...\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)", 0, true),
+            ("Fetching available models...", 0, false),
+            ("gemini-3.8-flash-low\tGemini 3.8 Flash (Low)", 1, false),
+        ] {
+            try """
+            #!/bin/sh
+            [ "$#" -eq 1 ] && [ "$1" = models ] || exit 9
+            printf '%s\\n' '\(output)'
+            exit \(exitCode)
+            """.write(to: script, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+            let found = await ModelDiscovery.refresh(antigravityBinary: script.path, codexCache: missingCache)
+            #expect((found["antigravity"]?.authoritative == true) == authoritative)
+            #expect(found["claude"] != nil)
+        }
+        let missing = await ModelDiscovery.refresh(antigravityBinary: directory.url.appendingPathComponent("missing").path,
+                                                     codexCache: missingCache)
+        #expect(missing["antigravity"] == nil)
+    }
+
     /// The shape of ~/.codex/models_cache.json on September 17, 2026.
     static let codexCache = """
     {
@@ -36,6 +83,7 @@ struct ModelDiscoveryTests {
         let missing = URL(fileURLWithPath: "/nonexistent/models_cache.json")
         let found = ModelDiscovery.discover(codexCache: missing)
         #expect(found["codex"] == nil)
+        #expect(found["antigravity"] == nil)
         // Claude's aliases are always there and never claim to be complete.
         #expect(found["claude"]?.authoritative == false)
         #expect(found["claude"]?.models.map(\.id) == ["haiku", "sonnet", "opus", "fable"])

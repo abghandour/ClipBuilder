@@ -4,6 +4,18 @@ import Testing
 
 @Suite("Wizard form plan")
 struct WizardFormPlanTests {
+    @Test func lengthHelpExplainsThePodcastClipExceptionOnly() {
+        let podcast = WizardFormPlan.lengthHelp(recipe: .podcast)
+        let exception = "A complete question and answer is kept even if it runs longer."
+        #expect(podcast.caption?.hasSuffix(exception) == true)
+        #expect(podcast.tooltip.hasSuffix(exception))
+        for recipe in [ReelRecipe.custom, .podcastHighlights] {
+            let help = WizardFormPlan.lengthHelp(recipe: recipe)
+            #expect(help.caption == WizardFieldHelp.length.caption)
+            #expect(help.tooltip == WizardFieldHelp.length.tooltip)
+        }
+    }
+
     @Test func criticBriefControlsOnlyAppearForIterateOutcome() {
         #expect(WizardFormPlan.showsCriticBriefControls(outcome: .iterate))
         #expect(!WizardFormPlan.showsCriticBriefControls(outcome: .oneReel))

@@ -58,7 +58,7 @@ nonisolated struct InstagramWebProvider: InstagramProvider {
               let dataObject = root["data"] as? [String: Any],
               let user = dataObject["user"] as? [String: Any] else {
             throw InstagramError.fetchFailed(
-                "Instagram blocked the request for @\(username) (HTTP \(status)). It may be a private account, or add a cookies.txt in Settings → Instagram and retry.")
+                "Instagram blocked the request for @\(username) (HTTP \(status)). No token is connected for it, so this went through the public site. If it is your account, paste its token in Settings → Instagram and click Connect Account. Otherwise it may be private; add browser cookies under Advanced fetching and retry.")
         }
         return user
     }

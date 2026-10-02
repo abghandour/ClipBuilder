@@ -12,9 +12,10 @@ import Foundation
 //   Run                       run → runThrowing: plan → assemble → caption → critique loop
 //   Run report                the .md written next to each rendered reel
 //   House style / Lessons     distillation (task .distill)
-//   Builder pre-fill          plan → TimelineDocument for the Builder
-// Pure plan post-processing lives in Services/Wizard/WizardPlanRules.swift;
-// the critic in Services/ReelCritic.swift; assembly at the end of this file.
+//   Builder pre-fill          plan → TimelineDocument for the Builder (shared podcast cuts
+//                             in Services/Wizard/WizardPodcastTimeline.swift)
+// Pure plan post-processing, podcast Q&A cuts and bounded transcript text live
+// in Services/Wizard/WizardPlanRules.swift; the critic in Services/ReelCritic.swift; assembly at the end of this file.
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
@@ -348,6 +349,8 @@ nonisolated struct WizardPlan: Sendable {
     /// The planner's kebab-case name for the output file ("du-plessis-
     /// strickland-split-decision"); nil falls back to the headline/title.
     var fileName: String?
+    /// Validated podcast camera focus; an explicit run option takes precedence.
+    var framing: CropRecipe.Kind? = nil
     /// The provider/model that wrote this plan (after any failover).
     var provenance: AIProvenance? = nil
 
@@ -875,6 +878,7 @@ actor WizardEngine {
                             videoTypes: [Int64: VideoType] = [:],
                             topics: [TopicRange] = [],
                             cleanupCuts: [EditProposal] = [],
+                            podcastTranscripts: [Int64: String] = [:],
                             editingInsights: EditingPerformanceInsights? = nil,
                             options: WizardOptions,
                             learnedContributors: [LearnedPreferences]? = nil,
@@ -951,7 +955,8 @@ actor WizardEngine {
         }
         return legacyPlanPrompt(profile: promptProfile, research: research, scenes: scenes, musicNames: musicNames,
             signals: visibleSignals, people: people, outcomes: outcomes, fightResearch: fightResearch,
-            videoTypes: videoTypes, topics: topics, cleanupCuts: cleanupCuts, editingInsights: editingInsights,
+            videoTypes: videoTypes, topics: topics, cleanupCuts: cleanupCuts,
+            podcastTranscripts: podcastTranscripts, editingInsights: editingInsights,
             options: promptOptions, learnedBenchmarks: benchmarkText) + localVocabulary + shared
     }
 
@@ -966,6 +971,7 @@ actor WizardEngine {
                             videoTypes: [Int64: VideoType] = [:],
                             topics: [TopicRange] = [],
                             cleanupCuts: [EditProposal] = [],
+                            podcastTranscripts: [Int64: String] = [:],
                             editingInsights: EditingPerformanceInsights? = nil,
                             options: WizardOptions, learnedBenchmarks: String? = nil) -> String {
         // Fight results the analyzer extracted — the ground truth behind
@@ -990,6 +996,20 @@ actor WizardEngine {
         // Recipes: the same catalog entry feeds the Wizard's picker caption
         // and this format contract, so the two never drift apart.
         var presetBlock = ReelRecipe.promptBlock(for: options.formatPreset)
+        if options.formatPreset == "podcast" {
+            presetBlock += """
+            - Return one clip per continuous stretch of the single chosen exchange, the first starting at the exchange's start. Return at most three clips, in source order, with cut transitions.
+            - Keep the full question and at least one complete answer sentence even if they run longer than Length. Never return only the question.
+
+            """
+            presetBlock += "- You may return an optional top-level \"framing\" field choosing one camera focus raw value:\n"
+            for kind in CropRecipe.Kind.allCases {
+                presetBlock += "  - \(kind.rawValue): \(kind.summary)\n"
+            }
+            if let target = options.targetDurationSeconds {
+                presetBlock += "- Aim for \(target)s containing the full question and the answer's key point. You may jump from the answer's opening to its closing sentences to fit. Completeness takes priority over Length.\n"
+            }
+        }
         // Learned video types: "cat:<key>" injects that category's rubric as
         // the format contract.
         if options.formatPreset.hasPrefix("cat:") {
@@ -1055,7 +1075,7 @@ actor WizardEngine {
         // Explicit pacing wins over every learned, benchmark, or reference
         // value. Automatic keeps the existing precedence chain unchanged.
         let cadenceDirective: String
-        if let cadenceRange = options.pacing.cadence.range {
+        if let cadenceRange = options.pacing.cadence.range, options.formatPreset != "podcast" {
             let average = options.pacing.cadence.averageSeconds ?? 3
             cutsPerMinute = Int((60 / average).rounded())
             cadenceDirective = """
@@ -1074,7 +1094,7 @@ actor WizardEngine {
         // transition count or the output lands short of what the user asked.
         var durationDirective = ""
         let xfadeDuration = SettingsStore.loadSettings().transitions.xfadeDuration
-        if let requested = options.targetDurationSeconds {
+        if let requested = options.targetDurationSeconds, options.formatPreset != "podcast" {
             let expectedClips = max(1, Int((Double(requested) / 60 * Double(cutsPerMinute)).rounded()))
             // Assume roughly half the gaps get an overlapping transition —
             // hard cuts and most action transitions consume no time.
@@ -1088,6 +1108,13 @@ actor WizardEngine {
             ## REQUIRED DURATION (HARD CONSTRAINT)
             The user requires the FINISHED reel to run ~\(requested)s. Transitions overlap the clips they join: each crossfade consumes ~\(String(format: "%.2f", xfadeDuration))s, whip_left/whip_right ~0.15s, speed_ramp ~0.3s; "cut" and all other action transitions consume ~0s. You MUST plan more clip time than \(requested)s: total clip duration = \(requested) + the summed overlap of the transitions you pick (~\(String(format: "%.1f", padded))s at ~\(expectedClips) clips with a typical mix). Set "target_duration" to that padded total, never to \(requested).
             """
+        }
+
+        if options.formatPreset == "podcast", let requested = options.targetDurationSeconds {
+            targetDuration = requested
+            durationMin = requested
+            durationMax = requested
+            durationDirective = "\n\n## PODCAST LENGTH\nAim for \(requested)s; keep a complete question and answer even when they exceed this target. Set target_duration to the actual total duration of the selected stretches."
         }
 
         let researchJSON = (try? JSONSerialization.data(withJSONObject: research, options: [.prettyPrinted, .sortedKeys]))
@@ -1250,8 +1277,12 @@ actor WizardEngine {
         }
 
         let notes = containmentNotes(scenes)
-        let sceneList = scenes.map {
-            sceneLine($0, type: videoTypes[$0.videoID], note: notes[$0.id])
+        let sceneList = scenes.map { scene in
+            var line = sceneLine(scene, type: videoTypes[scene.videoID], note: notes[scene.id])
+            if options.formatPreset == "podcast", let transcript = podcastTranscripts[scene.id], !transcript.isEmpty {
+                line += "\n    transcript (source seconds):\n" + transcript
+            }
+            return line
         }.joined(separator: "\n")
         let topicBlock: String
         if topics.isEmpty || options.formatPreset == "podcast" {
@@ -1285,7 +1316,9 @@ actor WizardEngine {
             """
         }
         let musicList = musicNames.isEmpty ? "No music available" : musicNames.joined(separator: ", ")
-        let beatInfo = SettingsStore.loadSettings().transitions.beatSnap && !musicNames.isEmpty
+        let beatInfo = options.formatPreset == "podcast"
+            ? "Podcast cuts stay on sentence boundaries; do not move them to music beats."
+            : SettingsStore.loadSettings().transitions.beatSnap && !musicNames.isEmpty
             ? "After planning, every cut boundary is automatically snapped to the nearest strong beat "
               + "of the selected music (within ±0.35s). Plan clip durations freely in the 1.5-5s range — "
               + "exact beat alignment is handled for you."
@@ -1403,14 +1436,14 @@ actor WizardEngine {
 
         KEY PRINCIPLES:
         1. HOOK — First 1-2 seconds must grab attention (most explosive/dramatic moment)
-        2. PACING — Tight cuts, no dead time. Target ~\(cutsPerMinute) cuts per minute
+        2. PACING — \(options.formatPreset == "podcast" ? "Keep continuous dialogue in sentence-complete stretches; at most three clips." : "Tight cuts, no dead time. Target ~\(cutsPerMinute) cuts per minute")
         3. ARC — Even a 20-second video needs rising action
         4. MUSIC — Choose music that amplifies energy. SYNC cuts to beat positions when possible.
         5. ENDING — Strong close that makes viewers replay or share
-        6. DURATION — Target \(targetDuration)s (within \(durationMin)-\(durationMax)s range)
-        7. BEATS — If beat positions are provided, align clip start/end times to land on or near beat positions. Viewers subconsciously feel beat-synced cuts as more professional.
+        6. DURATION — \(options.formatPreset == "podcast" ? "Keep the whole exchange unless Length requires trimming; full question and answer completeness wins over Length." : "Target \(targetDuration)s (within \(durationMin)-\(durationMax)s range)")
+        7. BEATS — \(options.formatPreset == "podcast" ? "Keep sentence boundaries intact, even when they do not match music beats." : "If beat positions are provided, align clip start/end times to land on or near beat positions. Viewers subconsciously feel beat-synced cuts as more professional.")
 
-        For each clip, specify a sub-range within the scene. Keep clips tight (1.5-5s each).
+        \(options.formatPreset == "podcast" ? "For each clip, specify one continuous sentence-complete stretch of the chosen exchange; the first starts at the exchange's start, at most three, in order." : "For each clip, specify a sub-range within the scene. Keep clips tight (1.5-5s each).")
         Prefer scenes tagged "high-energy" or with action/impact tags from the available list.
 
         Output a JSON object with EXACTLY this structure:
@@ -1442,7 +1475,7 @@ actor WizardEngine {
         - "transitions" array must have exactly len(clips) - 1 elements
         - clip start/end must be within the scene's time range
         - Scenes from the same video OVERLAP in time (see the contains:/within: notes in the scene list). Every second of source footage may appear in the reel AT MOST ONCE: never pick two clips whose video time ranges overlap, even through different scene IDs. Overlapping clips get trimmed or dropped.
-        - each clip duration should be 1.5-5 seconds
+        - \(options.formatPreset == "podcast" ? "each clip contains complete sentences; keep the full question and the answer's key point, even when longer than Length" : "each clip duration should be 1.5-5 seconds")
         - total clip duration should approximate target_duration
         - only use scene IDs from the list above
         - only use music names from the list above (or null)
@@ -1470,7 +1503,9 @@ actor WizardEngine {
                       scenes: [Int64: SceneRecord],
                       musicNames: Set<String>,
                       options: WizardOptions,
-                      podcastSentenceEnds: [Int64: [Double]] = [:]) -> WizardPlan? {
+                      podcastSentenceEnds: [Int64: [Double]] = [:],
+                      podcastSpeakerTurns: [Int64: [SpeakerTurn]] = [:],
+                      emit: @Sendable (String) -> Void = { _ in }) -> WizardPlan? {
         var musicName: String?
         var musicVolume = 3
         if let music = raw["music"] as? [String: Any] {
@@ -1492,27 +1527,50 @@ actor WizardEngine {
         let screenCropReferences = Dictionary(
             allowedLayouts.values.flatMap(\.references).map { ($0.lowercased(), $0) },
             uniquingKeysWith: { first, _ in first })
-        for clipObject in raw["clips"] as? [[String: Any]] ?? [] {
-            if options.formatPreset == "podcast", !clips.isEmpty { break }
+        var clipObjects = raw["clips"] as? [[String: Any]] ?? []
+        if options.formatPreset == "podcast" {
+            let chosen = clipObjects.first {
+                guard let id = ($0["scene_id"] as? NSNumber)?.int64Value,
+                      let scene = scenes[id] else { return false }
+                return scene.endTime - scene.startTime >= 0.5
+            }
+            if let chosen, let id = (chosen["scene_id"] as? NSNumber)?.int64Value, let scene = scenes[id] {
+                let proposals = clipObjects.filter { ($0["scene_id"] as? NSNumber)?.int64Value == id }
+                let ranges = proposals.compactMap { object -> ClosedRange<Double>? in
+                    let start = (object["start"] as? NSNumber)?.doubleValue ?? scene.startTime
+                    let end = (object["end"] as? NSNumber)?.doubleValue ?? scene.endTime
+                    guard start.isFinite, end.isFinite, end > start else { return nil }
+                    return start...end
+                }
+                let result = WizardPlanRules.podcastExchangeCuts(
+                    scene: scene.startTime...scene.endTime, sentenceEnds: podcastSentenceEnds[id] ?? [],
+                    turns: podcastSpeakerTurns[scene.videoID] ?? [], proposed: ranges,
+                    targetSeconds: options.targetDurationSeconds)
+                clipObjects = result.cuts.map { range in
+                    var object = proposals.first {
+                        let start = ($0["start"] as? NSNumber)?.doubleValue ?? scene.startTime
+                        let end = ($0["end"] as? NSNumber)?.doubleValue ?? scene.endTime
+                        return start < range.upperBound && end > range.lowerBound
+                    } ?? chosen
+                    object["start"] = range.lowerBound
+                    object["end"] = range.upperBound
+                    object.removeValue(forKey: "layout")
+                    object.removeValue(forKey: "areas")
+                    return object
+                }
+                if result.exceededTarget, let target = options.targetDurationSeconds {
+                    let duration = result.cuts.reduce(0.0) { $0 + $1.upperBound - $1.lowerBound }
+                    emit(String(format: "Podcast clip: kept the complete question and answer (%.1f s) although Length is %d s.", duration, target))
+                }
+            } else {
+                clipObjects = []
+            }
+        }
+        for clipObject in clipObjects {
             guard let sceneID = (clipObject["scene_id"] as? NSNumber)?.int64Value,
                   let scene = scenes[sceneID] else { continue }
             var start = max(scene.startTime, (clipObject["start"] as? NSNumber)?.doubleValue ?? scene.startTime)
             var end = min(scene.endTime, (clipObject["end"] as? NSNumber)?.doubleValue ?? scene.endTime)
-            if options.formatPreset == "podcast" {
-                if options.targetDurationSeconds == nil
-                    || scene.duration <= Double(options.targetDurationSeconds ?? 0) {
-                    // An analyzed podcast scene is already one complete Q&A.
-                    start = scene.startTime
-                    end = scene.endTime
-                } else {
-                    let boundaries = ([scene.startTime] + (podcastSentenceEnds[scene.id] ?? []) + [scene.endTime])
-                        .filter { $0 >= scene.startTime && $0 <= scene.endTime }.sorted()
-                    start = boundaries.last(where: { $0 <= start + 0.01 }) ?? scene.startTime
-                    let targetEnd = min(end, start + Double(options.targetDurationSeconds ?? 0))
-                    end = boundaries.last(where: { $0 <= targetEnd + 0.01 && $0 > start + 0.5 })
-                        ?? boundaries.first(where: { $0 > start + 0.5 }) ?? scene.endTime
-                }
-            }
             if end - start < 0.5 {
                 start = scene.startTime
                 end = min(scene.endTime, start + 3.0)
@@ -1529,8 +1587,10 @@ actor WizardEngine {
                       gap.end - gap.start >= 1.5 else { continue }
                 (start, end) = gap
             }
-            start = start.rounded(toPlaces: 2)
-            end = end.rounded(toPlaces: 2)
+            if options.formatPreset != "podcast" {
+                start = start.rounded(toPlaces: 2)
+                end = end.rounded(toPlaces: 2)
+            }
             usedRanges[scene.videoID, default: []].append((start, end))
             // "text_overlay" is {text, style, animation}; a bare string
             // (older prompt / stubborn model) still works with defaults.
@@ -1665,13 +1725,17 @@ actor WizardEngine {
         }
         if transitions.count > needed { transitions = Array(transitions.prefix(needed)) }
         while transitions.count < needed { transitions.append("cut") }
+        if options.formatPreset == "podcast" { transitions = Array(repeating: "cut", count: needed) }
 
         func cleanLine(_ value: Any?, maxWords: Int) -> String? {
             guard let text = (value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !text.isEmpty else { return nil }
             return text.split(separator: " ").prefix(maxWords).joined(separator: " ")
         }
-        return WizardPlan(targetDuration: (raw["target_duration"] as? NSNumber)?.doubleValue ?? 22,
+        let duration = options.formatPreset == "podcast"
+            ? clips.reduce(0.0) { $0 + $1.end - $1.start }
+            : (raw["target_duration"] as? NSNumber)?.doubleValue ?? 22
+        return WizardPlan(targetDuration: duration,
                           rationale: raw["rationale"] as? String ?? "",
                           musicName: musicName,
                           musicVolume: musicVolume,
@@ -1679,7 +1743,9 @@ actor WizardEngine {
                           transitions: transitions,
                           headline: cleanLine(raw["headline"], maxWords: 8),
                           introTitle: cleanLine(raw["intro_title"], maxWords: 7),
-                          fileName: WizardPlan.slug(raw["file_name"] as? String))
+                          fileName: WizardPlan.slug(raw["file_name"] as? String),
+                          framing: options.formatPreset == "podcast"
+                            ? (CropRecipe.Kind(rawValue: raw["framing"] as? String ?? "") ?? .talker) : nil)
     }
 
     // MARK: - Caption phase
@@ -1805,6 +1871,7 @@ actor WizardEngine {
         /// Word-safe sentence ends for trimming an overlong Q&A scene.
         var podcastSentenceEnds: [Int64: [Double]] = [:]
         var podcastSpeakerTurns: [Int64: [SpeakerTurn]] = [:]
+        var podcastTranscripts: [Int64: String] = [:]
         /// Trait/Instagram correlations used for hook, layout, cadence, and subject choices.
         var editingInsights: EditingPerformanceInsights?
     }
@@ -1997,6 +2064,7 @@ actor WizardEngine {
         var cleanupCuts: [EditProposal] = []
         var podcastSentenceEnds: [Int64: [Double]] = [:]
         var podcastSpeakerTurns: [Int64: [SpeakerTurn]] = [:]
+        var podcastTranscripts: [Int64: String] = [:]
         for videoID in videoIDs.sorted() {
             topics += (try? await database.fetchTopicRanges(videoID: videoID)) ?? []
             cleanupCuts += ((try? await database.fetchEditProposals(videoID: videoID)) ?? [])
@@ -2014,8 +2082,12 @@ actor WizardEngine {
                                           try? JSONDecoder().decode([TranscriptWord].self, from: $0)
                                       })
                 }
+                let turns = podcastSpeakerTurns[scene.videoID] ?? []
                 podcastSentenceEnds[scene.id] = Self.podcastTrimPoints(
-                    segments: segments, turns: podcastSpeakerTurns[scene.videoID] ?? [], scene: scene)
+                    segments: segments, turns: turns, scene: scene)
+                podcastTranscripts[scene.id] = WizardPlanRules.podcastTranscriptText(
+                    scene: scene.startTime...scene.endTime, segments: segments, turns: turns,
+                    speakerNames: Dictionary(people.map { ($0.key, $0.displayName) }, uniquingKeysWith: { first, _ in first }))
             }
         }
         let home = (try? await database.driveSetting("assetHome")) ?? ""
@@ -2036,6 +2108,7 @@ actor WizardEngine {
                               cleanupCuts: cleanupCuts,
                               podcastSentenceEnds: podcastSentenceEnds,
                               podcastSpeakerTurns: podcastSpeakerTurns,
+                              podcastTranscripts: podcastTranscripts,
                               editingInsights: editingInsights)
     }
 
@@ -2108,6 +2181,7 @@ actor WizardEngine {
                                 fightResearch: inputs.fightResearch,
                                 videoTypes: inputs.videoTypes, topics: inputs.topics,
                                 cleanupCuts: inputs.cleanupCuts,
+                                podcastTranscripts: inputs.podcastTranscripts,
                                 editingInsights: inputs.editingInsights,
                                 options: options, localLearning: inputs.localLearning)
         let modelConfig = await ai.config
@@ -2158,7 +2232,8 @@ actor WizardEngine {
             }
             var plan = validatePlan(rawPlan, scenes: inputs.sceneMap,
                                     musicNames: Set(inputs.music.map(\.name)), options: options,
-                                    podcastSentenceEnds: inputs.podcastSentenceEnds)
+                                    podcastSentenceEnds: inputs.podcastSentenceEnds,
+                                    podcastSpeakerTurns: inputs.podcastSpeakerTurns, emit: emit)
                 .map { WizardPlanRules.enforcePinnedOverlays($0, options: options) }
             plan?.provenance = reply.provenance
             return (plan, response)
@@ -2254,8 +2329,10 @@ actor WizardEngine {
                     proxySettings.customWidth = max(240, options.renderSettings.width / 3)
                     proxySettings.customHeight = max(240, options.renderSettings.height / 3)
                     proxySettings.quality = .compact
-                    let document = Self.timelineDocument(from: candidate, sceneMap: inputs.sceneMap,
-                        renderSettings: proxySettings, pacing: options.pacing, podcastFraming: options.podcastFraming)
+                    var proxyOptions = options
+                    proxyOptions.renderSettings = proxySettings
+                    let document = try await Self.timelineDocument(from: candidate, sceneMap: inputs.sceneMap,
+                        options: proxyOptions, database: database, log: emit)
                     let proxy = try await MultitrackRenderer(render: render).render(document: document,
                         scenes: inputs.scenes, profile: profile, database: database, preview: true, emit: emit)
                     defer { try? FileManager.default.removeItem(at: proxy.url) }
@@ -2835,15 +2912,18 @@ actor WizardEngine {
                                              sceneMap: [Int64: SceneRecord],
                                              renderSettings: RenderSettings = RenderSettings(),
                                              pacing: EditPacing = EditPacing(),
-                                             podcastFraming: PodcastFramingMode = .followSpeaker) -> TimelineDocument {
+                                             podcastFraming: PodcastFramingMode = .followSpeaker,
+                                             podcastCuts: [Int: TimelineDocument] = [:]) -> TimelineDocument {
         var document = TimelineDocument()
         document.renderSettings = renderSettings
         document.pacing = pacing
         var cursor = 0.0
-        for clip in plan.clips {
+        for (cutIndex, clip) in plan.clips.enumerated() {
             guard let scene = sceneMap[clip.sceneID] else { continue }
             // Screen time — slow motion stretches it beyond the source span.
-            let duration = ((clip.end - clip.start) / clip.speed * 10).rounded() / 10
+            let podcastCut = podcastCuts[cutIndex]
+            let duration = podcastCut != nil ? clip.end - clip.start
+                : ((clip.end - clip.start) / clip.speed * 10).rounded() / 10
             guard duration > 0 else { continue }
 
             var timelineClip = TimelineClip()
@@ -2865,8 +2945,21 @@ actor WizardEngine {
                 let name = plan.transitions[safe: index - 1] ?? "cut"
                 timelineClip.transIn = name == "cut" ? nil : name
             }
-            document.videoTrack.append(timelineClip)
-            if podcastFraming == .splitZoom, scene.tags.contains("podcast:split") {
+            if let podcastCut {
+                for var area in podcastCut.videoTrack {
+                    area.startTime += cursor
+                    document.videoTrack.append(area)
+                }
+                for var block in podcastCut.cropBlocks {
+                    block.startTime += cursor
+                    document.cropBlocks.append(block)
+                }
+                document.trackCount = max(document.trackCount, podcastCut.trackCount)
+                for track in 1..<max(1, podcastCut.trackCount) { document.trackSequential[track] = false }
+            } else {
+                document.videoTrack.append(timelineClip)
+            }
+            if podcastCut == nil, podcastFraming == .splitZoom, scene.tags.contains("podcast:split") {
                 var left = timelineClip
                 var right = timelineClip
                 right.uid = UUID()
@@ -2892,7 +2985,7 @@ actor WizardEngine {
             }
             // A layout block's other areas become muted clips on their own
             // (free-form) tracks, stacked over the same slot.
-            if let layoutName = clip.layout {
+            if podcastCut == nil, let layoutName = clip.layout {
                 for (slot, areaClip) in clip.areaClips.enumerated() {
                     guard let areaScene = sceneMap[areaClip.sceneID] else { continue }
                     let track = min(TimelineDocument.maxTracks - 1, slot + 1)
@@ -3093,9 +3186,10 @@ actor WizardEngine {
             emit("Headline: \(headline)")
         }
 
-        // Extract every planned clip concurrently — captions, text overlay
-        // and mute are burned in ONE encode pass per clip (they used to be
-        // up to three extra full re-encodes each).
+        // Extract every planned clip concurrently. Podcast layouts compose
+        // first; captions, text overlays and mute share the final encode.
+        let podcastCuts = try await WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: sceneMap,
+            options: options, database: database, log: emit)
         let jobs: [(index: Int, clip: WizardPlanClip, scene: SceneRecord)] =
             plan.clips.enumerated().compactMap { index, clip in
                 sceneMap[clip.sceneID].map { (index, clip, $0) }
@@ -3108,6 +3202,7 @@ actor WizardEngine {
                                               scene: job.scene, sceneMap: sceneMap, options: options,
                                               captionStyle: captionStyle,
                                               brandOverlays: brandOverlayFiles,
+                                              podcastDocument: podcastCuts[job.index], profile: profile,
                                               database: database, scratch: scratch,
                                               emit: emit)
         }
@@ -3130,7 +3225,8 @@ actor WizardEngine {
             for index in editPlan.clips.indices { editPlan.clips[index].textOverlay = nil }
         }
         var document = Self.timelineDocument(from: editPlan, sceneMap: sceneMap,
-            renderSettings: options.renderSettings, pacing: options.pacing, podcastFraming: options.podcastFraming)
+            renderSettings: options.renderSettings, pacing: options.pacing, podcastFraming: options.podcastFraming,
+            podcastCuts: podcastCuts)
             .keepingOverlaysClearOfPlatformChrome()
         for index in document.videoTrack.indices {
             document.videoTrack[index].muted = options.muteSource || document.videoTrack[index].muted
@@ -3294,6 +3390,7 @@ actor WizardEngine {
                                     options: WizardOptions,
                                     captionStyle: CaptionStyle,
                                     brandOverlays: [URL] = [],
+                                    podcastDocument: TimelineDocument? = nil, profile: BrandProfile,
                                     database: Database, scratch: URL,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> URL {
         // Source seconds consumed vs seconds on screen — slow motion
@@ -3301,7 +3398,7 @@ actor WizardEngine {
         // (overlays, captions, -t) uses `duration`; everything reading the
         // SOURCE (content box, Center Stage, hints) uses `sourceDuration`.
         let sourceDuration = clip.end - clip.start
-        let duration = sourceDuration / clip.speed
+        let duration = podcastDocument != nil ? sourceDuration : sourceDuration / clip.speed
         // Screen crop: the named area's mask rides into every render path.
         let mask = ScreenCropStore.maskFile(reference: clip.screenCrop, in: scratch)
         if clip.screenCrop != nil, mask == nil {
@@ -3417,6 +3514,14 @@ actor WizardEngine {
         }
 
         let output = scratch.appendingPathComponent("clip_\(index).mp4")
+        if let podcastDocument {
+            let framed = try await MultitrackRenderer(render: render).render(document: podcastDocument,
+                scenes: Array(sceneMap.values), profile: profile, database: database, preview: true, emit: emit)
+            defer { try? FileManager.default.removeItem(at: framed.url) }
+            try await render.extractClip(source: framed.url, start: 0, duration: duration,
+                overlays: overlays, mute: options.muteSource, output: output)
+            return output
+        }
         if options.podcastFraming == .splitZoom,
            scene.tags.contains("podcast:split") {
             let split = scratch.appendingPathComponent("clip_\(index)_split_zoom.mp4")

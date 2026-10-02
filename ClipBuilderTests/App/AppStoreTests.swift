@@ -276,9 +276,9 @@ struct AppStoreTests {
         defer { transport.finish(graph) }
         let store = makeStore()
         // Connecting a Facebook token also clears any previous Instagram lifecycle dates.
-        store.settings.instagram.tokenFlavor = "instagram"
-        store.settings.instagram.tokenRefreshedAt = .distantPast
-        store.settings.instagram.tokenExpiresAt = .distantFuture
+        store.settings.instagram.connections = [InstagramConnection(
+            username: "peacegrappler", igUserID: "ig-123", tokenFlavor: "instagram",
+            tokenExpiresAt: .distantFuture, tokenRefreshedAt: .distantPast)]
         let instant = Date(timeIntervalSince1970: 1_800_000_000)
         var writes: [(String, String)] = []
         let task = try #require(store.connectInstagram(token: " \(token)\n", session: graph.session,
@@ -287,14 +287,14 @@ struct AppStoreTests {
         let isInstagram = token.hasPrefix("IG")
         #expect(store.currentError == nil)
         #expect(!store.isConnectingInstagram)
-        #expect(store.settings.instagram.connectedUsername == "peacegrappler")
-        #expect(store.settings.instagram.connectedIGUserID == "ig-123")
-        #expect(store.settings.instagram.tokenFlavor == (isInstagram ? "instagram" : "facebook"))
-        #expect(store.settings.instagram.tokenRefreshedAt == (isInstagram ? instant : nil))
-        #expect(store.settings.instagram.tokenExpiresAt == (isInstagram ? instant.addingTimeInterval(60 * 86400) : nil))
+        #expect(store.settings.instagram.connections[0].username == "peacegrappler")
+        #expect(store.settings.instagram.connections[0].igUserID == "ig-123")
+        #expect(store.settings.instagram.connections[0].tokenFlavor == (isInstagram ? "instagram" : "facebook"))
+        #expect(store.settings.instagram.connections[0].tokenRefreshedAt == (isInstagram ? instant : nil))
+        #expect(store.settings.instagram.connections[0].tokenExpiresAt == (isInstagram ? instant.addingTimeInterval(60 * 86400) : nil))
         #expect(writes.count == 1)
         #expect(writes.first?.0 == token)
-        #expect(writes.first?.1 == "instagram_graph_token")
+        #expect(writes.first?.1 == "instagram_graph_token:ig-123")
         #expect(transport.requests.map { $0.url?.host } == [isInstagram ? "graph.instagram.com" : "graph.facebook.com"])
     }
 
@@ -312,9 +312,9 @@ struct AppStoreTests {
         let instant = Date(timeIntervalSince1970: 1_800_000_000)
         await store.connectInstagram(token: token, session: graph.session, saveToken: { _, _ in }, now: instant)?.value
         #expect(store.currentError == nil)
-        #expect(store.settings.instagram.tokenFlavor == (firstInstagram ? "facebook" : "instagram"))
-        #expect(store.settings.instagram.tokenRefreshedAt == (firstInstagram ? nil : instant))
-        #expect(store.settings.instagram.tokenExpiresAt == (firstInstagram ? nil : instant.addingTimeInterval(60 * 86400)))
+        #expect(store.settings.instagram.connections[0].tokenFlavor == (firstInstagram ? "facebook" : "instagram"))
+        #expect(store.settings.instagram.connections[0].tokenRefreshedAt == (firstInstagram ? nil : instant))
+        #expect(store.settings.instagram.connections[0].tokenExpiresAt == (firstInstagram ? nil : instant.addingTimeInterval(60 * 86400)))
         #expect(transport.requests.map { $0.url?.host } == (firstInstagram
             ? ["graph.instagram.com", "graph.facebook.com"] : ["graph.facebook.com", "graph.instagram.com"]))
     }
@@ -342,31 +342,28 @@ struct AppStoreTests {
         let scope = try DataFolderOverride()
         _ = scope
         let store = makeStore()
-        var original = InstagramSettings()
-        original.connectedUsername = "peacegrappler"
-        original.connectedIGUserID = "ig-123"
-        original.tokenFlavor = "instagram"
+        var original = InstagramConnection(username: "peacegrappler", igUserID: "ig-123", tokenFlavor: "instagram")
         original.tokenRefreshedAt = Date(timeIntervalSince1970: 1_799_000_000)
-        store.settings.instagram = original
+        store.settings.instagram.connections = [original]
         let instant = Date(timeIntervalSince1970: 1_800_000_000)
         let refresh = InstagramTokenRefresh(token: "IGnew", refreshedAt: instant,
                                             expiresAt: instant.addingTimeInterval(123456))
         var keychain = "IGold"
-        let saved = try store.applyInstagramTokenRefresh(refresh, settings: original, replacing: "IGold",
+        let saved = try store.applyInstagramTokenRefresh(refresh, connection: original, replacing: "IGold",
             readToken: { account in
-                #expect(account == "instagram_graph_token")
+                #expect(account == "instagram_graph_token:ig-123")
                 return keychain
             }, saveToken: { value, account in
-                #expect(account == "instagram_graph_token")
+                #expect(account == "instagram_graph_token:ig-123")
                 keychain = value
             })
         #expect(saved)
         #expect(keychain == "IGnew")
-        #expect(store.settings.instagram.tokenRefreshedAt == instant)
-        #expect(store.settings.instagram.tokenExpiresAt == refresh.expiresAt)
+        #expect(store.settings.instagram.connections[0].tokenRefreshedAt == instant)
+        #expect(store.settings.instagram.connections[0].tokenExpiresAt == refresh.expiresAt)
         let persisted = SettingsStore.loadSettings().instagram
-        #expect(persisted.tokenRefreshedAt == instant)
-        #expect(persisted.tokenExpiresAt == refresh.expiresAt)
+        #expect(persisted.connections[0].tokenRefreshedAt == instant)
+        #expect(persisted.connections[0].tokenExpiresAt == refresh.expiresAt)
     }
 
     @Test("A stale refresh cannot overwrite a disconnected or replaced connection", arguments: ["disconnect", "account", "reconnect", "token"])
@@ -374,24 +371,21 @@ struct AppStoreTests {
         let scope = try DataFolderOverride()
         _ = scope
         let store = makeStore()
-        var original = InstagramSettings()
-        original.connectedUsername = "peacegrappler"
-        original.connectedIGUserID = "ig-123"
-        original.tokenFlavor = "instagram"
+        var original = InstagramConnection(username: "peacegrappler", igUserID: "ig-123", tokenFlavor: "instagram")
         original.tokenRefreshedAt = .distantPast
-        store.settings.instagram = original
+        store.settings.instagram.connections = [original]
         switch change {
-        case "disconnect": store.settings.instagram.connectedUsername = ""
-        case "account": store.settings.instagram.connectedIGUserID = "other-id"
-        case "reconnect": store.settings.instagram.tokenRefreshedAt = Date()
+        case "disconnect": store.settings.instagram.connections = []
+        case "account": store.settings.instagram.connections[0].igUserID = "other-id"
+        case "reconnect": store.settings.instagram.connections[0].tokenRefreshedAt = Date()
         default: break
         }
         let refresh = InstagramTokenRefresh(token: "IGnew", refreshedAt: Date(), expiresAt: .distantFuture)
-        let saved = try store.applyInstagramTokenRefresh(refresh, settings: original, replacing: "IGold",
+        let saved = try store.applyInstagramTokenRefresh(refresh, connection: original, replacing: "IGold",
             readToken: { _ in change == "token" ? "IGanother" : "IGold" },
             saveToken: { _, _ in Issue.record("Stale refresh must not write the Keychain") })
         #expect(!saved)
-        #expect(store.settings.instagram.tokenExpiresAt == nil)
+        #expect(store.settings.instagram.connections.first?.tokenExpiresAt == nil)
     }
 
     @Test("Refresh Keychain errors leave both dates untouched")
@@ -399,20 +393,231 @@ struct AppStoreTests {
         let scope = try DataFolderOverride()
         _ = scope
         let store = makeStore()
-        var original = InstagramSettings()
-        original.connectedUsername = "peacegrappler"
-        original.connectedIGUserID = "ig-123"
-        original.tokenFlavor = "instagram"
+        var original = InstagramConnection(username: "peacegrappler", igUserID: "ig-123", tokenFlavor: "instagram")
         original.tokenRefreshedAt = .distantPast
-        store.settings.instagram = original
+        store.settings.instagram.connections = [original]
         let refresh = InstagramTokenRefresh(token: "IGnew", refreshedAt: Date(), expiresAt: .distantFuture)
         do {
-            _ = try store.applyInstagramTokenRefresh(refresh, settings: original, replacing: "IGold",
+            _ = try store.applyInstagramTokenRefresh(refresh, connection: original, replacing: "IGold",
                 readToken: { _ in "IGold" }, saveToken: { _, _ in throw InstagramError.fetchFailed("Keychain denied") })
             Issue.record("Expected a Keychain error")
         } catch {}
-        #expect(store.settings.instagram.tokenRefreshedAt == original.tokenRefreshedAt)
-        #expect(store.settings.instagram.tokenExpiresAt == nil)
+        #expect(store.settings.instagram.connections[0].tokenRefreshedAt == original.tokenRefreshedAt)
+        #expect(store.settings.instagram.connections.first?.tokenExpiresAt == nil)
+    }
+
+    @Test("A second connect appends and reconnect replaces the same ID in place")
+    func instagramMultipleConnects() async throws {
+        let transport = InstagramTestTransport([
+            "graph.instagram.com/me": .json(#"{"user_id":"ig-second","username":"second","account_type":"BUSINESS"}"#),
+        ])
+        let graph = transport.provider()
+        defer { transport.finish(graph) }
+        let store = makeStore()
+        let first = InstagramConnection(username: "first", igUserID: "ig-first", tokenFlavor: "facebook")
+        store.settings.instagram.connections = [first]
+        var tokens = ["instagram_graph_token:ig-first": "EAAfirst"]
+        let instant = Date(timeIntervalSince1970: 1_800_000_000)
+        await store.connectInstagram(token: "IGsecond", session: graph.session,
+            saveToken: { tokens[$1] = $0 }, now: instant)?.value
+        #expect(store.settings.instagram.connections.map(\.id) == ["ig-first", "ig-second"])
+        #expect(store.settings.instagram.connections[0] == first)
+        await store.connectInstagram(token: "IGreconnected", session: graph.session,
+            saveToken: { tokens[$1] = $0 }, now: instant.addingTimeInterval(60))?.value
+        #expect(store.settings.instagram.connections.map(\.id) == ["ig-first", "ig-second"])
+        #expect(store.settings.instagram.connections[0] == first)
+        #expect(store.settings.instagram.connections[1].tokenRefreshedAt == instant.addingTimeInterval(60))
+        #expect(tokens == ["instagram_graph_token:ig-first": "EAAfirst", "instagram_graph_token:ig-second": "IGreconnected"])
+    }
+
+    @Test("Facebook connect prefers profile handle, then unconnected, then first", arguments: ["profile", "unconnected", "all-connected"])
+    func instagramFacebookSelection(mode: String) async throws {
+        let transport = InstagramTestTransport([
+            "me/accounts": .json(#"{"data":[{"instagram_business_account":{"id":"first-id","username":"first"}},{"instagram_business_account":{"id":"second-id","username":"second"}}]}"#),
+        ])
+        let graph = transport.provider()
+        defer { transport.finish(graph) }
+        let store = makeStore()
+        let first = InstagramConnection(username: "first", igUserID: "first-id", tokenFlavor: "facebook")
+        let second = InstagramConnection(username: "second", igUserID: "second-id", tokenFlavor: "facebook")
+        store.settings.instagram.connections = mode == "unconnected" ? [first] : [first, second]
+        store.activeProfile.socials["instagram", default: SocialSlot()].handle = mode == "profile" ? " @SECOND " : "missing"
+        var writtenKey: String?
+        await store.connectInstagram(token: "EAAtest", session: graph.session,
+            saveToken: { _, key in writtenKey = key })?.value
+        #expect(writtenKey == "instagram_graph_token:" + (mode == "all-connected" ? "first-id" : "second-id"))
+        #expect(store.settings.instagram.connections.count == 2)
+    }
+
+    @Test("Disconnect removes only the chosen connection and Keychain item")
+    func instagramDisconnectOne() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        let first = InstagramConnection(username: "first", igUserID: "first-id", tokenFlavor: "facebook")
+        let second = InstagramConnection(username: "second", igUserID: "second-id", tokenFlavor: "instagram")
+        store.settings.instagram.connections = [first, second]
+        var tokens = ["instagram_graph_token:first-id": "EAAfirst", "instagram_graph_token:second-id": "IGsecond"]
+        store.disconnectInstagram(first, deleteToken: { tokens.removeValue(forKey: $0) })
+        #expect(store.settings.instagram.connections == [second])
+        #expect(tokens == ["instagram_graph_token:second-id": "IGsecond"])
+        #expect(SettingsStore.loadSettings().instagram.connections == [second])
+    }
+
+    @Test("Primary account order is profile handle, connected row, then own row")
+    func instagramPrimaryAccount() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        let own = IGAccountRecord(id: 1, username: "own", kind: "own")
+        let connected = IGAccountRecord(id: 2, username: "connected", kind: "public")
+        let profile = IGAccountRecord(id: 3, username: "profile", kind: "public")
+        store.igAccounts = [own, connected, profile]
+        store.settings.instagram.connections = [InstagramConnection(username: "CONNECTED", igUserID: "id", tokenFlavor: "facebook")]
+        store.activeProfile.socials["instagram", default: SocialSlot()].handle = " @PROFILE "
+        #expect(store.primaryInstagramAccount == profile)
+        store.activeProfile.socials["instagram", default: SocialSlot()].handle = "not-in-profile"
+        #expect(store.primaryInstagramAccount == connected)
+        #expect(store.isGraphAccount(connected))
+        #expect(!store.isGraphAccount(own))
+        store.settings.instagram.connections = []
+        #expect(store.primaryInstagramAccount == own)
+        store.igAccounts = [connected, profile]
+        #expect(store.primaryInstagramAccount == nil)
+    }
+
+    @Test("Publish choices stay in the profile and a disconnected remembered account falls back")
+    func instagramPublishSelection() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        let primary = IGAccountRecord(id: 1, username: "primary", kind: "own")
+        let second = IGAccountRecord(id: 2, username: "second", kind: "own")
+        store.igAccounts = [primary, second]
+        store.activeProfile.socials["instagram", default: SocialSlot()].handle = "primary"
+        let connections = [
+            InstagramConnection(username: "primary", igUserID: "1", tokenFlavor: "facebook"),
+            InstagramConnection(username: "second", igUserID: "2", tokenFlavor: "instagram"),
+            InstagramConnection(username: "another-profile", igUserID: "3", tokenFlavor: "instagram"),
+        ]
+        store.settings.instagram.connections = connections
+        #expect(store.instagramPublishAccounts == [primary, second])
+        #expect(store.defaultInstagramPublishAccount == primary)
+        store.activeProfile.instagramPublishAccount = "SECOND"
+        #expect(store.defaultInstagramPublishAccount == second)
+        store.disconnectInstagram(connections[1], deleteToken: { _ in })
+        #expect(store.defaultInstagramPublishAccount == primary)
+        store.igAccounts = []
+        #expect(store.instagramPublishAccounts.isEmpty)
+        #expect(store.defaultInstagramPublishAccount == nil)
+        #expect(store.settings.instagram.isGraphConnected)
+    }
+
+    @Test("Publish rejects unconnected accounts and accounts outside the current profile", arguments: [false, true])
+    func instagramRejectPublish(connectedElsewhere: Bool) async throws {
+        let store = makeStore()
+        let account = IGAccountRecord(id: 1, username: "target", kind: "own")
+        if connectedElsewhere {
+            store.settings.instagram.connections = [InstagramConnection(username: "target", igUserID: "id", tokenFlavor: "facebook")]
+        } else {
+            store.igAccounts = [account]
+        }
+        do {
+            _ = try await store.publishReelToInstagram(video: Fixtures.generatedVideo(id: 1), caption: "", shareToFeed: true,
+                                                       account: account, log: { _ in })
+            Issue.record("Expected an account selection error")
+        } catch {
+            #expect(String(describing: error).contains(connectedElsewhere
+                ? "Add @target on the Instagram screen first" : "@target is not connected"))
+        }
+        #expect(store.activeProfile.instagramPublishAccount == nil)
+    }
+
+    @Test("Successful publish targets and remembers the chosen account on the profile")
+    func instagramRemembersPublishedAccount() async throws {
+        let transport = InstagramTestTransport([
+            "POST second-id/media": .json(#"{"id":"container","uri":"https://rupload.facebook.com/upload"}"#),
+            "POST upload": .json(#"{"success":true}"#),
+            "container": .json(#"{"status_code":"FINISHED"}"#),
+            "POST second-id/media_publish": .json(#"{"id":"published"}"#),
+            "published": .json(#"{"permalink":"https://www.instagram.com/reel/published/"}"#),
+        ])
+        let graph = transport.provider()
+        defer { transport.finish(graph) }
+        let service = InstagramService(ai: AIService(config: AIConfig()), readToken: { key in
+            #expect(key == "instagram_graph_token:second-id")
+            return "IGsecond"
+        }, session: graph.session)
+        let profile = Fixtures.brand(name: "Publish test \(UUID().uuidString)")
+        defer { try? ProfileStore.delete(name: profile.profileName) }
+        let store = AppStore(settings: AppSettings(), profiles: [profile], active: profile,
+                             ai: AIService(config: AIConfig()), instagramService: service)
+        let first = IGAccountRecord(id: 1, username: "first", kind: "own")
+        let second = IGAccountRecord(id: 2, username: "second", kind: "own")
+        store.igAccounts = [first, second]
+        store.settings.instagram.connections = [
+            InstagramConnection(username: "first", igUserID: "first-id", tokenFlavor: "facebook"),
+            InstagramConnection(username: "second", igUserID: "second-id", tokenFlavor: "instagram"),
+        ]
+        let directory = try TempDirectory(prefix: "InstagramPublish")
+        let file = directory.url.appendingPathComponent("reel.mp4")
+        try Data([1, 2, 3]).write(to: file)
+        var video = Fixtures.generatedVideo(id: 1)
+        video.path = file.path
+        let result = try await store.publishReelToInstagram(video: video, caption: "Caption", shareToFeed: true,
+                                                            account: second, log: { _ in })
+        #expect(result.mediaID == "published")
+        #expect(store.activeProfile.instagramPublishAccount == "second")
+        #expect(store.profiles.first?.instagramPublishAccount == "second")
+        #expect(ProfileStore.load(name: profile.profileName)?.instagramPublishAccount == "second")
+        #expect(store.defaultInstagramPublishAccount == second)
+        #expect(transport.requests.filter { $0.url?.host == "graph.instagram.com" }.count == 4)
+        #expect(!transport.requests.contains { $0.url?.host == "graph.facebook.com" })
+    }
+
+    @Test("Migration moves the token before deleting the legacy item and retries failed writes", arguments: [false, true])
+    func instagramMigrationKeychain(failWrite: Bool) throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        store.settings.instagram.connectedUsername = "legacy"
+        store.settings.instagram.connectedIGUserID = "legacy-id"
+        var tokens = ["instagram_graph_token": "legacy-token"]
+        var operations: [String] = []
+        do {
+            try store.migrateInstagramConnection(readToken: { tokens[$0] }, saveToken: { value, key in
+                operations.append("write")
+                if failWrite { throw InstagramError.fetchFailed("Keychain denied") }
+                tokens[key] = value
+            }, deleteToken: { key in
+                operations.append("delete")
+                #expect(tokens["instagram_graph_token:legacy-id"] == "legacy-token")
+                tokens.removeValue(forKey: key)
+            })
+            #expect(!failWrite)
+        } catch {
+            #expect(failWrite)
+        }
+        if failWrite {
+            #expect(operations == ["write"])
+            #expect(store.settings.instagram.connections.isEmpty)
+            #expect(store.settings.instagram.connectedUsername == "legacy")
+            #expect(tokens["instagram_graph_token"] == "legacy-token")
+            store.saveSettings()
+            #expect(SettingsStore.loadSettings().instagram.connectedUsername == "legacy")
+            try store.migrateInstagramConnection(readToken: { tokens[$0] },
+                saveToken: { tokens[$1] = $0 }, deleteToken: { tokens.removeValue(forKey: $0) })
+            #expect(store.settings.instagram.connection(for: "legacy")?.id == "legacy-id")
+            #expect(tokens == ["instagram_graph_token:legacy-id": "legacy-token"])
+        } else {
+            #expect(operations == ["write", "delete"])
+            #expect(tokens == ["instagram_graph_token:legacy-id": "legacy-token"])
+            #expect(store.settings.instagram.connection(for: "legacy")?.id == "legacy-id")
+            try store.migrateInstagramConnection(
+                readToken: { _ in Issue.record("Migration must run once"); return nil },
+                saveToken: { _, _ in Issue.record("Migration must run once") },
+                deleteToken: { _ in Issue.record("Migration must run once") })
+        }
     }
 
 }

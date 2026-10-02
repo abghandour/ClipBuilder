@@ -175,6 +175,8 @@ nonisolated struct AIProviderBrand: Sendable, Hashable {
                         logoAsset: "logo-anthropic", tintHex: "#D97757"),
         AIProviderBrand(key: "gemini", label: "Gemini", vendor: "Google",
                         logoAsset: "logo-gemini", tintHex: "#4285F4"),
+        AIProviderBrand(key: "antigravity", label: "Antigravity", vendor: "Google",
+                        logoAsset: nil, tintHex: "#4285F4"),
         AIProviderBrand(key: "codex", label: "Codex", vendor: "OpenAI",
                         logoAsset: "logo-openai", tintHex: nil),
         AIProviderBrand(key: "qwen", label: "Qwen", vendor: "Alibaba Cloud",

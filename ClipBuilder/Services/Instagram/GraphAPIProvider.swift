@@ -147,6 +147,20 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
     /// The IG business/creator account behind the token's pages, matched to
     /// `username` when given (else the first one found — used by Connect).
     func resolveAccount(matching username: String?) async throws -> ResolvedAccount {
+        let accounts = try await resolveAccounts()
+        guard let username else { return accounts[0] }
+        guard let match = accounts.first(where: {
+            $0.username.caseInsensitiveCompare(username) == .orderedSame
+        }) else {
+            let found = accounts.map { "@\($0.username)" }.joined(separator: ", ")
+            throw InstagramError.fetchFailed(
+                "@\(username) is not among the token's Instagram accounts (found: \(found))")
+        }
+        return match
+    }
+
+    /// Connect chooses one account from all those visible to this token.
+    func resolveAccounts() async throws -> [ResolvedAccount] {
         if flavor == .instagram {
             // PLAN-VERIFY: use user_id, not app-scoped id, for Instagram Login paths.
             let object = try await getJSON("me", query: [
@@ -161,12 +175,8 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
                 throw InstagramError.fetchFailed(
                     "@\(found) is a personal account; switch it to Business or Creator in the Instagram app")
             }
-            if let username, found.caseInsensitiveCompare(username) != .orderedSame {
-                throw InstagramError.fetchFailed(
-                    "@\(username) is not among the token's Instagram accounts (found: @\(found))")
-            }
-            return ResolvedAccount(id: id, username: found, name: object["name"] as? String,
-                                   followers: object["followers_count"] as? Int)
+            return [ResolvedAccount(id: id, username: found, name: object["name"] as? String,
+                                    followers: object["followers_count"] as? Int)]
         }
         let object = try await getJSON("me/accounts", query: [
             "fields": "instagram_business_account{id,username,name,followers_count}",
@@ -194,15 +204,7 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
             throw InstagramError.fetchFailed(
                 "No Instagram business/creator account is linked to this token's Facebook pages")
         }
-        guard let username else { return accounts[0] }
-        guard let match = accounts.first(where: {
-            $0.username.caseInsensitiveCompare(username) == .orderedSame
-        }) else {
-            let found = accounts.map { "@\($0.username)" }.joined(separator: ", ")
-            throw InstagramError.fetchFailed(
-                "@\(username) is not among the token's Instagram accounts (found: \(found))")
-        }
-        return match
+        return accounts
     }
 
     /// Graph error 100 on `me?fields=instagram_business_account`: the node is

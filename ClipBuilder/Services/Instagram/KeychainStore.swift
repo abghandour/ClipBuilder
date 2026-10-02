@@ -9,6 +9,10 @@ nonisolated enum KeychainStore {
     /// Account name for the long-lived Meta Graph API access token.
     static let graphTokenAccount = "instagram_graph_token"
 
+    static func graphTokenAccount(igUserID: String) -> String {
+        "instagram_graph_token:\(igUserID)"
+    }
+
     static func save(_ value: String, account: String) throws {
         let data = Data(value.utf8)
         let query: [String: Any] = [

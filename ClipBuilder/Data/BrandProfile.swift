@@ -92,6 +92,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var houseStyleProvenance: AIProvenance?
     /// This judge belongs to the profile, unlike app-wide provider routing.
     var criticBriefUse: CriticBriefUse = .automatic
+    /// Last successful Instagram publish target for this profile.
+    var instagramPublishAccount: String?
 
     static let knownBuzzSources: [(key: String, label: String)] = [
         ("reddit", "Reddit (r/MMA and other MMA subreddits)"),
@@ -130,12 +132,14 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case tasteRubricProvenance = "taste_rubric_provenance"
         case houseStyleProvenance = "house_style_provenance"
         case criticBriefUse = "critic_brief_use"
+        case instagramPublishAccount = "instagram_publish_account"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         learnedSharing = try container.decodeIfPresent(LearnedSharing.self, forKey: .learnedSharing) ?? LearnedSharing()
         criticBriefUse = try container.decodeIfPresent(CriticBriefUse.self, forKey: .criticBriefUse) ?? .automatic
+        instagramPublishAccount = try container.decodeIfPresent(String.self, forKey: .instagramPublishAccount)
         profileName = try container.decodeIfPresent(String.self, forKey: .profileName) ?? "Default"
         brandName = try container.decodeIfPresent(String.self, forKey: .brandName) ?? profileName
         contentDomain = try container.decodeIfPresent(String.self, forKey: .contentDomain) ?? ""

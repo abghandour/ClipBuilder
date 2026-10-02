@@ -650,6 +650,11 @@ final class AppStore {
         let active = loaded.first { $0.profileName == activeName } ?? loaded[0]
         self.init(settings: settings, profiles: loaded, active: active,
                   ai: AIService(config: settings.ai), startWatcher: true, openProfile: true)
+        do {
+            try migrateInstagramConnection()
+        } catch {
+            presentError("Could not migrate the Instagram connection; it will retry next launch", error)
+        }
         // A saved data folder on an external or unmounted volume was ignored
         // while loading; forget it so the fallback is permanent and the
         // explanation shows once.
@@ -665,7 +670,7 @@ final class AppStore {
     /// Dependency-injected construction for state tests and isolated tools.
     /// Production construction keeps using `init()` above.
     init(settings: AppSettings, profiles: [BrandProfile], active: BrandProfile,
-         ai: AIService, database: Database? = nil,
+         ai: AIService, database: Database? = nil, instagramService: InstagramService? = nil,
          startWatcher: Bool = false, openProfile: Bool = false) {
         self.settings = settings
         self.profiles = profiles
@@ -677,8 +682,8 @@ final class AppStore {
         wizard = WizardEngine(ai: ai, render: renderEngine)
         multitrackRenderer = MultitrackRenderer(render: renderEngine)
         let instagramPersistence = InstagramTokenPersistence()
-        instagram = InstagramService(ai: ai, persistTokenRefresh: { refresh, settings, token in
-            try await instagramPersistence.save(refresh, settings: settings, replacing: token)
+        instagram = instagramService ?? InstagramService(ai: ai, persistTokenRefresh: { refresh, connection, token in
+            try await instagramPersistence.save(refresh, connection: connection, replacing: token)
         })
         fightResearchService = FightResearchService(ai: ai)
         opensProfiles = openProfile
@@ -1394,11 +1399,20 @@ final class AppStore {
 
     /// Bumped when the discovered model lists change, so Settings re-reads them.
     var modelCatalogVersion = 0
+    private(set) var refreshingModels = false
 
     /// Ask the installed CLIs again which models they offer.
     func refreshDiscoveredModels() {
-        AICatalog.applyDiscovered(ModelDiscovery.discover())
-        modelCatalogVersion &+= 1
+        guard !refreshingModels else { return }
+        refreshingModels = true
+        let configured = settings.ai.providers["antigravity"]?.bin
+        let binary = configured.flatMap { $0.isEmpty ? nil : $0 } ?? "agy"
+        Task {
+            defer { refreshingModels = false }
+            let found = await ModelDiscovery.refresh(antigravityBinary: binary)
+            AICatalog.applyDiscovered(found)
+            modelCatalogVersion &+= 1
+        }
     }
 
     // MARK: - Updates
@@ -1681,20 +1695,22 @@ final class AppStore {
         guard !trimmed.isEmpty, !isConnectingInstagram else { return nil }
         isConnectingInstagram = true
         let generation = profileGeneration
+        let ownHandle = activeProfile.socials["instagram"]?.handle
+            .trimmingCharacters(in: CharacterSet(charactersIn: "@ \n\t")) ?? ""
         return Task {
             defer { isConnectingInstagram = false }
             do {
                 var flavor = InstagramTokenFlavor.detect(trimmed)
-                let account: GraphAPIProvider.ResolvedAccount
+                let accounts: [GraphAPIProvider.ResolvedAccount]
                 do {
-                    account = try await GraphAPIProvider(token: trimmed, igUserID: nil, session: session, flavor: flavor)
-                        .resolveAccount(matching: nil)
+                    accounts = try await GraphAPIProvider(token: trimmed, igUserID: nil, session: session, flavor: flavor)
+                        .resolveAccounts()
                 } catch {
                     let detectedError = error
                     try Task.checkCancellation()
                     do {
-                        account = try await GraphAPIProvider(token: trimmed, igUserID: nil, session: session, flavor: flavor.other)
-                            .resolveAccount(matching: nil)
+                        accounts = try await GraphAPIProvider(token: trimmed, igUserID: nil, session: session, flavor: flavor.other)
+                            .resolveAccounts()
                         flavor = flavor.other
                     } catch {
                         try Task.checkCancellation()
@@ -1703,13 +1719,21 @@ final class AppStore {
                 }
                 try Task.checkCancellation()
                 guard generation == profileGeneration else { return }
-                try saveToken(trimmed, KeychainStore.graphTokenAccount)
-                settings.instagram.connectedUsername = account.username
-                settings.instagram.connectedIGUserID = account.id
-                settings.instagram.tokenFlavor = flavor.rawValue
+                let account = accounts.first { $0.username.caseInsensitiveCompare(ownHandle) == .orderedSame }
+                    ?? accounts.first { candidate in
+                        !settings.instagram.connections.contains { $0.igUserID == candidate.id }
+                    } ?? accounts[0]
+                try saveToken(trimmed, KeychainStore.graphTokenAccount(igUserID: account.id))
                 // PLAN-VERIFY: dashboard-generated Instagram Login tokens initially last 60 days.
-                settings.instagram.tokenRefreshedAt = flavor == .instagram ? now : nil
-                settings.instagram.tokenExpiresAt = flavor == .instagram ? now.addingTimeInterval(60 * 86400) : nil
+                let connection = InstagramConnection(
+                    username: account.username, igUserID: account.id, tokenFlavor: flavor.rawValue,
+                    tokenExpiresAt: flavor == .instagram ? now.addingTimeInterval(60 * 86400) : nil,
+                    tokenRefreshedAt: flavor == .instagram ? now : nil)
+                if let index = settings.instagram.connections.firstIndex(where: { $0.id == connection.id }) {
+                    settings.instagram.connections[index] = connection
+                } else {
+                    settings.instagram.connections.append(connection)
+                }
                 saveSettings()
                 // Make the connected account browsable right away.
                 addInstagramAccount(handle: account.username)
@@ -1723,19 +1747,18 @@ final class AppStore {
     /// Commit on the main actor so reconnect/disconnect cannot interleave between
     /// the identity check, Keychain write and settings update.
     @discardableResult
-    func applyInstagramTokenRefresh(_ refresh: InstagramTokenRefresh, settings original: InstagramSettings,
+    func applyInstagramTokenRefresh(_ refresh: InstagramTokenRefresh, connection original: InstagramConnection,
                                     replacing token: String,
                                     readToken: (String) -> String? = { KeychainStore.read(account: $0) },
                                     saveToken: (String, String) throws -> Void = { try KeychainStore.save($0, account: $1) }) throws -> Bool {
-        let current = settings.instagram
-        guard current.isGraphConnected, current.tokenFlavor == "instagram",
-              current.connectedUsername == original.connectedUsername,
-              current.connectedIGUserID == original.connectedIGUserID,
-              current.tokenRefreshedAt == original.tokenRefreshedAt,
-              readToken(KeychainStore.graphTokenAccount) == token else { return false }
-        try saveToken(refresh.token, KeychainStore.graphTokenAccount)
-        settings.instagram.tokenRefreshedAt = refresh.refreshedAt
-        settings.instagram.tokenExpiresAt = refresh.expiresAt
+        let key = KeychainStore.graphTokenAccount(igUserID: original.igUserID)
+        guard let index = settings.instagram.connections.firstIndex(where: { $0.id == original.id }),
+              settings.instagram.connections[index].tokenFlavor == "instagram",
+              settings.instagram.connections[index].tokenRefreshedAt == original.tokenRefreshedAt,
+              readToken(key) == token else { return false }
+        try saveToken(refresh.token, key)
+        settings.instagram.connections[index].tokenRefreshedAt = refresh.refreshedAt
+        settings.instagram.connections[index].tokenExpiresAt = refresh.expiresAt
         saveSettings()
         return true
     }
@@ -1745,21 +1768,27 @@ final class AppStore {
     /// failure. On success the connected account refreshes so the new reel
     /// shows up in the Instagram tab.
     func publishReelToInstagram(video: GeneratedVideoRecord, caption: String,
-                                shareToFeed: Bool,
+                                shareToFeed: Bool, account: IGAccountRecord,
                                 log: @escaping @Sendable (String) -> Void)
         async throws -> GraphAPIProvider.PublishedReel {
         if video.qualityReport?.verdict == .blocked {
             throw InstagramError.fetchFailed(
                 "This reel failed the release-quality gate. Open it in Builder and render a corrected version before publishing.")
         }
+        guard settings.instagram.connection(for: account.username) != nil else {
+            throw InstagramError.fetchFailed("@\(account.username) is not connected")
+        }
+        guard igAccounts.contains(where: { $0.id == account.id && $0.username == account.username }) else {
+            throw InstagramError.fetchFailed("Add @\(account.username) on the Instagram screen first")
+        }
         let database = database
         let generation = profileGeneration
         let projectID = activeProjectID
         let sourceScenes = scenes
-        let username = settings.instagram.connectedUsername
+        let username = account.username
         let result = try await instagram.publishReel(file: video.url, caption: caption,
                                                      shareToFeed: shareToFeed,
-                                                     settings: settings.instagram, log: log)
+                                                     account: username, settings: settings.instagram, log: log)
         if let database {
             try? await database.markGeneratedVideoPublished(id: video.id,
                                                             instagramMediaID: result.mediaID)
@@ -1776,19 +1805,32 @@ final class AppStore {
             if generation == profileGeneration, projectID == activeProjectID, let refreshed { generatedVideos = refreshed }
         }
         guard generation == profileGeneration else { return result }
-        if !username.isEmpty {
-            refreshInstagram(username: username)
-        }
+        activeProfile.instagramPublishAccount = username
+        saveActiveProfile()
+        refreshInstagram(username: username)
         return result
     }
 
-    func disconnectInstagram() {
-        KeychainStore.delete(account: KeychainStore.graphTokenAccount)
-        settings.instagram.connectedUsername = ""
-        settings.instagram.connectedIGUserID = ""
-        settings.instagram.tokenFlavor = "facebook"
-        settings.instagram.tokenExpiresAt = nil
-        settings.instagram.tokenRefreshedAt = nil
+    func disconnectInstagram(_ connection: InstagramConnection,
+                             deleteToken: (String) -> Void = { KeychainStore.delete(account: $0) }) {
+        deleteToken(KeychainStore.graphTokenAccount(igUserID: connection.igUserID))
+        settings.instagram.connections.removeAll { $0.id == connection.id }
+        saveSettings()
+    }
+
+    func migrateInstagramConnection(
+        readToken: (String) -> String? = { KeychainStore.read(account: $0) },
+        saveToken: (String, String) throws -> Void = { try KeychainStore.save($0, account: $1) },
+        deleteToken: (String) -> Void = { KeychainStore.delete(account: $0) }
+    ) throws {
+        guard settings.instagram.connections.isEmpty, !settings.instagram.connectedUsername.isEmpty else { return }
+        let migrated = InstagramConnectionMigration.migrate(settings.instagram)
+        if let connection = migrated.connections.first,
+           let token = readToken(KeychainStore.graphTokenAccount) {
+            try saveToken(token, KeychainStore.graphTokenAccount(igUserID: connection.igUserID))
+            deleteToken(KeychainStore.graphTokenAccount)
+        }
+        settings.instagram = migrated
         saveSettings()
     }
 
@@ -1863,10 +1905,8 @@ final class AppStore {
                 guard self.database === database, generation == profileGeneration, !Task.isCancelled else {
                     throw CancellationError()
                 }
-                let document = WizardEngine.timelineDocument(from: plan, sceneMap: sceneMap,
-                                                             renderSettings: options.renderSettings,
-                                                             pacing: options.pacing,
-                                                             podcastFraming: options.podcastFraming)
+                let document = try await WizardEngine.timelineDocument(from: plan, sceneMap: sceneMap,
+                    options: options, database: database, log: logSink(\.wizardLog, channel: "builder-prefill"))
                 if document.videoTrack.isEmpty {
                     presentError("The plan produced no usable clips")
                 } else {

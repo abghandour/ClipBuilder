@@ -5,8 +5,8 @@ import Foundation
 final class InstagramTokenPersistence {
     weak var store: AppStore?
 
-    func save(_ refresh: InstagramTokenRefresh, settings: InstagramSettings,
+    func save(_ refresh: InstagramTokenRefresh, connection: InstagramConnection,
               replacing token: String) throws -> Bool {
-        try store?.applyInstagramTokenRefresh(refresh, settings: settings, replacing: token) ?? false
+        try store?.applyInstagramTokenRefresh(refresh, connection: connection, replacing: token) ?? false
     }
 }

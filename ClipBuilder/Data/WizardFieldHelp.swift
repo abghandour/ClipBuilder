@@ -107,10 +107,47 @@ struct FieldCaption: View {
 
     var body: some View {
         if let caption = help.caption {
-            Text(caption)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            FormCaption(caption)
         }
+    }
+}
+
+/// A caption row in a grouped form. A bare Text row is centered by the form
+/// when it fits on one line and left-aligned once it wraps; pinning it to the
+/// leading edge keeps every caption under its control's label.
+struct FormCaption: View {
+    let text: String
+    var tone: FormCaptionTone = .secondary
+
+    init(_ text: String, tone: FormCaptionTone = .secondary) {
+        self.text = text
+        self.tone = tone
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(tone == .warning ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+enum FormCaptionTone {
+    case secondary, warning
+}
+
+/// A heading row that opens a run of related controls inside a form
+/// section, with room above it so the groups read as separate.
+struct FormGroupHeader: View {
+    let title: String
+
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        Text(title)
+            .font(.headline)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, Theme.spaceM)
     }
 }
 

@@ -389,6 +389,13 @@ extension AppStore {
         }
     }
 
+    /// Shared task pickers persist both routing fields on every selection.
+    func setTaskModel(task: String, provider: String?, model: String?) {
+        settings.ai.tasks[task] = provider
+        settings.ai.taskModels[task] = model
+        saveSettings()
+    }
+
     func saveSettings() {
         SettingsStore.save(settings)
         let config = settings.ai
