@@ -280,6 +280,13 @@ extension AppStore {
                     var wizard = Self.wizardOptionsFromForm(transcriptsAvailable: transcriptsAvailable, log: log)
                     wizard.projectID = pipelineProjectID
                     wizard.accountBenchmarks = igBenchmarks
+                    // The pipeline's selected videos own its source scope, even
+                    // when presentation settings came from a pasted Wizard run.
+                    wizard.sourcesRestricted = false
+                    wizard.sourceSceneSelection = false
+                    wizard.sourceSceneIDs = []
+                    wizard.sourceVideoPaths = []
+                    wizard.sourcePeople = []
                     wizard.selectedRunIDs = runIDs
                     // Favorite scope only when this video's batch actually has
                     // favorite scenes (holds across Resume, unlike a counter).
@@ -288,6 +295,7 @@ extension AppStore {
                             && (runID == nil || scene.runID == runID)
                     }
                     wizard.critiqueLoop = options.critique
+                    wizard.workflow = .automatic
                     if wizard.selectedRunIDs.isEmpty {
                         log("\(current.filename): no analyze batch to generate from — skipped")
                     } else {
@@ -393,53 +401,66 @@ extension AppStore {
         }
     }
 
-    /// The Wizard form's persisted settings as WizardOptions — mirrors
-    /// WizardView.runWizard()'s mapping (keep the two in sync) so pipeline
-    /// reels honor the same format, branding, audio, and duration the user
-    /// set up on the AI Wizard screen. Batch scoping, favoritesOnly, and the
-    /// critique flag stay the pipeline's to decide; the source-people filter
-    /// deliberately doesn't apply (a per-video run could end up with zero
-    /// eligible scenes).
+    /// Read the saved planning and presentation subsets used by the Wizard
+    /// and the pipeline sheet. The running pipeline supplies its own per-video
+    /// source scope, Automatic workflow, and critique choice.
     static func wizardOptionsFromForm(transcriptsAvailable: Bool, defaults: UserDefaults = .standard,
                                       log: (String) -> Void = { _ in }) -> WizardOptions {
         WizardDefaults.migrateLegacy(defaults: defaults)
-        var options = WizardOptions()
+        let copied = AISettingsJSON.decode(WizardOptions.self, defaults.string(forKey: AISettingsPreferences.snapshotKey))
+        let base = copied ?? WizardOptions()
+        var step1 = base.step1
+        var step2 = base.step2
         let audio = WizardDefaults.audioMode(defaults: defaults)
-        options.useMusic = audio.useMusic && !WizardEngine.availableMusic().isEmpty
-        options.muteSource = audio.muteSource && options.useMusic
-        options.musicFolder = options.useMusic ? WizardDefaults.musicFolder(defaults: defaults) : nil
-        options.formatPreset = defaults.string(forKey: "wizard.formatPreset") ?? "custom"
-        let recipe = ReelRecipe.recipe(id: options.formatPreset) ?? .custom
+        step2.useMusic = audio.useMusic && !WizardEngine.availableMusic().isEmpty
+        step2.muteSource = audio.muteSource && step2.useMusic == true
+        step2.musicFolder = step2.useMusic == true ? WizardDefaults.musicFolder(defaults: defaults) : nil
+        step1.formatPreset = defaults.string(forKey: "wizard.formatPreset") ?? "custom"
+        let recipe = ReelRecipe.recipe(id: step1.formatPreset ?? "custom") ?? .custom
         if recipe.capabilities.sources != .scenes {
-            options.formatPreset = ReelRecipe.custom.id
+            step1.formatPreset = ReelRecipe.custom.id
             log("Pipeline: using Custom because \(recipe.title) requires a recording; automated reels use each video's analyzed scenes.")
         }
         let text = WizardDefaults.textMode(defaults: defaults)
-            .output(transcriptsAvailable: transcriptsAvailable, recipe: options.formatPreset)
-        options.addCaptions = text.captions
-        options.enableTextOverlays = text.headlines
-        options.highlightFraming = defaults.string(forKey: "wizard.highlightFraming").flatMap(CropRecipe.Kind.init(rawValue:))
-        options.podcastFraming = PodcastFramingMode(rawValue: defaults.string(forKey: "wizard.podcastFraming") ?? "") ?? .followSpeaker
-        options.framingCamera = WizardDefaults.fallbackFramingCamera
+            .output(transcriptsAvailable: transcriptsAvailable, recipe: step1.formatPreset ?? "custom")
+        step2.addCaptions = text.captions
+        step2.enableTextOverlays = text.headlines
+        step2.highlightFraming = defaults.string(forKey: "wizard.highlightFraming").flatMap(CropRecipe.Kind.init(rawValue:))
+        step2.podcastFraming = PodcastFramingMode(rawValue: defaults.string(forKey: "wizard.podcastFraming") ?? "") ?? .followSpeaker
+        step2.framingCamera = defaults.string(forKey: "wizard.framingCamera") ?? WizardDefaults.fallbackFramingCamera
         let layoutMode = WizardLayoutMode(rawValue: defaults.string(forKey: WizardDefaults.layoutModeKey) ?? "")
             ?? .automatic
-        options.screenCropLayouts = WizardDefaults.screenCropLayouts(for: layoutMode, defaults: defaults)
-        options.allowedTransitions = WizardOptions.allowedTransitionsFromDefaults()
+        step1.screenCropLayouts = WizardDefaults.screenCropLayouts(for: layoutMode, defaults: defaults)
+        step2.allowedTransitions = WizardDefaults.allowedTransitions(defaults: defaults)
         // Saved research is useful context when it exists; a run should not
         // ask the user to decide whether a missing record is useful.
-        options.useFightResearch = true
-        options.aiInstructions = defaults.string(forKey: "wizard.aiInstructions") ?? ""
+        step1.useFightResearch = true
+        step1.aiInstructions = defaults.string(forKey: "wizard.aiInstructions") ?? ""
         let durationMode = WizardDefaults.durationMode(defaults: defaults)
         let customDuration = defaults.object(forKey: WizardDefaults.customDurationKey) == nil
             ? 20 : defaults.integer(forKey: WizardDefaults.customDurationKey)
-        options.targetDurationSeconds = durationMode.duration
+        step1.targetDurationSeconds = durationMode.duration
             ?? (durationMode == .custom ? min(180, max(3, customDuration)) : nil)
         let taste = defaults.string(forKey: "wizard.tastePreset") ?? ""
-        options.tastePreset = taste.isEmpty ? nil : taste
-        let branding = WizardDefaults.brandingMode(defaults: defaults)
-        options.includeWatermark = branding.includeWatermark
-        options.includeHeadline = branding.includeHeadline
-        options.includeOutro = branding.includeOutro
+        step1.tastePreset = taste.isEmpty ? nil : taste
+        let branding = WizardDefaults.brandingOverride(defaults: defaults).resolved(defaults: defaults)
+        step2.includeWatermark = copied?.includeWatermark ?? branding.includeWatermark
+        step2.includeHeadline = copied?.includeHeadline ?? branding.includeHeadline
+        step2.includeOutro = copied?.includeOutro ?? branding.includeOutro
+        step1.workflow = WizardWorkflow(rawValue: defaults.string(forKey: WizardDefaults.workflowKey) ?? "") ?? .automatic
+        step1.modelOverride = defaults.string(forKey: "wizard.modelOverride").flatMap { $0.isEmpty ? nil : $0 }
+        step1.critiqueLoop = defaults.string(forKey: "wizard.outcome") == ReelRecipe.Workflow.iterate.rawValue
+        step1.critiqueTargetScore = defaults.object(forKey: "wizard.critiqueTargetScore") == nil ? 85 : defaults.integer(forKey: "wizard.critiqueTargetScore")
+        step1.critiqueMaxVersions = defaults.object(forKey: "wizard.critiqueMaxVersions") == nil ? 3 : defaults.integer(forKey: "wizard.critiqueMaxVersions")
+        step2.musicTrack = defaults.string(forKey: "wizard.musicTrack").flatMap { $0.isEmpty ? nil : $0 }
+        step2.overlayStyle = defaults.string(forKey: "wizard.overlayStyle").flatMap { $0.isEmpty ? nil : $0 }
+        step2.pinnedOverlayTemplate = defaults.string(forKey: "wizard.pinnedOverlayTemplate").flatMap { $0.isEmpty ? nil : $0 }
+        step2.overlayAnimation = defaults.string(forKey: "wizard.overlayAnimation").flatMap { $0.isEmpty ? nil : $0 }
+        step2.overlayPlacement = defaults.string(forKey: "wizard.overlayPlacement").flatMap { $0.isEmpty ? nil : $0 }
+        step2.captionLanguage = defaults.string(forKey: "wizard.captionLanguage").flatMap { $0.isEmpty ? nil : $0 }
+        step2.useBRoll = defaults.object(forKey: "wizard.useBRoll") == nil || defaults.bool(forKey: "wizard.useBRoll")
+        step2.brollInstructions = defaults.string(forKey: "wizard.brollInstructions") ?? ""
+        var options = WizardOptions.merge(step1: step1, step2: step2, base: base)
         options.readBumperDefaults(defaults)
         return options
     }

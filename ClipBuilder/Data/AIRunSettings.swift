@@ -129,8 +129,9 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
             ]
         case .options:
             return [
-                "renderSettings", "pacing", "captionLanguage", "reviewProposedCuts", "muteSource",
+                "renderSettings", "pacing", "captionLanguage", "muteSource",
                 "addCaptions", "enableTextOverlays", "useMusic", "musicFolder", "useFightResearch",
+                "workflow", "musicTrack", "overlayStyle", "overlayAnimation", "overlayPlacement",
                 "targetDurationSeconds", "framingCamera", "podcastFraming", "highlightFraming", "useBRoll", "screenCropLayouts",
                 "allowedTransitions", "formatPreset", "critiqueLoop", "critiqueTargetScore", "critiqueMaxVersions", "includeWatermark",
                 "includeHeadline",
@@ -147,7 +148,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
         self.sourceName = sourceName
         self.scopes = scopes
         let allowed = scopes.reduce(into: Set<String>()) { $0.formUnion(Self.keys($1, kind: kind)) }
-        let settings = kind == .wizard ? WizardOptions.normalizeFavoriteSettings(settings) : settings
+        let settings = kind == .wizard ? WizardOptions.normalizeSettings(settings) : settings
         self.settings = settings.filter { allowed.contains($0.key) }
         // Include explicit nulls so a copied "automatic" choice clears an override.
         for key in allowed where self.settings[key] == nil { self.settings[key] = .null }
@@ -159,8 +160,8 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
     )
         -> (settings: [String: JSONSetting], skipped: [String])
     {
-        let settings = kind == .wizard ? WizardOptions.normalizeFavoriteSettings(self.settings) : self.settings
-        var result = kind == .wizard ? WizardOptions.normalizeFavoriteSettings(current) : current
+        let settings = kind == .wizard ? WizardOptions.normalizeSettings(self.settings) : self.settings
+        var result = kind == .wizard ? WizardOptions.normalizeSettings(current) : current
         var skipped: [String] = []
         let allowed = scopes.reduce(into: Set<String>()) { $0.formUnion(Self.keys($1, kind: kind)) }
         for (key, value) in settings where allowed.contains(key) { result[key] = value }

@@ -76,7 +76,7 @@ struct ReelRecipeTests {
         #expect(c.audioMusic == !highlights)
         #expect(c.onScreenText == !highlights)
         #expect(c.critiqueLoop == !highlights)
-        #expect(c.reviewProposedCuts == !highlights)
+        #expect(c.selectionReview == !highlights)
         #expect(c.styleReference == !highlights)
         #expect(c.bumpers == !highlights)
         #expect(c.branding == !highlights)
@@ -100,7 +100,7 @@ struct ReelRecipeTests {
         original.muteSource = true
         original.musicFolder = "Music"
         original.critiqueLoop = true
-        original.reviewProposedCuts = true
+        original.workflow = .reviewMoments
         original.includeIntroBumper = true
         original.includeOutroBumper = true
         original.includeMiddleBumper = true
@@ -143,7 +143,7 @@ struct ReelRecipeTests {
         }
         if highlights {
             for key in ["addCaptions", "enableTextOverlays", "useMusic", "muteSource", "critiqueLoop",
-                        "reviewProposedCuts", "includeIntroBumper", "includeOutroBumper", "includeMiddleBumper",
+                        "includeIntroBumper", "includeOutroBumper", "includeMiddleBumper",
                         "includeWatermark", "includeHeadline", "includeOutro", "favoritesOnly", "sourceSceneSelection"] {
                 expected[key] = .bool(false)
             }
@@ -152,6 +152,7 @@ struct ReelRecipeTests {
                 expected.removeValue(forKey: key)
             }
             for key in ["selectedRunIDs", "sourcePeople", "sourceSceneIDs"] { expected[key] = .array([]) }
+            expected["workflow"] = .string("automatic")
             expected["tastePreset"] = .string("none")
             expected["pacing"] = try json(WizardOptions())["pacing"]
         } else {
@@ -169,7 +170,7 @@ struct ReelRecipeTests {
         let result = original.neutralized(for: recipe)
         #expect(try json(result) == expected)
         #expect(try json(result.neutralized(for: recipe)) == expected)
-        #expect(original.useFightResearch && original.reviewProposedCuts && original.highlightMaxCount == 4)
+        #expect(original.useFightResearch && original.workflow == .reviewMoments && original.highlightMaxCount == 4)
     }
 
     @Test("Form policy uses capabilities and only offers the B-roll model with instructions", arguments: ReelRecipe.all)
@@ -194,20 +195,6 @@ struct ReelRecipeTests {
         #expect(ReelRecipe.podcast.id == "podcast")
         #expect(ReelRecipe.podcast.summary.contains("One complete question-and-answer exchange"))
         #expect(ReelRecipe.podcast.promptBlock.contains("Choose exactly one scene"))
-    }
-
-    @Test("Entering podcast framing arms review from Settings; leaving disarms it",
-          arguments: [true, false])
-    func reviewCutsTransition(reviewByDefault: Bool) {
-        var review = false
-        review = WizardFormPlan.reviewProposedCuts(podcastFraming: true, reviewCutsByDefault: reviewByDefault)
-        #expect(review == reviewByDefault)
-        // Even a manually armed review choice must not leak into the next recipe.
-        review = true
-        review = WizardFormPlan.reviewProposedCuts(podcastFraming: false, reviewCutsByDefault: reviewByDefault)
-        #expect(!review)
-        review = WizardFormPlan.reviewProposedCuts(podcastFraming: true, reviewCutsByDefault: reviewByDefault)
-        #expect(review == reviewByDefault)
     }
 
     @Test("Scene handoffs preserve scene recipes and restore a valid previous recipe",

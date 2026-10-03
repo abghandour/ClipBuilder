@@ -74,12 +74,7 @@ nonisolated enum WizardFieldHelp {
         "The language the captions appear in.",
         caption: "Original audio language keeps the transcript as spoken; any other choice translates it. The choices come from the profile's caption languages.")
     static let quality = FieldHelp(
-        "How many versions the AI critic may ask for after watching the render.")
-    static let reviewProposedCuts = FieldHelp(
-        "Pause after planning so you can approve or adjust the cuts before anything renders.",
-        caption: "The proposed cuts appear for review and nothing renders until you accept them. On by default for podcast reels.")
-
-    // More options
+        "How many takes the content critic may judge on small previews before the best is rendered.")
     static let modelOverride = FieldHelp(
         "Ask the AI provider for a specific model by name. Leave empty for its default.",
         caption: "Use the exact model name the provider's command-line tool accepts. Empty lets the provider choose.")

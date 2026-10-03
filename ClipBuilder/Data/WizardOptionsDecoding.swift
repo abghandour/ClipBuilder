@@ -1,12 +1,20 @@
 import Foundation
 
 nonisolated extension WizardOptions {
-    private enum LegacyKeys: String, CodingKey { case curatedOnly }
+    private enum LegacyKeys: String, CodingKey { case curatedOnly, reviewProposedCuts }
 
     static func normalizeFavoriteSettings<Value>(_ settings: [String: Value], prefix: String = "") -> [String: Value] {
         var result = settings
         let old = result.removeValue(forKey: prefix + LegacyKeys.curatedOnly.rawValue)
         if result[prefix + "favoritesOnly"] == nil { result[prefix + "favoritesOnly"] = old }
+        return result
+    }
+
+    static func normalizeSettings(_ settings: [String: JSONSetting]) -> [String: JSONSetting] {
+        var result = normalizeFavoriteSettings(settings)
+        if let legacy = result.removeValue(forKey: "reviewProposedCuts"), result["workflow"]?.string == nil {
+            result["workflow"] = .string((legacy == .bool(true) ? WizardWorkflow.reviewMoments : .automatic).rawValue)
+        }
         return result
     }
 
@@ -22,7 +30,7 @@ nonisolated extension WizardOptions {
         renderSettings = try values.decodeIfPresent(RenderSettings.self, forKey: .renderSettings) ?? renderSettings
         pacing = try values.decodeIfPresent(EditPacing.self, forKey: .pacing) ?? pacing
         captionLanguage = try values.decodeIfPresent(String.self, forKey: .captionLanguage)
-        reviewProposedCuts = try values.decodeIfPresent(Bool.self, forKey: .reviewProposedCuts) ?? reviewProposedCuts
+        workflow = try values.decodeIfPresent(WizardWorkflow.self, forKey: .workflow)
         muteSource = try values.decodeIfPresent(Bool.self, forKey: .muteSource) ?? muteSource
         addCaptions = try values.decodeIfPresent(Bool.self, forKey: .addCaptions) ?? addCaptions
         enableTextOverlays = try values.decodeIfPresent(Bool.self, forKey: .enableTextOverlays) ?? enableTextOverlays
@@ -31,6 +39,9 @@ nonisolated extension WizardOptions {
         useFightResearch = try values.decodeIfPresent(Bool.self, forKey: .useFightResearch) ?? useFightResearch
         selectedRunIDs = try values.decodeIfPresent(Set<Int64>.self, forKey: .selectedRunIDs) ?? selectedRunIDs
         let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+        if workflow == nil, try legacy.decodeIfPresent(Bool.self, forKey: .reviewProposedCuts) == true {
+            workflow = .reviewMoments
+        }
         favoritesOnly = try values.decodeIfPresent(Bool.self, forKey: .favoritesOnly)
             ?? legacy.decodeIfPresent(Bool.self, forKey: .curatedOnly) ?? favoritesOnly
         tastePreset = try values.decodeIfPresent(String.self, forKey: .tastePreset)

@@ -441,6 +441,10 @@ extension AppStore {
         guard let projectID = options.projectID else { return }
         options.localHashtags = OnDevicePolicy.isEnabled(item: "hashtags", config: settings.ai)
         options.accountBenchmarks = igBenchmarks
+        if options.formatPreset != "podcast_highlights", options.resolvedWorkflow != .automatic {
+            findWizardMoments(options: options)
+            return
+        }
         isWizardRunning = true
         wizardProjectID = projectID
         wizardProjectName = projects.first(where: { $0.id == projectID })?.name ?? activeProject?.name
@@ -477,22 +481,6 @@ extension AppStore {
                 } catch is CancellationError {
                     appendLog(\.wizardLog, ["Finding highlights stopped."])
                 } catch { presentError("Could not find podcast highlights", error) }
-                return
-            }
-            if options.reviewProposedCuts {
-                do {
-                    let prepared = try await wizard.plan(options: options, profile: profile,
-                                                         database: database,
-                                                         emit: logSink(\.wizardLog))
-                    guard generation == profileGeneration else { return }
-                    pendingCutReview = ProposedCutReviewRequest(plan: prepared.plan,
-                                                               sceneMap: prepared.sceneMap,
-                                                               options: options)
-                } catch is CancellationError {
-                    appendLog(\.wizardLog, ["Planning stopped."])
-                } catch {
-                    presentError("Could not prepare proposed cuts", error)
-                }
                 return
             }
             await wizard.run(options: options, profile: profile, database: database) { message in
@@ -670,48 +658,6 @@ extension AppStore {
         }
     }
 
-    func renderApprovedCuts(_ plan: WizardPlan, options: WizardOptions) {
-        guard let database, !isWizardRunning else { return }
-        var options = options
-        options.projectID = options.projectID ?? activeProjectID
-        guard let projectID = options.projectID else { return }
-        pendingCutReview = nil
-        isWizardRunning = true
-        wizardProjectID = projectID
-        wizardProjectName = projects.first(where: { $0.id == projectID })?.name ?? activeProject?.name
-        wizardStatus = WizardRunStatus(stage: "Rendering approved cuts", fraction: 0.3)
-        let profile = activeProfile
-        let wizard = wizard
-        let generation = profileGeneration
-        wizardTask = Task {
-            await AIRunCapture.context.withValue(AIRunCapture()) {
-            defer {
-                isWizardRunning = false
-                wizardStatus = nil
-                wizardProjectID = nil
-            }
-            let previousIDs = Set(((try? await database.fetchGeneratedVideos(projectID: projectID)) ?? []).map(\.id))
-            do {
-                try await wizard.renderApprovedPlan(plan, options: options, profile: profile,
-                                                    database: database, emit: logSink(\.wizardLog))
-            } catch is CancellationError {
-                appendLog(\.wizardLog, ["Render stopped."])
-            } catch {
-                presentError("Could not render approved cuts", error)
-            }
-            guard generation == profileGeneration else { return }
-            await refreshAllNow()
-            let fresh = ((try? await database.fetchGeneratedVideos(projectID: projectID)) ?? [])
-                .filter { !previousIDs.contains($0.id) }
-            if !fresh.isEmpty {
-                wizardResults = WizardRunResults(videos: fresh)
-                await recordWizardTimelines(fresh, projectID: projectID,
-                                            formatName: options.formatPreset)
-            }
-        }
-        }
-    }
-
     /// Re-run the wizard with the same options as the last run.
     func retryWizard() {
         guard var options = lastWizardOptions else { return }
@@ -747,7 +693,7 @@ extension AppStore {
     /// "clip 3/12" progress marker in engine log lines, compiled once.
     private static let clipProgressPattern = /clip (\d+)\/(\d+)/
 
-    private func updateWizardStatus(from rawMessage: String) {
+    func updateWizardStatus(from rawMessage: String) {
         // Phase lines arrive with leading newlines for log readability.
         let message = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
         func set(_ stage: String, detail: String = "", fraction: Double) {
@@ -771,6 +717,10 @@ extension AppStore {
                 fraction: 0.05)
         } else if message.hasPrefix("Plan: ") {
             set("Plan ready", fraction: 0.3)
+        } else if message.hasPrefix("Content critique: rendering proxy") {
+            set("Reviewing the moments", detail: message, fraction: 0.15)
+        } else if message.hasPrefix("Phase 4: Presentation critique") {
+            set("Reviewing the finished look", fraction: 0.96)
         } else if message.hasPrefix("Phase 3: Assembling") {
             set("Assembling the video",
                 detail: "Cutting clips and burning in overlays.",

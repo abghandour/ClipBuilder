@@ -249,7 +249,7 @@ struct WizardPlanRulesTests {
                                     regenerate: true)
         let block = WizardPlanRules.critiqueFeedbackBlock(critique, attempt: 2,
                                                           previousPlanJSON: String(repeating: "x", count: 5000))
-        #expect(block.contains("VERSION 2"))
+        #expect(block.contains("PROXY TAKE 2"))
         #expect(block.contains("61/100: Flat hook"))
         #expect(block.contains("- Hook starts on a wide shot"))
         #expect(block.contains("- Open on clip 3"))
@@ -259,6 +259,85 @@ struct WizardPlanRulesTests {
         let bare = WizardPlanRules.critiqueFeedbackBlock(
             ReelCritique(score: 70, summary: "", strengths: [], issues: [], notes: [], regenerate: false),
             attempt: 1, previousPlanJSON: "{}")
-        #expect(!bare.contains("Issues visible") && !bare.contains("Keep what"))
+        #expect(!bare.contains("Content issues visible") && !bare.contains("Keep what"))
+    }
+}
+
+extension WizardPlanRulesTests {
+    @Test func pacingProtectsTheMarkedEndAndUsesScreenTime() {
+        var opening = Fixtures.planClip(start: 10, end: 20)
+        opening.reason = "Keep the hook at the start"
+        var ending = Fixtures.planClip(sceneID: 2, start: 30, end: 40)
+        ending.reason = "Keep end: payoff at end; trim start"
+        ending.speed = 0.5
+        ending.areaClips = [WizardPlanAreaClip(area: "Side", sceneID: 3, start: 50, end: 60)]
+        let plan = Fixtures.plan(clips: [opening, ending])
+        let paced = WizardPlanRules.applyPacing(plan: plan, pacing: EditPacing(cadence: .threeSeconds))
+        #expect(paced.clips[0].start == 10 && paced.clips[0].end == 13)
+        #expect(paced.clips[1].start == 38.5 && paced.clips[1].end == 40)
+        #expect(paced.clips[1].areaClips[0].start == 58.5)
+        #expect(paced.targetDuration == 6)
+        #expect(plan.clips[1].start == 30)
+    }
+
+    @Test func pacingPreservesAutomaticShortClipsAndReplayPairs() {
+        var replay = Fixtures.planClip(start: 0, end: 8)
+        replay.replay = true
+        var echo = replay
+        echo.replay = false
+        echo.speed = 0.5
+        let short = Fixtures.planClip(sceneID: 2, start: 0, end: 1)
+        let plan = Fixtures.plan(clips: [replay, echo, short])
+        for pacing in [EditPacing(), EditPacing(cadence: .twoSeconds, curve: .accelerate)] {
+            let result = WizardPlanRules.applyPacing(plan: plan, pacing: pacing)
+            #expect(result.clips.map(\.start) == plan.clips.map(\.start))
+            #expect(result.clips.map(\.end) == plan.clips.map(\.end))
+        }
+    }
+
+    @Test func pacingCurveHasAFloorAndNeverExtendsFootage() {
+        let clips = (0..<8).map { Fixtures.planClip(sceneID: Int64($0), start: 0, end: 10) }
+        let result = WizardPlanRules.applyPacing(plan: Fixtures.plan(clips: clips),
+            pacing: EditPacing(cadence: .twoSeconds, curve: .accelerate))
+        let lengths = result.clips.map { ($0.end - $0.start) / $0.speed }
+        #expect(lengths.first! > lengths.last!)
+        #expect(lengths.allSatisfy { $0 >= 1.5 && $0 <= 10 })
+    }
+
+    @Test func transitionsAreStableValidatedAndBounded() {
+        #expect(WizardPlanRules.transitions(allowed: ["fade"], count: -1).isEmpty)
+        #expect(WizardPlanRules.transitions(allowed: nil, count: 2) == ["cut", "cut"])
+        #expect(WizardPlanRules.transitions(allowed: ["bogus"], count: 3) == ["cut", "cut", "cut"])
+        let result = WizardPlanRules.transitions(allowed: ["cut", "fade", "fade", "wipeleft"], count: 7)
+        #expect(result == ["cut", "cut", "fade", "cut", "cut", "wipeleft", "cut"])
+    }
+
+    @Test func musicUsesStableOrderFolderBoundariesAndSufficientLength() {
+        let tracks: [(name: String, duration: Double)] = [
+            ("Calmer/A", 60), ("Calm/Z", 60), ("Calm/A", 9),
+            ("Calm/Sub/B", 30), ("Calm/Invalid", .nan), ("Root", 90)
+        ]
+        #expect(WizardPlanRules.musicTrack(folder: "Calm", tracks: tracks, duration: 20) == "Calm/Sub/B")
+        #expect(WizardPlanRules.musicTrack(folder: "Calm/", tracks: Array(tracks.reversed()), duration: 60) == "Calm/Z")
+        #expect(WizardPlanRules.musicTrack(folder: "Calm", tracks: tracks, duration: 61) == nil)
+        #expect(WizardPlanRules.musicTrack(folder: "Missing", tracks: tracks, duration: 10) == nil)
+        #expect(WizardPlanRules.musicTrack(folder: nil, tracks: tracks, duration: 90) == "Root")
+    }
+
+    @Test func overlayStyleReplacesOldLookAndKeepsAllWords() {
+        var clip = Fixtures.planClip()
+        clip.textOverlay = "Keep these words"
+        clip.overlayKicker = "Guest"
+        clip.overlayStyle = "banner"
+        clip.overlayAccent = "#abc"
+        clip.overlayPlacement = "top"
+        clip.overlayAnimation = "pop"
+        clip.speakerIntroductions = [TextOverlayItem()]
+        let result = WizardPlanRules.overlayStyle(plan: Fixtures.plan(clips: [clip]), style: "Saved template")
+        #expect(result.clips[0].overlayStyle == "Saved template")
+        #expect(result.clips[0].textOverlay == clip.textOverlay && result.clips[0].overlayKicker == "Guest")
+        #expect(result.clips[0].overlayAccent == nil && result.clips[0].overlayAnimation == nil)
+        #expect(result.clips[0].speakerIntroductions == clip.speakerIntroductions)
+        #expect(clip.overlayStyle == "banner")
     }
 }

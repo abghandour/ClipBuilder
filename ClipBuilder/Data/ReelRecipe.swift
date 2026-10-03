@@ -59,7 +59,7 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         let audioMusic: Bool
         let onScreenText: Bool
         let critiqueLoop: Bool
-        let reviewProposedCuts: Bool
+        let selectionReview: Bool
         let styleReference: Bool
         let layouts: Bool
         let bumpers: Bool
@@ -73,25 +73,25 @@ nonisolated struct ReelRecipe: Identifiable, Sendable, Equatable {
         static let fight = Capabilities(
             workflow: .oneReel, sources: .scenes, length: .targetDuration, podcastFraming: false,
             cameraFocus: false, bRoll: false, fightResearch: true, audioMusic: true,
-            onScreenText: true, critiqueLoop: true, reviewProposedCuts: true,
+            onScreenText: true, critiqueLoop: true, selectionReview: true,
             styleReference: true, layouts: true, bumpers: true, branding: true,
             referenceTemplate: true, models: ["wizard", "critique", "captions"])
         static let spoken = Capabilities(
             workflow: .oneReel, sources: .scenes, length: .targetDuration, podcastFraming: true,
             cameraFocus: false, bRoll: true, fightResearch: false, audioMusic: true,
-            onScreenText: true, critiqueLoop: true, reviewProposedCuts: true,
+            onScreenText: true, critiqueLoop: true, selectionReview: true,
             styleReference: true, layouts: false, bumpers: true, branding: true,
             referenceTemplate: true, models: ["wizard", "critique", "captions"])
         static let highlights = Capabilities(
             workflow: .highlights, sources: .podcastRecording, length: .maxSecondsAndCount, podcastFraming: false,
             cameraFocus: true, bRoll: true, fightResearch: false, audioMusic: false,
-            onScreenText: false, critiqueLoop: false, reviewProposedCuts: false,
+            onScreenText: false, critiqueLoop: false, selectionReview: false,
             styleReference: false, layouts: false, bumpers: false, branding: false,
             referenceTemplate: false, models: ["highlights"])
         static let custom = Capabilities(
             workflow: .oneReel, sources: .scenes, length: .targetDuration, podcastFraming: true,
             cameraFocus: false, bRoll: true, fightResearch: true, audioMusic: true,
-            onScreenText: true, critiqueLoop: true, reviewProposedCuts: true,
+            onScreenText: true, critiqueLoop: true, selectionReview: true,
             styleReference: true, layouts: true, bumpers: true, branding: true,
             referenceTemplate: true, models: ["wizard", "critique", "captions"])
     }

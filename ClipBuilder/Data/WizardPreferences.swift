@@ -1,5 +1,17 @@
 import Foundation
 
+nonisolated enum WizardWorkflow: String, Codable, CaseIterable, Sendable {
+    case automatic, reviewMoments, reviewMomentsAndLook
+
+    var title: String {
+        switch self {
+        case .automatic: "Automatic"
+        case .reviewMoments: "Review the moments"
+        case .reviewMomentsAndLook: "Review moments and look"
+        }
+    }
+}
+
 /// The few output choices a person should make for a Wizard run. These are
 /// intentionally outcome-oriented; renderer implementation details stay with
 /// the surfaces that own them.
@@ -221,6 +233,7 @@ nonisolated enum WizardDefaults {
     /// Root-relative music-library folder the Wizard picks songs from; "" =
     /// the whole library.
     static let musicFolderKey = "wizard.musicFolder"
+    static let workflowKey = "wizard.workflow"
 
     static let useScreenCropsKey = "wizard.useScreenCrops"
     static let screenCropLayoutsKey = "wizard.screenCropLayouts"
@@ -231,6 +244,12 @@ nonisolated enum WizardDefaults {
 
     static func migrateLegacy(defaults: UserDefaults = .standard) {
         WizardCameraFocus.migrate(defaults: defaults)
+        if defaults.object(forKey: workflowKey) == nil {
+            let workflow: WizardWorkflow = defaults.bool(forKey: "wizard.reviewProposedCuts")
+                ? .reviewMoments : .automatic
+            defaults.set(workflow.rawValue, forKey: workflowKey)
+        }
+        defaults.removeObject(forKey: "wizard.reviewProposedCuts")
         if let oldValue = defaults.object(forKey: "wizard.curatedOnly") {
             if defaults.object(forKey: "wizard.favoritesOnly") == nil {
                 defaults.set(oldValue, forKey: "wizard.favoritesOnly")

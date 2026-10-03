@@ -334,8 +334,9 @@ struct MainWindowView: View {
         .sheet(item: $store.pendingPodcastHighlights, onDismiss: store.podcastHighlightReviewDidDismiss) { request in
             PodcastHighlightReviewSheet(request: request)
         }
-        .sheet(item: $store.pendingCutReview) { request in
-            ProposedCutsSheet(request: request)
+        .sheet(item: $store.pendingWizardSelectionReview, onDismiss: store.wizardSelectionReviewDidDismiss) { request in
+            WizardSelectionReviewSheet(request: request)
+                .environment(store)
         }
         .sheet(item: $store.pendingComparison) { batch in
             ComparisonSheet(batch: batch)
@@ -444,7 +445,7 @@ struct MainWindowView: View {
 
     private var jobReviewBlocked: Bool {
         store.wizardResults != nil || store.pendingPodcastHighlights != nil
-            || store.pendingCutReview != nil || store.pendingComparison != nil
+            || store.pendingWizardSelectionReview != nil || store.pendingComparison != nil
             || store.pendingPeopleReview != nil || store.pendingRenameReview != nil
             || store.showTrainingGuide || store.showResourceExport || store.resourceImportURL != nil
             || store.currentError != nil || store.currentNotice != nil || store.isLoadingProject

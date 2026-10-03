@@ -6,7 +6,7 @@ extension Database {
     @discardableResult
     func insertGeneratedVideo(path: String, duration: Double, timelineJSON: String,
                               wizardProvider: String?, wizardModel: String?,
-                              projectID: Int64? = nil,
+                              projectID: Int64? = nil, selectionTakeID: Int64? = nil,
                               rationale: String? = nil, batchID: String? = nil,
                               qualityJSON: String? = nil,
                               planClipsJSON: String? = nil, settings: WizardRunSettings? = nil, roles: [AIRole] = []) throws -> Int64 {
@@ -18,10 +18,16 @@ extension Database {
            try connection.query("SELECT 1 FROM projects WHERE id = ?", [.integer(id)]).isEmpty {
             projectID = nil
         }
+        // A take can also be deleted while encoding. Keep the rendered output.
+        var selectionTakeID = selectionTakeID
+        if let id = selectionTakeID,
+           try connection.query("SELECT 1 FROM wizard_selection_takes WHERE id = ?", [.integer(id)]).isEmpty {
+            selectionTakeID = nil
+        }
         try connection.execute("""
             INSERT INTO generated_videos (path, duration, timeline_json, wizard_provider, wizard_model,
-                                          project_id, rationale, batch_id, quality_json, plan_clips_json, settings_json, models_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          project_id, rationale, batch_id, quality_json, plan_clips_json, settings_json, models_json, selection_take_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [.text(path), .real(duration), .text(timelineJSON),
                   wizardProvider.map(SQLValue.text) ?? .null,
                   wizardModel.map(SQLValue.text) ?? .null,
@@ -31,14 +37,15 @@ extension Database {
                   qualityJSON.map(SQLValue.text) ?? .null,
                   planClipsJSON.map(SQLValue.text) ?? .null,
                   settings.flatMap(AISettingsJSON.encode).map(SQLValue.text) ?? .null,
-                  AISettingsJSON.encode((AIRunCapture.current?.roles ?? []) + roles).map(SQLValue.text) ?? .null])
+                  AISettingsJSON.encode((AIRunCapture.current?.roles ?? []) + roles).map(SQLValue.text) ?? .null,
+                  selectionTakeID.map(SQLValue.integer) ?? .null])
         let recordID = connection.lastInsertRowID
         if wizardProvider != nil, let projectID {
             try ensureWizardTimeline(
                 projectID: projectID,
                 name: "Wizard · Run",
                 documentJSON: timelineJSON,
-                sourceRunID: batchID ?? "video-\(recordID)",
+                sourceRunID: selectionTakeID.map { "take:\($0)" } ?? batchID ?? "video-\(recordID)",
                 thumbnailVideoID: nil
             )
         }
@@ -148,7 +155,8 @@ extension Database {
                              driveLink: row["drive_link"]?.stringValue,
                              driveOffloaded: row["drive_offloaded"]?.boolValue ?? false,
                              driveShared: row["drive_shared"]?.boolValue ?? false,
-                             settingsJSON: row["settings_json"]?.stringValue, modelsJSON: row["models_json"]?.stringValue)
+                             settingsJSON: row["settings_json"]?.stringValue, modelsJSON: row["models_json"]?.stringValue,
+                             selectionTakeID: row["selection_take_id"]?.intValue)
     }
 
     func setGeneratedVideoFavorite(_ id: Int64, favorite: Bool) throws {

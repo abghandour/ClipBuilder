@@ -23,9 +23,10 @@ nonisolated struct ReelCritique: Codable, Sendable, Hashable {
     var provider: String?
     var model: String?
     var briefKey: String? = nil
+    var scope: ReelCritic.Scope? = nil
 
     var shortLabel: String {
-        "AI critique \(score)/100" + (forecast.map { " · forecast \($0)" } ?? "")
+        (scope.map { $0 == .content ? "Content " : "Presentation " } ?? "AI critique ") + "\(score)/100" + (forecast.map { " · forecast \($0)" } ?? "")
     }
 }
 
@@ -34,6 +35,30 @@ nonisolated struct ReelCritique: Codable, Sendable, Hashable {
 /// through the normal model chain, which deliberately leads with a different
 /// model than planning so the planner never grades its own work.
 nonisolated enum ReelCritic {
+    enum Scope: String, Codable, Sendable {
+        case content, presentation
+
+        var rubric: String {
+            switch self {
+            case .content:
+                "Selection: choose compelling, relevant footage.\nStory: a strong opening hook, clear progression, complete exchanges and a satisfying payoff.\nTiming: source in/out points, order and purposeful replays."
+            case .presentation:
+                "Framing: keep subjects visible and camera movement comfortable.\nCaptions: accurate, readable and within safe areas when enabled.\nOverlays: legible placement, animation and contrast when enabled.\nBranding: consistent identity and unobtrusive bumpers when enabled.\nFinish: transitions, audio balance and encode quality."
+            }
+        }
+
+        /// Learned taste is free-form text. Drop lines belonging to the other
+        /// stage, including mixed lines, instead of leaking its rubric back in.
+        func filtered(_ text: String) -> String {
+            let excluded = self == .content
+                ? ["caption", "branding", "brand", "watermark", "overlay", "font", "typograph", "safe area", "safe-area", "framing", "camera", "transition", "music", "audio", "bumper", "color", "colour", "legib", "resolution", "encode"]
+                : ["selection", "story", "hook", "payoff", "narrative", "escalat", "footage choice", "choose footage", "clip choice", "opening", "ending", "exchange", "replay", "pacing", "cut rhythm"]
+            return text.components(separatedBy: .newlines).filter { line in
+                !excluded.contains { line.localizedCaseInsensitiveContains($0) }
+            }.joined(separator: "\n")
+        }
+    }
+
 
     /// Frame timestamps: the hook is sampled densely (the first 2 seconds
     /// decide whether a viewer stays), then the body evenly, capped so the
@@ -69,7 +94,8 @@ nonisolated enum ReelCritic {
                          ai: AIService,
                          emit: @escaping @Sendable (String) -> Void,
                          database: Database? = nil, generatedID: Int64? = nil,
-                         brief: CriticBrief? = nil, referenceFrames: [AIFrame] = []) async throws -> ReelCritique {
+                         brief: CriticBrief? = nil, referenceFrames: [AIFrame] = [],
+                         scope: Scope = .presentation) async throws -> ReelCritique {
         var frames: [AIFrame] = []
         for time in sampleTimes(duration: duration) {
             if let jpeg = await ThumbnailService.jpegFrame(url: video, at: time,
@@ -80,7 +106,7 @@ nonisolated enum ReelCritic {
         guard !frames.isEmpty else {
             throw AIError.unusableResponse("Could not sample frames from the rendered reel for critique.")
         }
-        emit("Critique: reviewing \(frames.count) frames of the rendered reel...")
+        emit("Critique: reviewing \(frames.count) frames for \(scope.rawValue)...")
 
         var learnedLines: [String] = []
         if let database {
@@ -94,6 +120,7 @@ nonisolated enum ReelCritic {
                 learnedLines = try await ReelModelScoring.criticLines(config: config, store: models, traits: traits, frames: frames.map(\.jpeg))
             } catch { emit("Trained scoring unavailable: \(error.localizedDescription)") }
         }
+        learnedLines = learnedLines.map { scope.filtered($0) }.filter { !$0.isEmpty }
         let learnedBlock = learnedLines.isEmpty ? "" : "\n" + learnedLines.joined(separator: "\n")
         if let brief {
             let references: [AIFrame]
@@ -106,17 +133,17 @@ nonisolated enum ReelCritic {
         let response = try await ai.call(prompt: prompt(duration: duration, plan: plan,
                                                         sceneMap: sceneMap, options: options,
                                                         profile: profile, attempt: attempt,
-                                                        previous: previous, brief: brief) + learnedBlock,
+                                                        previous: previous, brief: brief, scope: scope) + learnedBlock,
                                          task: .critique, frames: frames,
                                          timeout: 180, log: emit)
         var critique = try parse(response.text, options: options, provider: response.provider,
-                                 model: response.model, briefKey: brief?.key)
+                                 model: response.model, briefKey: brief?.key, scope: scope)
         critique.strengths += learnedLines
         return critique
     }
 
     static func parse(_ text: String, options: WizardOptions, provider: String? = nil,
-                      model: String? = nil, briefKey: String? = nil) throws -> ReelCritique {
+                      model: String? = nil, briefKey: String? = nil, scope: Scope = .content) throws -> ReelCritique {
         guard let object = AIResponseParser.jsonObject(from: text) else {
             throw AIError.unusableResponse("The critic's response was not valid JSON.")
         }
@@ -132,11 +159,11 @@ nonisolated enum ReelCritic {
             notes: strings("notes"),
             regenerate: (object["regenerate"] as? Bool)
                 ?? ((object["regenerate"] as? NSNumber)?.boolValue ?? false),
-            forecast: options.accountBenchmarks == nil ? nil
+            forecast: scope == .presentation || options.accountBenchmarks == nil ? nil
                 : (object["engagement_forecast"] as? NSNumber).map { max(0, min(100, $0.intValue)) },
-            forecastReasons: strings("forecast_reasons").isEmpty ? nil : strings("forecast_reasons"),
+            forecastReasons: scope == .presentation || strings("forecast_reasons").isEmpty ? nil : strings("forecast_reasons"),
             provider: provider,
-            model: model, briefKey: briefKey)
+            model: model, briefKey: briefKey, scope: scope)
         if briefKey != nil {
             critique.notes += strings("reference_gap").map { "Reference gap: \($0)" }
         }
@@ -154,89 +181,79 @@ nonisolated enum ReelCritic {
         if let forecast = critique.forecast, forecast < 55, critique.score < 92, !critique.notes.isEmpty {
             critique.regenerate = true
         }
+        if scope == .presentation { critique.regenerate = false }
         return critique
     }
 
     static func prompt(duration: Double, plan: WizardPlan,
-                               sceneMap: [Int64: SceneRecord],
-                               options: WizardOptions, profile: BrandProfile,
-                               attempt: Int, previous: [ReelCritique], brief: CriticBrief? = nil) -> String {
-        var lines: [String] = []
-        lines.append("""
-        You are a ruthless short-form editor reviewing a rendered Instagram fight reel \
-        before it ships. The attached images are frames sampled from the FINAL rendered \
-        video (labels are timestamps). Judge the rendered result, not the intent: hook \
-        impact in the first 2 seconds, pacing and cut rhythm, 9:16 framing (are the \
-        fighters fully in frame?), text overlay legibility over the footage, escalation \
-        toward a payoff, and the ending. Be specific and be strict — a mediocre reel \
-        should not score above 70.
-        """)
-        lines.append("\n## The reel")
-        lines.append("- Rendered duration: \(String(format: "%.1f", duration))s"
-            + (options.targetDurationSeconds.map { " (target \($0)s)" } ?? ""))
-        lines.append("- Music: \(plan.musicName ?? "none") · Captions: \(options.addCaptions ? "on" : "off") · Text overlays: \(options.enableTextOverlays ? "on" : "off")")
-        lines.append("- Planner's strategy: \(plan.rationale)")
-        lines.append("\n## Planned clips (what each moment is supposed to be)")
-        for (index, clip) in plan.clips.enumerated() {
-            let scene = sceneMap[clip.sceneID]
-            var line = "\(index + 1). \(String(format: "%.1f", (clip.end - clip.start) / clip.speed))s"
-            if clip.speed != 1 { line += " at \(clip.speed)×" }
-            if let tags = scene?.tags, !tags.isEmpty {
-                line += " — \(tags.prefix(6).joined(separator: ", "))"
+                       sceneMap: [Int64: SceneRecord],
+                       options: WizardOptions, profile: BrandProfile,
+                       attempt: Int, previous: [ReelCritique], brief: CriticBrief? = nil,
+                       scope: Scope = .content) -> String {
+        var lines = ["You are a strict short-form editor. Review only \(scope.rawValue). A mediocre result should not score above 70."]
+        switch scope {
+        case .content:
+            lines.append("The timestamped frames come from a reduced-quality proxy of a take. Judge the selected moments and their order. Ignore missing finishing treatments and proxy image quality; these are applied in step 2.")
+        case .presentation:
+            lines.append("The timestamped frames come from the FINAL rendered reel. Judge only the finishing treatment. The accepted moments are fixed; annotate improvements to the look without requesting different footage or a re-plan. Disabled treatments are intentional, never omissions.")
+        }
+        lines.append("\n## Rubric\n" + scope.rubric)
+        lines.append("- Duration: \(String(format: "%.1f", duration))s")
+        if scope == .content {
+            lines.append("- Planner's strategy: \(plan.rationale)")
+            lines.append("\n## Selected moments")
+            for (index, clip) in plan.clips.enumerated() {
+                let tags = sceneMap[clip.sceneID]?.tags.prefix(6).joined(separator: ", ") ?? ""
+                lines.append("\(index + 1). \(String(format: "%.1f", (clip.end - clip.start) / clip.speed))s — \(tags) — \(clip.reason ?? "")")
             }
-            if let reason = clip.reason, !reason.isEmpty { line += " — planner: \(reason)" }
-            lines.append(line)
+        } else {
+            lines.append("- Music: \(plan.musicName ?? "none") · Captions: \(options.addCaptions ? "on" : "off") · Text overlays: \(options.enableTextOverlays ? "on" : "off")")
+            lines.append("- Branding: watermark \(options.includeWatermark), headline \(options.includeHeadline), outro \(options.includeOutro)")
         }
-        if !profile.tasteRubric.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("\n## The owner's taste (judge against THIS, not your own)")
-            lines.append(profile.tasteRubric)
+        func appendContext(_ title: String, _ text: String) {
+            let filtered = scope.filtered(text).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !filtered.isEmpty { lines.append("\n## \(title)\n" + filtered) }
         }
+        appendContext("The owner's taste", profile.tasteRubric)
+        appendContext("House style", profile.houseStyle)
         if let brief {
-            lines.append("\n## Reference reels (the owner's own good ones — COMPARE, do not reward copying)")
-            lines.append("""
-            The REFERENCE images are reels this owner rates highly. Judge the reel under
-            review by the standard they set: hook choice, cut rhythm, framing, text use,
-            ending. A reel that does the same things is not automatically good; a reel that
-            breaks their pattern needs a reason.
-            """)
-            lines.append(brief.rules)
-            lines.append(contentsOf: brief.exemplars.map(\.summary))
+            lines.append("\n## Reference reels — COMPARE, do not reward copying")
+            lines.append("Apply only the current rubric to the REFERENCE images and these filtered notes.")
+            appendContext("Reference rules", brief.rules)
+            for exemplar in brief.exemplars { appendContext("Reference", exemplar.summary) }
         }
-        if !profile.houseStyle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            lines.append("\n## House style")
-            lines.append(profile.houseStyle)
+        if scope == .content, let benchmarks = options.accountBenchmarks {
+            appendContext("This account's audience", benchmarks.criticBlock())
         }
-        if let benchmarks = options.accountBenchmarks {
-            lines.append("\n## This account's audience (forecast against THIS, not generic best practice)")
-            lines.append(benchmarks.criticBlock())
-        }
-        if !previous.isEmpty {
-            lines.append("\n## Earlier versions of this same run")
+        if scope == .content, !previous.isEmpty {
+            lines.append("\n## Earlier takes in this run")
             for (index, earlier) in previous.enumerated() {
-                lines.append("Version \(index + 1) scored \(earlier.score)/100 — issues then: "
-                    + (earlier.issues.isEmpty ? "none listed" : earlier.issues.joined(separator: "; ")))
+                lines.append("Attempt \(index + 1) scored \(earlier.score)/100 — \(earlier.issues.joined(separator: "; "))")
             }
-            lines.append("This is version \(attempt). Score it absolutely (do not grade on improvement), and only request regeneration if a MATERIALLY better reel is plausible from the same footage.")
+            lines.append("This is attempt \(attempt). Score absolutely, not on improvement.")
         }
+        let notes = scope == .content
+            ? "concrete instructions for the planner's next take — name clips by number"
+            : "concrete finishing observations for the accepted reel; never request a re-plan"
+        let regenerate = scope == .content
+            ? "<true only if score < \(options.critiqueTargetScore) AND the issues are fixable by re-planning from the same footage>"
+            : "false"
         lines.append("""
 
         ## Answer with STRICT JSON only — no prose outside the JSON
         {
           "score": <0-100>,
           "summary": "<one sentence verdict>",
-          "strengths": ["<what genuinely works>"],
-          "issues": ["<specific problems visible in the rendered frames>"],
-          "notes": ["<concrete, actionable instructions for the planner's next attempt — name clips by number>"],
-          "regenerate": <true only if score < \(options.critiqueTargetScore) AND the issues are fixable by re-planning from the same footage>,
-          "engagement_forecast": <0-100: how THIS account's audience will respond (saves, shares, watch-through), judged against the account benchmarks above — 50 = a typical reel for the account, 75+ = top quartile; omit when no benchmarks were given>,
-          "forecast_reasons": ["<what in the rendered reel drives or drags the forecast, tied to the top/bottom-quartile traits — specific, actionable for the planner>"]
+          "strengths": ["<what works within this rubric>"],
+          "issues": ["<specific problems within this rubric>"],
+          "notes": ["<\(notes)>"],
+          "regenerate": \(regenerate)
         }
         """)
-        if brief != nil {
-            // Only the brief path changes the answer schema. The legacy prompt stays byte-identical.
-            let last = lines.count - 1
-            lines[last] = lines[last].replacingOccurrences(of: "\n  \"forecast_reasons\":", with: "\n  \"reference_gap\": [\"<what the reel under review lacks vs. the references, specific>\"],\n  \"forecast_reasons\":")
+        if scope == .content, options.accountBenchmarks != nil {
+            lines.append("Also include engagement_forecast (0–100 against the account benchmarks) and forecast_reasons (specific reasons).")
         }
+        if brief != nil { lines.append("Also include \"reference_gap\": an array of specific gaps within the current rubric.") }
         return lines.joined(separator: "\n")
     }
 }

@@ -361,3 +361,343 @@ extension WizardEngineTests {
         #expect(WizardEngine.versionLimit(options: options) == 5)
     }
 }
+
+extension WizardEngineTests {
+    @Test func plannerOnlyRequestsEditorialDecisions() async throws {
+        let engine = WizardEngine(ai: AIService(config: AIConfig()), render: RenderEngine())
+        var options = WizardOptions()
+        options.enableTextOverlays = true
+        options.pinnedOverlayText = "Keep this headline"
+        options.pinnedOverlayTemplate = "Forbidden template sentinel"
+        options.allowedTransitions = ["knife_slash"]
+        options.overlayStyle = "banner"
+        options.overlayAnimation = "pop"
+        let prompt = await engine.planPrompt(profile: Fixtures.brand(), research: [:],
+            scenes: [Fixtures.scene()], musicNames: ["Forbidden music sentinel"], signals: .init(),
+            people: [], outcomes: [], options: options, learnedContributors: [])
+        for removed in ["Available Music", "Available Transitions", "Music Beat Analysis",
+                        "Forbidden music sentinel", "Forbidden template sentinel", "knife_slash",
+                        "\"style\":", "\"animation\":", "\"accent\":", "\"placement\":",
+                        "\"text_case\":", "\"transitions\":", "\"music\":"] {
+            #expect(!prompt.contains(removed), "Planner must not request \(removed)")
+        }
+        #expect(prompt.contains("Keep this headline"))
+        #expect(prompt.contains("\"kicker\":"))
+        #expect(prompt.contains("\"speed\":"))
+        #expect(prompt.contains("\"areas\":"))
+        let raw: [String: Any] = [
+            "target_duration": 4, "headline": "The answer",
+            "music": ["name": "track", "volume": 5], "transitions": ["fade"],
+            "clips": [["scene_id": 1, "start": 2, "end": 6, "reason": "Keep the answer",
+                       "text_overlay": ["text": "The answer", "kicker": "Guest", "style": "banner",
+                                        "animation": "pop", "accent": "#abc", "placement": "bottom",
+                                        "text_case": "upper"]]]
+        ]
+        let plan = try #require(await engine.validatePlan(raw, scenes: [1: Fixtures.scene()],
+                                                         musicNames: ["track"], options: options))
+        #expect(plan.musicName == nil)
+        #expect(plan.clips[0].textOverlay == "The answer" && plan.clips[0].overlayKicker == "Guest")
+        #expect(plan.clips[0].overlayStyle == nil && plan.clips[0].overlayAnimation == nil)
+        #expect(plan.clips[0].overlayAccent == nil && plan.clips[0].overlayPlacement == nil)
+        #expect(plan.clips[0].overlayCase == nil)
+    }
+
+    @Test func automaticRecordsOneTakeBeforeRendering() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        let projectID = try await temp.database.createProject(profileName: "Selection Test", name: "Project", videoIDs: [videoID])
+        let scene = try #require(try await temp.database.fetchScenes(projectID: projectID).first)
+        let reply = """
+        {"target_duration":8,"rationale":"Keep the complete moment","headline":"The moment",
+         "clips":[{"scene_id":\(scene.id),"start":0,"end":8,"reason":"Complete moment"}]}
+        """
+        var config = AIConfig()
+        config.tasks["wizard"] = "claude"
+        config.providers["claude"] = AIProviderSettings(bin: "/bin/echo", model: "fixture")
+        let response = try JSONSerialization.data(withJSONObject: [
+            "type": "assistant", "message": ["content": [["type": "text", "text": reply]]]
+        ])
+        let requests = WizardPlannerRequests()
+        let service = AIService(config: config) { _, arguments, stdin, _, _, _ in
+            await requests.append(arguments.joined(separator: " ") + String(decoding: stdin ?? Data(), as: UTF8.self))
+            return ProcessResult(stdout: response, stderr: Data(), exitCode: 0)
+        }
+        let engine = WizardEngine(ai: service, render: RenderEngine())
+        var options = WizardOptions()
+        options.projectID = projectID
+        options.useMusic = false
+        options.critiqueLoop = false
+        options.tastePreset = "none"
+        let profile = Fixtures.brand(name: "Selection Test")
+        let database = temp.database
+        try await engine.runAutomatic(options: options, profile: profile, database: database, emit: { _ in }, renderTake: { take, renderOptions in
+            let persisted = try await database.fetchWizardSelectionTakes(selectionID: take.selectionID)
+            #expect(persisted.count == 1 && persisted.first?.id == take.id)
+            #expect(take.ordinal == 1 && renderOptions.projectID == projectID)
+            #expect(take.plan.clips.map(\.sceneID) == [scene.id])
+            // Stand in only for encoding. Persist using the production output link API.
+            try await database.insertGeneratedVideo(path: "/tmp/automatic.mp4", duration: 8,
+                timelineJSON: "{}", wizardProvider: nil, wizardModel: nil,
+                projectID: projectID, selectionTakeID: take.id)
+        })
+        let selections = try await temp.database.fetchWizardSelections(projectID: projectID)
+        let selection = try #require(selections.first)
+        #expect(selections.count == 1)
+        let takes = try await temp.database.fetchWizardSelectionTakes(selectionID: selection.id)
+        #expect(takes.count == 1 && selection.bestTakeID == takes.first?.id)
+        #expect(try await temp.database.fetchGeneratedVideos(projectID: projectID).first?.selectionTakeID == takes.first?.id)
+        let next = try await engine.findMoments(options: options, note: "Start with the answer", previousTakes: takes,
+            profile: profile, database: temp.database, emit: { _ in })
+        #expect(next.take.selectionID == selection.id && next.take.ordinal == 2)
+        #expect(next.take.note == "Start with the answer")
+        let prompts = await requests.prompts
+        #expect(prompts.contains { $0.contains("USER RULE FOR THIS TAKE") && $0.contains("Start with the answer") })
+        #expect(try await temp.database.fetchWizardSelections(projectID: projectID).count == 1)
+    }
+
+    @Test func makeReelRejectsMissingScenesWithoutCallingThePlanner() async throws {
+        let temp = try TempDatabase()
+        let project = try await temp.database.createProject(profileName: "Test", name: "Project")
+        var options = WizardOptions()
+        options.projectID = project
+        options.critiqueLoop = true
+        let take = try await temp.database.recordWizardTake(projectID: project, options: options.step1, plan: Fixtures.plan())
+        let service = AIService(config: AIConfig()) { _, _, _, _, _, _ in
+            Issue.record("Rendering a saved take must never call the planner to repair missing footage")
+            throw CancellationError()
+        }
+        let engine = WizardEngine(ai: service, render: RenderEngine())
+        await #expect(throws: AIError.self) {
+            try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(),
+                                      database: temp.database, emit: { _ in })
+        }
+        #expect(try await temp.database.fetchWizardSelectionTakes(selectionID: take.selectionID).count == 1)
+    }
+}
+
+private actor WizardPlannerRequests {
+    private(set) var prompts: [String] = []
+    func append(_ prompt: String) { prompts.append(prompt) }
+}
+
+extension WizardEngineTests {
+    @Test("Proxy retries record scores and render only the best take, newest wins ties",
+          arguments: [false, true], [70, 92, 80])
+    func critiqueRetriesOnTakes(step1Only: Bool, secondScore: Int) async throws {
+        try await exerciseTakeIteration(step1Only: step1Only, scores: [80, secondScore], regenerate: [true, false])
+    }
+
+    @Test("A satisfied content critic leaves one scored take", arguments: [false, true])
+    func satisfiedCriticStopsTakeIteration(step1Only: Bool) async throws {
+        try await exerciseTakeIteration(step1Only: step1Only, scores: [93], regenerate: [false])
+    }
+
+    @Test("The attempt cap keeps take history and announces the best", arguments: [false, true])
+    func critiqueTakeLimit(step1Only: Bool) async throws {
+        try await exerciseTakeIteration(step1Only: step1Only, scores: [80, 70], regenerate: [true, true])
+    }
+
+    private func exerciseTakeIteration(step1Only: Bool, scores: [Int], regenerate: [Bool]) async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let videoID = try await temp.seedVideo()
+        let projectID = try await database.createProject(profileName: "Take Loop", name: "Iteration", videoIDs: [videoID])
+        let scene = try #require(try await database.fetchScenes(projectID: projectID).first)
+        let reply = """
+        {"target_duration":8,"rationale":"Keep the complete moment","headline":"The moment",
+         "clips":[{"scene_id":\(scene.id),"start":0,"end":8,"reason":"Complete moment"}]}
+        """
+        let response = try JSONSerialization.data(withJSONObject: [
+            "type": "assistant", "message": ["content": [["type": "text", "text": reply]]]
+        ])
+        let requests = WizardPlannerRequests()
+        var config = AIConfig()
+        config.tasks["wizard"] = "claude"
+        config.providers["claude"] = AIProviderSettings(bin: "/bin/echo", model: "fixture")
+        let ai = AIService(config: config) { _, arguments, stdin, _, _, _ in
+            await requests.append(arguments.joined(separator: " ") + String(decoding: stdin ?? Data(), as: UTF8.self))
+            return ProcessResult(stdout: response, stderr: Data(), exitCode: 0)
+        }
+        let engine = WizardEngine(ai: ai, render: RenderEngine())
+        var options = WizardOptions()
+        options.projectID = projectID
+        options.useMusic = false
+        options.tastePreset = "none"
+        options.critiqueLoop = true
+        options.critiqueMaxVersions = 2
+        let profile = Fixtures.brand(name: "Take Loop")
+        let logs = WizardIterationLog()
+        let directory = temp.path.deletingLastPathComponent()
+        let renderProxy: WizardEngine.ProxyRenderer = { _, _, proxyOptions in
+            #expect(proxyOptions.renderSettings.quality == .compact)
+            #expect(proxyOptions.renderSettings.width == 360 && proxyOptions.renderSettings.height == 640)
+            #expect(!proxyOptions.addCaptions && !proxyOptions.enableTextOverlays && !proxyOptions.useMusic)
+            #expect(try await database.fetchGeneratedVideos(projectID: projectID).isEmpty)
+            let url = directory.appendingPathComponent("preview-\(UUID().uuidString).mp4")
+            try Data("proxy fixture".utf8).write(to: url)
+            return MultitrackRenderer.RenderResult(url: url, duration: 8)
+        }
+        let reviewContent: WizardEngine.ContentReviewer = { url, duration, take, previous in
+            let index = take.ordinal - 1
+            let saved = try #require(try await database.wizardSelectionTake(id: take.id))
+            #expect(saved.proxyPath == url.path && FileManager.default.fileExists(atPath: url.path))
+            #expect(url.deletingLastPathComponent() == WizardEngine.takeProxyDirectory(database: database))
+            #expect(duration == 8 && previous.count == index)
+            if index > 0 {
+                #expect(saved.note?.contains("CONTENT CRITIC REVIEWED THE PROXY TAKE 1") == true)
+                #expect(saved.note?.contains("Improve take 1") == true)
+            }
+            return ReelCritique(score: scores[index], summary: "Content review of take \(take.ordinal)",
+                strengths: ["Keep the moment"], issues: ["Issue in take \(take.ordinal)"],
+                notes: ["Improve take \(take.ordinal)"], regenerate: regenerate[index], provider: "fixture", model: "critic")
+        }
+        let renderTake: @Sendable (WizardSelectionTake, WizardOptions) async throws -> Void = { take, _ in
+            #expect(try await database.fetchGeneratedVideos(projectID: projectID).isEmpty, "Only one final render")
+            #expect(try await database.fetchWizardSelectionTakes(selectionID: take.selectionID).count == scores.count)
+            #expect(take.criticScore == scores.max())
+            let output = try await database.insertGeneratedVideo(path: "/tmp/take-\(take.id).mp4", duration: 8,
+                timelineJSON: "{}", wizardProvider: nil, wizardModel: nil,
+                projectID: projectID, selectionTakeID: take.id, batchID: "final-render")
+            let presentation = ReelCritique(score: 33, summary: "Presentation only", strengths: [], issues: [],
+                notes: ["Improve the look"], regenerate: false, provider: "fixture", model: "critic")
+            try await database.updateGeneratedCritique(id: output,
+                critiqueJSON: String(decoding: try JSONEncoder().encode(presentation), as: UTF8.self))
+        }
+        if step1Only {
+            let first = try await engine.findMoments(options: options, profile: profile, database: database, emit: { _ in })
+            let best = try await engine.iterateTakes(first: first.take, options: options, profile: profile,
+                database: database, emit: { logs.append($0) }, renderProxy: renderProxy, reviewContent: reviewContent)
+            #expect(try await database.fetchGeneratedVideos(projectID: projectID).isEmpty, "Review stops before step 2")
+            try await engine.makeReel(take: best, options: options, profile: profile, database: database,
+                emit: { _ in }, renderTake: renderTake)
+        } else {
+            try await engine.runAutomatic(options: options, profile: profile, database: database,
+                emit: { logs.append($0) }, renderTake: renderTake, renderProxy: renderProxy, reviewContent: reviewContent)
+        }
+        let selections = try await database.fetchWizardSelections(projectID: projectID)
+        let selection = try #require(selections.first)
+        #expect(selections.count == 1)
+        let takes = try await database.fetchWizardSelectionTakes(selectionID: selection.id)
+        #expect(takes.map(\.ordinal) == Array(1...scores.count))
+        #expect(takes.map(\.criticScore) == scores.map { Optional($0) })
+        #expect(takes.allSatisfy { $0.proxyPath != nil && $0.criticNotes?.contains("Content review") == true })
+        let bestIndex = try #require(scores.indices.max {
+            scores[$0] == scores[$1] ? $0 < $1 : scores[$0] < scores[$1]
+        })
+        #expect(selection.bestTakeID == takes[bestIndex].id)
+        let outputs = try await database.fetchGeneratedVideos(projectID: projectID)
+        #expect(outputs.count == 1)
+        let output = try #require(outputs.first)
+        #expect(output.selectionTakeID == selection.bestTakeID && output.critique?.score == 33)
+        #expect(WizardBatchRanking.best(in: outputs, batchID: "final-render")?.id == output.id)
+        #expect(WizardBatchRanking.discards(in: outputs, keeping: output).isEmpty)
+        if scores.count == 2 { #expect(await requests.prompts.contains { $0.contains("Improve take 1") }) }
+        if regenerate.last == true {
+            #expect(logs.lines.contains { $0.contains("cap is reached. Best: Take \(bestIndex + 1), \(scores[bestIndex])/100.") })
+        } else { #expect(logs.lines.contains("The content critic is satisfied — no further takes.")) }
+        try await engine.discardOtherTakeProxies(selectionID: selection.id, keeping: takes[bestIndex].id, database: database)
+        let retained = try await database.fetchWizardSelectionTakes(selectionID: selection.id)
+        #expect(retained.count == scores.count && retained.map(\.criticScore) == takes.map(\.criticScore))
+        for (index, take) in retained.enumerated() {
+            #expect((take.proxyPath != nil) == (index == bestIndex))
+            let oldPath = try #require(takes[index].proxyPath)
+            #expect(FileManager.default.fileExists(atPath: oldPath) == (index == bestIndex))
+        }
+        #expect(try await database.fetchGeneratedVideos(projectID: projectID).count == 1)
+    }
+
+    @Test func renderingAcceptedTakeNeverReplansOrOverwritesItsContentScore() async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let videoID = try await temp.seedVideo()
+        let projectID = try await database.createProject(profileName: "Review", name: "Review", videoIDs: [videoID])
+        let scene = try #require(try await database.fetchScenes(projectID: projectID).first)
+        var options = WizardOptions()
+        options.projectID = projectID
+        options.critiqueLoop = true
+        let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id)])
+        let first = try await database.recordWizardTake(projectID: projectID, options: options.step1, plan: plan)
+        let accepted = try await database.addWizardSelectionTake(selectionID: first.selectionID, plan: plan,
+            note: "User chose this take", criticScore: 95, criticNotes: "Content score")
+        try await database.setBestWizardSelectionTake(selectionID: first.selectionID, takeID: accepted.id)
+        let ai = AIService(config: AIConfig()) { _, _, _, _, _, _ in
+            Issue.record("Making the accepted reel must not call the planner")
+            throw CancellationError()
+        }
+        let engine = WizardEngine(ai: ai, render: RenderEngine())
+        try await engine.makeReel(take: accepted, options: options, profile: Fixtures.brand(), database: database,
+            emit: { _ in }) { take, _ in
+                #expect(take.id == accepted.id)
+                let output = try await database.insertGeneratedVideo(path: "/tmp/accepted.mp4", duration: 4,
+                    timelineJSON: "{}", wizardProvider: nil, wizardModel: nil, projectID: projectID, selectionTakeID: take.id)
+                let critique = try ReelCritic.parse(#"{"score":40,"regenerate":true,"notes":["Fix contrast"]}"#,
+                    options: WizardOptions(), scope: .presentation)
+                #expect(!critique.regenerate)
+                try await database.updateGeneratedCritique(id: output,
+                    critiqueJSON: String(decoding: try JSONEncoder().encode(critique), as: UTF8.self))
+            }
+        let takes = try await database.fetchWizardSelectionTakes(selectionID: first.selectionID)
+        #expect(takes.map(\.ordinal) == [1, 2] && takes[1].criticScore == 95)
+        #expect(try await database.wizardSelection(id: first.selectionID)?.bestTakeID == accepted.id)
+        #expect(try await database.fetchGeneratedVideos(projectID: projectID).count == 1)
+    }
+}
+
+nonisolated private final class WizardIterationLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+    var lines: [String] { lock.withLock { storage } }
+    func append(_ line: String) { lock.withLock { storage.append(line) } }
+}
+
+extension WizardEngineTests {
+    @Test("A failed proxy or judge preserves the take; cancellation propagates", arguments: [false, true], [false, true])
+    func proxyFailureAndCancellation(cancel: Bool, failBeforeReview: Bool) async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let videoID = try await temp.seedVideo()
+        let project = try await database.createProject(profileName: "Proxy failure", name: "Test", videoIDs: [videoID])
+        let scene = try #require(try await database.fetchScenes(projectID: project).first)
+        var options = WizardOptions()
+        options.projectID = project
+        options.critiqueLoop = true
+        let first = try await database.recordWizardTake(projectID: project, options: options.step1,
+            plan: Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id)]))
+        let ai = AIService(config: AIConfig()) { _, _, _, _, _, _ in
+            Issue.record("A failed first proxy or judge must not call the planner")
+            throw CancellationError()
+        }
+        let engine = WizardEngine(ai: ai, render: RenderEngine())
+        let directory = temp.path.deletingLastPathComponent()
+        let proxy: WizardEngine.ProxyRenderer = { _, _, _ in
+            if failBeforeReview {
+                if cancel { throw CancellationError() }
+                throw CocoaError(.fileWriteUnknown)
+            }
+            let url = directory.appendingPathComponent("preview.mp4")
+            try Data("proxy".utf8).write(to: url)
+            return .init(url: url, duration: 4)
+        }
+        let reviewer: WizardEngine.ContentReviewer = { _, _, _, _ in
+            if cancel { throw CancellationError() }
+            throw AIError.unusableResponse("Judge unavailable")
+        }
+        if cancel {
+            await #expect(throws: CancellationError.self) {
+                _ = try await engine.iterateTakes(first: first, options: options, profile: Fixtures.brand(),
+                    database: database, emit: { _ in }, renderProxy: proxy, reviewContent: reviewer)
+            }
+        } else {
+            let best = try await engine.iterateTakes(first: first, options: options, profile: Fixtures.brand(),
+                database: database, emit: { _ in }, renderProxy: proxy, reviewContent: reviewer)
+            #expect(best.id == first.id)
+        }
+        let saved = try #require(try await database.wizardSelectionTake(id: first.id))
+        #expect(saved.criticScore == nil)
+        #expect((saved.proxyPath == nil) == failBeforeReview)
+        #expect(try await database.wizardSelection(id: first.selectionID)?.bestTakeID == first.id)
+        #expect(try await database.fetchWizardSelectionTakes(selectionID: first.selectionID).count == 1)
+        #expect(try await database.fetchGeneratedVideos(projectID: project).isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("preview.mp4").path))
+    }
+}

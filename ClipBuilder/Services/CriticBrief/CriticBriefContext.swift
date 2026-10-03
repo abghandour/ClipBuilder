@@ -6,17 +6,17 @@ nonisolated struct CriticBriefContext: Sendable {
     var brief: CriticBrief
     var frames: [AIFrame]
 
-    static func loadForRun(database: Database, profile: BrandProfile, generatedID: Int64,
+    static func loadForRun(database: Database, profile: BrandProfile, generatedID: Int64? = nil, selectionID: Int64? = nil,
                            ai: AIService, emit: @escaping @Sendable (String) -> Void) async throws -> Self? {
         let store = CriticBriefStore(profile: profile)
         return try await loadForRun(database: database, profile: profile, generatedID: generatedID,
-                                    store: store, build: { pool in
+                                    selectionID: selectionID, store: store, build: { pool in
             try await store.build(pool: pool, profile: profile, ai: ai, emit: emit)
         }, emit: emit)
     }
 
     /// Inject the cache and expensive build boundary so policy tests need no AI or media encoding.
-    static func loadForRun(database: Database, profile: BrandProfile, generatedID: Int64,
+    static func loadForRun(database: Database, profile: BrandProfile, generatedID: Int64? = nil, selectionID: Int64? = nil,
                            store: CriticBriefStore,
                            build: @Sendable ([CriticExemplars.Candidate]) async throws -> CriticBrief?,
                            emit: @escaping @Sendable (String) -> Void) async throws -> Self? {
@@ -31,7 +31,10 @@ nonisolated struct CriticBriefContext: Sendable {
             emit("Critic brief has not passed the agreement keep rule; reviewing without brief. Evaluate Critic in Settings > AI.")
             return nil
         }
-        let exclusion = try await database.criticExclusion(generatedID: generatedID)
+        let exclusion: CriticExemplars.Exclusion
+        if let selectionID { exclusion = try await database.wizardSelectionCriticExclusion(selectionID: selectionID) }
+        else if let generatedID { exclusion = try await database.criticExclusion(generatedID: generatedID) }
+        else { exclusion = .init() }
         let selection = try await CriticExemplars.select(database: database, profile: profile, excluding: exclusion, emit: emit)
         if let cached = brief {
             // Never use a cached teacher containing the target or its siblings.

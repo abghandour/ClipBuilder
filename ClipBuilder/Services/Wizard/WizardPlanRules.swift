@@ -6,6 +6,91 @@ import Foundation
 /// these between validation and assembly.
 nonisolated enum WizardPlanRules {
 
+    /// Shorten toward the requested screen-time cadence without extending any source range.
+    /// Reasons can explicitly protect the ending ("keep end" / "trim start"); otherwise
+    /// keep the opening. Replay pairs retain their exact shared window.
+    static func applyPacing(plan: WizardPlan, pacing: EditPacing) -> WizardPlan {
+        guard pacing.cadence != .automatic else { return plan }
+        var result = plan
+        let total = plan.clips.reduce(0.0) { $0 + max(0, $1.end - $1.start) / max(0.1, $1.speed) }
+        var cursor = 0.0
+        for index in plan.clips.indices {
+            let clip = plan.clips[index]
+            let speed = max(0.1, clip.speed)
+            let duration = (clip.end - clip.start) / speed
+            let progress = total > 0 ? cursor / total : 0
+            cursor += duration
+            let followsReplay = index > 0 && plan.clips[index - 1].replay
+                && plan.clips[index - 1].sceneID == clip.sceneID
+            guard !clip.replay, !followsReplay,
+                  let interval = pacing.interval(at: progress), duration > 1.5 else { continue }
+            let wanted = min(duration, max(max(1.5, 1.5 / speed), interval))
+            let delta = max(0, (duration - wanted) * speed)
+            let reason = clip.reason?.lowercased() ?? ""
+            let trimStart = reason.contains("keep end") || reason.contains("trim start")
+                || reason.contains("payoff at end")
+            if trimStart { result.clips[index].start += delta }
+            else { result.clips[index].end -= delta }
+            // All areas share the slot. Apply the same offset and never extend an area.
+            for areaIndex in clip.areaClips.indices {
+                let area = clip.areaClips[areaIndex]
+                let available = max(0, area.end - area.start)
+                let length = min(available, wanted * speed)
+                if trimStart { result.clips[index].areaClips[areaIndex].start = area.end - length }
+                else { result.clips[index].areaClips[areaIndex].end = area.start + length }
+            }
+            // Introductions are timed in screen seconds, relative to the selected cut.
+            let offset = trimStart ? delta / speed : 0
+            result.clips[index].speakerIntroductions = clip.speakerIntroductions.compactMap { introduction in
+                var item = introduction
+                item.startTime = max(0, item.startTime - offset)
+                item.endTime = min(wanted, item.endTime - offset)
+                return item.endTime > item.startTime ? item : nil
+            }
+        }
+        result.targetDuration = result.clips.reduce(0) { $0 + ($1.end - $1.start) / max(0.1, $1.speed) }
+        return result
+    }
+
+    /// Hard cuts form the backbone; every third boundary cycles an allowed accent.
+    /// A nil list permits the catalog. Unknown names and duplicates are discarded.
+    static func transitions(allowed: [String]?, count: Int) -> [String] {
+        guard count > 0 else { return [] }
+        let valid = Set(RenderEngine.allTransitions)
+        var seen = Set<String>()
+        let accents = (allowed ?? RenderEngine.allTransitions).filter { $0 != "cut" && valid.contains($0) && seen.insert($0).inserted }
+        guard !accents.isEmpty else { return Array(repeating: "cut", count: count) }
+        return (0..<count).map { index in
+            (index + 1).isMultiple(of: 3) ? accents[(index / 3) % accents.count] : "cut"
+        }
+    }
+
+    /// Names are root-relative library paths. Stable lexical order, exact folder boundary,
+    /// and a known duration keep selection independent of filesystem enumeration order.
+    static func musicTrack(folder: String?, tracks: [(name: String, duration: Double)],
+                           duration: Double) -> String? {
+        guard duration.isFinite, duration > 0 else { return nil }
+        let folder = folder?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+        return tracks.filter {
+            (folder.isEmpty || $0.name.hasPrefix(folder + "/"))
+                && $0.duration.isFinite && $0.duration >= duration
+        }.sorted { $0.name < $1.name }.first?.name
+    }
+
+    /// A render has one visual style. Keep all words, including contextual kickers.
+    static func overlayStyle(plan: WizardPlan, style: String?) -> WizardPlan {
+        var result = plan
+        for index in result.clips.indices {
+            result.clips[index].overlayStyle = style ?? WizardTextStyle.impact.rawValue
+            result.clips[index].overlayAnimation = nil
+            result.clips[index].overlayAccent = nil
+            result.clips[index].overlayPlacement = nil
+            result.clips[index].overlayCase = nil
+        }
+        return result
+    }
+
+
     /// Keep the question and a complete answer sentence before considering
     /// length or optional jumps to the exchange's closing sentences.
     static func podcastExchangeCuts(scene: ClosedRange<Double>, sentenceEnds: [Double],
@@ -215,13 +300,13 @@ nonisolated enum WizardPlanRules {
         return plan
     }
 
-    /// The re-plan prompt suffix after the critic asks for another version.
+    /// The re-plan prompt suffix after the content critic asks for another take.
     static func critiqueFeedbackBlock(_ critique: ReelCritique, attempt: Int,
                                       previousPlanJSON: String) -> String {
-        var lines = ["\n\n## A CRITIC REVIEWED THE RENDERED VERSION \(attempt) — BUILD A BETTER ONE"]
-        lines.append("It watched the actual rendered frames and scored the reel \(critique.score)/100: \(critique.summary)")
+        var lines = ["\n\n## A CONTENT CRITIC REVIEWED THE PROXY TAKE \(attempt) — PLAN A BETTER TAKE"]
+        lines.append("It watched the content proxy and scored the take \(critique.score)/100: \(critique.summary)")
         if !critique.issues.isEmpty {
-            lines.append("Issues visible in the rendered video:")
+            lines.append("Content issues visible in the proxy:")
             lines.append(contentsOf: critique.issues.map { "- \($0)" })
         }
         if !critique.notes.isEmpty {

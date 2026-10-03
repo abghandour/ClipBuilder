@@ -20,7 +20,7 @@ extension WizardOptions {
             options.musicFolder = nil
         }
         if !capabilities.critiqueLoop { options.critiqueLoop = false }
-        if !capabilities.reviewProposedCuts { options.reviewProposedCuts = false }
+        if !capabilities.selectionReview { options.workflow = .automatic }
         if !capabilities.bumpers {
             options.includeIntroBumper = false
             options.includeOutroBumper = false

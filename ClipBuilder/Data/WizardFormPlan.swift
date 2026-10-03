@@ -9,6 +9,43 @@ nonisolated struct WizardFormPlan: Sendable {
         capabilities = recipe.capabilities
     }
 
+    enum Control: String, CaseIterable, Sendable {
+        case sources, outcome, recipe, length, brief, styleReference, fightResearch, layouts, iteration, planningModels
+        case output, pacing, audio, musicTrack, text, overlayStyle, transitions, cameraFocus, framingCamera
+        case bRoll, bumpers, branding, presentationModels
+    }
+
+    var step1Controls: Set<Control> {
+        var controls: Set<Control> = [.sources, .outcome, .recipe, .length, .brief, .planningModels]
+        if capabilities.styleReference { controls.insert(.styleReference) }
+        if capabilities.fightResearch { controls.insert(.fightResearch) }
+        if capabilities.layouts { controls.insert(.layouts) }
+        if capabilities.critiqueLoop { controls.insert(.iteration) }
+        return controls
+    }
+
+    var step2Controls: Set<Control> {
+        var controls: Set<Control> = [.output, .pacing, .transitions, .presentationModels]
+        if capabilities.audioMusic { controls.formUnion([.audio, .musicTrack]) }
+        if capabilities.onScreenText { controls.formUnion([.text, .overlayStyle]) }
+        if capabilities.offersCameraFocus { controls.insert(.cameraFocus) }
+        if capabilities.layouts { controls.insert(.framingCamera) }
+        if capabilities.bRoll { controls.insert(.bRoll) }
+        if capabilities.bumpers { controls.insert(.bumpers) }
+        if capabilities.branding { controls.insert(.branding) }
+        return controls
+    }
+
+    static func step2Collapsed(hasSelection: Bool, workflow: WizardWorkflow) -> Bool {
+        !hasSelection && workflow != .automatic
+    }
+
+    var step1Models: [String] { capabilities.models.filter { $0 != "captions" && $0 != "broll" } }
+
+    func step2Models(useBRoll: Bool, instructions: String) -> [String] {
+        models(useBRoll: useBRoll, instructions: instructions).filter { $0 == "captions" || $0 == "broll" }
+    }
+
     static func lengthHelp(recipe: ReelRecipe) -> FieldHelp {
         let help = WizardFieldHelp.length
         guard recipe.id == "podcast" else { return help }
@@ -29,11 +66,6 @@ nonisolated struct WizardFormPlan: Sendable {
 
     static func showsCriticBriefControls(outcome: ReelRecipe.Workflow) -> Bool {
         outcome == .iterate
-    }
-
-    static func reviewedCutsCaption(outcome: ReelRecipe.Workflow, reviewProposedCuts: Bool) -> String? {
-        guard outcome == .iterate, reviewProposedCuts else { return nil }
-        return "Your approved cuts are version 1; later versions re-plan from the critique."
     }
 
     /// Ordinary runs retain their live filters (and any explicit pasted
@@ -153,14 +185,9 @@ nonisolated struct WizardFormPlan: Sendable {
         return items.isEmpty ? [.ok] : items
     }
 
-    func primaryActionTitle(reviewProposedCuts: Bool) -> String {
-        if capabilities.sources == .podcastRecording { return "Find highlights" }
-        return capabilities.reviewProposedCuts && reviewProposedCuts ? "Prepare cuts" : "Generate reel"
-    }
-
     func runSummary(sceneCount: Int, source: String, targetSeconds: Int?,
                     highlightCount: Int, highlightSeconds: Double, captions: Bool,
-                    critique: Bool, reviewProposedCuts: Bool,
+                    critique: Bool, selectionReview: Bool,
                     critiqueTargetScore: Int = 85, critiqueMaxVersions: Int = 3) -> String {
         if capabilities.sources == .podcastRecording {
             let count = highlightCount > 0 ? "Up to \(highlightCount) highlights" : "Highlights with no count limit"
@@ -169,15 +196,10 @@ nonisolated struct WizardFormPlan: Sendable {
         let length = targetSeconds.map { "\($0)s " } ?? ""
         var summary = "One \(length)reel from \(sceneCount) scenes" + (source.isEmpty ? "" : " \(source)")
         if capabilities.critiqueLoop && critique {
-            summary += ", up to \(critiqueMaxVersions) versions until the critic scores \(critiqueTargetScore)+"
+            summary += ", up to \(critiqueMaxVersions) takes until the critic scores \(critiqueTargetScore)+"
         } else if capabilities.onScreenText { summary += captions ? ", captions on" : ", captions off" }
-        if capabilities.reviewProposedCuts && reviewProposedCuts { summary += ", cuts reviewed before render" }
+        if capabilities.selectionReview && selectionReview { summary += ", cuts reviewed before render" }
         return summary
-    }
-
-    /// A capability transition starts a fresh review choice for the new recipe.
-    static func reviewProposedCuts(podcastFraming: Bool, reviewCutsByDefault: Bool) -> Bool {
-        podcastFraming && reviewCutsByDefault
     }
 
     static func recipeForSceneHandoff(current: ReelRecipe, lastSceneRecipeID: String) -> ReelRecipe {

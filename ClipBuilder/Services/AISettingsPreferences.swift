@@ -19,7 +19,10 @@ import Foundation
         "aiInstructions": "wizard.aiInstructions", "formatPreset": "wizard.formatPreset",
         "tastePreset": "wizard.tastePreset",
         "captionLanguage": "wizard.captionLanguage",
-        "reviewProposedCuts": "wizard.reviewProposedCuts",
+        "workflow": WizardDefaults.workflowKey,
+        "musicTrack": "wizard.musicTrack", "overlayStyle": "wizard.overlayStyle",
+        "overlayAnimation": "wizard.overlayAnimation", "overlayPlacement": "wizard.overlayPlacement",
+        "pinnedOverlayTemplate": "wizard.pinnedOverlayTemplate", "framingCamera": "wizard.framingCamera",
         "highlightFraming": "wizard.highlightFraming", "useBRoll": "wizard.useBRoll",
         "brollInstructions": "wizard.brollInstructions",
         "podcastFraming": "wizard.podcastFraming", "critiqueLoop": "wizard.critiqueLoop",
@@ -44,7 +47,7 @@ import Foundation
         if let saved = AISettingsJSON.decode(
             [String: JSONSetting].self, defaults.string(forKey: snapshotKey))
         {
-            result.merge(WizardOptions.normalizeFavoriteSettings(saved)) { _, new in new }
+            result.merge(WizardOptions.normalizeSettings(saved)) { _, new in new }
         }
         for (field, key) in wizardKeys {
             if let value = defaults.object(forKey: key) { result[field] = setting(value) }
@@ -119,7 +122,7 @@ import Foundation
         scopes: Set<AISettingsScope> = Set(AISettingsScope.allCases),
         sourceName: String = "another run", defaults: UserDefaults
     ) {
-        let result = kind == .wizard ? WizardOptions.normalizeFavoriteSettings(result) : result
+        let result = kind == .wizard ? WizardOptions.normalizeSettings(result) : result
         let mapping = kind == .wizard ? wizardKeys : analysisKeys
         let allowed = scopes.reduce(into: Set<String>()) {
             $0.formUnion(AISettingsEnvelope.keys($1, kind: kind))
@@ -147,6 +150,9 @@ import Foundation
             defaults.set(AISettingsJSON.encode(result), forKey: snapshotKey)
             defaults.set(sourceName, forKey: sourceNameKey)
             if scopes.contains(.options) {
+                if result["workflow"]?.string == nil {
+                    defaults.set(WizardWorkflow.automatic.rawValue, forKey: WizardDefaults.workflowKey)
+                }
                 // Pasted legacy split-feed settings need the same mapping even
                 // after this installation has migrated its own preferences.
                 if result["podcastFraming"]?.string == PodcastFramingMode.splitZoom.rawValue {

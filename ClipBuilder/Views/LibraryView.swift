@@ -236,6 +236,9 @@ struct LibraryView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            if let takeID = video.selectionTakeID {
+                WizardSelectionOutputLink(takeID: takeID)
+            }
             if let quality = video.qualityReport {
                 Label(quality.summary, systemImage: quality.verdict == .publishable
                       ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")

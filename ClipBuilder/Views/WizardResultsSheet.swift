@@ -15,6 +15,7 @@ struct WizardResultsSheet: View {
     @State private var builderTarget: GeneratedVideoRecord?
     @State private var feedbackDrafts: [Int64: String] = [:]
 
+    @State private var keepingTake: WizardSelectionSummary?
     @State private var keepingBest: GeneratedVideoRecord?
     @State private var removedVideoIDs: Set<Int64> = []
 
@@ -43,7 +44,7 @@ struct WizardResultsSheet: View {
                     PlatformChromePicker().fixedSize()
                 }
                 Text(visibleVideos.count > 1 && !bestCritiquedIDs.isEmpty
-                     ? "The critic reviewed each version — its favorite is marked. Watch and rate; every rating trains the wizard."
+                     ? "The critic’s highest-rated output in each batch is marked. Watch and rate; every rating trains the wizard."
                      : "Watch and rate — every rating trains the wizard. Not what you wanted? Retry runs the same settings again.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -79,6 +80,7 @@ struct WizardResultsSheet: View {
         .frame(minWidth: 480)
         .modalCloseButton { dismiss() }
         .task {
+            await store.refreshWizardSelections()
             for video in results.videos {
                 guard await DrivePlayback.prepare(video.url) else { continue }
                 guard let asset = try? await DriveLocalAsset.make(video.url) else { continue }
@@ -102,6 +104,19 @@ struct WizardResultsSheet: View {
             Button("Cancel", role: .cancel) { keepingBest = nil }
         } message: {
             Text("Keep \(keepingBest?.filename ?? "the best version") and remove the other versions from this run. No other batch is affected.")
+        }
+        .confirmationDialog("Keep the best take's preview only?", isPresented: Binding(
+            get: { keepingTake != nil }, set: { if !$0 { keepingTake = nil } })
+        ) {
+            Button("Delete Other Take Previews", role: .destructive) {
+                if let selection = keepingTake, let best = selection.bestTake {
+                    store.keepBestWizardTakeProxy(selectionID: selection.id, takeID: best.id)
+                }
+                keepingTake = nil
+            }
+            Button("Cancel", role: .cancel) { keepingTake = nil }
+        } message: {
+            Text("Keep the best take's preview and the rendered reel. All takes, cuts and content scores remain in the selection.")
         }
         .sheet(item: $reviewTarget) { video in
             ReviewSheet(video: video)
@@ -140,6 +155,24 @@ struct WizardResultsSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
+
+            if let takeID = video.selectionTakeID,
+               let selection = store.wizardSelections.first(where: { $0.takes.contains { $0.id == takeID } }),
+               let take = selection.takes.first(where: { $0.id == takeID }) {
+                Button("Take \(take.ordinal)" + (take.criticScore.map { " · content \($0)/100" } ?? "")) {
+                    store.wizardResults = nil
+                    dismiss()
+                    store.openWizardSelection(selection.id, takeID: takeID)
+                }
+                .buttonStyle(.link).font(.caption).lineLimit(1).fixedSize()
+                if selection.selection.bestTakeID == takeID,
+                   selection.takes.contains(where: { $0.id != takeID && $0.proxyPath != nil }) {
+                    Button("Keep best only") { keepingTake = selection }
+                        .lineLimit(1).fixedSize().controlSize(.small)
+                        .disabled(store.isWizardRunning)
+                        .help("Delete other take previews; preserve the take history and scores")
+                }
+            }
 
             if let critique = video.critique {
                 critiqueLine(critique, isBest: bestCritiquedIDs.contains(video.id))
@@ -254,7 +287,7 @@ struct WizardResultsSheet: View {
             lines.append(contentsOf: critique.issues.map { "  • \($0)" })
         }
         if !critique.notes.isEmpty {
-            lines.append("Notes for the next version:")
+            lines.append("Review notes:")
             lines.append(contentsOf: critique.notes.map { "  • \($0)" })
         }
         if let judge = AIProvenance(provider: critique.provider, model: critique.model) {

@@ -1,10 +1,11 @@
 import SwiftUI
 import AVKit
 
-struct ProposedCutsSheet: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let request: ProposedCutReviewRequest
+/// Shared per-cut review body: playback, include/reject, trims, and Space / I / O.
+struct ProposedCutsEditor: View {
+    @State private var originalPlan: WizardPlan
+    let sceneMap: [Int64: SceneRecord]
+    let onChange: (WizardPlan) -> Void
 
     @State private var plan: WizardPlan
     @State private var rejected: Set<Int>
@@ -14,12 +15,14 @@ struct ProposedCutsSheet: View {
     @State private var draft: (start: Double, end: Double)?
     @State private var window = ProposedCutTrim.Window(start: 0, span: 30)
 
-    init(request: ProposedCutReviewRequest) {
-        self.request = request
-        var plan = request.plan
+    init(plan: WizardPlan, sceneMap: [Int64: SceneRecord], onChange: @escaping (WizardPlan) -> Void) {
+        _originalPlan = State(initialValue: plan)
+        self.sceneMap = sceneMap
+        self.onChange = onChange
+        var plan = plan
         for index in plan.clips.indices {
             let clip = plan.clips[index]
-            guard let scene = request.sceneMap[clip.sceneID] else { continue }
+            guard let scene = sceneMap[clip.sceneID] else { continue }
             let range = ProposedCutTrim.clamp(start: clip.start, end: clip.end,
                                              scene: scene.startTime...scene.endTime)
             plan.clips[index].start = range.lowerBound
@@ -28,55 +31,24 @@ struct ProposedCutsSheet: View {
         _plan = State(initialValue: plan)
         _rejected = State(initialValue: [])
         _selectedIndex = State(initialValue: plan.clips.indices.first {
-            request.sceneMap[plan.clips[$0].sceneID] != nil
+            sceneMap[plan.clips[$0].sceneID] != nil
         } ?? plan.clips.indices.first)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: Theme.spaceS) {
-                Text("Review Proposed Cuts").font(.headline)
-                Text("Accept, reject, or trim each cut before any rendering starts.")
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Spacer()
-                    Button("Cancel", action: dismiss.callAsFunction)
-                    Button("Edit Accepted Cuts in Builder", action: editInBuilder)
-                        .disabled(acceptedCount == 0)
-                    Button("Fix with Wizard…", systemImage: "wand.and.stars") {
-                        store.openReviewedPlanInBuilder(approvedPlan(), request: request, fixWithWizard: true)
-                        dismiss()
-                    }
-                    .labelStyle(.iconOnly)
-                    .disabled(acceptedCount == 0)
-                    .help("Create a timeline from the accepted cuts and open Builder Wizard to preview fixes.")
-                    Button("Render Accepted Cuts", action: render)
-                        .buttonStyle(.borderedProminent)
-                        .disabled(acceptedCount == 0)
+        HStack(spacing: 0) {
+            List(selection: $selectedIndex) {
+                ForEach(plan.clips.indices, id: \.self) { index in
+                    cutRow(index).tag(index)
                 }
-                .fixedSize(horizontal: false, vertical: true)
             }
-            .lineLimit(1)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(Theme.spaceM)
-
+            .listStyle(.sidebar)
+            .frame(width: 320)
             Divider()
-
-            HStack(spacing: 0) {
-                List(selection: $selectedIndex) {
-                    ForEach(plan.clips.indices, id: \.self) { index in
-                        cutRow(index).tag(index)
-                    }
-                }
-                .listStyle(.sidebar)
-                .frame(width: 320)
-                Divider()
-                trimSurface
-                    .padding(Theme.spaceM)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            trimSurface
+                .padding(Theme.spaceM)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 1000, idealWidth: 1100, minHeight: 600, idealHeight: 720)
         .onAppear { selectCurrentCut() }
         .onChange(of: selectedIndex) { _, _ in selectCurrentCut() }
         .onChange(of: selectedURL) { _, _ in selectCurrentCut() }
@@ -97,13 +69,9 @@ struct ProposedCutsSheet: View {
         }
     }
 
-    private var acceptedCount: Int {
-        plan.clips.indices.filter { !rejected.contains($0) && request.sceneMap[plan.clips[$0].sceneID] != nil }.count
-    }
-
     private var selectedScene: SceneRecord? {
         guard let selectedIndex else { return nil }
-        return request.sceneMap[plan.clips[selectedIndex].sceneID]
+        return sceneMap[plan.clips[selectedIndex].sceneID]
     }
 
     private var selectedURL: URL? { selectedScene?.videoURL }
@@ -121,7 +89,7 @@ struct ProposedCutsSheet: View {
 
     private func cutRow(_ index: Int) -> some View {
         let clip = plan.clips[index]
-        let scene = request.sceneMap[clip.sceneID]
+        let scene = sceneMap[clip.sceneID]
         let range = ProposedCutTrim.range(start: clip.start, end: clip.end)
         return VStack(alignment: .leading, spacing: Theme.spaceS) {
             HStack(spacing: Theme.spaceS) {
@@ -137,6 +105,7 @@ struct ProposedCutsSheet: View {
                     set: { include in
                         if include { rejected.remove(index) } else { rejected.insert(index) }
                         if selectedIndex == index { draft = nil }
+                        onChange(approvedPlan())
                     }))
                     .toggleStyle(.switch)
                     .controlSize(.small)
@@ -161,7 +130,10 @@ struct ProposedCutsSheet: View {
 
     @ViewBuilder
     private var trimSurface: some View {
-        if let index = selectedIndex, let scene = selectedScene, let range = selectedRange {
+        if let scene = selectedScene, !FileManager.default.fileExists(atPath: scene.videoPath) {
+            ContentUnavailableView("Video not available", systemImage: "video.slash",
+                description: Text("Make this source available on this Mac to preview and trim it."))
+        } else if let index = selectedIndex, let scene = selectedScene, let range = selectedRange {
             VStack(alignment: .leading, spacing: Theme.spaceS) {
                 // The list truncates the planner's reason; here it reads in full.
                 VStack(alignment: .leading, spacing: 2) {
@@ -228,7 +200,7 @@ struct ProposedCutsSheet: View {
     }
 
     private func trimControls(index: Int, range: ClosedRange<Double>) -> some View {
-        let proposal = request.plan.clips[index]
+        let proposal = originalPlan.clips[index]
         let changed = ProposedCutTrim.differs(range, proposedStart: proposal.start, proposedEnd: proposal.end)
         let start = draft?.start ?? range.lowerBound
         let end = draft?.end ?? range.upperBound
@@ -260,7 +232,8 @@ struct ProposedCutsSheet: View {
     private func selectCurrentCut() {
         draft = nil
         playback.pause()
-        guard let scene = selectedScene, let range = selectedRange else {
+        guard let scene = selectedScene, let range = selectedRange,
+              FileManager.default.fileExists(atPath: scene.videoPath) else {
             playback.tearDown()
             loadedURL = nil
             return
@@ -289,6 +262,7 @@ struct ProposedCutsSheet: View {
         let range = ProposedCutTrim.clamp(start: start, end: end, scene: bounds)
         plan.clips[index].start = range.lowerBound
         plan.clips[index].end = range.upperBound
+        onChange(approvedPlan())
         if playback.player != nil { playback.setRange(range) }
         if window.needsRecentering(range) { window = ProposedCutTrim.window(for: range, scene: bounds) }
     }
@@ -311,21 +285,10 @@ struct ProposedCutsSheet: View {
         return true
     }
 
-    private func render() {
-        let approved = approvedPlan()
-        store.renderApprovedCuts(approved, options: request.options)
-        dismiss()
-    }
-
-    private func editInBuilder() {
-        store.openReviewedPlanInBuilder(approvedPlan(), request: request)
-        dismiss()
-    }
-
     private func approvedPlan() -> WizardPlan {
         var approved = plan
         approved.clips = plan.clips.enumerated().compactMap { index, clip in
-            guard !rejected.contains(index), let scene = request.sceneMap[clip.sceneID] else { return nil }
+            guard !rejected.contains(index), let scene = sceneMap[clip.sceneID] else { return nil }
             var clip = clip
             clip.start = min(scene.endTime, max(scene.startTime, clip.start))
             clip.end = min(scene.endTime, max(clip.start + 0.5, clip.end))

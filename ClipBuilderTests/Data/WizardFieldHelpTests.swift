@@ -13,7 +13,7 @@ struct WizardFieldHelpTests {
         ("encodeQuality", WizardFieldHelp.encodeQuality), ("customCRF", WizardFieldHelp.customCRF),
         ("audio", WizardFieldHelp.audio), ("musicFolder", WizardFieldHelp.musicFolder),
         ("onScreenText", WizardFieldHelp.onScreenText), ("captionLanguage", WizardFieldHelp.captionLanguage),
-        ("quality", WizardFieldHelp.quality), ("reviewProposedCuts", WizardFieldHelp.reviewProposedCuts),
+        ("quality", WizardFieldHelp.quality),
         ("modelOverride", WizardFieldHelp.modelOverride), ("styleReference", WizardFieldHelp.styleReference),
         ("layouts", WizardFieldHelp.layouts), ("bumperIntro", WizardFieldHelp.bumperIntro),
         ("bumperOutro", WizardFieldHelp.bumperOutro), ("bumperMiddle", WizardFieldHelp.bumperMiddle),

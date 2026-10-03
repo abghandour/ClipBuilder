@@ -63,6 +63,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var captionLanguages: [String]
     var defaultRenderSettings: RenderSettings
     var defaultPacing: EditPacing
+    /// Step 2 music mix level (1–5); old profiles retain the existing 3/5 mix.
+    var defaultMusicVolume: Int?
     var useLearnedEditingDefaults: Bool
     var learnedHookStyle: String
     var learnedLayoutPreference: String
@@ -120,6 +122,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case captionLanguages = "caption_languages"
         case defaultRenderSettings = "default_render_settings"
         case defaultPacing = "default_pacing"
+        case defaultMusicVolume = "default_music_volume"
         case useLearnedEditingDefaults = "use_learned_editing_defaults"
         case learnedHookStyle = "learned_hook_style"
         case learnedLayoutPreference = "learned_layout_preference"
@@ -159,6 +162,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         defaultRenderSettings = try container.decodeIfPresent(RenderSettings.self, forKey: .defaultRenderSettings)
             ?? RenderSettings()
         defaultPacing = try container.decodeIfPresent(EditPacing.self, forKey: .defaultPacing) ?? EditPacing()
+        defaultMusicVolume = try container.decodeIfPresent(Int.self, forKey: .defaultMusicVolume)
         useLearnedEditingDefaults = try container.decodeIfPresent(Bool.self, forKey: .useLearnedEditingDefaults) ?? false
         learnedHookStyle = try container.decodeIfPresent(String.self, forKey: .learnedHookStyle) ?? ""
         learnedLayoutPreference = try container.decodeIfPresent(String.self, forKey: .learnedLayoutPreference) ?? ""

@@ -11,6 +11,7 @@ import CryptoKit
 //   Database+Analysis.swift      scenes, analysis checkpoints, analysis runs
 //   Database+People.swift        people
 //   Database+Transcripts.swift   transcripts, speaker attribution
+//   Database+WizardSelections.swift selections and their saved takes
 //   Database+Generated.swift     generated videos, reviews, preferences, lessons, wizard research
 //   Database+Fights.swift        fight events, fight research
 //   Database+Instagram.swift     Instagram accounts, media, reports
@@ -221,6 +222,33 @@ actor Database {
         scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
         score INTEGER NOT NULL,
         graded_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS wizard_selections (
+        id INTEGER PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        recipe TEXT NOT NULL,
+        step1_options_json TEXT NOT NULL,
+        best_take_id INTEGER REFERENCES wizard_selection_takes(id) ON DELETE SET NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        edited_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_wizard_selections_project ON wizard_selections(project_id);
+
+    CREATE TABLE IF NOT EXISTS wizard_selection_takes (
+        id INTEGER PRIMARY KEY,
+        selection_id INTEGER NOT NULL REFERENCES wizard_selections(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL,
+        note TEXT,
+        plan_json TEXT NOT NULL,
+        scene_ids_json TEXT NOT NULL,
+        proxy_path TEXT,
+        critic_score INTEGER,
+        critic_notes TEXT,
+        provenance_json TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(selection_id, ordinal)
     );
 
     CREATE TABLE IF NOT EXISTS generated_videos (
@@ -685,6 +713,9 @@ actor Database {
         let stamped = try connection.query("PRAGMA user_version").first?.values.first?.intValue ?? 0
         if stamped != Self.schemaVersion {
             try Self.migrate(connection)
+            if try !connection.columnNames(of: "generated_videos").contains("selection_take_id") {
+                try connection.execute("ALTER TABLE generated_videos ADD COLUMN selection_take_id INTEGER REFERENCES wizard_selection_takes(id) ON DELETE SET NULL")
+            }
             try connection.transaction {
                 if stamped < 16 {
                     try connection.execute("UPDATE scenes SET favorite = 1, favorite_provider = curated_provider, favorite_model = curated_model WHERE curated = 1 AND favorite = 0")
@@ -697,7 +728,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 20
+    static let schemaVersion: Int64 = 21
 
     // MARK: - Helpers
 

@@ -295,7 +295,12 @@ final class AppStore {
     var pendingPodcastHighlights: PodcastHighlightReviewRequest?
     var awaitingPodcastReviewDismissal = false
     var podcastResultsAfterDismissal: WizardRunResults?
-    var pendingCutReview: ProposedCutReviewRequest?
+    var pendingWizardSelectionReview: WizardSelectionReviewRequest?
+    var wizardSelections: [WizardSelectionSummary] = []
+    var activeWizardSelectionID: Int64?
+    var wizardLookRevision = 0
+    var wizardSelectionSaveTask: Task<Void, Error>?
+    var wizardSelectionAfterDismissal: (() -> Void)?
     /// Options of the last run — "Retry" in the results sheet re-runs them.
     var lastWizardOptions: WizardOptions?
     /// Why the last generation produced nothing — shown as a banner in the
@@ -930,7 +935,11 @@ final class AppStore {
         igReport = nil
         pendingWizardTemplate = nil
         wizardPromptRequests = [:]
-        pendingCutReview = nil
+        pendingWizardSelectionReview = nil
+        wizardSelectionAfterDismissal = nil
+        wizardSelectionSaveTask = nil
+        wizardSelections = []
+        activeWizardSelectionID = nil
         pendingPodcastHighlights = nil
         podcastResultsAfterDismissal = nil
         wizardResults = nil

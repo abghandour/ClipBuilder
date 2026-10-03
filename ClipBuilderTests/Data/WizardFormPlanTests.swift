@@ -22,14 +22,6 @@ struct WizardFormPlanTests {
         #expect(!WizardFormPlan.showsCriticBriefControls(outcome: .highlights))
     }
 
-    @Test func reviewedCutsCaptionExplainsOnlyApprovedCutIterations() {
-        #expect(WizardFormPlan.reviewedCutsCaption(outcome: .iterate, reviewProposedCuts: true)
-            == "Your approved cuts are version 1; later versions re-plan from the critique.")
-        #expect(WizardFormPlan.reviewedCutsCaption(outcome: .iterate, reviewProposedCuts: false) == nil)
-        #expect(WizardFormPlan.reviewedCutsCaption(outcome: .oneReel, reviewProposedCuts: true) == nil)
-        #expect(WizardFormPlan.reviewedCutsCaption(outcome: .highlights, reviewProposedCuts: true) == nil)
-    }
-
     @Test func ordinarySceneRunsKeepLiveFiltersWhenCopied() throws {
         let plan = WizardFormPlan(recipe: .custom)
         var options = WizardOptions()
@@ -166,8 +158,6 @@ struct WizardFormPlanTests {
     func primaryActionAndTaskFollowRecipe(_ recipe: ReelRecipe) {
         let plan = WizardFormPlan(recipe: recipe)
         let highlights = recipe.workflow == .highlights
-        #expect(plan.primaryActionTitle(reviewProposedCuts: false) == (highlights ? "Find highlights" : "Generate reel"))
-        #expect(plan.primaryActionTitle(reviewProposedCuts: true) == (highlights ? "Find highlights" : "Prepare cuts"))
         #expect(plan.primaryTask == (highlights ? "highlights" : "wizard"))
     }
 
@@ -175,17 +165,17 @@ struct WizardFormPlanTests {
         let scenes = WizardFormPlan(recipe: .custom)
         #expect(scenes.runSummary(sceneCount: 24, source: "of Jack Della Maddalena", targetSeconds: 20,
             highlightCount: 5, highlightSeconds: 30, captions: true, critique: true,
-            reviewProposedCuts: false) == "One 20s reel from 24 scenes of Jack Della Maddalena, up to 3 versions until the critic scores 85+")
+            selectionReview: false) == "One 20s reel from 24 scenes of Jack Della Maddalena, up to 3 takes until the critic scores 85+")
         #expect(scenes.runSummary(sceneCount: 2, source: "in this project", targetSeconds: nil,
             highlightCount: 0, highlightSeconds: 30, captions: false, critique: false,
-            reviewProposedCuts: true).hasSuffix("cuts reviewed before render"))
+            selectionReview: true).hasSuffix("cuts reviewed before render"))
         let highlights = WizardFormPlan(recipe: .podcastHighlights)
         #expect(highlights.runSummary(sceneCount: 10, source: "Podcast 02.mp4", targetSeconds: 20,
             highlightCount: 5, highlightSeconds: 30, captions: true, critique: true,
-            reviewProposedCuts: false) == "Up to 5 highlights, up to 30s each, from Podcast 02.mp4, reviewed before render")
+            selectionReview: false) == "Up to 5 highlights, up to 30s each, from Podcast 02.mp4, reviewed before render")
         #expect(highlights.runSummary(sceneCount: 10, source: "Podcast.mp4", targetSeconds: nil,
             highlightCount: 0, highlightSeconds: 30, captions: false, critique: false,
-            reviewProposedCuts: false).hasPrefix("Highlights with no count limit"))
+            selectionReview: false).hasPrefix("Highlights with no count limit"))
     }
 
     @Test func editingSummaryOmitsUnsupportedPreferences() {
@@ -258,9 +248,9 @@ extension WizardFormPlanTests {
 
     @Test func iterateSummaryNamesTargetAndAttempts() {
         let summary = WizardFormPlan(recipe: .custom).runSummary(sceneCount: 24, source: "", targetSeconds: 20,
-            highlightCount: 0, highlightSeconds: 30, captions: false, critique: true, reviewProposedCuts: false,
+            highlightCount: 0, highlightSeconds: 30, captions: false, critique: true, selectionReview: false,
             critiqueTargetScore: 80, critiqueMaxVersions: 4)
-        #expect(summary == "One 20s reel from 24 scenes, up to 4 versions until the critic scores 80+")
+        #expect(summary == "One 20s reel from 24 scenes, up to 4 takes until the critic scores 80+")
     }
 
     @Test @MainActor func iterationOptionsRoundTripAndPaste() throws {
@@ -284,5 +274,109 @@ extension WizardFormPlanTests {
         AISettingsPreferences.write(JSONSetting.dictionary(options), kind: .wizard,
             scopes: [.options], defaults: defaults)
         #expect(defaults.string(forKey: "wizard.outcome") == "oneReel")
+    }
+}
+
+extension WizardFormPlanTests {
+    @Test func everyControlBelongsToExactlyOneStep() {
+        let custom = WizardFormPlan(recipe: .custom)
+        #expect(custom.step1Controls == [.sources, .outcome, .recipe, .length, .brief,
+            .styleReference, .fightResearch, .layouts, .iteration, .planningModels])
+        #expect(custom.step2Controls == [.output, .pacing, .audio, .musicTrack, .text,
+            .overlayStyle, .transitions, .cameraFocus, .framingCamera, .bRoll, .bumpers, .branding, .presentationModels])
+        #expect(custom.step1Controls.union(custom.step2Controls) == Set(WizardFormPlan.Control.allCases))
+        for recipe in ReelRecipe.all {
+            let form = WizardFormPlan(recipe: recipe)
+            #expect(form.step1Controls.isDisjoint(with: form.step2Controls))
+            #expect(!form.step1Controls.contains(.cameraFocus))
+            #expect(!form.step1Controls.contains(.bRoll))
+            #expect(!form.step2Controls.contains(.layouts))
+            #expect(!form.step2Controls.contains(.iteration))
+        }
+        let highlights = WizardFormPlan(recipe: .podcastHighlights)
+        #expect(!highlights.step1Controls.contains(.iteration))
+        #expect(!highlights.step2Controls.contains(.audio))
+        #expect(!highlights.step2Controls.contains(.branding))
+        #expect(highlights.step2Controls.contains(.cameraFocus))
+    }
+
+    @Test func modelRowsAreSplitByStepWithoutDuplicates() {
+        let form = WizardFormPlan(recipe: .custom)
+        #expect(form.step1Models == ["wizard", "critique"])
+        #expect(form.step2Models(useBRoll: true, instructions: "Use fight footage") == ["captions", "broll"])
+        #expect(form.step2Models(useBRoll: false, instructions: "") == ["captions"])
+        #expect(Set(form.step1Models).isDisjoint(with: form.step2Models(useBRoll: true, instructions: "Cutaways")))
+    }
+
+    @Test func lookCardStaysCollapsedUntilSelectionOrAutomaticWorkflow() {
+        for workflow in WizardWorkflow.allCases {
+            #expect(!WizardFormPlan.step2Collapsed(hasSelection: true, workflow: workflow))
+            #expect(WizardFormPlan.step2Collapsed(hasSelection: false, workflow: workflow) == (workflow != .automatic))
+        }
+    }
+
+    @Test func legacyWorkflowMappingRunsOnceAndPreservesAnExplicitChoice() throws {
+        for legacy in [false, true] {
+            let suite = "WizardWorkflow-\(UUID().uuidString)"
+            let defaults = try #require(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            defaults.set(legacy, forKey: "wizard.reviewProposedCuts")
+            WizardDefaults.migrateLegacy(defaults: defaults)
+            #expect(defaults.object(forKey: "wizard.reviewProposedCuts") == nil)
+            #expect(defaults.string(forKey: WizardDefaults.workflowKey)
+                == (legacy ? WizardWorkflow.reviewMoments.rawValue : WizardWorkflow.automatic.rawValue))
+            defaults.set(WizardWorkflow.reviewMomentsAndLook.rawValue, forKey: WizardDefaults.workflowKey)
+            defaults.set(!legacy, forKey: "wizard.reviewProposedCuts")
+            WizardDefaults.migrateLegacy(defaults: defaults)
+            #expect(defaults.object(forKey: "wizard.reviewProposedCuts") == nil)
+            #expect(defaults.string(forKey: WizardDefaults.workflowKey) == WizardWorkflow.reviewMomentsAndLook.rawValue)
+        }
+        let suite = "WizardWorkflowFresh-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        WizardDefaults.migrateLegacy(defaults: defaults)
+        #expect(defaults.string(forKey: WizardDefaults.workflowKey) == WizardWorkflow.automatic.rawValue)
+    }
+
+    @Test func legacyReviewSnapshotsEncodeOnlyWorkflowAndMigrateClipboard() throws {
+        let legacy = try JSONDecoder().decode(WizardOptions.self, from: Data(#"{"reviewProposedCuts":true}"#.utf8))
+        let encoded = try JSONEncoder().encode(legacy)
+        #expect(!String(decoding: encoded, as: UTF8.self).contains("reviewProposedCuts"))
+        #expect(try JSONDecoder().decode(WizardOptions.self, from: encoded).resolvedWorkflow == .reviewMoments)
+        let modern = try JSONDecoder().decode(WizardOptions.self,
+            from: Data(#"{"reviewProposedCuts":true,"workflow":"automatic"}"#.utf8))
+        #expect(modern.resolvedWorkflow == .automatic)
+        let envelope = AISettingsEnvelope(kind: .wizard, sourceName: "Legacy", scopes: [.options],
+            settings: ["reviewProposedCuts": .bool(true)])
+        #expect(envelope.settings["workflow"] == .string("reviewMoments"))
+        #expect(envelope.settings["reviewProposedCuts"] == nil)
+        // Synthesized step snapshots ignore the retired key.
+        let step = try JSONDecoder().decode(WizardStep1Options.self,
+            from: Data(#"{"reviewProposedCuts":true,"workflow":"reviewMoments"}"#.utf8))
+        #expect(step.workflow == .reviewMoments)
+    }
+
+    @Test @MainActor func workflowAndLookOptionsSurviveCopyAndSharedFormSubsets() throws {
+        let suite = "WizardTwoStepCopy-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let legacy = try JSONDecoder().decode(WizardOptions.self, from: Data("{\"reviewProposedCuts\":true}".utf8))
+        #expect(legacy.workflow == .reviewMoments && legacy.resolvedWorkflow == .reviewMoments)
+        var options = WizardOptions()
+        options.workflow = .reviewMomentsAndLook
+        options.overlayStyle = "minimal"
+        options.overlayAnimation = "fade"
+        options.overlayPlacement = "bottom"
+        options.musicTrack = "Fights/theme.mp3"
+        let decoded = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(options))
+        #expect(decoded.resolvedWorkflow == .reviewMomentsAndLook)
+        AISettingsPreferences.write(JSONSetting.dictionary(options), kind: .wizard,
+            scopes: [.options], defaults: defaults)
+        let shared = AppStore.wizardOptionsFromForm(transcriptsAvailable: true, defaults: defaults)
+        #expect(shared.step1.workflow == .reviewMomentsAndLook)
+        #expect(shared.step2.overlayStyle == "minimal")
+        #expect(shared.step2.overlayAnimation == "fade")
+        #expect(shared.step2.overlayPlacement == "bottom")
+        #expect(shared.step2.musicTrack == "Fights/theme.mp3")
     }
 }

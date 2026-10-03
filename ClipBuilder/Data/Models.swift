@@ -680,6 +680,8 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     var settingsJSON: String? = nil
     var modelsJSON: String? = nil
 
+    var selectionTakeID: Int64? = nil
+
     var url: URL { URL(fileURLWithPath: path) }
     var filename: String { url.lastPathComponent }
 

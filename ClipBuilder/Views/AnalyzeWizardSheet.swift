@@ -44,7 +44,8 @@ struct AnalyzeWizardSheet: View {
     @AppStorage("pipeline.critique") private var critique = true
     @AppStorage("pipeline.coverFrame") private var coverFrame = true
     /// The saved Wizard form, read once: it lists the music folder on disk.
-    @State private var wizardForm = WizardOptions()
+    @State private var step1 = WizardStep1Options()
+    @State private var step2 = WizardStep2Options()
 
     private var options: PipelineOptions {
         PipelineOptions(detectPeople: detectPeople, transcribe: transcribe,
@@ -104,7 +105,7 @@ struct AnalyzeWizardSheet: View {
                     taskRow(.generate, $generate, "Generate video",
                             "One reel per video via the AI Wizard, using your current Wizard settings (format, branding, audio).")
                     taskRow(.critique, $critique, "Critique & auto-retry",
-                            "The AI critic reviews each render and re-plans until satisfied (up to 3 versions).",
+                            "The content critic compares up to 3 takes on small previews. Only the best take is rendered.",
                             enabled: generate)
                         .disabled(!generate)
                         .padding(.leading, 18)
@@ -136,7 +137,11 @@ struct AnalyzeWizardSheet: View {
         .padding(20)
         .frame(minWidth: 720, idealWidth: 760, minHeight: 480, idealHeight: 720)
         .modalCloseButton { dismiss() }
-        .onAppear { wizardForm = AppStore.wizardOptionsFromForm(transcriptsAvailable: false) }
+        .onAppear {
+            let form = AppStore.wizardOptionsFromForm(transcriptsAvailable: false)
+            step1 = form.step1
+            step2 = form.step2
+        }
     }
 
     private func taskRow(_ phase: PipelinePhase, _ isOn: Binding<Bool>, _ title: String,
@@ -179,7 +184,7 @@ struct AnalyzeWizardSheet: View {
     private static let modelLabelWidth: CGFloat = 130
 
     private func modelTasks(for phase: PipelinePhase) -> [String] {
-        phase.aiTasks(recipe: ReelRecipe.recipe(id: wizardForm.formatPreset) ?? .custom,
-                      useBRoll: wizardForm.useBRoll, brollInstructions: wizardForm.brollInstructions)
+        phase.aiTasks(recipe: ReelRecipe.recipe(id: step1.formatPreset ?? "custom") ?? .custom,
+                      useBRoll: step2.useBRoll ?? false, brollInstructions: step2.brollInstructions ?? "")
     }
 }
