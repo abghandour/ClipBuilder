@@ -45,7 +45,7 @@ struct PodcastHighlightIntegrationTests {
         #expect(review.highlightThreshold == PodcastSettings().highlightThreshold)
         #expect(review.candidates.count == 3)
         #expect(review.candidates.allSatisfy { $0.kind == .whole && $0.duration <= 25 })
-        #expect(!review.options.reviewProposedCuts && !review.options.addCaptions && !review.options.useMusic)
+        #expect(review.options.resolvedWorkflow == .automatic && !review.options.addCaptions && !review.options.useMusic)
         #expect(!review.options.useFightResearch && !review.options.critiqueLoop)
         #expect(review.options.tastePreset == "none" && review.options.screenCropLayouts.isEmpty)
         #expect(!review.options.includeWatermark && !review.options.enableTextOverlays)

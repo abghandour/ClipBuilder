@@ -6,7 +6,7 @@ import CoreGraphics
 /// area instead of a 9:16 window), the result is scaled into the area's
 /// bounding box and placed on a black 1080×1920 canvas. The caller masks
 /// the canvas with the area's polygon. When nobody is visible the window
-/// is a static center crop at the same aspect.
+/// is a static crop at the same aspect, centered on the known face or source.
 nonisolated enum AreaFramer {
     // Output/tracking changes must bump MultitrackRenderer.framingVersion.
     /// The area's bounding box in output pixels, rounded to even sizes
@@ -29,6 +29,7 @@ nonisolated enum AreaFramer {
                       area: ScreenCropArea,
                       focusPortraits: [Data] = [],
                       avoidPortraits: [Data] = [],
+                      fallbackCenter: (x: Double, y: Double)? = nil,
                       tuning: CenterStageService.Tuning = .fastAction,
                       centerStage: CenterStageService,
                       scratch: URL,
@@ -53,7 +54,8 @@ nonisolated enum AreaFramer {
         } catch {
             try Task.checkCancellation()
             onFallback?()
-            log("Area \"\(area.name)\": \(error) — using a static center window")
+            let fallback = fallbackCenter == nil ? "static center window" : "static window centered on the face"
+            log("Area \"\(area.name)\": \(error) — using a \(fallback)")
         }
         defer { if let fitted { try? FileManager.default.removeItem(at: fitted) } }
 
@@ -63,14 +65,13 @@ nonisolated enum AreaFramer {
             arguments += ["-i", fitted.path]
             filter = "[0:v]scale=\(Int(box.width)):\(Int(box.height)),\(place)"
         } else {
-            let aspect = box.width / box.height
+            let size = await FFmpeg.dimensions(of: source)
+            let window = fallbackWindow(aspect: box.width / box.height,
+                                        sourceSize: CGSize(width: size.width, height: size.height),
+                                        center: fallbackCenter)
             arguments += ["-ss", String(format: "%.3f", max(0, start)),
                           "-t", String(format: "%.3f", duration), "-i", source.path]
-            // Largest window of the area's aspect that fits the source,
-            // centered — crop's default x/y center it.
-            filter = String(format: "[0:v]crop='if(gt(iw/ih,%.5f),ih*%.5f,iw)':'if(gt(iw/ih,%.5f),ih,iw/%.5f)',",
-                            aspect, aspect, aspect, aspect)
-                + "scale=\(Int(box.width)):\(Int(box.height)),\(place)"
+            filter = "[0:v]" + staticFilter(area: area, window: window) + "[vout]"
         }
         arguments += ["-filter_complex", filter, "-map", "[vout]", "-map", "0:a?",
                       "-t", String(format: "%.3f", duration)]
@@ -85,6 +86,7 @@ nonisolated enum AreaFramer {
     /// cell of a video call is framed on that person alone.
     static func frame(source: URL, start: Double, duration: Double,
                       area: ScreenCropArea, region: FreeCropRect,
+                      focus: (x: Double, y: Double)? = nil,
                       tuning: CenterStageService.Tuning = .fastAction,
                       centerStage: CenterStageService,
                       scratch: URL,
@@ -107,8 +109,24 @@ nonisolated enum AreaFramer {
         defer { try? FileManager.default.removeItem(at: feed) }
         log(String(format: "Area \"%@\": feed %.0f%%×%.0f%% at (%.0f%%, %.0f%%) cut out for tracking",
                    area.name, w * 100, h * 100, x * 100, y * 100))
-        return try await frame(source: feed, start: 0, duration: duration, area: area, tuning: tuning,
+        // The planner's face is in source coordinates; the inner framer sees only this feed.
+        let fallbackCenter = focus.map { (x: ($0.x - x) / w, y: ($0.y - y) / h) }
+        return try await frame(source: feed, start: 0, duration: duration, area: area,
+                               fallbackCenter: fallbackCenter, tuning: tuning,
                                centerStage: centerStage, scratch: scratch, onFallback: onFallback, log: log)
+    }
+
+    /// Largest window of `aspect` inside the source, centered on the face when known.
+    /// The center and result are source-frame fractions; edge faces clamp the window.
+    static func fallbackWindow(aspect: Double, sourceSize: CGSize,
+                               center: (x: Double, y: Double)?) -> FreeCropRect {
+        let sourceAspect = max(1, sourceSize.width) / max(1, sourceSize.height)
+        let targetAspect = max(0.0001, aspect)
+        let w = min(1, targetAspect / sourceAspect)
+        let h = min(1, sourceAspect / targetAspect)
+        let x = min(1 - w, max(0, (center?.x ?? 0.5) - w / 2))
+        let y = min(1 - h, max(0, (center?.y ?? 0.5) - h / 2))
+        return FreeCropRect(xFrac: x, yFrac: y, wFrac: w, hFrac: h)
     }
 
     /// Like `frame`, but the camera replays an explicit path (crop

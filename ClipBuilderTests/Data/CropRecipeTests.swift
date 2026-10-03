@@ -104,7 +104,7 @@ struct CropRecipeTests {
         var fixed = CropRecipe(kind: .grid); fixed.tracking = false
         let still = try CropRecipePlanner.plan(fixed, video: Self.video(), turns: Self.turns, roster: [],
                                                layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16.0)
-        #expect(still.slots.allSatisfy { $0.window != nil && $0.region == nil })
+        #expect(still.slots.allSatisfy { $0.window != nil && $0.region == nil && $0.focus == nil })
         #expect(still.slots[1].window?.xFrac ?? 0 > 0.5)
         // A tile that knows where its face sits centers the crop there.
         var faced = Self.tiles; faced[1].faceX = 0.6; faced[1].faceY = 0.2
@@ -121,6 +121,41 @@ struct CropRecipeTests {
             try CropRecipePlanner.plan(CropRecipe(kind: .grid), video: Self.video(tiles: six + [PodcastTile(index: 6, x: 0, y: 0, w: 0.1, h: 0.1)]),
                                        turns: Self.turns, roster: [], layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16.0)
         }
+    }
+
+    @Test("a still grid slot carries its face center in source coordinates")
+    func gridFocus() throws {
+        var tiles = Self.tiles
+        tiles[3].faceX = 0.685
+        tiles[3].faceY = 0.7
+        tiles[3].pictureY = 0.55
+        tiles[3].pictureX = 0.5
+        tiles[3].pictureW = 0.5
+        tiles[3].pictureH = 0.4
+        let plan = try CropRecipePlanner.plan(CropRecipe(kind: .grid), video: Self.video(tiles: tiles),
+            turns: Self.turns, roster: [], layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16.0)
+        let slot = plan.slots[3]
+        let face = try #require(tiles[3].faceCenter)
+        let focus = try #require(slot.focus)
+        #expect(focus.x == face.x && focus.y == face.y)
+        #expect(slot.region == FreeCropRect(xFrac: 0.5, yFrac: 0.55, wFrac: 0.5, hFrac: 0.4))
+        #expect(slot.window == nil && slot.path == nil)
+        #expect(plan.slots[0].focus == nil)
+        var changed = slot
+        changed.focus = nil
+        #expect(changed != slot)
+        changed.focus = (x: face.x + 0.01, y: face.y)
+        #expect(changed != slot)
+    }
+
+    @Test("a still grid slot falls back to the roster portrait center")
+    func gridRosterFocus() throws {
+        let person = VideoPersonRecord(videoID: 1, personID: 1, key: "bob", name: "Bob",
+            descriptor: "", portraitAt: 0, portraitBox: .init(x: 0.6, y: 0.1, w: 0.1, h: 0.2))
+        let plan = try CropRecipePlanner.plan(CropRecipe(kind: .grid), video: Self.video(),
+            turns: Self.turns, roster: [person], layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16.0)
+        let focus = try #require(plan.slots[1].focus)
+        #expect(abs(focus.x - 0.65) < 1e-9 && abs(focus.y - 0.2) < 1e-9)
     }
 
     @Test("talker recipes cut between feeds with held keyframes and fill the other cells")

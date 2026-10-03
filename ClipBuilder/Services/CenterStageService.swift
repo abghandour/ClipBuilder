@@ -176,7 +176,7 @@ actor CenterStageService {
     private struct Target {
         var time: Double       // relative to the clip start
         var union: CGRect      // normalized, top-left origin
-        var tracked: Bool      // false = no humans found this frame
+        var tracked: Bool      // false = no matching people found this frame
         var inFocus = true     // false = outside the picked people's ranges
     }
 
@@ -246,7 +246,7 @@ actor CenterStageService {
                                             focusPortraits: focusPortraits,
                                             avoidPortraits: avoidPortraits,
                                             orientation: Self.displayOrientation(of: info.preferredTransform),
-                                            tuning: tuning)
+                                            tuning: tuning, log: emit)
         let analyzed = targets.filter(\.inFocus)
         let trackedShare = analyzed.isEmpty ? 0
             : Double(analyzed.filter(\.tracked).count) / Double(analyzed.count)
@@ -409,13 +409,24 @@ actor CenterStageService {
 
     // MARK: - Pass 1: people tracking
 
+    /// Expand an upright, top-left normalized face into head-and-shoulders
+    /// framing, clipping the estimate at the image edges.
+    nonisolated static func bodyEstimate(fromFace face: CGRect) -> CGRect {
+        let width = face.width * 2.6
+        let estimate = CGRect(x: face.midX - width / 2,
+                              y: face.minY - face.height * 0.35,
+                              width: width, height: face.height * 3.2)
+        return estimate.intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+    }
+
     private func trackPeople(asset: AVURLAsset, track: AVAssetTrack,
                              start: Double, duration: Double,
                              focusRanges: [(start: Double, end: Double)],
                              focusPortraits: [Data] = [],
                              avoidPortraits: [Data] = [],
                              orientation: CGImagePropertyOrientation,
-                             tuning: Tuning) async throws -> [Target] {
+                             tuning: Tuning,
+                             log: @Sendable (String) -> Void = { print($0) }) async throws -> [Target] {
         let decodePermit = try await MediaWorkScheduler.current.acquire(.decoding)
         defer { withExtendedLifetime(decodePermit) {} }
         try Task.checkCancellation()
@@ -475,6 +486,9 @@ actor CenterStageService {
         var lastUnion = CGRect(x: 0.3, y: 0.1, width: 0.4, height: 0.8)
         var request = DetectHumanRectanglesRequest(.revision2)
         request.upperBodyOnly = false
+        let faceRequest = DetectFaceRectanglesRequest(.revision3)
+        var analyzedSamples = 0
+        var faceSamples = 0
 
         while reader.status == .reading, let sample = readerOutput.copyNextSampleBuffer() {
             try Task.checkCancellation()
@@ -491,25 +505,38 @@ actor CenterStageService {
                 continue
             }
 
-            let observations: [HumanObservation]
+            analyzedSamples += 1
+            var boxes: [CGRect]
+            var usedFaces = false
             do {
                 let visionPermit = try await MediaWorkScheduler.current.acquire(.vision)
                 defer { withExtendedLifetime(visionPermit) {} }
                 try Task.checkCancellation()
                 let timing = PerfSignpost.begin("Vision", metadata: "tracking")
                 defer { PerfSignpost.end(timing) }
-                observations = (try? await request.perform(on: pixelBuffer, orientation: orientation)) ?? []
+                let observations = (try? await request.perform(on: pixelBuffer, orientation: orientation)) ?? []
+                try Task.checkCancellation()
+                // Both requests report upright bottom-left boxes. Convert
+                // faces before expanding them in top-left display space.
+                if observations.isEmpty {
+                    let faces = (try? await faceRequest.perform(on: pixelBuffer, orientation: orientation)) ?? []
+                    boxes = faces.map { face in
+                        let box = face.boundingBox.cgRect
+                        return Self.bodyEstimate(fromFace: CGRect(x: box.minX, y: 1 - box.maxY,
+                                                                  width: box.width, height: box.height))
+                    }
+                    usedFaces = !faces.isEmpty
+                } else {
+                    boxes = observations.map { observation in
+                        let box = observation.boundingBox.cgRect
+                        return CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
+                    }
+                }
                 try Task.checkCancellation()
             }
-            // With the orientation supplied, Vision reports boxes in upright
-            // (display) space — bottom-left-origin normalized. Peripheral
-            // detections (crowd, staff at distance) are dropped so the
+            // Peripheral detections (crowd, staff at distance) are dropped so the
             // camera frames the main subjects instead of everyone visible.
-            let detections = Analyzer.primaryPeopleBoxes(
-                observations.map { observation in
-                    let box = observation.boundingBox.cgRect
-                    return CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
-                })
+            let detections = Analyzer.primaryPeopleBoxes(boxes)
 
             var focused = detections
             if (!references.isEmpty || !negatives.isEmpty) && !detections.isEmpty {
@@ -540,9 +567,11 @@ actor CenterStageService {
                 let union = focused.dropFirst().reduce(focused[0]) { $0.union($1) }
                 lastUnion = union
                 targets.append(Target(time: time, union: union, tracked: true))
+                if usedFaces { faceSamples += 1 }
             }
         }
         reader.cancelReading()
+        log("Center Stage: \(faceSamples) of \(analyzedSamples) samples framed from faces")
         guard !targets.isEmpty else {
             throw CenterStageError(message: "No frames could be analyzed for tracking.")
         }

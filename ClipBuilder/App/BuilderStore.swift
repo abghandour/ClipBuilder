@@ -740,6 +740,7 @@ final class BuilderTimelineModel {
                 $0.muted = track > 0
                 $0.areaWindow = slot.window
                 $0.areaRegion = slot.region
+                $0.areaFocus = slot.focus.map { AreaFocus(x: $0.x, y: $0.y) }
                 if let path = slot.path, path.count >= 2 {
                     $0.cameraPath = path
                     $0.cameraPathSource = "recipe"

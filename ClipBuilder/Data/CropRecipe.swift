@@ -133,8 +133,16 @@ nonisolated enum CropRecipePlanner {
         var path: [CameraPathKeyframe]?
         /// The feed the tracking camera stays inside (a still cell).
         var region: FreeCropRect?
+        /// Known face center, as fractions of the full source frame.
+        var focus: (x: Double, y: Double)?
         /// Source spans during which this cell shows the talker.
         var talking: [ClosedRange<Double>] = []
+
+        static func == (lhs: Slot, rhs: Slot) -> Bool {
+            lhs.subject == rhs.subject && lhs.window == rhs.window && lhs.path == rhs.path
+                && lhs.region == rhs.region && lhs.focus?.x == rhs.focus?.x && lhs.focus?.y == rhs.focus?.y
+                && lhs.talking == rhs.talking
+        }
     }
 
     struct Plan: Sendable, Equatable {
@@ -448,6 +456,7 @@ nonisolated enum CropRecipePlanner {
                 } else if recipe.tracking, let tile = tiles.first(where: { $0.index == filled[0].tile })?.picture {
                     // A still cell: the tracking camera inside the feed's picture.
                     slot.region = FreeCropRect(xFrac: tile.x, yFrac: tile.y, wFrac: tile.w, hFrac: tile.h)
+                    slot.focus = faceCenters[filled[0].tile]
                 } else {
                     slot.window = FreeCropRect(xFrac: only.x, yFrac: only.y, wFrac: only.w, hFrac: only.h)
                 }

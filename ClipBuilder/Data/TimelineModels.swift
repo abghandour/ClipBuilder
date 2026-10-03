@@ -694,6 +694,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// recording. Nil lets it see the whole frame. Ignored with a window
     /// or a camera path.
     var areaRegion: FreeCropRect?
+    /// Known face center in source-frame fractions, used if feed tracking fails.
+    var areaFocus: AreaFocus?
     var captions: String = "inherit"   // inherit | none | top | middle | bottom
     /// Wide clips only: reframe with the Center Stage tracking camera
     /// instead of a static crop.
@@ -748,6 +750,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         screenCrop = nil
         areaWindow = nil
         areaRegion = nil
+        areaFocus = nil
         cropXFrac = nil
         position = nil
         // A bumper is never a cutaway: it owns the canvas outright.
@@ -790,6 +793,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             screenCrop = nil
             areaWindow = nil
             areaRegion = nil
+            areaFocus = nil
             wide = false
             position = nil
         }
@@ -833,6 +837,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case areaWindow = "area_window"
         case cutawaySourceWindow = "cutaway_source_window"
         case areaRegion = "area_region"
+        case areaFocus = "area_focus"
         case centerStage = "center_stage"
         case cameraPath = "camera_path"
         case cameraPathSource = "camera_path_source"
@@ -876,6 +881,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         areaWindow = try container.decodeIfPresent(FreeCropRect.self, forKey: .areaWindow)
         cutawaySourceWindow = try container.decodeIfPresent(FreeCropRect.self, forKey: .cutawaySourceWindow)
         areaRegion = try container.decodeIfPresent(FreeCropRect.self, forKey: .areaRegion)
+        areaFocus = try container.decodeIfPresent(AreaFocus.self, forKey: .areaFocus)
         centerStage = try container.decodeIfPresent(Bool.self, forKey: .centerStage) ?? false
         if let path = try container.decodeIfPresent([CameraPathKeyframe].self, forKey: .cameraPath), path.count >= 2 {
             cameraPath = path
@@ -945,6 +951,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         if let areaWindow { try container.encode(areaWindow, forKey: .areaWindow) }
         try container.encodeIfPresent(cutawaySourceWindow, forKey: .cutawaySourceWindow)
         if let areaRegion { try container.encode(areaRegion, forKey: .areaRegion) }
+        try container.encodeIfPresent(areaFocus, forKey: .areaFocus)
         try container.encode(captions, forKey: .captions)
         try container.encode(centerStage, forKey: .centerStage)
         if let cameraPath, cameraPath.count >= 2 {
@@ -981,6 +988,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.centerStage == rhs.centerStage && lhs.speed == rhs.speed
             && lhs.effect == rhs.effect && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
             && lhs.screenCrop == rhs.screenCrop && lhs.areaWindow == rhs.areaWindow && lhs.areaRegion == rhs.areaRegion
+            && lhs.areaFocus == rhs.areaFocus
             && lhs.cutawaySourceWindow == rhs.cutawaySourceWindow
     }
 
@@ -1341,6 +1349,12 @@ nonisolated struct FreeCrop: Codable, Sendable, Equatable {
     var src: FreeCropRect
     var dst: FreeCropRect
     var z: Int = 0
+}
+
+/// A known face center expressed as fractions of the full source frame.
+nonisolated struct AreaFocus: Codable, Sendable, Equatable {
+    var x: Double
+    var y: Double
 }
 
 nonisolated struct FreeCropRect: Codable, Sendable, Equatable {

@@ -59,6 +59,45 @@ struct TimelineModelsTests {
         #expect(!clip.originKey.isEmpty, "a missing origin is generated on load")
     }
 
+    @Test("area_focus round-trips and remains optional for older documents")
+    func areaFocusRoundTrip() throws {
+        var clip = Fixtures.timelineClip(sceneID: nil, duration: 4)
+        clip.areaRegion = FreeCropRect(xFrac: 0.5, yFrac: 0.5, wFrac: 0.5, hFrac: 0.5)
+        clip.areaFocus = AreaFocus(x: 0.685, y: 0.7)
+        let data = try JSONEncoder().encode(clip)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let focus = try #require(object["area_focus"] as? [String: Double])
+        #expect(focus == ["x": 0.685, "y": 0.7])
+        let restored = try JSONDecoder().decode(TimelineClip.self, from: data)
+        #expect(restored.areaFocus == clip.areaFocus && restored.areaRegion == clip.areaRegion)
+
+        object.removeValue(forKey: "area_focus")
+        let legacy = try JSONDecoder().decode(TimelineClip.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(legacy.areaFocus == nil && legacy.areaRegion == clip.areaRegion)
+        let legacyData = try JSONEncoder().encode(legacy)
+        let legacyObject = try #require(try JSONSerialization.jsonObject(with: legacyData) as? [String: Any])
+        #expect(legacyObject["area_focus"] == nil)
+
+        var changed = clip
+        changed.areaFocus = AreaFocus(x: 0.7, y: 0.7)
+        #expect(changed != clip)
+    }
+
+    @Test("bumper and cover-all rules clear face focus together with the feed region")
+    func areaFocusClearing() {
+        var clip = Fixtures.timelineClip(duration: 4)
+        clip.areaRegion = FreeCropRect(xFrac: 0.5, yFrac: 0.5, wFrac: 0.5, hFrac: 0.5)
+        clip.areaFocus = AreaFocus(x: 0.685, y: 0.7)
+        var bumper = clip
+        bumper.bumper = true
+        bumper.enforceBumperRules()
+        #expect(bumper.areaRegion == nil && bumper.areaFocus == nil)
+        clip.role = .cutaway
+        clip.coverAllAreas = true
+        clip.enforceCutawayRules()
+        #expect(clip.areaRegion == nil && clip.areaFocus == nil)
+    }
+
     @Test("equality sees the role, cover-all, audio and origin")
     func equalityIncludesTheNewFields() {
         let base = cutaway()

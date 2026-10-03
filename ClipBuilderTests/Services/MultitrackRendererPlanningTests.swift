@@ -40,22 +40,32 @@ struct MultitrackRendererPlanningTests {
         var clip = Fixtures.timelineClip(sceneID: 1, sourceStart: 2, duration: 4)
         clip.wide = true
         clip.areaRegion = FreeCropRect(xFrac: 0.5, yFrac: 0, wFrac: 0.5, hFrac: 0.5)
+        clip.areaFocus = AreaFocus(x: 0.685, y: 0.2)
         var document = Fixtures.timelineDocument(clips: [clip])
         document.cropBlocks = [CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"), startTime: 0, duration: 20)]
         let scenes = [Fixtures.scene(id: 1, start: 0, end: 10)]
         #expect(MultitrackRenderer.resolveClips(document: document, scenes: scenes).first?.areaRegion?.xFrac == 0.5)
+        #expect(MultitrackRenderer.resolveClips(document: document, scenes: scenes).first?.areaFocus == clip.areaFocus)
         document.videoTrack[0].areaWindow = FreeCropRect(xFrac: 0, yFrac: 0, wFrac: 0.5, hFrac: 0.5)
         #expect(MultitrackRenderer.resolveClips(document: document, scenes: scenes).first?.areaRegion == nil)
+        #expect(MultitrackRenderer.resolveClips(document: document, scenes: scenes).first?.areaFocus == nil)
         document.videoTrack[0].areaWindow = nil
         document.videoTrack[0].cameraPath = [CameraPathKeyframe(t: 0, x: 0, y: 0, w: 0.3, h: 0.5), CameraPathKeyframe(t: 4, x: 0, y: 0, w: 0.3, h: 0.5)]
         #expect(MultitrackRenderer.resolveClips(document: document, scenes: scenes).first?.areaRegion == nil)
+        #expect(MultitrackRenderer.resolveClips(document: document, scenes: scenes).first?.areaFocus == nil)
         // The framing cache key tells a feed apart from the whole frame.
         var plain = try #require(MultitrackRenderer.resolveClips(document: Fixtures.timelineDocument(clips: [clip]), scenes: scenes).first)
         plain.framingIdentity = "fixture"
-        var whole = plain; whole.areaRegion = nil
+        var whole = plain; whole.areaRegion = nil; whole.areaFocus = nil
         let area = ScreenCropStore.builtIn[0].areas[0]
         #expect(try MultitrackRenderer.prepassKey(plain, area: area, tuning: "balanced")
                 != MultitrackRenderer.prepassKey(whole, area: area, tuning: "balanced"))
+        var moved = plain
+        moved.areaFocus = AreaFocus(x: 0.8, y: 0.2)
+        #expect(try MultitrackRenderer.prepassKey(plain, area: area, tuning: "balanced")
+                != MultitrackRenderer.prepassKey(moved, area: area, tuning: "balanced"))
+        #expect(try MultitrackRenderer.prepassKey(plain, area: nil, tuning: "balanced")
+                == MultitrackRenderer.prepassKey(moved, area: nil, tuning: "balanced"))
     }
 
     @Test("a clip's own camera path outranks its scene's and the file's, sliced to the clip's span")
