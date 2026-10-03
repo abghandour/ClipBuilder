@@ -30,7 +30,8 @@ struct LearnedRedactionTests {
             "tag_schema", "socials", "captions", "logo_path", "accent_color", "tagline", "hashtags", "caption_languages",
             "default_render_settings", "default_pacing", "use_learned_editing_defaults", "learned_hook_style",
             "learned_layout_preference", "taste_rubric", "taste_exemplar_frames", "taste_categories", "house_style",
-            "buzz_sources", "buzz_extra_sources", "taste_rubric_provenance", "house_style_provenance", "learned_sharing"]
+            "buzz_sources", "buzz_extra_sources", "taste_rubric_provenance", "house_style_provenance", "learned_sharing",
+            "critic_brief_use"]
         #expect(Set(source.keys).subtracting(classified).isEmpty)
         let data = try JSONEncoder().encode(result.document)
         let wire = String(decoding: data, as: UTF8.self)

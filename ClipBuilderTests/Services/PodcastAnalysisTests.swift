@@ -324,7 +324,7 @@ struct PodcastAnalysisTests {
         #expect(fetched[0].pictureConfidence == 0.88)
     }
 
-    @Test("podcast Wizard keeps a short exchange whole and sentence-trims an overlong one")
+    @Test("podcast Wizard keeps a short exchange whole and keeps the question and answer of an overlong one")
     func wizardBoundaries() async throws {
         let engine = WizardEngine(ai: AIService(config: AppSettings().ai), render: RenderEngine())
         var short = Fixtures.scene(start: 2, end: 12)
@@ -344,8 +344,10 @@ struct PodcastAnalysisTests {
         let trimmed = try #require(await engine.validatePlan(
             raw, scenes: [1: long], musicNames: [], options: options,
             podcastSentenceEnds: [1: [7, 12, 18, 25]]))
+        // The question plus the answer's first full sentence, filled to the
+        // last sentence end within Length (2 + 20): never the question alone.
         #expect(trimmed.clips[0].start == 2)
-        #expect(trimmed.clips[0].end == 7)
+        #expect(trimmed.clips[0].end == 18)
 
         let untrimmedAI: [String: Any] = ["target_duration": 20,
                                           "clips": [["scene_id": 1, "start": 2, "end": 62]]]
@@ -517,7 +519,9 @@ struct PodcastAnalysisTests {
         #expect(ends == [10, 20])
         let engine = WizardEngine(ai: AIService(config: AppSettings().ai), render: RenderEngine())
         let raw: [String: Any] = ["clips": [["scene_id": scene.id, "start": 0, "end": 62]]]
-        for (target, expectedEnd) in [(15, 10.0), (25, 20.0)] {
+        // The first answer sentence ends at 20; a complete question and
+        // answer is kept even when it runs past a shorter Length.
+        for (target, expectedEnd) in [(15, 20.0), (25, 20.0)] {
             var options = WizardOptions()
             options.formatPreset = "podcast"
             options.targetDurationSeconds = target
