@@ -39,6 +39,13 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var musicTrack: String?
     var addCaptions: Bool?
     var enableTextOverlays: Bool?
+    var nameTagsOnly: Bool?
+    var nameTags: Bool?
+    var nameTagContent: String?
+    var nameTagStyle: String?
+    var nameTagPosition: String?
+    var captionPosition: String?
+    var captionStyleID: String?
     var captionLanguage: String?
     var pinnedOverlayTemplate: String?
     var overlayStyle: String?
@@ -100,6 +107,13 @@ nonisolated extension WizardOptions {
         result.musicTrack = musicTrack
         result.addCaptions = addCaptions
         result.enableTextOverlays = enableTextOverlays
+        result.nameTagsOnly = nameTagsOnly
+        result.nameTags = nameTags
+        result.nameTagContent = nameTagContent
+        result.nameTagStyle = nameTagStyle
+        result.nameTagPosition = nameTagPosition
+        result.captionPosition = captionPosition
+        result.captionStyleID = captionStyleID
         result.captionLanguage = captionLanguage
         result.pinnedOverlayTemplate = pinnedOverlayTemplate
         result.overlayStyle = overlayStyle
@@ -159,6 +173,13 @@ nonisolated extension WizardOptions {
         result.musicTrack = step2.musicTrack
         result.addCaptions = step2.addCaptions ?? base.addCaptions
         result.enableTextOverlays = step2.enableTextOverlays ?? base.enableTextOverlays
+        result.nameTagsOnly = step2.nameTagsOnly
+        result.nameTags = step2.nameTags
+        result.nameTagContent = step2.nameTagContent
+        result.nameTagStyle = step2.nameTagStyle
+        result.nameTagPosition = step2.nameTagPosition
+        result.captionPosition = step2.captionPosition
+        result.captionStyleID = step2.captionStyleID
         result.captionLanguage = step2.captionLanguage
         result.pinnedOverlayTemplate = step2.pinnedOverlayTemplate
         result.overlayStyle = step2.overlayStyle

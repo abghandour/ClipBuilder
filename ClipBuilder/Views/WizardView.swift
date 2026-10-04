@@ -32,6 +32,12 @@ struct WizardView: View {
     @AppStorage("wizard.outcome") private var outcomeRaw = "oneReel"
     @AppStorage("wizard.critiqueTargetScore") private var critiqueTargetScore = 85
     @AppStorage("wizard.critiqueMaxVersions") private var critiqueMaxVersions = 3
+    @AppStorage("wizard.nameTags") private var nameTags = false
+    @AppStorage("wizard.nameTagContent") private var nameTagContent: String?
+    @AppStorage("wizard.nameTagStyle") private var nameTagStyle: String?
+    @AppStorage("wizard.nameTagPosition") private var nameTagPosition: String?
+    @State private var captionPosition: String?
+    @State private var captionStyleID: String?
     @AppStorage("wizard.captionLanguage") private var captionLanguage = ""
     @AppStorage(WizardDefaults.workflowKey) private var reviewWorkflowRaw = WizardWorkflow.automatic.rawValue
     @AppStorage("wizard.musicTrack") private var musicTrackRaw = ""
@@ -107,6 +113,25 @@ struct WizardView: View {
                 && !store.scenes.isEmpty && !isFindingFootage && !store.isWizardRunning
         }
         return canGenerate && !isFindingFootage
+    }
+
+    private func loadCaptionChoices() {
+        let saved = WizardCaptionChoices.load(profileName: store.activeProfile.profileName)
+        captionPosition = saved.captionPosition
+        captionStyleID = saved.captionStyleID
+    }
+
+    private func captionChoice(_ path: WritableKeyPath<WizardCaptionChoices, String?>) -> Binding<String?> {
+        Binding(get: {
+            let choices = WizardCaptionChoices(captionPosition: captionPosition, captionStyleID: captionStyleID)
+            return choices[keyPath: path]
+        }, set: { value in
+            var choices = WizardCaptionChoices(captionPosition: captionPosition, captionStyleID: captionStyleID)
+            choices[keyPath: path] = value
+            captionPosition = choices.captionPosition
+            captionStyleID = choices.captionStyleID
+            choices.save(profileName: store.activeProfile.profileName)
+        })
     }
 
     private var copiedOptions: WizardOptions? {
@@ -371,6 +396,7 @@ struct WizardView: View {
             .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
+            loadCaptionChoices()
             enteredWithHandoff = store.pendingWizardPrompt?.proposesFootage == false || store.pendingWizardTemplate != nil
             if store.pendingWizardTemplate != nil {
                 formatPreset = WizardFormPlan.recipeForSceneHandoff(current: recipe, lastSceneRecipeID: lastSceneRecipeID).id
@@ -385,8 +411,10 @@ struct WizardView: View {
             let new = AISettingsJSON.decode(WizardOptions.self, newValue)
             if old?.pacing != new?.pacing { runPacing = nil }
             if old?.renderSettings != new?.renderSettings { runRenderSettings = nil }
+            loadCaptionChoices()
         }
         .onChange(of: store.activeProfile.id) { _, _ in
+            loadCaptionChoices()
             runPacing = nil
             runRenderSettings = nil
             proposedSceneIDs = nil
@@ -511,8 +539,14 @@ struct WizardView: View {
         var options = formOptions()
         options.formatPreset = selectedRecipe.id
         let text = textMode.output(transcriptsAvailable: available, recipe: selectedRecipe.id)
+        options.captionPosition = captionPosition
+        options.captionStyleID = captionStyleID
         options.addCaptions = text.captions
         options.enableTextOverlays = text.headlines
+        options.nameTags = selectedRecipe.capabilities.offersCameraFocus && nameTags
+        options.nameTagContent = nameTagContent
+        options.nameTagStyle = nameTagStyle
+        options.nameTagPosition = nameTagPosition
         return options.neutralized(for: selectedRecipe)
     }
 
@@ -763,7 +797,7 @@ struct WizardView: View {
             .controlSize(.small).lineLimit(1).fixedSize()
         }
 
-        if lookCapabilities.audioMusic || lookCapabilities.onScreenText {
+        if lookCapabilities.audioMusic || lookCapabilities.onScreenText || lookCapabilities.offersCameraFocus {
             FormGroupHeader("Sound and text")
         }
         if lookCapabilities.audioMusic {
@@ -825,6 +859,9 @@ struct WizardView: View {
             }
 
             if textMode == .captions || textMode == .both {
+                CaptionPositionPicker(selection: captionChoice(\.captionPosition))
+                FormCaption("Auto keeps clear of the platform buttons; the other choices use the edge of the frame.")
+                CaptionStylePicker(selection: captionChoice(\.captionStyleID), profile: store.activeProfile)
                 Picker("Caption language", selection: $captionLanguage) {
                     Text("Original audio language").tag("")
                     ForEach(store.activeProfile.captionLanguages, id: \.self) { language in
@@ -837,6 +874,12 @@ struct WizardView: View {
             }
         }
 
+        if lookFormPlan.step2Controls.contains(.nameTags) {
+            MiniRow("Name tags") { Toggle("Name tags", isOn: $nameTags) }
+            if nameTags {
+                NameTagControls(content: $nameTagContent, style: $nameTagStyle, position: $nameTagPosition)
+            }
+        }
         if lookFormPlan.step2Controls.contains(.overlayStyle) { overlayControls }
         FormGroupHeader("Pacing and transitions")
         EditPacingControls(pacing: pacingBinding)
@@ -1638,8 +1681,14 @@ struct WizardView: View {
         options.overlayAnimation = overlayAnimationRaw.isEmpty ? nil : overlayAnimationRaw
         options.overlayPlacement = overlayPlacementRaw.isEmpty ? nil : overlayPlacementRaw
         options.muteSource = audio.muteSource && options.useMusic
+        options.captionPosition = captionPosition
+        options.captionStyleID = captionStyleID
         options.addCaptions = text.captions
         options.enableTextOverlays = text.headlines
+        options.nameTags = capabilities.offersCameraFocus && nameTags
+        options.nameTagContent = nameTagContent
+        options.nameTagStyle = nameTagStyle
+        options.nameTagPosition = nameTagPosition
         options.framingCamera = framingCameraRaw
         options.screenCropLayouts = WizardDefaults.screenCropLayouts(for: layoutMode)
         options.allowedTransitions = pasted?.allowedTransitions ?? WizardOptions.allowedTransitionsFromDefaults()

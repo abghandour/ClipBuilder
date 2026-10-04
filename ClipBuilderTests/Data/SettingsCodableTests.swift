@@ -68,3 +68,25 @@ struct SettingsCodableTests {
         #expect(decoded.connection(for: "unconnected") == nil)
     }
 }
+
+extension SettingsCodableTests {
+    @Test func captionPresentationChoicesAreOptionalAndBelongToStepTwo() throws {
+        let old = try JSONDecoder().decode(WizardOptions.self, from: Data("{}".utf8))
+        #expect(old.captionPosition == nil && old.captionStyleID == nil)
+        for position in [nil, "bottom", "middle", "top"] as [String?] {
+            var options = WizardOptions()
+            options.captionPosition = position
+            options.captionStyleID = UUID().uuidString
+            let decoded = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(options))
+            #expect(decoded.captionPosition == position && decoded.captionStyleID == options.captionStyleID)
+            let step = try JSONDecoder().decode(WizardStep2Options.self, from: JSONEncoder().encode(options.step2))
+            let merged = WizardOptions.merge(step1: options.step1, step2: step)
+            #expect(merged.captionPositionOverride == position && merged.captionStyleID == options.captionStyleID)
+            let cleared = WizardOptions.merge(step1: options.step1, step2: WizardStep2Options(), base: options)
+            #expect(cleared.captionPosition == nil && cleared.captionStyleID == nil)
+            let first = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(options.step1)) as? [String: Any])
+            #expect(first["captionPosition"] == nil && first["captionStyleID"] == nil)
+        }
+        #expect(AISettingsEnvelope.keys(.options, kind: .wizard).isSuperset(of: ["captionPosition", "captionStyleID"]))
+    }
+}

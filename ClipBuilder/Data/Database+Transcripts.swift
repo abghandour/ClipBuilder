@@ -16,6 +16,27 @@ extension Database {
         return Set(rows.compactMap { $0["video_id"]?.intValue })
     }
 
+    /// Read the stored original language without loading transcript text or translations.
+    func originalTranscriptLanguage(videoID: Int64) throws -> String? {
+        try connection.query("""
+            SELECT language FROM transcripts WHERE video_id = ? AND is_translation = 0
+            ORDER BY start_time, id LIMIT 1
+            """, [.integer(videoID)]).first?["language"]?.stringValue
+    }
+
+    /// Test translation availability without the caption query's original-language fallback.
+    /// An optional interval also detects a missing section of a partial translation.
+    func hasTranscriptTranslation(videoID: Int64, language: String,
+                                  start: Double? = nil, end: Double? = nil) throws -> Bool {
+        var sql = "SELECT 1 FROM transcripts WHERE video_id = ? AND is_translation = 1 AND language = ?"
+        var values: [SQLValue] = [.integer(videoID), .text(language)]
+        if let start, let end {
+            sql += " AND end_time > ? AND start_time < ?"
+            values += [.real(start), .real(end)]
+        }
+        return try !connection.query(sql + " LIMIT 1", values).isEmpty
+    }
+
     /// `seconds` is how long the pass that produced these segments took; it
     /// is stamped on every row and, for the original language, on the video.
     func replaceTranscripts(videoID: Int64, language: String, isTranslation: Bool,
@@ -176,7 +197,7 @@ extension Database {
         let rows: [SQLRow]
         if let language, !language.isEmpty {
             rows = try connection.query("""
-                SELECT start_time, end_time, text FROM transcripts
+                SELECT start_time, end_time, text, NULL AS words FROM transcripts
                 WHERE video_id = ? AND is_translation = 1 AND language = ?
                     AND end_time > ? AND start_time < ?
                 ORDER BY start_time
@@ -186,7 +207,7 @@ extension Database {
             }
         } else {
             rows = try connection.query("""
-                SELECT start_time, end_time, text FROM transcripts
+                SELECT start_time, end_time, text, words FROM transcripts
                 WHERE video_id = ? AND is_translation = 0 AND end_time > ? AND start_time < ?
                 ORDER BY start_time
                 """, [.integer(videoID), .real(start), .real(end)])
@@ -195,7 +216,8 @@ extension Database {
             TranscriptSegment(start: $0["start_time"]?.doubleValue ?? 0,
                               end: $0["end_time"]?.doubleValue ?? 0,
                               text: $0["text"]?.stringValue ?? "",
-                              words: nil)
+                              words: $0["words"]?.stringValue?.data(using: .utf8)
+                                .flatMap { try? JSONDecoder().decode([TranscriptWord].self, from: $0) })
         }
     }
 

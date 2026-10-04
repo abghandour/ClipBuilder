@@ -9,6 +9,7 @@ nonisolated struct WizardSelectionRecord: Identifiable, Sendable {
     var bestTakeID: Int64?
     var createdAt: String?
     var editedAt: String?
+    var miniBatch: String? = nil
 }
 
 nonisolated struct WizardSelectionTake: Identifiable, Sendable {
@@ -41,19 +42,20 @@ nonisolated enum WizardSelectionError: LocalizedError {
 extension Database {
     @discardableResult
     func insertWizardSelection(projectID: Int64, name: String, recipe: String,
-                               step1Options: WizardStep1Options) throws -> Int64 {
+                               step1Options: WizardStep1Options, miniBatch: String? = nil) throws -> Int64 {
         let json = try Self.wizardSelectionJSON(step1Options)
         try connection.execute("""
-            INSERT INTO wizard_selections (project_id, name, recipe, step1_options_json)
-            VALUES (?, ?, ?, ?)
-            """, [.integer(projectID), .text(name), .text(recipe), .text(json)])
+            INSERT INTO wizard_selections (project_id, name, recipe, step1_options_json, mini_batch)
+            VALUES (?, ?, ?, ?, ?)
+            """, [.integer(projectID), .text(name), .text(recipe), .text(json), miniBatch.map(SQLValue.text) ?? .null])
         return connection.lastInsertRowID
     }
 
     /// Creation and Take 1 commit together; a failed plan write leaves no empty selection.
     func recordWizardTake(projectID: Int64, selectionID: Int64? = nil,
                           options: WizardStep1Options, plan: WizardPlan,
-                          note: String? = nil) throws -> WizardSelectionTake {
+                          note: String? = nil, miniBatch: String? = nil,
+                          fallbackName: String? = nil) throws -> WizardSelectionTake {
         try connection.transaction {
             let id: Int64
             if let selectionID {
@@ -67,8 +69,8 @@ extension Database {
                                                   [.integer(projectID)]).first?["n"]?.intValue ?? 0
                 let headline = plan.headline?.trimmingCharacters(in: .whitespacesAndNewlines)
                 id = try insertWizardSelection(projectID: projectID,
-                    name: headline.flatMap { $0.isEmpty ? nil : $0 } ?? "Selection \(count + 1)",
-                    recipe: options.formatPreset ?? "custom", step1Options: options)
+                    name: headline.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackName ?? "Selection \(count + 1)",
+                    recipe: options.formatPreset ?? "custom", step1Options: options, miniBatch: miniBatch)
             }
             return try insertWizardSelectionTake(selectionID: id, plan: plan, note: note)
         }
@@ -172,6 +174,64 @@ extension Database {
                              [.integer(projectID)]).map(Self.wizardSelectionRecord)
     }
 
+    /// Preserve planner order within a Mini run, independently of later take edits.
+    func fetchWizardSelections(projectID: Int64, miniBatch: String) throws -> [WizardSelectionRecord] {
+        try connection.query("SELECT * FROM wizard_selections WHERE project_id = ? AND mini_batch = ? ORDER BY id",
+                             [.integer(projectID), .text(miniBatch)]).map(Self.wizardSelectionRecord)
+    }
+
+    /// Replace only this run's Q&A selections atomically. Failed writes retain the
+    /// previous batch; current saved scene edits are read inside the transaction.
+    func replaceMiniQASelections(projectID: Int64, videoID: Int64, miniBatch: String,
+                                 kept: Set<Int64>, rows: [TranscriptRow], labels: [Int64: String],
+                                 turns: [SpeakerTurn], options: WizardStep1Options) throws -> [MiniWizardCandidate] {
+        try connection.transaction {
+            let scenes = try fetchScenes(projectID: projectID, includeExcluded: true).filter { $0.videoID == videoID }
+            let sections = TranscriptQASections.sections(scenes: scenes, rows: rows, labels: labels)
+            let plans = MiniWizardQARules.plans(sections: sections, kept: kept, rows: rows, turns: turns)
+            try connection.execute("DELETE FROM wizard_selections WHERE project_id = ? AND mini_batch = ? AND recipe = 'podcast'",
+                                   [.integer(projectID), .text(miniBatch)])
+            var step1 = options
+            step1.formatPreset = "podcast"
+            step1.targetDurationSeconds = nil
+            var candidates: [MiniWizardCandidate] = []
+            for plan in plans {
+                let id = try insertWizardSelection(projectID: projectID, name: plan.headline ?? "Exchange",
+                    recipe: "podcast", step1Options: step1, miniBatch: miniBatch)
+                let take = try insertWizardSelectionTake(selectionID: id, plan: plan)
+                guard let selection = try wizardSelection(id: id) else { throw WizardSelectionError.missingSelection }
+                candidates.append(MiniWizardCandidate(selection: selection, take: take))
+            }
+            return candidates
+        }
+    }
+
+    /// Save the joined take and its exact selection name together, off the main actor.
+    func recordMiniCombinedTake(projectID: Int64, miniBatch: String, name: String,
+                                takes: [WizardSelectionTake], options: WizardStep1Options) throws -> WizardSelectionTake {
+        try connection.transaction {
+            guard !takes.isEmpty else { throw WizardSelectionError.missingTake }
+            let scenes = try fetchScenes(projectID: projectID, includeExcluded: true)
+            let resolved = try takes.map { take in
+                guard let selection = try wizardSelection(id: take.selectionID),
+                      selection.projectID == projectID, selection.miniBatch == miniBatch else {
+                    throw WizardSelectionError.wrongSelection
+                }
+                guard let plan = WizardSelectionRules.resolvedPlan(take.plan, scenes: scenes) else {
+                    throw WizardSelectionError.footageChanged
+                }
+                var take = take
+                take.plan = plan
+                return take
+            }
+            var step1 = options
+            step1.targetDurationSeconds = nil
+            let id = try insertWizardSelection(projectID: projectID, name: name,
+                recipe: options.formatPreset ?? "custom", step1Options: step1, miniBatch: miniBatch)
+            return try insertWizardSelectionTake(selectionID: id, plan: WizardPlanRules.combinedPlan(resolved))
+        }
+    }
+
     func renameWizardSelection(id: Int64, name: String) throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
@@ -240,7 +300,7 @@ extension Database {
             projectID: row["project_id"]?.intValue ?? 0, name: row["name"]?.stringValue ?? "",
             recipe: row["recipe"]?.stringValue ?? "custom", step1Options: options,
             bestTakeID: row["best_take_id"]?.intValue, createdAt: row["created_at"]?.stringValue,
-            editedAt: row["edited_at"]?.stringValue)
+            editedAt: row["edited_at"]?.stringValue, miniBatch: row["mini_batch"]?.stringValue)
     }
 
     private nonisolated static func wizardTakeRecord(_ row: SQLRow) throws -> WizardSelectionTake {

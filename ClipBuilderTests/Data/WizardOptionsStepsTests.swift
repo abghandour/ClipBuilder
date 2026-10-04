@@ -31,6 +31,10 @@ struct WizardOptionsStepsTests {
         options.overlayAnimation = "fade"
         options.overlayPlacement = "bottom"
         options.captionLanguage = "pt"
+        options.nameTags = true
+        options.nameTagContent = "nameAndRole"
+        options.nameTagStyle = "Guest look"
+        options.nameTagPosition = "topTrailing"
         options.allowedTransitions = ["fade"]
         options.highlightFraming = .grid
         options.pacing = EditPacing(cadence: .threeSeconds, curve: .accelerate)
@@ -66,6 +70,9 @@ struct WizardOptionsStepsTests {
         let step2 = try decoder.decode(WizardStep2Options.self, from: Data("{}".utf8))
         let merged = WizardOptions.merge(step1: step1, step2: step2)
         #expect(merged.useMusic && merged.useBRoll && merged.critiqueLoop)
+        #expect(step2.nameTags == nil && step2.nameTagContent == nil && step2.nameTagStyle == nil && step2.nameTagPosition == nil)
+        let legacy = try decoder.decode(WizardOptions.self, from: Data("{}".utf8))
+        #expect(legacy.nameTags == nil && legacy.nameTagContent == nil && legacy.nameTagStyle == nil && legacy.nameTagPosition == nil)
         #expect(merged.pacing == EditPacing())
         var original = WizardRunSettings(options: WizardOptions())
         original.options.musicTrack = "New track"

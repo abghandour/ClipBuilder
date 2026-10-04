@@ -21,7 +21,8 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
+        case nameTags, nameTagContent, nameTagStyle, nameTagPosition
+        case captionPosition, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
     }
 
@@ -36,12 +37,19 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var projectID: Int64?
     var renderSettings = RenderSettings()
     var pacing = EditPacing()
+    var captionPosition: String?
+    var captionStyleID: String?
     var captionLanguage: String?
     var workflow: WizardWorkflow?
     var resolvedWorkflow: WizardWorkflow { workflow ?? .automatic }
     var muteSource = false
     var addCaptions = false
     var enableTextOverlays = false
+    var nameTagsOnly: Bool?
+    var nameTags: Bool?
+    var nameTagContent: String?
+    var nameTagStyle: String?
+    var nameTagPosition: String?
     var useMusic = true
     /// Restrict render music to one library folder (root-relative,
     /// e.g. "Fights/Intros"; subfolders included). nil = the whole library.
@@ -399,7 +407,14 @@ actor WizardEngine {
     private let render: RenderEngine
     private let centerStage = CenterStageService()
 
-    init(ai: AIService, render: RenderEngine) {
+    typealias CaptionTranslation = @Sendable (Int64, [TranscriptRow], String, Database) async throws -> Int
+    private let translateCaptions: CaptionTranslation?
+    private let captionOnDevice: TranscriptTranslator.InstalledTranslation
+
+    init(ai: AIService, render: RenderEngine, translateCaptions: CaptionTranslation? = nil,
+         captionOnDevice: @escaping TranscriptTranslator.InstalledTranslation = TranscriptTranslator.translateInstalled) {
+        self.translateCaptions = translateCaptions
+        self.captionOnDevice = captionOnDevice
         self.ai = ai
         self.render = render
     }
@@ -407,6 +422,7 @@ actor WizardEngine {
     func findPodcastHighlights(options: WizardOptions, settings: PodcastSettings, database: Database,
                                emit: @escaping @Sendable (String) -> Void, requestText: String = "",
                                interpretRequest: Bool = true,
+                               avoidingRanges: [(videoID: Int64, start: Double, end: Double)] = [],
                                progress: @Sendable (String, Double) async -> Void = { _, _ in }) async throws -> PodcastHighlightReviewRequest {
         var options = options
         options.highlightMaxSeconds = PodcastSettings.clampHighlightSeconds(options.highlightMaxSeconds ?? settings.highlightMaxSeconds)
@@ -460,7 +476,9 @@ actor WizardEngine {
                             score: $0.score ?? 0, speakerKeys: $0.tags.filter { $0.hasPrefix("person:") }.map { String($0.dropFirst(7)) })
         }, segments: segments, turns: turns, roster: roster,
             maxSeconds: options.highlightMaxSeconds ?? settings.highlightMaxSeconds,
-            threshold: settings.highlightThreshold, maxCount: options.highlightMaxCount, highlightFraming: options.highlightFraming, instructions: requestText, ai: ai, model: options.modelOverride, log: emit, progress: progress)
+            threshold: settings.highlightThreshold, maxCount: options.highlightMaxCount, highlightFraming: options.highlightFraming,
+            excludedRanges: avoidingRanges.filter { $0.videoID == video.id }.map { (start: $0.start, end: $0.end) },
+            instructions: requestText, ai: ai, model: options.modelOverride, log: emit, progress: progress)
         let people = try await database.fetchPeople()
         return PodcastHighlightReviewRequest(video: video, candidates: candidates, scenes: scenes,
                                              segments: segments, turns: turns, roster: roster, people: people, options: options,
@@ -2306,10 +2324,112 @@ actor WizardEngine {
         return projectID
     }
 
+    nonisolated static func candidatesPrompt(count: Int, planningPrompt: String) -> String {
+        planningPrompt + """
+
+        ## MINI CANDIDATES — RESPONSE FORMAT OVERRIDE
+        Return \(count) alternative plans, each about target_duration (the requested length),
+        with no overlapping footage between candidates. These are separate reels, not parts of one reel.
+        Footage ranges on the same video must not overlap even when their scene IDs differ.
+        Return one top-level JSON object: {"candidates": [{plan}, ...]}.
+        Each plan follows the schema above, includes its own headline and a one-line reason in rationale.
+        If the footage cannot support \(count) non-overlapping plans, return fewer; never reuse footage to fill the quota.
+        """
+    }
+
+    /// One planner request for the whole batch; validation never retries the model.
+    func findCandidates(count: Int, options: WizardOptions, profile: BrandProfile,
+                        database: Database, emit: @escaping @Sendable (String) -> Void) async throws
+        -> (miniBatch: String, takes: [WizardSelectionTake]) {
+        guard count > 0 else { throw AIError.unusableResponse("Choose at least one candidate.") }
+        let options = options.neutralized(for: ReelRecipe.recipe(id: options.formatPreset) ?? .custom)
+        let projectID = try await selectionProjectID(options: options, profile: profile, database: database)
+        // Each alternative needs its own source pool budget, while the prompt retains
+        // the requested per-reel length. Do not shortlist for just one reel.
+        var poolOptions = options
+        poolOptions.targetDurationSeconds = (options.targetDurationSeconds ?? 30) * count
+        let inputs = try await loadPlanningInputs(options: poolOptions, profile: profile, database: database, emit: emit)
+        let prompt = Self.candidatesPrompt(count: count, planningPrompt: planPrompt(
+            profile: profile, research: inputs.research, scenes: inputs.scenes,
+            musicNames: inputs.music.map(\.name), signals: inputs.signals,
+            people: inputs.people, outcomes: inputs.outcomes, fightResearch: inputs.fightResearch,
+            videoTypes: inputs.videoTypes, topics: inputs.topics, cleanupCuts: inputs.cleanupCuts,
+            podcastTranscripts: inputs.podcastTranscripts, editingInsights: inputs.editingInsights,
+            options: options, localLearning: inputs.localLearning))
+        let frames = tasteExemplarFrames(profile: profile, options: options)
+        var recorder = LastPlanRecorder(profile: profile.profileName)
+        let attempt = recorder.begin(prompt: prompt, frames: frames.map(\.label))
+        defer {
+            do { try recorder.save() }
+            catch { emit("Could not save the plan prompt record: \(error.localizedDescription)") }
+        }
+        emit("Phase 2: Planning \(count) alternative candidates...")
+        let reply: AIResponse
+        do {
+            reply = try await ai.call(prompt: prompt, task: .wizard, frames: frames.isEmpty ? nil : frames,
+                                      model: options.modelOverride, timeout: 300, log: emit)
+        } catch {
+            recorder.failed(attempt, error: error)
+            recorder.accept(nil)
+            throw error
+        }
+        recorder.answered(attempt, provider: reply.provenance.provider, model: reply.provenance.model)
+        guard let raw = AIResponseParser.jsonObject(from: reply.text),
+              let candidates = raw["candidates"] as? [[String: Any]] else {
+            recorder.accept(nil)
+            throw AIError.unusableResponse("The planner did not return a candidates array.")
+        }
+        let validated = candidates.compactMap { raw -> WizardPlan? in
+            guard var plan = validatePlan(raw, scenes: inputs.sceneMap, musicNames: [], options: options,
+                podcastSentenceEnds: inputs.podcastSentenceEnds,
+                podcastSpeakerTurns: inputs.podcastSpeakerTurns, emit: emit) else { return nil }
+            if let reason = raw["reason"] as? String, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                plan.rationale = reason
+            }
+            plan.provenance = reply.provenance
+            return WizardSelectionRules.snapshot(plan, scenes: inputs.scenes)
+        }
+        let plans = Array(WizardPlanRules.candidatesWithoutOverlap(validated).prefix(count))
+        recorder.accept(plans.isEmpty ? nil : attempt)
+        guard !plans.isEmpty else {
+            throw AIError.unusableResponse("No usable, non-overlapping candidates were found. Try another length or instructions.")
+        }
+        emit("Kept \(plans.count) candidates from \(candidates.count) proposals after validation and overlap checks.")
+        try Task.checkCancellation()
+        let batch = UUID().uuidString
+        var takes: [WizardSelectionTake] = []
+        for (index, plan) in plans.enumerated() {
+            try Task.checkCancellation()
+            takes.append(try await database.recordWizardTake(projectID: projectID, options: options.step1,
+                plan: plan, miniBatch: batch, fallbackName: "Candidate \(index + 1)"))
+        }
+        return (batch, takes)
+    }
+
+    /// Convert finder ranges to saved single-cut plans on their containing exchange.
+    nonisolated static func miniHighlightPlans(_ candidates: [HighlightCandidate],
+                                               videoID: Int64, scenes: [SceneRecord]) -> [WizardPlan] {
+        let plans = candidates.compactMap { candidate -> WizardPlan? in
+            guard candidate.sourceStart.isFinite, candidate.sourceEnd.isFinite, candidate.duration > 0,
+                  let scene = scenes.first(where: {
+                      $0.videoID == videoID && $0.tags.contains("podcast-exchange")
+                          && $0.startTime <= candidate.sourceStart && $0.endTime >= candidate.sourceEnd
+                  }) else { return nil }
+            let clip = WizardPlanClip(sceneID: scene.id, start: candidate.sourceStart,
+                                      end: candidate.sourceEnd, reason: candidate.reason)
+            let plan = WizardPlan(targetDuration: candidate.duration, rationale: candidate.reason,
+                musicName: nil, musicVolume: 0, clips: [clip], transitions: [],
+                headline: candidate.title, framing: candidate.framing)
+            return WizardSelectionRules.snapshot(plan, scenes: [scene])
+        }
+        return WizardPlanRules.candidatesWithoutOverlap(plans)
+    }
+
     /// Step 1 creates one saved take. Previous takes supply editorial context and
     /// identify the selection; no presentation options are consumed here.
     func findMoments(options: WizardOptions, note: String? = nil,
                      previousTakes: [WizardSelectionTake] = [],
+                     avoidingRanges: [(videoID: Int64, start: Double, end: Double)] = [],
                      profile: BrandProfile, database: Database,
                      emit: @escaping @Sendable (String) -> Void) async throws
         -> (plan: WizardPlan, sceneMap: [Int64: SceneRecord], take: WizardSelectionTake) {
@@ -2326,6 +2446,12 @@ actor WizardEngine {
         let inputs = try await loadPlanningInputs(options: options, profile: profile,
                                                   database: database, emit: emit)
         var feedback = ""
+        if !avoidingRanges.isEmpty {
+            feedback += "\n## SOURCE VIDEO IDS FOR AVOID RANGES\n"
+            for scene in inputs.scenes {
+                feedback += "scene_id \(scene.id): video_id \(scene.videoID), source seconds \(scene.startTime)–\(scene.endTime)\n"
+            }
+        }
         if !previousTakes.isEmpty {
             feedback += "\n\n## PREVIOUS TAKES\n"
             for take in previousTakes.sorted(by: { $0.ordinal < $1.ordinal }).suffix(5) {
@@ -2341,6 +2467,10 @@ actor WizardEngine {
             database: database, critiqueFeedback: feedback.isEmpty ? nil : feedback, emit: emit).plan else {
             throw AIError.unusableResponse("Reel planning failed: the AI did not produce a usable plan — its raw response is in the log above.")
         }
+        let snapshot = WizardSelectionRules.snapshot(plan, scenes: inputs.scenes)
+        guard avoidingRanges.isEmpty || WizardPlanRules.avoidsRanges(snapshot, ranges: avoidingRanges) else {
+            throw AIError.unusableResponse("The new take overlaps another kept candidate. Try a different note or unkeep that candidate.")
+        }
         try Task.checkCancellation()
         let take = try await database.recordWizardTake(projectID: projectID, selectionID: selectionID,
                                                        options: options.step1, plan: plan, note: note)
@@ -2354,6 +2484,7 @@ actor WizardEngine {
                   profile: BrandProfile, database: Database,
                   batchID: String? = nil,
                   emit: @escaping @Sendable (String) -> Void,
+                  renderPlan: (@Sendable (WizardPlan, WizardOptions) async throws -> Void)? = nil,
                   renderTake: (@Sendable (WizardSelectionTake, WizardOptions) async throws -> Void)? = nil) async throws {
         guard let saved = try await database.wizardSelectionTake(id: take.id),
               let selection = try await database.wizardSelection(id: saved.selectionID) else {
@@ -2373,14 +2504,87 @@ actor WizardEngine {
         }
         try await renderSelection(plan, takeID: saved.id, options: options,
                                   profile: profile, database: database, batchID: batchID,
-                                  emit: emit)
+                                  emit: emit, renderPlan: renderPlan)
+    }
+
+    /// Prepare each source once, before any clips are assembled or extracted in parallel.
+    func prepareCaptionTranslations(plan: WizardPlan, options: WizardOptions,
+                                    sceneMap: [Int64: SceneRecord], database: Database,
+                                    emit: @escaping @Sendable (String) -> Void) async throws {
+        guard options.addCaptions, let target = options.captionLanguage, !target.isEmpty else { return }
+        var rangesByVideo: [Int64: [(start: Double, end: Double)]] = [:]
+        var sources: [SceneRecord] = []
+        for clip in plan.clips {
+            let cuts = [(sceneID: clip.sceneID, start: clip.start, end: clip.end)]
+                + clip.areaClips.map { (sceneID: $0.sceneID, start: $0.start, end: $0.end) }
+            for cut in cuts {
+                guard let scene = sceneMap[cut.sceneID] else { continue }
+                if rangesByVideo[scene.videoID] == nil { sources.append(scene) }
+                rangesByVideo[scene.videoID, default: []].append((cut.start, cut.end))
+            }
+        }
+        let languageName = Locale(identifier: "en").localizedString(forIdentifier: target) ?? target
+        for scene in sources {
+            try Task.checkCancellation()
+            do {
+                let rows = try await database.fetchTranscripts(videoID: scene.videoID)
+                let originals = WizardCaptionChoices.rowsNeedingTranslation(
+                    originals: rows.filter { !$0.isTranslation && $0.language != target },
+                    translations: rows.filter { $0.isTranslation && $0.language == target },
+                    ranges: rangesByVideo[scene.videoID] ?? [], padding: 1)
+                guard !originals.isEmpty else { continue }
+                emit("Captions: translating \(originals.count) lines of \(scene.videoFilename) to \(languageName)…")
+                let count: Int
+                if let translateCaptions {
+                    count = try await translateCaptions(scene.videoID, originals, target, database)
+                    emit("Captions: translated \(count) of \(originals.count) lines")
+                } else {
+                    count = try await TranscriptTranslator.translateBatched(videoID: scene.videoID, originals: originals,
+                        target: target, ai: ai, database: database, onDevice: captionOnDevice,
+                        log: { emit($0) }).segments
+                }
+                try Task.checkCancellation()
+                guard count > 0, try await database.hasTranscriptTranslation(videoID: scene.videoID, language: target) else {
+                    throw AIError.unusableResponse("The translator returned no caption lines.")
+                }
+                emit("Captions: \(scene.videoFilename) translated \(count) lines")
+            } catch {
+                if error is CancellationError { throw error }
+                try Task.checkCancellation()
+                emit("Captions: could not translate \(scene.videoFilename) to \(languageName) (\(error.userMessage)) — using the original language")
+            }
+        }
+    }
+
+    /// The query intentionally falls back for missing intervals. Make that choice
+    /// visible, including partial translations, without repeating it for every cut.
+    func captionSegments(videoID: Int64, filename: String, start: Double, end: Double,
+                         language: String?, database: Database, fallbacks: WizardCaptionFallbackLog,
+                         emit: @escaping @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+        try Task.checkCancellation()
+        if let language, !language.isEmpty,
+           try await database.originalTranscriptLanguage(videoID: videoID) != language,
+           try await !database.hasTranscriptTranslation(videoID: videoID, language: language, start: start, end: end) {
+            let originals = try await database.transcriptSegments(videoID: videoID, start: start, end: end)
+            if !originals.isEmpty, await fallbacks.shouldLog(videoID: videoID, language: language) {
+                let name = Locale(identifier: "en").localizedString(forIdentifier: language) ?? language
+                emit("Captions: no \(name) translation for \(filename) in this cut — using the original language")
+            }
+            return originals
+        }
+        return try await database.transcriptSegments(videoID: videoID, start: start, end: end, language: language)
     }
 
     private func renderSelection(_ selection: WizardPlan, takeID: Int64? = nil, options: WizardOptions,
                                  profile: BrandProfile, database: Database,
                                  batchID: String? = nil,
-                                 emit rawEmit: @escaping @Sendable (String) -> Void) async throws {
-        let options = options.neutralized(for: ReelRecipe.recipe(id: options.formatPreset) ?? .custom)
+                                 emit rawEmit: @escaping @Sendable (String) -> Void,
+                                 renderPlan: (@Sendable (WizardPlan, WizardOptions) async throws -> Void)? = nil) async throws {
+        var options = options
+        // Highlights is a finder recipe. Saved highlight cuts use the podcast renderer,
+        // including camera focus, captions, bumpers and branding chosen in step 2.
+        if options.formatPreset == ReelRecipe.podcastHighlights.id { options.formatPreset = "podcast" }
+        options = options.neutralized(for: ReelRecipe.recipe(id: options.formatPreset) ?? .custom)
         guard !selection.clips.isEmpty else {
             throw AIError.unusableResponse("Accept at least one proposed cut before rendering.")
         }
@@ -2428,6 +2632,15 @@ actor WizardEngine {
                     .flatMap { WizardTextStyle.animations.contains($0) ? $0 : nil }
                 plan.clips[index].overlayPlacement = options.overlayPlacement
                     .flatMap { WizardTextStyle.placements.contains($0) ? $0 : nil }
+            }
+            if options.nameTagsOnly == true { plan = WizardPlanRules.nameTagsOnly(plan: plan) }
+            plan = WizardNameTags.renderPlan(plan, options: options)
+            try await prepareCaptionTranslations(plan: plan, options: options, sceneMap: sceneMap,
+                                                 database: database, emit: emit)
+            // Exercise the prepared render plan in tests without encoding or calling caption AI.
+            if let renderPlan {
+                try await renderPlan(plan, options)
+                return
             }
             if options.formatPreset != "podcast" {
                 plan = await snapCutsToBeats(plan, music: music, sceneMap: sceneMap, emit: emit)
@@ -2970,6 +3183,11 @@ actor WizardEngine {
                     area.startTime += cursor
                     document.videoTrack.append(area)
                 }
+                for var overlay in podcastCut.textOverlays {
+                    overlay.startTime += cursor
+                    overlay.endTime += cursor
+                    document.textOverlays.append(overlay)
+                }
                 for var block in podcastCut.cropBlocks {
                     block.startTime += cursor
                     document.cropBlocks.append(block)
@@ -3181,6 +3399,7 @@ actor WizardEngine {
                           brollCache: inout WizardPodcastBRoll.Cache,
                           batchID: String? = nil, selectionTakeID: Int64? = nil,
                           emit: @escaping @Sendable (String) -> Void) async throws -> AssemblyResult {
+        let plan = WizardNameTags.renderPlan(plan, options: options)
         let renderStarted = ContinuousClock.now
         emit("Wizard render start")
         defer { emit("Wizard render end; duration=\(renderStarted.duration(to: .now))") }
@@ -3208,21 +3427,24 @@ actor WizardEngine {
 
         // Extract every planned clip concurrently. Podcast layouts compose
         // first; captions, text overlays and mute share the final encode.
+        let profile = profile.withCaptionStyle(id: options.captionStyleID)
+        let captionStyle = profile.captions
+        let people = options.usesNameTags ? try await database.fetchPeople() : []
         let podcastCuts = try await WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: sceneMap,
-            options: options, database: database, log: emit)
+            options: options, database: database, captionStyle: captionStyle, log: emit)
         let jobs: [(index: Int, clip: WizardPlanClip, scene: SceneRecord)] =
             plan.clips.enumerated().compactMap { index, clip in
                 sceneMap[clip.sceneID].map { (index, clip, $0) }
             }
         let clipCount = plan.clips.count
-        let captionStyle = profile.captions
+        let captionFallbacks = WizardCaptionFallbackLog()
         let brandOverlayFiles = brandOverlays
         let extracted = try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
             try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
                                               scene: job.scene, sceneMap: sceneMap, options: options,
-                                              captionStyle: captionStyle,
+                                              captionStyle: captionStyle, captionFallbacks: captionFallbacks,
                                               brandOverlays: brandOverlayFiles,
-                                              podcastDocument: podcastCuts[job.index], profile: profile,
+                                              podcastDocument: podcastCuts[job.index], nameTagPeople: people, profile: profile,
                                               database: database, scratch: scratch,
                                               emit: emit)
         }
@@ -3251,9 +3473,25 @@ actor WizardEngine {
             renderSettings: options.renderSettings, pacing: options.pacing, podcastFraming: options.podcastFraming,
             podcastCuts: podcastCuts)
             .keepingOverlaysClearOfPlatformChrome()
+        var tagCursor = 0.0
+        for (index, clip) in editPlan.clips.enumerated() {
+            guard let scene = sceneMap[clip.sceneID] else { continue }
+            let duration = podcastCuts[index] != nil ? clip.end - clip.start
+                : ((clip.end - clip.start) / clip.speed * 10).rounded() / 10
+            if podcastCuts[index] == nil {
+                for var item in WizardNameTags.ordinary(scene: scene, duration: duration, people: people,
+                                                       options: options, captionStyle: captionStyle) {
+                    item.startTime += tagCursor
+                    item.endTime += tagCursor
+                    document.textOverlays.append(item)
+                }
+            }
+            tagCursor += duration
+        }
         for index in document.videoTrack.indices {
             document.videoTrack[index].muted = options.muteSource || document.videoTrack[index].muted
-            document.videoTrack[index].captions = options.addCaptions ? "bottom" : "none"
+            document.videoTrack[index].captions = options.addCaptions && document.videoTrack[index].track == 0
+                ? (options.captionPositionOverride ?? captionStyle.position) : "none"
         }
         // Brand cards must outlive scratch cleanup so Builder can reopen them.
         let cards = SettingsStore.cacheDirectory.appendingPathComponent("wizard-cards/" + UUID().uuidString,
@@ -3411,9 +3649,9 @@ actor WizardEngine {
     private func extractPlannedClip(_ clip: WizardPlanClip, index: Int, of total: Int,
                                     scene: SceneRecord, sceneMap: [Int64: SceneRecord] = [:],
                                     options: WizardOptions,
-                                    captionStyle: CaptionStyle,
+                                    captionStyle: CaptionStyle, captionFallbacks: WizardCaptionFallbackLog,
                                     brandOverlays: [URL] = [],
-                                    podcastDocument: TimelineDocument? = nil, profile: BrandProfile,
+                                    podcastDocument: TimelineDocument? = nil, nameTagPeople: [PersonRecord] = [], profile: BrandProfile,
                                     database: Database, scratch: URL,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> URL {
         // Source seconds consumed vs seconds on screen — slow motion
@@ -3447,7 +3685,18 @@ actor WizardEngine {
         var overlays: [RenderEngine.ClipOverlay] = brandOverlays.map {
             RenderEngine.ClipOverlay(png: $0, x: 0, y: 0, start: 0, end: duration)
         }
-        if options.enableTextOverlays {
+        if options.usesNameTags {
+            let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
+                                               videoHeight: RenderEngine.outputHeight)
+            let tags = podcastDocument?.textOverlays.filter { $0.design == "nameTag" }
+                ?? WizardNameTags.ordinary(scene: scene, duration: duration, people: nameTagPeople,
+                                          options: options, captionStyle: captionStyle)
+            for item in tags {
+                let png = try renderer.render(item, to: scratch)
+                overlays.append(RenderEngine.ClipOverlay(png: png, x: 0, y: 0, start: item.startTime, end: item.endTime))
+            }
+        }
+        if options.enableTextOverlays && !options.usesNameTags {
             let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
                                                videoHeight: RenderEngine.outputHeight)
             for introduction in clip.speakerIntroductions {
@@ -3462,17 +3711,26 @@ actor WizardEngine {
             let renderer = CaptionRenderer(videoWidth: RenderEngine.outputWidth,
                                            videoHeight: RenderEngine.outputHeight,
                                            style: captionStyle)
-            let sourceSegments = (try? await database.transcriptSegments(
-                videoID: scene.videoID, start: clip.start, end: clip.end,
-                language: options.captionLanguage)) ?? []
-            for segment in sourceSegments {
-                let start = max(0, segment.start - clip.start)
-                let end = min(duration, segment.end - clip.start)
-                guard end > start + 0.1 else { continue }
+            let sourceSegments: [TranscriptSegment]
+            do {
+                sourceSegments = try await captionSegments(videoID: scene.videoID, filename: scene.videoFilename,
+                    start: clip.start, end: clip.end, language: options.captionLanguage,
+                    database: database, fallbacks: captionFallbacks, emit: emit)
+            } catch {
+                if error is CancellationError { throw error }
+                try Task.checkCancellation()
+                emit("Captions: could not read \(scene.videoFilename) (\(error)) — skipping captions")
+                sourceSegments = []
+            }
+            let captionSpeed = podcastDocument == nil ? clip.speed : 1
+            for segment in sourceSegments.flatMap({ renderer.pages(for: $0) }) {
+                let start = max(0, (segment.start - clip.start) / captionSpeed)
+                let end = min(duration, (segment.end - clip.start) / captionSpeed)
+                guard end > start else { continue }
                 let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { continue }
                 guard let rendered = try? renderer.render(text: text, to: scratch) else { continue }
-                let (x, y) = renderer.position(for: rendered)
+                let (x, y) = renderer.position(for: rendered, positionOverride: options.captionPositionOverride)
                 overlays.append(RenderEngine.ClipOverlay(png: rendered.pngURL, x: x, y: y,
                                                          start: start, end: end))
             }
@@ -3537,7 +3795,12 @@ actor WizardEngine {
         }
 
         let output = scratch.appendingPathComponent("clip_\(index).mp4")
-        if let podcastDocument {
+        if var podcastDocument {
+            // The final extract overlays own captions (including translated
+            // fallback rows) and tags in one pass. Keep them in the editable
+            // document, but do not burn a second copy in this framing prepass.
+            for index in podcastDocument.videoTrack.indices { podcastDocument.videoTrack[index].captions = "none" }
+            podcastDocument.textOverlays.removeAll { $0.design == "nameTag" }
             let framed = try await MultitrackRenderer(render: render).render(document: podcastDocument,
                 scenes: Array(sceneMap.values), profile: profile, database: database, preview: true, emit: emit)
             defer { try? FileManager.default.removeItem(at: framed.url) }

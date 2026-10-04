@@ -188,7 +188,9 @@ extension TextOverlayItem {
 
     /// The same overlay moved into the safe area (a no-op when nil).
     func keptClear(of safeArea: PlatformSafeArea?) -> TextOverlayItem {
-        guard let safeArea else { return self }
+        // NameTagPlanner already resolves Auto safety and caption clearance.
+        // Re-clamping here would undo explicit corners and caption stacking.
+        guard design != "nameTag", let safeArea else { return self }
         let box = normalizedBox
         let center = safeArea.clampedCenter(x: box.midX, y: box.midY, width: box.width, height: box.height)
         var item = self

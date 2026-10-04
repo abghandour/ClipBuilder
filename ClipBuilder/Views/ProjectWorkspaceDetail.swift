@@ -23,6 +23,9 @@ struct ProjectWorkspaceDetail: View {
                     }
                 case .wizard:
                     WizardView()
+                case .wizardMini:
+                    MiniWizardView(profileName: store.activeProfile.profileName)
+                        .id(store.activeProfile.profileName)
                 case .outputs:
                     LibraryView()
                 case .people:
@@ -37,6 +40,9 @@ struct ProjectWorkspaceDetail: View {
                     AssetBrowserView(kind: .fonts)
                 case .images:
                     AssetBrowserView(kind: .images)
+                case .captions:
+                    CaptionStylesView()
+                        .id(store.activeProfile.profileName)
                 case .overlays:
                     OverlayTemplatesView()
                 case .effects:

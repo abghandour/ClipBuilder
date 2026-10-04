@@ -113,3 +113,29 @@ struct WizardPodcastTimelineTests {
         }
     }
 }
+
+extension WizardPodcastTimelineTests {
+    @Test func captionPositionAndPersistentTagsSurviveComposedCutDocuments() throws {
+        let (video, scene, turns) = try source()
+        let people = [PersonRecord(id: 1, key: "ann", name: "Ann", descriptor: "Host"),
+                      PersonRecord(id: 2, key: "bob", name: "Bob", descriptor: "Guest")]
+        var options = WizardOptions()
+        options.formatPreset = "podcast"
+        options.highlightFraming = .talkerAndPrevious
+        options.nameTags = true
+        options.nameTagContent = "nameAndRole"
+        options.addCaptions = true
+        options.captionPosition = "bottom"
+        let plan = Fixtures.plan(clips: [Fixtures.planClip(start: 0, end: 10)])
+        let cuts = WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: [1: scene], options: options,
+            videos: [video], turns: [1: turns], layouts: ScreenCropStore.builtIn, people: people)
+        let cut = try #require(cuts[0])
+        #expect(cut.videoTrack.filter { $0.track == 0 }.allSatisfy { $0.captions == "bottom" })
+        #expect(cut.videoTrack.filter { $0.track != 0 }.allSatisfy { $0.captions == "none" })
+        #expect(cut.textOverlays.count == 4)
+        #expect(cut.textOverlays.allSatisfy { $0.design == "nameTag" && $0.transIn == "cut" && $0.transOut == "cut" })
+        let document = WizardEngine.timelineDocument(from: plan, sceneMap: [1: scene], podcastCuts: cuts)
+        #expect(document.textOverlays == cut.textOverlays)
+        #expect(cut.textOverlays.contains { $0.text == "Bob\nGuest" && $0.startTime == 4 })
+    }
+}

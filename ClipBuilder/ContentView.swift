@@ -154,11 +154,13 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case fonts
     case images
     case overlays
+    case captions
     case effects
     case looks
     case screenCrops
     case bumpers
     case wizard
+    case wizardMini
     case learned
     case builder
     case library
@@ -169,14 +171,14 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 
     /// People sit with the project: a project's People screen shows only
     /// people with footage in it (identities stay profile-wide).
-    static let projectSections: [SidebarSection] = [.sources, .scenes, .wizard, .timelines, .outputs, .people]
+    static let projectSections: [SidebarSection] = [.sources, .scenes, .wizard, .wizardMini, .timelines, .outputs, .people]
     static let studioSections: [SidebarSection] = [.instagram, .instagramReports]
     /// Every resource library is its own row: one click, one screen, as the
     /// app always had it — a tab strip inside one screen hid them.
     /// AI Lessons sits with the resources: like them it is profile-wide and
     /// syncs with the Drive home (up when a nickname is set, down always).
     static let resourceSections: [SidebarSection] = [
-        .music, .fonts, .images, .overlays, .effects, .looks, .screenCrops, .bumpers, .learned,
+        .music, .fonts, .images, .overlays, .captions, .effects, .looks, .screenCrops, .bumpers, .learned,
     ]
     static let visibleSections = projectSections + studioSections + resourceSections
 
@@ -192,8 +194,8 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .people: return "6"
         case .instagram: return "7"
         case .instagramReports: return "8"
-        case .projects, .analyze, .builder, .library, .resources, .learned,
-             .music, .fonts, .images, .overlays, .effects, .looks, .screenCrops: return nil
+        case .projects, .analyze, .builder, .library, .resources, .learned, .wizardMini,
+             .music, .fonts, .images, .overlays, .captions, .effects, .looks, .screenCrops: return nil
         }
     }
 
@@ -216,12 +218,14 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .outputs, .library: return "Outputs"
         case .learned: return "AI Lessons"
         case .wizard: return "AI Wizard"
+        case .wizardMini: return "AI Wizard Mini"
         case .instagram: return "Posts"
         case .instagramReports: return "Reports"
         case .resources: return "Resources"
         case .music: return AssetKind.music.title
         case .fonts: return AssetKind.fonts.title
         case .images: return AssetKind.images.title
+        case .captions: return "Captions"
         case .overlays: return "Overlays"
         case .effects: return "Transitions"
         case .looks: return "Looks"
@@ -240,12 +244,14 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .outputs, .library: return "play.rectangle"
         case .learned: return "graduationcap"
         case .wizard: return "wand.and.stars"
+        case .wizardMini: return "wand.and.stars.inverse"
         case .instagram: return "camera"
         case .instagramReports: return "chart.bar.xaxis"
         case .resources: return "line.3.horizontal"
         case .music: return AssetKind.music.systemImage
         case .fonts: return AssetKind.fonts.systemImage
         case .images: return AssetKind.images.systemImage
+        case .captions: return "captions.bubble"
         case .overlays: return "character.textbox"
         case .effects: return "rectangle.on.rectangle"
         case .looks: return "camera.filters"
@@ -262,6 +268,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .timelines, .builder: .timelines
         case .learned: .learned
         case .wizard: .wizard
+        case .wizardMini: .wizardMini
         case .outputs, .library: .outputs
         case .people: .people
         case .instagram: .instagram
@@ -269,11 +276,19 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .resources, .music: .music
         case .fonts: .fonts
         case .images: .images
+        case .captions: .captions
         case .overlays: .overlays
         case .effects: .effects
         case .looks: .looks
         case .bumpers: .bumpers
         case .screenCrops: .screenCrops
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .wizardMini: "Choose one analyzed video, review its footage, then set the look."
+        default: title
         }
     }
 }

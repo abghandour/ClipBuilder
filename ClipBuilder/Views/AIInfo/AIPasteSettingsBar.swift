@@ -59,7 +59,7 @@ struct AIPasteSettingsBar: View {
             sameVideo: analysis?.wrappedValue.videoPath)
         AISettingsPreferences.write(
             applied.settings, kind: kind, scopes: envelope.scopes, sourceName: envelope.sourceName,
-            defaults: defaults)
+            profileName: store.activeProfile.profileName, defaults: defaults)
         if let analysis,
             let value = AISettingsJSON.decode(
                 AnalysisRunSettings.self, AISettingsJSON.encode(applied.settings))

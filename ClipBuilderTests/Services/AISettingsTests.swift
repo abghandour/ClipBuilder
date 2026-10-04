@@ -328,3 +328,21 @@ struct AIProvenanceDurationTests {
         #expect(AIProvenance.appleSpeech(duration: 40).durationLabel == "40 s")
     }
 }
+
+extension AISettingsTests {
+    @Test func pastedCaptionChoicesAreProfileScoped() throws {
+        let suite = "CaptionPaste.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let choices: [String: JSONSetting] = ["captionPosition": .string("top"), "captionStyleID": .string("style-id")]
+        AISettingsPreferences.write(choices, kind: .wizard, scopes: [.options], profileName: "First", defaults: defaults)
+        let restored = AISettingsPreferences.wizard(defaults: defaults, profile: Fixtures.brand(name: "First"))
+        #expect(restored["captionPosition"] == .string("top"))
+        #expect(restored["captionStyleID"] == .string("style-id"))
+        let other = AISettingsPreferences.wizard(defaults: defaults, profile: Fixtures.brand(name: "Second"))
+        #expect(other["captionPosition"] == .null && other["captionStyleID"] == .null)
+        AISettingsPreferences.write(["captionPosition": .null, "captionStyleID": .null],
+            kind: .wizard, scopes: [.options], profileName: "First", defaults: defaults)
+        #expect(WizardCaptionChoices.load(profileName: "First", defaults: defaults) == WizardCaptionChoices())
+    }
+}

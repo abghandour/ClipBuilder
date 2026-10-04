@@ -681,7 +681,7 @@ extension MultitrackRendererPlanningTests {
         var changed = clip
         changed.effect = nil
         #expect(changed != clip)
-        #expect(RenderSegmentCache.rendererVersion == "multitrack-segment-v5")
+        #expect(RenderSegmentCache.rendererVersion == "multitrack-segment-v6")
     }
 }
 

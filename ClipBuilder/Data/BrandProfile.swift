@@ -51,6 +51,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var tagSchema: [String: [String]]
     var socials: [String: SocialSlot]
     var captions: CaptionStyle
+    var captionStyles: [NamedCaptionStyle]?
     // Brand kit — drives the wizard's watermark, headline, and outro card.
     /// Absolute path to the brand logo image ("" = no logo features).
     var logoPath: String
@@ -96,6 +97,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var criticBriefUse: CriticBriefUse = .automatic
     /// Last successful Instagram publish target for this profile.
     var instagramPublishAccount: String?
+    /// Private Mini Wizard instructions, shared by this profile's projects.
+    var miniInstructions: String?
 
     static let knownBuzzSources: [(key: String, label: String)] = [
         ("reddit", "Reddit (r/MMA and other MMA subreddits)"),
@@ -116,6 +119,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case socials
         case hashtags
         case captions
+        case captionStyles = "caption_styles"
         case logoPath = "logo_path"
         case accentColor = "accent_color"
         case tagline
@@ -136,6 +140,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case houseStyleProvenance = "house_style_provenance"
         case criticBriefUse = "critic_brief_use"
         case instagramPublishAccount = "instagram_publish_account"
+        case miniInstructions = "mini_instructions"
     }
 
     init(from decoder: Decoder) throws {
@@ -143,6 +148,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         learnedSharing = try container.decodeIfPresent(LearnedSharing.self, forKey: .learnedSharing) ?? LearnedSharing()
         criticBriefUse = try container.decodeIfPresent(CriticBriefUse.self, forKey: .criticBriefUse) ?? .automatic
         instagramPublishAccount = try container.decodeIfPresent(String.self, forKey: .instagramPublishAccount)
+        miniInstructions = try container.decodeIfPresent(String.self, forKey: .miniInstructions)
         profileName = try container.decodeIfPresent(String.self, forKey: .profileName) ?? "Default"
         brandName = try container.decodeIfPresent(String.self, forKey: .brandName) ?? profileName
         contentDomain = try container.decodeIfPresent(String.self, forKey: .contentDomain) ?? ""
@@ -152,6 +158,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
             ?? "~/Documents/ClipBuilder/\(profileName)/Output"
         tagSchema = try container.decodeIfPresent([String: [String]].self, forKey: .tagSchema) ?? [:]
         socials = try container.decodeIfPresent([String: SocialSlot].self, forKey: .socials) ?? [:]
+        captionStyles = try container.decodeIfPresent([NamedCaptionStyle].self, forKey: .captionStyles)
         captions = try container.decodeIfPresent(CaptionStyle.self, forKey: .captions) ?? CaptionStyle()
         logoPath = try container.decodeIfPresent(String.self, forKey: .logoPath) ?? ""
         accentColor = try container.decodeIfPresent(String.self, forKey: .accentColor) ?? ""
@@ -290,6 +297,7 @@ nonisolated struct SocialSlot: Codable, Sendable, Hashable {
 
 /// Burn-in caption style persisted with the profile (captions key).
 nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
+    var alignment: String?
     var font: String = "sans"          // sans | serif | mono | asset font name
     var color: String = "#ffffff"
     var bgOn: Bool = false
@@ -297,7 +305,7 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
     var position: String = "bottom"    // bottom | middle | top
 
     enum CodingKeys: String, CodingKey {
-        case font, color
+        case font, color, alignment
         case bgOn = "bg_on"
         case bgColor = "bg_color"
         case position
@@ -307,6 +315,7 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        alignment = try container.decodeIfPresent(String.self, forKey: .alignment)
         font = try container.decodeIfPresent(String.self, forKey: .font) ?? "sans"
         color = try container.decodeIfPresent(String.self, forKey: .color) ?? "#ffffff"
         bgOn = try container.decodeIfPresent(Bool.self, forKey: .bgOn) ?? false

@@ -3,6 +3,7 @@ import SwiftUI
 struct WizardCameraFocusPicker: View {
     @Binding var selection: String
     let allowsOriginal: Bool
+    var showsSummary: Bool = true
 
     var body: some View {
         Picker("Camera focus", selection: $selection) {
@@ -15,6 +16,8 @@ struct WizardCameraFocusPicker: View {
             }
         }
         .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-        FormCaption(WizardCameraFocus.summary(selection))
+        if showsSummary {
+            FormCaption(WizardCameraFocus.summary(selection))
+        }
     }
 }

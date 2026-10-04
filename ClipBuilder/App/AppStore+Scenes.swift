@@ -182,19 +182,25 @@ extension AppStore {
         guard let database, end > start else { return }
         let clearing = abs(start - scene.originalStart) < 0.05
             && abs(end - scene.originalEnd) < 0.05
-        Task {
+        let previous = sceneEditSaveTask
+        let generation = profileGeneration
+        let projectID = activeProjectID
+        sceneEditSaveTask = Task {
+            _ = try? await previous?.value
             do {
                 try await database.setSceneEditRange(scene.id,
                                                      start: clearing ? nil : start,
                                                      end: clearing ? nil : end)
             } catch {
-                presentError("Could not save the trim", error)
-                return
+                if generation == profileGeneration { presentError("Could not save the trim", error) }
+                throw error
             }
+            guard generation == profileGeneration, projectID == activeProjectID else { return }
             updateScene(scene.id) {
                 $0.startTime = clearing ? scene.originalStart : start
                 $0.endTime = clearing ? scene.originalEnd : end
             }
+            refreshMiniQASections()
             if scene.centerStagePathJSON != nil, let stored = scene.centerStagePath {
                 // Ends by re-reading this one row, so the new path lands
                 // without a whole-library reload.

@@ -3,6 +3,14 @@ import Testing
 @testable import Clip_Builder
 
 struct TranslationBatchTests {
+    @Test func timeoutDefaultsTo60AndAcceptsWizardOverride() async throws {
+        let stub = CaptionTranslationStub()
+        let ai = stub.service()
+        _ = try await TranslationBatch.perform(texts: ["Olá"], language: "en", ai: ai)
+        _ = try await TranslationBatch.perform(texts: ["Olá"], language: "en", ai: ai, timeout: 120)
+        #expect(stub.calls().map(\.timeout) == [60, 120])
+    }
+
     @Test func threeFailuresUseOneCall() async throws {
         let stub = try StubAI(response: "1. Olá\n2. Tchau\n3. Obrigado")
         let result = try await TranslationBatch.perform(texts: ["Hello", "Goodbye", "Thanks"], language: "pt-BR", ai: stub.service)

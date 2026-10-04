@@ -145,3 +145,50 @@ extension WizardSelectionStoreTests {
         #expect(exclusion.paths == ["/tmp/look1.mp4", "/tmp/look2.mp4", "/tmp/sibling.mp4"])
     }
 }
+
+extension WizardSelectionStoreTests {
+    @Test func miniBatchQueriesKeepProjectScopeAndPlannerOrderAcrossRegeneration() async throws {
+        let temp = try TempDatabase()
+        let db = temp.database
+        let project = try await db.createProject(profileName: "Test", name: "Mini")
+        let other = try await db.createProject(profileName: "Test", name: "Other")
+        let options = WizardOptions().step1
+        let first = try await db.recordWizardTake(projectID: project, options: options, plan: Fixtures.plan(),
+                                                  miniBatch: "batch-a", fallbackName: "Candidate 1")
+        var named = Fixtures.plan()
+        named.headline = "The decisive moment"
+        let second = try await db.recordWizardTake(projectID: project, options: options, plan: named,
+                                                   miniBatch: "batch-a", fallbackName: "Candidate 2")
+        _ = try await db.recordWizardTake(projectID: project, options: options, plan: Fixtures.plan(), miniBatch: "batch-b")
+        _ = try await db.recordWizardTake(projectID: other, options: options, plan: Fixtures.plan(), miniBatch: "batch-a")
+        let ordinary = try await db.recordWizardTake(projectID: project, options: options, plan: Fixtures.plan())
+        let next = try await db.recordWizardTake(projectID: project, selectionID: first.selectionID,
+                                                 options: options, plan: named, note: "A stronger opening")
+        let rows = try await db.fetchWizardSelections(projectID: project, miniBatch: "batch-a")
+        #expect(rows.map(\.id) == [first.selectionID, second.selectionID])
+        #expect(rows.map(\.name) == ["Candidate 1", "The decisive moment"])
+        #expect(rows.allSatisfy { $0.miniBatch == "batch-a" })
+        #expect(next.ordinal == 2 && next.selectionID == first.selectionID)
+        #expect(try await db.wizardSelection(id: ordinary.selectionID)?.miniBatch == nil)
+        #expect(try await db.fetchWizardSelections(projectID: project).count == 4)
+        #expect(try await db.fetchWizardSelections(projectID: project, miniBatch: "missing").isEmpty)
+        let reopened = try Database(path: temp.path)
+        #expect(try await reopened.fetchWizardSelections(projectID: project, miniBatch: "batch-a").count == 2)
+    }
+
+    @Test func miniBatchMigrationPreservesVersion21SelectionsAndTakes() async throws {
+        let temp = try TempDatabase()
+        let project = try await temp.database.createProject(profileName: "Test", name: "Old selections")
+        let take = try await temp.database.recordWizardTake(projectID: project, options: WizardOptions().step1,
+                                                           plan: Fixtures.plan())
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("ALTER TABLE wizard_selections DROP COLUMN mini_batch")
+        try raw.execute("PRAGMA user_version = 21")
+        let migrated = try Database(path: temp.path)
+        #expect(try raw.columnNames(of: "wizard_selections").contains("mini_batch"))
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
+        #expect(try await migrated.wizardSelection(id: take.selectionID)?.miniBatch == nil)
+        #expect(try await migrated.wizardSelectionTake(id: take.id)?.ordinal == 1)
+        #expect(try await migrated.fetchWizardSelections(projectID: project).count == 1)
+    }
+}

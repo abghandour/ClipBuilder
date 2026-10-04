@@ -1402,7 +1402,7 @@ actor MultitrackRenderer {
                 segmentComplete = false
                 continue
             }
-            for row in rows {
+            for row in rows.flatMap({ captionRenderer.pages(for: $0) }) {
                 // Shift to segment-local SCREEN time (slow motion stretches
                 // it) and clamp to the window, like get_transcript_for_clip.
                 let start = max(0, (row.start - sourceStart) / clip.speed)
@@ -1701,7 +1701,7 @@ actor MultitrackRenderer {
         for (capIndex, caption) in captions.enumerated() {
             let outLabel = capIndex == captions.count - 1 && overlays.isEmpty ? "[vout]" : "[cap\(capIndex)]"
             filters.append("\(previous)[\(captionBase + capIndex):v]overlay=x=\(caption.x):y=\(caption.y):" +
-                           String(format: "enable='between(t,%.3f,%.3f)'", caption.start, caption.end) + outLabel)
+                           String(format: "enable='gte(t,%.3f)*lt(t,%.3f)'", caption.start, caption.end) + outLabel)
             previous = outLabel
         }
 

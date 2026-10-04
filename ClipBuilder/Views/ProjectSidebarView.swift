@@ -77,6 +77,7 @@ struct ProjectSidebarView: View {
                         .badge(section.shortcutLabel.map { Text($0).monospaced() })
                         .tag(section)
                         .disabled(store.activeProjectID == nil)
+                        .help(section.help)
                     }
                 } header: {
                     projectHeader
@@ -124,4 +125,3 @@ struct ProjectSidebarView: View {
         store.createProject(named: newProjectName)
     }
 }
-

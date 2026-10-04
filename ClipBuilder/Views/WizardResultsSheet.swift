@@ -31,6 +31,13 @@ struct WizardResultsSheet: View {
         })
     }
 
+    private let cardWidth: CGFloat = 320
+    private var idealSize: CGSize {
+        WizardResultsLayout.idealSize(count: visibleVideos.count,
+            cardSize: CGSize(width: cardWidth, height: 640),
+            screen: NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900))
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
@@ -40,6 +47,7 @@ struct WizardResultsSheet: View {
                          ? "Your video is ready"
                          : "\(visibleVideos.count) videos are ready")
                         .font(.headline)
+                        .lineLimit(1).fixedSize()
                     Spacer()
                     PlatformChromePicker().fixedSize()
                 }
@@ -51,8 +59,10 @@ struct WizardResultsSheet: View {
             }
             .padding()
 
-            ScrollView(.horizontal) {
-                HStack(alignment: .top, spacing: 16) {
+            ScrollView(.vertical) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: cardWidth, maximum: cardWidth + 60),
+                                             spacing: WizardResultsLayout.spacing, alignment: .top)],
+                          alignment: .center, spacing: WizardResultsLayout.spacing) {
                     ForEach(visibleVideos) { video in
                         videoCard(video)
                     }
@@ -65,7 +75,7 @@ struct WizardResultsSheet: View {
                     store.retryWizard()
                     dismiss()
                 } label: {
-                    Label("Generate Again", systemImage: "arrow.clockwise")
+                    Label("Generate Again", systemImage: "arrow.clockwise").lineLimit(1).fixedSize()
                 }
                 .help("Generate again with the same settings — a new plan, new videos")
 
@@ -77,7 +87,9 @@ struct WizardResultsSheet: View {
             }
             .padding()
         }
-        .frame(minWidth: 480)
+        .frame(minWidth: 520, idealWidth: idealSize.width, maxWidth: .infinity,
+               minHeight: 560, idealHeight: idealSize.height, maxHeight: .infinity)
+        .presentationSizing(.fitted)
         .modalCloseButton { dismiss() }
         .task {
             await store.refreshWizardSelections()
@@ -140,70 +152,80 @@ struct WizardResultsSheet: View {
         }
     }
 
-    @ViewBuilder
+    /// One result: the player, what it is, how to rate it, what to do next.
+    /// Grouped top to bottom so each row has one job.
     private func videoCard(_ video: GeneratedVideoRecord) -> some View {
-        VStack(spacing: 8) {
+        let take = takeInfo(for: video)
+        let isBest = bestCritiquedIDs.contains(video.id)
+        return VStack(alignment: .leading, spacing: Theme.spaceS) {
             PlayerView(player: players[video.id])
                 .frame(width: 210, height: 373)
-                .background(.black, in: RoundedRectangle(cornerRadius: 8))
+                .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
                 .overlay {
                     PlatformChromeLayer(size: CGSize(width: 210, height: 373),
                                         safeAreaSettings: store.activeProfile.defaultRenderSettings.platformSafeArea)
                 }
+                .frame(maxWidth: .infinity)
 
-            Text("\(video.filename) · \(video.duration.timecode)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            if let takeID = video.selectionTakeID,
-               let selection = store.wizardSelections.first(where: { $0.takes.contains { $0.id == takeID } }),
-               let take = selection.takes.first(where: { $0.id == takeID }) {
-                Button("Take \(take.ordinal)" + (take.criticScore.map { " · content \($0)/100" } ?? "")) {
-                    store.wizardResults = nil
-                    dismiss()
-                    store.openWizardSelection(selection.id, takeID: takeID)
-                }
-                .buttonStyle(.link).font(.caption).lineLimit(1).fixedSize()
-                if selection.selection.bestTakeID == takeID,
-                   selection.takes.contains(where: { $0.id != takeID && $0.proxyPath != nil }) {
-                    Button("Keep best only") { keepingTake = selection }
-                        .lineLimit(1).fixedSize().controlSize(.small)
-                        .disabled(store.isWizardRunning)
-                        .help("Delete other take previews; preserve the take history and scores")
-                }
-            }
-
-            if let critique = video.critique {
-                critiqueLine(critique, isBest: bestCritiquedIDs.contains(video.id))
-                if bestCritiquedIDs.contains(video.id) {
-                    Button("Keep best only") { keepingBest = video }
-                        .lineLimit(1).fixedSize()
-                        .controlSize(.small)
-                }
-            }
-
-            if let rationale = video.rationale, !rationale.isEmpty {
-                Text(rationale)
-                    .font(.caption2)
+            // What it is.
+            VStack(alignment: .leading, spacing: 2) {
+                Text(cardTitle(video))
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(video.rationale ?? video.filename)
+                Text("\(video.filename) · \(video.duration.timecode)")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(3)
-                    .frame(width: 210)
+                    .lineLimit(1).truncationMode(.middle)
+                    .help(video.filename)
             }
 
-            HStack(spacing: 12) {
+            if take != nil || video.critique != nil {
+                HStack(spacing: Theme.spaceS) {
+                    if let take {
+                        Button("Take \(take.take.ordinal)" + (take.take.criticScore.map { " · content \($0)/100" } ?? "")) {
+                            store.wizardResults = nil
+                            dismiss()
+                            store.openWizardSelection(take.selection.id, takeID: take.take.id)
+                        }
+                        .buttonStyle(.link).font(.caption)
+                        .help("Open this take in the selection review")
+                    }
+                    if let critique = video.critique {
+                        critiqueLine(critique, isBest: isBest)
+                    }
+                    Spacer(minLength: 0)
+                    if let take, take.canKeepBestOnly {
+                        Button("Keep best only") { keepingTake = take.selection }
+                            .controlSize(.small)
+                            .disabled(store.isWizardRunning)
+                            .help("Delete other take previews; preserve the take history and scores")
+                    } else if video.critique != nil, isBest {
+                        Button("Keep best only") { keepingBest = video }
+                            .controlSize(.small)
+                    }
+                }
+                .lineLimit(1)
+            }
+
+            Divider()
+
+            // Rate it.
+            HStack(spacing: Theme.spaceS) {
+                Text("Rate").font(.caption).foregroundStyle(.secondary)
                 ThumbsToggle(value: Binding(
                     get: { verdicts[video.id] ?? 0 },
                     set: { verdict in
                         verdicts[video.id] = verdict
                         saveQuickVerdict(verdict, for: video)
                     }))
-
-                Button("Full Review…") {
-                    reviewTarget = video
-                }
-                .controlSize(.small)
+                Spacer(minLength: 0)
+                Button("Full Review…") { reviewTarget = video }
+                    .controlSize(.small)
+                    .help("Rate each dimension and each clip")
             }
+            .lineLimit(1)
 
             // Free-text note straight into the wizard's training signals —
             // for anything the thumbs and review dimensions can't say.
@@ -219,65 +241,84 @@ struct WizardResultsSheet: View {
                     .disabled((feedbackDrafts[video.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
                     .help("Saved as a feedback note — the next runs and lesson distillation read it")
             }
-            .frame(width: 210)
 
-            Button("Fix with Wizard…", systemImage: "wand.and.stars") {
-                store.openInBuilder(video, fixWithWizard: true)
-                dismiss()
-            }
-            .labelStyle(.iconOnly)
-            .controlSize(.small)
-            .help("Open this result as a new timeline and preview fixes with Builder Wizard. Apply stays manual.")
-            AIInfoButton(output: video)
-            Button {
-                if store.builder.document.videoTrack.isEmpty {
-                    dismiss()
-                    store.openInBuilder(video)
-                } else {
-                    builderTarget = video
+            Divider()
+
+            // What next.
+            HStack(spacing: Theme.spaceS) {
+                Button("Edit in Builder") {
+                    if store.builder.document.videoTrack.isEmpty {
+                        dismiss()
+                        store.openInBuilder(video)
+                    } else {
+                        builderTarget = video
+                    }
                 }
-            } label: {
-                Label("Edit in Builder", systemImage: "slider.horizontal.below.rectangle")
+                .help("Open this video's timeline in the Builder to tweak clips, overlays, and music")
+                Button("Fix with Wizard…") {
+                    store.openInBuilder(video, fixWithWizard: true)
+                    dismiss()
+                }
+                .help("Open this result as a new timeline and preview fixes with Builder Wizard. Apply stays manual.")
+                Spacer(minLength: 0)
+                AIInfoButton(output: video)
+                    .help("How the AI made this video")
             }
             .controlSize(.small)
-            .help("Open this video's timeline in the Builder to tweak clips, overlays, and music")
+            .lineLimit(1)
         }
+        .padding(Theme.spaceM)
+        .frame(width: cardWidth, alignment: .top)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
     }
 
-    /// The critic's take on this version: score (colored by band), one-line
-    /// summary, and the full strengths/issues/notes in the tooltip.
-    @ViewBuilder
+    /// The reel's headline when the planner wrote one, else its file name.
+    private func cardTitle(_ video: GeneratedVideoRecord) -> String {
+        if let rationale = video.rationale?.trimmingCharacters(in: .whitespacesAndNewlines), !rationale.isEmpty {
+            return rationale
+        }
+        return (video.filename as NSString).deletingPathExtension
+    }
+
+    private struct TakeInfo {
+        var selection: WizardSelectionSummary
+        var take: WizardSelectionTake
+        var canKeepBestOnly: Bool
+    }
+
+    private func takeInfo(for video: GeneratedVideoRecord) -> TakeInfo? {
+        guard let takeID = video.selectionTakeID,
+              let selection = store.wizardSelections.first(where: { $0.takes.contains { $0.id == takeID } }),
+              let take = selection.takes.first(where: { $0.id == takeID }) else { return nil }
+        let canKeep = selection.selection.bestTakeID == takeID
+            && selection.takes.contains { $0.id != takeID && $0.proxyPath != nil }
+        return TakeInfo(selection: selection, take: take, canKeepBestOnly: canKeep)
+    }
+
+    /// The critic's score (colored by band) and BEST mark; the summary and
+    /// the full strengths/issues/notes are in the tooltip.
     private func critiqueLine(_ critique: ReelCritique, isBest: Bool) -> some View {
-        VStack(spacing: 2) {
-            HStack(spacing: 6) {
-                Label(critique.shortLabel, systemImage: "checkmark.seal.text")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(critique.score >= 85 ? .green
-                                     : critique.score >= 70 ? .yellow : .orange)
-                if isBest {
-                    Text("BEST")
-                        .font(.badgeCompact)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(.green.opacity(0.85), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
-                        .foregroundStyle(.black)
-                        .accessibilityLabel("Critic's favorite version")
-                }
-            }
-            if !critique.summary.isEmpty {
-                Text(critique.summary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.center)
+        HStack(spacing: 6) {
+            Label(critique.shortLabel, systemImage: "checkmark.seal.text")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(critique.score >= 85 ? .green
+                                 : critique.score >= 70 ? .yellow : .orange)
+            if isBest {
+                Text("BEST")
+                    .font(.badgeCompact)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(.green.opacity(0.85), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
+                    .foregroundStyle(.black)
+                    .accessibilityLabel("Critic's favorite version")
             }
         }
-        .frame(width: 210)
+        .lineLimit(1)
         .help(critiqueTooltip(critique))
     }
 
     private func critiqueTooltip(_ critique: ReelCritique) -> String {
-        var lines: [String] = []
+        var lines: [String] = critique.summary.isEmpty ? [] : [critique.summary]
         if !critique.strengths.isEmpty {
             lines.append("Strengths:")
             lines.append(contentsOf: critique.strengths.map { "  • \($0)" })

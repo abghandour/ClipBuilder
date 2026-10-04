@@ -12,7 +12,7 @@ enum PodcastHighlightTimeline {
             .min { $0.duration < $1.duration }
         builder.document = PodcastRecipeTimeline.build(kind: candidate.framing, video: video,
             range: candidate.sourceStart...candidate.sourceEnd, sourceScene: sourceScene,
-            turns: turns, roster: roster, layouts: layouts, settings: settings)
+            turns: turns, roster: roster, layouts: layouts, settings: settings, options: options, people: people)
         let tiles = CropRecipePlanner.tiles(video: video, roster: roster)
         guard options.useBRoll else { log("B-roll off"); return builder.document }
         let sources = PodcastHighlightBRollPlanner.sources(videoID: video.id, range: candidate.sourceRange,

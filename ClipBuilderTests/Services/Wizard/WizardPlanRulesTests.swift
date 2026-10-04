@@ -341,3 +341,98 @@ extension WizardPlanRulesTests {
         #expect(clip.overlayStyle == "banner")
     }
 }
+
+extension WizardPlanRulesTests {
+    @Test func miniCandidatesRejectOverlapAcrossSceneIDsButAllowTouchingAndDifferentVideos() {
+        var firstScene = Fixtures.scene(id: 1, start: 0, end: 30)
+        firstScene.videoDuration = 30
+        var secondScene = firstScene
+        secondScene.id = 2
+        var otherVideo = firstScene
+        otherVideo.id = 3
+        otherVideo.videoID = 2
+        otherVideo.videoPath = "/tmp/other.mp4"
+        let scenes = [firstScene, secondScene, otherVideo]
+        func plan(_ id: Int64, _ start: Double, _ end: Double) -> WizardPlan {
+            WizardSelectionRules.snapshot(Fixtures.plan(clips: [Fixtures.planClip(sceneID: id, start: start, end: end)]), scenes: scenes)
+        }
+        let a = plan(1, 0, 10)
+        let overlap = plan(2, 9.49, 15)
+        let touching = plan(2, 10, 20)
+        let other = plan(3, 0, 10)
+        let kept = WizardPlanRules.candidatesWithoutOverlap([a, overlap, touching, other])
+        #expect(kept.map { $0.clips[0].sceneID } == [1, 2, 3])
+        #expect(kept.map { $0.clips[0].start } == [0, 10, 0])
+        #expect(WizardPlanRules.candidatesWithoutOverlap([Fixtures.plan(clips: [])]).isEmpty)
+        #expect(WizardPlanRules.candidatesWithoutOverlap([Fixtures.plan()]).isEmpty)
+    }
+
+    @Test(arguments: [9.49, 9.5, 9.51, 10.0])
+    func miniCandidateOverlapMatchesHalfSecondValidationTolerance(start: Double) {
+        let scenes = [Fixtures.scene(id: 1, start: 0, end: 20), Fixtures.scene(id: 2, start: 0, end: 20)]
+        let first = WizardSelectionRules.snapshot(
+            Fixtures.plan(clips: [Fixtures.planClip(sceneID: 1, start: 0, end: 10)]), scenes: scenes)
+        let next = WizardSelectionRules.snapshot(
+            Fixtures.plan(clips: [Fixtures.planClip(sceneID: 2, start: start, end: 15)]), scenes: scenes)
+        let allowed = start >= 9.5
+        #expect(WizardPlanRules.candidatesWithoutOverlap([first, next]).count == (allowed ? 2 : 1))
+        #expect(WizardPlanRules.avoidsRanges(next, ranges: WizardPlanRules.footageRanges(first)) == allowed)
+    }
+
+    @Test func miniOverlapChecksSecondaryAreasAndDropsWholeCandidate() {
+        let scenes = [Fixtures.scene(id: 1, start: 0, end: 30), Fixtures.scene(id: 2, start: 0, end: 30)]
+        var clip = Fixtures.planClip(sceneID: 1, start: 0, end: 5)
+        clip.areaClips = [WizardPlanAreaClip(area: "Side", sceneID: 2, start: 10, end: 15)]
+        let first = WizardSelectionRules.snapshot(Fixtures.plan(clips: [clip]), scenes: scenes)
+        let second = WizardSelectionRules.snapshot(Fixtures.plan(clips: [
+            Fixtures.planClip(sceneID: 1, start: 20, end: 25),
+            Fixtures.planClip(sceneID: 2, start: 12, end: 18)
+        ]), scenes: scenes)
+        #expect(WizardPlanRules.candidatesWithoutOverlap([first, second]).count == 1)
+        // Replays inside one candidate are valid; only cross-candidate reuse is rejected.
+        let replay = WizardSelectionRules.snapshot(Fixtures.plan(clips: [clip, clip]), scenes: scenes)
+        #expect(WizardPlanRules.candidatesWithoutOverlap([replay]).count == 1)
+    }
+
+    @Test func miniAvoidRuleListsExactSourceRangesInStableOrder() {
+        let rule = WizardPlanRules.avoidRangesRule([
+            (videoID: 9, start: 100.125, end: 110.5), (videoID: 2, start: 0, end: 10),
+            (videoID: 2, start: .nan, end: 12), (videoID: 2, start: 4, end: 4)
+        ])
+        #expect(rule.contains("Avoid all footage"))
+        #expect(rule.contains("video_id 2: [0.0, 10.0) seconds\n- video_id 9: [100.125, 110.5) seconds"))
+        #expect(!rule.contains("nan"))
+        #expect(WizardPlanRules.avoidRangesRule([]).isEmpty)
+    }
+}
+
+extension WizardPlanRulesTests {
+    @Test func combinedPlanPreservesCardOrderTextAndSumOfPlaybackDurations() {
+        var first = Fixtures.planClip(sceneID: 2, start: 10, end: 16)
+        first.textOverlay = "First clip"
+        first.speed = 2
+        first.speakerIntroductions = [TextOverlayItem()]
+        var second = Fixtures.planClip(sceneID: 1, start: 0, end: 4)
+        second.textOverlay = "Second clip"
+        second.overlayKicker = "Context"
+        var firstPlan = Fixtures.plan(clips: [first])
+        firstPlan.headline = "First headline"
+        firstPlan = WizardSelectionRules.snapshot(firstPlan, scenes: [Fixtures.scene(id: 2, start: 10, end: 16)])
+        let secondPlan = WizardSelectionRules.snapshot(Fixtures.plan(clips: [second]),
+            scenes: [Fixtures.scene(id: 1, start: 0, end: 4)])
+        func take(_ plan: WizardPlan, id: Int64) -> WizardSelectionTake {
+            WizardSelectionTake(id: id, selectionID: id, ordinal: 1, plan: plan, sceneIDs: plan.clips.map(\.sceneID))
+        }
+        let joined = WizardPlanRules.combinedPlan([take(firstPlan, id: 2), take(secondPlan, id: 1)])
+        #expect(joined.clips.map(\.sceneID) == [2, 1])
+        #expect(joined.clips.map(\.textOverlay) == ["First clip", "Second clip"])
+        #expect(joined.clips[0].speakerIntroductions == first.speakerIntroductions)
+        #expect(joined.clips[1].overlayKicker == "Context")
+        #expect(joined.transitions == ["cut"] && joined.targetDuration == 7)
+        #expect(joined.headline == "First headline" && joined.provenance == nil && joined.musicName == nil)
+        #expect(joined.footage?.map(\.sceneID) == [2, 1])
+        let empty = WizardPlanRules.combinedPlan([])
+        #expect(empty.clips.isEmpty && empty.transitions.isEmpty && empty.targetDuration == 0)
+        #expect(WizardPlanRules.combinedPlan([take(firstPlan, id: 2)]).transitions.isEmpty)
+    }
+}

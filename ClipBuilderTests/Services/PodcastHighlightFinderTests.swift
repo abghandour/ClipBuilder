@@ -429,3 +429,23 @@ extension PodcastHighlightFinderTests {
     }
 
 }
+
+extension PodcastHighlightFinderTests {
+    @Test func excludedKeptRangesDoNotConsumeTheCandidateCap() async throws {
+        var exchanges: [PodcastExchange] = []
+        for index in 0..<3 {
+            let start = Double(index * 10)
+            exchanges.append(PodcastExchange(start: start, end: start + 10, title: "Exchange \(index)",
+                                             summary: "Complete answer", score: Double(9 - index), speakerKeys: []))
+        }
+        var segments: [TranscriptSegment] = []
+        for index in 0..<6 {
+            let start = Double(index * 5)
+            segments.append(TranscriptSegment(start: start, end: start + 5, text: "Sentence \(index)."))
+        }
+        let result = try await PodcastHighlightFinder.find(exchanges: exchanges, segments: segments, turns: [], roster: [],
+            maxSeconds: 10, threshold: 7, maxCount: 1, excludedRanges: [(start: 0, end: 10)])
+        #expect(result.count == 1)
+        #expect(result.first?.sourceStart == 10 && result.first?.sourceEnd == 20)
+    }
+}

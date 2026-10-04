@@ -18,8 +18,7 @@ nonisolated struct CaptionRenderer {
     var videoWidth: Int
     var videoHeight: Int
     var style: CaptionStyle
-    /// The canvas's platform safe area (from the render in progress), so
-    /// bottom captions sit above the description and top ones below the header.
+    /// Auto placement clears platform UI; explicit positions use frame edges.
     var safeArea: PlatformSafeArea? = PlatformSafeArea.resolve(RenderContext.settings)
 
     // MARK: - Color / font resolution
@@ -62,10 +61,10 @@ nonisolated struct CaptionRenderer {
 
     /// Greedy word-wrap to 86% of the video width (captions.py behavior).
     private func wrap(_ text: String, font: CTFont) -> [String] {
-        let available = CGFloat(videoWidth) * 0.86
+        let available = maxTextWidth
         var lines: [String] = []
         var current = ""
-        for word in text.split(separator: " ") {
+        for word in text.split(whereSeparator: \.isWhitespace) {
             let candidate = current.isEmpty ? String(word) : current + " " + word
             if lineWidth(candidate, font: font) <= available || current.isEmpty {
                 current = candidate
@@ -75,7 +74,52 @@ nonisolated struct CaptionRenderer {
             }
         }
         if !current.isEmpty { lines.append(current) }
+        // Balance two rows using the same measured widths used for drawing.
+        if lines.count == 2 {
+            let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
+            var best = CGFloat.greatestFiniteMagnitude
+            for index in 1..<words.count {
+                let pair = [words[..<index].joined(separator: " "), words[index...].joined(separator: " ")]
+                let widths = pair.map { lineWidth($0, font: font) }
+                if widths.allSatisfy({ $0 <= available }), abs(widths[0] - widths[1]) < best {
+                    best = abs(widths[0] - widths[1])
+                    lines = pair
+                }
+            }
+        }
         return lines.isEmpty ? [text] : lines
+    }
+
+    private var maxTextWidth: CGFloat {
+        let padding = CGFloat(max(18, videoWidth / 60) * 2)
+        return min(CGFloat(videoWidth) * 0.86,
+                   CGFloat(videoWidth) * (safeArea?.rect.width ?? 1) - padding)
+    }
+
+    func rowCount(for text: String) -> Int {
+        wrap(text, font: resolveFont(size: max(36, CGFloat(videoWidth) / 22))).count
+    }
+
+    func pages(for segment: TranscriptSegment) -> [CaptionPage] {
+        CaptionPaging.pages(text: segment.text, start: segment.start, end: segment.end,
+                            words: segment.words, fits: { rowCount(for: $0) <= 2 })
+    }
+
+    /// Conservative two-row band, in top-left canvas pixels, shared with name tags.
+    func twoRowBand(positionOverride: String? = nil) -> CGRect {
+        if let positionOverride, positionOverride != "auto", safeArea != nil {
+            var fullFrame = self
+            fullFrame.safeArea = nil
+            return fullFrame.twoRowBand(positionOverride: positionOverride)
+        }
+        let size = max(36, CGFloat(videoWidth) / 22)
+        let font = resolveFont(size: size)
+        let height = Int(ceil(CTFontGetAscent(font) + CTFontGetDescent(font))) * 2
+            + max(4, Int(size) / 6) + max(10, Int(size) / 4) * 2
+        let box = RenderedCaption(pngURL: URL(fileURLWithPath: "/"),
+                                  width: Int(maxTextWidth) + max(18, videoWidth / 60) * 2, height: height)
+        let origin = position(for: box, positionOverride: positionOverride)
+        return CGRect(x: origin.x, y: origin.y, width: box.width, height: box.height)
     }
 
     // MARK: - Rendering
@@ -84,7 +128,11 @@ nonisolated struct CaptionRenderer {
     /// max(36, videoW / 22); explicit `fontSize` overrides (text overlays).
     func render(text: String, to directory: URL,
                 fontSize explicitSize: CGFloat? = nil) throws -> RenderedCaption {
-        let fontSize = explicitSize ?? max(36, CGFloat(videoWidth) / 22)
+        var fontSize = explicitSize ?? max(36, CGFloat(videoWidth) / 22)
+        let initialFont = resolveFont(size: fontSize)
+        let longest = text.split(whereSeparator: \.isWhitespace)
+            .map { lineWidth(String($0), font: initialFont) }.max() ?? 0
+        if longest > maxTextWidth { fontSize *= maxTextWidth / longest }
         let font = resolveFont(size: fontSize)
         let lines = wrap(text, font: font)
 
@@ -123,7 +171,8 @@ nonisolated struct CaptionRenderer {
         let showOutline = !hasBackground
         for (index, lineText) in lines.enumerated() {
             let width = lineWidth(lineText, font: font)
-            let x = (CGFloat(boxWidth) - width) / 2
+            let x = Self.lineOrigin(width: width, boxWidth: CGFloat(boxWidth),
+                                    padding: CGFloat(padX), alignment: style.alignment)
             // CoreGraphics origin is bottom-left; line 0 is the top line.
             let baselineY = CGFloat(boxHeight - padY - (index + 1) * lineHeight - index * lineGap) + descent
 
@@ -159,25 +208,45 @@ nonisolated struct CaptionRenderer {
         return RenderedCaption(pngURL: pngURL, width: boxWidth, height: boxHeight)
     }
 
+    /// Align wrapped lines inside the caption box; nil preserves centered captions.
+    static func lineOrigin(width: CGFloat, boxWidth: CGFloat, padding: CGFloat,
+                           alignment: String?) -> CGFloat {
+        switch alignment {
+        case "leading": padding
+        case "trailing": max(padding, boxWidth - padding - width)
+        default: (boxWidth - width) / 2
+        }
+    }
+
     /// Overlay pixel position for a rendered caption box — captions.py math.
     func position(for caption: RenderedCaption, positionOverride: String? = nil) -> (x: Int, y: Int) {
-        let marginV = max(40, videoHeight / 18)
+        // Auto retains the profile's historical placement and platform clearance.
+        if positionOverride == nil || positionOverride == "auto" {
+            let margin = max(40, videoHeight / 18)
+            let x = (videoWidth - caption.width) / 2
+            let y: Int
+            switch style.position.lowercased() {
+            case "top": y = margin
+            case "middle": y = (videoHeight - caption.height) / 2
+            default: y = videoHeight - caption.height - margin
+            }
+            guard let safeArea else { return (x, y) }
+            let inset = max(16, videoHeight / 60)
+            let origin = safeArea.clampedOrigin(
+                x: Double(x) / Double(videoWidth), y: Double(y) / Double(videoHeight),
+                width: Double(caption.width) / Double(videoWidth),
+                height: Double(caption.height + inset * 2) / Double(videoHeight))
+            return (Int((origin.x * Double(videoWidth)).rounded()),
+                    Int((origin.y * Double(videoHeight)).rounded()) + inset)
+        }
+        let margin = max(32, videoHeight / 28)
         let x = (videoWidth - caption.width) / 2
         let y: Int
         switch (positionOverride ?? style.position).lowercased() {
-        case "top": y = marginV
+        case "top": y = margin
         case "middle": y = (videoHeight - caption.height) / 2
-        default: y = videoHeight - caption.height - marginV
+        default: y = videoHeight - margin - caption.height
         }
-        guard let safeArea else { return (x, y) }
-        // Inside the safe area the caption keeps a smaller margin, so the
-        // chrome-avoiding lift does not push it further than needed.
-        let inset = max(16, videoHeight / 60)
-        let origin = safeArea.clampedOrigin(
-            x: Double(x) / Double(videoWidth), y: Double(y) / Double(videoHeight),
-            width: Double(caption.width) / Double(videoWidth),
-            height: Double(caption.height + inset * 2) / Double(videoHeight))
-        return (Int((origin.x * Double(videoWidth)).rounded()),
-                Int((origin.y * Double(videoHeight)).rounded()) + inset)
+        return (x, y)
     }
 }

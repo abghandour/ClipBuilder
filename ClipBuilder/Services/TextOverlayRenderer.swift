@@ -15,7 +15,7 @@ import UniformTypeIdentifiers
 nonisolated struct TextOverlayRenderer {
     var videoWidth = 1080
     var videoHeight = 1920
-    /// Platform chrome to stay clear of; every design clamps its box into it.
+    /// Platform chrome to stay clear of; name tags retain their planned placement.
     var safeArea: PlatformSafeArea? = PlatformSafeArea.resolve(RenderContext.settings)
 
     /// A box centre (fractions of the frame) moved into the safe area.
@@ -167,6 +167,8 @@ nonisolated struct TextOverlayRenderer {
             context.beginTransparencyLayer(auxiliaryInfo: nil)
         }
         switch item.design {
+        case "nameTag":
+            drawNameTag(in: context, item: item)
         case "hero":
             drawHero(in: context, item: item, words: words, visibleWords: visibleWords)
         case "tag":
@@ -196,6 +198,82 @@ nonisolated struct TextOverlayRenderer {
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
         return pngURL
+    }
+
+    /// Shared by the planner and drawing: sizes are canvas pixels, fontsize is
+    /// always in the overlay's 1920-high design space. Template sizes do not apply.
+    struct NameTagLayout {
+        var fontSize: Int
+        var lines: [String]
+        var fonts: [CTFont]
+        var size: CGSize
+        var padding: CGFloat
+        var lineGap: CGFloat
+    }
+
+    func nameTagLayout(_ item: TextOverlayItem, maxWidth: CGFloat) -> NameTagLayout {
+        let scale = CGFloat(videoHeight) / 1920
+        let lines = Array(item.text.components(separatedBy: "\n").prefix(2))
+        var designSize = max(22, item.fontsize)
+        func metrics(_ size: Int) -> (fonts: [CTFont], padding: CGFloat, width: CGFloat) {
+            let pixels = CGFloat(size) * scale
+            let fonts = lines.indices.map {
+                resolveFont(size: pixels * ($0 == 0 ? 1 : 0.72), family: item.fontfamily,
+                            bold: item.bold, italic: item.italic)
+            }
+            let padding = ceil(pixels * max(0.24, CGFloat(item.strokeWidthEm)))
+            let width = lines.indices.map { lineWidth(lines[$0], font: fonts[$0]) }.max() ?? 0
+            return (fonts, padding, ceil(width + padding * 2))
+        }
+        var measured = metrics(designSize)
+        while designSize > 22 && measured.width > maxWidth {
+            designSize -= 1
+            measured = metrics(designSize)
+        }
+        let available = max(0, maxWidth - measured.padding * 2)
+        let fitted = lines.indices.map { index -> String in
+            var text = lines[index]
+            guard lineWidth(text, font: measured.fonts[index]) > available else { return text }
+            while !text.isEmpty && lineWidth(text + "…", font: measured.fonts[index]) > available {
+                text.removeLast()
+            }
+            return lineWidth("…", font: measured.fonts[index]) <= available ? text + "…" : ""
+        }
+        let gap = CGFloat(designSize) * scale * 0.12
+        let height = measured.fonts.reduce(CGFloat.zero) { $0 + CTFontGetAscent($1) + CTFontGetDescent($1) }
+            + gap * CGFloat(max(0, lines.count - 1)) + measured.padding * 2
+        return NameTagLayout(fontSize: designSize, lines: fitted, fonts: measured.fonts,
+            size: CGSize(width: min(maxWidth, measured.width), height: ceil(height)),
+            padding: measured.padding, lineGap: gap)
+    }
+
+    /// The planner owns placement, including explicit corners outside safe areas.
+    private func drawNameTag(in context: CGContext, item: TextOverlayItem) {
+        let box = item.normalizedBox
+        let rect = CGRect(x: box.minX * Double(videoWidth), y: box.minY * Double(videoHeight),
+                          width: box.width * Double(videoWidth), height: box.height * Double(videoHeight))
+        guard rect.width > 0, rect.height > 0 else { return }
+        // Undo insignificant normalized-coordinate roundoff before fitting again.
+        let layout = nameTagLayout(item, maxWidth: rect.width + 0.00001)
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.clip(to: CGRect(x: rect.minX, y: CGFloat(videoHeight) - rect.maxY,
+                               width: rect.width, height: rect.height))
+        if item.boxOpacity > 0 {
+            // fillRoundedBackground adds 5px itself; include that in our bounds.
+            fillRoundedBackground(in: context, item: item,
+                topLeft: (Int(rect.minX) + 5, Int(rect.minY) + 5),
+                size: (max(0, Int(rect.width) - 10), max(0, Int(rect.height) - 10)))
+        }
+        var top = rect.minY + layout.padding
+        for index in layout.lines.indices {
+            let font = layout.fonts[index]
+            // Names are literal, not template emphasis markup.
+            let words = [Word(text: layout.lines[index], highlighted: false, index: 0)]
+            drawStyledLine(words, font: font, item: item, visibleWords: nil, in: context,
+                           x: rect.minX + layout.padding, baselineFromTop: top + CTFontGetAscent(font))
+            top += CTFontGetAscent(font) + CTFontGetDescent(font) + layout.lineGap
+        }
     }
 
     /// WYSIWYG mode: auto-fit the largest font whose wrapped lines fill the

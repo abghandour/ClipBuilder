@@ -713,6 +713,9 @@ actor Database {
         let stamped = try connection.query("PRAGMA user_version").first?.values.first?.intValue ?? 0
         if stamped != Self.schemaVersion {
             try Self.migrate(connection)
+            if try !connection.columnNames(of: "wizard_selections").contains("mini_batch") {
+                try connection.execute("ALTER TABLE wizard_selections ADD COLUMN mini_batch TEXT")
+            }
             if try !connection.columnNames(of: "generated_videos").contains("selection_take_id") {
                 try connection.execute("ALTER TABLE generated_videos ADD COLUMN selection_take_id INTEGER REFERENCES wizard_selection_takes(id) ON DELETE SET NULL")
             }
@@ -728,7 +731,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 21
+    static let schemaVersion: Int64 = 22
 
     // MARK: - Helpers
 

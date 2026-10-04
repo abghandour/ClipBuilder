@@ -12,6 +12,20 @@ struct AppStoreTests {
                         ai: AIService(config: settings.ai))
     }
 
+    @Test func captionTranslationLogsUpdateWizardStage() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        store.updateWizardStatus(from: "Captions: translating 42 lines of podcast.mp4 to English…")
+        #expect(store.wizardStatus?.stage == "Translating captions 0 of 42")
+        store.updateWizardStatus(from: "Captions: translated 25 of 42 lines")
+        #expect(store.wizardStatus?.stage == "Translating captions 25 of 42")
+        store.updateWizardStatus(from: "Captions: translated 42 of 42 lines")
+        #expect(store.wizardStatus?.stage == "Translating captions 42 of 42")
+        store.updateWizardStatus(from: "Phase 3: Assembling")
+        #expect(store.wizardStatus?.stage == "Assembling the video")
+    }
+
     @Test("errors queue in order and cancellation is dropped")
     func errorQueue() throws {
         let scope = try DataFolderOverride()

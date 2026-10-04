@@ -211,7 +211,7 @@ actor RenderEngine {
             }
             var step = "\(previous)\(inputLabel)overlay=x=\(xExpr):y=\(yExpr)"
             if let windowStart = overlay.start, let windowEnd = overlay.end {
-                step += String(format: ":enable='between(t,%.3f,%.3f)'", windowStart, windowEnd)
+                step += String(format: ":enable='gte(t,%.3f)*lt(t,%.3f)'", windowStart, windowEnd)
             }
             filters.append(step + outLabel)
             previous = outLabel

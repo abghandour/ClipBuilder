@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 @MainActor
 enum PodcastRecipeTimeline {
@@ -6,6 +7,8 @@ enum PodcastRecipeTimeline {
     static func build(kind: CropRecipe.Kind, video: VideoRecord, range: ClosedRange<Double>,
                       sourceScene: SceneRecord?, turns: [SpeakerTurn], roster: [VideoPersonRecord],
                       layouts: [ScreenCropLayout], settings: RenderSettings,
+                      options: WizardOptions = WizardOptions(), people: [PersonRecord] = [],
+                      captionStyle: CaptionStyle = CaptionStyle(),
                       log: (String) -> Void = { _ in }) -> TimelineDocument {
         let builder = BuilderTimelineModel(mode: .transient)
         builder.document.renderSettings = settings
@@ -45,6 +48,16 @@ enum PodcastRecipeTimeline {
             if plan == nil { builder.document.videoTrack[index].centerStage = sourceScene?.centerStagePath != nil }
         }
         for index in builder.document.cropBlocks.indices { builder.document.cropBlocks[index].duration = duration }
+        if let plan, options.usesNameTags {
+            let areas = NameTagPlanner.areas(plan: plan, tiles: tiles, roster: roster, layouts: layouts,
+                canvas: CGSize(width: settings.width, height: settings.height), duration: duration,
+                sourceAspect: Double(video.width) / Double(max(1, video.height)))
+            builder.document.textOverlays += WizardNameTags.overlays(areas: areas, people: people,
+                options: options, captionStyle: captionStyle)
+        } else if let sourceScene, options.usesNameTags {
+            builder.document.textOverlays += WizardNameTags.ordinary(scene: sourceScene, duration: duration,
+                people: people, options: options, captionStyle: captionStyle)
+        }
         return builder.document
     }
 }

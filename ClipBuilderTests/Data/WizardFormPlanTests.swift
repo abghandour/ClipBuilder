@@ -283,7 +283,8 @@ extension WizardFormPlanTests {
         #expect(custom.step1Controls == [.sources, .outcome, .recipe, .length, .brief,
             .styleReference, .fightResearch, .layouts, .iteration, .planningModels])
         #expect(custom.step2Controls == [.output, .pacing, .audio, .musicTrack, .text,
-            .overlayStyle, .transitions, .cameraFocus, .framingCamera, .bRoll, .bumpers, .branding, .presentationModels])
+            .overlayStyle, .transitions, .cameraFocus, .framingCamera, .bRoll, .bumpers, .branding, .presentationModels,
+            .captionPosition, .captionStyle, .nameTags, .nameTagContent, .nameTagStyle, .nameTagPosition])
         #expect(custom.step1Controls.union(custom.step2Controls) == Set(WizardFormPlan.Control.allCases))
         for recipe in ReelRecipe.all {
             let form = WizardFormPlan(recipe: recipe)
@@ -298,6 +299,7 @@ extension WizardFormPlanTests {
         #expect(!highlights.step2Controls.contains(.audio))
         #expect(!highlights.step2Controls.contains(.branding))
         #expect(highlights.step2Controls.contains(.cameraFocus))
+        #expect(highlights.step2Controls.contains(.nameTags))
     }
 
     @Test func modelRowsAreSplitByStepWithoutDuplicates() {

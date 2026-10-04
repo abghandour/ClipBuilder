@@ -3,6 +3,7 @@ import AVKit
 
 /// Shared per-cut review body: playback, include/reject, trims, and Space / I / O.
 struct ProposedCutsEditor: View {
+    @Environment(\.isEnabled) private var isEnabled
     @State private var originalPlan: WizardPlan
     let sceneMap: [Int64: SceneRecord]
     let onChange: (WizardPlan) -> Void
@@ -83,7 +84,7 @@ struct ProposedCutsEditor: View {
     }
 
     private var canTrim: Bool {
-        guard let selectedIndex, selectedScene != nil else { return false }
+        guard isEnabled, let selectedIndex, selectedScene != nil else { return false }
         return !rejected.contains(selectedIndex)
     }
 
@@ -268,7 +269,7 @@ struct ProposedCutsEditor: View {
     }
 
     private func handleKey(_ event: NSEvent) -> Bool {
-        guard let range = selectedRange, let scene = selectedScene, playback.player != nil else { return false }
+        guard isEnabled, let range = selectedRange, let scene = selectedScene, playback.player != nil else { return false }
         switch event.charactersIgnoringModifiers?.lowercased() {
         case " ":
             playback.togglePlay()

@@ -6,7 +6,7 @@ nonisolated enum TranscriptQASections {
 
     nonisolated enum Edge { case start, end }
 
-    nonisolated struct Section: Identifiable {
+    nonisolated struct Section: Identifiable, Sendable {
         var scene: SceneRecord
         var question: String
         var asker: String?

@@ -183,9 +183,9 @@ struct EffectControlsTests {
             (.scenes, "scenes"), (.people, "people"),
             (.music, "music"), (.fonts, "fonts"), (.images, "images"),
             (.overlays, "overlays"), (.effects, "effects"), (.screenCrops, "screenCrops"),
-            (.bumpers, "bumpers"), (.wizard, "wizard"), (.learned, "learned"),
+            (.bumpers, "bumpers"), (.wizard, "wizard"), (.wizardMini, "wizardMini"), (.learned, "learned"),
             (.builder, "builder"), (.library, "library"), (.instagram, "instagram"),
-            (.instagramReports, "instagramReports")
+            (.instagramReports, "instagramReports"), (.captions, "captions")
         ]
         for (section, value) in existing {
             #expect(section.rawValue == value)
@@ -197,6 +197,12 @@ struct EffectControlsTests {
         #expect(SidebarSection.effects.title == "Transitions")
         #expect(SidebarSection.looks.title == "Looks")
         #expect(SidebarSection.looks.shortcut == nil)
+        #expect(SidebarSection.wizardMini.title == "AI Wizard Mini")
+        #expect(SidebarSection.wizardMini.systemImage == "wand.and.stars.inverse")
+        #expect(SidebarSection.wizardMini.projectDestination == .wizardMini)
+        #expect(SidebarSection.wizardMini.shortcut == nil)
+        let wizard = SidebarSection.projectSections.firstIndex(of: .wizard)
+        #expect(wizard.map { SidebarSection.projectSections[$0 + 1] } == .wizardMini)
         let resources = SidebarSection.resourceSections
         let transitions = resources.firstIndex(of: .effects)
         #expect(transitions.map { resources[$0 + 1] } == .looks)

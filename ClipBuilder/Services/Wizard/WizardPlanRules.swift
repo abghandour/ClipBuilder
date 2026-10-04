@@ -6,6 +6,57 @@ import Foundation
 /// these between validation and assembly.
 nonisolated enum WizardPlanRules {
 
+    /// Source seconds, including secondary layout areas. Plans must carry a footage snapshot.
+    static func footageRanges(_ plan: WizardPlan) -> [(videoID: Int64, start: Double, end: Double)] {
+        let sources = Dictionary((plan.footage ?? []).compactMap { reference -> (Int64, Int64)? in
+            guard let sceneID = reference.sceneID, let videoID = reference.videoID else { return nil }
+            return (sceneID, videoID)
+        }, uniquingKeysWith: { first, _ in first })
+        return plan.clips.flatMap { clip in
+            [(clip.sceneID, clip.start, clip.end)] + clip.areaClips.map { ($0.sceneID, $0.start, $0.end) }
+        }.compactMap { sceneID, start, end in
+            guard let videoID = sources[sceneID], start.isFinite, end.isFinite, end > start else { return nil }
+            return (videoID, start, end)
+        }
+    }
+
+    static func avoidsRanges(_ plan: WizardPlan,
+                             ranges: [(videoID: Int64, start: Double, end: Double)]) -> Bool {
+        let footage = footageRanges(plan)
+        guard !plan.clips.isEmpty,
+              footage.count == plan.clips.reduce(0, { $0 + 1 + $1.areaClips.count }) else { return false }
+        return footage.allSatisfy { cut in
+            let used = ranges.filter { $0.videoID == cut.videoID }
+            let overlap = used.reduce(0.0) {
+                $0 + max(0, min(cut.end, $1.end) - max(cut.start, $1.start))
+            }
+            // Match validatePlan's per-cut tolerance for small boundary overlaps.
+            return overlap <= 0.5
+        }
+    }
+
+    /// Keep complete alternatives in response order. As in validatePlan, a cut
+    /// reusing more than 0.5 source seconds drops the later candidate wholesale.
+    static func candidatesWithoutOverlap(_ candidates: [WizardPlan]) -> [WizardPlan] {
+        var kept: [WizardPlan] = []
+        var used: [(videoID: Int64, start: Double, end: Double)] = []
+        for candidate in candidates where avoidsRanges(candidate, ranges: used) {
+            kept.append(candidate)
+            used += footageRanges(candidate)
+        }
+        return kept
+    }
+
+    static func avoidRangesRule(_ ranges: [(videoID: Int64, start: Double, end: Double)]) -> String {
+        let valid = ranges.filter { $0.start.isFinite && $0.end.isFinite && $0.end > $0.start }.sorted {
+            if $0.videoID != $1.videoID { return $0.videoID < $1.videoID }
+            return $0.start == $1.start ? $0.end < $1.end : $0.start < $1.start
+        }
+        guard !valid.isEmpty else { return "" }
+        return "Avoid all footage overlapping these kept candidates (video IDs, source seconds; touching endpoints are allowed):\n"
+            + valid.map { "- video_id \($0.videoID): [\($0.start), \($0.end)) seconds" }.joined(separator: "\n")
+    }
+
     /// Shorten toward the requested screen-time cadence without extending any source range.
     /// Reasons can explicitly protect the ending ("keep end" / "trim start"); otherwise
     /// keep the opening. Replay pairs retain their exact shared window.
@@ -75,6 +126,36 @@ nonisolated enum WizardPlanRules {
             (folder.isEmpty || $0.name.hasPrefix(folder + "/"))
                 && $0.duration.isFinite && $0.duration >= duration
         }.sorted { $0.name < $1.name }.first?.name
+    }
+
+    /// Join accepted takes in card order, retaining their per-clip text and source identities.
+    static func combinedPlan(_ takes: [WizardSelectionTake]) -> WizardPlan {
+        let clips = takes.flatMap { $0.plan.clips }
+        var plan = WizardPlan(targetDuration: 0, rationale: takes.first?.plan.rationale ?? "",
+            musicName: nil, musicVolume: 0, clips: clips,
+            transitions: Array(repeating: "cut", count: max(0, clips.count - 1)),
+            headline: takes.first?.plan.headline)
+        plan.targetDuration = WizardSelectionRules.duration(plan)
+        var seen: Set<Int64> = []
+        plan.footage = takes.flatMap { $0.plan.footage ?? [] }.filter {
+            guard let id = $0.sceneID else { return false }
+            return seen.insert(id).inserted
+        }
+        return plan
+    }
+
+    static func nameTagsOnly(plan: WizardPlan) -> WizardPlan {
+        var result = plan
+        for index in result.clips.indices {
+            result.clips[index].textOverlay = nil
+            result.clips[index].overlayKicker = nil
+            result.clips[index].overlayStyle = nil
+            result.clips[index].overlayAnimation = nil
+            result.clips[index].overlayAccent = nil
+            result.clips[index].overlayPlacement = nil
+            result.clips[index].overlayCase = nil
+        }
+        return result
     }
 
     /// A render has one visual style. Keep all words, including contextual kickers.
@@ -260,7 +341,7 @@ nonisolated enum WizardPlanRules {
                                         people: [PersonRecord],
                                         sceneMap: [Int64: SceneRecord],
                                         speakerTurns: [Int64: [SpeakerTurn]] = [:]) -> WizardPlan {
-        guard options.enableTextOverlays,
+        guard options.enableTextOverlays, !options.usesNameTags,
               options.formatPreset == "interview" || options.formatPreset == "podcast" else { return plan }
         var plan = plan
         var introduced = Set<String>()

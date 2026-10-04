@@ -297,6 +297,9 @@ final class AppStore {
     var podcastResultsAfterDismissal: WizardRunResults?
     var pendingWizardSelectionReview: WizardSelectionReviewRequest?
     var wizardSelections: [WizardSelectionSummary] = []
+    var miniRun: MiniWizardRun?
+    /// Serial scene trims; Mini waits for the latest write before recording Q&A takes.
+    var sceneEditSaveTask: Task<Void, Error>?
     var activeWizardSelectionID: Int64?
     var wizardLookRevision = 0
     var wizardSelectionSaveTask: Task<Void, Error>?
@@ -939,6 +942,8 @@ final class AppStore {
         wizardSelectionAfterDismissal = nil
         wizardSelectionSaveTask = nil
         wizardSelections = []
+        miniRun = nil
+        sceneEditSaveTask = nil
         activeWizardSelectionID = nil
         pendingPodcastHighlights = nil
         podcastResultsAfterDismissal = nil

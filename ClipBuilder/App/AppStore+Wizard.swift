@@ -692,6 +692,8 @@ extension AppStore {
     /// untouched.
     /// "clip 3/12" progress marker in engine log lines, compiled once.
     private static let clipProgressPattern = /clip (\d+)\/(\d+)/
+    private static let captionStartPattern = /^Captions: translating (\d+) lines of\b/
+    private static let captionProgressPattern = /^Captions: translated (\d+) of (\d+) lines$/
 
     func updateWizardStatus(from rawMessage: String) {
         // Phase lines arrive with leading newlines for log readability.
@@ -721,6 +723,10 @@ extension AppStore {
             set("Reviewing the moments", detail: message, fraction: 0.15)
         } else if message.hasPrefix("Phase 4: Presentation critique") {
             set("Reviewing the finished look", fraction: 0.96)
+        } else if let match = message.firstMatch(of: Self.captionStartPattern) {
+            set("Translating captions 0 of \(match.1)", detail: message, fraction: 0.3)
+        } else if let match = message.firstMatch(of: Self.captionProgressPattern) {
+            set("Translating captions \(match.1) of \(match.2)", detail: message, fraction: 0.3)
         } else if message.hasPrefix("Phase 3: Assembling") {
             set("Assembling the video",
                 detail: "Cutting clips and burning in overlays.",

@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import Clip_Builder
 
@@ -478,6 +479,16 @@ extension WizardEngineTests {
 private actor WizardPlannerRequests {
     private(set) var prompts: [String] = []
     func append(_ prompt: String) { prompts.append(prompt) }
+
+    /// Claude receives a JSON envelope, so decode its text before checking multiline rules.
+    func appendClaudeRequest(_ stdin: Data?) throws {
+        let data = try #require(stdin)
+        let envelope = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let message = try #require(envelope["message"] as? [String: Any])
+        let content = try #require(message["content"] as? [[String: Any]])
+        let prompt = try #require(content.last(where: { $0["type"] as? String == "text" })?["text"] as? String)
+        prompts.append(prompt)
+    }
 }
 
 extension WizardEngineTests {
@@ -606,7 +617,8 @@ extension WizardEngineTests {
         #expect(try await database.fetchGeneratedVideos(projectID: projectID).count == 1)
     }
 
-    @Test func renderingAcceptedTakeNeverReplansOrOverwritesItsContentScore() async throws {
+    @Test(arguments: [false, true], ["podcast", "podcast_highlights"])
+    func renderingAcceptedTakeNeverReplansOrOverwritesItsContentScore(nameTagsOnly: Bool, recipe: String) async throws {
         let temp = try TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
@@ -615,7 +627,20 @@ extension WizardEngineTests {
         var options = WizardOptions()
         options.projectID = projectID
         options.critiqueLoop = true
-        let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id)])
+        options.useMusic = false
+        options.formatPreset = recipe
+        options.nameTagsOnly = nameTagsOnly ? true : nil
+        options.nameTags = nameTagsOnly
+        options.enableTextOverlays = true
+        options.podcastFraming = .original
+        options.addCaptions = true
+        options.includeIntroBumper = true
+        var clip = Fixtures.planClip(sceneID: scene.id)
+        clip.textOverlay = "Editorial overlay"
+        clip.overlayKicker = "Context"
+        clip.speakerIntroductions = [TextOverlayItem()]
+        let introductions = clip.speakerIntroductions
+        let plan = Fixtures.plan(clips: [clip])
         let first = try await database.recordWizardTake(projectID: projectID, options: options.step1, plan: plan)
         let accepted = try await database.addWizardSelectionTake(selectionID: first.selectionID, plan: plan,
             note: "User chose this take", criticScore: 95, criticNotes: "Content score")
@@ -626,17 +651,30 @@ extension WizardEngineTests {
         }
         let engine = WizardEngine(ai: ai, render: RenderEngine())
         try await engine.makeReel(take: accepted, options: options, profile: Fixtures.brand(), database: database,
-            emit: { _ in }) { take, _ in
-                #expect(take.id == accepted.id)
+            emit: { _ in }, renderPlan: { rendered, renderOptions in
+                // Stored plans decode overlays with fresh uids; compare what renders.
+                let kept = rendered.clips.first?.speakerIntroductions ?? []
+                if nameTagsOnly {
+                    #expect(renderOptions.usesNameTags && kept.isEmpty)
+                } else {
+                    #expect(kept.map { ($0.text, $0.startTime, $0.endTime, $0.position) }.elementsEqual(
+                        introductions.map { ($0.text, $0.startTime, $0.endTime, $0.position) }, by: ==))
+                }
+                #expect(rendered.clips.first?.textOverlay == (nameTagsOnly ? nil : "Editorial overlay"))
+                #expect(rendered.clips.first?.overlayKicker == (nameTagsOnly ? nil : "Context"))
+                if nameTagsOnly { #expect(rendered.clips.first?.overlayStyle == nil) }
+                #expect(renderOptions.addCaptions && renderOptions.includeIntroBumper)
+                #expect(renderOptions.podcastFraming == .original)
                 let output = try await database.insertGeneratedVideo(path: "/tmp/accepted.mp4", duration: 4,
-                    timelineJSON: "{}", wizardProvider: nil, wizardModel: nil, projectID: projectID, selectionTakeID: take.id)
+                    timelineJSON: "{}", wizardProvider: nil, wizardModel: nil, projectID: projectID, selectionTakeID: accepted.id)
                 let critique = try ReelCritic.parse(#"{"score":40,"regenerate":true,"notes":["Fix contrast"]}"#,
                     options: WizardOptions(), scope: .presentation)
                 #expect(!critique.regenerate)
                 try await database.updateGeneratedCritique(id: output,
                     critiqueJSON: String(decoding: try JSONEncoder().encode(critique), as: UTF8.self))
-            }
+            })
         let takes = try await database.fetchWizardSelectionTakes(selectionID: first.selectionID)
+        #expect(takes.last?.plan.clips.first?.textOverlay == "Editorial overlay")
         #expect(takes.map(\.ordinal) == [1, 2] && takes[1].criticScore == 95)
         #expect(try await database.wizardSelection(id: first.selectionID)?.bestTakeID == accepted.id)
         #expect(try await database.fetchGeneratedVideos(projectID: projectID).count == 1)
@@ -699,5 +737,345 @@ extension WizardEngineTests {
         #expect(try await database.fetchWizardSelectionTakes(selectionID: first.selectionID).count == 1)
         #expect(try await database.fetchGeneratedVideos(projectID: project).isEmpty)
         #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent("preview.mp4").path))
+    }
+}
+
+extension WizardEngineTests {
+    @Test("Mini uses one request for three validated alternatives", arguments: [false, true])
+    func miniCandidatesSingleCallDropsInvalidAndOverlappingPlans(includeBadCandidates: Bool) async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo(sceneCount: 3)
+        let projectID = try await temp.database.createProject(profileName: "Mini Test", name: "Mini", videoIDs: [videoID])
+        let scenes = try await temp.database.fetchScenes(projectID: projectID).sorted { $0.startTime < $1.startTime }
+        #expect(scenes.count == 3)
+        var candidates: [[String: Any]] = scenes.enumerated().map { index, scene in
+            ["target_duration": 8, "rationale": "Reason \(index + 1)", "headline": index == 0 ? "First moment" : "",
+             "clips": [["scene_id": scene.id, "start": scene.startTime - 2, "end": scene.endTime + 2]]]
+        }
+        if includeBadCandidates {
+            candidates.insert(["clips": [["scene_id": -999, "start": 0, "end": 8]]], at: 1)
+            candidates.insert(candidates[0], at: 2)
+        }
+        let reply = String(decoding: try JSONSerialization.data(withJSONObject: ["candidates": candidates]), as: UTF8.self)
+        var config = AIConfig()
+        config.tasks["wizard"] = "claude"
+        config.providers["claude"] = AIProviderSettings(bin: "/bin/echo", model: "fixture")
+        let response = try JSONSerialization.data(withJSONObject: [
+            "type": "assistant", "message": ["content": [["type": "text", "text": reply]]]
+        ])
+        let requests = WizardPlannerRequests()
+        let service = AIService(config: config) { _, _, stdin, _, _, _ in
+            try await requests.appendClaudeRequest(stdin)
+            return ProcessResult(stdout: response, stderr: Data(), exitCode: 0)
+        }
+        let engine = WizardEngine(ai: service, render: RenderEngine())
+        var options = WizardOptions()
+        options.projectID = projectID
+        options.formatPreset = "custom"
+        // Test candidate validation independently of the default near-adjacent scene stacking.
+        options.stackLevel = SceneStackLevel.off.rawValue
+        options.targetDurationSeconds = 10
+        options.tastePreset = "none"
+        options.useMusic = false
+        options.critiqueLoop = false
+        options.aiInstructions = "Keep complete moments."
+        let result = try await engine.findCandidates(count: 3, options: options, profile: Fixtures.brand(name: "Mini Test"),
+                                                    database: temp.database, emit: { _ in })
+        #expect(result.takes.count == 3)
+        #expect(result.takes.allSatisfy { $0.ordinal == 1 && $0.plan.provenance != nil })
+        #expect(result.takes.map { $0.plan.clips[0].start } == scenes.map(\.startTime))
+        #expect(result.takes.map { $0.plan.clips[0].end } == scenes.map(\.endTime))
+        #expect(result.takes.map { $0.plan.rationale } == ["Reason 1", "Reason 2", "Reason 3"])
+        let selections = try await temp.database.fetchWizardSelections(projectID: projectID, miniBatch: result.miniBatch)
+        #expect(selections.map(\.name) == ["First moment", "Candidate 2", "Candidate 3"])
+        #expect(selections.allSatisfy { $0.recipe == "custom" })
+        let prompts = await requests.prompts
+        #expect(prompts.count == 1)
+        let prompt = try #require(prompts.first)
+        #expect(prompt.contains("3 alternative plans"))
+        #expect(prompt.contains("3 non-overlapping plans"))
+        #expect(prompt.contains("no overlapping footage between candidates"))
+        #expect(prompt.contains("candidates") && prompt.contains("one-line reason"))
+        #expect(prompt.contains("Select approximately 10s"))
+        #expect(prompt.contains("Keep complete moments."))
+    }
+
+    @Test func miniPodcastCandidatesBecomeSingleClipPlans() {
+        var scene = Fixtures.scene(id: 5, start: 100, end: 160)
+        scene.videoDuration = 200
+        scene.tags = ["podcast-exchange"]
+        let candidates = [
+            HighlightCandidate(sourceStart: 105, sourceEnd: 115, title: "Opening", reason: "A complete answer",
+                               score: 8, kind: .subcut, framing: .talker, speakerKeys: []),
+            HighlightCandidate(sourceStart: 110, sourceEnd: 120, title: "Overlap", reason: "Drop this",
+                               score: 8, kind: .subcut, speakerKeys: []),
+            HighlightCandidate(sourceStart: 130, sourceEnd: 145, title: "Closing", reason: "A useful takeaway",
+                               score: 9, kind: .subcut, speakerKeys: [])
+        ]
+        let plans = WizardEngine.miniHighlightPlans(candidates, videoID: scene.videoID, scenes: [scene])
+        #expect(plans.count == 2)
+        #expect(plans.allSatisfy { $0.clips.count == 1 && $0.clips[0].sceneID == scene.id })
+        #expect(plans.map { $0.clips[0].start } == [105, 130])
+        #expect(plans.map { $0.clips[0].end } == [115, 145])
+        #expect(plans.map(\.targetDuration) == [10, 15])
+        #expect(plans.first?.headline == "Opening" && plans.first?.rationale == "A complete answer")
+        #expect(plans.first?.footage?.first?.videoID == scene.videoID)
+    }
+}
+
+extension WizardEngineTests {
+    @Test func miniRegenerationIncludesAvoidRuleAndRefusesOverlapBeforeSaving() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo(sceneCount: 2)
+        let projectID = try await temp.database.createProject(profileName: "Mini Regenerate", name: "Mini", videoIDs: [videoID])
+        let scenes = try await temp.database.fetchScenes(projectID: projectID).sorted { $0.startTime < $1.startTime }
+        let scene = try #require(scenes.first)
+        var options = WizardOptions()
+        options.projectID = projectID
+        options.formatPreset = "custom"
+        // Test candidate validation independently of the default near-adjacent scene stacking.
+        options.stackLevel = SceneStackLevel.off.rawValue
+        options.targetDurationSeconds = 8
+        options.tastePreset = "none"
+        options.useMusic = false
+        options.critiqueLoop = false
+        let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id, start: 0, end: 8)], targetDuration: 8)
+        let first = try await temp.database.recordWizardTake(projectID: projectID, options: options.step1,
+                                                            plan: plan, miniBatch: "regenerate-batch")
+        let reply = """
+        {"target_duration":8,"rationale":"Complete moment","clips":[{"scene_id":\(scene.id),"start":0,"end":8,"reason":"Keep the complete moment"}]}
+        """
+        var config = AIConfig()
+        config.tasks["wizard"] = "claude"
+        config.providers["claude"] = AIProviderSettings(bin: "/bin/echo", model: "fixture")
+        let response = try JSONSerialization.data(withJSONObject: [
+            "type": "assistant", "message": ["content": [["type": "text", "text": reply]]]
+        ])
+        let requests = WizardPlannerRequests()
+        let service = AIService(config: config) { _, _, stdin, _, _, _ in
+            try await requests.appendClaudeRequest(stdin)
+            return ProcessResult(stdout: response, stderr: Data(), exitCode: 0)
+        }
+        let engine = WizardEngine(ai: service, render: RenderEngine())
+        let ranges = [(videoID: videoID, start: 10.0, end: 18.0)]
+        let avoidRule = WizardPlanRules.avoidRangesRule(ranges)
+        let note = "Start with the answer\n\n" + avoidRule
+        let second = try await engine.findMoments(options: options, note: note, previousTakes: [first],
+            avoidingRanges: ranges, profile: Fixtures.brand(name: "Mini Regenerate"), database: temp.database, emit: { _ in }).take
+        #expect(second.selectionID == first.selectionID && second.ordinal == 2)
+        #expect(second.note == note)
+        let prompts = await requests.prompts
+        let prompt = try #require(prompts.first)
+        #expect(prompt.contains(note))
+        #expect(prompt.contains("## PREVIOUS TAKES"))
+        #expect(prompt.contains("Take 1:"))
+        #expect(prompt.contains(avoidRule))
+        #expect(prompt.contains("## SOURCE VIDEO IDS FOR AVOID RANGES"))
+        // Corrective requests must retain the same regeneration instructions too.
+        #expect(prompts.allSatisfy { $0.contains(note) && $0.contains("## PREVIOUS TAKES") && $0.contains(avoidRule) })
+        let overlap = [(videoID: videoID, start: 1.0, end: 3.0)]
+        await #expect(throws: AIError.self) {
+            _ = try await engine.findMoments(options: options, note: WizardPlanRules.avoidRangesRule(overlap),
+                previousTakes: [first, second], avoidingRanges: overlap, profile: Fixtures.brand(name: "Mini Regenerate"),
+                database: temp.database, emit: { _ in })
+        }
+        #expect(try await temp.database.fetchWizardSelectionTakes(selectionID: first.selectionID).count == 2)
+        #expect(try await temp.database.wizardSelection(id: first.selectionID)?.miniBatch == "regenerate-batch")
+    }
+}
+
+extension WizardEngineTests {
+    @Test(arguments: ["translated", "failure", "cancelled"])
+    func captionTranslationIsPreparedBeforeRendering(outcome: String) async throws {
+        let temp = try TempDatabase()
+        let database = temp.database
+        let videoID = try await temp.seedVideo()
+        let projectID = try await database.createProject(profileName: "Captions", name: "Captions", videoIDs: [videoID])
+        let scene = try #require(try await database.fetchScenes(projectID: projectID).first)
+        try await database.replaceTranscripts(videoID: videoID, language: "pt", isTranslation: false,
+            segments: [.init(start: 0, end: 4, text: "Olá", words: nil)], provider: "test", model: nil)
+        var options = WizardOptions()
+        options.projectID = projectID
+        options.addCaptions = true
+        options.captionLanguage = "en"
+        options.useMusic = false
+        options.enableTextOverlays = false
+        options.formatPreset = "custom"
+        let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id, start: 0, end: 4),
+                                        Fixtures.planClip(sceneID: scene.id, start: 0, end: 4)])
+        let take = try await database.recordWizardTake(projectID: projectID, options: options.step1, plan: plan)
+        let log = WizardCaptionTestLog()
+        let translations = WizardCaptionTestLog()
+        let rendered = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: AIService(config: AIConfig()), render: RenderEngine(),
+            translateCaptions: { id, originals, target, database in
+                translations.append("translate")
+                #expect(id == videoID && target == "en" && originals.map(\.text) == ["Olá"])
+                if outcome == "cancelled" { throw CancellationError() }
+                if outcome == "failure" { throw AIError.unusableResponse("Translator unavailable") }
+                try await database.replaceTranscripts(videoID: id, language: target, isTranslation: true,
+                    segments: [.init(start: 0, end: 4, text: "Hello", words: nil)], provider: "test", model: nil)
+                return 1
+            })
+        do {
+            try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(), database: database,
+                emit: { log.append($0) }, renderPlan: { _, _ in
+                    rendered.append("render")
+                    let fallbacks = WizardCaptionFallbackLog()
+                    for _ in 0..<2 {
+                        // Exercise the same fetch used by extractPlannedClip, without encoding.
+                        let captions = try await engine.captionSegments(videoID: videoID, filename: scene.videoFilename,
+                            start: 0, end: 4, language: "en", database: database, fallbacks: fallbacks,
+                            emit: { log.append($0) })
+                        #expect(captions.map(\.text) == (outcome == "translated" ? ["Hello"] : ["Olá"]))
+                    }
+                })
+            #expect(outcome != "cancelled")
+        } catch is CancellationError {
+            #expect(outcome == "cancelled")
+        }
+        #expect(translations.lines().count == 1) // Two cuts of the same source translate once.
+        if outcome == "translated" {
+            #expect(log.lines().contains { $0.contains("translating 1 lines of fixture.mp4 to English") })
+            #expect(log.lines().contains { $0.contains("translated 1 lines") })
+            #expect(!log.lines().contains { $0.contains("using the original language") })
+            // An existing target track is reused on later runs.
+            try await engine.prepareCaptionTranslations(plan: plan, options: options, sceneMap: [scene.id: scene],
+                                                        database: database, emit: { log.append($0) })
+            #expect(translations.lines().count == 1)
+        } else if outcome == "failure" {
+            #expect(log.lines().contains {
+                $0.contains("could not translate fixture.mp4 to English") && $0.contains("Translator unavailable")
+                    && $0.contains("using the original language")
+            })
+            #expect(log.lines().filter { $0.contains("in this cut — using the original language") }.count == 1)
+        } else {
+            #expect(rendered.lines().isEmpty)
+            #expect(!log.lines().contains { $0.contains("using the original language") })
+        }
+    }
+
+    @Test func captionsSkipTranslationWhenDisabledOrAlreadyInOriginalLanguage() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        let scene = try #require(try await temp.database.fetchScenes().first)
+        try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+            segments: [.init(start: 0, end: 4, text: "Hello", words: nil)], provider: "test", model: nil)
+        let engine = WizardEngine(ai: AIService(config: AIConfig()), render: RenderEngine(),
+            translateCaptions: { _, _, _, _ in
+                Issue.record("Translation must not be requested")
+                throw CancellationError()
+            })
+        for (enabled, language) in [(false, "pt"), (true, ""), (true, "en")] {
+            var options = WizardOptions()
+            options.addCaptions = enabled
+            options.captionLanguage = language
+            try await engine.prepareCaptionTranslations(plan: Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id)]),
+                options: options, sceneMap: [scene.id: scene], database: temp.database, emit: { _ in })
+        }
+    }
+}
+
+private nonisolated final class WizardCaptionTestLog: Sendable {
+    private let storage = Mutex<[String]>([])
+
+    func append(_ line: String) { storage.withLock { $0.append(line) } }
+    func lines() -> [String] { storage.withLock { $0 } }
+}
+
+extension WizardEngineTests {
+    @Test(arguments: [false, true])
+    func wizardUsesTheSharedTranslateAIRoute(batch: Bool) async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        let scene = try #require(try await temp.database.fetchScenes().first)
+        try await temp.database.replaceTranscripts(videoID: videoID, language: "pt", isTranslation: false,
+            segments: [.init(start: 0, end: 4, text: "Olá", words: nil)], provider: "test", model: nil)
+        var config = AIConfig()
+        config.tasks["translate"] = "claude"
+        config.taskModels["translate"] = "translation-fixture"
+        config.providers["claude"] = AIProviderSettings(bin: "/bin/echo", model: "fixture")
+        config.onDeviceOverrides["translation-batch"] = batch
+        let response = try JSONSerialization.data(withJSONObject: [
+            "type": "assistant", "message": ["content": [["type": "text", "text": "1. Hello"]]]
+        ])
+        let requests = WizardCaptionTestLog()
+        let ai = AIService(config: config) { _, arguments, _, _, _, _ in
+            requests.append("translate")
+            #expect(arguments.contains("translation-fixture"))
+            return ProcessResult(stdout: response, stderr: Data(), exitCode: 0)
+        }
+        let engine = WizardEngine(ai: ai, render: RenderEngine(), captionOnDevice: { _, _ in [:] })
+        var options = WizardOptions()
+        options.addCaptions = true
+        options.captionLanguage = "en"
+        try await engine.prepareCaptionTranslations(plan: Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id)]),
+            options: options, sceneMap: [scene.id: scene], database: temp.database, emit: { _ in })
+        let rows = try await temp.database.transcriptSegments(videoID: videoID, start: 0, end: 4, language: "en")
+        #expect(rows.map(\.text) == ["Hello"])
+        #expect(requests.lines().count == 1)
+    }
+
+    @Test func fortySecondCutOnlyTranslatesOverlappingRowsOfLongTranscriptWithProgress() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        let scene = try #require(try await temp.database.fetchScenes().first)
+        let transcript = (0..<276).map {
+            TranscriptSegment(start: Double($0), end: Double($0 + 1), text: "Portuguese line \($0)", words: nil)
+        }
+        try await temp.database.replaceTranscripts(videoID: videoID, language: "pt", isTranslation: false,
+            segments: transcript, provider: "fixture", model: nil)
+        let stub = CaptionTranslationStub()
+        let engine = WizardEngine(ai: stub.service(), render: RenderEngine(), captionOnDevice: { _, _ in [:] })
+        var options = WizardOptions()
+        options.addCaptions = true
+        options.captionLanguage = "en"
+        let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id, start: 100, end: 140)])
+        try await engine.prepareCaptionTranslations(plan: plan, options: options, sceneMap: [scene.id: scene],
+            database: temp.database, emit: { stub.log($0) })
+        #expect(stub.calls().map { $0.texts.count } == [25, 17])
+        #expect(stub.calls().flatMap(\.texts) == (99..<141).map { "Portuguese line \($0)" })
+        #expect(stub.logs() == ["Captions: translating 42 lines of fixture.mp4 to English…",
+                                "Captions: translated 25 of 42 lines", "Captions: translated 42 of 42 lines",
+                                "Captions: fixture.mp4 translated 42 lines"])
+        let stored = try await temp.database.fetchTranscripts(videoID: videoID)
+        #expect(stored.filter { !$0.isTranslation }.count == 276)
+        #expect(stored.filter(\.isTranslation).count == 42)
+        // Reusing exactly these cuts does no work and emits nothing.
+        let logCount = stub.logs().count
+        try await engine.prepareCaptionTranslations(plan: plan, options: options, sceneMap: [scene.id: scene],
+            database: temp.database, emit: { stub.log($0) })
+        #expect(stub.calls().count == 2 && stub.logs().count == logCount)
+    }
+
+    @Test func captionRangesIncludeAreaClipsAndFillPartialTracksPerRow() async throws {
+        let temp = try TempDatabase()
+        let firstID = try await temp.seedVideo()
+        let secondID = try await temp.seedVideo()
+        let scenes = try await temp.database.fetchScenes()
+        let first = try #require(scenes.first { $0.videoID == firstID })
+        let second = try #require(scenes.first { $0.videoID == secondID })
+        for id in [firstID, secondID] {
+            try await temp.database.replaceTranscripts(videoID: id, language: "pt", isTranslation: false,
+                segments: [.init(start: 0, end: 2, text: "First \(id)", words: nil),
+                           .init(start: 2, end: 4, text: "Second \(id)", words: nil),
+                           .init(start: 20, end: 22, text: "Area \(id)", words: nil),
+                           .init(start: 90, end: 92, text: "Unused \(id)", words: nil)], provider: "fixture", model: nil)
+        }
+        try await temp.database.replaceTranscripts(videoID: firstID, language: "en", isTranslation: true,
+            segments: [.init(start: 0, end: 2, text: "Already translated", words: nil)], provider: "fixture", model: nil)
+        var cut = Fixtures.planClip(sceneID: first.id, start: 0, end: 4)
+        cut.areaClips = [.init(area: "Same source", sceneID: first.id, start: 20, end: 22),
+                         .init(area: "Other source", sceneID: second.id, start: 20, end: 22)]
+        let stub = CaptionTranslationStub()
+        let engine = WizardEngine(ai: stub.service(), render: RenderEngine(), captionOnDevice: { _, _ in [:] })
+        var options = WizardOptions()
+        options.addCaptions = true
+        options.captionLanguage = "en"
+        try await engine.prepareCaptionTranslations(plan: Fixtures.plan(clips: [cut, cut]), options: options,
+            sceneMap: [first.id: first, second.id: second], database: temp.database, emit: { stub.log($0) })
+        #expect(stub.calls().map(\.texts) == [["Second \(firstID)", "Area \(firstID)"], ["Area \(secondID)"]])
+        let stored = try await temp.database.fetchTranscripts(videoID: firstID).filter(\.isTranslation)
+        #expect(stored.map(\.text) == ["Already translated", "English Second \(firstID)", "English Area \(firstID)"])
     }
 }

@@ -14,6 +14,8 @@ struct LearnedRedactionTests {
         profile.houseStyle = "Strong openings\nCookie: session-secret\nig_comments private_handle"
         profile.tasteRubric = "Keep action https://private/source /Users/private/movie.mp4 @private_handle"
         profile.tasteExemplarFrames = ["/Users/private/exemplar.jpg"]
+        profile.captionStyles = [NamedCaptionStyle(name: "private-caption-style-sentinel", style: CaptionStyle())]
+        profile.miniInstructions = "mini-private-instructions-sentinel"
         profile.learnedSharing.enabled["people"] = true
         let person = PersonRecord(id: 1, key: "person", name: "Trainer", descriptor: "Coach",
                                   avatarVideoID: 4, avatarTime: 1, avatarBoxJSON: "face-box-secret")
@@ -27,14 +29,20 @@ struct LearnedRedactionTests {
         // new field fails this independent oracle until reviewed explicitly.
         let source = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(profile)) as? [String: Any])
         let classified: Set<String> = ["profile_name", "brand_name", "content_domain", "source_folder", "output_folder",
-            "tag_schema", "socials", "captions", "logo_path", "accent_color", "tagline", "hashtags", "caption_languages",
+            "tag_schema", "socials", "captions", "caption_styles", "logo_path", "accent_color", "tagline", "hashtags", "caption_languages",
             "default_render_settings", "default_pacing", "use_learned_editing_defaults", "learned_hook_style",
             "learned_layout_preference", "taste_rubric", "taste_exemplar_frames", "taste_categories", "house_style",
             "buzz_sources", "buzz_extra_sources", "taste_rubric_provenance", "house_style_provenance", "learned_sharing",
-            "critic_brief_use"]
+            "critic_brief_use", "mini_instructions"]
         #expect(Set(source.keys).subtracting(classified).isEmpty)
         let data = try JSONEncoder().encode(result.document)
         let wire = String(decoding: data, as: UTF8.self)
+        #expect(source["mini_instructions"] as? String == profile.miniInstructions)
+        #expect(source["caption_styles"] != nil)
+        #expect(!wire.contains("caption_styles"))
+        #expect(!wire.contains("private-caption-style-sentinel"))
+        #expect(!wire.contains("mini_instructions"))
+        #expect(!wire.contains("mini-private-instructions-sentinel"))
         for secret in ["session-secret", "private_handle", "/Users/", "https:", "ig_", "face-box-secret", "avatar", "socials", "providerSettings", "onDeviceAgreement"] {
             #expect(!wire.contains(secret))
         }

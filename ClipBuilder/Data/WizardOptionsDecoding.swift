@@ -29,10 +29,17 @@ nonisolated extension WizardOptions {
         projectID = try values.decodeIfPresent(Int64.self, forKey: .projectID)
         renderSettings = try values.decodeIfPresent(RenderSettings.self, forKey: .renderSettings) ?? renderSettings
         pacing = try values.decodeIfPresent(EditPacing.self, forKey: .pacing) ?? pacing
+        captionPosition = try values.decodeIfPresent(String.self, forKey: .captionPosition)
+        captionStyleID = try values.decodeIfPresent(String.self, forKey: .captionStyleID)
         captionLanguage = try values.decodeIfPresent(String.self, forKey: .captionLanguage)
         workflow = try values.decodeIfPresent(WizardWorkflow.self, forKey: .workflow)
         muteSource = try values.decodeIfPresent(Bool.self, forKey: .muteSource) ?? muteSource
         addCaptions = try values.decodeIfPresent(Bool.self, forKey: .addCaptions) ?? addCaptions
+        nameTags = try values.decodeIfPresent(Bool.self, forKey: .nameTags)
+        nameTagContent = try values.decodeIfPresent(String.self, forKey: .nameTagContent)
+        nameTagStyle = try values.decodeIfPresent(String.self, forKey: .nameTagStyle)
+        nameTagPosition = try values.decodeIfPresent(String.self, forKey: .nameTagPosition)
+        nameTagsOnly = try values.decodeIfPresent(Bool.self, forKey: .nameTagsOnly)
         enableTextOverlays = try values.decodeIfPresent(Bool.self, forKey: .enableTextOverlays) ?? enableTextOverlays
         useMusic = try values.decodeIfPresent(Bool.self, forKey: .useMusic) ?? useMusic
         aiInstructions = try values.decodeIfPresent(String.self, forKey: .aiInstructions) ?? aiInstructions

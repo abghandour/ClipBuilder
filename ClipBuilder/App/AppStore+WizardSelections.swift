@@ -296,7 +296,7 @@ extension AppStore {
         }
     }
 
-    private func beginWizardSelectionWork(projectID: Int64, stage: String, options: WizardOptions) {
+    func beginWizardSelectionWork(projectID: Int64, stage: String, options: WizardOptions) {
         isWizardRunning = true
         wizardProjectID = projectID
         wizardProjectName = projects.first { $0.id == projectID }?.name
@@ -306,14 +306,14 @@ extension AppStore {
         lastWizardOptions = options
     }
 
-    private func finishWizardSelectionWork(generation: Int) {
+    func finishWizardSelectionWork(generation: Int) {
         guard generation == profileGeneration else { return }
         isWizardRunning = false
         wizardStatus = nil
         wizardProjectID = nil
     }
 
-    private func wizardSelectionLogSink() -> @Sendable (String) -> Void {
+    func wizardSelectionLogSink() -> @Sendable (String) -> Void {
         let generation = profileGeneration
         return { message in
             Task { @MainActor in

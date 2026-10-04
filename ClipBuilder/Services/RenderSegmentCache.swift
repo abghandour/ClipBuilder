@@ -8,7 +8,8 @@ actor RenderSegmentCache {
     /// Bumped whenever the filter graph changes shape: v3 added B-roll
     /// (draw order, cover-all framing, alpha dissolves, the audio mix).
     // v5 preserves original transcript timing through framing intermediates.
-    nonisolated static let rendererVersion = "multitrack-segment-v5"
+    // v6 uses half-open caption windows at page boundaries.
+    nonisolated static let rendererVersion = "multitrack-segment-v6"
     private let root: URL?
     private let byteLimit: Int64
 

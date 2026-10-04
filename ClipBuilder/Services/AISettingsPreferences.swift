@@ -19,6 +19,8 @@ import Foundation
         "aiInstructions": "wizard.aiInstructions", "formatPreset": "wizard.formatPreset",
         "tastePreset": "wizard.tastePreset",
         "captionLanguage": "wizard.captionLanguage",
+        "nameTags": "wizard.nameTags", "nameTagContent": "wizard.nameTagContent",
+        "nameTagStyle": "wizard.nameTagStyle", "nameTagPosition": "wizard.nameTagPosition",
         "workflow": WizardDefaults.workflowKey,
         "musicTrack": "wizard.musicTrack", "overlayStyle": "wizard.overlayStyle",
         "overlayAnimation": "wizard.overlayAnimation", "overlayPlacement": "wizard.overlayPlacement",
@@ -52,6 +54,9 @@ import Foundation
         for (field, key) in wizardKeys {
             if let value = defaults.object(forKey: key) { result[field] = setting(value) }
         }
+        let captionChoices = WizardCaptionChoices.load(profileName: profile.profileName, defaults: defaults)
+        result["captionPosition"] = captionChoices.captionPosition.map(JSONSetting.string) ?? .null
+        result["captionStyleID"] = captionChoices.captionStyleID.map(JSONSetting.string) ?? .null
         if CropRecipe.Kind(rawValue: result["highlightFraming"]?.string ?? "") == nil {
             result["highlightFraming"] = .null
         }
@@ -120,12 +125,18 @@ import Foundation
     static func write(
         _ result: [String: JSONSetting], kind: AISettingsEnvelope.Kind,
         scopes: Set<AISettingsScope> = Set(AISettingsScope.allCases),
-        sourceName: String = "another run", defaults: UserDefaults
+        sourceName: String = "another run", profileName: String? = nil, defaults: UserDefaults
     ) {
         let result = kind == .wizard ? WizardOptions.normalizeSettings(result) : result
         let mapping = kind == .wizard ? wizardKeys : analysisKeys
         let allowed = scopes.reduce(into: Set<String>()) {
             $0.formUnion(AISettingsEnvelope.keys($1, kind: kind))
+        }
+        if kind == .wizard, let profileName, scopes.contains(.options) {
+            var choices = WizardCaptionChoices.load(profileName: profileName, defaults: defaults)
+            if let value = result["captionPosition"] { choices.captionPosition = value.string }
+            if let value = result["captionStyleID"] { choices.captionStyleID = value.string }
+            choices.save(profileName: profileName, defaults: defaults)
         }
         for (field, key) in mapping where allowed.contains(field) {
             guard let value = result[field] else { continue }

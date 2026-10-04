@@ -308,6 +308,7 @@ nonisolated enum PodcastHighlightFinder {
 
     static func find(exchanges: [PodcastExchange], segments: [TranscriptSegment], turns: [SpeakerTurn],
                      roster: [VideoPersonRecord], maxSeconds: Double, threshold: Double, maxCount: Int? = nil, highlightFraming: CropRecipe.Kind? = nil,
+                     excludedRanges: [(start: Double, end: Double)] = [],
                      instructions: String = "", ai: AIService? = nil, model: String? = nil,
                      log: @escaping @Sendable (String) -> Void = { _ in },
                      progress: @Sendable (String, Double) async -> Void = { _, _ in }) async throws -> [HighlightCandidate] {
@@ -316,6 +317,11 @@ nonisolated enum PodcastHighlightFinder {
         let names = Dictionary(roster.map { ($0.key, $0.displayName) }, uniquingKeysWith: { first, _ in first })
         let total = max(1, exchanges.count)
         var found: [HighlightCandidate] = []
+        func availableCandidates() -> [HighlightCandidate] {
+            found.filter { candidate in
+                !excludedRanges.contains { $0.start < candidate.sourceEnd && $0.end > candidate.sourceStart }
+            }
+        }
         var done = Set<Int>()
         var pending: [Entry] = []
         let cap = maxCount.flatMap { $0 > 0 ? $0 : nil }
@@ -349,7 +355,7 @@ nonisolated enum PodcastHighlightFinder {
             job.count > 1 || (job.first.map { $0.exchange.end - $0.exchange.start > limit } ?? false)
         }.count
         for batch in jobs {
-            if let cap, resolveOverlaps(found, threshold: threshold).count >= cap {
+            if let cap, resolveOverlaps(availableCandidates(), threshold: threshold).count >= cap {
                 log("Podcast highlights: cap reached after \(callCount) calls")
                 loggedCap = true
                 break
@@ -433,14 +439,15 @@ nonisolated enum PodcastHighlightFinder {
                 done.insert(entry.index)
             }
         }
-        let eligible = found.filter { $0.score >= threshold }
-        let nonoverlapping = resolveOverlaps(found, threshold: threshold)
+        let available = availableCandidates()
+        let eligible = available.filter { $0.score >= threshold }
+        let nonoverlapping = resolveOverlaps(available, threshold: threshold)
         let kept = cap.map { Array(nonoverlapping.prefix($0)) } ?? nonoverlapping
         if let cap, kept.count >= cap, !loggedCap {
             log("Podcast highlights: cap reached after \(callCount) calls")
         }
         await progress("Finding highlights · done", 1)
-        log("Podcast highlights: \(found.count) candidates found; \(found.count - eligible.count) below threshold; \(eligible.count - nonoverlapping.count) dropped for overlap; \(nonoverlapping.count - kept.count) above cap; \(kept.count) kept.")
+        log("Podcast highlights: \(found.count) candidates found; \(found.count - available.count) excluded by kept footage; \(available.count - eligible.count) below threshold; \(eligible.count - nonoverlapping.count) dropped for overlap; \(nonoverlapping.count - kept.count) above cap; \(kept.count) kept.")
         return kept.map { candidate in
             var candidate = candidate
             if let highlightFraming { candidate.framing = highlightFraming }

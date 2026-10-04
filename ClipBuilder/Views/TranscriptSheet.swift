@@ -204,7 +204,8 @@ struct TranscriptSheet: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if showsQA, !qaSections.isEmpty {
-                TranscriptQAView(video: video, sections: qaSections, rows: rows, labels: qaLabels) { scene, start, end in
+                TranscriptQAView(video: video, sections: qaSections, rows: rows, labels: qaLabels,
+                                 preferredTranslationLanguage: store.activeProfile.captionLanguages.first) { scene, start, end in
                     store.setSceneEditRange(scene, start: start, end: end)
                 }
             } else if rows.isEmpty {

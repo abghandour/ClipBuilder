@@ -939,7 +939,7 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 21)
+        #expect(Database.schemaVersion == 22)
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))
@@ -992,5 +992,27 @@ extension DatabaseTests {
         #expect(try await again.fetchGeneratedVideos().first?.favorite == true)
         try await again.setGeneratedVideoFavorite(id, favorite: false)
         #expect(try await reopened.fetchGeneratedVideos().first?.favorite == false)
+    }
+}
+
+extension DatabaseTests {
+    @Test func translationAvailabilityNeverFallsBackToOriginals() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        let otherID = try await temp.seedVideo()
+        let rows = [TranscriptSegment(start: 0, end: 2, text: "Hello", words: nil)]
+        try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+            segments: rows, provider: "test", model: nil)
+        #expect(try await !temp.database.hasTranscriptTranslation(videoID: videoID, language: "en"))
+        try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: true,
+            segments: rows, provider: "test", model: nil)
+        #expect(try await temp.database.hasTranscriptTranslation(videoID: videoID, language: "en"))
+        #expect(try await !temp.database.hasTranscriptTranslation(videoID: otherID, language: "en"))
+        #expect(try await !temp.database.hasTranscriptTranslation(videoID: videoID, language: "pt"))
+        #expect(try await temp.database.hasTranscriptTranslation(videoID: videoID, language: "en", start: 1, end: 3))
+        #expect(try await !temp.database.hasTranscriptTranslation(videoID: videoID, language: "en", start: 2, end: 3))
+        try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: true,
+            segments: [], provider: "test", model: nil)
+        #expect(try await !temp.database.hasTranscriptTranslation(videoID: videoID, language: "en"))
     }
 }
