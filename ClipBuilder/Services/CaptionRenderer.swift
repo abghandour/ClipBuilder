@@ -222,22 +222,7 @@ nonisolated struct CaptionRenderer {
     func position(for caption: RenderedCaption, positionOverride: String? = nil) -> (x: Int, y: Int) {
         // Auto retains the profile's historical placement and platform clearance.
         if positionOverride == nil || positionOverride == "auto" {
-            let margin = max(40, videoHeight / 18)
-            let x = (videoWidth - caption.width) / 2
-            let y: Int
-            switch style.position.lowercased() {
-            case "top": y = margin
-            case "middle": y = (videoHeight - caption.height) / 2
-            default: y = videoHeight - caption.height - margin
-            }
-            guard let safeArea else { return (x, y) }
-            let inset = max(16, videoHeight / 60)
-            let origin = safeArea.clampedOrigin(
-                x: Double(x) / Double(videoWidth), y: Double(y) / Double(videoHeight),
-                width: Double(caption.width) / Double(videoWidth),
-                height: Double(caption.height + inset * 2) / Double(videoHeight))
-            return (Int((origin.x * Double(videoWidth)).rounded()),
-                    Int((origin.y * Double(videoHeight)).rounded()) + inset)
+            return position(for: caption, clipPosition: style.position)
         }
         let margin = max(32, videoHeight / 28)
         let x = (videoWidth - caption.width) / 2
@@ -248,5 +233,30 @@ nonisolated struct CaptionRenderer {
         default: y = videoHeight - margin - caption.height
         }
         return (x, y)
+    }
+
+    /// A Builder clip's caption row (bottom | middle | top): placed by the
+    /// historical margins, then kept clear of the platform chrome when the
+    /// timeline's safe area is on. The Wizard's explicit choices use
+    /// `position(for:positionOverride:)` and the frame edge instead.
+    func position(for caption: RenderedCaption, clipPosition: String) -> (x: Int, y: Int) {
+        let margin = max(40, videoHeight / 18)
+        let x = (videoWidth - caption.width) / 2
+        let y: Int
+        switch clipPosition.lowercased() {
+        case "top": y = margin
+        case "middle": y = (videoHeight - caption.height) / 2
+        default: y = videoHeight - caption.height - margin
+        }
+        guard let safeArea else { return (x, y) }
+        // Inside the safe area the caption keeps a smaller margin, so the
+        // chrome-avoiding lift does not push it further than needed.
+        let inset = max(16, videoHeight / 60)
+        let origin = safeArea.clampedOrigin(
+            x: Double(x) / Double(videoWidth), y: Double(y) / Double(videoHeight),
+            width: Double(caption.width) / Double(videoWidth),
+            height: Double(caption.height + inset * 2) / Double(videoHeight))
+        return (Int((origin.x * Double(videoWidth)).rounded()),
+                Int((origin.y * Double(videoHeight)).rounded()) + inset)
     }
 }

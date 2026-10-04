@@ -106,11 +106,15 @@ struct PlatformSafeAreaTests {
         let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: CaptionStyle(),
                                        safeArea: PlatformSafeArea.resolve(settings))
         let caption = CaptionRenderer.RenderedCaption(pngURL: URL(fileURLWithPath: "/tmp/c.png"), width: 900, height: 120)
-        let bottom = renderer.position(for: caption, positionOverride: "bottom")
+        // A Builder clip's caption row stays clear of the platform chrome.
+        let bottom = renderer.position(for: caption, clipPosition: "bottom")
         #expect(bottom.y + 120 <= Int(0.74 * 1920))
         #expect(bottom.y + 120 > Int(0.74 * 1920) - 80)
-        let top = renderer.position(for: caption, positionOverride: "top")
+        let top = renderer.position(for: caption, clipPosition: "top")
         #expect(top.y >= Int(0.13 * 1920))
+        // The Wizard's explicit choices use the frame edge instead.
+        let edge = renderer.position(for: caption, positionOverride: "bottom")
+        #expect(edge.y + 120 > Int(0.74 * 1920))
         let plain = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: CaptionStyle(), safeArea: nil)
         #expect(plain.position(for: caption).y == 1920 - 120 - max(40, 1920 / 18))
     }

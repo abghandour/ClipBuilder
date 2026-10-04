@@ -1415,7 +1415,7 @@ actor MultitrackRenderer {
                     segmentComplete = false
                     continue
                 }
-                let (x, y) = captionRenderer.position(for: rendered, positionOverride: captionPosition)
+                let (x, y) = captionRenderer.position(for: rendered, clipPosition: captionPosition)
                 captions.append(CaptionOverlay(png: rendered.pngURL, x: x, y: y, start: start, end: end, text: text))
             }
         }
