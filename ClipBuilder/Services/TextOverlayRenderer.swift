@@ -90,12 +90,12 @@ nonisolated struct TextOverlayRenderer {
                 CGFloat(value & 0xff) / 255)
     }
 
-    private static func cgColor(_ string: String?, fallback: (CGFloat, CGFloat, CGFloat) = (1, 1, 1)) -> CGColor {
+    static func cgColor(_ string: String?, fallback: (CGFloat, CGFloat, CGFloat) = (1, 1, 1)) -> CGColor {
         let (r, g, b) = parseColor(string, fallback: fallback)
         return CGColor(red: r, green: g, blue: b, alpha: 1)
     }
 
-    private func resolveFont(size: CGFloat, family: String?, bold: Bool, italic: Bool) -> CTFont {
+    func resolveFont(size: CGFloat, family: String?, bold: Bool, italic: Bool) -> CTFont {
         let base = CTFontCreateWithName((family?.isEmpty == false ? family! : "Helvetica Neue") as CFString,
                                         size, nil)
         var traits: CTFontSymbolicTraits = []
@@ -107,7 +107,7 @@ nonisolated struct TextOverlayRenderer {
 
     // MARK: - Measurement
 
-    private func line(_ text: String, font: CTFont) -> CTLine {
+    func line(_ text: String, font: CTFont) -> CTLine {
         let attributed = NSAttributedString(string: text, attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             // Without this Core Text fills with attribute black and ignores
@@ -117,7 +117,7 @@ nonisolated struct TextOverlayRenderer {
         return CTLineCreateWithAttributedString(attributed)
     }
 
-    private func lineWidth(_ text: String, font: CTFont) -> CGFloat {
+    func lineWidth(_ text: String, font: CTFont) -> CGFloat {
         CGFloat(CTLineGetTypographicBounds(line(text, font: font), nil, nil, nil))
     }
 
@@ -209,9 +209,13 @@ nonisolated struct TextOverlayRenderer {
         var size: CGSize
         var padding: CGFloat
         var lineGap: CGFloat
+        var geometry: TagLayout.Result? = nil
     }
 
-    func nameTagLayout(_ item: TextOverlayItem, maxWidth: CGFloat) -> NameTagLayout {
+    func nameTagLayout(_ item: TextOverlayItem, maxWidth: CGFloat, imageAspects: [UUID: CGFloat] = [:]) -> NameTagLayout {
+        if let style = item.tagStyle {
+            return styledNameTagLayout(item, style: style, maxWidth: maxWidth, aspects: imageAspects)
+        }
         let scale = CGFloat(videoHeight) / 1920
         let lines = Array(item.text.components(separatedBy: "\n").prefix(2))
         var designSize = max(22, item.fontsize)
@@ -249,6 +253,10 @@ nonisolated struct TextOverlayRenderer {
 
     /// The planner owns placement, including explicit corners outside safe areas.
     private func drawNameTag(in context: CGContext, item: TextOverlayItem) {
+        if let style = item.tagStyle {
+            drawStyledNameTag(in: context, item: item, style: style)
+            return
+        }
         let box = item.normalizedBox
         let rect = CGRect(x: box.minX * Double(videoWidth), y: box.minY * Double(videoHeight),
                           width: box.width * Double(videoWidth), height: box.height * Double(videoHeight))

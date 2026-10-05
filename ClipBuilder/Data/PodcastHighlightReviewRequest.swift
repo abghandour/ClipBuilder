@@ -10,6 +10,7 @@ nonisolated struct PodcastHighlightReviewRequest: Identifiable, Sendable {
     var roster: [VideoPersonRecord]
     /// Everyone the profile knows, so footage of someone the reel names counts as in context.
     var people: [PersonRecord] = []
+    var profile: BrandProfile = BrandProfile(name: "Default")
     var options: WizardOptions
     var roles: [AIRole] = []
     var profileGeneration: Int = 0

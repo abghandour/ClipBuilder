@@ -284,7 +284,7 @@ extension WizardFormPlanTests {
             .styleReference, .fightResearch, .layouts, .iteration, .planningModels])
         #expect(custom.step2Controls == [.output, .pacing, .audio, .musicTrack, .text,
             .overlayStyle, .transitions, .cameraFocus, .framingCamera, .bRoll, .bumpers, .branding, .presentationModels,
-            .captionPosition, .captionStyle, .nameTags, .nameTagContent, .nameTagStyle, .nameTagPosition])
+            .captionPosition, .captionStyle, .nameTags, .nameTagStyleID, .nameTagPosition])
         #expect(custom.step1Controls.union(custom.step2Controls) == Set(WizardFormPlan.Control.allCases))
         for recipe in ReelRecipe.all {
             let form = WizardFormPlan(recipe: recipe)
@@ -305,8 +305,8 @@ extension WizardFormPlanTests {
     @Test func modelRowsAreSplitByStepWithoutDuplicates() {
         let form = WizardFormPlan(recipe: .custom)
         #expect(form.step1Models == ["wizard", "critique"])
-        #expect(form.step2Models(useBRoll: true, instructions: "Use fight footage") == ["captions", "broll", "framing"])
-        #expect(form.step2Models(useBRoll: false, instructions: "") == ["captions", "framing"])
+        #expect(form.step2Models(useBRoll: true, instructions: "Use fight footage") == ["captions", "broll", "framing", "tag_text"])
+        #expect(form.step2Models(useBRoll: false, instructions: "") == ["captions", "framing", "tag_text"])
         #expect(Set(form.step1Models).isDisjoint(with: form.step2Models(useBRoll: true, instructions: "Cutaways")))
         #expect(WizardFormPlan(recipe: .podcast).step2Models(useBRoll: false, instructions: "").contains("framing"))
         #expect(!WizardFormPlan(recipe: .mmaFinish).step2Models(useBRoll: false, instructions: "").contains("framing"))
@@ -382,5 +382,21 @@ extension WizardFormPlanTests {
         #expect(shared.step2.overlayAnimation == "fade")
         #expect(shared.step2.overlayPlacement == "bottom")
         #expect(shared.step2.musicTrack == "Fights/theme.mp3")
+    }
+}
+
+
+extension WizardFormPlanTests {
+    @Test func tagStyleIDSurvivesCopyAndPreferenceRestore() throws {
+        let suite = "TagStylePreferences.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var options = WizardOptions()
+        options.nameTags = true
+        options.nameTagStyleID = UUID().uuidString
+        AISettingsPreferences.write(JSONSetting.dictionary(options), kind: .wizard,
+            scopes: [.options], defaults: defaults)
+        let copy = AISettingsPreferences.wizard(defaults: defaults, profile: Fixtures.brand())
+        #expect(copy["nameTagStyleID"] == options.nameTagStyleID.map(JSONSetting.string))
     }
 }

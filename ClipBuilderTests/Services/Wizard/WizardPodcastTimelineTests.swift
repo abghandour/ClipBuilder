@@ -117,18 +117,18 @@ struct WizardPodcastTimelineTests {
 extension WizardPodcastTimelineTests {
     @Test func captionPositionAndPersistentTagsSurviveComposedCutDocuments() throws {
         let (video, scene, turns) = try source()
-        let people = [PersonRecord(id: 1, key: "ann", name: "Ann", descriptor: "Host"),
-                      PersonRecord(id: 2, key: "bob", name: "Bob", descriptor: "Guest")]
+        // The visual descriptor never reaches a tag; the second line is the tag text.
+        let people = [PersonRecord(id: 1, key: "ann", name: "Ann", descriptor: "tall, grey hoodie"),
+                      PersonRecord(id: 2, key: "bob", name: "Bob", descriptor: "short, red cap")]
         var options = WizardOptions()
         options.formatPreset = "podcast"
         options.highlightFraming = .talkerAndPrevious
         options.nameTags = true
-        options.nameTagContent = "nameAndRole"
         options.addCaptions = true
         options.captionPosition = "bottom"
         let plan = Fixtures.plan(clips: [Fixtures.planClip(start: 0, end: 10)])
         let cuts = WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: [1: scene], options: options,
-            videos: [video], turns: [1: turns], layouts: ScreenCropStore.builtIn, people: people)
+            videos: [video], turns: [1: turns], layouts: ScreenCropStore.builtIn, people: people, tagText: ["ann": "Host", "bob": "Guest"])
         let cut = try #require(cuts[0])
         #expect(cut.videoTrack.filter { $0.track == 0 }.allSatisfy { $0.captions == "bottom" })
         #expect(cut.videoTrack.filter { $0.track != 0 }.allSatisfy { $0.captions == "none" })

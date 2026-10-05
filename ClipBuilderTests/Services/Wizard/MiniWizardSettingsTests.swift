@@ -201,3 +201,24 @@ extension MiniWizardSettingsTests {
         #expect(options.usesNameTags && options.step2.nameTagStyle == "Guest look")
     }
 }
+
+
+extension MiniWizardSettingsTests {
+    @Test func tagStyleSelectionMapsToStepTwoAndOldTemplateIsIgnored() throws {
+        let named = NamedTagStyle(name: "Guest", style: TagStyle())
+        var profile = Fixtures.brand()
+        profile.tagStyles = [named]
+        var settings = MiniWizardSettings()
+        settings.nameTags = true
+        settings.nameTagStyle = "Old overlay"
+        settings.nameTagStyleID = named.id.uuidString
+        let step = settings.step2Options(base: WizardStep2Options())
+        #expect(step.nameTagStyleID == named.id.uuidString)
+        settings.nameTagStyleID = nil
+        let legacy = settings.step2Options(base: step)
+        #expect(legacy.nameTagStyleID == nil)
+        #expect(profile.tagStyle(id: legacy.nameTagStyleID) == TagStyle())
+        profile.tagStyles = []
+        #expect(profile.tagStyle(id: step.nameTagStyleID) == TagStyle())
+    }
+}

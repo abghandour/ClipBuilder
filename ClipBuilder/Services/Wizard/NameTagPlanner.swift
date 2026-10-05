@@ -33,7 +33,6 @@ nonisolated enum NameTagPlanner {
         var spans: [Span]
     }
     struct Settings: Sendable {
-        var content: String? = nil
         var position: String? = nil
         var safeRect: CGRect? = nil
         var captionBand: CGRect? = nil
@@ -41,7 +40,7 @@ nonisolated enum NameTagPlanner {
     }
 
     static func plan(areas: [Area], people: [Person], settings: Settings,
-                     template: TextOverlayItem? = nil) -> [NameTag] {
+                     style: TagStyle = TagStyle(), imageAspects: [UUID: CGFloat] = [:]) -> [NameTag] {
         let names = Dictionary(people.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
         let explicitCorner = Corner(rawValue: settings.position ?? "")
         let frame = CGRect(origin: .zero, size: settings.canvas)
@@ -61,13 +60,15 @@ nonisolated enum NameTagPlanner {
                 let name = person.name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
                 let role = person.role.split(whereSeparator: \.isWhitespace).joined(separator: " ")
                 guard !name.isEmpty else { continue }
-                let lines = settings.content == "nameAndRole" && !role.isEmpty ? [name, role] : [name]
-                var item = styledItem(lines: lines, template: template)
+                let lines = !role.isEmpty ? [name, role] : [name]
+                var item = styledItem(lines: lines, style: style)
                 let scale = settings.canvas.height / 1920
                 item.fontsize = Int(min(64, max(30, min(area.rect.width, area.rect.height) * 0.075 / scale)))
-                let layout = renderer.nameTagLayout(item, maxWidth: min(area.rect.width * 0.6, allowed.width))
-                let width = layout.size.width
-                let height = layout.size.height
+                let layout = renderer.nameTagLayout(item, maxWidth: min(area.rect.width * 0.6, allowed.width), imageAspects: imageAspects)
+                let fit = min(1, min(area.rect.width * 0.6, allowed.width) / max(1, layout.size.width),
+                              allowed.height / max(1, layout.size.height))
+                let width = layout.size.width * fit
+                let height = layout.size.height * fit
                 func rect(_ corner: Corner) -> CGRect {
                     let y = corner == .bottomLeading || corner == .bottomTrailing ? allowed.maxY - height : allowed.minY
                     let verticalBounds = height <= allowed.height ? allowed
@@ -90,7 +91,7 @@ nonisolated enum NameTagPlanner {
                 guard let placed = clearingCaption(rect(corner), corner: corner, area: area.rect,
                     allowed: allowed, frame: frame, safe: explicitCorner == nil ? settings.safeRect : nil,
                     band: settings.captionBand, gap: settings.canvas.height * 0.01) else { continue }
-                let tag = NameTag(personKey: key, lines: lines, areaRect: area.rect, rect: placed,
+                let tag = NameTag(personKey: key, lines: layout.lines, areaRect: area.rect, rect: placed,
                                   corner: corner, fontSize: layout.fontSize, start: span.start, end: span.end)
                 if let last = tags.last, last.personKey == key, last.lines == tag.lines,
                    last.rect == tag.rect, abs(last.end - tag.start) < 0.00001 {
@@ -132,8 +133,9 @@ nonisolated enum NameTagPlanner {
         return nil
     }
 
-    private static func styledItem(lines: [String], template: TextOverlayItem?) -> TextOverlayItem {
-        var item = template ?? LowerThirdOverlay.composition(name: lines[0], role: "").texts[0]
+    private static func styledItem(lines: [String], style: TagStyle) -> TextOverlayItem {
+        var item = TextOverlayItem()
+        item.tagStyle = style
         item.text = lines.joined(separator: "\n")
         item.design = "nameTag"
         item.kicker = nil
@@ -210,8 +212,8 @@ nonisolated enum NameTagPlanner {
         }
     }
 
-    static func overlay(_ tag: NameTag, canvas: CGSize, template: TextOverlayItem? = nil) -> TextOverlayItem {
-        var item = styledItem(lines: tag.lines, template: template)
+    static func overlay(_ tag: NameTag, canvas: CGSize, style: TagStyle = TagStyle()) -> TextOverlayItem {
+        var item = styledItem(lines: tag.lines, style: style)
         item.startTime = tag.start
         item.endTime = tag.end
         item.unbounded = false

@@ -185,7 +185,7 @@ struct EffectControlsTests {
             (.overlays, "overlays"), (.effects, "effects"), (.screenCrops, "screenCrops"),
             (.bumpers, "bumpers"), (.wizard, "wizard"), (.wizardMini, "wizardMini"), (.learned, "learned"),
             (.builder, "builder"), (.library, "library"), (.instagram, "instagram"),
-            (.instagramReports, "instagramReports"), (.captions, "captions")
+            (.instagramReports, "instagramReports"), (.captions, "captions"), (.tags, "tags")
         ]
         for (section, value) in existing {
             #expect(section.rawValue == value)
@@ -195,9 +195,12 @@ struct EffectControlsTests {
         #expect(SidebarSection.looks.rawValue == "looks")
         #expect(SidebarSection.looks.projectDestination == .looks)
         #expect(SidebarSection.effects.title == "Transitions")
+        #expect(SidebarSection.tags.title == "Tags" && SidebarSection.tags.systemImage == "tag")
+        let captions = SidebarSection.resourceSections.firstIndex(of: .captions)!
+        #expect(SidebarSection.resourceSections[captions + 1] == .tags)
         #expect(SidebarSection.looks.title == "Looks")
         #expect(SidebarSection.looks.shortcut == nil)
-        #expect(SidebarSection.wizardMini.title == "AI Wizard Mini")
+        #expect(SidebarSection.wizardMini.title == "AI Wizard Express")
         #expect(SidebarSection.wizardMini.systemImage == "wand.and.stars.inverse")
         #expect(SidebarSection.wizardMini.projectDestination == .wizardMini)
         #expect(SidebarSection.wizardMini.shortcut == nil)

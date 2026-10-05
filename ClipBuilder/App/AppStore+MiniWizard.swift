@@ -23,7 +23,7 @@ extension AppStore {
         let generation = profileGeneration
         let podcastSettings = settings.podcast
         let wizard = wizard
-        beginWizardSelectionWork(projectID: projectID, stage: "Finding Mini highlights", options: options)
+        beginWizardSelectionWork(projectID: projectID, stage: "Finding Express highlights", options: options)
         wizardTask = Task {
             await AIRunCapture.context.withValue(AIRunCapture()) {
                 defer { finishWizardSelectionWork(generation: generation) }
@@ -32,7 +32,7 @@ extension AppStore {
                     let batch: String
                     if flow.isPodcastOrInterview {
                         let review = try await wizard.findPodcastHighlights(options: options, settings: podcastSettings,
-                            database: database, emit: wizardSelectionLogSink(),
+                            database: database, profile: profile, emit: wizardSelectionLogSink(),
                             requestText: options.aiInstructions, interpretRequest: false)
                         let plans = WizardEngine.miniHighlightPlans(review.candidates, videoID: video.id, scenes: review.scenes)
                         guard !plans.isEmpty else {
@@ -60,12 +60,12 @@ extension AppStore {
                     miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
                         length: flow.length, batchID: batch, candidates: candidates, options: options,
                         selectedSelectionID: candidates.first?.id)
-                    appendLog(\.wizardLog, ["Mini: \(candidates.count) candidates ready to review."])
+                    appendLog(\.wizardLog, ["Express: \(candidates.count) candidates ready to review."])
                     await refreshWizardSelections()
                 } catch is CancellationError {
-                    if generation == profileGeneration { appendLog(\.wizardLog, ["Finding Mini footage stopped."]) }
+                    if generation == profileGeneration { appendLog(\.wizardLog, ["Finding Express footage stopped."]) }
                 } catch {
-                    if generation == profileGeneration { presentError("Could not find Mini footage", error) }
+                    if generation == profileGeneration { presentError("Could not find Express footage", error) }
                 }
             }
         }
@@ -85,7 +85,7 @@ extension AppStore {
         let rule = WizardPlanRules.avoidRangesRule(ranges)
         let feedback = [note.trimmingCharacters(in: .whitespacesAndNewlines), rule]
             .filter { !$0.isEmpty }.joined(separator: "\n\n")
-        beginWizardSelectionWork(projectID: run.projectID, stage: "Regenerating Mini candidate", options: run.options)
+        beginWizardSelectionWork(projectID: run.projectID, stage: "Regenerating Express candidate", options: run.options)
         wizardTask = Task {
             await AIRunCapture.context.withValue(AIRunCapture()) {
                 defer { finishWizardSelectionWork(generation: generation) }
@@ -103,7 +103,7 @@ extension AppStore {
                         options.highlightMaxCount = 1
                         let request = [options.aiInstructions, feedback].filter { !$0.isEmpty }.joined(separator: "\n\n")
                         let review = try await wizard.findPodcastHighlights(options: options, settings: podcastSettings,
-                            database: database, emit: wizardSelectionLogSink(), requestText: request,
+                            database: database, profile: profile, emit: wizardSelectionLogSink(), requestText: request,
                             interpretRequest: false, avoidingRanges: ranges)
                         guard let plan = WizardEngine.miniHighlightPlans(review.candidates,
                             videoID: run.video.id, scenes: review.scenes).first,
@@ -128,7 +128,7 @@ extension AppStore {
                     miniRun?.requestedCard = .footage
                     await refreshWizardSelections()
                 } catch is CancellationError {
-                    if generation == profileGeneration { appendLog(\.wizardLog, ["Regenerating Mini candidate stopped."]) }
+                    if generation == profileGeneration { appendLog(\.wizardLog, ["Regenerating Express candidate stopped."]) }
                 } catch {
                     if generation == profileGeneration { presentError("Could not regenerate the candidate", error) }
                 }
@@ -180,7 +180,7 @@ extension AppStore {
                                       turns: speakers.turns, kept: Set(sections.map(\.id)))
                 miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .qa,
                     length: .automatic, batchID: UUID().uuidString, candidates: [], options: options, qa: qa)
-                appendLog(\.wizardLog, ["Mini: \(sections.count) Q&A exchanges ready to review."])
+                appendLog(\.wizardLog, ["Express: \(sections.count) Q&A exchanges ready to review."])
             } catch is CancellationError {
                 if generation == profileGeneration { appendLog(\.wizardLog, ["Loading Q&A stopped."]) }
             } catch {
@@ -221,7 +221,7 @@ extension AppStore {
                 miniRun?.selectedSelectionID = candidates.first?.id
                 refreshMiniQASections()
                 miniRun?.requestedCard = candidates.isEmpty ? .footage : .settings
-                appendLog(\.wizardLog, ["Mini: saved \(candidates.count) Q&A selections."])
+                appendLog(\.wizardLog, ["Express: saved \(candidates.count) Q&A selections."])
                 await refreshWizardSelections()
             } catch is CancellationError {
                 if generation == profileGeneration { appendLog(\.wizardLog, ["Saving Q&A selections stopped."]) }
@@ -298,6 +298,14 @@ extension AppStore {
                             miniBatch: run.batchID, name: candidates[0].selection.name,
                             takes: takes, options: run.options.step1)]
                     }
+                    var tagFields: [PersonTagField] = []
+                    if options.usesNameTags, var tagPlan = takes.first?.plan {
+                        tagPlan.clips = takes.flatMap { $0.plan.clips }
+                        let scenes = try await database.fetchScenes(projectID: run.projectID, includeExcluded: true)
+                        tagFields = try await wizard.prepareTagText(plan: tagPlan, options: options, profile: profile,
+                            sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
+                            database: database, emit: wizardSelectionLogSink())
+                    }
                     for (index, take) in takes.enumerated() {
                         try Task.checkCancellation()
                         guard generation == profileGeneration else { throw CancellationError() }
@@ -318,12 +326,12 @@ extension AppStore {
                         let renderBatch = UUID().uuidString
                         renderBatches.insert(renderBatch)
                         try await wizard.makeReel(take: take, options: renderOptions, profile: profile,
-                            database: database, batchID: renderBatch, emit: emit)
+                            database: database, batchID: renderBatch, tagTextPrepared: true, preparedTagFields: tagFields, emit: emit)
                     }
                 } catch is CancellationError {
-                    if generation == profileGeneration { appendLog(\.wizardLog, ["Mini rendering stopped."]) }
+                    if generation == profileGeneration { appendLog(\.wizardLog, ["Express rendering stopped."]) }
                 } catch {
-                    if generation == profileGeneration { presentError("Could not generate Mini videos", error) }
+                    if generation == profileGeneration { presentError("Could not generate Express videos", error) }
                 }
                 guard generation == profileGeneration else { return }
                 await refreshAllNow()

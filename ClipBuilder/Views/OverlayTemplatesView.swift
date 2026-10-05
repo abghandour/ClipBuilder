@@ -603,7 +603,7 @@ struct OverlayPreviewCanvas: View {
 /// Corner handle that scales the selected item: drag distance from the item's
 /// center sets the scale factor, applied by the owner (font size for texts,
 /// width fraction for images).
-private struct ResizeHandle: View {
+struct ResizeHandle: View {
     let center: CGPoint
     let onScale: (Double) -> Void
 

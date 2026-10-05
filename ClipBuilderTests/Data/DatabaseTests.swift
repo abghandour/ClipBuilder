@@ -939,7 +939,7 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 22)
+        #expect(Database.schemaVersion == 23)
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))
@@ -1014,5 +1014,41 @@ extension DatabaseTests {
         try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: true,
             segments: [], provider: "test", model: nil)
         #expect(try await !temp.database.hasTranscriptTranslation(videoID: videoID, language: "en"))
+    }
+}
+
+
+extension DatabaseTests {
+    @Test func version22GainsTagFieldsAndPersistsEditsAcrossReopen() async throws {
+        let temp = try TempDatabase()
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("DROP TABLE person_tag_fields")
+        try raw.execute("PRAGMA user_version = 22")
+        let migrated = try Database(path: temp.path)
+        let person = try await migrated.createPerson(name: "Alex")
+        let provenance = AIProvenance(provider: "test", model: "fixture", task: "tag_text")
+        try await migrated.savePersonTagField(personKey: person.key, field: "Role", value: "Host", provenance: provenance)
+        let reopened = try Database(path: temp.path)
+        let field = try #require(try await reopened.personTagFields(personKey: person.key).first)
+        #expect(field.value == "Host" && field.provenance == provenance)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
+        try await reopened.clearPersonTagField(personKey: person.key, field: "Role")
+        #expect(try await reopened.personTagFields(personKey: person.key).isEmpty)
+    }
+
+    @Test func mergingAndDeletingPeoplePreservesThenCleansTagFields() async throws {
+        let temp = try TempDatabase()
+        let source = try await temp.database.createPerson(name: "Source")
+        let target = try await temp.database.createPerson(name: "Target")
+        try await temp.database.savePersonTagField(personKey: source.key, field: "Role", value: "Host", provenance: nil)
+        try await temp.database.savePersonTagField(personKey: source.key, field: "Team", value: "Source team", provenance: nil)
+        try await temp.database.savePersonTagField(personKey: target.key, field: "Team", value: "Target team", provenance: nil)
+        try await temp.database.mergePeople(source: source, into: target)
+        let fields = try await temp.database.personTagFields(personKey: target.key)
+        #expect(fields.count == 2)
+        #expect(fields.first { $0.field == "Team" }?.value == "Target team")
+        #expect(try await temp.database.personTagFields(personKey: source.key).isEmpty)
+        try await temp.database.deletePerson(target)
+        #expect(try await temp.database.personTagFields().isEmpty)
     }
 }

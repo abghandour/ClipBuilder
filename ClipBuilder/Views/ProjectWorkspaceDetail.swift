@@ -40,6 +40,8 @@ struct ProjectWorkspaceDetail: View {
                     AssetBrowserView(kind: .fonts)
                 case .images:
                     AssetBrowserView(kind: .images)
+                case .tags:
+                    TagStylesView().id(store.activeProfile.profileName)
                 case .captions:
                     CaptionStylesView()
                         .id(store.activeProfile.profileName)

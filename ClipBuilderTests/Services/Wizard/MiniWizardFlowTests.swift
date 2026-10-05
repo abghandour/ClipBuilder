@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import Clip_Builder
 
@@ -239,5 +240,18 @@ extension MiniWizardFlowTests {
             == "1 reel from 1 exchange · High · 16:9 · 1080p · intro video · outro video · name tags")
         #expect(flow.runSummary(candidates: [], exchangeCount: 4, settings: settings).hasPrefix("4 reels from 4 exchanges"))
         #expect(flow.runSummary(candidates: [], exchangeCount: 0, settings: settings) == "No kept footage")
+    }
+}
+
+
+extension MiniWizardFlowTests {
+    @Test func tagStyleSurvivesEffectivePodcastSettings() {
+        var settings = MiniWizardSettings()
+        settings.nameTags = true
+        settings.nameTagStyleID = UUID().uuidString
+        let podcast = MiniWizardFlow(video: Fixtures.video(), hasPodcastExchangeScenes: true)
+        let effective = settings.effective(for: podcast, introAvailable: false, outroAvailable: false)
+        #expect(effective.nameTagStyleID == settings.nameTagStyleID)
+        #expect(effective.step2Options(base: WizardStep2Options()).nameTagStyleID == settings.nameTagStyleID)
     }
 }

@@ -10,6 +10,7 @@ import CryptoKit
 //                                taste studies, Center Stage hints, voice profiles
 //   Database+Analysis.swift      scenes, analysis checkpoints, analysis runs
 //   Database+People.swift        people
+//   Database+TagFields.swift     cached person tag descriptions
 //   Database+Transcripts.swift   transcripts, speaker attribution
 //   Database+WizardSelections.swift selections and their saved takes
 //   Database+Generated.swift     generated videos, reviews, preferences, lessons, wizard research
@@ -713,6 +714,15 @@ actor Database {
         let stamped = try connection.query("PRAGMA user_version").first?.values.first?.intValue ?? 0
         if stamped != Self.schemaVersion {
             try Self.migrate(connection)
+            try connection.execute("""
+                CREATE TABLE IF NOT EXISTS person_tag_fields (
+                    person_key TEXT NOT NULL REFERENCES people(key) ON DELETE CASCADE ON UPDATE CASCADE,
+                    field TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    provenance TEXT,
+                    PRIMARY KEY (person_key, field)
+                )
+                """)
             if try !connection.columnNames(of: "wizard_selections").contains("mini_batch") {
                 try connection.execute("ALTER TABLE wizard_selections ADD COLUMN mini_batch TEXT")
             }
@@ -731,7 +741,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 22
+    static let schemaVersion: Int64 = 23
 
     // MARK: - Helpers
 

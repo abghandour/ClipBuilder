@@ -21,7 +21,7 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case nameTags, nameTagContent, nameTagStyle, nameTagPosition
+        case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case captionPosition, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
     }
@@ -49,6 +49,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var nameTags: Bool?
     var nameTagContent: String?
     var nameTagStyle: String?
+    var nameTagStyleID: String?
     var nameTagPosition: String?
     var useMusic = true
     /// Restrict render music to one library folder (root-relative,
@@ -405,7 +406,7 @@ nonisolated struct WizardPlan: Codable, Sendable {
 /// Autonomous Reels generator — the Swift port of wizard.py: cached research
 /// → AI plan → validation → linear assembly → AI caption.
 actor WizardEngine {
-    private let ai: AIService
+    let ai: AIService
     private let render: RenderEngine
     private let centerStage = CenterStageService()
 
@@ -422,6 +423,7 @@ actor WizardEngine {
     }
 
     func findPodcastHighlights(options: WizardOptions, settings: PodcastSettings, database: Database,
+                               profile: BrandProfile = BrandProfile(name: "Default"),
                                emit: @escaping @Sendable (String) -> Void, requestText: String = "",
                                interpretRequest: Bool = true,
                                avoidingRanges: [(videoID: Int64, start: Double, end: Double)] = [],
@@ -483,7 +485,7 @@ actor WizardEngine {
             instructions: requestText, ai: ai, model: options.modelOverride, log: emit, progress: progress)
         let people = try await database.fetchPeople()
         return PodcastHighlightReviewRequest(video: video, candidates: candidates, scenes: scenes,
-                                             segments: segments, turns: turns, roster: roster, people: people, options: options,
+                                             segments: segments, turns: turns, roster: roster, people: people, profile: profile, options: options,
                                              roles: AIRunCapture.current?.roles ?? [], highlightThreshold: settings.highlightThreshold)
     }
 
@@ -2572,7 +2574,7 @@ actor WizardEngine {
     /// The take is re-read so hand edits made after opening a review are respected.
     func makeReel(take: WizardSelectionTake, options: WizardOptions,
                   profile: BrandProfile, database: Database,
-                  batchID: String? = nil,
+                  batchID: String? = nil, tagTextPrepared: Bool = false, preparedTagFields: [PersonTagField] = [],
                   emit: @escaping @Sendable (String) -> Void,
                   renderPlan: (@Sendable (WizardPlan, WizardOptions) async throws -> Void)? = nil,
                   renderTake: (@Sendable (WizardSelectionTake, WizardOptions) async throws -> Void)? = nil) async throws {
@@ -2597,7 +2599,7 @@ actor WizardEngine {
             return
         }
         try await renderSelection(plan, takeID: saved.id, options: options,
-                                  profile: profile, database: database, batchID: batchID,
+                                  profile: profile, database: database, batchID: batchID, tagTextPrepared: tagTextPrepared, preparedTagFields: preparedTagFields,
                                   emit: emit, renderPlan: renderPlan)
     }
 
@@ -2671,7 +2673,7 @@ actor WizardEngine {
 
     private func renderSelection(_ selection: WizardPlan, takeID: Int64? = nil, options: WizardOptions,
                                  profile: BrandProfile, database: Database,
-                                 batchID: String? = nil,
+                                 batchID: String? = nil, tagTextPrepared: Bool = false, preparedTagFields: [PersonTagField] = [],
                                  emit rawEmit: @escaping @Sendable (String) -> Void,
                                  renderPlan: (@Sendable (WizardPlan, WizardOptions) async throws -> Void)? = nil) async throws {
         var options = options
@@ -2729,6 +2731,8 @@ actor WizardEngine {
             }
             if options.nameTagsOnly == true { plan = WizardPlanRules.nameTagsOnly(plan: plan) }
             plan = WizardNameTags.renderPlan(plan, options: options)
+            let tagFields = try await prepareTagText(plan: plan, options: options, profile: profile,
+                sceneMap: sceneMap, database: database, writeMissing: !tagTextPrepared, emit: emit)
             try await prepareCaptionTranslations(plan: plan, options: options, sceneMap: sceneMap,
                                                  database: database, emit: emit)
             // Exercise the prepared render plan in tests without encoding or calling caption AI.
@@ -2747,6 +2751,12 @@ actor WizardEngine {
             if options.highlightFraming == nil, options.podcastFraming != .original,
                let provenance = plan.framingProvenance {
                 try await database.recordOutputRole(id: result.recordID, role: "Camera focus", provenance: provenance)
+            }
+            for field in tagFields + preparedTagFields {
+                if let provenance = field.provenance {
+                    try await database.recordOutputRole(id: result.recordID,
+                        role: "Name tag text · \(field.personKey) · \(field.field)", provenance: provenance)
+                }
             }
             let tags = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
             var captionText: String?
@@ -2969,7 +2979,7 @@ actor WizardEngine {
             content.clips[index].speakerIntroductions = []
         }
         var document = try await Self.timelineDocument(from: content, sceneMap: sceneMap,
-            options: options, database: database, log: emit)
+            options: options, database: database, profile: profile, log: emit)
         document.textOverlays = []
         for index in document.videoTrack.indices { document.videoTrack[index].captions = "none" }
         let proxy = try await MultitrackRenderer(render: render).render(document: document,
@@ -3528,8 +3538,10 @@ actor WizardEngine {
         let profile = profile.withCaptionStyle(id: options.captionStyleID)
         let captionStyle = profile.captions
         let people = options.usesNameTags ? try await database.fetchPeople() : []
+        let tagText = options.usesNameTags
+            ? try await database.tagText(field: profile.tagStyle(id: options.nameTagStyleID).description.field) : [:]
         let podcastCuts = try await WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: sceneMap,
-            options: options, database: database, captionStyle: captionStyle, log: emit)
+            options: options, database: database, profile: profile, captionStyle: captionStyle, log: emit)
         let jobs: [(index: Int, clip: WizardPlanClip, scene: SceneRecord)] =
             plan.clips.enumerated().compactMap { index, clip in
                 sceneMap[clip.sceneID].map { (index, clip, $0) }
@@ -3542,7 +3554,7 @@ actor WizardEngine {
                                               scene: job.scene, sceneMap: sceneMap, options: options,
                                               captionStyle: captionStyle, captionFallbacks: captionFallbacks,
                                               brandOverlays: brandOverlayFiles,
-                                              podcastDocument: podcastCuts[job.index], nameTagPeople: people, profile: profile,
+                                              podcastDocument: podcastCuts[job.index], nameTagPeople: people, tagText: tagText, profile: profile,
                                               database: database, scratch: scratch,
                                               emit: emit)
         }
@@ -3571,14 +3583,16 @@ actor WizardEngine {
             renderSettings: options.renderSettings, pacing: options.pacing, podcastFraming: options.podcastFraming,
             podcastCuts: podcastCuts)
             .keepingOverlaysClearOfPlatformChrome()
+        let tagImageAspects = await TextOverlayRenderer.tagImageAspects(profile.tagStyle(id: options.nameTagStyleID))
         var tagCursor = 0.0
         for (index, clip) in editPlan.clips.enumerated() {
             guard let scene = sceneMap[clip.sceneID] else { continue }
             let duration = podcastCuts[index] != nil ? clip.end - clip.start
                 : ((clip.end - clip.start) / clip.speed * 10).rounded() / 10
             if podcastCuts[index] == nil {
-                for var item in WizardNameTags.ordinary(scene: scene, duration: duration, people: people,
-                                                       options: options, captionStyle: captionStyle) {
+                for var item in WizardNameTags.ordinary(scene: scene, duration: duration, people: people, tagText: tagText,
+                                                       options: options, captionStyle: captionStyle, profile: profile,
+                                                       imageAspects: tagImageAspects) {
                     item.startTime += tagCursor
                     item.endTime += tagCursor
                     document.textOverlays.append(item)
@@ -3749,7 +3763,7 @@ actor WizardEngine {
                                     options: WizardOptions,
                                     captionStyle: CaptionStyle, captionFallbacks: WizardCaptionFallbackLog,
                                     brandOverlays: [URL] = [],
-                                    podcastDocument: TimelineDocument? = nil, nameTagPeople: [PersonRecord] = [], profile: BrandProfile,
+                                    podcastDocument: TimelineDocument? = nil, nameTagPeople: [PersonRecord] = [], tagText: [String: String], profile: BrandProfile,
                                     database: Database, scratch: URL,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> URL {
         // Source seconds consumed vs seconds on screen — slow motion
@@ -3786,9 +3800,11 @@ actor WizardEngine {
         if options.usesNameTags {
             let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
                                                videoHeight: RenderEngine.outputHeight)
+            let imageAspects = await TextOverlayRenderer.tagImageAspects(profile.tagStyle(id: options.nameTagStyleID))
             let tags = podcastDocument?.textOverlays.filter { $0.design == "nameTag" }
-                ?? WizardNameTags.ordinary(scene: scene, duration: duration, people: nameTagPeople,
-                                          options: options, captionStyle: captionStyle)
+                ?? WizardNameTags.ordinary(scene: scene, duration: duration, people: nameTagPeople, tagText: tagText,
+                                          options: options, captionStyle: captionStyle, profile: profile,
+                                          imageAspects: imageAspects)
             for item in tags {
                 let png = try renderer.render(item, to: scratch)
                 overlays.append(RenderEngine.ClipOverlay(png: png, x: 0, y: 0, start: item.startTime, end: item.endTime))

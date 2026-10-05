@@ -40,7 +40,7 @@ struct PodcastHighlightIntegrationTests {
         options.renderSettings.quality = .archival
         options.sourcesRestricted = true
         options.sourceVideoPaths = [input.video.path]
-        let review = try await engine.findPodcastHighlights(options: options, settings: PodcastSettings(), database: temp.database, emit: { _ in })
+        let review = try await engine.findPodcastHighlights(options: options, settings: PodcastSettings(), database: temp.database, profile: profile, emit: { _ in })
         #expect(review.options.renderSettings == options.renderSettings)
         #expect(review.highlightThreshold == PodcastSettings().highlightThreshold)
         #expect(review.candidates.count == 3)
@@ -373,26 +373,55 @@ struct PodcastHighlightIntegrationTests {
             options: options, settings: PodcastSettings(), database: temp.database, emit: { _ in })
         let candidate = try #require(review.candidates.first)
         let key = { (request: PodcastHighlightReviewRequest, source: String, layouts: [ScreenCropLayout]) in
-            try PodcastHighlightRenderKey.make(candidate: candidate, request: request, layouts: layouts, profile: profile, sourceFingerprint: source)
+            try await PodcastHighlightRenderKey.make(candidate: candidate, request: request, layouts: layouts, profile: profile, tagText: [:], sourceFingerprint: source)
         }
-        let base = try key(review, "size:1", [])
-        #expect(try key(review, "size:1", []) == base)
-        #expect(try key(review, "size:2", []) != base)
+        let base = try await key(review, "size:1", [])
+        #expect(try await key(review, "size:1", []) == base)
+        #expect(try await key(review, "size:2", []) != base)
         var changed = review
         changed.options.brollInstructions = "Show the guest's fights."
-        #expect(try key(changed, "size:1", []) != base)
+        #expect(try await key(changed, "size:1", []) != base)
         changed = review
         changed.scenes[0].tags.append("person:guest-2")
-        #expect(try key(changed, "size:1", []) != base)
+        #expect(try await key(changed, "size:1", []) != base)
         changed = review
         changed.highlightThreshold += 0.5
-        #expect(try key(changed, "size:1", []) != base)
+        #expect(try await key(changed, "size:1", []) != base)
         let layouts = ScreenCropStore.all()
-        let withLayouts = try key(review, "size:1", layouts)
+        let withLayouts = try await key(review, "size:1", layouts)
         #expect(layouts.isEmpty || withLayouts != base)
         var other = candidate
         other.sourceEnd += 1
-        #expect(try PodcastHighlightRenderKey.make(candidate: other, request: review, layouts: [], profile: profile, sourceFingerprint: "size:1") != base)
+        #expect(try await PodcastHighlightRenderKey.make(candidate: other, request: review, layouts: [], profile: profile, tagText: [:], sourceFingerprint: "size:1") != base)
+
+        var tagged = review
+        tagged.people = [PersonRecord(id: 1, key: "ann", name: "Ann", descriptor: "tall, grey hoodie")]
+        let nameOnly = try await PodcastHighlightRenderKey.make(candidate: candidate, request: tagged,
+            layouts: [], profile: profile, tagText: [:], sourceFingerprint: "size:1")
+        let withText = try await PodcastHighlightRenderKey.make(candidate: candidate, request: tagged,
+            layouts: [], profile: profile, tagText: ["ann": "Host"], sourceFingerprint: "size:1")
+        #expect(withText != nameOnly)
+        var styled = profile
+        var style = TagStyle()
+        style.description.color = "#ff0000"
+        styled.tagStyle = style
+        #expect(try await PodcastHighlightRenderKey.make(candidate: candidate, request: tagged,
+            layouts: [], profile: styled, tagText: ["ann": "Host"], sourceFingerprint: "size:1") != withText)
+        let image = temp.directory.url.appendingPathComponent("tag.png")
+        try Data("first".utf8).write(to: image)
+        style.images = [TagImage(path: image.path)]
+        styled.tagStyle = style
+        let originalImage = try await PodcastHighlightRenderKey.make(candidate: candidate, request: tagged,
+            layouts: [], profile: styled, tagText: [:], sourceFingerprint: "size:1")
+        let originalDate = try FileManager.default.attributesOfItem(atPath: image.path)[.modificationDate] as? Date
+        try Data("longer replacement".utf8).write(to: image)
+        if let originalDate { try FileManager.default.setAttributes([.modificationDate: originalDate], ofItemAtPath: image.path) }
+        let resizedImage = try await PodcastHighlightRenderKey.make(candidate: candidate, request: tagged,
+            layouts: [], profile: styled, tagText: [:], sourceFingerprint: "size:1")
+        #expect(resizedImage != originalImage, "File size invalidates even when the modification date is unchanged")
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1)], ofItemAtPath: image.path)
+        #expect(try await PodcastHighlightRenderKey.make(candidate: candidate, request: tagged,
+            layouts: [], profile: styled, tagText: [:], sourceFingerprint: "size:1") != resizedImage)
 
         let reel = temp.directory.url.appendingPathComponent("reel.mp4")
         try Data("reel".utf8).write(to: reel)

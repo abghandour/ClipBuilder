@@ -84,26 +84,25 @@ struct NameTagPlannerTests {
         }
     }
 
-    @Test func contentAndTemplateStyleProduceHardCutLiteralText() throws {
+    @Test func twoLinesAndIndependentStyleProduceHardCutLiteralText() throws {
         let area = NameTagPlanner.Area(rect: frame, spans: [.init(start: 0, end: 5, personKey: "ann")])
         let name = try #require(NameTagPlanner.plan(areas: [area], people: people, settings: .init()).first)
         let role = try #require(NameTagPlanner.plan(areas: [area], people: people,
-            settings: .init(content: "nameAndRole")).first)
-        #expect(name.lines == ["Ann"] && role.lines == ["Ann", "Host"])
+            settings: .init()).first)
+        #expect(name.lines == ["Ann", "Host"] && role.lines == ["Ann", "Host"])
         let bob = NameTagPlanner.Area(rect: frame, spans: [.init(start: 0, end: 5, personKey: "bob")])
-        #expect(NameTagPlanner.plan(areas: [bob], people: people, settings: .init(content: "nameAndRole")).first?.lines == ["Bob"])
-        var template = TextOverlayItem(text: "Replace")
-        template.fontfamily = "Menlo"
-        template.fontcolor = "#ABCDEF"
-        template.bgcolor = "#123456"
-        template.strokeColor = "black"
-        template.strokeWidthEm = 0.04
+        #expect(NameTagPlanner.plan(areas: [bob], people: people, settings: .init()).first?.lines == ["Bob"])
+        var template = TagStyle()
+        template.name.font = "Menlo"
+        template.description.font = "Menlo"
+        template.name.color = "#ABCDEF"
+        template.bgColor = "#123456"
         let styled = try #require(NameTagPlanner.plan(areas: [area], people: people,
-            settings: .init(content: "nameAndRole"), template: template).first)
-        let overlay = NameTagPlanner.overlay(styled, canvas: frame.size, template: template)
+            settings: .init(), style: template).first)
+        let overlay = NameTagPlanner.overlay(styled, canvas: frame.size, style: template)
         #expect(overlay.text == "Ann\nHost" && overlay.design == "nameTag")
-        #expect(overlay.fontfamily == template.fontfamily && overlay.fontcolor == template.fontcolor)
-        #expect(overlay.bgcolor == template.bgcolor && overlay.strokeWidthEm == template.strokeWidthEm)
+        #expect(overlay.tagStyle == template)
+
         #expect(overlay.transIn == "cut" && overlay.transOut == "cut" && overlay.endTime == 5)
     }
 
@@ -140,14 +139,14 @@ extension NameTagPlannerTests {
         let people = [PersonRecord(id: 1, key: "ann", name: "Ann", descriptor: "Host"),
                       PersonRecord(id: 2, key: "bob", name: "Bob", descriptor: "")]
         scene.tags = ["person:ann"]
-        #expect(WizardNameTags.ordinary(scene: scene, duration: 10, people: people,
-            options: options, captionStyle: CaptionStyle()).count == 1)
+        #expect(WizardNameTags.ordinary(scene: scene, duration: 10, people: people, tagText: [:],
+            options: options, captionStyle: CaptionStyle(), profile: Fixtures.brand()).count == 1)
         scene.tags += ["person:bob"]
-        #expect(WizardNameTags.ordinary(scene: scene, duration: 10, people: people,
-            options: options, captionStyle: CaptionStyle()).isEmpty)
+        #expect(WizardNameTags.ordinary(scene: scene, duration: 10, people: people, tagText: [:],
+            options: options, captionStyle: CaptionStyle(), profile: Fixtures.brand()).isEmpty)
         scene.tags = []
-        #expect(WizardNameTags.ordinary(scene: scene, duration: 10, people: people,
-            options: options, captionStyle: CaptionStyle()).isEmpty)
+        #expect(WizardNameTags.ordinary(scene: scene, duration: 10, people: people, tagText: [:],
+            options: options, captionStyle: CaptionStyle(), profile: Fixtures.brand()).isEmpty)
     }
 
     @Test func explicitOffOverridesLegacyMiniNameTagsOnlyAndIntroductionsStayInOldPlans() {
@@ -214,9 +213,20 @@ extension NameTagPlannerTests {
     @Test func longNamesStayUnderTheAreaWidthCapAndBlankNamesAreOmitted() throws {
         let rect = CGRect(x: 0, y: 0, width: 400, height: 600)
         let area = NameTagPlanner.Area(rect: rect, spans: [.init(start: 0, end: 5, personKey: "ann")])
+        var style = TagStyle()
+        style.name.font = "Menlo"
+        style.name.bold = false
         let tag = try #require(NameTagPlanner.plan(areas: [area],
-            people: [.init(key: "ann", name: String(repeating: "Long name ", count: 20))], settings: .init()).first)
-        #expect(tag.rect.width == 240 && rect.contains(tag.rect))
+            people: [.init(key: "ann", name: String(repeating: "Long name ", count: 20))], settings: .init(), style: style).first)
+        // At the 22-point floor, 16 letters plus the ellipsis fit; the
+        // 6-point padding on each side is part of the exact measured width.
+        let font = CTFontCreateWithName("Menlo" as CFString, 22, nil)
+        let expectedLine = "Long name Long n…"
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: expectedLine,
+            attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]))
+        let expectedWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) + 12
+        #expect(tag.lines == [expectedLine])
+        #expect(tag.rect.width == expectedWidth && rect.contains(tag.rect))
         #expect(NameTagPlanner.plan(areas: [area], people: [.init(key: "ann", name: " \n ")], settings: .init()).isEmpty)
     }
 }
@@ -228,7 +238,7 @@ extension NameTagPlannerTests {
             .twoRowBand(positionOverride: "bottom")
         let area = NameTagPlanner.Area(rect: frame, spans: [.init(start: 0, end: 5, personKey: "ann")])
         let tag = try #require(NameTagPlanner.plan(areas: [area], people: people,
-            settings: .init(content: "nameAndRole", position: "bottomTrailing", captionBand: band)).first)
+            settings: .init(position: "bottomTrailing", captionBand: band)).first)
         #expect(tag.rect.maxY <= band.minY - 19.2 + 0.001)
         #expect(abs(tag.rect.maxX - (1080 - 43.2)) < 0.001)
         #expect(frame.contains(tag.rect))
@@ -242,7 +252,7 @@ extension NameTagPlannerTests {
         let area = NameTagPlanner.Area(rect: frame, spans: [.init(start: 0, end: 5, personKey: "ann")])
         for corner in [NameTagPlanner.Corner.topLeading, .topTrailing] {
             let tag = try #require(NameTagPlanner.plan(areas: [area], people: people,
-                settings: .init(content: "nameAndRole", position: corner.rawValue, captionBand: band)).first)
+                settings: .init(position: corner.rawValue, captionBand: band)).first)
             #expect(tag.rect.minY >= band.maxY + 19.2 - 0.001)
             #expect(frame.contains(tag.rect))
         }
@@ -253,7 +263,7 @@ extension NameTagPlannerTests {
         let band = CGRect(x: 0, y: 1760, width: 1080, height: 120)
         let area = NameTagPlanner.Area(rect: rect, spans: [.init(start: 0, end: 5, personKey: "ann")])
         let tag = try #require(NameTagPlanner.plan(areas: [area], people: people,
-            settings: .init(content: "nameAndRole", position: "bottomTrailing", captionBand: band)).first)
+            settings: .init(position: "bottomTrailing", captionBand: band)).first)
         #expect(rect.contains(tag.rect))
         #expect(tag.rect.maxY <= band.minY - 19.2 + 0.001)
         #expect(abs(tag.rect.maxX - (rect.maxX - 21.6)) < 0.001)
@@ -280,34 +290,27 @@ extension NameTagPlannerTests {
         let safe = CGRect(x: 0, y: 250, width: 896, height: 1170)
         let area = NameTagPlanner.Area(rect: rect, spans: [.init(start: 0, end: 5, personKey: "ann")])
         let tag = try #require(NameTagPlanner.plan(areas: [area], people: people,
-            settings: .init(content: "nameAndRole", safeRect: safe, captionBand: band)).first)
+            settings: .init(safeRect: safe, captionBand: band)).first)
         #expect(safe.contains(tag.rect))
         #expect(tag.rect.maxY <= band.minY - 19.2 + 0.001 || tag.rect.minY >= band.maxY + 19.2 - 0.001)
     }
 
-    @Test func measuredTemplateFontsIgnoreAbsoluteTemplateSizeAndScaleWithCanvas() throws {
-        var template = TextOverlayItem(text: "Template")
-        template.fontsize = 6
-        template.fontfamily = "Menlo"
-        template.boxRadius = 12
-        template.strokeColor = "black"
-        template.strokeWidthEm = 0.04
+    @Test func measuredStyleFontsScaleWithCanvas() throws {
+        var template = TagStyle()
+        template.name.font = "Menlo"
+        template.description.font = "Menlo"
+        template.cornerRadius = 12
         for scale in [0.5, 1.0, 2.0] {
             let canvas = CGSize(width: 1080 * scale, height: 1920 * scale)
             for shortSide in [200.0, 540.0, 1080.0] {
                 let area = NameTagPlanner.Area(rect: CGRect(x: 0, y: 0, width: shortSide * scale, height: 1920 * scale),
                     spans: [.init(start: 0, end: 5, personKey: "ann")])
-                let settings = NameTagPlanner.Settings(content: "nameAndRole", canvas: canvas)
+                let settings = NameTagPlanner.Settings(canvas: canvas)
                 let tag = try #require(NameTagPlanner.plan(areas: [area], people: people,
-                    settings: settings, template: template).first)
-                var largeTemplate = template
-                largeTemplate.fontsize = 180
-                let large = try #require(NameTagPlanner.plan(areas: [area], people: people,
-                    settings: settings, template: largeTemplate).first)
-                #expect(tag == large)
-                let overlay = NameTagPlanner.overlay(tag, canvas: canvas, template: template)
+                    settings: settings, style: template).first)
+                let overlay = NameTagPlanner.overlay(tag, canvas: canvas, style: template)
                 #expect(overlay.fontsize == Int(min(64, max(30, shortSide * 0.075))))
-                #expect(overlay.boxRadius == 12 && overlay.fontfamily == "Menlo")
+                #expect(overlay.tagStyle?.cornerRadius == 12 && overlay.tagStyle?.name.font == "Menlo")
                 let renderer = TextOverlayRenderer(videoWidth: Int(canvas.width), videoHeight: Int(canvas.height), safeArea: nil)
                 let measured = renderer.nameTagLayout(overlay, maxWidth: tag.rect.width)
                 #expect(measured.size == tag.rect.size)
@@ -320,28 +323,36 @@ extension NameTagPlannerTests {
     @Test func longNamesShrinkToTheFloorThenTruncateWithEllipsis() throws {
         let area = NameTagPlanner.Area(rect: CGRect(x: 0, y: 0, width: 400, height: 600),
             spans: [.init(start: 0, end: 5, personKey: "ann")])
+        var style = TagStyle()
+        style.name.font = "Menlo"
+        style.name.bold = false
         let tag = try #require(NameTagPlanner.plan(areas: [area],
-            people: [.init(key: "ann", name: String(repeating: "Long name ", count: 20))], settings: .init()).first)
-        let item = NameTagPlanner.overlay(tag, canvas: frame.size)
+            people: [.init(key: "ann", name: String(repeating: "Long name ", count: 20))], settings: .init(), style: style).first)
+        let item = NameTagPlanner.overlay(tag, canvas: frame.size, style: style)
         let layout = TextOverlayRenderer(safeArea: nil).nameTagLayout(item, maxWidth: tag.rect.width)
         #expect(item.fontsize == 22)
         #expect(layout.lines[0].hasSuffix("…"))
-        #expect(layout.size == tag.rect.size && layout.size.width <= 240)
+        let font = CTFontCreateWithName("Menlo" as CFString, 22, nil)
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: "Long name Long n…",
+            attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]))
+        let expectedWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) + 12
+        #expect(layout.lines == ["Long name Long n…"])
+        #expect(layout.size == tag.rect.size && layout.size.width == expectedWidth)
     }
 
     @Test func fullFrameTagRendersAtLeastThirtyPixelsOfInkPerLine() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        var template = TextOverlayItem(text: "Template")
-        template.fontsize = 6
-        template.fontfamily = "Helvetica Neue"
-        template.boxOpacity = 0
+        var template = TagStyle()
+        template.name.font = "Helvetica Neue"
+        template.description.font = "Helvetica Neue"
+        template.bgOn = false
         let area = NameTagPlanner.Area(rect: frame, spans: [.init(start: 0, end: 5, personKey: "ann")])
         let tag = try #require(NameTagPlanner.plan(areas: [area],
             people: [.init(key: "ann", name: "ANN", role: "HOST")],
-            settings: .init(content: "nameAndRole", position: "bottomTrailing"), template: template).first)
-        let item = NameTagPlanner.overlay(tag, canvas: frame.size, template: template)
+            settings: .init(position: "bottomTrailing"), style: template).first)
+        let item = NameTagPlanner.overlay(tag, canvas: frame.size, style: template)
         let renderer = TextOverlayRenderer(safeArea: nil)
         let url = try renderer.render(item, to: directory)
         let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
@@ -362,5 +373,92 @@ extension NameTagPlannerTests {
         #expect(lineHeights.count == 2)
         #expect(lineHeights.allSatisfy { $0 >= 30 })
         #expect(tag.fontSize == 64)
+    }
+}
+
+extension NameTagPlannerTests {
+    @Test func styledImageUnionIsPlacedAndClearsCaptions() throws {
+        let image = TagImage(path: "/fixture.png", x: -0.3, y: 0.5, width: 0.4)
+        var style = TagStyle()
+        style.images = [image]
+        style.name.underline = true
+        let area = NameTagPlanner.Area(rect: frame, spans: [.init(start: 0, end: 5, personKey: "ann")])
+        let band = CGRect(x: 0, y: 1700, width: 1080, height: 200)
+        let aspects: [UUID: CGFloat] = [image.id: 2]
+        let tag = try #require(NameTagPlanner.plan(areas: [area], people: people,
+            settings: .init(position: "bottomTrailing", captionBand: band), style: style, imageAspects: aspects).first)
+        #expect(frame.contains(tag.rect) && tag.rect.width <= frame.width * 0.6)
+        #expect(tag.rect.maxY <= band.minY - 19.2 + 0.001)
+        let item = NameTagPlanner.overlay(tag, canvas: frame.size, style: style)
+        let measured = TextOverlayRenderer(safeArea: nil).nameTagLayout(item, maxWidth: tag.rect.width, imageAspects: aspects)
+        let geometry = try #require(measured.geometry)
+        #expect(geometry.bounds.minX < geometry.textBlock.minX)
+        #expect(measured.size == tag.rect.size)
+    }
+
+    @Test func legacyNameTagKeepsItsSharedFontAndGeometry() throws {
+        var item = LowerThirdOverlay.composition(name: "Ann", role: "").texts[0]
+        item.text = "Ann\nHost"
+        item.design = "nameTag"
+        item.fontsize = 64
+        let layout = TextOverlayRenderer(safeArea: nil).nameTagLayout(item, maxWidth: 648)
+        #expect(item.tagStyle == nil && layout.geometry == nil)
+        #expect(layout.lines == ["Ann", "Host"] && layout.fontSize == 64)
+        #expect(layout.padding == 16 && layout.lineGap == 64 * 0.12)
+        #expect(abs(CTFontGetSize(layout.fonts[1]) / CTFontGetSize(layout.fonts[0]) - 0.72) < 0.001)
+    }
+}
+
+extension NameTagPlannerTests {
+    @Test func tallImagesFitTheWholeUnionInsideThePersonsArea() throws {
+        let image = TagImage(path: "/fixture.png", x: 0.5, y: 0.5, width: 0.8)
+        var style = TagStyle()
+        style.images = [image]
+        let rect = CGRect(x: 0, y: 0, width: 540, height: 500)
+        let area = NameTagPlanner.Area(rect: rect, spans: [.init(start: 0, end: 5, personKey: "ann")])
+        let tag = try #require(NameTagPlanner.plan(areas: [area], people: people, settings: .init(),
+            style: style, imageAspects: [image.id: 0.05]).first)
+        #expect(rect.contains(tag.rect))
+        #expect(tag.rect.height <= 460 && tag.rect.width <= 324)
+    }
+}
+
+extension NameTagPlannerTests {
+    @Test func styledLinesHaveIndependentFontsCaseAndUnderlines() throws {
+        var style = TagStyle()
+        style.name.font = "Menlo"
+        style.name.uppercase = true
+        style.name.underline = true
+        style.name.underlineThickness = 0.1
+        style.description.font = "Helvetica Neue"
+        style.description.scale = 0.5
+        style.description.bold = false
+        style.description.italic = true
+        var item = TextOverlayItem(text: "Alex Morgan\nHost")
+        item.fontsize = 64
+        item.tagStyle = style
+        let layout = TextOverlayRenderer(safeArea: nil).nameTagLayout(item, maxWidth: 1000)
+        #expect(layout.lines == ["ALEX MORGAN", "Host"])
+        #expect(CTFontGetSize(layout.fonts[0]) == 64 && CTFontGetSize(layout.fonts[1]) == 32)
+        #expect(CTFontGetSymbolicTraits(layout.fonts[0]).contains(.traitBold))
+        #expect(CTFontGetSymbolicTraits(layout.fonts[1]).contains(.traitItalic))
+        let geometry = try #require(layout.geometry)
+        #expect(geometry.underlines[0]?.height == 6.4 && geometry.underlines[1] == nil)
+    }
+
+    @Test func missingTagImagesAreSkippedWithoutBreakingRendering() throws {
+        let directory = try TempDirectory(prefix: "TagImageMissing")
+        var style = TagStyle()
+        style.images = [TagImage(path: directory.url.appendingPathComponent("missing.png").path)]
+        #expect(TextOverlayRenderer.tagImages(style).isEmpty)
+        var item = TextOverlayItem(text: "Alex Morgan\nHost")
+        item.tagStyle = style
+        item.design = "nameTag"
+        item.xFrac = 0.5
+        item.yFrac = 0.5
+        item.wFrac = 0.6
+        item.hFrac = 0.2
+        let url = try TextOverlayRenderer(safeArea: nil).render(item, to: directory.url)
+        #expect(FileManager.default.fileExists(atPath: url.path))
     }
 }

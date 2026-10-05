@@ -43,3 +43,17 @@ struct AITaskRegistryTests {
         #expect(AITask.critique.label == "Reel critique")
     }
 }
+
+
+extension AITaskRegistryTests {
+    @Test func tagTextUsesTheCaptionRoute() {
+        #expect(AITask.tagText.rawValue == "tag_text")
+        #expect(AITask.tagText.label == "Name tag text")
+        #expect(AITask.configurable.contains(.tagText))
+        #expect(AICatalog.taskDefaults["tag_text"] == AICatalog.taskDefaults["captions"])
+        let tags = AICatalog.recommendedChains["tag_text"] ?? []
+        let captions = AICatalog.recommendedChains["captions"] ?? []
+        #expect(tags.map { $0.0 } == captions.map { $0.0 })
+        #expect(tags.map { $0.1 } == captions.map { $0.1 })
+    }
+}

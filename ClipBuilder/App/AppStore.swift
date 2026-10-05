@@ -1919,8 +1919,10 @@ final class AppStore {
                 guard self.database === database, generation == profileGeneration, !Task.isCancelled else {
                     throw CancellationError()
                 }
+                _ = try await wizard.prepareTagText(plan: plan, options: options, profile: profile,
+                    sceneMap: sceneMap, database: database, emit: logSink(\.wizardLog, channel: "builder-prefill"))
                 let document = try await WizardEngine.timelineDocument(from: plan, sceneMap: sceneMap,
-                    options: options, database: database, log: logSink(\.wizardLog, channel: "builder-prefill"))
+                    options: options, database: database, profile: profile, log: logSink(\.wizardLog, channel: "builder-prefill"))
                 if document.videoTrack.isEmpty {
                     presentError("The plan produced no usable clips")
                 } else {

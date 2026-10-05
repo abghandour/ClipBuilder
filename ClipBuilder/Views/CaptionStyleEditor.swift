@@ -40,7 +40,7 @@ struct CaptionStyleEditor: View {
                 }
                 FormCaption(isDefault
                     ? "Used whenever a run selects Profile default. Changes save automatically."
-                    : "Available in this profile’s Mini and full Wizard. Changes save automatically.")
+                    : "Available in this profile’s Express and full Wizard. Changes save automatically.")
             }
             Section {
                 FormGroupHeader("Preview")

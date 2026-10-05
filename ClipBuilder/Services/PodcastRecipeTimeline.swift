@@ -7,8 +7,9 @@ enum PodcastRecipeTimeline {
     static func build(kind: CropRecipe.Kind, video: VideoRecord, range: ClosedRange<Double>,
                       sourceScene: SceneRecord?, turns: [SpeakerTurn], roster: [VideoPersonRecord],
                       layouts: [ScreenCropLayout], settings: RenderSettings,
-                      options: WizardOptions = WizardOptions(), people: [PersonRecord] = [],
-                      captionStyle: CaptionStyle = CaptionStyle(),
+                      options: WizardOptions = WizardOptions(), people: [PersonRecord] = [], tagText: [String: String],
+                      captionStyle: CaptionStyle = CaptionStyle(), profile: BrandProfile = BrandProfile(name: "Default"),
+                      imageAspects: [UUID: CGFloat] = [:],
                       log: (String) -> Void = { _ in }) -> TimelineDocument {
         let builder = BuilderTimelineModel(mode: .transient)
         builder.document.renderSettings = settings
@@ -52,11 +53,11 @@ enum PodcastRecipeTimeline {
             let areas = NameTagPlanner.areas(plan: plan, tiles: tiles, roster: roster, layouts: layouts,
                 canvas: CGSize(width: settings.width, height: settings.height), duration: duration,
                 sourceAspect: Double(video.width) / Double(max(1, video.height)))
-            builder.document.textOverlays += WizardNameTags.overlays(areas: areas, people: people,
-                options: options, captionStyle: captionStyle)
+            builder.document.textOverlays += WizardNameTags.overlays(areas: areas, people: people, tagText: tagText,
+                options: options, captionStyle: captionStyle, profile: profile, imageAspects: imageAspects)
         } else if let sourceScene, options.usesNameTags {
             builder.document.textOverlays += WizardNameTags.ordinary(scene: sourceScene, duration: duration,
-                people: people, options: options, captionStyle: captionStyle)
+                people: people, tagText: tagText, options: options, captionStyle: captionStyle, profile: profile, imageAspects: imageAspects)
         }
         return builder.document
     }

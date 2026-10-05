@@ -6,7 +6,7 @@ import Testing
 struct MiniWizardMemoryTests {
     @Test func everyAnswerHasAStableDistinctProfileKey() {
         let names: Set<String> = ["videoPath", "footageKind", "length", "quality", "preset", "cameraFocus",
-            "captions", "englishCaptions", "captionPosition", "captionStyleID", "introVideo", "outroVideo", "nameTags", "nameTagContent", "nameTagStyle", "nameTagPosition", "watermark", "outputMode"]
+            "captions", "englishCaptions", "captionPosition", "captionStyleID", "introVideo", "outroVideo", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "watermark", "outputMode"]
         #expect(Set(MiniWizardMemory.Field.allCases.map(\.rawValue)) == names)
         for profile in ["First", "First.Second", "Profile with spaces", "عربي"] {
             let keys = MiniWizardMemory.Field.allCases.map { MiniWizardMemory.key(for: $0, profileName: profile) }
@@ -50,6 +50,7 @@ struct MiniWizardMemoryTests {
         first.introVideo = true
         first.outroVideo = true
         first.nameTags = true
+        first.nameTagStyleID = UUID().uuidString
         first.watermark = false
         first.outputMode = .oneReel
         let second = MiniWizardSettings()
@@ -61,7 +62,7 @@ struct MiniWizardMemoryTests {
                          forKey: MiniWizardMemory.key(for: .footageKind, profileName: name))
             defaults.set(MiniWizardFlow.Length.fifteen.rawValue,
                          forKey: MiniWizardMemory.key(for: .length, profileName: name))
-            for field in MiniWizardMemory.Field.allCases where ![.captionPosition, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagPosition].contains(field) {
+            for field in MiniWizardMemory.Field.allCases where ![.captionPosition, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition].contains(field) {
                 #expect(defaults.object(forKey: MiniWizardMemory.key(for: field, profileName: name)) != nil)
             }
         }

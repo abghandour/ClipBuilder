@@ -14,6 +14,7 @@ nonisolated struct MiniWizardSettings: Equatable, Sendable {
     var nameTags = false
     var nameTagContent: String?
     var nameTagStyle: String?
+    var nameTagStyleID: String?
     var nameTagPosition: String?
     var watermark = true
     var outputMode: MiniWizardFlow.OutputMode = .separateVideos
@@ -41,6 +42,7 @@ nonisolated struct MiniWizardSettings: Equatable, Sendable {
         result.nameTags = nameTags
         result.nameTagContent = nameTagContent
         result.nameTagStyle = nameTagStyle
+        result.nameTagStyleID = nameTagStyleID
         result.nameTagPosition = nameTagPosition
         return result
     }
@@ -69,6 +71,7 @@ nonisolated struct MiniWizardSettings: Equatable, Sendable {
         result.captionStyleID = defaults.string(forKey: key(.captionStyleID))
         result.nameTagContent = defaults.string(forKey: key(.nameTagContent))
         result.nameTagStyle = defaults.string(forKey: key(.nameTagStyle))
+        result.nameTagStyleID = defaults.string(forKey: key(.nameTagStyleID))
         result.nameTagPosition = defaults.string(forKey: key(.nameTagPosition))
         result.cameraFocus = defaults.string(forKey: key(.cameraFocus)) ?? ""
         result.outputMode = MiniWizardFlow.OutputMode(rawValue: defaults.string(forKey: key(.outputMode)) ?? "")
@@ -88,6 +91,7 @@ nonisolated struct MiniWizardSettings: Equatable, Sendable {
         defaults.set(captionStyleID, forKey: key(.captionStyleID))
         defaults.set(nameTagContent, forKey: key(.nameTagContent))
         defaults.set(nameTagStyle, forKey: key(.nameTagStyle))
+        defaults.set(nameTagStyleID, forKey: key(.nameTagStyleID))
         defaults.set(nameTagPosition, forKey: key(.nameTagPosition))
         defaults.set(cameraFocus, forKey: key(.cameraFocus))
         defaults.set(outputMode.rawValue, forKey: key(.outputMode))

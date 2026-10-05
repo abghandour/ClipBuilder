@@ -1,18 +1,21 @@
 import Foundation
+import CoreGraphics
 
 @MainActor
 enum PodcastHighlightTimeline {
     static func build(candidate: HighlightCandidate, video: VideoRecord, scenes: [SceneRecord],
                       turns: [SpeakerTurn], roster: [VideoPersonRecord], segments: [TranscriptSegment],
                       layouts: [ScreenCropLayout], settings: RenderSettings, threshold: Double = 7, options: WizardOptions = WizardOptions(),
-                      plannedCuts: [PodcastHighlightBRollPlanner.Cut]? = nil, people: [PersonRecord] = [],
+                      plannedCuts: [PodcastHighlightBRollPlanner.Cut]? = nil, people: [PersonRecord] = [], tagText: [String: String],
+                      profile: BrandProfile = BrandProfile(name: "Default"), imageAspects: [UUID: CGFloat] = [:],
                       log: @Sendable (String) -> Void) -> TimelineDocument {
         let builder = BuilderTimelineModel(mode: .transient)
         let sourceScene = scenes.filter { $0.videoID == video.id && $0.startTime <= candidate.sourceStart && $0.endTime >= candidate.sourceEnd }
             .min { $0.duration < $1.duration }
         builder.document = PodcastRecipeTimeline.build(kind: candidate.framing, video: video,
             range: candidate.sourceStart...candidate.sourceEnd, sourceScene: sourceScene,
-            turns: turns, roster: roster, layouts: layouts, settings: settings, options: options, people: people)
+            turns: turns, roster: roster, layouts: layouts, settings: settings, options: options, people: people, tagText: tagText,
+            captionStyle: profile.captionStyle(id: options.captionStyleID), profile: profile, imageAspects: imageAspects)
         let tiles = CropRecipePlanner.tiles(video: video, roster: roster)
         guard options.useBRoll else { log("B-roll off"); return builder.document }
         let sources = PodcastHighlightBRollPlanner.sources(videoID: video.id, range: candidate.sourceRange,

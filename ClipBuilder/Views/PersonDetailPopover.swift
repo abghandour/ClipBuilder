@@ -47,6 +47,7 @@ struct PersonDetailPopover: View {
             header
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    PersonTagFieldsView(person: person)
                     if let video { inThisVideo(video) }
                     videosSection
                     scenesSection

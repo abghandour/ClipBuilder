@@ -486,6 +486,10 @@ struct PeopleView: View {
                 }
                 .padding()
 
+                PersonTagFieldsView(person: person)
+                    .id(person.key)
+                    .padding(.horizontal)
+
                 if filtered.isEmpty {
                     ContentUnavailableView(
                         "No matching scenes",

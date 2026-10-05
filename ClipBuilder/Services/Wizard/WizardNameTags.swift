@@ -17,32 +17,34 @@ nonisolated enum WizardNameTags {
         }
         let renderer = CaptionRenderer(videoWidth: render.width, videoHeight: render.height,
                                        style: captionStyle, safeArea: safe)
-        return NameTagPlanner.Settings(content: options.nameTagContent, position: options.nameTagPosition,
+        return NameTagPlanner.Settings(position: options.nameTagPosition,
             safeRect: safeRect, captionBand: options.addCaptions
                 ? renderer.twoRowBand(positionOverride: options.captionPositionOverride) : nil, canvas: canvas)
     }
 
-    static func overlays(areas: [NameTagPlanner.Area], people: [PersonRecord],
-                         options: WizardOptions, captionStyle: CaptionStyle) -> [TextOverlayItem] {
+    static func overlays(areas: [NameTagPlanner.Area], people: [PersonRecord], tagText: [String: String],
+                         options: WizardOptions, captionStyle: CaptionStyle, profile: BrandProfile,
+                         imageAspects: [UUID: CGFloat] = [:]) -> [TextOverlayItem] {
         guard options.usesNameTags else { return [] }
         let names = people.filter { !$0.name.isEmpty && !$0.hidden }.map {
-            NameTagPlanner.Person(key: $0.key, name: $0.displayName, role: $0.descriptor)
+            NameTagPlanner.Person(key: $0.key, name: $0.displayName, role: tagText[$0.key] ?? "")
         }
-        let template = OverlayTemplateStore.composition(named: options.nameTagStyle)?.texts.first
+        let style = profile.tagStyle(id: options.nameTagStyleID)
         let tags = NameTagPlanner.plan(areas: areas, people: names,
-            settings: settings(options: options, captionStyle: captionStyle), template: template)
+            settings: settings(options: options, captionStyle: captionStyle), style: style, imageAspects: imageAspects)
         let canvas = CGSize(width: options.renderSettings.width, height: options.renderSettings.height)
-        return tags.map { NameTagPlanner.overlay($0, canvas: canvas, template: template) }
+        return tags.map { NameTagPlanner.overlay($0, canvas: canvas, style: style) }
     }
 
-    static func ordinary(scene: SceneRecord, duration: Double, people: [PersonRecord],
-                         options: WizardOptions, captionStyle: CaptionStyle) -> [TextOverlayItem] {
+    static func ordinary(scene: SceneRecord, duration: Double, people: [PersonRecord], tagText: [String: String],
+                         options: WizardOptions, captionStyle: CaptionStyle, profile: BrandProfile,
+                         imageAspects: [UUID: CGFloat] = [:]) -> [TextOverlayItem] {
         let identified = people.filter { !$0.name.isEmpty && !$0.hidden && scene.tags.contains($0.tag) }
         guard identified.count == 1 else { return [] }
         let area = NameTagPlanner.Area(
             rect: CGRect(x: 0, y: 0, width: options.renderSettings.width, height: options.renderSettings.height),
             spans: [.init(start: 0, end: duration, personKey: identified[0].key)])
-        return overlays(areas: [area], people: identified, options: options, captionStyle: captionStyle)
+        return overlays(areas: [area], people: identified, tagText: tagText, options: options, captionStyle: captionStyle, profile: profile, imageAspects: imageAspects)
     }
 
     /// Old plans keep their introductions on disk. A name-tag run suppresses

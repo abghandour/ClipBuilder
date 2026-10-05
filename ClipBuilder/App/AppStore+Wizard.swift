@@ -468,7 +468,7 @@ extension AppStore {
             if options.formatPreset == "podcast_highlights" {
                 do {
                     var review = try await wizard.findPodcastHighlights(options: options, settings: settings.podcast,
-                                                                         database: database, emit: logSink(\.analysisLog),
+                                                                         database: database, profile: profile, emit: logSink(\.analysisLog),
                                                                          requestText: options.aiInstructions, interpretRequest: false, progress: { status, fraction in
                         await MainActor.run {
                             guard generation == self.profileGeneration, self.isWizardRunning else { return }
@@ -530,10 +530,15 @@ extension AppStore {
             sourcePaths.contains($0.path) && ($0.type == .podcast || $0.type == .interview || podcastIDs.contains($0.id))
         }.map(\.path))
         if !podcastPaths.isEmpty { options.sourcesRestricted = true; options.sourceVideoPaths = podcastPaths }
+        let profile = activeProfile
         let review = try await wizard.findPodcastHighlights(options: options, settings: settings.podcast,
-                                                            database: database, emit: logSink(\.analysisLog), requestText: requestText)
+                                                            database: database, profile: profile, emit: logSink(\.analysisLog), requestText: requestText)
         try Task.checkCancellation()
         guard generation == profileGeneration, activeProjectID == projectID else { throw CancellationError() }
+        _ = try await wizard.prepareTagText(request: review, candidates: review.candidates,
+            database: database, emit: logSink(\.analysisLog))
+        let tagText = try await database.tagText(field: profile.tagStyle(id: review.options.nameTagStyleID).description.field)
+        let imageAspects = await TextOverlayRenderer.tagImageAspects(profile.tagStyle(id: review.options.nameTagStyleID))
         var names: [String] = []
         for candidate in review.candidates {
             try Task.checkCancellation()
@@ -545,7 +550,8 @@ extension AppStore {
             guard generation == profileGeneration else { throw CancellationError() }
             let document = PodcastHighlightTimeline.build(candidate: candidate, video: review.video, scenes: review.scenes,
                 turns: review.turns, roster: review.roster, segments: review.segments, layouts: ScreenCropStore.all(),
-                settings: review.options.renderSettings, threshold: review.highlightThreshold, options: review.options, plannedCuts: cuts, people: review.people, log: logSink(\.analysisLog))
+                settings: review.options.renderSettings, threshold: review.highlightThreshold, options: review.options, plannedCuts: cuts, people: review.people,
+                tagText: tagText, profile: profile, imageAspects: imageAspects, log: logSink(\.analysisLog))
             let name = "\(review.video.filename) — \(candidate.title)"
             var created = false
             guard let task = createTimeline(named: name, document: document, projectID: projectID, open: false,
@@ -573,6 +579,9 @@ extension AppStore {
             wizardFailureMessage = "Open the project again before rendering highlights."
             return false
         }
+        var renderRequest = request
+        renderRequest.profile = activeProfile
+        let request = renderRequest
         let approved = request.candidates.filter { selected.contains($0.id) }
         guard !approved.isEmpty else {
             wizardFailureMessage = "Select at least one highlight to render."
@@ -585,7 +594,7 @@ extension AppStore {
         wizardProjectID = projectID
         wizardProjectName = projects.first { $0.id == projectID }?.name
         let generation = profileGeneration
-        let profile = activeProfile
+        let profile = request.profile
         let batchID = UUID().uuidString
         let renderer = multitrackRenderer
         wizardTask = Task {
@@ -594,6 +603,13 @@ extension AppStore {
             var reused: [GeneratedVideoRecord] = []
             let layouts = ScreenCropStore.all()
             do {
+                let tagFields = try await wizard.prepareTagText(request: request, candidates: approved,
+                    database: database, emit: logSink(\.wizardLog))
+                let tagText = try await database.tagText(field: profile.tagStyle(id: request.options.nameTagStyleID).description.field)
+                let imageAspects = await TextOverlayRenderer.tagImageAspects(profile.tagStyle(id: request.options.nameTagStyleID))
+                let tagRoles = tagFields.compactMap { field in
+                    field.provenance.map { AIRole(role: "Name tag text · \(field.personKey) · \(field.field)", provenance: $0) }
+                }
                 for (index, candidate) in approved.enumerated() {
                     try Task.checkCancellation()
                     guard generation == profileGeneration else { throw CancellationError() }
@@ -601,8 +617,10 @@ extension AppStore {
                                                    fraction: Double(index) / Double(approved.count))
                     // Same recording, range, framing, B-roll pool, options, layouts and
                     // brand as an earlier reel that is still on disk: open that one.
-                    let fingerprint = try? PodcastHighlightRenderKey.make(candidate: candidate, request: request, layouts: layouts,
-                        profile: profile, sourceFingerprint: SourceIdentityCache.shared.fingerprint(of: request.video.url))
+                    let fingerprint = try? await PodcastHighlightRenderKey.make(candidate: candidate, request: request, layouts: layouts,
+                        profile: profile, tagText: tagText)
+                    try Task.checkCancellation()
+                    guard generation == profileGeneration else { throw CancellationError() }
                     if let fingerprint,
                        let existing = try await database.generatedVideo(projectID: projectID, renderFingerprint: fingerprint) {
                         appendLog(\.wizardLog, ["Highlight \(index + 1) “\(candidate.title)” was already rendered with these settings: "
@@ -619,11 +637,12 @@ extension AppStore {
                         let document = PodcastHighlightTimeline.build(candidate: candidate, video: request.video, scenes: request.scenes,
                             turns: request.turns, roster: request.roster, segments: request.segments, layouts: ScreenCropStore.all(),
                             settings: request.options.renderSettings, threshold: request.highlightThreshold,
-                            options: request.options, plannedCuts: cuts, people: request.people, log: logSink(\.analysisLog))
+                            options: request.options, plannedCuts: cuts, people: request.people,
+                            tagText: tagText, profile: profile, imageAspects: imageAspects, log: logSink(\.analysisLog))
                         return try await renderer.render(document: document, scenes: request.scenes, profile: profile,
                             database: database, projectID: projectID,
                             outputName: MultitrackRenderer.outputBaseName(project: request.video.filename, timeline: candidate.title),
-                            batchID: batchID, wizardOptions: request.options, roles: request.roles + (AIRunCapture.current?.roles ?? []),
+                            batchID: batchID, wizardOptions: request.options, roles: request.roles + tagRoles + (AIRunCapture.current?.roles ?? []),
                             renderFingerprint: fingerprint, emit: logSink(\.wizardLog))
                     }
                     timelineNames[result.url.path] = "\(request.video.filename) — \(candidate.title)"

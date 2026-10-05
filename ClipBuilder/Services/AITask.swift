@@ -86,6 +86,8 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// Writes the Instagram caption for a rendered reel. Prompt:
     /// `WizardEngine.captionPrompt`; also caption fixes in `AppStore`.
     case captions
+    /// Missing person descriptions in one batch. Prompt: `TagTextWriter.prompt`.
+    case tagText = "tag_text"
     /// Turns crawled fan chatter into the reel's story. Prompt:
     /// `FightResearchService`.
     case fightResearch = "fight_research"
@@ -117,7 +119,7 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// Order is the Settings order.
     static let configurable: [AITask] = [
         .analysis, .people, .roles, .exchanges, .highlights, .framing, .broll, .wizard, .critique, .research, .fightResearch,
-        .parse, .captions, .distill, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
+        .parse, .captions, .tagText, .distill, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
         .gap, .onboard, .route,
     ]
 

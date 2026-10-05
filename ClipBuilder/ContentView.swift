@@ -155,6 +155,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case images
     case overlays
     case captions
+    case tags
     case effects
     case looks
     case screenCrops
@@ -178,7 +179,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     /// AI Lessons sits with the resources: like them it is profile-wide and
     /// syncs with the Drive home (up when a nickname is set, down always).
     static let resourceSections: [SidebarSection] = [
-        .music, .fonts, .images, .overlays, .captions, .effects, .looks, .screenCrops, .bumpers, .learned,
+        .music, .fonts, .images, .overlays, .captions, .tags, .effects, .looks, .screenCrops, .bumpers, .learned,
     ]
     static let visibleSections = projectSections + studioSections + resourceSections
 
@@ -195,7 +196,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .instagram: return "7"
         case .instagramReports: return "8"
         case .projects, .analyze, .builder, .library, .resources, .learned, .wizardMini,
-             .music, .fonts, .images, .overlays, .captions, .effects, .looks, .screenCrops: return nil
+             .music, .fonts, .images, .overlays, .captions, .tags, .effects, .looks, .screenCrops: return nil
         }
     }
 
@@ -218,7 +219,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .outputs, .library: return "Outputs"
         case .learned: return "AI Lessons"
         case .wizard: return "AI Wizard"
-        case .wizardMini: return "AI Wizard Mini"
+        case .wizardMini: return "AI Wizard Express"
         case .instagram: return "Posts"
         case .instagramReports: return "Reports"
         case .resources: return "Resources"
@@ -226,6 +227,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .fonts: return AssetKind.fonts.title
         case .images: return AssetKind.images.title
         case .captions: return "Captions"
+        case .tags: return "Tags"
         case .overlays: return "Overlays"
         case .effects: return "Transitions"
         case .looks: return "Looks"
@@ -252,6 +254,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .fonts: return AssetKind.fonts.systemImage
         case .images: return AssetKind.images.systemImage
         case .captions: return "captions.bubble"
+        case .tags: return "tag"
         case .overlays: return "character.textbox"
         case .effects: return "rectangle.on.rectangle"
         case .looks: return "camera.filters"
@@ -277,6 +280,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .fonts: .fonts
         case .images: .images
         case .captions: .captions
+        case .tags: .tags
         case .overlays: .overlays
         case .effects: .effects
         case .looks: .looks

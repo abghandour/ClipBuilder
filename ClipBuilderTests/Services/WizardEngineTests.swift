@@ -1233,3 +1233,228 @@ extension WizardEngineTests {
         #expect(calls.lines().isEmpty)
     }
 }
+
+extension WizardEngineTests {
+    private func tagTextFixture() async throws -> (TempDatabase, WizardOptions, WizardSelectionTake, [Int64: SceneRecord]) {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        let database = temp.database
+        let projectID = try await database.createProject(profileName: "Tags", name: "Tags", videoIDs: [videoID])
+        let scene = try #require(try await database.fetchScenes().first)
+        for key in ["ann", "bob", "outside"] {
+            try await database.upsertPerson(key: key, descriptor: "tall, grey hoodie")
+            let person = try #require(try await database.fetchPeople().first { $0.key == key })
+            try await database.renamePerson(id: person.id, name: key.capitalized)
+            if key != "outside" { try await database.addSceneTag(sceneID: scene.id, tag: "person:" + key) }
+        }
+        let roster = try await database.fetchPeople()
+        try await database.replaceVideoPeople(videoID: videoID, entries: roster.map {
+            (personID: $0.id, portraitAt: 0, portraitJSON: nil, rangesJSON: nil)
+        })
+        var options = WizardOptions()
+        options.nameTags = true
+        options.formatPreset = "custom"
+        options.useMusic = false
+        options.critiqueLoop = false
+        let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id)])
+        options.projectID = projectID
+        let take = try await database.recordWizardTake(projectID: projectID, options: options.step1, plan: plan)
+        let scenes = try await database.fetchScenes()
+        return (temp, options, take, Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }))
+    }
+
+    private func tagTextService(calls: WizardCaptionTestLog, reply: String = #"{"ann":"Host","bob":"Guest"}"#,
+                                failure: Bool = false, cancel: Bool = false) -> AIService {
+        var config = AIConfig()
+        config.tasks["tag_text"] = "claude"
+        config.providers["claude"] = AIProviderSettings(bin: "/bin/echo", model: "fixture")
+        return AIService(config: config) { _, _, stdin, timeout, _, _ in
+            calls.append(String(decoding: stdin ?? Data(), as: UTF8.self))
+            if cancel { throw CancellationError() }
+            if failure { throw AIError.unusableResponse("Fixture unavailable") }
+            #expect(timeout == 90)
+            let response = try JSONSerialization.data(withJSONObject: [
+                "type": "assistant", "message": ["content": [["type": "text", "text": reply]]]
+            ])
+            return ProcessResult(stdout: response, stderr: Data(), exitCode: 0)
+        }
+    }
+
+    @Test func tagTextBatchesMissingPeopleAndReusesCacheAcrossReels() async throws {
+        let (temp, options, take, scenes) = try await tagTextFixture()
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: tagTextService(calls: calls), render: RenderEngine())
+        for run in 0..<2 {
+            let fields = try await engine.prepareTagText(plan: take.plan, options: options, profile: Fixtures.brand(),
+                sceneMap: scenes, database: temp.database, emit: { _ in })
+            #expect(Set(fields.map(\.personKey)) == (run == 0 ? ["ann", "bob"] : []))
+            #expect(fields.allSatisfy { $0.provenance?.task == "tag_text" && $0.provenance?.model == "fixture" })
+        }
+        #expect(calls.lines().count == 1)
+        #expect(calls.lines()[0].contains("ann") && calls.lines()[0].contains("bob"))
+        #expect(!calls.lines()[0].contains("outside"), "A roster entry alone must not trigger tag text")
+        let tagText = try await temp.database.tagText(field: "Role")
+        #expect(tagText["ann"] == "Host")
+        #expect(try await temp.database.fetchPeople().allSatisfy { $0.descriptor == "tall, grey hoodie" })
+    }
+
+    @Test func savedTagFieldWinsAndTheVisualDescriptionIsNeverTagText() async throws {
+        let (temp, options, take, scenes) = try await tagTextFixture()
+        for key in ["ann", "bob"] { try await temp.database.upsertPerson(key: key, descriptor: "tall, grey hoodie") }
+        try await temp.database.savePersonTagField(personKey: "ann", field: "Role", value: "Saved role", provenance: nil)
+        #expect(try await temp.database.tagText(field: "Role")["bob"] == nil)
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: tagTextService(calls: calls), render: RenderEngine())
+        let fields = try await engine.prepareTagText(plan: take.plan, options: options, profile: Fixtures.brand(),
+            sceneMap: scenes, database: temp.database, emit: { _ in })
+        #expect(fields.filter { $0.provenance != nil }.map(\.personKey) == ["bob"])
+        #expect(!calls.lines()[0].contains("\"key\":\"ann\""))
+        let tagText = try await temp.database.tagText(field: "Role")
+        #expect(tagText["ann"] == "Saved role")
+        #expect(tagText["bob"] == "Guest")
+    }
+
+    @Test func failedTagTextRendersNameOnlyAndDoesNotCache() async throws {
+        let (temp, options, take, scenes) = try await tagTextFixture()
+        let engine = WizardEngine(ai: tagTextService(calls: WizardCaptionTestLog(), failure: true), render: RenderEngine())
+        let fields = try await engine.prepareTagText(plan: take.plan, options: options, profile: Fixtures.brand(),
+            sceneMap: scenes, database: temp.database, emit: { _ in })
+        #expect(fields.isEmpty)
+        var scene = try #require(scenes.values.first)
+        scene.tags = ["person:ann"]
+        let tagText = try await temp.database.tagText(field: "Role")
+        let people = try await temp.database.fetchPeople()
+        let tags = WizardNameTags.ordinary(scene: scene, duration: 4, people: people, tagText: tagText, options: options,
+            captionStyle: CaptionStyle(), profile: Fixtures.brand())
+        #expect(tags.first?.text == "Ann")
+    }
+
+    @Test func cancellationPropagatesWithoutCachingTagText() async throws {
+        let (temp, options, take, scenes) = try await tagTextFixture()
+        let engine = WizardEngine(ai: tagTextService(calls: WizardCaptionTestLog(), cancel: true), render: RenderEngine())
+        await #expect(throws: CancellationError.self) {
+            _ = try await engine.prepareTagText(plan: take.plan, options: options, profile: Fixtures.brand(),
+                sceneMap: scenes, database: temp.database, emit: { _ in })
+        }
+        #expect(try await temp.database.personTagFields().isEmpty)
+    }
+
+    @Test func tagTextCacheIsPerFieldAndPeopleCanEditAndClearIt() async throws {
+        let (temp, options, take, scenes) = try await tagTextFixture()
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: tagTextService(calls: calls), render: RenderEngine())
+        var profile = Fixtures.brand()
+        for field in ["Role", "Team"] {
+            var style = TagStyle()
+            style.description.field = field
+            profile.tagStyle = style
+            _ = try await engine.prepareTagText(plan: take.plan, options: options, profile: profile,
+                sceneMap: scenes, database: temp.database, emit: { _ in })
+        }
+        #expect(calls.lines().count == 2)
+        try await temp.database.savePersonTagField(personKey: "ann", field: "Team", value: "Corrected", provenance: nil)
+        #expect(try await temp.database.tagText(field: "Team")["ann"] == "Corrected")
+        try await temp.database.clearPersonTagField(personKey: "ann", field: "Team")
+        #expect(try await temp.database.personTagFields(personKey: "ann").map(\.field) == ["Role"])
+    }
+
+    @Test func makeReelPreparesTagTextBeforeTheRenderHook() async throws {
+        let (temp, options, take, _) = try await tagTextFixture()
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: tagTextService(calls: calls), render: RenderEngine())
+        try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(), database: temp.database,
+            emit: { _ in }, renderPlan: { _, _ in
+                let cached = try? await temp.database.personTagFields()
+                #expect(cached?.count == 2)
+            })
+        #expect(calls.lines().count == 1)
+    }
+}
+
+extension WizardEngineTests {
+    @Test func miniBatchPreparationDoesNotRetryMissingAnswersDuringEachReel() async throws {
+        let (temp, options, take, scenes) = try await tagTextFixture()
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: tagTextService(calls: calls, reply: "{}"), render: RenderEngine())
+        _ = try await engine.prepareTagText(plan: take.plan, options: options, profile: Fixtures.brand(),
+            sceneMap: scenes, database: temp.database, emit: { _ in })
+        for _ in 0..<2 {
+            try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(), database: temp.database,
+                tagTextPrepared: true, emit: { _ in }, renderPlan: { _, _ in })
+        }
+        #expect(calls.lines().count == 1)
+        #expect(try await temp.database.personTagFields().isEmpty)
+    }
+
+    @Test func tagTextSkipsDisabledTagsAndPeopleOutsideThePlan() async throws {
+        let (temp, base, take, scenes) = try await tagTextFixture()
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: tagTextService(calls: calls), render: RenderEngine())
+        var options = base
+        options.nameTags = false
+        _ = try await engine.prepareTagText(plan: take.plan, options: options, profile: Fixtures.brand(),
+            sceneMap: scenes, database: temp.database, emit: { _ in })
+        options.nameTags = true
+        _ = try await engine.prepareTagText(plan: Fixtures.plan(clips: []), options: options, profile: Fixtures.brand(),
+            sceneMap: scenes, database: temp.database, emit: { _ in })
+        #expect(calls.lines().isEmpty)
+    }
+}
+
+extension WizardEngineTests {
+    @Test func highlightsBatchKeptPeopleReuseCacheAndAttributeOnlyNewFields() async throws {
+        let (temp, options, _, sceneMap) = try await tagTextFixture()
+        let video = try #require(try await temp.database.fetchVideos().first)
+        var scene = try #require(sceneMap.values.first)
+        scene.tags = ["person:ann"]
+        let people = try await temp.database.fetchPeople()
+        let roster = people.map { person in
+            VideoPersonRecord(videoID: video.id, personID: person.id, key: person.key, name: person.name,
+                descriptor: person.descriptor, portraitAt: 0, portraitBox: nil)
+        }
+        let candidates = [
+            HighlightCandidate(sourceStart: 0, sourceEnd: 2, title: "First", reason: "Test", score: 8,
+                kind: .subcut, speakerKeys: ["ann"]),
+            HighlightCandidate(sourceStart: 2, sourceEnd: 4, title: "Second", reason: "Test", score: 8,
+                kind: .subcut, speakerKeys: ["bob"]),
+            HighlightCandidate(sourceStart: 20, sourceEnd: 24, title: "Not kept", reason: "Test", score: 8,
+                kind: .subcut, speakerKeys: ["outside"])
+        ]
+        let turns = [
+            SpeakerTurn(videoID: video.id, start: 2, end: 4, cluster: 0, confidence: 1, personKey: "bob"),
+            SpeakerTurn(videoID: video.id, start: 20, end: 24, cluster: 1, confidence: 1, personKey: "outside")
+        ]
+        let request = PodcastHighlightReviewRequest(video: video, candidates: candidates, scenes: [scene],
+            segments: [], turns: turns, roster: roster, people: people, profile: Fixtures.brand(), options: options)
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: tagTextService(calls: calls), render: RenderEngine())
+        let kept = Array(candidates.prefix(2))
+        let written = try await engine.prepareTagText(request: request, candidates: kept, database: temp.database, emit: { _ in })
+        #expect(Set(written.map(\.personKey)) == ["ann", "bob"])
+        #expect(written.allSatisfy { $0.provenance?.task == "tag_text" })
+        #expect(try await temp.database.tagText(field: "Role") == ["ann": "Host", "bob": "Guest"])
+        let cached = try await engine.prepareTagText(request: request, candidates: kept, database: temp.database, emit: { _ in })
+        #expect(cached.isEmpty, "Cached fields must not be credited as AI work in this run")
+        #expect(calls.lines().count == 1)
+        #expect(calls.lines()[0].contains("ann") && calls.lines()[0].contains("bob"))
+        #expect(!calls.lines()[0].contains("outside") && !calls.lines()[0].contains("grey hoodie"))
+    }
+
+    @Test func highlightsTagTextFailureUsesNamesAndCancellationPropagates() async throws {
+        let (temp, options, _, sceneMap) = try await tagTextFixture()
+        let video = try #require(try await temp.database.fetchVideos().first)
+        let candidate = HighlightCandidate(sourceStart: 0, sourceEnd: 4, title: "Test", reason: "Test", score: 8,
+            kind: .subcut, speakerKeys: ["ann", "bob"])
+        let request = PodcastHighlightReviewRequest(video: video, candidates: [candidate], scenes: Array(sceneMap.values),
+            segments: [], turns: [], roster: [], people: try await temp.database.fetchPeople(),
+            profile: Fixtures.brand(), options: options)
+        let failed = WizardEngine(ai: tagTextService(calls: WizardCaptionTestLog(), failure: true), render: RenderEngine())
+        #expect(try await failed.prepareTagText(request: request, candidates: [candidate], database: temp.database, emit: { _ in }).isEmpty)
+        #expect(try await temp.database.tagText(field: "Role").isEmpty)
+        let cancelled = WizardEngine(ai: tagTextService(calls: WizardCaptionTestLog(), cancel: true), render: RenderEngine())
+        await #expect(throws: CancellationError.self) {
+            _ = try await cancelled.prepareTagText(request: request, candidates: [candidate], database: temp.database, emit: { _ in })
+        }
+        #expect(try await temp.database.tagText(field: "Role").isEmpty)
+    }
+}

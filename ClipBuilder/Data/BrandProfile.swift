@@ -52,6 +52,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var socials: [String: SocialSlot]
     var captions: CaptionStyle
     var captionStyles: [NamedCaptionStyle]?
+    var tagStyle: TagStyle?
+    var tagStyles: [NamedTagStyle]?
     // Brand kit — drives the wizard's watermark, headline, and outro card.
     /// Absolute path to the brand logo image ("" = no logo features).
     var logoPath: String
@@ -120,6 +122,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case hashtags
         case captions
         case captionStyles = "caption_styles"
+        case tagStyle = "tag_style"
+        case tagStyles = "tag_styles"
         case logoPath = "logo_path"
         case accentColor = "accent_color"
         case tagline
@@ -159,6 +163,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         tagSchema = try container.decodeIfPresent([String: [String]].self, forKey: .tagSchema) ?? [:]
         socials = try container.decodeIfPresent([String: SocialSlot].self, forKey: .socials) ?? [:]
         captionStyles = try container.decodeIfPresent([NamedCaptionStyle].self, forKey: .captionStyles)
+        tagStyle = try container.decodeIfPresent(TagStyle.self, forKey: .tagStyle)
+        tagStyles = try container.decodeIfPresent([NamedTagStyle].self, forKey: .tagStyles)
         captions = try container.decodeIfPresent(CaptionStyle.self, forKey: .captions) ?? CaptionStyle()
         logoPath = try container.decodeIfPresent(String.self, forKey: .logoPath) ?? ""
         accentColor = try container.decodeIfPresent(String.self, forKey: .accentColor) ?? ""

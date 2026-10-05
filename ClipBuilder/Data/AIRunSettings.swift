@@ -130,7 +130,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
         case .options:
             return [
                 "renderSettings", "pacing", "captionLanguage", "captionPosition", "captionStyleID", "muteSource",
-                "addCaptions", "enableTextOverlays", "nameTagsOnly", "nameTags", "nameTagContent", "nameTagStyle", "nameTagPosition",
+                "addCaptions", "enableTextOverlays", "nameTagsOnly", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition",
                 "useMusic", "musicFolder", "useFightResearch",
                 "workflow", "musicTrack", "overlayStyle", "overlayAnimation", "overlayPlacement",
                 "targetDurationSeconds", "framingCamera", "podcastFraming", "highlightFraming", "useBRoll", "screenCropLayouts",

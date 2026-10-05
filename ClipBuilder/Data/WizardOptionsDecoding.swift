@@ -38,6 +38,7 @@ nonisolated extension WizardOptions {
         nameTags = try values.decodeIfPresent(Bool.self, forKey: .nameTags)
         nameTagContent = try values.decodeIfPresent(String.self, forKey: .nameTagContent)
         nameTagStyle = try values.decodeIfPresent(String.self, forKey: .nameTagStyle)
+        nameTagStyleID = try values.decodeIfPresent(String.self, forKey: .nameTagStyleID)
         nameTagPosition = try values.decodeIfPresent(String.self, forKey: .nameTagPosition)
         nameTagsOnly = try values.decodeIfPresent(Bool.self, forKey: .nameTagsOnly)
         enableTextOverlays = try values.decodeIfPresent(Bool.self, forKey: .enableTextOverlays) ?? enableTextOverlays

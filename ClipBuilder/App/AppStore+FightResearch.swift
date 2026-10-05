@@ -115,10 +115,11 @@ extension AppStore {
     func openReviewedPlanInBuilder(_ plan: WizardPlan, sceneMap: [Int64: SceneRecord], options: WizardOptions, fixWithWizard: Bool = false) {
         guard let database else { return }
         let generation = profileGeneration
+        let profile = activeProfile
         Task {
             do {
                 let document = try await WizardEngine.timelineDocument(from: plan, sceneMap: sceneMap,
-                    options: options, database: database, log: logSink(\.wizardLog))
+                    options: options, database: database, profile: profile, log: logSink(\.wizardLog))
                 guard self.database === database, generation == profileGeneration, !Task.isCancelled else { return }
                 createTimeline(named: "Reviewed Plan", document: document, projectID: options.projectID,
                                isWizardPlan: true, fixWithWizard: fixWithWizard)

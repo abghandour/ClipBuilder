@@ -125,6 +125,10 @@ extension Database {
     /// retags every scene of `source` onto `target` and drops `source`.
     func mergePeople(source: PersonRecord, into target: PersonRecord) throws {
         try connection.transaction {
+            try connection.execute("""
+                INSERT OR IGNORE INTO person_tag_fields (person_key, field, value, provenance)
+                SELECT ?, field, value, provenance FROM person_tag_fields WHERE person_key = ?
+                """, [.text(target.key), .text(source.key)])
             try connection.execute("UPDATE speaker_turns SET person_key = ? WHERE person_key = ?",
                                    [.text(target.key), .text(source.key)])
             try connection.execute("UPDATE transcripts SET speaker_key = ? WHERE speaker_key = ?",

@@ -2,24 +2,22 @@ import SwiftUI
 
 /// Shared visible choices for Mini and the full Wizard's presentation card.
 struct NameTagControls: View {
-    @Binding var content: String?
     @Binding var style: String?
     @Binding var position: String?
-    @State private var templates: [String] = []
+    let profile: BrandProfile
+
+    private var resolvedStyle: Binding<String?> {
+        Binding(get: {
+            profile.tagStyles?.contains { $0.id.uuidString == style } == true ? style : nil
+        }, set: { style = $0 })
+    }
 
     var body: some View {
-        MiniRow("Tag shows") {
-            Picker("Tag shows", selection: $content) {
-                Text("Name").lineLimit(1).fixedSize().tag(nil as String?)
-                Text("Name and role").lineLimit(1).fixedSize().tag("nameAndRole" as String?)
-            }
-            .pickerStyle(.segmented)
-        }
         MiniRow("Tag style") {
-            Picker("Tag style", selection: $style) {
-                Text("Default").lineLimit(1).fixedSize().tag(nil as String?)
-                ForEach(templates, id: \.self) { name in
-                    Text(name).lineLimit(1).fixedSize().tag(name as String?)
+            Picker("Tag style", selection: resolvedStyle) {
+                Text("Profile default").lineLimit(1).fixedSize().tag(nil as String?)
+                ForEach(profile.tagStyles ?? []) { named in
+                    Text(named.name).lineLimit(1).fixedSize().tag(Optional(named.id.uuidString))
                 }
             }
             .pickerStyle(.menu)
@@ -35,9 +33,7 @@ struct NameTagControls: View {
             .pickerStyle(.menu)
         }
         FormCaption("Auto keeps clear of the platform buttons; the other choices use the corner of the person's area.")
-            .task { templates = OverlayTemplateStore.list().map(\.name) }
             .onAppear {
-                if content == "name" { content = nil }
                 if position == "auto" { position = nil }
             }
     }

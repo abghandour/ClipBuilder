@@ -122,7 +122,7 @@ struct MiniWizardView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .screenTitle("AI Wizard Mini")
+        .screenTitle("AI Wizard Express")
         .task(id: sourceKey) { await loadSources() }
         .onAppear(perform: restoreAnswers)
         .onChange(of: store.profileGeneration) { _, _ in restoreAnswers() }

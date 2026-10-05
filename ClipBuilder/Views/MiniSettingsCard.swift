@@ -75,12 +75,15 @@ struct MiniSettingsCard: View {
             bumperToggle("Outro video", placement: .outro, value: $settings.outroVideo)
             if flow.showsNameTags {
                 MiniRow("Name tags") {
-                    Toggle("Name tags", isOn: $settings.nameTags)
+                    HStack {
+                        Toggle("Name tags", isOn: $settings.nameTags)
+                        if settings.nameTags { MiniModelButton(tasks: ["tag_text"]) }
+                    }
                 }
                 if settings.nameTags {
                     MiniDependents {
-                        NameTagControls(content: $settings.nameTagContent, style: $settings.nameTagStyle,
-                                        position: $settings.nameTagPosition)
+                        NameTagControls(style: $settings.nameTagStyleID,
+                                        position: $settings.nameTagPosition, profile: store.activeProfile)
                     }
                 }
             }

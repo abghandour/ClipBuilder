@@ -35,6 +35,7 @@ struct WizardView: View {
     @AppStorage("wizard.nameTags") private var nameTags = false
     @AppStorage("wizard.nameTagContent") private var nameTagContent: String?
     @AppStorage("wizard.nameTagStyle") private var nameTagStyle: String?
+    @AppStorage("wizard.nameTagStyleID") private var nameTagStyleID: String?
     @AppStorage("wizard.nameTagPosition") private var nameTagPosition: String?
     @State private var captionPosition: String?
     @State private var captionStyleID: String?
@@ -546,6 +547,7 @@ struct WizardView: View {
         options.nameTags = selectedRecipe.capabilities.offersCameraFocus && nameTags
         options.nameTagContent = nameTagContent
         options.nameTagStyle = nameTagStyle
+        options.nameTagStyleID = nameTagStyleID
         options.nameTagPosition = nameTagPosition
         return options.neutralized(for: selectedRecipe)
     }
@@ -884,7 +886,7 @@ struct WizardView: View {
         if lookFormPlan.step2Controls.contains(.nameTags) {
             MiniRow("Name tags") { Toggle("Name tags", isOn: $nameTags) }
             if nameTags {
-                NameTagControls(content: $nameTagContent, style: $nameTagStyle, position: $nameTagPosition)
+                NameTagControls(style: $nameTagStyleID, position: $nameTagPosition, profile: store.activeProfile)
                     .formDependent()
             }
         }
@@ -1697,6 +1699,7 @@ struct WizardView: View {
         options.nameTags = capabilities.offersCameraFocus && nameTags
         options.nameTagContent = nameTagContent
         options.nameTagStyle = nameTagStyle
+        options.nameTagStyleID = nameTagStyleID
         options.nameTagPosition = nameTagPosition
         options.framingCamera = framingCameraRaw
         options.screenCropLayouts = WizardDefaults.screenCropLayouts(for: layoutMode)

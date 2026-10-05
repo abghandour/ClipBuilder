@@ -43,6 +43,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var nameTags: Bool?
     var nameTagContent: String?
     var nameTagStyle: String?
+    var nameTagStyleID: String?
     var nameTagPosition: String?
     var captionPosition: String?
     var captionStyleID: String?
@@ -111,6 +112,7 @@ nonisolated extension WizardOptions {
         result.nameTags = nameTags
         result.nameTagContent = nameTagContent
         result.nameTagStyle = nameTagStyle
+        result.nameTagStyleID = nameTagStyleID
         result.nameTagPosition = nameTagPosition
         result.captionPosition = captionPosition
         result.captionStyleID = captionStyleID
@@ -177,6 +179,7 @@ nonisolated extension WizardOptions {
         result.nameTags = step2.nameTags
         result.nameTagContent = step2.nameTagContent
         result.nameTagStyle = step2.nameTagStyle
+        result.nameTagStyleID = step2.nameTagStyleID
         result.nameTagPosition = step2.nameTagPosition
         result.captionPosition = step2.captionPosition
         result.captionStyleID = step2.captionStyleID

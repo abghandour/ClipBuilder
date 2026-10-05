@@ -21,6 +21,7 @@ import Foundation
         "captionLanguage": "wizard.captionLanguage",
         "nameTags": "wizard.nameTags", "nameTagContent": "wizard.nameTagContent",
         "nameTagStyle": "wizard.nameTagStyle", "nameTagPosition": "wizard.nameTagPosition",
+        "nameTagStyleID": "wizard.nameTagStyleID",
         "workflow": WizardDefaults.workflowKey,
         "musicTrack": "wizard.musicTrack", "overlayStyle": "wizard.overlayStyle",
         "overlayAnimation": "wizard.overlayAnimation", "overlayPlacement": "wizard.overlayPlacement",

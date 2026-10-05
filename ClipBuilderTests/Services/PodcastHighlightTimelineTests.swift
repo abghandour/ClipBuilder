@@ -8,7 +8,7 @@ struct PodcastHighlightTimelineTests {
     @Test func exactPlainFootageWindow() {
         let candidate = HighlightCandidate(sourceStart: 2.13, sourceEnd: 6.87, title: "Test", reason: "Test", score: 8, kind: .subcut, speakerKeys: [])
         let document = PodcastHighlightTimeline.build(candidate: candidate, video: Fixtures.video(), scenes: [Fixtures.scene()],
-            turns: [], roster: [], segments: [], layouts: [], settings: RenderSettings(), log: { _ in })
+            turns: [], roster: [], segments: [], layouts: [], settings: RenderSettings(), tagText: [:], log: { _ in })
         #expect(document.videoTrack.count == 1)
         #expect(document.videoTrack.first?.sourceStart == 2.13)
         #expect(document.videoTrack.first?.sourceEnd == 6.87)
@@ -30,7 +30,7 @@ struct PodcastHighlightTimelineTests {
             let candidate = HighlightCandidate(sourceStart: 0, sourceEnd: 10, title: "Test", reason: "Test", score: 8,
                                                kind: .whole, framing: framing, speakerKeys: ["ann", "bob"])
             let document = PodcastHighlightTimeline.build(candidate: candidate, video: video, scenes: [], turns: turns,
-                roster: [], segments: segments, layouts: ScreenCropStore.builtIn, settings: RenderSettings(), log: { _ in })
+                roster: [], segments: segments, layouts: ScreenCropStore.builtIn, settings: RenderSettings(), tagText: [:], log: { _ in })
             let main = document.videoTrack.filter { !$0.isCutaway }
             #expect(main.count == (framing == .talker ? 1 : 2))
             #expect(main.filter { !$0.muted }.count == 1)
@@ -85,7 +85,7 @@ struct PodcastHighlightTimelineTests {
             settings.preset = .portrait4K
             settings.quality = .archival
             let document = PodcastHighlightTimeline.build(candidate: candidate, video: video, scenes: [], turns: turns,
-                roster: [], segments: [], layouts: ScreenCropStore.builtIn, settings: settings, log: { _ in })
+                roster: [], segments: [], layouts: ScreenCropStore.builtIn, settings: settings, tagText: [:], log: { _ in })
             #expect(document.renderSettings == settings)
             let main = try #require(document.videoTrack.first { !$0.isCutaway })
             #expect(main.cameraPath != nil)
@@ -104,9 +104,38 @@ struct PodcastHighlightTimelineTests {
         options.useBRoll = false
         let document = PodcastHighlightTimeline.build(candidate: candidate, video: Fixtures.video(), scenes: [scene],
             turns: [], roster: [], segments: [], layouts: [], settings: RenderSettings(), options: options,
-            plannedCuts: [.init(source: .scene(2), sourceStart: 0, start: 2, duration: 3, reason: "Must not appear")], log: { _ in })
+            plannedCuts: [.init(source: .scene(2), sourceStart: 0, start: 2, duration: 3, reason: "Must not appear")], tagText: [:], log: { _ in })
         #expect(!document.videoTrack.contains { $0.isCutaway })
         #expect(document.videoTrack.count == 1 && document.videoTrack[0].duration == 10)
     }
 
+}
+
+extension PodcastHighlightTimelineTests {
+    @Test func tagTextIsExplicitAndTheChosenStyleReachesTheHighlight() throws {
+        let candidate = HighlightCandidate(sourceStart: 0, sourceEnd: 10, title: "Test", reason: "Test", score: 8,
+                                           kind: .whole, speakerKeys: ["ann"])
+        var scene = Fixtures.scene(start: 0, end: 10)
+        scene.tags = ["person:ann"]
+        let person = PersonRecord(id: 1, key: "ann", name: "Ann", descriptor: "tall man, grey hoodie")
+        var style = TagStyle()
+        style.name.underline = true
+        style.description.color = "#00ff00"
+        let named = NamedTagStyle(name: "Chosen", style: style)
+        var profile = Fixtures.brand()
+        profile.tagStyles = [named]
+        var options = WizardOptions()
+        options.nameTags = true
+        options.nameTagStyleID = named.id.uuidString
+        options.useBRoll = false
+        for text in [[:], ["ann": "Host"]] {
+            let document = PodcastHighlightTimeline.build(candidate: candidate, video: Fixtures.video(), scenes: [scene],
+                turns: [], roster: [], segments: [], layouts: [], settings: RenderSettings(), options: options,
+                people: [person], tagText: text, profile: profile, log: { _ in })
+            let tag = try #require(document.textOverlays.first { $0.design == "nameTag" })
+            #expect(tag.text == (text.isEmpty ? "Ann" : "Ann\nHost"))
+            #expect(tag.tagStyle == style)
+            #expect(!tag.text.contains(person.descriptor))
+        }
+    }
 }
