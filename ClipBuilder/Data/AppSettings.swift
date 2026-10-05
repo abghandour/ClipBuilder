@@ -266,6 +266,7 @@ nonisolated enum AICatalog {
         "roles": "People roles",
         "exchanges": "Podcast exchanges",
         "highlights": "Podcast highlights",
+        "framing": "Camera focus choice",
         "broll": "B-roll placement",
         "wizard": "Reel planning",
         "critique": "Reel critique",
@@ -284,6 +285,8 @@ nonisolated enum AICatalog {
         "trim": "Trim suggestion",
         "gap": "Content gap report",
         "onboard": "Profile starter",
+        // Not in Settings → AI's routing list; the Mini wizard's gear sets it.
+        "translate": "Caption translation",
     ]
 
     static let taskDefaults: [String: String] = [
@@ -293,6 +296,7 @@ nonisolated enum AICatalog {
         "roles": "claude",
         "exchanges": "claude",
         "highlights": "claude",
+        "framing": "claude",
         "broll": "claude",
         "wizard": "claude",
         "critique": "claude",
@@ -355,6 +359,12 @@ nonisolated enum AICatalog {
                        ("qwen", "qwen3-coder-plus"),
                        ("kimi", "kimi-code/kimi-for-coding"),
                        ("gemini", "gemini-3.1-pro-preview")],
+        "framing": [("claude", "claude-sonnet-5-5"),
+                    ("antigravity", "gemini-3.1-pro-high"),
+                    ("codex", "gpt-6-astra"),
+                    ("qwen", "qwen3-coder-plus"),
+                    ("kimi", "kimi-code/kimi-for-coding"),
+                    ("gemini", "gemini-3.1-pro-preview")],
         // Planning is the run's brain: strongest reasoning first — Fable at
         // maximum thinking (AIService raises the thinking budget for it).
         "wizard": [("claude", "claude-fable-5-1"),

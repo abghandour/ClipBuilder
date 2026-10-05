@@ -366,6 +366,8 @@ nonisolated struct WizardPlan: Codable, Sendable {
     var fileName: String?
     /// Validated podcast camera focus; an explicit run option takes precedence.
     var framing: CropRecipe.Kind? = nil
+    /// Independent of the planner: retained so later renders credit the camera choice.
+    var framingProvenance: AIProvenance? = nil
     /// The provider/model that wrote this plan (after any failover).
     var provenance: AIProvenance? = nil
 
@@ -2478,6 +2480,94 @@ actor WizardEngine {
         return (plan, inputs.sceneMap, take)
     }
 
+    /// One request for all unresolved podcast takes; saved choices survive later renders.
+    func chooseCameraFocus(takes: [WizardSelectionTake], options: WizardOptions,
+                           profile: BrandProfile, database: Database,
+                           emit: @escaping @Sendable (String) -> Void) async throws -> [WizardSelectionTake] {
+        guard options.highlightFraming == nil, options.podcastFraming != .original,
+              (ReelRecipe.recipe(id: options.formatPreset) ?? .custom).capabilities.offersCameraFocus else { return takes }
+        try Task.checkCancellation()
+        let scenes = try await database.fetchScenes(projectID: options.projectID, includeExcluded: true)
+        let sceneMap = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
+        var result = takes
+        var pending: [Int] = []
+        for index in result.indices {
+            // Read through stale caller snapshots so a saved decision never triggers another call.
+            guard let saved = try await database.wizardSelectionTake(id: result[index].id) else {
+                throw WizardSelectionError.missingTake
+            }
+            guard let plan = WizardSelectionRules.resolvedPlan(saved.plan, scenes: scenes) else {
+                throw WizardSelectionError.footageChanged
+            }
+            result[index].plan = plan
+            if plan.framing == nil,
+               plan.clips.contains(where: { sceneMap[$0.sceneID]?.tags.contains("podcast") == true }) {
+                pending.append(index)
+            }
+        }
+        guard !pending.isEmpty else { return result }
+        let videos = try await database.fetchVideos(projectID: options.projectID)
+        let podcastClips = Dictionary(uniqueKeysWithValues: pending.map { index in
+            (result[index].id, result[index].plan.clips.filter { sceneMap[$0.sceneID]?.tags.contains("podcast") == true })
+        })
+        let videoIDs = Set(podcastClips.values.flatMap { $0.compactMap { sceneMap[$0.sceneID]?.videoID } })
+        var turns: [Int64: [SpeakerTurn]] = [:]
+        var rosters: [Int64: [VideoPersonRecord]] = [:]
+        var rows: [Int64: [TranscriptRow]] = [:]
+        var videoFeeds: [Int64: Int] = [:]
+        for id in videoIDs.sorted() {
+            try Task.checkCancellation()
+            turns[id] = try await database.fetchSpeakerTurns(videoID: id)
+            let roster = try await database.fetchVideoPeople(videoID: id)
+            rosters[id] = roster
+            rows[id] = try await database.fetchTranscripts(videoID: id)
+            videoFeeds[id] = videos.first(where: { $0.id == id }).map {
+                max(1, CropRecipePlanner.tiles(video: $0, roster: roster).count)
+            } ?? 1
+        }
+        let exchanges = pending.map { index in
+            CameraFocusChooser.exchange(id: result[index].id, clips: podcastClips[result[index].id] ?? [],
+                sceneMap: sceneMap, turns: turns, rosters: rosters, rows: rows)
+        }
+        var feeds: [Int64: Int] = [:]
+        for index in pending {
+            let take = result[index]
+            let counts = (podcastClips[take.id] ?? []).compactMap { sceneMap[$0.sceneID] }
+                .map { videoFeeds[$0.videoID] ?? 1 }
+            // Single-feed sources rule out multi-cell layouts; otherwise the largest
+            // recording imposes the grid/rest layout's maximum supported tile count.
+            feeds[take.id] = counts.contains(1) ? 1 : (counts.max() ?? 1)
+        }
+        var text = ""
+        var provenance: AIProvenance?
+        do {
+            emit("Choosing camera focus")
+            let reply = try await ai.call(prompt: CameraFocusChooser.prompt(exchanges: exchanges, feeds: feeds, options: options),
+                task: .framing, timeout: 90, log: emit)
+            text = reply.text
+            provenance = reply.provenance
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            try Task.checkCancellation()
+            emit("Camera focus choice failed: \(error.userMessage) — using speaker rules")
+        }
+        try Task.checkCancellation()
+        let choices = CameraFocusChooser.parse(text, ids: Set(exchanges.map(\.id)), allowed: CropRecipe.Kind.allCases)
+        for (index, exchange) in zip(pending, exchanges) {
+            let allowed = CameraFocusChooser.allowedLayouts(feeds: feeds[exchange.id] ?? 1)
+            let choice = choices[exchange.id].flatMap { allowed.contains($0.kind) ? $0 : nil }
+            let kind = choice?.kind ?? CameraFocusChooser.fallback(speakers: exchange.speakers.count, allowed: allowed)
+            result[index].plan.framing = kind
+            result[index].plan.framingProvenance = choice != nil ? provenance
+                : AIProvenance(provider: "local", model: "speaker-count", task: "framing", at: Date(),
+                               fellBack: true, technique: "speaker-count")
+            try Task.checkCancellation()
+            try await database.updateWizardSelectionTakePlan(id: exchange.id, plan: result[index].plan)
+            emit("Camera focus: \(kind.name) — \(choice?.reason ?? "chosen by rule (the model did not answer)")")
+        }
+        return result
+    }
+
     /// Step 2 always renders the saved plan, independent of the current source filters.
     /// The take is re-read so hand edits made after opening a review are respected.
     func makeReel(take: WizardSelectionTake, options: WizardOptions,
@@ -2493,11 +2583,15 @@ actor WizardEngine {
         var options = WizardOptions.merge(step1: selection.step1Options, step2: options.step2, base: options)
         options.projectID = selection.projectID
         let scenes = try await database.fetchScenes(projectID: selection.projectID, includeExcluded: true)
-        guard let plan = WizardSelectionRules.resolvedPlan(saved.plan, scenes: scenes) else {
+        guard let resolvedPlan = WizardSelectionRules.resolvedPlan(saved.plan, scenes: scenes) else {
             throw AIError.unusableResponse("Footage changed. Find the moments again before rendering this selection.")
         }
+        var resolved = saved
+        resolved.plan = resolvedPlan
+        let focused = try await chooseCameraFocus(takes: [resolved], options: options,
+            profile: profile, database: database, emit: emit)
+        let plan = focused[0].plan
         if let renderTake {
-            var resolved = saved
             resolved.plan = plan
             try await renderTake(resolved, options)
             return
@@ -2650,6 +2744,10 @@ actor WizardEngine {
             let result = try await assemble(plan: plan, music: music, options: options,
                 profile: profile, database: database, sceneMap: sceneMap,
                 brollCache: &brollCache, batchID: batchID, selectionTakeID: takeID, emit: emit)
+            if options.highlightFraming == nil, options.podcastFraming != .original,
+               let provenance = plan.framingProvenance {
+                try await database.recordOutputRole(id: result.recordID, role: "Camera focus", provenance: provenance)
+            }
             let tags = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
             var captionText: String?
             do {

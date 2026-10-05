@@ -15,6 +15,7 @@ struct WizardPodcastControls: View {
                         .accessibilityLabel("B-roll instructions")
                     FormCaption("e.g. use fight footage of the guest when he talks about his fights; never cover the host")
                 }
+                .formDependent()
             }
         }
     }

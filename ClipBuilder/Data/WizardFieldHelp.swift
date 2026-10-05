@@ -147,6 +147,12 @@ struct FormGroupHeader: View {
 }
 
 extension View {
+    /// A form row that only exists because the row above it is switched on
+    /// or set a certain way: indented so the hierarchy is visible.
+    func formDependent() -> some View {
+        padding(.leading, Theme.spaceXL)
+    }
+
     /// Attaches the field's tooltip (also read by VoiceOver as the hint).
     func fieldHelp(_ help: FieldHelp) -> some View {
         self.help(help.tooltip)

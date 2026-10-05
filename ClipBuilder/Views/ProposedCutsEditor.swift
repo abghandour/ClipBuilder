@@ -212,6 +212,7 @@ struct ProposedCutsEditor: View {
             .labelStyle(.iconOnly)
             .disabled(playback.player == nil)
             .help(playback.isPlaying ? "Pause (Space)" : "Play the cut (Space)")
+            PlaybackSpeedSlider(playback: playback)
             Text("\(ProposedCutTrim.timecode(start))–\(ProposedCutTrim.timecode(end)) · \(ProposedCutTrim.duration(ProposedCutTrim.range(start: start, end: end)), format: .number.precision(.fractionLength(1)))s")
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 .fixedSize()

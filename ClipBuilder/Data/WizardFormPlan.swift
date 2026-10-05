@@ -45,7 +45,9 @@ nonisolated struct WizardFormPlan: Sendable {
     var step1Models: [String] { capabilities.models.filter { $0 != "captions" && $0 != "broll" } }
 
     func step2Models(useBRoll: Bool, instructions: String) -> [String] {
-        models(useBRoll: useBRoll, instructions: instructions).filter { $0 == "captions" || $0 == "broll" }
+        var tasks = models(useBRoll: useBRoll, instructions: instructions).filter { $0 == "captions" || $0 == "broll" }
+        if capabilities.podcastFraming { tasks.append("framing") }
+        return tasks
     }
 
     static func lengthHelp(recipe: ReelRecipe) -> FieldHelp {

@@ -26,3 +26,16 @@ struct MiniRow<Control: View>: View {
         }
     }
 }
+
+/// Rows that only exist because the row above them is switched on. The
+/// indent (rules included) shows which setting they belong to.
+struct MiniDependents<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
+            content
+        }
+        .padding(.leading, Theme.spaceXL)
+    }
+}

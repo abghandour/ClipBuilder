@@ -722,6 +722,7 @@ struct WizardView: View {
                     let clamped = min(180, max(3, value))
                     if clamped != value { customDuration = clamped }
                 }
+                .formDependent()
             }
         }
         FormGroupHeader("Brief")
@@ -819,6 +820,7 @@ struct WizardView: View {
                 }
                 .fieldHelp(WizardFieldHelp.musicFolder)
                 .onChange(of: musicFolderRaw) { refreshMusicCount() }
+                .formDependent()
             }
 
             if audioMode.useMusic {
@@ -860,8 +862,11 @@ struct WizardView: View {
 
             if textMode == .captions || textMode == .both {
                 CaptionPositionPicker(selection: captionChoice(\.captionPosition))
+                    .formDependent()
                 FormCaption("Auto keeps clear of the platform buttons; the other choices use the edge of the frame.")
+                    .formDependent()
                 CaptionStylePicker(selection: captionChoice(\.captionStyleID), profile: store.activeProfile)
+                    .formDependent()
                 Picker("Caption language", selection: $captionLanguage) {
                     Text("Original audio language").tag("")
                     ForEach(store.activeProfile.captionLanguages, id: \.self) { language in
@@ -870,7 +875,9 @@ struct WizardView: View {
                     }
                 }
                 .fieldHelp(WizardFieldHelp.captionLanguage)
+                .formDependent()
                 FieldCaption(WizardFieldHelp.captionLanguage)
+                    .formDependent()
             }
         }
 
@@ -878,6 +885,7 @@ struct WizardView: View {
             MiniRow("Name tags") { Toggle("Name tags", isOn: $nameTags) }
             if nameTags {
                 NameTagControls(content: $nameTagContent, style: $nameTagStyle, position: $nameTagPosition)
+                    .formDependent()
             }
         }
         if lookFormPlan.step2Controls.contains(.overlayStyle) { overlayControls }
@@ -933,7 +941,8 @@ struct WizardView: View {
         }
 
         if !lookFormPlan.step2Models(useBRoll: useBRoll, instructions: brollInstructions).isEmpty {
-            DisclosureGroup("Caption and B-roll AI settings") {
+            DisclosureGroup(lookFormPlan.capabilities.podcastFraming
+                ? "Caption, B-roll and camera focus AI settings" : "Caption and B-roll AI settings") {
                 TaskModelPickers(tasks: lookFormPlan.step2Models(useBRoll: useBRoll, instructions: brollInstructions))
             }
         }

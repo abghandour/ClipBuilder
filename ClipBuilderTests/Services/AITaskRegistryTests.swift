@@ -22,6 +22,17 @@ struct AITaskRegistryTests {
         for key in AICatalog.recommendedChains.keys { #expect(known.contains(key), Comment(rawValue: key)) }
     }
 
+    @Test func cameraFocusHasItsOwnRouteWithTheHighlightsChain() {
+        #expect(AITask.framing.rawValue == "framing")
+        #expect(AITask.framing.label == "Camera focus choice")
+        #expect(AITask.configurable.contains(.framing))
+        #expect(AICatalog.taskDefaults["framing"] == AICatalog.taskDefaults["highlights"])
+        let camera = AICatalog.recommendedChains["framing"] ?? []
+        let highlights = AICatalog.recommendedChains["highlights"] ?? []
+        #expect(camera.map { $0.0 } == highlights.map { $0.0 })
+        #expect(camera.map { $0.1 } == highlights.map { $0.1 })
+    }
+
     @Test func rawValuesAreStableSettingsKeys() throws {
         // Keys stored in settings JSON and provenance; renaming a case must not change these.
         #expect(AITask.fightResearch.rawValue == "fight_research")

@@ -163,23 +163,35 @@ struct MiniWizardView: View {
                 .accessibilityLabel("Length")
             }
         }
-        FormGroupHeader("Instructions for the AI")
-        TextEditor(text: instructions)
-            .font(.body)
-            .frame(minHeight: 80, idealHeight: 100)
-            .focused($instructionsFocused)
-            .accessibilityLabel("Instructions for the AI")
-            .onSubmit { saveInstructions() }
-        FormCaption("Optional. Saved with this profile and shared by its projects.")
-        Button {
-            instructionsFocused = false
-            saveInstructions()
-            store.generateMiniFootage(flow: flow)
-        } label: {
-            Text("Generate footage").lineLimit(1).fixedSize()
+        // Only Highlights asks a model, so only Highlights has instructions
+        // and a model to choose. Q&A lists the exchanges analysis found.
+        let usesAI = flow.effectiveFootageKind == .highlights
+        if usesAI {
+            FormGroupHeader("Instructions for the AI")
+            TextEditor(text: instructions)
+                .font(.body)
+                .frame(minHeight: 80, idealHeight: 100)
+                .focused($instructionsFocused)
+                .accessibilityLabel("Instructions for the AI")
+                .onSubmit { saveInstructions() }
+            FormCaption("Optional. Saved with this profile and shared by its projects.")
+        } else {
+            FormCaption("Q&A lists the question-and-answer exchanges found when this video was analyzed. No AI model runs for this step, so there is nothing to instruct or choose.")
         }
-        .buttonStyle(.borderedProminent)
-        .disabled(selectedVideo == nil || store.isWizardRunning)
+        HStack(spacing: Theme.spaceS) {
+            Button {
+                instructionsFocused = false
+                saveInstructions()
+                store.generateMiniFootage(flow: flow)
+            } label: {
+                Text(usesAI ? "Generate footage" : "Show Q&A exchanges").lineLimit(1).fixedSize()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(selectedVideo == nil || store.isWizardRunning)
+            if usesAI {
+                MiniModelButton(tasks: [flow.isPodcastOrInterview ? "highlights" : "wizard"])
+            }
+        }
     }
 
     @ViewBuilder

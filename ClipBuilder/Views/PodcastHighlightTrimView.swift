@@ -10,6 +10,8 @@ final class PodcastHighlightTrimPlayback {
     private(set) var player: AVPlayer?
     private(set) var time: Double = 0
     private(set) var isPlaying = false
+    /// Playback speed, shared by every trim surface and remembered.
+    private(set) var rate: Double = PlaybackSpeed.stored()
     private var range: ClosedRange<Double> = 0...1
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
@@ -24,6 +26,8 @@ final class PodcastHighlightTrimPlayback {
             guard let asset = try? await DriveLocalAsset.make(url) else { return }
             let item = AVPlayerItem(asset: asset)
             item.forwardPlaybackEndTime = CMTime(seconds: range.upperBound, preferredTimescale: 600)
+            // Speech keeps its pitch at slow and fast speeds.
+            item.audioTimePitchAlgorithm = .timeDomain
             let player = AVPlayer(playerItem: item)
             for _ in 0..<100 where item.status != .readyToPlay {
                 if item.status == .failed || Task.isCancelled { return }
@@ -81,8 +85,16 @@ final class PodcastHighlightTrimPlayback {
     func play() {
         guard let player else { return }
         if time >= range.upperBound - 0.05 || time < range.lowerBound - 0.05 { seek(to: range.lowerBound) }
-        player.play()
+        player.playImmediately(atRate: Float(rate))
         isPlaying = true
+    }
+
+    /// Change the speed now (when playing) and for every later play, here and
+    /// on the other trim surfaces.
+    func setRate(_ newRate: Double) {
+        rate = PlaybackSpeed.nearest(newRate)
+        PlaybackSpeed.store(rate)
+        if isPlaying { player?.rate = Float(rate) }
     }
 
     func pause() {
@@ -147,6 +159,7 @@ struct PodcastHighlightTrimView: View {
                     }
                     .labelStyle(.iconOnly)
                     .help(playback.isPlaying ? "Pause (Space)" : "Play the reel from its start (Space)")
+                    PlaybackSpeedSlider(playback: playback)
                     Text("\(editStart.timecode)–\(editEnd.timecode) · \(editEnd - editStart, format: .number.precision(.fractionLength(1)))s")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)

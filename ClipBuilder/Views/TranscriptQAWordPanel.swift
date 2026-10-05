@@ -2,14 +2,14 @@ import SwiftUI
 
 /// Full-recording transcript; only visible lines are laid out. The two anchors
 /// live above the scroll content, so moving a cut never replaces its gesture.
-struct TranscriptQAWordPanel: View {
+struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     @Environment(\.isEnabled) private var isEnabled
     let transcript: TranscriptQATrim.Transcript
     let videoID: Int64
     let translationLanguages: [String]
     let translationsByLanguage: [String: [Int: String]]
     let preferredTranslationLanguage: String?
-    let sectionID: Int64
+    let sectionID: SelectionID
     let range: ClosedRange<Double>
     let otherRanges: [ClosedRange<Double>]
     let playback: PodcastHighlightTrimPlayback
@@ -28,7 +28,7 @@ struct TranscriptQAWordPanel: View {
     @State private var dragFrame: CGRect?
     @State private var scrollDirection = 0
     @State private var lastPreviewedWord: Int?
-    private static let scrollSpace = "qaWordViewport"
+    private static var scrollSpace: String { "qaWordViewport" }
 
     private var currentLine: Int? { transcript.lineID(at: playback.time) }
     private var firstWord: TranscriptQATrim.Word? { transcript.words.first { TranscriptQATrim.contains($0, in: range) } }
@@ -118,14 +118,14 @@ struct TranscriptQAWordPanel: View {
 
     private var transcriptScroll: some View {
         GeometryReader { geometry in
-            // Preserve readable columns in a compressed pane without changing
-            // its preferred width. Extra width can be reached by scrolling.
-            let contentWidth = showsTranslation
-                ? max(geometry.size.width, 320 + 5 * Theme.spaceS) : geometry.size.width
-            let columnWidth = (contentWidth - 5 * Theme.spaceS) / 2
+            // Both columns always fit the pane (the scroller's gutter included):
+            // text wraps in a narrow pane and the user widens the column for
+            // more room. Sideways scrolling would hide the translation.
+            let contentWidth = max(120, geometry.size.width - 16)
+            let columnWidth = max(40, (contentWidth - 5 * Theme.spaceS) / 2)
             ScrollViewReader { proxy in
                 ZStack(alignment: .topLeading) {
-                    ScrollView(showsTranslation ? [.vertical, .horizontal] : [.vertical]) {
+                    ScrollView(.vertical) {
                         LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(transcript.lines) { line in
                                 transcriptLine(line, columnWidth: columnWidth).id(line.id)

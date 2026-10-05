@@ -1079,3 +1079,157 @@ extension WizardEngineTests {
         #expect(stored.map(\.text) == ["Already translated", "English Second \(firstID)", "English Area \(firstID)"])
     }
 }
+
+extension WizardEngineTests {
+    private func cameraFocusFixture() async throws -> (TempDatabase, WizardOptions, WizardSelectionTake) {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        let database = temp.database
+        let projectID = try await database.createProject(profileName: "Camera focus", name: "Podcast", videoIDs: [videoID])
+        let scene = try #require(try await database.fetchScenes(projectID: projectID).first)
+        try await database.addSceneTag(sceneID: scene.id, tag: "podcast")
+        try await database.addSceneTag(sceneID: scene.id, tag: "q&a")
+        try await database.setPodcastLayout(videoID: videoID, layout: .splitHorizontal, seamX: 0.5, confidence: 1)
+        try await database.replaceSpeakerTurns(videoID: videoID, turns: [
+            SpeakerTurn(videoID: videoID, start: 0, end: 2, cluster: 0, confidence: 1),
+            SpeakerTurn(videoID: videoID, start: 2, end: 8, cluster: 1, confidence: 1)
+        ])
+        var options = WizardOptions()
+        options.projectID = projectID
+        options.formatPreset = "podcast"
+        options.useMusic = false
+        options.critiqueLoop = false
+        let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id, start: 0, end: 8)])
+        let take = try await database.recordWizardTake(projectID: projectID, options: options.step1, plan: plan)
+        return (temp, options, take)
+    }
+
+    private func cameraFocusService(calls: WizardCaptionTestLog, reply: String,
+                                    failure: Bool = false, cancel: Bool = false) -> AIService {
+        var config = AIConfig()
+        config.tasks["framing"] = "claude"
+        config.providers["claude"] = AIProviderSettings(bin: "/bin/echo", model: "fixture")
+        return AIService(config: config) { _, _, stdin, timeout, _, _ in
+            calls.append(String(decoding: stdin ?? Data(), as: UTF8.self))
+            if cancel { throw CancellationError() }
+            if failure { throw AIError.unusableResponse("Fixture model unavailable") }
+            #expect(timeout == 90)
+            let response = try JSONSerialization.data(withJSONObject: [
+                "type": "assistant", "message": ["content": [["type": "text", "text": reply]]]
+            ])
+            return ProcessResult(stdout: response, stderr: Data(), exitCode: 0)
+        }
+    }
+
+    @Test func cameraFocusIsSavedAndSecondRenderDoesNotCallAgain() async throws {
+        let (temp, options, take) = try await cameraFocusFixture()
+        let calls = WizardCaptionTestLog()
+        let logs = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: cameraFocusService(calls: calls,
+            reply: #"{"choices":[{"id":\#(take.id),"framing":"grid","reason":"Show both reactions."}]}"#),
+            render: RenderEngine())
+        for _ in 0..<2 {
+            // Deliberately reuse the original nil-framing snapshot, like a reopened review.
+            try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(), database: temp.database,
+                emit: { logs.append($0) }, renderPlan: { plan, _ in
+                    #expect(plan.framing == .grid)
+                    #expect(plan.framingProvenance?.task == "framing")
+                    #expect(plan.framingProvenance?.model == "fixture")
+                })
+        }
+        #expect(calls.lines().count == 1)
+        let saved = try #require(try await temp.database.wizardSelectionTake(id: take.id))
+        #expect(saved.plan.framing == .grid)
+        #expect(saved.plan.framingProvenance?.provider == "claude")
+        #expect(logs.lines().contains { $0.contains("Camera focus: Everyone in a grid — Show both reactions.") })
+    }
+
+    @Test(arguments: [false, true])
+    func explicitCameraFocusAndOriginalSkipAI(original: Bool) async throws {
+        let (temp, base, take) = try await cameraFocusFixture()
+        var options = base
+        if original { options.podcastFraming = .original }
+        else { options.highlightFraming = .talkerAndRest }
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: cameraFocusService(calls: calls, reply: "{}"), render: RenderEngine())
+        try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(), database: temp.database,
+            emit: { _ in }, renderPlan: { plan, _ in #expect(plan.framing == nil) })
+        #expect(calls.lines().isEmpty)
+        #expect(try await temp.database.wizardSelectionTake(id: take.id)?.plan.framing == nil)
+    }
+
+    @Test(arguments: [false, true])
+    func unansweredCameraFocusFallsBackAndLogs(failure: Bool) async throws {
+        let (temp, options, take) = try await cameraFocusFixture()
+        let calls = WizardCaptionTestLog()
+        let logs = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: cameraFocusService(calls: calls, reply: "{}", failure: failure), render: RenderEngine())
+        try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(), database: temp.database,
+            emit: { logs.append($0) }, renderPlan: { plan, _ in
+                #expect(plan.framing == .talkerAndPrevious)
+                #expect(plan.framingProvenance?.provider == "local")
+                #expect(plan.framingProvenance?.fellBack == true)
+            })
+        let saved = try #require(try await temp.database.wizardSelectionTake(id: take.id))
+        #expect(saved.plan.framing == .talkerAndPrevious)
+        #expect(logs.lines().contains { $0.contains("Camera focus: Talker and previous — chosen by rule (the model did not answer)") })
+        #expect(!calls.lines().isEmpty)
+    }
+
+    @Test func cameraFocusBatchesTakesBeforeCombining() async throws {
+        let (temp, options, first) = try await cameraFocusFixture()
+        let second = try await temp.database.recordWizardTake(projectID: try #require(options.projectID),
+            options: options.step1, plan: first.plan)
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: cameraFocusService(calls: calls, reply: """
+            {"choices":[{"id":\(first.id),"framing":"grid","reason":"Both people."},
+                        {"id":\(second.id),"framing":"talker","reason":"Focus on the answer."}]}
+            """), render: RenderEngine())
+        let chosen = try await engine.chooseCameraFocus(takes: [first, second], options: options,
+            profile: Fixtures.brand(), database: temp.database, emit: { _ in })
+        #expect(calls.lines().count == 1)
+        #expect(chosen.map(\.plan.framing) == [.grid, .talker])
+        let combined = WizardPlanRules.combinedPlan(chosen)
+        #expect(combined.framing == .grid)
+        #expect(combined.framingProvenance == chosen[0].plan.framingProvenance)
+        #expect(try await temp.database.wizardSelectionTake(id: second.id)?.plan.framing == .talker)
+    }
+
+    @Test func cancellingCameraFocusDoesNotPersistFallback() async throws {
+        let (temp, options, take) = try await cameraFocusFixture()
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: cameraFocusService(calls: calls, reply: "{}", cancel: true), render: RenderEngine())
+        await #expect(throws: CancellationError.self) {
+            try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(), database: temp.database,
+                emit: { _ in }, renderPlan: { _, _ in Issue.record("Cancelled camera choice must not render") })
+        }
+        #expect(try await temp.database.wizardSelectionTake(id: take.id)?.plan.framing == nil)
+    }
+}
+
+extension WizardEngineTests {
+    @Test func cameraFocusRejectsMultiCellResponseForASingleFeed() async throws {
+        let (temp, options, take) = try await cameraFocusFixture()
+        let scene = try #require(try await temp.database.fetchScenes(projectID: options.projectID).first)
+        try await temp.database.setPodcastLayout(videoID: scene.videoID, layout: .singleCamera, seamX: nil, confidence: 1)
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: cameraFocusService(calls: calls,
+            reply: #"{"choices":[{"id":\#(take.id),"framing":"grid","reason":"Invalid for this recording."}]}"#),
+            render: RenderEngine())
+        let chosen = try await engine.chooseCameraFocus(takes: [take], options: options,
+            profile: Fixtures.brand(), database: temp.database, emit: { _ in })
+        #expect(chosen[0].plan.framing == .talker)
+        #expect(chosen[0].plan.framingProvenance?.provider == "local")
+    }
+
+    @Test func cameraFocusSkipsOrdinaryScenes() async throws {
+        let (temp, options, take) = try await cameraFocusFixture()
+        try await temp.database.removeSceneTags(sceneID: take.plan.clips[0].sceneID, withPrefix: "podcast")
+        let calls = WizardCaptionTestLog()
+        let engine = WizardEngine(ai: cameraFocusService(calls: calls, reply: "{}"), render: RenderEngine())
+        let chosen = try await engine.chooseCameraFocus(takes: [take], options: options,
+            profile: Fixtures.brand(), database: temp.database, emit: { _ in })
+        #expect(chosen[0].plan.framing == nil)
+        #expect(calls.lines().isEmpty)
+    }
+}

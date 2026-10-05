@@ -278,6 +278,20 @@ extension AppStore {
                         }
                         takes.append(take)
                     }
+                    if flow.showsCameraFocus, options.highlightFraming == nil, options.podcastFraming != .original,
+                       takes.contains(where: { $0.plan.framing == nil }) {
+                        let stage = "Choosing camera focus"
+                        wizardStatus = WizardRunStatus(stage: stage, fraction: 0)
+                        appendLog(\.wizardLog, [stage])
+                        takes = try await wizard.chooseCameraFocus(takes: takes, options: options,
+                            profile: profile, database: database, emit: { message in
+                                Task { @MainActor in
+                                    guard generation == self.profileGeneration, self.isWizardRunning else { return }
+                                    self.appendLog(\.wizardLog, [message])
+                                    if self.wizardStatus?.stage == stage { self.wizardStatus?.detail = message }
+                                }
+                            })
+                    }
                     if chosen.outputMode == .oneReel {
                         try Task.checkCancellation()
                         takes = [try await database.recordMiniCombinedTake(projectID: run.projectID,

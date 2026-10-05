@@ -135,6 +135,10 @@ nonisolated enum WizardPlanRules {
             musicName: nil, musicVolume: 0, clips: clips,
             transitions: Array(repeating: "cut", count: max(0, clips.count - 1)),
             headline: takes.first?.plan.headline)
+        // One reel has one camera layout: use the first kept take's saved choice.
+        // Mini chooses each take before combining, so separate renders retain their own choices.
+        plan.framing = takes.first?.plan.framing
+        plan.framingProvenance = takes.first?.plan.framingProvenance
         plan.targetDuration = WizardSelectionRules.duration(plan)
         var seen: Set<Int64> = []
         plan.footage = takes.flatMap { $0.plan.footage ?? [] }.filter {

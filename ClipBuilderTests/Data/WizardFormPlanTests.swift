@@ -305,9 +305,11 @@ extension WizardFormPlanTests {
     @Test func modelRowsAreSplitByStepWithoutDuplicates() {
         let form = WizardFormPlan(recipe: .custom)
         #expect(form.step1Models == ["wizard", "critique"])
-        #expect(form.step2Models(useBRoll: true, instructions: "Use fight footage") == ["captions", "broll"])
-        #expect(form.step2Models(useBRoll: false, instructions: "") == ["captions"])
+        #expect(form.step2Models(useBRoll: true, instructions: "Use fight footage") == ["captions", "broll", "framing"])
+        #expect(form.step2Models(useBRoll: false, instructions: "") == ["captions", "framing"])
         #expect(Set(form.step1Models).isDisjoint(with: form.step2Models(useBRoll: true, instructions: "Cutaways")))
+        #expect(WizardFormPlan(recipe: .podcast).step2Models(useBRoll: false, instructions: "").contains("framing"))
+        #expect(!WizardFormPlan(recipe: .mmaFinish).step2Models(useBRoll: false, instructions: "").contains("framing"))
     }
 
     @Test func lookCardStaysCollapsedUntilSelectionOrAutomaticWorkflow() {
