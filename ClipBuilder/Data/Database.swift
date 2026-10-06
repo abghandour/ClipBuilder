@@ -729,11 +729,12 @@ actor Database {
             if try !connection.columnNames(of: "generated_videos").contains("selection_take_id") {
                 try connection.execute("ALTER TABLE generated_videos ADD COLUMN selection_take_id INTEGER REFERENCES wizard_selection_takes(id) ON DELETE SET NULL")
             }
-            try connection.transaction {
+            try connection.transaction { [connection] in
                 if stamped < 16 {
                     try connection.execute("UPDATE scenes SET favorite = 1, favorite_provider = curated_provider, favorite_model = curated_model WHERE curated = 1 AND favorite = 0")
                     try connection.execute("UPDATE scenes SET favorite_provider = curated_provider, favorite_model = curated_model WHERE curated = 1 AND favorite = 1 AND favorite_provider IS NULL")
                 }
+                try Self.migrateTeamSync(connection)
                 try connection.execute("PRAGMA user_version = \(Self.schemaVersion)")
             }
         }
@@ -741,7 +742,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 23
+    static let schemaVersion: Int64 = 24
 
     // MARK: - Helpers
 

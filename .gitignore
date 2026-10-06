@@ -44,3 +44,6 @@ fastlane/test_output
 Configuration/GoogleDrive-Local.xcconfig
 Configuration/GoogleDrive-Local.plist
 Configuration/GoogleDrive-Local.json
+
+# Supabase CLI link state
+supabase/.temp/
