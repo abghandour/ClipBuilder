@@ -1,0 +1,112 @@
+import Foundation
+
+/// Closed portable projection, in dependency order. Paths, thumbnails and local
+/// avatar references are intentionally absent. Foreign keys travel as UUIDs.
+nonisolated struct SyncTable: Sendable, Equatable {
+    let name: String
+    let columns: [String]
+    let integers: Set<String>
+    let reals: Set<String>
+    let naturalKey: [String]
+    let references: [String: String]
+
+    static let all: [SyncTable] = [
+        SyncTable(name: "profile_documents",
+            columns: ["document_json"],
+            integers: [], reals: [],
+            naturalKey: [], references: [:]),
+        SyncTable(name: "wizard_lessons",
+            columns: ["text", "pinned", "evidence", "created_at", "updated_at", "provider", "model", "learned_id"],
+            integers: ["pinned"], reals: [],
+            naturalKey: [], references: [:]),
+        SyncTable(name: "people",
+            columns: ["key", "name", "descriptor", "created_at", "category", "hidden"],
+            integers: ["hidden"], reals: [],
+            naturalKey: ["key"], references: [:]),
+        SyncTable(name: "text_overlay_presets",
+            columns: ["name", "data_json", "created_at"],
+            integers: [], reals: [],
+            naturalKey: ["name", "data_json"], references: [:]),
+        SyncTable(name: "library_asset_metadata",
+            columns: ["kind", "is_broll", "subjects_json", "tags_json", "provider", "model", "analyzed_at", "display_name", "placements_json", "technique", "asset_id"],
+            integers: ["is_broll"], reals: [],
+            naturalKey: ["asset_id"], references: [:]),
+        SyncTable(name: "ig_accounts",
+            columns: ["username", "kind", "display_name", "ig_user_id", "followers", "last_fetched_at", "added_at"],
+            integers: ["followers"], reals: [],
+            naturalKey: ["username"], references: [:]),
+        SyncTable(name: "ig_media",
+            columns: ["account_id", "media_id", "media_type", "caption", "permalink", "posted_at", "duration", "stats_json", "source", "fetched_at"],
+            integers: ["account_id"], reals: ["duration"],
+            naturalKey: ["account_id", "media_id"], references: ["account_id": "ig_accounts"]),
+        SyncTable(name: "ig_report_media",
+            columns: ["account_id", "media_id", "shortcode", "media_type", "media_product_type", "caption", "caption_truncated", "permalink", "posted_at", "like_count", "comments_count", "thumbnail_url", "source", "fetched_at"],
+            integers: ["account_id", "caption_truncated", "like_count", "comments_count"], reals: [],
+            naturalKey: ["account_id", "shortcode"], references: ["account_id": "ig_accounts"]),
+        SyncTable(name: "taste_studies",
+            columns: ["media_id", "category_key", "studied_at"],
+            integers: ["media_id"], reals: [],
+            naturalKey: ["media_id"], references: ["media_id": "ig_media"]),
+        SyncTable(name: "ig_templates",
+            columns: ["media_id", "template_json", "provider", "model", "analyzed_at"],
+            integers: ["media_id"], reals: [],
+            naturalKey: ["media_id"], references: ["media_id": "ig_media"]),
+        SyncTable(name: "ig_account_snapshots",
+            columns: ["account_id", "snapshot_date", "followers_count", "follows_count", "media_count", "source"],
+            integers: ["account_id", "followers_count", "follows_count", "media_count"], reals: [],
+            naturalKey: ["account_id", "snapshot_date"], references: ["account_id": "ig_accounts"]),
+        SyncTable(name: "ig_media_insight_snapshots",
+            columns: ["report_media_id", "metric", "value", "fetched_at", "source"],
+            integers: ["report_media_id"], reals: ["value"],
+            naturalKey: ["report_media_id", "metric", "fetched_at"], references: ["report_media_id": "ig_report_media"]),
+        SyncTable(name: "ig_account_insights",
+            columns: ["account_id", "metric", "period", "breakdown_dimension", "breakdown_value", "value", "end_time", "source"],
+            integers: ["account_id"], reals: ["value"],
+            naturalKey: ["account_id", "metric", "period", "breakdown_dimension", "breakdown_value", "end_time"], references: ["account_id": "ig_accounts"]),
+        SyncTable(name: "ig_audience_demographics",
+            columns: ["account_id", "metric", "dimension", "dimension_value", "timeframe", "value", "fetched_date", "source"],
+            integers: ["account_id", "value"], reals: [],
+            naturalKey: ["account_id", "metric", "dimension", "dimension_value", "timeframe", "fetched_date"], references: ["account_id": "ig_accounts"]),
+        SyncTable(name: "ig_comments",
+            columns: ["id", "account_id", "report_media_id", "parent_comment_id", "username", "from_id", "text", "like_count", "hidden", "timestamp", "ref_timestamp", "fetched_at"],
+            integers: ["account_id", "report_media_id", "like_count", "hidden"], reals: [],
+            naturalKey: ["id"], references: ["account_id": "ig_accounts", "report_media_id": "ig_report_media"]),
+        SyncTable(name: "ig_commenter_rankings_import",
+            columns: ["account_id", "period_key", "as_of", "username", "rank", "score", "early", "text_comments", "emoji_comments", "text_replies", "emoji_replies", "total"],
+            integers: ["account_id", "rank", "score", "early", "text_comments", "emoji_comments", "text_replies", "emoji_replies", "total"], reals: [],
+            naturalKey: ["account_id", "period_key", "username"], references: ["account_id": "ig_accounts"]),
+        SyncTable(name: "ig_commenter_activity_import",
+            columns: ["account_id", "period_key", "as_of", "username", "comments", "replies", "total", "top_posts_json"],
+            integers: ["account_id", "comments", "replies", "total"], reals: [],
+            naturalKey: ["account_id", "period_key", "username"], references: ["account_id": "ig_accounts"]),
+        SyncTable(name: "ig_comment_heatmap_import",
+            columns: ["account_id", "window_end", "dow", "hour", "count"],
+            integers: ["account_id", "dow", "hour", "count"], reals: [],
+            naturalKey: ["account_id", "window_end", "dow", "hour"], references: ["account_id": "ig_accounts"]),
+        SyncTable(name: "ig_reel_analysis_import",
+            columns: ["account_id", "report_media_id", "analysis_date", "score", "tier", "good_json", "bad_json", "top_tip"],
+            integers: ["account_id", "report_media_id", "score"], reals: [],
+            naturalKey: ["account_id", "report_media_id", "analysis_date"], references: ["account_id": "ig_accounts", "report_media_id": "ig_report_media"]),
+        SyncTable(name: "ig_ignored_accounts",
+            columns: ["account_id", "username", "reason"],
+            integers: ["account_id"], reals: [],
+            naturalKey: ["account_id", "username"], references: ["account_id": "ig_accounts"]),
+        SyncTable(name: "ig_report_sync_state",
+            columns: ["account_id", "key", "value"],
+            integers: ["account_id"], reals: [],
+            naturalKey: ["account_id", "key"], references: ["account_id": "ig_accounts"]),
+        SyncTable(name: "reel_traits",
+            columns: ["video_kind", "video_id", "version", "traits_json", "computed_at", "reference"],
+            integers: ["version", "reference"], reals: [],
+            naturalKey: ["video_kind", "video_id"], references: [:]),
+        SyncTable(name: "reel_outcomes",
+            columns: ["video_id", "account_id", "traits_version", "outcome_json"],
+            integers: ["account_id", "traits_version"], reals: [],
+            naturalKey: ["video_id"], references: ["account_id": "ig_accounts", "video_id": "ig_report_media"])
+    ]
+    static var lessons: SyncTable { all.first { $0.name == "wizard_lessons" }! }
+    static func named(_ name: String) throws -> SyncTable {
+        guard let table = all.first(where: { $0.name == name }) else { throw SyncError.invalidRow("table") }
+        return table
+    }
+}

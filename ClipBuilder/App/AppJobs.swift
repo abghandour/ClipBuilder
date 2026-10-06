@@ -6,10 +6,11 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case coverFrames, overlayTemplate, sceneSearch, imageSearch, fightResearch
     case generateRequest, instagramPublish, socialExport, resourceExport, resourceImport
     case mapSpeakers, suggestTrim, cameraPath, evaluateReelModel, publishLessons, transcriptAnalysis
+    case teamSync
     case personRoles
     case criticBrief, evaluateCritic
 
-    var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief }
+    var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief || self == .teamSync }
 
     var shortTitle: String {
         switch self {
@@ -35,6 +36,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .evaluateReelModel: "Evaluate Model"
         case .publishLessons: "Publish AI Lessons"
         case .transcriptAnalysis: "Transcript Analysis"
+        case .teamSync: "Team Sync"
         case .personRoles: "People Roles"
         case .criticBrief: "Critic Brief"
         case .evaluateCritic: "Evaluate Critic"
@@ -48,7 +50,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .instagramPublish: "instagram"
         case .socialExport: "builder"
         case .profileStarter, .overlayTemplate, .imageSearch, .resourceExport, .resourceImport,
-             .evaluateReelModel, .publishLessons: "app"
+             .evaluateReelModel, .publishLessons, .teamSync: "app"
         case .criticBrief, .evaluateCritic: "wizard"
         default: "analysis"
         }
@@ -310,6 +312,15 @@ final class AppJobs {
                 store?.wizardPromptRequests[items[index].projectID ?? 0] = nil
             }
         }
+    }
+
+    func cancelAndWait(kind: AppJobKind) async {
+        // Stop marks the visible row cancelled before the task's cleanup ends.
+        // Include those still-live tasks when replacing their backing profile.
+        let ids = liveTasks.filter { $0.value.kind == kind }.map(\.key)
+        let pending = ids.compactMap { tasks[$0] }
+        for id in ids { cancel(id) }
+        for task in pending { await task.value }
     }
 
     func dismiss(_ id: UUID) {

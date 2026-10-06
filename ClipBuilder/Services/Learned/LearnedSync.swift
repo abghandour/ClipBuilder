@@ -139,6 +139,7 @@ extension AssetSyncExecutor {
     /// The download half of `run`, for Macs that cannot publish yet.
     static func pull(executor: AssetSyncExecutor, profile: BrandProfile,
                      library: LearnedLibrary = LearnedLibrary()) async throws {
+        guard profile.teamID == nil else { return }
         var destination = library
         destination.profile = profile.profileName
         try await executor.pullLearned(excluding: LearnedPreferences.contributor(profile: profile), library: destination)
@@ -148,6 +149,7 @@ extension AssetSyncExecutor {
                     library: LearnedLibrary = LearnedLibrary(), benchmarks: AccountBenchmarks? = nil,
                     log: (String) -> Void = { _ in }, config: AIConfig? = nil,
                     distill: () async throws -> Void) async throws {
+        guard profile.teamID == nil else { return }
         guard !profile.learnedSharing.deviceNickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw AIError.notConfigured("Open AI Lessons and enter a device nickname before publishing.")
         }

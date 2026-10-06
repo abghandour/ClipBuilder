@@ -394,11 +394,15 @@ extension Database {
         }
     }
 
-    func fetchLessons() throws -> [WizardLesson] {
+    func backfillLessonIdentities() throws {
         for row in try connection.query("SELECT id, text FROM wizard_lessons WHERE learned_id IS NULL") {
             try connection.execute("UPDATE wizard_lessons SET learned_id = ? WHERE id = ?",
                 [.text(LearnedPreferences.stableID(row["text"]?.stringValue ?? "")), row["id"] ?? .null])
         }
+    }
+
+    func fetchLessons() throws -> [WizardLesson] {
+        try backfillLessonIdentities()
         return try connection.query("SELECT * FROM wizard_lessons ORDER BY pinned DESC, id").map {
             WizardLesson(learnedID: $0["learned_id"]?.stringValue ?? "",
                          updatedAt: $0["updated_at"]?.stringValue, id: $0["id"]?.intValue ?? 0,

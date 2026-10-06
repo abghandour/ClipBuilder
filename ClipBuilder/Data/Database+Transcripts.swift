@@ -352,12 +352,16 @@ extension Database {
     }
 
     func upsertAssetMetadata(_ metadata: LibraryAssetMetadata) throws {
+        let assetID = TeamSyncAsset.identity(path: metadata.path, kind: metadata.kind)
+        // Resolve a placeholder received before this Mac downloaded the asset.
+        try connection.execute("UPDATE library_asset_metadata SET path = ? WHERE asset_id = ? AND path LIKE 'team-asset:%'",
+                               [.text(metadata.path), .text(assetID)])
         let subjectsData = try JSONEncoder().encode(metadata.subjects)
         let tagsData = try JSONEncoder().encode(metadata.tags)
         try connection.execute("""
             INSERT INTO library_asset_metadata
-                (path, kind, is_broll, subjects_json, tags_json, provider, model, display_name, placements_json, technique, analyzed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                (path, kind, is_broll, subjects_json, tags_json, provider, model, display_name, placements_json, technique, asset_id, analyzed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(path) DO UPDATE SET kind=excluded.kind, is_broll=excluded.is_broll,
                 subjects_json=excluded.subjects_json, tags_json=excluded.tags_json,
                 display_name=excluded.display_name, placements_json=excluded.placements_json,
@@ -369,7 +373,7 @@ extension Database {
                   metadata.model.map(SQLValue.text) ?? .null,
                   metadata.displayName.map(SQLValue.text) ?? .null,
                   try metadata.placements.map { SQLValue.text(String(decoding: try JSONEncoder().encode($0), as: UTF8.self)) } ?? .null,
-                  metadata.technique.map(SQLValue.text) ?? .null])
+                  metadata.technique.map(SQLValue.text) ?? .null, .text(assetID)])
     }
 
     func fetchAssetMetadata(kind: String? = nil) throws -> [LibraryAssetMetadata] {

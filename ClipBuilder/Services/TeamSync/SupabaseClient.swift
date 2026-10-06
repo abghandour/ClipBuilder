@@ -28,6 +28,8 @@ nonisolated struct SupabaseClient: Sendable {
         var access_token: String?
         var refresh_token: String?
         var expires_in: Int?
+        var expires_at: Double?
+        var email: String?
     }
 
     /// Configure the Supabase email template with {{ .Token }} for a typed code.
@@ -67,14 +69,24 @@ nonisolated struct SupabaseClient: Sendable {
         return version
     }
 
-    func push(_ wire: SyncMapping.WireRow) async throws {
-        _ = try await request(path: "rest/v1/wizard_lessons", method: "POST",
-                              query: [.init(name: "on_conflict", value: "sync_id")], body: wire,
+    func push(_ wire: SyncMapping.WireRow, table: SyncTable = .lessons) async throws {
+        try await push([wire], table: table)
+    }
+
+    func push(_ rows: [SyncMapping.WireRow], table: SyncTable = .lessons) async throws {
+        guard !rows.isEmpty else { return }
+        // PostgREST array inserts require the same keys on every object.
+        let keys = Set(rows.flatMap { $0.keys })
+        let batch = rows.map { row in
+            Dictionary(uniqueKeysWithValues: keys.map { ($0, row[$0] ?? .null) })
+        }
+        _ = try await request(path: "rest/v1/\(table.name)", method: "POST",
+                              query: [.init(name: "on_conflict", value: "sync_id")], encodedBody: try JSONEncoder().encode(batch),
                               prefer: "resolution=merge-duplicates,return=minimal")
     }
 
     /// Keyset pagination includes sync_id so equal server stamps never skip rows.
-    func pull(scope: SyncScope, after cursor: SyncCursor?, limit: Int) async throws -> [SyncMapping.WireRow] {
+    func pull(scope: SyncScope, after cursor: SyncCursor?, limit: Int, table: SyncTable = .lessons) async throws -> [SyncMapping.WireRow] {
         var query: [URLQueryItem] = [
             .init(name: "select", value: "*"),
             .init(name: "team_id", value: "eq.\(scope.teamID.uuidString.lowercased())"),
@@ -86,7 +98,7 @@ nonisolated struct SupabaseClient: Sendable {
             query.append(.init(name: "or", value:
                 "(server_updated_at.gt.\(cursor.timestamp),and(server_updated_at.eq.\(cursor.timestamp),sync_id.gt.\(cursor.syncID)))"))
         }
-        let data = try await request(path: "rest/v1/wizard_lessons", query: query)
+        let data = try await request(path: "rest/v1/\(table.name)", query: query)
         let rows = try JSONDecoder().decode([SyncMapping.WireRow].self, from: data)
         // Reject malformed or mis-scoped pages before the database sees them.
         var previous = cursor
@@ -102,8 +114,8 @@ nonisolated struct SupabaseClient: Sendable {
         return rows
     }
 
-    private func request(path: String, method: String = "GET", query: [URLQueryItem] = [],
-                         body: SyncMapping.WireRow? = nil, prefer: String? = nil) async throws -> Data {
+    func request(path: String, method: String = "GET", query: [URLQueryItem] = [],
+                         body: SyncMapping.WireRow? = nil, encodedBody: Data? = nil, prefer: String? = nil) async throws -> Data {
         try Task.checkCancellation()
         var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
         components?.queryItems = query.isEmpty ? nil : query
@@ -119,10 +131,9 @@ nonisolated struct SupabaseClient: Sendable {
         if let accessToken { request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization") }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let prefer { request.setValue(prefer, forHTTPHeaderField: "Prefer") }
-        if let body {
-            request.httpBody = try JSONEncoder().encode(body)
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        }
+        if let encodedBody { request.httpBody = encodedBody }
+        else if let body { request.httpBody = try JSONEncoder().encode(body) }
+        if request.httpBody != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         let (data, response) = try await transport(request)
         guard (200..<300).contains(response.statusCode) else { throw SyncError.http(response.statusCode) }
         return data

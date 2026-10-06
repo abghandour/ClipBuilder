@@ -42,6 +42,9 @@ nonisolated struct TasteCategory: Codable, Sendable, Hashable, Identifiable {
 /// Brand profile — mirrors the JSON files the Python app keeps at
 /// `~/Documents/ClipBuilder/<name>.json` so both apps can share profiles.
 nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
+    var profileID: UUID?
+    var teamID: UUID?
+    var teamSyncPaused: Bool?
     var learnedSharing = LearnedSharing()
     var profileName: String
     var brandName: String
@@ -111,6 +114,9 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var id: String { profileName }
 
     enum CodingKeys: String, CodingKey {
+        case profileID = "profile_id"
+        case teamID = "team_id"
+        case teamSyncPaused = "team_sync_paused"
         case learnedSharing = "learned_sharing"
         case profileName = "profile_name"
         case brandName = "brand_name"
@@ -149,6 +155,9 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        profileID = try container.decodeIfPresent(UUID.self, forKey: .profileID)
+        teamID = try container.decodeIfPresent(UUID.self, forKey: .teamID)
+        teamSyncPaused = try container.decodeIfPresent(Bool.self, forKey: .teamSyncPaused)
         learnedSharing = try container.decodeIfPresent(LearnedSharing.self, forKey: .learnedSharing) ?? LearnedSharing()
         criticBriefUse = try container.decodeIfPresent(CriticBriefUse.self, forKey: .criticBriefUse) ?? .automatic
         instagramPublishAccount = try container.decodeIfPresent(String.self, forKey: .instagramPublishAccount)

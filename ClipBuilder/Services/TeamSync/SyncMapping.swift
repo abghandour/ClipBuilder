@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// JSON values stay typed and lossless across an older client's read/edit/write.
 nonisolated enum SyncJSON: Codable, Sendable, Equatable {
@@ -60,6 +61,7 @@ nonisolated enum SyncError: Error, LocalizedError, Equatable {
     case invalidRow(String)
     case scopeMismatch
     case needsUpdate(Int)
+    case serverNotReady
     case alreadySyncing
     case http(Int)
 
@@ -68,6 +70,7 @@ nonisolated enum SyncError: Error, LocalizedError, Equatable {
         case .invalidRow(let field): return "Invalid sync response: \(field)."
         case .scopeMismatch: return "This database is already bound to another team or profile."
         case .needsUpdate(let version): return "Team sync needs a newer app (server schema \(version)). Local work is still available."
+        case .serverNotReady: return "The Team server needs its Phase 1 migration. Local work is still available."
         case .alreadySyncing: return "Team sync is already running."
         case .http(let code): return "Team sync request failed (HTTP \(code))."
         }
@@ -82,23 +85,28 @@ nonisolated enum SyncMapping {
     /// Only explicitly portable local columns are exported. Integer ids and any
     /// local path columns in SQLRow never enter the wire representation.
     static func wire(local: SQLRow?, syncID: String, scope: SyncScope,
-                     preserved: WireRow = [:]) throws -> WireRow {
+                     preserved: WireRow = [:], table: SyncTable = .lessons) throws -> WireRow {
         guard UUID(uuidString: syncID) != nil else { throw SyncError.invalidRow("sync_id") }
-        var result = preserved
-        result.removeValue(forKey: "id")
+        if table.name == "profile_documents", UUID(uuidString: syncID) != scope.profileID { throw SyncError.invalidRow("profile identity") }
+        var result = preserved.mapValues(portableJSON)
+        if table.name != "ig_comments" { result.removeValue(forKey: "id") }
         result.removeValue(forKey: "server_updated_at")
         result.removeValue(forKey: "updated_by")
-        for key in result.keys where key == "path" || key.hasSuffix("_path") {
+        for key in result.keys where isLocalField(key) {
             result.removeValue(forKey: key)
         }
         result["sync_id"] = .string(syncID.lowercased())
         result["team_id"] = .string(scope.teamID.uuidString.lowercased())
         result["profile_id"] = .string(scope.profileID.uuidString.lowercased())
         if let local {
-            for column in columns {
+            for column in table.columns {
                 switch local[column] ?? .null {
-                case .text(let v): result[column] = .string(v)
+                case .text(let v):
+                    if column.hasSuffix("_json"), let json = try? JSONDecoder().decode(SyncJSON.self, from: Data(v.utf8)) {
+                        result[column] = .string(try portableJSONString(json))
+                    } else { result[column] = .string(v) }
                 case .integer(let v): result[column] = .number(Decimal(v))
+                case .real(let v) where v.isFinite: result[column] = .number(Decimal(v))
                 case .null: result[column] = .null
                 default: throw SyncError.invalidRow(column)
                 }
@@ -136,24 +144,89 @@ nonisolated enum SyncMapping {
 
     /// The receiving database chooses its own integer id by sync_id; a sender's
     /// integer id has no meaning here. No local foreign keys exist in this table.
-    static func local(wire: WireRow, localID: Int64?, scope: SyncScope) throws -> SQLRow {
+    static func local(wire: WireRow, localID: Int64?, scope: SyncScope, table: SyncTable = .lessons) throws -> SQLRow {
         var result: SQLRow = ["sync_id": .text(try identity(wire, scope: scope))]
         if let localID { result["id"] = .integer(localID) }
-        for column in columns {
+        for column in table.columns {
             let value = wire[column] ?? .null
             switch value {
-            case .string(let v) where column != "pinned": result[column] = .text(v)
-            case .number(let v) where column == "pinned" && (v == 0 || v == 1):
-                result[column] = .integer(v == 1 ? 1 : 0)
-            case .null where !["text", "pinned", "evidence"].contains(column): result[column] = .null
+            case .string(let v): result[column] = .text(v)
+            case .number(let v) where table.integers.contains(column):
+                guard let integer = Int64(NSDecimalNumber(decimal: v).stringValue) else { throw SyncError.invalidRow(column) }
+                result[column] = .integer(integer)
+            case .number(let v) where table.reals.contains(column): result[column] = .real(NSDecimalNumber(decimal: v).doubleValue)
+            case .null: result[column] = .null
             default: throw SyncError.invalidRow(column)
             }
         }
         // fetchLessons lazily fills this; resolve it now so a pulled row does
         // not immediately appear as a local edit when the existing UI reads it.
-        if result["learned_id"]?.stringValue == nil {
+        if table.name == "wizard_lessons", result["learned_id"]?.stringValue == nil {
             result["learned_id"] = .text(LearnedPreferences.stableID(result["text"]?.stringValue ?? ""))
         }
+        if table.name == "wizard_lessons" {
+            guard result["text"]?.stringValue != nil, result["evidence"]?.stringValue != nil,
+                  let pinned = result["pinned"]?.intValue, pinned == 0 || pinned == 1 else {
+                throw SyncError.invalidRow("lesson")
+            }
+        }
         return result
+    }
+
+    /// Restore only local file fields, matching array elements by stable identity.
+    /// A teammate's path can never overwrite a path on this Mac.
+    static func applyingPortableJSON(_ remote: SyncJSON, to local: SyncJSON?) -> SyncJSON {
+        switch remote {
+        case .object(var fields):
+            guard case .object(let previous) = local else { return remote }
+            for (key, value) in previous where isLocalField(key) { fields[key] = value }
+            for key in fields.keys where !isLocalField(key) {
+                fields[key] = applyingPortableJSON(fields[key] ?? .null, to: previous[key])
+            }
+            return .object(fields)
+        case .array(let values):
+            guard case .array(let previous) = local else { return remote }
+            return .array(values.map { value in
+                guard case .object(let fields) = value,
+                      let key = ["id", "key", "name"].first(where: { fields[$0] != nil }) else { return value }
+                let old = previous.first {
+                    guard case .object(let item) = $0 else { return false }
+                    return item[key] == fields[key]
+                }
+                return applyingPortableJSON(value, to: old)
+            })
+        default: return remote
+        }
+    }
+
+    static func portableJSONString(_ value: SyncJSON) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return String(decoding: try encoder.encode(portableJSON(value)), as: UTF8.self)
+    }
+
+    static func isLocalField(_ key: String) -> Bool {
+        let key = key.lowercased()
+        return key == "path" || key.hasSuffix("path") || key == "fontfile" || key == "exemplar_frames"
+    }
+
+    static func portableJSON(_ value: SyncJSON) -> SyncJSON {
+        switch value {
+        case .object(let fields):
+            return .object(fields.filter { !isLocalField($0.key) }.mapValues(portableJSON))
+        case .array(let values): return .array(values.map(portableJSON))
+        default: return value
+        }
+    }
+
+    /// Canonical natural-key identities also converge simultaneous first uploads.
+    static func stableID(_ components: [String]) -> String {
+        let data = (try? JSONEncoder().encode(components)) ?? Data()
+        var bytes = Array(SHA256.hash(data: data).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x50
+        bytes[8] = (bytes[8] & 0x3f) | 0x80
+        let hex = bytes.map { String(format: "%02x", $0) }.joined()
+        return [String(hex.prefix(8)), String(hex.dropFirst(8).prefix(4)), String(hex.dropFirst(12).prefix(4)),
+                String(hex.dropFirst(16).prefix(4)), String(hex.suffix(12))].joined(separator: "-")
     }
 }

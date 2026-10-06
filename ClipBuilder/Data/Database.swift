@@ -735,6 +735,7 @@ actor Database {
                     try connection.execute("UPDATE scenes SET favorite_provider = curated_provider, favorite_model = curated_model WHERE curated = 1 AND favorite = 1 AND favorite_provider IS NULL")
                 }
                 try Self.migrateTeamSync(connection)
+                try Self.migrateBrandSync(connection)
                 try connection.execute("PRAGMA user_version = \(Self.schemaVersion)")
             }
         }
@@ -742,7 +743,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 24
+    static let schemaVersion: Int64 = 27
 
     // MARK: - Helpers
 

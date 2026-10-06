@@ -4,6 +4,13 @@ import Synchronization
 /// App-level (profile-independent) settings — mirrors data/app_settings.json
 /// from the Python app: analysis mode, transcription provider, AI routing.
 nonisolated struct AppSettings: Codable, Sendable {
+    var supabaseURL: String?
+    var supabasePublishableKey: String?
+    static let defaultSupabaseURL = "https://nekytkrbudqttttazhgo.supabase.co"
+    // Public configuration only. Sessions are stored exclusively in Keychain.
+    static let defaultSupabasePublishableKey = "sb_publishable_b4Q9R20qEWUCIiX1oxDtyg_Bk8QWIvE"
+    var teamSyncURL: String { supabaseURL ?? Self.defaultSupabaseURL }
+    var teamSyncKey: String { supabasePublishableKey ?? Self.defaultSupabasePublishableKey }
     var builderAgent = BuilderAgentLimits()
     var analysisMode: String = "visual"          // visual | speech
     var transcribeProvider: String = "apple"     // apple (SpeechAnalyzer) — cloud providers can be added later
@@ -17,6 +24,8 @@ nonisolated struct AppSettings: Codable, Sendable {
     var podcast: PodcastSettings = PodcastSettings()
 
     enum CodingKeys: String, CodingKey {
+        case supabaseURL = "supabase_url"
+        case supabasePublishableKey = "supabase_publishable_key"
         case builderAgent = "builder_agent"
         case analysisMode = "analysis_mode"
         case transcribeProvider = "transcribe_provider"
@@ -34,6 +43,8 @@ nonisolated struct AppSettings: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        supabaseURL = try container.decodeIfPresent(String.self, forKey: .supabaseURL)
+        supabasePublishableKey = try container.decodeIfPresent(String.self, forKey: .supabasePublishableKey)
         builderAgent = try container.decodeIfPresent(BuilderAgentLimits.self, forKey: .builderAgent) ?? BuilderAgentLimits()
         analysisMode = try container.decodeIfPresent(String.self, forKey: .analysisMode) ?? "visual"
         let provider = try container.decodeIfPresent(String.self, forKey: .transcribeProvider) ?? "apple"

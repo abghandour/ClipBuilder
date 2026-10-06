@@ -175,6 +175,7 @@ struct AssetBrowserView: View {
             watcher = nil
             stopPlayback()
         }
+        .onChange(of: store.teamSync.assetMetadataRevision) { loadMetadata() }
         .onChange(of: path) {
             stopPlayback()
             refresh()

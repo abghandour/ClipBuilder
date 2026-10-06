@@ -62,6 +62,8 @@ final class AppStore {
         }
     }
     var createdOverlayName: String?
+    let teamSync = TeamSyncState()
+    var teamSyncCoordinator: TeamSyncCoordinator { teamSync.coordinator }
     let jobs = AppJobs()
     let googleDrive = GoogleDriveTransfers.shared
     var database: Database?
@@ -362,6 +364,7 @@ final class AppStore {
             profiles = loaded
             if let refreshed = profiles.first(where: { $0.profileName == activeProfile.profileName }) {
                 activeProfile = refreshed
+                teamSync.configure(store: self)
             }
         }
         if summary.preferencesApplied > 0 { WizardDefaults.migrateLegacy() }
@@ -897,6 +900,7 @@ final class AppStore {
                      defaultRenderSettings: activeProfile.defaultRenderSettings)
         Task { await initializeProjectWorkspace() }
         loadInstagramCache()
+        teamSync.configure(store: self)
         scanSourceFolder()
     }
 

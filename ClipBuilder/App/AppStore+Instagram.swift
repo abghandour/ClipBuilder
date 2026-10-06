@@ -10,12 +10,14 @@ extension AppStore {
     func loadInstagramCache() {
         guard let database else { return }
         igReport = nil
+        let generation = profileGeneration
         Task {
             // Account ids collide across profiles and the service is shared,
             // so the cached inputs go before anything is read.
             await instagram.invalidateReportInputs()
             do {
                 let accounts = try await database.fetchIGAccounts()
+                guard generation == profileGeneration else { return }
                 igAccounts = accounts
                 if igSelectedAccountID == nil || !accounts.contains(where: { $0.id == igSelectedAccountID }) {
                     igSelectedAccountID = accounts.first?.id
@@ -28,8 +30,30 @@ extension AppStore {
             // the benchmarks feed the wizard and critic so they build at
             // launch — after a beat, so the library and first frame win.
             try? await Task.sleep(for: .seconds(2))
+            guard generation == profileGeneration else { return }
             await reloadIGBenchmarks()
         }
+    }
+
+    /// Refresh only pulled brand/report inputs. Keep the current report visible
+    /// until its replacement is ready, including when the selected account stays.
+    func refreshSyncedInstagram(database: Database) async {
+        let generation = profileGeneration
+        let hadReport = igReport != nil
+        await instagram.invalidateReportInputs()
+        do {
+            let accounts = try await database.fetchIGAccounts()
+            guard generation == profileGeneration else { return }
+            igAccounts = accounts
+            if !accounts.contains(where: { $0.id == igSelectedAccountID }) {
+                igSelectedAccountID = accounts.first?.id
+            }
+            try await reloadIGMedia()
+            guard generation == profileGeneration else { return }
+            if hadReport { await reloadIGReport() }
+            guard generation == profileGeneration else { return }
+            await reloadIGBenchmarks()
+        } catch { presentError("Could not refresh shared Instagram data", error) }
     }
 
     /// Build the report the first time the Reports tab shows (or after it

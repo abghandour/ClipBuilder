@@ -79,6 +79,7 @@ nonisolated enum LearnedCache {
     }
     static func merged(profile: BrandProfile, local: LearnedPreferences,
                        contributors: [LearnedPreferences]) -> [LearnedMerge.Line] {
+        let contributors = profile.teamID == nil ? contributors : []
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         let key = LearnedPreferences.stableID(String(decoding: (try? encoder.encode(local)) ?? Data(), as: UTF8.self)

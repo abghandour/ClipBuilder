@@ -19,6 +19,9 @@ struct SettingsView: View {
             AISettingsTab()
                 .tabItem { Label("AI", systemImage: "sparkles") }
                 .tag("ai")
+            TeamSettingsTab()
+                .tabItem { Label("Team", systemImage: "person.2") }
+                .tag("team")
             GoogleDriveSettingsView()
                 .tabItem { Label("Google Drive", systemImage: "cloud") }
                 .tag("googleDrive")
@@ -28,7 +31,7 @@ struct SettingsView: View {
         }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            Label(selectedTab == "googleDrive" ? "Your connection is saved securely on this Mac" : "Changes save automatically", systemImage: "checkmark")
+            Label((selectedTab == "googleDrive" || selectedTab == "team") ? "Your connection is saved securely on this Mac" : "Changes save automatically", systemImage: "checkmark")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)

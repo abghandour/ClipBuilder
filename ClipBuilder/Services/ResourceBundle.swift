@@ -337,6 +337,9 @@ nonisolated enum ResourceBundle {
                     } else {
                         profile.logoPath = ""
                     }
+                    profile.teamID = nil
+                    profile.profileID = nil
+                    profile.teamSyncPaused = nil
                     // Exemplar frames are derived data on this Mac's disk.
                     profile.tasteExemplarFrames = []
                     for index in profile.tasteCategories.indices {
@@ -525,6 +528,9 @@ nonisolated enum ResourceBundle {
                     let source = folder.appendingPathComponent(item.relativePath)
                     guard let data = try? Data(contentsOf: source),
                           var profile = try? JSONDecoder().decode(BrandProfile.self, from: data) else { continue }
+                    profile.teamID = nil
+                    profile.profileID = nil
+                    profile.teamSyncPaused = nil
                     if profile.logoPath.hasPrefix(logoMarker) {
                         let name = String(profile.logoPath.dropFirst(logoMarker.count))
                         let target = imagesRoot.appendingPathComponent("Logos").appendingPathComponent(name)
@@ -548,7 +554,15 @@ nonisolated enum ResourceBundle {
                     }
                     profile.profileName = finalTarget!.deletingPathExtension().lastPathComponent
                     try encoder.encode(profile).write(to: rewritten)
+                    // Keep the old binding if placing the replacement fails.
                     try place(rewritten, at: target, policy: policy, summary: &summary)
+                    if policy == .replace {
+                        let databaseURL = SettingsStore.databaseURL(profileName: profile.profileName)
+                        if FileManager.default.fileExists(atPath: databaseURL.path) {
+                            let database = try SQLiteConnection(path: databaseURL.path)
+                            try Database.detachSync(database)
+                        }
+                    }
                     ProfileStore.ensureFolders(for: profile)
                 }
             }

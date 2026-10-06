@@ -265,6 +265,16 @@ struct ResourceImportSheet: View {
                          profileGeneration: generation, cleanup: {
                              Task.detached { ResourceBundle.discard(preview) }
                          }) { log in
+            let replacesActiveProfile = categories.contains(.profiles) && chosenPolicy == .replace &&
+                (preview.items[.profiles] ?? []).contains(where: {
+                    URL(fileURLWithPath: $0.relativePath).deletingPathExtension().lastPathComponent == store.activeProfile.profileName
+                })
+            defer {
+                if replacesActiveProfile { store.teamSync.finishProfileReplacement() }
+            }
+            if replacesActiveProfile {
+                await store.teamSync.suspendForProfileReplacement()
+            }
             let done = try await AppJobWork.run {
                 return try ResourceBundle.importBundle(preview, categories: categories, policy: chosenPolicy,
                                                         learnedLibrary: learnedLibrary, progress: log)

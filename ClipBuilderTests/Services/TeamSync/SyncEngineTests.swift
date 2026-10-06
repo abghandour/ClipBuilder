@@ -87,10 +87,10 @@ struct SyncEngineTests {
         _ = try await a.database.addLesson(text: "Local", pinned: true, evidence: "")
         let raw = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
         let before = try raw.query("SELECT sequence FROM sync_outbox").compactMap { $0["sequence"]?.intValue }
-        await server.setVersion(2)
+        await server.setVersion(3)
         let sync = engine(a, server, scope)
-        await #expect(throws: SyncError.needsUpdate(2)) { try await sync.sync() }
-        #expect(await sync.status == .needsUpdate(serverVersion: 2))
+        await #expect(throws: SyncError.needsUpdate(3)) { try await sync.sync() }
+        #expect(await sync.status == .needsUpdate(serverVersion: 3))
         #expect(try raw.query("SELECT sequence FROM sync_outbox").compactMap { $0["sequence"]?.intValue } == before)
         #expect(try raw.query("SELECT * FROM sync_binding").isEmpty)
         #expect(try raw.query("SELECT * FROM sync_cursors").isEmpty)
@@ -158,6 +158,7 @@ struct SyncEngineTests {
     func atomicApply() async throws {
         let a = try SyncTestFolder()
         let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        try await a.database.bindSync(to: scope)
         var good = try SyncMapping.wire(local: ["text": .text("Good"), "pinned": .integer(0), "evidence": .text("")],
                                        syncID: UUID().uuidString, scope: scope)
         good["server_updated_at"] = .string("2026-10-06T00:00:00.000001+00:00")
@@ -184,5 +185,472 @@ struct SyncEngineTests {
         #expect(requests.map { $0.url!.path } == ["/auth/v1/otp", "/auth/v1/verify", "/auth/v1/token"])
         let verify = try JSONDecoder().decode(SyncMapping.WireRow.self, from: requests[1].httpBody!)
         #expect(verify == ["email": .string("member@example.com"), "token": .string("123456"), "type": .string("email")])
+    }
+}
+
+extension SyncEngineTests {
+    @Test("Every brand table converges with remapped references, independent cursors and no pull echo")
+    func brandTables() async throws {
+        let a = try SyncTestFolder(), b = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let rawA = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
+        let rawB = try SQLiteConnection(path: b.url.appendingPathComponent("profile.db").path)
+        try BrandSyncFixtures.seed(rawA)
+        try rawA.execute("UPDATE sync_control SET suspended = 1")
+        try rawA.execute("UPDATE profile_documents SET sync_id = ?", [.text(scope.profileID.uuidString.lowercased())])
+        try rawA.execute("DELETE FROM sync_outbox WHERE \"table\" = 'profile_documents'")
+        try rawA.execute("UPDATE sync_control SET suspended = 0")
+        // Reserve different integer sequences without creating pending rows.
+        try rawB.executeScript("""
+            UPDATE sync_control SET suspended = 1;
+            INSERT INTO ig_accounts(id, username) VALUES (99, 'unrelated');
+            INSERT INTO ig_media(id, account_id, media_id) VALUES (99, 99, 'other');
+            INSERT INTO ig_report_media(id, account_id, shortcode) VALUES (99, 99, 'other');
+            UPDATE sync_control SET suspended = 0;
+            """)
+        let ea = engine(a, server, scope), eb = engine(b, server, scope)
+        try await ea.sync()
+        try await eb.sync()
+        try await ea.sync()
+        for table in SyncTable.all {
+            let remote = await server.allRows(table: table.name)
+            #expect(!remote.isEmpty, "Missing \(table.name)")
+            #expect(try await b.database.syncCursor(table: table) != nil)
+            for row in remote where !SyncMapping.isDeleted(row) {
+                let id = try #require(row["sync_id"]?.string)
+                #expect(try !rawB.query("SELECT 1 FROM \(table.name) WHERE sync_id = ?", [.text(id)]).isEmpty)
+            }
+        }
+        let account = try #require(try rawB.query("SELECT id FROM ig_accounts WHERE username = 'brand'").first?["id"]?.intValue)
+        #expect(account != 1)
+        #expect(try rawB.query("SELECT account_id FROM ig_media WHERE media_id = 'sample-media_id'").first?["account_id"]?.intValue == account)
+        let outcome = try #require(try rawB.query("SELECT outcome_json FROM reel_outcomes").first?["outcome_json"]?.stringValue)
+        let object = try JSONDecoder().decode(SyncMapping.WireRow.self, from: Data(outcome.utf8))
+        #expect(object["accountID"] == .number(Decimal(account)))
+        #expect(try await b.database.syncPendingCount() == 0)
+        #expect(try rawB.query("PRAGMA foreign_key_check").isEmpty)
+    }
+
+    @Test("Joining merges natural keys while preserving local integer IDs and media paths")
+    func naturalKeyJoin() async throws {
+        let a = try SyncTestFolder(), b = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let rawA = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
+        let rawB = try SQLiteConnection(path: b.url.appendingPathComponent("profile.db").path)
+        try rawA.executeScript("""
+            INSERT INTO people(id, key, name) VALUES (1, 'person', 'A');
+            INSERT INTO ig_accounts(id, username) VALUES (1, 'Brand');
+            INSERT INTO ig_media(id, account_id, media_id, local_video_path) VALUES (1, 1, 'media', '/private/a.mov');
+            """)
+        try rawB.executeScript("""
+            INSERT INTO people(id, key, name) VALUES (44, 'person', 'B');
+            INSERT INTO ig_accounts(id, username) VALUES (55, 'brand');
+            INSERT INTO ig_media(id, account_id, media_id, local_video_path) VALUES (66, 55, 'media', '/private/b.mov');
+            """)
+        try await engine(a, server, scope).sync()
+        try await engine(b, server, scope).sync()
+        try await engine(a, server, scope).sync()
+        #expect(try rawB.query("SELECT id FROM people").first?["id"]?.intValue == 44)
+        #expect(try rawB.query("SELECT id FROM ig_accounts").first?["id"]?.intValue == 55)
+        #expect(try rawB.query("SELECT id FROM ig_media").first?["id"]?.intValue == 66)
+        #expect(try rawB.query("SELECT local_video_path FROM ig_media").first?["local_video_path"]?.stringValue == "/private/b.mov")
+        for name in ["people", "ig_accounts", "ig_media"] {
+            #expect(await server.allRows(table: name).count == 1)
+            #expect(try rawB.query("SELECT * FROM \(name)").count == 1)
+        }
+        #expect(try rawA.query("SELECT name FROM people").first?["name"]?.stringValue == "A")
+        #expect(try rawB.query("SELECT name FROM people").first?["name"]?.stringValue == "A")
+    }
+}
+
+extension SyncEngineTests {
+    @Test("Joining keeps the shared profile and natural-key values, and uploads only unmatched local rows")
+    func serverWinsInitialJoin() async throws {
+        let a = try SyncTestFolder(), b = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        var owner = BrandProfile(name: "Owner")
+        owner.teamID = scope.teamID
+        owner.profileID = scope.profileID
+        owner.houseStyle = "Team style"
+        var joiner = owner
+        joiner.houseStyle = "Local style"
+        joiner.sourceFolder = "/private/tmp/joiner-footage"
+        let rawA = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
+        let rawB = try SQLiteConnection(path: b.url.appendingPathComponent("profile.db").path)
+        try rawA.execute("INSERT INTO people(key, name) VALUES ('match', 'Shared name')")
+        try rawB.execute("INSERT INTO people(key, name) VALUES ('match', 'Local name'), ('unique', 'Only here')")
+        try await a.database.bindSync(to: scope)
+        try await a.database.saveSyncProfile(owner)
+        try await engine(a, server, scope).sync()
+        try await b.database.bindSync(to: scope)
+        try await b.database.saveSyncProfile(joiner)
+        // Fail after downloading the document. A fresh engine must resume the
+        // server-first join without re-uploading the UI's stale local document.
+        await server.onNextPull { throw URLError(.networkConnectionLost) }
+        await #expect(throws: URLError.self) { try await self.engine(b, server, scope).sync() }
+        #expect(try await b.database.initialSyncPending())
+        let reopened = try Database(path: b.url.appendingPathComponent("profile.db"))
+        try await reopened.saveSyncProfile(joiner)
+        try await SyncEngine(database: reopened, client: server.client(), scope: scope).sync()
+        let document = try #require(try await reopened.syncedProfileDocument())
+        let applied = try TeamProfileDocument.applying(document, to: joiner)
+        #expect(applied.houseStyle == "Team style")
+        #expect(applied.sourceFolder == joiner.sourceFolder)
+        #expect(try rawB.query("SELECT name FROM people WHERE key = 'match'").first?["name"]?.stringValue == "Shared name")
+        let remotePeople = await server.allRows(table: "people")
+        #expect(Set(remotePeople.compactMap { $0["name"]?.string }) == ["Shared name", "Only here"])
+        let remoteProfile = try #require(await server.allRows(table: "profile_documents").first?["document_json"]?.string)
+        #expect(try TeamProfileDocument.applying(remoteProfile, to: owner).houseStyle == "Team style")
+        #expect(try await reopened.syncPendingCount() == 0)
+        #expect(try await reopened.initialSyncPending())
+        try JSONEncoder().encode(applied).write(to: b.url.appendingPathComponent("saved-profile.json"), options: .atomic)
+        try await reopened.completeSyncProfileAdoption(applied)
+        #expect(try await !reopened.initialSyncPending())
+    }
+
+    @Test("Pruned media and account cascades leave harmless soft-reference orphans")
+    func orphanedBrandReferences() async throws {
+        let folder = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let raw = try SQLiteConnection(path: folder.url.appendingPathComponent("profile.db").path)
+        try raw.execute("PRAGMA foreign_keys = ON")
+        try raw.executeScript("""
+            INSERT INTO ig_accounts(id, username) VALUES (1, 'brand');
+            INSERT INTO ig_media(id, account_id, media_id) VALUES (1, 1, 'pruned');
+            INSERT INTO ig_report_media(id, account_id, shortcode) VALUES (1, 1, 'cascade');
+            INSERT INTO reel_traits(video_kind, video_id, version, traits_json, computed_at) VALUES
+                ('instagram', '1', 1, '{}', '2026-10-06'), ('imported', '1', 1, '{}', '2026-10-06');
+            INSERT INTO taste_studies(media_id, category_key, studied_at) VALUES (1, 'fight', '2026-10-06');
+            DELETE FROM ig_media;
+            DELETE FROM ig_accounts;
+            """)
+        // These were written before attachment and have random legacy IDs.
+        let sync = engine(folder, server, scope)
+        try await sync.sync()
+        #expect(await sync.status == .synced)
+        #expect(await server.allRows(table: "reel_traits").isEmpty)
+        #expect(await server.allRows(table: "taste_studies").isEmpty)
+        #expect(try await folder.database.syncPendingCount() == 0)
+        // Repeated writes to the orphaned caches cannot poison later cycles.
+        try raw.execute("UPDATE reel_traits SET version = 2")
+        try raw.execute("UPDATE taste_studies SET category_key = 'new'")
+        try await sync.sync()
+        #expect(await sync.status == .synced)
+        #expect(try await folder.database.syncPendingCount() == 0)
+    }
+
+    @Test("Local-only traits created during HTTP cannot upload or overwrite local caches on pull")
+    func localOnlyTraitsDuringUpload() async throws {
+        let folder = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let sync = engine(folder, server, scope)
+        try await sync.sync()
+        _ = try await folder.database.addLesson(text: "Trigger upload", pinned: false, evidence: "")
+        let dbPath = folder.url.appendingPathComponent("profile.db").path
+        let localID = UUID().uuidString.lowercased()
+        await server.onNextPush {
+            let raw = try SQLiteConnection(path: dbPath)
+            try raw.execute("INSERT INTO reel_traits(video_kind, video_id, version, traits_json, computed_at, sync_id) VALUES ('generated', '42', 1, '{}', '2026-10-06', ?)", [.text(localID)])
+            // Simulate an old client's already-queued row as well as current triggers.
+            try raw.execute("INSERT INTO sync_outbox(\"table\", sync_id, op) VALUES ('reel_traits', ?, 'upsert')", [.text(localID)])
+            try raw.execute("INSERT INTO sync_outbox(\"table\", sync_id, op) VALUES ('reel_traits', ?, 'delete')", [.text(UUID().uuidString.lowercased())])
+            try raw.execute("INSERT INTO reel_traits(video_kind, video_id, version, traits_json, computed_at) VALUES ('external', 'portable-reference', 1, '{}', '2026-10-06')")
+        }
+        try await sync.sync()
+        let uploaded = await server.allRows(table: "reel_traits")
+        #expect(uploaded.count == 1)
+        #expect(uploaded.first?["video_kind"]?.string == "external")
+        let table = try SyncTable.named("reel_traits")
+        var invalid = try SyncMapping.wire(local: ["video_kind": .text("generated"), "video_id": .text("42"),
+            "version": .integer(2), "traits_json": .text("{}"), "computed_at": .text("2026-10-06"), "reference": .integer(0)],
+            syncID: localID, scope: scope, table: table)
+        try await server.seed(invalid, table: table.name)
+        try await sync.sync()
+        let raw = try SQLiteConnection(path: dbPath)
+        #expect(try raw.query("SELECT version FROM reel_traits WHERE sync_id = ?", [.text(localID)]).first?["version"]?.intValue == 1)
+        // A malicious portable kind or a tombstone with the same ID also cannot touch it.
+        invalid["video_kind"] = .string("external")
+        try await server.seed(invalid, table: table.name)
+        try await sync.sync()
+        try await server.seed(SyncMapping.wire(local: nil, syncID: localID, scope: scope, table: table), table: table.name)
+        try await sync.sync()
+        #expect(try raw.query("SELECT video_kind FROM reel_traits WHERE sync_id = ?", [.text(localID)]).first?["video_kind"]?.stringValue == "generated")
+        #expect(try await folder.database.syncPendingCount() == 0)
+    }
+
+    @Test("Uploads use table batches and acknowledgements preserve edits made during the POST")
+    func batchedUploads() async throws {
+        let folder = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        var ids: [Int64] = []
+        for index in 0..<5 {
+            ids.append(try await folder.database.addLesson(text: "Lesson \(index)", pinned: false, evidence: ""))
+        }
+        let editedID = ids[0]
+        await server.onNextPush {
+            try await folder.database.updateLesson(id: editedID, text: "During batch", pinned: true)
+        }
+        let sync = SyncEngine(database: folder.database, client: server.client(), scope: scope, batchSize: 3)
+        try await sync.sync()
+        let posts = await server.capturedRequests().filter { $0.httpMethod == "POST" }
+        let sizes = try posts.map { try JSONDecoder().decode([SyncMapping.WireRow].self, from: $0.httpBody!).count }
+        #expect(sizes == [3, 3])
+        #expect(await server.allRows().contains { $0["text"]?.string == "During batch" })
+        #expect(try await folder.database.syncPendingCount() == 0)
+        // Pulling unchanged rows and server echoes causes no cache refresh.
+        try await sync.sync()
+        #expect(await sync.changedTables.isEmpty)
+    }
+}
+
+extension SyncEngineTests {
+    /// Exercise the same durable adoption boundary as TeamSyncState without
+    /// starting AppStore's network monitors, user-data bootstrap or Keychain.
+    private func adopt(_ current: BrandProfile, database: Database, folder: URL) async throws -> BrandProfile {
+        let adoption = try #require(try await database.syncProfileAdoption())
+        let merged = try TeamProfileDocument.merging(adoption.document, into: current, baseline: adoption.baseline)
+        try JSONEncoder().encode(merged).write(to: folder.appendingPathComponent("saved-profile.json"), options: .atomic)
+        try await database.completeSyncProfileAdoption(merged)
+        return merged
+    }
+
+    @Test("Stop or quit around adoption never replaces the team's profile", arguments: [false, true])
+    func interruptedProfileAdoption(adoptBeforeStop: Bool) async throws {
+        let folder = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        var local = BrandProfile(name: "Joiner")
+        local.teamID = scope.teamID
+        local.profileID = scope.profileID
+        local.houseStyle = "Local default"
+        local.sourceFolder = "/private/tmp/local-footage"
+        var shared = local
+        shared.houseStyle = "Team style"
+        let table = try SyncTable.named("profile_documents")
+        try await server.seed(SyncMapping.wire(local: ["document_json": .text(TeamProfileDocument.encode(shared))],
+            syncID: scope.profileID.uuidString.lowercased(), scope: scope, table: table), table: table.name)
+        try await folder.database.bindSync(to: scope)
+        try await folder.database.saveSyncProfile(local)
+        try await engine(folder, server, scope).sync()
+        #expect(try await folder.database.initialSyncPending())
+        if adoptBeforeStop {
+            local = try await adopt(local, database: folder.database, folder: folder.url)
+            #expect(try await !folder.database.initialSyncPending())
+        } else {
+            // A failed disk save cannot acknowledge the adoption.
+            let invalidFolder = folder.url.appendingPathComponent("missing-directory")
+            await #expect(throws: (any Error).self) {
+                _ = try await self.adopt(local, database: folder.database, folder: invalidFolder)
+            }
+            #expect(try await folder.database.initialSyncPending())
+        }
+        // The attach error handler's pause-save, followed by quit/relaunch.
+        local.teamSyncPaused = true
+        try await folder.database.saveSyncProfile(local)
+        try JSONEncoder().encode(local).write(to: folder.url.appendingPathComponent("saved-profile.json"), options: .atomic)
+        let reopened = try Database(path: folder.url.appendingPathComponent("profile.db"))
+        let loaded = try JSONDecoder().decode(BrandProfile.self, from: Data(contentsOf: folder.url.appendingPathComponent("saved-profile.json")))
+        try await reopened.saveSyncProfile(loaded)
+        try await SyncEngine(database: reopened, client: server.client(), scope: scope).sync()
+        let merged = try await adopt(loaded, database: reopened, folder: folder.url)
+        #expect(merged.houseStyle == "Team style")
+        #expect(merged.sourceFolder == local.sourceFolder)
+        #expect(merged.teamSyncPaused == true)
+        let remote = try #require(await server.allRows(table: table.name).first?["document_json"]?.string)
+        #expect(try TeamProfileDocument.applying(remote, to: local).houseStyle == "Team style")
+    }
+
+    @Test("Edits during join and later pulls merge with the newer remote profile", arguments: [false, true])
+    func concurrentProfileAdoption(alreadyJoined: Bool) async throws {
+        let folder = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        var original = BrandProfile(name: "Joiner")
+        original.teamID = scope.teamID
+        original.profileID = scope.profileID
+        original.houseStyle = "Old style"
+        original.tagline = "Old tagline"
+        try await folder.database.bindSync(to: scope)
+        try await folder.database.saveSyncProfile(original)
+        if alreadyJoined {
+            try await engine(folder, server, scope).sync()
+            _ = try await adopt(original, database: folder.database, folder: folder.url)
+        }
+        var shared = original
+        shared.houseStyle = "New team style"
+        let table = try SyncTable.named("profile_documents")
+        try await server.seed(SyncMapping.wire(local: ["document_json": .text(TeamProfileDocument.encode(shared))],
+            syncID: scope.profileID.uuidString.lowercased(), scope: scope, table: table), table: table.name)
+        var edited = original
+        edited.tagline = "Edited while pulling"
+        edited.sourceFolder = "/private/tmp/new-local-folder"
+        let current = edited
+        await server.onNextPull {
+            // This save used to replace the pulled document or cause the store
+            // to skip adoption because its snapshot no longer matched.
+            try await folder.database.saveSyncProfile(current)
+        }
+        try await engine(folder, server, scope).sync()
+        let merged = try await adopt(edited, database: folder.database, folder: folder.url)
+        #expect(merged.houseStyle == "New team style")
+        #expect(merged.tagline == edited.tagline)
+        #expect(merged.sourceFolder == edited.sourceFolder)
+        try await engine(folder, server, scope).sync()
+        let remote = try #require(await server.allRows(table: table.name).first?["document_json"]?.string)
+        let uploaded = try TeamProfileDocument.applying(remote, to: original)
+        #expect(uploaded.houseStyle == "New team style")
+        #expect(uploaded.tagline == edited.tagline)
+    }
+
+    @Test("A tombstoned profile completes adoption and re-uploads the local profile", arguments: [false, true])
+    func tombstonedProfileAdoption(alreadyJoined: Bool) async throws {
+        let folder = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        var local = BrandProfile(name: "Local")
+        local.teamID = scope.teamID
+        local.profileID = scope.profileID
+        local.houseStyle = "Keep this style"
+        local.sourceFolder = "/private/tmp/local-footage"
+        try await folder.database.bindSync(to: scope)
+        try await folder.database.saveSyncProfile(local)
+        if alreadyJoined {
+            try await engine(folder, server, scope).sync()
+            _ = try await adopt(local, database: folder.database, folder: folder.url)
+        }
+        let table = try SyncTable.named("profile_documents")
+        try await server.seed(SyncMapping.wire(local: nil, syncID: scope.profileID.uuidString.lowercased(),
+            scope: scope, table: table), table: table.name)
+        try await engine(folder, server, scope).sync()
+        #expect(try await folder.database.syncedProfileDocument() == nil)
+        let adoption = try #require(try await folder.database.syncProfileAdoption())
+        #expect(adoption.document == nil)
+
+        // Stop, a failed profile save, and relaunch must leave recovery possible.
+        local.tagline = "Edited after the tombstone"
+        try await folder.database.saveSyncProfile(local)
+        await #expect(throws: (any Error).self) {
+            _ = try await self.adopt(local, database: folder.database,
+                                     folder: folder.url.appendingPathComponent("missing-directory"))
+        }
+        #expect(try await folder.database.syncProfileAdoption() != nil)
+        let reopened = try Database(path: folder.url.appendingPathComponent("profile.db"))
+        let recovered = try await adopt(local, database: reopened, folder: folder.url)
+        #expect(recovered.houseStyle == local.houseStyle)
+        #expect(recovered.tagline == local.tagline)
+        #expect(recovered.sourceFolder == local.sourceFolder)
+        #expect(try await reopened.syncProfileAdoption() == nil)
+        #expect(try await !reopened.initialSyncPending())
+        #expect(try await reopened.syncedProfileDocument() != nil)
+        #expect(try await reopened.syncPendingCount() == 1)
+
+        let sync = SyncEngine(database: reopened, client: server.client(), scope: scope)
+        try await sync.sync()
+        _ = try await adopt(recovered, database: reopened, folder: folder.url)
+        let uploaded = try #require(await server.allRows(table: table.name).first)
+        #expect(!SyncMapping.isDeleted(uploaded))
+        let document = try #require(uploaded["document_json"]?.string)
+        #expect(try document == TeamProfileDocument.encode(recovered))
+        #expect(try await reopened.syncPendingCount() == 0)
+
+        // Future saves must no longer disappear behind the old baseline.
+        var edited = recovered
+        edited.houseStyle = "Edited after recovery"
+        try await reopened.saveSyncProfile(edited)
+        try await sync.sync()
+        let updated = try #require(await server.allRows(table: table.name).first?["document_json"]?.string)
+        #expect(try TeamProfileDocument.applying(updated, to: edited).houseStyle == edited.houseStyle)
+        #expect(try await reopened.syncPendingCount() == 0)
+    }
+
+    @Test("Children arriving after the parent scan are parked and applied after reopening")
+    func deferredParents() async throws {
+        let source = try SyncTestFolder(), receiver = try SyncTestFolder()
+        let sourceServer = StubSyncServer(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let raw = try SQLiteConnection(path: source.url.appendingPathComponent("profile.db").path)
+        try raw.executeScript("""
+            INSERT INTO ig_accounts(id, username) VALUES (1, 'brand');
+            INSERT INTO ig_media(id, account_id, media_id) VALUES (1, 1, 'late-media');
+            INSERT INTO ig_report_media(id, account_id, shortcode) VALUES (1, 1, 'late-report');
+            INSERT INTO taste_studies(media_id, category_key, studied_at) VALUES (1, 'fight', '2026-10-06');
+            INSERT INTO reel_traits(video_kind, video_id, version, traits_json, computed_at) VALUES
+                ('instagram', '1', 1, '{}', '2026-10-06'), ('imported', '1', 1, '{}', '2026-10-06');
+            """)
+        try await engine(source, sourceServer, scope).sync()
+        for row in await sourceServer.allRows(table: "ig_accounts") { try await server.seed(row, table: "ig_accounts") }
+        // Finish the empty join, so this is the single scan in an ordinary cycle.
+        try await engine(receiver, server, scope).sync()
+        await server.onNextPull(table: "taste_studies") {
+            for name in ["ig_media", "ig_report_media", "taste_studies", "reel_traits"] {
+                for row in await sourceServer.allRows(table: name) { try await server.seed(row, table: name) }
+            }
+        }
+        try await engine(receiver, server, scope).sync()
+        let receiverRaw = try SQLiteConnection(path: receiver.url.appendingPathComponent("profile.db").path)
+        #expect(try receiverRaw.query("SELECT * FROM sync_pending_parents").count == 3)
+        #expect(try receiverRaw.query("SELECT * FROM taste_studies").isEmpty)
+        #expect(try receiverRaw.query("SELECT * FROM reel_traits").isEmpty)
+        let studyTable = try SyncTable.named("taste_studies"), traitsTable = try SyncTable.named("reel_traits")
+        let studyCursor = try await receiver.database.syncCursor(table: studyTable)
+        let traitsCursor = try await receiver.database.syncCursor(table: traitsTable)
+        #expect(studyCursor != nil && traitsCursor != nil)
+        let reopened = try Database(path: receiver.url.appendingPathComponent("profile.db"))
+        let sync = SyncEngine(database: reopened, client: server.client(), scope: scope)
+        try await sync.sync()
+        #expect(try receiverRaw.query("SELECT * FROM sync_pending_parents").isEmpty)
+        #expect(try receiverRaw.query("SELECT * FROM taste_studies").count == 1)
+        #expect(try receiverRaw.query("SELECT * FROM reel_traits").count == 2)
+        #expect(try await reopened.syncCursor(table: studyTable) == studyCursor)
+        #expect(try await reopened.syncCursor(table: traitsTable) == traitsCursor)
+        #expect(try await reopened.syncPendingCount() == 0)
+        #expect(await sync.changedTables.isSuperset(of: ["taste_studies", "reel_traits"]))
+        try await sync.sync()
+        #expect(await sync.changedTables.isEmpty)
+    }
+
+    @Test("A join preserves edits made after its initial sequence boundary, including retries", arguments: [false, true])
+    func joinTimeRowEdit(interrupt: Bool) async throws {
+        let folder = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let table = try SyncTable.named("people")
+        try await server.seed(SyncMapping.wire(local: ["key": .text("match"), "name": .text("Team name")],
+            syncID: UUID().uuidString.lowercased(), scope: scope, table: table), table: table.name)
+        let path = folder.url.appendingPathComponent("profile.db").path
+        let raw = try SQLiteConnection(path: path)
+        try raw.execute("INSERT INTO people(key, name) VALUES ('match', 'Old local')")
+        await server.onNextPull {
+            let connection = try SQLiteConnection(path: path)
+            try connection.execute("UPDATE people SET name = 'Edited during join'")
+            if interrupt { throw URLError(.networkConnectionLost) }
+        }
+        if interrupt {
+            await #expect(throws: URLError.self) { try await self.engine(folder, server, scope).sync() }
+        }
+        let reopened = try Database(path: folder.url.appendingPathComponent("profile.db"))
+        try await SyncEngine(database: reopened, client: server.client(), scope: scope).sync()
+        #expect(try raw.query("SELECT name FROM people").first?["name"]?.stringValue == "Edited during join")
+        #expect(await server.allRows(table: "people").first?["name"]?.string == "Edited during join")
+        #expect(try await reopened.syncPendingCount() == 0)
+    }
+
+    @Test("Own JSON echoes ignore key order but genuine nested changes still refresh")
+    func canonicalJSONEcho() async throws {
+        let folder = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let raw = try SQLiteConnection(path: folder.url.appendingPathComponent("profile.db").path)
+        try raw.executeScript("""
+            INSERT INTO ig_accounts(id, username) VALUES (1, 'brand');
+            INSERT INTO ig_media(id, account_id, media_id, stats_json)
+                VALUES (1, 1, 'media', '{"z":2,"a":{"second":2,"first":1}}');
+            """)
+        let sync = engine(folder, server, scope)
+        try await sync.sync()
+        #expect(await sync.changedTables.isEmpty)
+        try raw.execute("UPDATE ig_media SET stats_json = '{\"z\":3,\"a\":{\"second\":2,\"first\":1}}'")
+        try await sync.sync()
+        #expect(await sync.changedTables.isEmpty)
+        var remote = try #require(await server.allRows(table: "ig_media").first)
+        remote["stats_json"] = .string("{\"a\":{\"first\":99,\"second\":2},\"z\":3}")
+        try await server.seed(remote, table: "ig_media")
+        try await sync.sync()
+        #expect(await sync.changedTables.contains("ig_media"))
     }
 }

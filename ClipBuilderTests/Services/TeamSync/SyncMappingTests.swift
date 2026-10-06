@@ -51,3 +51,70 @@ struct SyncMappingTests {
         }
     }
 }
+
+extension SyncMappingTests {
+    @Test("Every Phase 1 projection preserves portable values and strips local paths", arguments: SyncTable.all)
+    func everyTable(table: SyncTable) throws {
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        var local: SQLRow = [:]
+        for column in table.columns {
+            if table.references[column] != nil { local[column] = .text(UUID().uuidString.lowercased()) }
+            else if table.integers.contains(column) { local[column] = .integer(column == "pinned" ? 1 : 42) }
+            else if table.reals.contains(column) { local[column] = .real(12.75) }
+            else { local[column] = .text(column.hasSuffix("_json") ? "{}" : "portable-\(column)") }
+        }
+        local["path"] = .text("/private/mac-only.mov")
+        local["thumbnail_path"] = .text("/private/thumbnail.jpg")
+        let identity = table.name == "profile_documents" ? scope.profileID.uuidString : UUID().uuidString
+        let wire = try SyncMapping.wire(local: local, syncID: identity, scope: scope,
+                                       preserved: ["future_field": .object(["enabled": .bool(true)])], table: table)
+        let decoded = try JSONDecoder().decode(SyncMapping.WireRow.self, from: JSONEncoder().encode(wire))
+        let received = try SyncMapping.local(wire: decoded, localID: nil, scope: scope, table: table)
+        for column in table.columns {
+            #expect(received[column]?.stringValue == local[column]?.stringValue, "\(table.name).\(column)")
+        }
+        #expect(wire["path"] == nil)
+        #expect(wire["thumbnail_path"] == nil)
+        #expect(try SyncMapping.wire(local: received, syncID: identity, scope: scope, preserved: decoded, table: table) == wire)
+    }
+
+    @Test("Shared profile JSON excludes machine configuration and preserves local exemplar files on apply")
+    func profileDocument() throws {
+        var profile = BrandProfile(name: "Local")
+        profile.profileID = UUID()
+        profile.teamID = UUID()
+        profile.logoPath = "/private/logo.png"
+        profile.sourceFolder = "/private/footage"
+        profile.houseStyle = "Keep the opening short"
+        profile.tasteCategories = [TasteCategory(key: "fight", label: "Fights", exemplarFrames: ["/private/frame.jpg"])]
+        let json = try TeamProfileDocument.encode(profile)
+        #expect(!json.contains("/private"))
+        #expect(!json.contains("team_id"))
+        var receiver = profile
+        receiver.sourceFolder = "/private/receiver"
+        receiver.houseStyle = "Old"
+        let applied = try TeamProfileDocument.applying(json, to: receiver)
+        #expect(applied.houseStyle == profile.houseStyle)
+        #expect(applied.sourceFolder == receiver.sourceFolder)
+        #expect(applied.tasteCategories[0].exemplarFrames == receiver.tasteCategories[0].exemplarFrames)
+    }
+}
+
+extension SyncMappingTests {
+    @Test("Asset identity resolves aliases, known moved roots, and never falls back to the basename")
+    func assetIdentityPaths() throws {
+        let root = URL(fileURLWithPath: "/private/tmp/SyncAssets-\(UUID().uuidString)")
+        let alias = root.appendingPathExtension("alias")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: root)
+        defer {
+            try? FileManager.default.removeItem(at: alias)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let actual = TeamSyncAsset.identity(path: root.appendingPathComponent("a/IMG_0001.jpg").path, kind: "images", knownRoots: [root])
+        #expect(actual == TeamSyncAsset.identity(path: alias.appendingPathComponent("a/IMG_0001.jpg").path, kind: "images", knownRoots: [root]))
+        let moved = URL(fileURLWithPath: "/private/tmp/old-library")
+        #expect(actual == TeamSyncAsset.identity(path: moved.appendingPathComponent("a/IMG_0001.jpg").path, kind: "images", knownRoots: [root, moved]))
+        #expect(TeamSyncAsset.identity(path: "/unknown/a/IMG_0001.jpg", kind: "images") != TeamSyncAsset.identity(path: "/unknown/b/IMG_0001.jpg", kind: "images"))
+    }
+}

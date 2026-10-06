@@ -342,6 +342,17 @@ extension AppStore {
         }
         do {
             try ProfileStore.save(activeProfile)
+            if activeProfile.teamID != nil, !teamSync.syncing, let database {
+                let generation = profileGeneration
+                Task {
+                    guard generation == profileGeneration, !teamSync.syncing else { return }
+                    do { try await database.saveSyncProfile(activeProfile) }
+                    catch {
+                        guard generation == profileGeneration else { return }
+                        presentError("Could not queue the shared profile", error)
+                    }
+                }
+            }
             if let index = profiles.firstIndex(where: { $0.profileName == activeProfile.profileName }) {
                 profiles[index] = activeProfile
             }

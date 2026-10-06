@@ -1,6 +1,6 @@
 # Team Sync Plan
 
-Date: October 2, 2026. Status: Phase 0 implemented on October 6, 2026; verification pending.
+Date: October 2, 2026. Status: Phase 1 implemented, verified and live on October 6, 2026 (commit and release pending); Phase 2 designed October 6, 2026, implementation not started.
 Implementation: Codex; build, tests and review: Claude (per the September 23 working rule).
 
 ## Problem
@@ -58,6 +58,14 @@ Detached, or with no network, the app behaves exactly as today.
   are never compared.
 - **S9. Deletes are tombstones.** A delete syncs as `deleted_at`. Tombstones
   are kept 90 days so a Mac that was offline still learns of the delete.
+- **S10. Shared rows appear right away** (decided October 6, 2026). A row
+  for footage a Mac does not have is shown as soon as it arrives, marked
+  "not on this Mac", never hidden until the file exists. Analysis, scenes
+  and transcripts are readable; render, playback and frame-based views wait
+  for the file.
+- **S11. Any member may delete a shared row** (decided October 6, 2026).
+  Deletes are tombstones (S9) accepted from every team member; there is no
+  creator or owner restriction. This is how Phase 1 shipped and it stays.
 
 ## Conflict rules
 
@@ -134,12 +142,50 @@ Never synced: `analysis_checkpoints`, `transcript_backups`, `voice_profiles`,
   (same footage hash, same person key, same Instagram media id) so two
   members who both analyzed a file do not get duplicates of the video row.
 
+## Phase 2: footage analysis
+
+Tables (see "What syncs"): `videos`, `analysis_runs`, `scenes`, `scene_tags`,
+`moments`, `transcripts`, `speaker_turns`, `transcript_features`,
+`topic_ranges`, `video_people`, `person_markers`, `video_subjects`,
+`video_notes`, `grades`, `fight_*`, `wizard_research`.
+
+- **Identity.** `videos` is keyed by `hash` (S4); `path`, Drive-local cache
+  paths and thumbnails never leave the Mac. Children refer to the video by
+  its `sync_id`; `scenes` carry their run's `sync_id`; transcripts and
+  turns are addressed by (video, start) for merge-on-join. `person_markers`
+  and `video_people` refer to `people` by `sync_id` (Phase 1 table).
+- **Not on this Mac (S10).** `videos.path` becomes nullable for synced rows
+  that have no local file. `VideoRecord.isPresent` is false when `path` is
+  NULL or the file is missing. Sources lists such rows with a "Not on this
+  Mac" badge and, when the row has a Drive file id, a Download action that
+  reuses the Asset Sync download path and fills `path` on completion by
+  matching the hash. Scenes, transcript and tags open read-only; frame
+  thumbnails, playback, analysis and render are disabled with that reason.
+  When a member later imports the same file, the import matches the hash
+  and adopts the synced row instead of creating a new one.
+- **Analysis.** Two members analyzing the same file keep both
+  `analysis_runs` (conflict rules). The newest run is the default on every
+  Mac. `analysis_checkpoints`, `transcript_backups`, `voice_profiles` and
+  `center_stage_hints` stay local.
+- **Volume.** A profile can hold tens of thousands of transcript and turn
+  rows. Batches stay at 200 rows; the initial upload runs through the
+  existing AppJobs status-bar row with Stop. Pull applies per table in one
+  transaction per batch with `foreign_key_check` in Debug.
+- **Merge on join.** Same hash: the local video row is rekeyed to the remote
+  `sync_id`; its children are rekeyed by natural key where one exists
+  (scenes by run and index, transcripts by start) and otherwise uploaded as
+  the member's own run.
+- **Tests.** `SyncMappingTests` round-trips every Phase 2 table with paths
+  absent; `SyncEngineTests` covers two Macs analyzing the same file, a video
+  arriving before its file, and a later import adopting the synced row; `SyncMigrationTests` covers the local schema bump.
+
 ## Phases
 
 0. **Foundations (M).** Supabase project, schema and RLS for one table, auth,
    `sync_id` and outbox migration, engine round trip for `wizard_lessons`
    between two data folders on one Mac. Proves S3, S7, S8, S9.
 1. **Brand knowledge (M).** Phase 1 tables, Settings › Team, status-bar item.
+   Shipped October 6, 2026 (uncommitted at the time of writing).
 2. **Footage analysis (L).** Phase 2 tables, "not on this Mac" state in
    Sources and Scenes.
 3. **Work (L).** Portable timelines, revision conflict copies, presence,
@@ -188,11 +234,12 @@ Each phase ships on its own and is useful without the next.
 
 ## Open questions
 
-1. Should sync be automatic as described, or manual only like the Drive
-   asset Refresh?
-2. Can any member delete shared rows (a timeline, a lesson), or only the
-   team owner?
-3. Should footage rows for files a member does not have appear in Sources,
-   or stay hidden until the file arrives?
-4. Is email one-time code acceptable for sign-in, or should it be Sign in
-   with Apple?
+All resolved on October 6, 2026:
+
+1. Sync is automatic (launch, network return, every 60 s while frontmost)
+   plus Sync Now and Pause. Shipped in Phase 1.
+2. Any member can delete shared rows; deletes are tombstones (S11).
+3. Footage rows for files a member lacks appear right away, marked "not on
+   this Mac" (S10, Phase 2).
+4. Email one-time code is the sign-in. Shipped in Phase 1 with Gmail SMTP
+   delivering the code.

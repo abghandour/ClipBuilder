@@ -3,6 +3,7 @@ import SwiftUI
 /// Permanent window chrome, outside the split views so it cannot cover editing controls.
 struct AppStatusBar: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.openSettings) private var openSettings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("statusBar.logExpanded") private var logExpanded = false
     @AppStorage("statusBar.logChannel") private var channelFilter = ""
@@ -93,6 +94,19 @@ struct AppStatusBar: View {
             // Recovery actions appear only when something needs recovering;
             // an always-present menu that is usually empty reads as broken.
             recoveryActions
+            Button {
+                UserDefaults.standard.set("team", forKey: "settings.selectedTab")
+                openSettings()
+            } label: {
+                Label(store.teamSync.status, systemImage: "person.2")
+                    .lineLimit(1).fixedSize()
+            }
+            .help("Open Team settings")
+            if store.teamSync.attached && !store.teamSync.paused {
+                Button("Sync Now") { store.teamSync.syncNow() }
+                    .lineLimit(1).fixedSize()
+                    .disabled(store.teamSync.syncing || store.teamSync.replacingProfile)
+            }
             Picker("App Log section", selection: $channelFilter) {
                 Text("All sections").tag("")
                 ForEach(AppLogChannels.available(in: store.unifiedLog, selection: channelFilter), id: \.self) { channel in
