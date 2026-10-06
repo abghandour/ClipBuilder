@@ -144,7 +144,7 @@ struct AppJobsTests {
 
     @Test func onlyExplicitNoticeKindsPostAnOrdinaryCompletionNotice() async throws {
         let store = makeStore()
-        for kind in AppJobKind.allCases where kind != .overlayTemplate && kind != .criticBrief {
+        for kind in AppJobKind.allCases where !kind.postsNotice {
             #expect(!kind.postsNotice)
             store.jobs.start(kind, title: kind.shortTitle, project: nil, profileGeneration: 0) { log in
                 log("Finished silently")
