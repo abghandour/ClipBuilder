@@ -12,7 +12,7 @@ struct WizardSourceGrid: View {
     let onToggle: (VideoRecord) -> Void
 
     private var selectedNames: [String] {
-        videos.filter { selectedPaths.contains($0.path) }.map(\.filename)
+        videos.filter { $0.path.map(selectedPaths.contains) == true }.map(\.filename)
     }
 
     var body: some View {
@@ -56,7 +56,7 @@ struct WizardSourceGrid: View {
     }
 
     private func cell(_ video: VideoRecord) -> some View {
-        let selected = selectedPaths.contains(video.path)
+        let selected = video.path.map(selectedPaths.contains) ?? false
         return Button {
             onToggle(video)
         } label: {
@@ -91,10 +91,11 @@ struct WizardSourceGrid: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!video.isPresent)
         .accessibilityLabel(video.filename)
         .accessibilityValue(selected ? "Selected" : "Not selected")
         .accessibilityHint(selected ? "Click to deselect" : "Click to select")
-        .help(selected ? "Click to deselect" : "Click to select · hover to skim the video")
+        .help(!video.isPresent ? VideoRecord.notPresentReason : selected ? "Click to deselect" : "Click to select · hover to skim the video")
     }
 }
 

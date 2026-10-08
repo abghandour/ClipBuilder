@@ -8,7 +8,7 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     var id: Int64
     var hash: String
     var filename: String
-    var path: String
+    var path: String?
     var duration: Double
     var width: Int
     var height: Int
@@ -53,7 +53,20 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     var driveOffloaded: Bool = false
     var driveShared: Bool = false
 
-    var url: URL { URL(fileURLWithPath: path) }
+    var sourceAvailable: Bool? = nil
+    var locallyDownloaded: Bool? = nil
+    var isPresent: Bool { path != nil && (sourceAvailable ?? (driveFileID != nil || FootageAvailability.isPresent(path: path))) }
+
+    static let notPresentReason = "Not on this Mac"
+
+    /// Legacy media views take a URL. A missing row gets an inert, absolute URL
+    /// rather than resolving an empty path to the application's working folder.
+    /// Media actions must check isPresent before using it.
+    var url: URL { URL(fileURLWithPath: path ?? "/.clipbuilder-unavailable/\(id)") }
+
+    func requirePresent() throws {
+        guard isPresent else { throw CocoaError(.fileReadNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "\(filename): Not on this Mac. Download or import the source file first."]) }
+    }
 
     var type: VideoType? { videoType.flatMap(VideoType.init(rawValue:)) }
 
@@ -459,7 +472,9 @@ nonisolated struct AnalysisRun: Identifiable, Sendable, Hashable {
     var settingsJSON: String? = nil
     var modelsJSON: String? = nil
 
-    var videoURL: URL { URL(fileURLWithPath: videoPath) }
+    var sourceAvailable: Bool? = nil
+    var isPresent: Bool { sourceAvailable ?? FootageAvailability.isPresent(path: videoPath) }
+    var videoURL: URL { URL(fileURLWithPath: videoPath.isEmpty ? "/.clipbuilder-unavailable/\(videoID)" : videoPath) }
 
     /// Who analyzed this batch.
     var provenance: AIProvenance? {
@@ -526,7 +541,9 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
 
     var duration: Double { endTime - startTime }
     var isBRoll: Bool { tags.contains("b-roll") }
-    var videoURL: URL { URL(fileURLWithPath: videoPath) }
+    var sourceAvailable: Bool? = nil
+    var isPresent: Bool { sourceAvailable ?? FootageAvailability.isPresent(path: videoPath) }
+    var videoURL: URL { URL(fileURLWithPath: videoPath.isEmpty ? "/.clipbuilder-unavailable/\(videoID)" : videoPath) }
 
     /// Who selected this favorite, when it was proposed by AI.
     var favoriteProvenance: AIProvenance? {
@@ -572,6 +589,12 @@ nonisolated struct MomentRecord: Identifiable, Sendable, Hashable {
     var dialog: String?
 }
 
+nonisolated struct TranscriptionSet: Identifiable, Sendable, Hashable {
+    var id: String
+    var createdAt: String
+    var model: String?
+}
+
 nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable, Codable {
     var id: Int64
     var videoID: Int64
@@ -589,6 +612,8 @@ nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable, Codable {
     /// Who says this line, as the user set it: nil = whoever the speaker
     /// turns say, "" = nobody known (Unknown), else a person key.
     var speakerKey: String? = nil
+    var transcriptionKey: String? = nil
+    var transcriptionCreatedAt: String? = nil
 
     var speaker: SpeakerAttribution {
         get { SpeakerAttribution(stored: speakerKey) }

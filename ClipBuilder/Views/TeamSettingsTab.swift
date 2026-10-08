@@ -118,7 +118,7 @@ private struct TeamAttachmentSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Share \(profileName) with your team?").font(.headline)
-            Text("Transcripts, people names and Instagram audience data leave this Mac when shared. Phase 1 shares brand knowledge and reports; footage and media files remain on your Mac and Google Drive.")
+            Text("Transcripts, people names and Instagram audience data leave this Mac when shared. Team Sync shares brand knowledge, reports and footage analysis; media files remain on your Mac and Google Drive.")
                 .fixedSize(horizontal: false, vertical: true)
             ScrollView {
                 VStack(spacing: 8) {
@@ -167,6 +167,24 @@ extension SyncTable {
         case "ig_report_sync_state": "Report history"
         case "reel_traits": "Reel traits"
         case "reel_outcomes": "Reel outcomes"
+        case "videos": "Source videos"
+        case "analysis_runs": "Analysis runs"
+        case "scenes": "Scenes"
+        case "scene_tags": "Scene tags"
+        case "moments": "Moments"
+        case "transcripts": "Transcripts"
+        case "speaker_turns": "Speaker turns"
+        case "transcript_features": "Speech features"
+        case "topic_ranges": "Topics"
+        case "video_people": "Video people"
+        case "person_markers": "Person markers"
+        case "video_subjects": "Video subjects"
+        case "video_notes": "Video notes"
+        case "grades": "Grades"
+        case "fight_events": "Fight events"
+        case "fight_outcomes": "Fight outcomes"
+        case "fight_research": "Fight research"
+        case "wizard_research": "Wizard research"
         default: name
         }
     }

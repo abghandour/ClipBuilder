@@ -46,6 +46,7 @@ nonisolated enum FramingService {
                               tagFramedPeople: Bool,
                               log: @escaping @Sendable (String) -> Void,
                               progress: (@Sendable (Double) -> Void)? = nil) async throws -> Summary {
+        try video.requirePresent()
         let scenes = try await database.fetchScenes(videoID: video.id, includeExcluded: false)
         guard !scenes.isEmpty else {
             log("Framing: no scenes yet — run tag detection first")

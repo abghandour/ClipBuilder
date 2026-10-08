@@ -108,6 +108,7 @@ actor TranscriptionService {
     func transcribePodcast(video: VideoRecord, database: Database,
                            languageCode: String = "", force: Bool = false,
                            log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+        try video.requirePresent()
         if !languageCode.isEmpty {
             return try await transcribe(video: video, database: database,
                                         languageCode: languageCode, force: force, log: log)
@@ -187,6 +188,7 @@ actor TranscriptionService {
                     languageCode: String = "",
                     force: Bool = false,
                     log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+        try video.requirePresent()
         let locale = languageCode.isEmpty ? Locale.current : Locale(identifier: languageCode)
         guard let supportedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
             throw TranscriptionError.unsupportedLocale(locale.identifier)

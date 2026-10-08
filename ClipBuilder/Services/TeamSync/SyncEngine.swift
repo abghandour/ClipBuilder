@@ -3,7 +3,7 @@ import Foundation
 /// Cancellable, dependency-ordered multi-table cycle. Nothing instantiates this
 /// for unattached profiles. The coordinator owns scheduling and admission.
 actor SyncEngine {
-    static let understoodSchemaVersion = 2
+    static let understoodSchemaVersion = 3
 
     enum Status: Sendable, Equatable {
         case idle, syncing, synced
@@ -55,7 +55,7 @@ actor SyncEngine {
             // Gate before binding, queue seeding, acknowledgements or applies.
             let version = try await client.schemaVersion()
             guard version <= Self.understoodSchemaVersion else { throw SyncError.needsUpdate(version) }
-            guard version >= 2 else { throw SyncError.serverNotReady }
+            guard version >= Self.understoodSchemaVersion else { throw SyncError.serverNotReady }
             try Task.checkCancellation()
             try await database.bindSync(to: scope)
             try await database.canonicalizeSyncIdentities(scope: scope)
@@ -81,6 +81,10 @@ actor SyncEngine {
                     try await database.acknowledgeSyncChanges(changes)
                 }
                 try await pull(table)
+                // Self-referencing scenes can arrive before their parent in a batch.
+                while try await database.retrySyncParents(scope: scope, table: table) {
+                    changedTables.insert(table.name)
+                }
                 log("PROGRESS: \(Double(index + 1) / Double(SyncTable.all.count))")
             }
             try await database.completeInitialSync()

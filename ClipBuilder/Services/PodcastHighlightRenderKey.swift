@@ -60,7 +60,7 @@ nonisolated enum PodcastHighlightRenderKey {
             candidate: Candidate(sourceStart: candidate.sourceStart, sourceEnd: candidate.sourceEnd,
                                  framing: candidate.framing.rawValue, kind: candidate.kind.rawValue,
                                  speakerKeys: candidate.speakerKeys.sorted(), includesQuestion: candidate.includesQuestion),
-            video: Video(path: video.path, fingerprint: fingerprint, duration: video.duration, width: video.width,
+            video: Video(path: video.path ?? "", fingerprint: fingerprint, duration: video.duration, width: video.width,
                          height: video.height, videoType: video.videoType, podcastLayout: video.podcastLayout,
                          podcastSeamX: video.podcastSeamX, podcastTilesJSON: video.podcastTilesJSON),
             scenes: request.scenes.sorted { $0.id < $1.id }.map {

@@ -352,7 +352,7 @@ extension AppStore {
     /// Wizard, the pipeline's rename step); nil for a hand rename.
     func renameVideo(_ video: VideoRecord, to rawName: String, provenance: AIProvenance? = nil) {
         guard let database else { return }
-        if video.driveFileID != nil, !FileManager.default.fileExists(atPath: video.path) {
+        if !video.isPresent {
             let generation = profileGeneration
             let profile = activeProfile.profileName
             Task {

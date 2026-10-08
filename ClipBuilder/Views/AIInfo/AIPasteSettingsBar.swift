@@ -54,7 +54,7 @@ struct AIPasteSettingsBar: View {
                 ?? AISettingsPreferences.analysis(defaults: defaults)
         let applied = envelope.applying(
             to: current, profile: store.activeProfile.profileName,
-            videoPaths: Set(store.videos.map(\.path)), runIDs: Set(store.analysisRuns.map(\.id)),
+            videoPaths: Set(store.videos.compactMap(\.path)), runIDs: Set(store.analysisRuns.map(\.id)),
             people: Set(store.people.map(\.key)), sceneIDs: Set(store.scenes.map(\.id)),
             sameVideo: analysis?.wrappedValue.videoPath)
         AISettingsPreferences.write(

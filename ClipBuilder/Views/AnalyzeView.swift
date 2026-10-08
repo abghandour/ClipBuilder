@@ -215,20 +215,21 @@ struct AnalyzeView: View {
                     Label(selection.count > 1 ? "Analyze \(selection.count)" : "Analyze",
                           systemImage: "sparkles")
                 }
-                .disabled(selection.isEmpty || store.isAnalyzing)
-                .help(selection.count > 1
+                .disabled(selection.isEmpty || store.isAnalyzing || selectedVideos.contains { !$0.isPresent })
+                .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason : selection.count > 1
                       ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
                       : "Runs a fresh analysis of the selected video. Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
 
                 Button("Run Full Pipeline", systemImage: "wand.and.rays") {
                     showAnalyzeWizard = true
                 }
-                .disabled(selection.isEmpty || store.isPipelineRunning)
+                .disabled(selection.isEmpty || store.isPipelineRunning || selectedVideos.contains { !$0.isPresent })
                 .help("Analyze the selected videos and generate reels from them in one run")
                 Button("Generate Video…", systemImage: "wand.and.stars") {
                     showGenerateSheet = true
                 }
-                .disabled(selection.isEmpty || store.isAnalyzing)
+                .disabled(selection.isEmpty || store.isAnalyzing || selectedVideos.contains { !$0.isPresent })
+                .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason : "")
                 .help("Describe a video to make from the selected sources; the AI Wizard is filled in from your words")
                 Button("Scan for Duplicates…", systemImage: "rectangle.on.rectangle") {
                     showDuplicateScan = true
@@ -315,6 +316,7 @@ struct AnalyzeView: View {
     /// A multi-selection runs back to back under one plan, one analyze batch
     /// per video; fine-trim only applies to single-video runs.
     private func startAnalysis(of videos: [VideoRecord]) {
+        guard videos.allSatisfy(\.isPresent) else { store.presentError(VideoRecord.notPresentReason); return }
         let unfinished = videos.filter { store.analysisCheckpoints[$0.id] != nil }
         if unfinished.isEmpty {
             presentPlan(for: videos)
@@ -430,6 +432,10 @@ struct AnalyzeView: View {
                     Text(video.filename)
                         .help("Double-click to rename")
                     if video.driveFileID != nil { DriveFetchIndicator(media: video.driveMedia) }
+                    if !video.isPresent {
+                        Label("Not on this Mac", systemImage: "externaldrive.badge.questionmark")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                    }
                     AIInfoButton(video: video)
                 }
                 // Table cells are hosted per row by AppKit. A recycled cell can
@@ -720,11 +726,10 @@ private struct VideoPreviewPane: View {
                         }
                     case .unavailable:
                         VStack(spacing: 4) {
-                            Label("Video not available", systemImage: "video.slash")
+                            Label("Not on this Mac", systemImage: "video.slash")
                                 .font(.caption)
                             if video.driveFileID != nil {
-                                Text("Download a local copy from the Drive menu.")
-                                    .font(.caption2)
+                                MissingFootageDownloadButton(video: video)
                             }
                         }
                         .foregroundStyle(.secondary)
@@ -969,7 +974,7 @@ private struct VideoPreviewPane: View {
             }
         }
         .padding(10)
-        .task(id: video.id) {
+        .task(id: "\(video.id)|\(video.path ?? "")|\(video.locallyDownloaded ?? false)|\(video.driveOffloaded)") {
             // Drop the old player right away so the pane follows the selection
             // instantly, then open the file off the main thread: creating the
             // player synchronously probes the file and stalled the click.
@@ -977,15 +982,16 @@ private struct VideoPreviewPane: View {
             player = nil
             roster = []
             availability = .loading
+            roster = await store.videoPeople(for: video.id)
             // Let the pane's loading state paint before the file is touched.
             await Task.yield()
             // A file that is not on this Mac is reported, not spun on; a
             // download the user already started is joined and shown as such.
             // Selecting a row never starts a download by itself.
-            if !FileManager.default.fileExists(atPath: video.path) {
+            if !video.isPresent {
                 let fetching = video.driveFileID != nil
                     && store.googleDrive.activeFetchJob(for: video.driveMedia, profile: store.activeProfile.profileName) != nil
-                guard fetching else { availability = .unavailable; return }
+                guard fetching, video.path != nil else { availability = .unavailable; return }
                 availability = .downloading
             }
             guard await DrivePlayback.prepare(video.url) else {

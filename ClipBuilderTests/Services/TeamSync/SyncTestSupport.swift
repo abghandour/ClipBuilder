@@ -19,7 +19,7 @@ nonisolated final class SyncTestFolder: Sendable {
 /// JSON, scoping, upsert and keyset filters; it is not an alternate sync engine.
 actor StubSyncServer {
     var rows: [String: SyncMapping.WireRow] = [:]
-    var version = 2
+    var version = 3
     var offline = false
     var clock = 0
     var requests: [URLRequest] = []
@@ -123,6 +123,8 @@ nonisolated enum BrandSyncFixtures {
                 else if table.reals.contains(column) { values[column] = .real(1.25) }
                 else { values[column] = .text(column.hasSuffix("_json") ? "{}" : "sample-\(column)") }
             }
+            if table.name == "videos" { columns.append("path"); values["path"] = .text("/private/tmp/source.mov") }
+            if table.name == "scenes" { values["parent_scene_id"] = .null }
             if table.name == "library_asset_metadata" {
                 columns.append("path")
                 values["path"] = .text("/private/tmp/team-sync-asset.png")

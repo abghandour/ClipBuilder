@@ -39,7 +39,7 @@ struct PodcastHighlightIntegrationTests {
         options.renderSettings.preset = .portrait4K
         options.renderSettings.quality = .archival
         options.sourcesRestricted = true
-        options.sourceVideoPaths = [input.video.path]
+        options.sourceVideoPaths = [try #require(input.video.path)]
         let review = try await engine.findPodcastHighlights(options: options, settings: PodcastSettings(), database: temp.database, profile: profile, emit: { _ in })
         #expect(review.options.renderSettings == options.renderSettings)
         #expect(review.highlightThreshold == PodcastSettings().highlightThreshold)
@@ -63,7 +63,7 @@ struct PodcastHighlightIntegrationTests {
         var options = WizardOptions()
         options.projectID = input.project
         options.sourcesRestricted = true
-        options.sourceVideoPaths = [input.video.path]
+        options.sourceVideoPaths = [try #require(input.video.path)]
         options.highlightMaxSeconds = 25
         options.highlightMaxCount = 2
         options.useBRoll = true

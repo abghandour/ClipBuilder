@@ -217,7 +217,8 @@ actor MultitrackRenderer {
                 renderFingerprint: String? = nil,
                 preview: Bool = false,
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
-        try await RenderContext.$settings.withValue(document.renderSettings) {
+        try FootageAvailability.requireSources(document: document, scenes: scenes)
+        return try await RenderContext.$settings.withValue(document.renderSettings) {
             try await renderConfigured(document: document, scenes: scenes, profile: profile,
                                        database: database, centerStageCamera: centerStageCamera,
                                        projectID: projectID, outputName: outputName, batchID: batchID, wizardOptions: wizardOptions, roles: roles,

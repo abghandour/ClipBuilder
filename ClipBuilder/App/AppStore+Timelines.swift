@@ -46,6 +46,7 @@ extension AppStore {
     /// them first — the Builder's unsaved scratch document is not shown
     /// anywhere and would be discarded by the next open.
     func addScenesToBuilder(_ scenesToAdd: [SceneRecord]) {
+        guard scenesToAdd.allSatisfy(\.isPresent) else { presentError(VideoRecord.notPresentReason); return }
         guard !scenesToAdd.isEmpty else { return }
         if openTimelineID != nil {
             scenesToAdd.forEach { builder.addScene($0) }
@@ -467,6 +468,10 @@ extension AppStore {
         guard let database, !isBuilderRendering, !isBuilderPreviewRendering else { return }
         guard !builder.document.videoTrack.isEmpty else {
             presentError("Add clips to the timeline first.")
+            return
+        }
+        if let name = FootageAvailability.missingSource(document: builder.document, scenes: builder.scenes) {
+            presentError("\(name): Not on this Mac. Download or import the source file before rendering.")
             return
         }
         isBuilderRendering = true

@@ -204,7 +204,7 @@ final class TeamSyncState {
             let client = try await self.session().client()
             let version = try await client.schemaVersion()
             guard version <= SyncEngine.understoodSchemaVersion else { throw SyncError.needsUpdate(version) }
-            guard version >= 2 else { throw SyncError.serverNotReady }
+            guard version >= SyncEngine.understoodSchemaVersion else { throw SyncError.serverNotReady }
             try Task.checkCancellation()
             guard store.profileGeneration == capturedGeneration else { throw CancellationError() }
             try await db.bindSync(to: scope)
@@ -248,7 +248,10 @@ final class TeamSyncState {
         store?.saveActiveProfile()
         if value {
             automaticCycle?.cancel()
-            Task { await coordinator.cancelAndWait() }
+            Task {
+                await store?.jobs.cancelAndWait(kind: .teamSync)
+                await coordinator.cancelAndWait()
+            }
             status = "Sync paused"
         } else { syncNow() }
     }
@@ -274,9 +277,25 @@ final class TeamSyncState {
         automaticCycle = Task { [weak self] in
             guard let self else { return }
             defer { if self.cycleToken == token { self.automaticCycle = nil } }
-            do { try await self.performCycle() }
-            catch is CancellationError { }
-            catch { if self.generation == captured { self.message = error.localizedDescription } }
+            guard self.generation == captured, let store = self.store, let db = store.database else { return }
+            let backlog = (try? await db.initialSyncPending()) ?? false
+            guard self.generation == captured, !self.paused, !self.attaching else { return }
+            self.attaching = true
+            store.jobs.start(.teamSync, title: backlog ? "Upload and merge team footage" : "Team sync",
+                             project: nil, profileGeneration: store.profileGeneration,
+                             subjectID: store.activeProfile.profileName,
+                             cleanup: { [weak self] in self?.attaching = false }) { [weak self] log in
+                guard let self, self.generation == captured else { throw CancellationError() }
+                do { try await self.performCycle(log: log) }
+                catch {
+                    if self.generation == captured {
+                        self.message = error.localizedDescription
+                        if error is CancellationError || Task.isCancelled { self.setPaused(true) }
+                    }
+                    throw error
+                }
+                return nil
+            }
         }
     }
 
@@ -324,6 +343,19 @@ final class TeamSyncState {
                 store.people = people
             }
             if changed.contains("library_asset_metadata") { assetMetadataRevision += 1 }
+            if changed.contains(where: { name in SyncTable.footage.contains { $0.name == name } }) {
+                await store.refreshAllNow()
+                let defaults = try await db.consumeSyncedRunDefaults()
+                guard captured == generation else { throw CancellationError() }
+                if !defaults.isEmpty {
+                    if store.sceneRunSelection.isEmpty {
+                        store.sceneRunSelection = Set(store.analysisRuns.filter { defaults[$0.videoID] == nil }.map(\.id))
+                    }
+                    store.sceneRunSelection.formUnion(defaults.values.filter { id in store.analysisRuns.contains { $0.id == id } })
+                    store.projectStateVersion += 1
+                    store.scheduleProjectStateSave()
+                }
+            }
             if changed.contains(where: { $0.hasPrefix("ig_") || $0 == "reel_traits" || $0 == "reel_outcomes" }) {
                 await store.refreshSyncedInstagram(database: db)
             }

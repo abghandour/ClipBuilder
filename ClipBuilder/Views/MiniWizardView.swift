@@ -230,7 +230,7 @@ struct MiniWizardView: View {
         let selected = selectedVideo?.id == video.id
         return Button {
             instructionsFocused = false
-            videoPath = video.path
+            videoPath = video.path ?? ""
         } label: {
             VStack(alignment: .leading, spacing: Theme.spaceXS) {
                 VideoThumbnail(url: video.url, time: min(1, video.duration / 2), cornerRadius: Theme.mediaRadius)

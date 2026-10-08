@@ -23,18 +23,18 @@ struct MiniWizardMemoryTests {
         #expect(MiniWizardMemory.field(forKey: "wizard.length", profileName: "First") == nil)
     }
 
-    @Test func rememberedVideoMustStillBeAnalyzedAndInTheCurrentProjectList() {
+    @Test func rememberedVideoMustStillBeAnalyzedAndInTheCurrentProjectList() throws {
         var video = Fixtures.video()
         video.analyzedAt = "2026-10-03"
-        #expect(MiniWizardMemory.validatedVideoPath(video.path, videos: [video]) == video.path)
-        #expect(MiniWizardMemory.validatedVideoPath(video.path, videos: []) == "")
+        #expect(MiniWizardMemory.validatedVideoPath(try #require(video.path), videos: [video]) == video.path)
+        #expect(MiniWizardMemory.validatedVideoPath(try #require(video.path), videos: []) == "")
         #expect(MiniWizardMemory.validatedVideoPath("/removed.mp4", videos: [video]) == "")
         #expect(MiniWizardMemory.validatedVideoPath("", videos: [video]) == "")
         var other = video
         other.path = "/another.mp4"
-        #expect(MiniWizardMemory.validatedVideoPath(video.path, videos: [other]) == "")
+        #expect(MiniWizardMemory.validatedVideoPath(try #require(video.path), videos: [other]) == "")
         video.analyzedAt = nil
-        #expect(MiniWizardMemory.validatedVideoPath(video.path, videos: [video, other]) == "")
+        #expect(MiniWizardMemory.validatedVideoPath(try #require(video.path), videos: [video, other]) == "")
     }
 
     @Test func allSettingsRestoreAcrossProfilesUsingTheSameKeyCatalog() throws {

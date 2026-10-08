@@ -26,6 +26,7 @@ actor PodcastAnalysisService {
                  progress: @escaping @Sendable (Double, String) -> Void, useLocal: Bool = false,
                  capturedSettings: PodcastSettings? = nil,
                  checkpointing: PodcastCheckpointing? = nil) async throws -> Result {
+        try video.requirePresent()
         // An interrupted run's finished pieces: the people pass and the
         // exchange grouping are the model calls worth not repeating (the
         // transcript is cached on disk and the rest is local).

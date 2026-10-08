@@ -629,7 +629,7 @@ struct ScenesView: View {
                   onTranscript: {
                       transcriptVideo = store.videos.first { $0.id == scene.videoID }
                   },
-                  onEdit: { editingScene = scene },
+                  onEdit: { if scene.isPresent { editingScene = scene } },
                   bulkActions: selectedSceneIDs.count > 1 && selectedSceneIDs.contains(scene.id)
                       ? SceneBulkActions(
                             count: selectedSceneIDs.count,
@@ -663,7 +663,7 @@ struct ScenesView: View {
                                          stackPickerID = nil
                                          store.chooseStackBest(pick, among: stack)
                                      },
-                                     onPreview: { previewScene = $0 })
+                                     onPreview: { if $0.isPresent { previewScene = $0 } })
                 }
             }
             .accessibilityAddTraits(.isButton)
@@ -749,10 +749,12 @@ struct ScenesView: View {
         switch press.characters {
         case " ":
             guard let scene = selection.last ?? selection.first else { return .ignored }
+            guard scene.isPresent else { store.presentError(VideoRecord.notPresentReason); return .handled }
             previewScene = scene
             return .handled
         case "\r":
             guard selection.count == 1, let scene = selection.first else { return .ignored }
+            guard scene.isPresent else { store.presentError(VideoRecord.notPresentReason); return .handled }
             editingScene = scene
             return .handled
         case "g", "5":
@@ -778,6 +780,7 @@ struct ScenesView: View {
 
     private func bulkGrade(_ score: Int, in filtered: [SceneRecord]) {
         let selection = orderedSelection(in: filtered)
+        guard selection.allSatisfy(\.isPresent) else { store.presentError(VideoRecord.notPresentReason); return }
         guard !selection.isEmpty else { return }
         if selection.count == 1, let scene = selection.first {
             store.grade(scene, score: score)
@@ -789,6 +792,7 @@ struct ScenesView: View {
     private func bulkToggleFavorite(in filtered: [SceneRecord]) {
         // "Make it so" semantics: any non-favorite → favorite all.
         let selection = orderedSelection(in: filtered)
+        guard selection.allSatisfy(\.isPresent) else { store.presentError(VideoRecord.notPresentReason); return }
         let makeFavorite = selection.contains { !$0.favorite }
         let changed = selection.filter { $0.favorite != makeFavorite }
         if changed.count == 1, let scene = changed.first {
@@ -800,6 +804,7 @@ struct ScenesView: View {
 
     private func bulkSetHidden(in filtered: [SceneRecord]) {
         let selection = orderedSelection(in: filtered)
+        guard selection.allSatisfy(\.isPresent) else { store.presentError(VideoRecord.notPresentReason); return }
         let hide = selection.contains { !$0.excluded }
         let changed = selection.filter { $0.excluded != hide }
         if changed.count == 1, let scene = changed.first {
@@ -949,6 +954,29 @@ struct SceneCard: View {
     }
 
     var body: some View {
+        if scene.isPresent {
+            presentCard
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Not on this Mac", systemImage: "video.slash")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                Text(scene.videoFilename).font(.caption).lineLimit(1)
+                Text("\(scene.startTime.timecode)–\(scene.endTime.timecode)").font(.caption.monospacedDigit())
+                SceneTagLine(tags: scene.tags)
+                if let narrative = scene.narrative { Text(narrative).font(.caption).textSelection(.enabled) }
+                Button("Transcript", systemImage: "text.quote", action: onTranscript)
+                    .lineLimit(1).fixedSize()
+                if let video = store.videos.first(where: { $0.id == scene.videoID }) {
+                    MissingFootageDownloadButton(video: video)
+                }
+            }
+            .padding(Theme.spaceS)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.background.secondary, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+        }
+    }
+
+    private var presentCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             SceneInlinePlayer(scene: scene)
                 .aspectRatio(9 / 16, contentMode: .fit)

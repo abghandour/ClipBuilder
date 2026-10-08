@@ -87,10 +87,10 @@ struct SyncEngineTests {
         _ = try await a.database.addLesson(text: "Local", pinned: true, evidence: "")
         let raw = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
         let before = try raw.query("SELECT sequence FROM sync_outbox").compactMap { $0["sequence"]?.intValue }
-        await server.setVersion(3)
+        await server.setVersion(4)
         let sync = engine(a, server, scope)
-        await #expect(throws: SyncError.needsUpdate(3)) { try await sync.sync() }
-        #expect(await sync.status == .needsUpdate(serverVersion: 3))
+        await #expect(throws: SyncError.needsUpdate(4)) { try await sync.sync() }
+        #expect(await sync.status == .needsUpdate(serverVersion: 4))
         #expect(try raw.query("SELECT sequence FROM sync_outbox").compactMap { $0["sequence"]?.intValue } == before)
         #expect(try raw.query("SELECT * FROM sync_binding").isEmpty)
         #expect(try raw.query("SELECT * FROM sync_cursors").isEmpty)
@@ -652,5 +652,212 @@ extension SyncEngineTests {
         try await server.seed(remote, table: "ig_media")
         try await sync.sync()
         #expect(await sync.changedTables.contains("ig_media"))
+    }
+}
+
+extension SyncEngineTests {
+    @Test("Two Macs analyzing identical footage in the same second keep both runs and scenes")
+    func footageRunsConverge() async throws {
+        let a = try SyncTestFolder(), b = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let rawA = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
+        let rawB = try SQLiteConnection(path: b.url.appendingPathComponent("profile.db").path)
+        for (raw, id, path) in [(rawA, 10, "/private/tmp/mac-a.mov"), (rawB, 90, "/private/tmp/mac-b.mov")] {
+            try raw.execute("INSERT INTO videos(id, hash, filename, path) VALUES (?, 'same-footage', 'Fight.mov', ?)", [.integer(Int64(id)), .text(path)])
+            try raw.execute("""
+                INSERT INTO analysis_runs(id, video_id, name, created_at)
+                VALUES (?, ?, 'Same name', '2026-10-07 12:00:00')
+                """, [.integer(Int64(id)), .integer(Int64(id))])
+            try raw.execute("INSERT INTO scenes(video_id, run_id, start_time, end_time) VALUES (?, ?, 0, 10)", [.integer(Int64(id)), .integer(Int64(id))])
+        }
+        let ea = engine(a, server, scope), eb = engine(b, server, scope)
+        try await ea.sync()
+        try await eb.sync()
+        try await ea.sync()
+        try await eb.sync()
+        for raw in [rawA, rawB] {
+            #expect(try raw.query("SELECT * FROM videos").count == 1)
+            #expect(try raw.query("SELECT * FROM analysis_runs").count == 2)
+            #expect(try raw.query("SELECT * FROM scenes").count == 2)
+            #expect(try raw.query("PRAGMA foreign_key_check").isEmpty)
+        }
+        #expect(try rawA.query("SELECT path FROM videos").first?["path"]?.stringValue == "/private/tmp/mac-a.mov")
+        #expect(try rawB.query("SELECT path FROM videos").first?["path"]?.stringValue == "/private/tmp/mac-b.mov")
+        let firstA = try #require(try await a.database.fetchAnalysisRuns().first)
+        let firstB = try #require(try await b.database.fetchAnalysisRuns().first)
+        let identityA = try rawA.query("SELECT sync_id FROM analysis_runs WHERE id = ?", [.integer(firstA.id)]).first?["sync_id"]?.stringValue
+        let identityB = try rawB.query("SELECT sync_id FROM analysis_runs WHERE id = ?", [.integer(firstB.id)]).first?["sync_id"]?.stringValue
+        #expect(identityA == identityB)
+        #expect(try await a.database.syncPendingCount() == 0)
+        #expect(try await b.database.syncPendingCount() == 0)
+    }
+
+    @Test("Footage arrives without a path; later hash import adopts its row and analysis")
+    func footageBeforeFileAndImport() async throws {
+        let a = try SyncTestFolder(), b = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let rawA = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
+        let rawB = try SQLiteConnection(path: b.url.appendingPathComponent("profile.db").path)
+        let file = b.url.appendingPathComponent("local.mov")
+        try Data("identical footage fixture".utf8).write(to: file)
+        let hash = try ContentHash.fingerprint(of: file)
+        try rawA.execute("INSERT INTO videos(id, hash, filename, path, duration) VALUES (7, ?, 'Shared.mov', '/other-mac/secret.mov', 10)", [.text(hash)])
+        try rawA.execute("INSERT INTO analysis_runs(id, video_id, name) VALUES (7, 7, 'Shared analysis')")
+        try rawA.execute("INSERT INTO scenes(video_id, run_id, start_time, end_time) VALUES (7, 7, 0, 10)")
+        let ea = engine(a, server, scope), eb = engine(b, server, scope)
+        try await ea.sync()
+        try await eb.sync()
+        let missing = try #require(try await b.database.fetchVideos().first)
+        #expect(missing.path == nil)
+        #expect(!missing.isPresent)
+        #expect(throws: CocoaError.self) { try missing.requirePresent() }
+        let identity = try #require(try rawB.query("SELECT sync_id FROM videos").first?["sync_id"]?.stringValue)
+        let scenes = try await b.database.fetchScenes()
+        #expect(scenes.count == 1)
+        #expect(scenes.first?.isPresent == false)
+        var clip = TimelineClip()
+        clip.sceneID = scenes.first?.id
+        var document = TimelineDocument()
+        document.videoTrack = [clip]
+        #expect(FootageAvailability.missingSource(document: document, scenes: scenes) == "Shared.mov")
+        let adopted = try await b.database.registerVideo(hash: hash, filename: file.lastPathComponent, path: file.path,
+                                                         duration: 10, width: 1920, height: 1080, wide: true)
+        #expect(adopted == missing.id)
+        #expect(try await b.database.video(id: adopted)?.isPresent == true)
+        #expect(try rawB.query("SELECT sync_id FROM videos").first?["sync_id"]?.stringValue == identity)
+        #expect(try rawB.query("SELECT * FROM videos").count == 1)
+        #expect(try await b.database.fetchScenes().first?.isPresent == true)
+        try await eb.sync()
+        #expect(await server.allRows(table: "videos").allSatisfy { $0["path"] == nil })
+        try FileManager.default.removeItem(at: file)
+        #expect(try await b.database.video(id: adopted)?.isPresent == false)
+    }
+
+    @Test("Scenes park until a missing run arrives, including nullable self and person references")
+    func footageParkedParents() async throws {
+        let a = try SyncTestFolder(), b = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let raw = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
+        try raw.execute("INSERT INTO videos(id, hash, filename, path) VALUES (1, 'parked', 'Shared.mov', '/mac-a.mov')")
+        try raw.execute("INSERT INTO analysis_runs(id, video_id, name) VALUES (1, 1, 'Run')")
+        try raw.execute("INSERT INTO scenes(video_id, run_id, start_time, end_time) VALUES (1, 1, 0, 10)")
+        try raw.execute("INSERT INTO person_markers(video_id, at_time, x, y, width, height) VALUES (1, 0, 0, 0, 1, 1)")
+        try await a.database.bindSync(to: scope)
+        try await a.database.canonicalizeSyncIdentities(scope: scope)
+        var runs: [SyncMapping.WireRow] = []
+        for name in ["videos", "analysis_runs", "scenes", "person_markers"] {
+            let table = try SyncTable.named(name)
+            let changes = try await a.database.pendingSyncChanges(scope: scope, limit: 200, table: table)
+            for change in changes {
+                if name == "analysis_runs" { runs.append(change.wire) }
+                else { try await server.seed(change.wire, table: name) }
+            }
+        }
+        let eb = engine(b, server, scope)
+        try await eb.sync()
+        let rawB = try SQLiteConnection(path: b.url.appendingPathComponent("profile.db").path)
+        #expect(try rawB.query("SELECT * FROM scenes").isEmpty)
+        #expect(try rawB.query("SELECT * FROM sync_pending_parents WHERE \"table\" = 'scenes'").count == 1)
+        #expect(try rawB.query("SELECT * FROM person_markers WHERE person_id IS NULL").count == 1)
+        let cursor = try await b.database.syncCursor(table: SyncTable.named("scenes"))
+        for run in runs { try await server.seed(run, table: "analysis_runs") }
+        try await eb.sync()
+        #expect(try rawB.query("SELECT * FROM scenes").count == 1)
+        #expect(try rawB.query("SELECT * FROM sync_pending_parents").isEmpty)
+        #expect(try await b.database.syncCursor(table: SyncTable.named("scenes")) == cursor)
+        #expect(try await b.database.syncPendingCount() == 0)
+    }
+}
+
+extension SyncEngineTests {
+    @Test("Duplicate fight event natural keys preserve both rows and do not stall later cycles")
+    func duplicateFightEventKeys() async throws {
+        let a = try SyncTestFolder(), b = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let raw = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
+        try raw.execute("INSERT INTO videos(id, hash, filename, path) VALUES (1, 'fight', 'Fight.mov', NULL)")
+        for points in [1.0, 2.0] {
+            try raw.execute("INSERT INTO fight_events(video_id, at_time, fighter_key, action, points) VALUES (1, 1.2345678901234567, 'blue', 'hit', ?)", [.real(points)])
+        }
+        let ea = engine(a, server, scope), eb = engine(b, server, scope)
+        try await ea.sync()
+        try await eb.sync()
+        try await ea.sync()
+        let rows = try await b.database.fetchFightEvents()
+        #expect(rows.count == 2)
+        #expect(await server.allRows(table: "fight_events").count == 2)
+        #expect(try await a.database.syncPendingCount() == 0)
+        #expect(await ea.changedTables.isEmpty)
+    }
+
+    @Test("Two members' transcription segments and turns stay in complete independent sets")
+    func independentTranscriptionSets() async throws {
+        let a = try SyncTestFolder(), b = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        for (folder, label, date) in [(a, "A", "2026-10-07T10:00:00Z"), (b, "B", "2026-10-07T11:00:00Z")] {
+            let raw = try SQLiteConnection(path: folder.url.appendingPathComponent("profile.db").path)
+            try raw.execute("INSERT INTO videos(id, hash, filename, path) VALUES (1, 'same', 'Interview.mov', NULL)")
+            try await folder.database.replaceTranscripts(videoID: 1, language: "en", isTranslation: false,
+                segments: [TranscriptSegment(start: 0, end: 1, text: label + "1"), TranscriptSegment(start: 1, end: 2, text: label + "2")], provider: "test", model: label)
+            try raw.execute("UPDATE transcripts SET transcription_created_at = ?", [.text(date)])
+            try raw.execute("""
+                INSERT INTO speaker_turns(video_id, start_time, end_time, cluster, transcription_key, transcription_created_at)
+                SELECT video_id, start_time, end_time, 1, transcription_key, transcription_created_at FROM transcripts
+                """)
+        }
+        let ea = engine(a, server, scope), eb = engine(b, server, scope)
+        try await ea.sync()
+        try await eb.sync()
+        try await ea.sync()
+        try await eb.sync()
+        for folder in [a, b] {
+            let raw = try SQLiteConnection(path: folder.url.appendingPathComponent("profile.db").path)
+            #expect(try raw.query("SELECT * FROM transcripts").count == 4)
+            let sets = try await folder.database.transcriptionSets(videoID: 1)
+            #expect(sets.count == 2)
+            for set in sets {
+                let rows = try await folder.database.fetchTranscripts(videoID: 1, transcriptionKey: set.id)
+                #expect(rows.count == 2)
+                #expect(Set(rows.map { String($0.text.prefix(1)) }).count == 1)
+                #expect(try await folder.database.fetchSpeakerTurns(videoID: 1, transcriptionKey: set.id).count == 2)
+            }
+            #expect(try await folder.database.fetchTranscripts(videoID: 1).map(\.text) == ["B1", "B2"])
+            #expect(try await folder.database.transcriptSegments(videoID: 1, start: 0, end: 2).map(\.text) == ["B1", "B2"])
+            #expect(try await folder.database.syncPendingCount() == 0)
+        }
+    }
+
+    @Test("First synced run defaults are consumed once and never apply to locally analyzed footage")
+    func firstSyncedRunDefaultOnly() async throws {
+        let a = try SyncTestFolder(), b = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let raw = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
+        try raw.executeScript("""
+            INSERT INTO videos(id, hash, filename, path) VALUES (1, 'new', 'New.mov', NULL);
+            INSERT INTO analysis_runs(video_id, name, created_at) VALUES (1, 'Old', '2026-10-06'), (1, 'New', '2026-10-07');
+            """)
+        try await engine(a, server, scope).sync()
+        try await engine(b, server, scope).sync()
+        #expect(try await a.database.consumeSyncedRunDefaults().isEmpty)
+        let defaults = try await b.database.consumeSyncedRunDefaults()
+        let newest = try #require(try await b.database.fetchAnalysisRuns().first)
+        #expect(defaults[newest.videoID] == newest.id)
+        // A user can now clear the selection. The next cycle does not select again.
+        try await engine(b, server, scope).sync()
+        #expect(try await b.database.consumeSyncedRunDefaults().isEmpty)
+    }
+
+    @Test("A teammate's Drive copy cannot overwrite this Mac's existing copy")
+    func prefersLocalDriveCopy() async throws {
+        let a = try SyncTestFolder(), b = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        for (folder, drive) in [(a, "drive-A"), (b, "drive-B")] {
+            let raw = try SQLiteConnection(path: folder.url.appendingPathComponent("profile.db").path)
+            try raw.execute("INSERT INTO videos(id, hash, filename, path, drive_file_id, drive_link) VALUES (1, 'same', 'Same.mov', NULL, ?, ?)", [.text(drive), .text(drive + "-link")])
+        }
+        try await engine(a, server, scope).sync()
+        try await engine(b, server, scope).sync()
+        #expect(try await b.database.video(id: 1)?.driveFileID == "drive-B")
+        #expect(try await b.database.video(id: 1)?.driveLink == "drive-B-link")
     }
 }

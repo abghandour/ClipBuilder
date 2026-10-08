@@ -111,6 +111,7 @@ extension Database {
         }
         sql += " ORDER BY v.filename COLLATE NOCASE, s.start_time"
         let sceneRows = try connection.query(sql, params)
+        try refreshFootageAvailability()
 
         // Scope the tag/grade lookups to the filter — otherwise a
         // single-video fetch pays for the whole library's tags and grades.
@@ -192,7 +193,8 @@ extension Database {
                 videoDuration: row["video_duration"]?.doubleValue ?? 0,
                 videoWidth: Int(row["video_width"]?.intValue ?? 0),
                 videoHeight: Int(row["video_height"]?.intValue ?? 0),
-                wide: row["video_wide"]?.boolValue ?? false)
+                wide: row["video_wide"]?.boolValue ?? false,
+                sourceAvailable: FootageAvailability.isPresent(path: row["video_path"]?.stringValue))
         }
     }
 
@@ -305,11 +307,12 @@ extension Database {
 
     /// All batches joined with their video and scene count, newest first.
     func fetchAnalysisRuns() throws -> [AnalysisRun] {
-        try connection.query("""
+        try refreshFootageAvailability()
+        return try connection.query("""
             SELECT r.*, v.filename AS video_filename, v.path AS video_path,
                    (SELECT COUNT(*) FROM scenes s WHERE s.run_id = r.id) AS scene_count
             FROM analysis_runs r JOIN videos v ON v.id = r.video_id
-            ORDER BY r.created_at DESC, r.id DESC
+            ORDER BY r.created_at DESC, r.sync_id DESC
             """).map { row in
             AnalysisRun(id: row["id"]?.intValue ?? 0,
                         videoID: row["video_id"]?.intValue ?? 0,
@@ -324,7 +327,8 @@ extension Database {
                         videoFilename: row["video_filename"]?.stringValue ?? "",
                         videoPath: row["video_path"]?.stringValue ?? "",
                         sceneCount: Int(row["scene_count"]?.intValue ?? 0),
-                        settingsJSON: row["settings_json"]?.stringValue, modelsJSON: row["models_json"]?.stringValue)
+                        settingsJSON: row["settings_json"]?.stringValue, modelsJSON: row["models_json"]?.stringValue,
+                        sourceAvailable: FootageAvailability.isPresent(path: row["video_path"]?.stringValue))
         }
     }
 

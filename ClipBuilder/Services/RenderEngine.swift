@@ -118,6 +118,10 @@ actor RenderEngine {
                      speed: Double = 1,
                      mask: URL? = nil,
                      output: URL) async throws {
+        let source = try await DriveMediaResolver.shared.ensureLocal(source)
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw CocoaError(.fileReadNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "\(source.lastPathComponent): Not on this Mac. Download or import the source file first."])
+        }
         let hasAudio = mute ? false : await FFmpeg.hasAudioStream(source)
         var arguments = ["-y", "-ss", String(format: "%.2f", start), "-i", source.path]
         if !hasAudio { arguments += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"] }

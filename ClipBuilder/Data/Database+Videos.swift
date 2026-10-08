@@ -291,9 +291,11 @@ extension Database {
         try connection.query("""
             SELECT pm.*, v.path AS video_path FROM person_markers pm
             JOIN videos v ON v.id = pm.video_id
-            WHERE pm.person_id = ? ORDER BY pm.id LIMIT 1
-            """, [.integer(personID)]).first.map { row in
-            (row["video_path"]?.stringValue ?? "",
+            WHERE pm.person_id = ? AND v.path IS NOT NULL ORDER BY pm.id LIMIT 1
+            """, [.integer(personID)]).first.flatMap { row in
+            guard let path = row["video_path"]?.stringValue,
+                  FileManager.default.fileExists(atPath: path) else { return nil }
+            return (path,
              PersonMarker(id: row["id"]?.intValue ?? 0,
                           videoID: row["video_id"]?.intValue ?? 0,
                           atTime: row["at_time"]?.doubleValue ?? 0,
@@ -324,7 +326,8 @@ extension Database {
         guard !createdDatesBackfilled else { return }
         let rows = try connection.query("SELECT id, path, discovered_at FROM videos WHERE created_at IS NULL")
         for row in rows {
-            let date = await creationDates.resolve(path: row["path"]?.stringValue ?? "",
+            guard let path = row["path"]?.stringValue else { continue }
+            let date = await creationDates.resolve(path: path,
                                                   discoveredAt: row["discovered_at"]?.stringValue)
             try connection.execute("UPDATE videos SET created_at = ? WHERE id = ? AND created_at IS NULL",
                                    [.text(date), .integer(row["id"]?.intValue ?? 0)])
@@ -356,7 +359,7 @@ extension Database {
             id: row["id"]?.intValue ?? 0,
             hash: row["hash"]?.stringValue ?? "",
             filename: row["filename"]?.stringValue ?? "",
-            path: row["path"]?.stringValue ?? "",
+            path: row["path"]?.stringValue,
             duration: row["duration"]?.doubleValue ?? 0,
             width: Int(row["width"]?.intValue ?? 0),
             height: Int(row["height"]?.intValue ?? 0),
@@ -385,7 +388,9 @@ extension Database {
             driveFileID: row["drive_file_id"]?.stringValue,
             driveLink: row["drive_link"]?.stringValue,
             driveOffloaded: row["drive_offloaded"]?.boolValue ?? false,
-            driveShared: row["drive_shared"]?.boolValue ?? false)
+            driveShared: row["drive_shared"]?.boolValue ?? false,
+            sourceAvailable: FootageAvailability.refresh(path: row["path"]?.stringValue, driveFileID: row["drive_file_id"]?.stringValue),
+            locallyDownloaded: FootageAvailability.isDownloaded(path: row["path"]?.stringValue))
     }
 
     func setVideoType(id: Int64, type: String?) throws {
@@ -407,19 +412,22 @@ extension Database {
 
     func replaceSpeakerTurns(videoID: Int64, turns: [SpeakerTurn]) throws {
         try connection.transaction {
-            try connection.execute("DELETE FROM speaker_turns WHERE video_id = ?", [.integer(videoID)])
+            let transcript = try latestTranscription(videoID: videoID)
+            let key = transcript.key ?? UUID().uuidString.lowercased()
+            let createdAt = transcript.createdAt ?? Date().ISO8601Format()
+            try connection.execute("DELETE FROM speaker_turns WHERE video_id = ? AND transcription_key IS ?", [.integer(videoID), .text(key)])
             for turn in turns {
                 try connection.execute("""
                     INSERT INTO speaker_turns
                         (video_id, start_time, end_time, cluster, confidence, picture_side,
-                         picture_confidence, resolved_side, person_key, tile)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         picture_confidence, resolved_side, person_key, tile, transcription_key, transcription_created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .real(turn.start), .real(turn.end),
                           .integer(Int64(turn.cluster)), .real(turn.confidence),
                           .text(turn.pictureSide.rawValue), .real(turn.pictureConfidence),
                           .text(turn.resolvedSide.rawValue),
                           turn.personKey.map(SQLValue.text) ?? .null,
-                          turn.tile.map { SQLValue.integer(Int64($0)) } ?? .null])
+                          turn.tile.map { SQLValue.integer(Int64($0)) } ?? .null, .text(key), .text(createdAt)])
             }
         }
     }
@@ -457,10 +465,12 @@ extension Database {
             }
     }
 
-    func fetchSpeakerTurns(videoID: Int64) throws -> [SpeakerTurn] {
-        try connection.query("""
-            SELECT * FROM speaker_turns WHERE video_id = ? ORDER BY start_time, id
-            """, [.integer(videoID)]).map { row in
+    func fetchSpeakerTurns(videoID: Int64, transcriptionKey: String? = nil) throws -> [SpeakerTurn] {
+        let transcript = try latestTranscription(videoID: videoID)
+        let key = try transcriptionKey ?? transcript.key ?? connection.query("SELECT transcription_key FROM speaker_turns WHERE video_id = ? ORDER BY transcription_created_at DESC, transcription_key DESC LIMIT 1", [.integer(videoID)]).first?["transcription_key"]?.stringValue
+        return try connection.query("""
+            SELECT * FROM speaker_turns WHERE video_id = ? AND transcription_key IS ? ORDER BY start_time, id
+            """, [.integer(videoID), key.map(SQLValue.text) ?? .null]).map { row in
                 SpeakerTurn(id: row["id"]?.intValue ?? 0,
                             videoID: videoID,
                             start: row["start_time"]?.doubleValue ?? 0,

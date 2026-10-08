@@ -132,24 +132,24 @@ struct WizardFormPlanTests {
             providerIssue: "No AI provider is available").contains { $0.isBlocking })
     }
 
-    @Test func highlightsRequireTheSelectedRecordingsOriginalTranscriptAndExchanges() {
+    @Test func highlightsRequireTheSelectedRecordingsOriginalTranscriptAndExchanges() throws {
         let plan = WizardFormPlan(recipe: .podcastHighlights)
         let video = Fixtures.video()
         var exchange = Fixtures.scene()
         exchange.tags = ["podcast-exchange"]
         #expect(plan.readiness(pool: [exchange], videos: [video], transcripts: [video.id],
-            selectedVideoPath: video.path) == [.ok])
+            selectedVideoPath: try #require(video.path)) == [.ok])
         #expect(plan.readiness(pool: [exchange], videos: [video], transcripts: [99],
-            selectedVideoPath: video.path) == [.warning(message: "Transcript required", action: .analyze)])
+            selectedVideoPath: try #require(video.path)) == [.warning(message: "Transcript required", action: .analyze)])
         #expect(plan.readiness(pool: [], videos: [video], transcripts: [video.id],
-            selectedVideoPath: video.path) == [.warning(message: "No exchanges analyzed yet", action: .analyze)])
+            selectedVideoPath: try #require(video.path)) == [.warning(message: "No exchanges analyzed yet", action: .analyze)])
         exchange.excluded = true
         #expect(plan.readiness(pool: [exchange], videos: [video], transcripts: [video.id],
-            selectedVideoPath: video.path).contains { $0.isBlocking })
+            selectedVideoPath: try #require(video.path)).contains { $0.isBlocking })
         exchange.excluded = false
         exchange.ignored = true
         #expect(plan.readiness(pool: [exchange], videos: [video], transcripts: [video.id],
-            selectedVideoPath: video.path).contains { $0.isBlocking })
+            selectedVideoPath: try #require(video.path)).contains { $0.isBlocking })
         #expect(plan.readiness(pool: [exchange], videos: [video], transcripts: [video.id],
             selectedVideoPath: "/missing.mp4") == [.warning(message: "Choose a recording", action: .sources)])
     }

@@ -121,7 +121,7 @@ nonisolated struct DriveMedia: Codable, Hashable, Sendable, Identifiable {
 extension VideoRecord {
     nonisolated var driveMedia: DriveMedia {
         DriveMedia(
-            kind: .source, recordID: id, path: path, fileID: driveFileID,
+            kind: .source, recordID: id, path: path ?? "", fileID: driveFileID,
             link: driveLink, offloaded: driveOffloaded, shared: driveShared)
     }
 }

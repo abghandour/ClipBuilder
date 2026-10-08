@@ -1114,6 +1114,7 @@ final class AppStore {
     /// hand teach the tracker their voices — and re-cut the rows by the
     /// new turns. No model call; failures belong to the owning job.
     func mapSpeakersAgain(video: VideoRecord, status: (@Sendable (String) -> Void)? = nil) async throws -> Bool {
+        try video.requirePresent()
         guard let database else { throw AIError.notConfigured("No profile is open.") }
         let generation = profileGeneration
         appendLog(\.analysisLog, ["\(video.filename): mapping speakers again"])
@@ -1230,7 +1231,7 @@ final class AppStore {
         if scenes != snapshot.scenes { scenes = snapshot.scenes }
         // Published Library lists can refresh while an open script retains its
         // fixed document baseline. Only the latest ordinary hydration is queued.
-        let paths = Set(snapshot.videos.filter { $0.driveFileID != nil }.map(\.path))
+        let paths = Set(snapshot.videos.filter { $0.driveFileID != nil }.compactMap(\.path))
         builderLibraryHydration.refresh { [weak self] in
             guard let self, generation == self.profileGeneration else { return }
             if self.builder.driveBackedPaths != paths { self.builder.updateDriveBackedPaths(paths) }

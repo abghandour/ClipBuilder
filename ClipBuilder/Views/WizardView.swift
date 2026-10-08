@@ -446,7 +446,7 @@ struct WizardView: View {
                 proposedSceneIDs = nil
             }
         }
-        .onChange(of: podcastHighlightVideos.map(\.path)) {
+        .onChange(of: podcastHighlightVideos.compactMap(\.path)) {
             if !podcastHighlightVideos.contains(where: { $0.path == highlightVideoPath }) {
                 highlightVideoPath = podcastHighlightVideos.first?.path ?? ""
             }
@@ -1060,7 +1060,7 @@ struct WizardView: View {
                                  selectedPaths: highlightVideoPath.isEmpty ? [] : [highlightVideoPath],
                                  isExpanded: $sourceGridExpanded,
                                  subtitle: { recordingSubtitle($0) }) { video in
-                    highlightVideoPath = highlightVideoPath == video.path ? "" : video.path
+                    highlightVideoPath = highlightVideoPath == video.path ? "" : (video.path ?? "")
                 }
             } else {
                 HStack {
@@ -1073,7 +1073,7 @@ struct WizardView: View {
                 // Every analyzed video contributes until one is clicked off;
                 // the grid then narrows the run to the videos still selected.
                 WizardSourceGrid(videos: analyzedVideos,
-                                 selectedPaths: Set(analyzedVideos.filter(videoContributes).map(\.path)),
+                                 selectedPaths: Set(analyzedVideos.filter(videoContributes).compactMap(\.path)),
                                  isExpanded: $sourceGridExpanded,
                                  subtitle: { analyzedSubtitle($0) }) { video in
                     toggleVideo(video)

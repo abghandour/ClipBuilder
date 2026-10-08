@@ -46,10 +46,8 @@ actor Analyzer {
 
     /// Size and modification date: the two values a copy in progress changes.
     nonisolated private static func signature(of url: URL) -> (size: Int?, modified: Date?)? {
-        // A fresh URL each time: NSURL caches resource values per instance.
-        guard let values = try? URL(fileURLWithPath: url.path).resourceValues(
-            forKeys: [.fileSizeKey, .contentModificationDateKey]) else { return nil }
-        return (values.fileSize, values.contentModificationDate)
+        guard let values = try? FileManager.default.attributesOfItem(atPath: url.path) else { return nil }
+        return ((values[.size] as? NSNumber)?.intValue, values[.modificationDate] as? Date)
     }
 
     /// Files modified this recently may still be arriving (Finder and the
@@ -126,7 +124,7 @@ actor Analyzer {
         // own row at the same path, that row is a duplicate with nothing
         // attached (it was never analyzed). Remove it.
         let registered = try await database.fetchVideos()
-        let byPath = Dictionary(grouping: registered, by: \.path)
+        let byPath = Dictionary(grouping: registered.filter { $0.path != nil }, by: \.path)
         let ghosts = byPath.values.flatMap { rows -> [VideoRecord] in
             guard rows.contains(where: { $0.duration > 0 }) else { return [] }
             return rows.filter { $0.duration <= 0 }
@@ -940,6 +938,7 @@ actor Analyzer {
     func classifyLongRecording(video: VideoRecord, provider: String?, model: String?,
                                log: @escaping @Sendable (String) -> Void, useLocal: Bool = false,
                                speechFraction: Double? = nil, cuts: [Double]? = nil) async throws -> VideoType? {
+        try video.requirePresent()
         guard video.type == nil, video.duration >= 300 else { return video.type }
         let times = (0..<5).map { (Double($0) + 0.5) * video.duration / 5 }
         let frames = await extractFrames(url: video.url, timestamps: times, log: log)
@@ -981,6 +980,7 @@ actor Analyzer {
                           sampleTimes: [Double]? = nil,
                           log: @escaping @Sendable (String) -> Void) async throws
         -> (roster: [VideoPersonRecord], suggestedFilename: String?) {
+        try video.requirePresent()
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let duration = video.duration > 0 ? video.duration : await FFmpeg.duration(of: video.url)
         let frames: [AIFrame]
@@ -1119,6 +1119,7 @@ actor Analyzer {
                      log: @escaping @Sendable (String) -> Void, useLocal: Bool = false,
                      detectors: VideoDetectors? = nil) async throws
         -> (start: Double, end: Double, reason: String, provenance: AIProvenance) {
+        try video.requirePresent()
         try Task.checkCancellation()
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         let duration = video.duration > 0 ? video.duration : await FFmpeg.duration(of: video.url)
@@ -1230,6 +1231,7 @@ actor Analyzer {
     func scoreFightAction(video: VideoRecord, scenes: [SceneRecord], profile: BrandProfile,
                           database: Database, provider: String? = nil, model: String? = nil,
                           log: @escaping @Sendable (String) -> Void) async throws -> Int {
+        try video.requirePresent()
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
         // Only footage typed fight/recap gets the pass — anything else
         // (including untyped) shouldn't burn a dense AI pass, and the UI
@@ -1521,6 +1523,7 @@ actor Analyzer {
                        log: @escaping @Sendable (String) -> Void,
                        progress: @escaping @Sendable (Double, String) -> Void) async throws
         -> (runID: Int64?, newPeople: [DetectedNewPerson], suggestedFilename: String?) {
+        try video.requirePresent()
         return try await AIRunCapture.context.withValue(AIRunCapture.current ?? AIRunCapture()) {
         // Where an interrupted run got to: the whole-video answer and every
         // finished window are reused, and each new piece is written as it

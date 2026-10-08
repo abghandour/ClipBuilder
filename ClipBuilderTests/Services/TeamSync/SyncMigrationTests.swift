@@ -52,7 +52,7 @@ struct SyncMigrationTests {
         #expect(ids.count == 2)
         #expect(Set(ids).count == 2)
         #expect(ids.allSatisfy { UUID(uuidString: $0) != nil })
-        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 27)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try await migrated.fetchLessons().map(\.id) == [7, 42])
         #expect(try await migrated.syncPendingCount() == 0)
         #expect(throws: SQLiteError.self) {
@@ -90,7 +90,7 @@ extension SyncMigrationTests {
         try raw.execute("DELETE FROM sync_outbox")
         try raw.execute("PRAGMA user_version = 24")
         let migrated = try Database(path: path)
-        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 27)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try await migrated.syncPendingCount() == 0)
         try await migrated.bindSync(to: SyncScope(teamID: UUID(), profileID: UUID()))
         for table in SyncTable.all {
@@ -166,7 +166,7 @@ extension SyncMigrationTests {
         try raw.execute("PRAGMA user_version = 25")
         let reopened = try Database(path: folder.url.appendingPathComponent("profile.db"))
         #expect(try await reopened.syncPendingCount() == 0)
-        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 27)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.query("SELECT sync_id FROM wizard_lessons WHERE id = ?", [.integer(id)]).first?["sync_id"]?.stringValue == identity)
         try await reopened.updateLesson(id: id, text: "Still local", pinned: false)
         #expect(try await reopened.syncPendingCount() == 0)
@@ -196,7 +196,8 @@ extension SyncMigrationTests {
         #expect(try await reopened.syncScope() == scope)
         #expect(try await reopened.syncCursor() == cursor)
         #expect(try await reopened.syncPendingCount() == 1)
-        #expect(try await !reopened.initialSyncPending())
+        // Phase 2 reopens reconciliation for its newly shared tables.
+        #expect(try await reopened.initialSyncPending())
         #expect(try raw.query("SELECT * FROM sync_profile_adoption").isEmpty)
         #expect(try raw.query("SELECT * FROM sync_pending_parents").isEmpty)
     }
@@ -228,5 +229,65 @@ extension SyncMigrationTests {
         try await folder.database.bindSync(to: other)
         #expect(try await folder.database.syncScope() == other)
         #expect(try await folder.database.syncPendingCount() == 2)
+    }
+}
+
+extension SyncMigrationTests {
+    @Test("Version 27 preserves local footage and children, permits NULL paths, and seeds attached profiles", arguments: [false, true])
+    func version27Footage(attached: Bool) async throws {
+        let directory = URL(fileURLWithPath: "/private/tmp/ClipBuilderV28-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("v27.db")
+        let raw = try SQLiteConnection(path: path.path)
+        // Construct the actual v27 schema: NOT NULL path, no footage sync IDs.
+        try raw.executeScript(Database.schema)
+        try Database.migrate(raw)
+        try Database.migrateTeamSync(raw)
+        try Database.migrateBrandSync(raw, tables: SyncTable.all.filter { !SyncTable.footage.contains($0) })
+        try raw.executeScript("""
+            INSERT INTO videos(id, hash, filename, path, duration, drive_file_id)
+                VALUES (42, 'existing-hash', 'Existing.mov', '/private/tmp/existing.mov', 12, 'drive-id');
+            INSERT INTO analysis_runs(id, video_id, name) VALUES (17, 42, 'Existing run');
+            INSERT INTO scenes(id, video_id, run_id, start_time, end_time) VALUES (9, 42, 17, 0, 12);
+            INSERT INTO scene_tags(scene_id, tag) VALUES (9, 'fight');
+            INSERT INTO transcripts(video_id, start_time, end_time, text) VALUES (42, 0, 12, 'Keep transcript');
+            UPDATE sync_bootstrap SET complete = 1;
+            PRAGMA user_version = 27;
+            """)
+        if attached {
+            try raw.execute("INSERT INTO sync_binding VALUES (1, ?, ?)", [.text(UUID().uuidString), .text(UUID().uuidString)])
+            try raw.execute("INSERT INTO sync_cursors VALUES ('wizard_lessons', '2026-10-06T00:00:00Z', ?)", [.text(UUID().uuidString)])
+        }
+        let migrated = try Database(path: path)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
+        #expect(try raw.query("PRAGMA foreign_key_check").isEmpty)
+        #expect(try await migrated.video(id: 42)?.path == "/private/tmp/existing.mov")
+        #expect(try await migrated.video(id: 42)?.driveFileID == "drive-id")
+        #expect(try await migrated.fetchScenes(videoID: 42).first?.tags == ["fight"])
+        #expect(try await migrated.fetchTranscripts(videoID: 42).first?.text == "Keep transcript")
+        #expect(try await migrated.fetchAnalysisRuns().first?.id == 17)
+        for table in SyncTable.footage {
+            #expect(try raw.columnNames(of: table.name).contains("sync_id"))
+            for row in try raw.query("SELECT sync_id FROM \(table.name)") {
+                #expect(row["sync_id"]?.stringValue.flatMap(UUID.init(uuidString:)) != nil)
+            }
+        }
+        #expect(try await migrated.syncPendingCount() == 0)
+        if attached {
+            #expect(try !raw.query("SELECT 1 FROM sync_seed_progress").isEmpty)
+            try await migrated.seedSyncRows()
+            #expect(try await migrated.syncPendingCount() == 5)
+        }
+        #expect(try await migrated.initialSyncPending() == attached)
+        if attached { #expect(try await migrated.syncCursor() != nil) }
+        try raw.execute("INSERT INTO videos(hash, filename, path) VALUES ('remote-hash', 'Remote.mov', NULL)")
+        #expect(try raw.query("SELECT path FROM videos WHERE hash = 'remote-hash'").first?["path"]?.stringValue == nil)
+        #expect(throws: SQLiteError.self) {
+            try raw.execute("INSERT INTO videos(hash, filename, path) VALUES ('existing-hash', 'Duplicate.mov', NULL)")
+        }
+        let identities = try raw.query("SELECT sync_id FROM videos ORDER BY id").compactMap { $0["sync_id"]?.stringValue }
+        _ = try Database(path: path)
+        #expect(try raw.query("SELECT sync_id FROM videos ORDER BY id").compactMap { $0["sync_id"]?.stringValue } == identities)
     }
 }

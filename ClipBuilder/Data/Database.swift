@@ -729,13 +729,29 @@ actor Database {
             if try !connection.columnNames(of: "generated_videos").contains("selection_take_id") {
                 try connection.execute("ALTER TABLE generated_videos ADD COLUMN selection_take_id INTEGER REFERENCES wizard_selection_takes(id) ON DELETE SET NULL")
             }
+            // SQLite ignores foreign_keys changes within a transaction.
+            try connection.execute("PRAGMA foreign_keys=OFF")
+            defer { try? connection.execute("PRAGMA foreign_keys=ON") }
             try connection.transaction { [connection] in
                 if stamped < 16 {
                     try connection.execute("UPDATE scenes SET favorite = 1, favorite_provider = curated_provider, favorite_model = curated_model WHERE curated = 1 AND favorite = 0")
                     try connection.execute("UPDATE scenes SET favorite_provider = curated_provider, favorite_model = curated_model WHERE curated = 1 AND favorite = 1 AND favorite_provider IS NULL")
                 }
                 try Self.migrateTeamSync(connection)
+                if stamped < 28 { try Self.migrateFootageSync(connection) }
+                try Self.migrateTranscriptionSets(connection)
                 try Self.migrateBrandSync(connection)
+                if stamped < 28 { try Self.seedFootageSync(connection) }
+                // Legacy orphan data must not prevent opening the profile.
+                // Inspect only children of the rebuilt videos table.
+                for row in try connection.query("SELECT name FROM sqlite_master WHERE type = 'table'") {
+                    guard let name = row["name"]?.stringValue else { continue }
+                    let quoted = name.replacingOccurrences(of: "\"", with: "\"\"")
+                    if try connection.query("PRAGMA foreign_key_list(\"\(quoted)\")").contains(where: { $0["table"]?.stringValue == "videos" }),
+                       try !connection.query("PRAGMA foreign_key_check(\"\(quoted)\")").isEmpty {
+                        NSLog("Team Sync migration: existing foreign key violations in %@", name)
+                    }
+                }
                 try connection.execute("PRAGMA user_version = \(Self.schemaVersion)")
             }
         }
@@ -743,7 +759,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 27
+    static let schemaVersion: Int64 = 29
 
     // MARK: - Helpers
 

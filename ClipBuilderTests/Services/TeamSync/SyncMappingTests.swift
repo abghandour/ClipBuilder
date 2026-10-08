@@ -22,6 +22,7 @@ struct SyncMappingTests {
         #expect(wire["id"] == nil)
         #expect(wire["path"] == nil)
         #expect(wire["thumbnail_path"] == nil)
+        #expect(wire["center_stage_path"] == nil)
         let again = try SyncMapping.wire(local: received, syncID: syncID, scope: scope, preserved: decoded)
         #expect(again == wire)
         #expect(again["future"] == future)
@@ -53,7 +54,7 @@ struct SyncMappingTests {
 }
 
 extension SyncMappingTests {
-    @Test("Every Phase 1 projection preserves portable values and strips local paths", arguments: SyncTable.all)
+    @Test("Every Phase 1 and Phase 2 projection preserves portable values and strips local paths", arguments: SyncTable.all)
     func everyTable(table: SyncTable) throws {
         let scope = SyncScope(teamID: UUID(), profileID: UUID())
         var local: SQLRow = [:]
@@ -65,6 +66,7 @@ extension SyncMappingTests {
         }
         local["path"] = .text("/private/mac-only.mov")
         local["thumbnail_path"] = .text("/private/thumbnail.jpg")
+        local["center_stage_path"] = .text("/private/camera.json")
         let identity = table.name == "profile_documents" ? scope.profileID.uuidString : UUID().uuidString
         let wire = try SyncMapping.wire(local: local, syncID: identity, scope: scope,
                                        preserved: ["future_field": .object(["enabled": .bool(true)])], table: table)
@@ -75,6 +77,7 @@ extension SyncMappingTests {
         }
         #expect(wire["path"] == nil)
         #expect(wire["thumbnail_path"] == nil)
+        #expect(wire["center_stage_path"] == nil)
         #expect(try SyncMapping.wire(local: received, syncID: identity, scope: scope, preserved: decoded, table: table) == wire)
     }
 
@@ -116,5 +119,74 @@ extension SyncMappingTests {
         let moved = URL(fileURLWithPath: "/private/tmp/old-library")
         #expect(actual == TeamSyncAsset.identity(path: moved.appendingPathComponent("a/IMG_0001.jpg").path, kind: "images", knownRoots: [root, moved]))
         #expect(TeamSyncAsset.identity(path: "/unknown/a/IMG_0001.jpg", kind: "images") != TeamSyncAsset.identity(path: "/unknown/b/IMG_0001.jpg", kind: "images"))
+    }
+}
+
+extension SyncMappingTests {
+    @Test("Analysis settings strip nested source files and path arrays")
+    func footageSettingsPrivacy() throws {
+        let table = try SyncTable.named("analysis_runs")
+        let wire = try SyncMapping.wire(local: ["settings_json": .text(#"{"sourceVideoPaths":["/private/secret.mov"],"nested":{"videoFile":"/private/secret.mov","source_folder":"/private/media","trim":4}}"#)],
+            syncID: UUID().uuidString, scope: SyncScope(teamID: UUID(), profileID: UUID()), table: table)
+        let settings = try #require(wire["settings_json"]?.string)
+        #expect(!settings.contains("/private"))
+        #expect(settings.contains("trim"))
+    }
+}
+
+extension SyncMappingTests {
+    @Test("REAL timestamps round trip bit-for-bit through wire JSON")
+    func realTimestampPrecision() throws {
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let table = try SyncTable.named("fight_events")
+        var seed: UInt64 = 0x123456789abcdef
+        for _ in 0..<1000 {
+            seed = seed &* 6364136223846793005 &+ 1
+            let time = Double(seed >> 11) / Double(UInt64(1) << 53) * 100_000
+            let wire = try SyncMapping.wire(local: ["at_time": .real(time)], syncID: UUID().uuidString, scope: scope, table: table)
+            let decoded = try JSONDecoder().decode(SyncMapping.WireRow.self, from: JSONEncoder().encode(wire))
+            let local = try SyncMapping.local(wire: decoded, localID: nil, scope: scope, table: table)
+            #expect(local["at_time"]?.doubleValue?.bitPattern == time.bitPattern)
+        }
+    }
+
+    @Test("Present, offloaded, and truly absent footage have distinct admission states")
+    func footageAvailabilityStates() async throws {
+        let folder = try SyncTestFolder()
+        let raw = try SQLiteConnection(path: folder.url.appendingPathComponent("profile.db").path)
+        let local = folder.url.appendingPathComponent("present.mov")
+        try Data("fixture".utf8).write(to: local)
+        let offloaded = folder.url.appendingPathComponent("offloaded.mov").path
+        try raw.execute("INSERT INTO videos(id, hash, filename, path) VALUES (1, 'present', 'Present.mov', ?)", [.text(local.path)])
+        try raw.execute("INSERT INTO videos(id, hash, filename, path, drive_file_id, drive_offloaded) VALUES (2, 'offloaded', 'Offloaded.mov', ?, 'drive', 1)", [.text(offloaded)])
+        try raw.execute("INSERT INTO videos(id, hash, filename, path) VALUES (3, 'absent', 'Absent.mov', ?)", [.text(folder.url.appendingPathComponent("absent.mov").path)])
+        try raw.execute("INSERT INTO videos(id, hash, filename, path, drive_file_id) VALUES (4, 'remote', 'Remote.mov', NULL, 'remote-drive')")
+        let present = try #require(try await folder.database.video(id: 1))
+        let drive = try #require(try await folder.database.video(id: 2))
+        let absent = try #require(try await folder.database.video(id: 3))
+        let remote = try #require(try await folder.database.video(id: 4))
+        #expect(present.isPresent)
+        #expect(drive.isPresent)
+        #expect(drive.locallyDownloaded == false)
+        #expect(!absent.isPresent)
+        #expect(!remote.isPresent)
+        var clip = Fixtures.timelineClip(sceneID: nil)
+        clip.videoFile = offloaded
+        #expect(FootageAvailability.missingSource(document: Fixtures.timelineDocument(clips: [clip]), scenes: []) == nil)
+        // Reading a hydrated snapshot never stats the path in a view body.
+        try FileManager.default.removeItem(at: local)
+        #expect(present.isPresent)
+        #expect(try await folder.database.video(id: 1)?.isPresent == false)
+    }
+
+    @Test("A stale scene with no explicit video fallback remains skippable")
+    func staleSceneSkipped() {
+        var clip = Fixtures.timelineClip(sceneID: 999)
+        clip.videoFile = nil
+        let document = Fixtures.timelineDocument(clips: [clip])
+        #expect(FootageAvailability.missingSource(document: document, scenes: []) == nil)
+        var scene = Fixtures.scene(id: 999)
+        scene.videoPath = ""
+        #expect(FootageAvailability.missingSource(document: document, scenes: [scene]) == scene.videoFilename)
     }
 }

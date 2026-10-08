@@ -23,6 +23,7 @@ extension AppStore {
     func analyze(videos targets: [VideoRecord], provider: String? = nil, model: String? = nil,
                  includeFightScoring: Bool = true, originatingProjectName: String? = nil) {
         guard let database, !isAnalyzing else { return }
+        guard targets.allSatisfy(\.isPresent) else { presentError(VideoRecord.notPresentReason); return }
         isAnalyzing = true
         analysisCompletion = nil
         analyzingVideoIDs = Set(targets.map(\.id))
@@ -585,6 +586,7 @@ extension AppStore {
 
     private func compose(_ source: BuilderTimelineModel.ComposeSource, video: VideoRecord,
                          recipe kind: CropRecipe.Kind, highlightTalker: Bool) {
+        guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         guard let database else { return }
         let name: String
         var range: ClosedRange<Double>?
@@ -656,6 +658,7 @@ extension AppStore {
     /// tagging and podcast stages land in a new analyze batch like a full
     /// run; people detection and transcription update the video in place.
     func rerun(_ stage: AnalysisStage, video: VideoRecord, provider: String? = nil, model: String? = nil) {
+        guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         switch stage {
         case .people:
             detectPeople(in: [video], provider: provider, model: model)
@@ -794,6 +797,7 @@ extension AppStore {
     /// (static) or camera path per scene, plus optional framed: people tags.
     func detectFraming(video: VideoRecord, camera: String, tagFramedPeople: Bool,
                        refreshLibrary: Bool = true) async {
+        guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         guard let database, !isDetectingFraming else { return }
         isDetectingFraming = true
         framingProgress = 0

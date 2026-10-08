@@ -49,13 +49,13 @@ actor DriveMediaStore {
         return url
     }
 
-    private func downloadNew(_ file: DriveFile, progress: @escaping @Sendable (Double) async -> Void) async throws
+    private func downloadNew(_ file: DriveFile, expectedHash: String? = nil, destinationName: String? = nil, progress: @escaping @Sendable (Double) async -> Void) async throws
         -> URL
     {
         // Drive names are untrusted and need not be unique. A private per-id
         // subdirectory prevents traversal and collisions with imported footage.
         let safeID = ContentHashForDrive.key(file.id)
-        let name = URL(fileURLWithPath: file.name).lastPathComponent
+        let name = URL(fileURLWithPath: destinationName ?? file.name).lastPathComponent
         guard name != ".", name != "..", name != "/", !name.isEmpty, !file.isFolder else {
             throw GoogleDriveError.invalidResponse
         }
@@ -65,12 +65,16 @@ actor DriveMediaStore {
             _ = try await client.download(id: file.id, to: destination, progress: progress)
         }
         let hash = try ContentHash.fingerprint(of: destination)
+        if let expectedHash, expectedHash != hash {
+            try FileManager.default.removeItem(at: destination)
+            throw GoogleDriveError.conflict
+        }
         // Match the folder scanner's content-based registration. Preserve an
         // existing local copy (and its scenes) instead of moving its DB path.
         let known = try await database.fetchVideos().first { $0.hash == hash }
         let recordID: Int64
         let registeredURL: URL
-        if let known, FileManager.default.fileExists(atPath: known.path) {
+        if let known, FootageAvailability.isDownloaded(path: known.path) {
             recordID = known.id
             registeredURL = known.url
             if known.path != destination.path { try? FileManager.default.removeItem(at: destination) }
@@ -90,6 +94,23 @@ actor DriveMediaStore {
         _ media: DriveMedia,
         progress: @escaping @Sendable (Double) async -> Void = { _ in }
     ) async throws -> URL {
+        // Synced sources have no destination on this Mac. Use the normal Drive
+        // import path, verify the fingerprint, then adopt the existing hash row.
+        if media.kind == .source,
+           let video = try await database.video(id: media.recordID), video.path == nil {
+            guard let id = media.fileID else { throw GoogleDriveError.notFound }
+            if let task = fetching[media.id] { return try await task.value }
+            let task = Task {
+                let file = try await client.metadata(id: id)
+                return try await downloadNew(file, expectedHash: video.hash, destinationName: video.filename, progress: progress)
+            }
+            fetching[media.id] = task
+            defer { fetching[media.id] = nil }
+            return try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { task.cancel() }
+        }
+        guard !media.path.isEmpty else { throw GoogleDriveError.notFound }
         let url = URL(fileURLWithPath: media.path)
         if FileManager.default.fileExists(atPath: media.path) {
             if media.offloaded { try await database.setDriveOffloaded(media, false) }
@@ -171,7 +192,7 @@ actor DriveMediaStore {
     /// Remove everything a cancelled transfer left behind: partial download
     /// bytes and checkpoints, restore staging, or the resumable upload session.
     /// Registered media and Drive records are untouched.
-    func discardArtifacts(for job: DriveTransfer) {
+    func discardArtifacts(for job: DriveTransfer) async {
         let fm = FileManager.default
         switch job.operation {
         case .download:
@@ -186,7 +207,16 @@ actor DriveMediaStore {
             }
         case .fetch:
             guard let media = job.media else { return }
-            let files = DriveTransferFiles(for: URL(fileURLWithPath: media.path))
+            let destination: URL
+            if media.path.isEmpty {
+                guard media.kind == .source, let fileID = media.fileID,
+                      let video = try? await database.video(id: media.recordID) else { return }
+                destination = inputFolder.appendingPathComponent("Google Drive/\(ContentHashForDrive.key(fileID))", isDirectory: true)
+                    .appendingPathComponent(URL(fileURLWithPath: video.filename).lastPathComponent)
+            } else {
+                destination = URL(fileURLWithPath: media.path)
+            }
+            let files = DriveTransferFiles(for: destination)
             for url in [files.restoring, files.partial, files.checkpoint] { try? fm.removeItem(at: url) }
         case .upload:
             guard let media = job.media else { return }

@@ -183,9 +183,11 @@ struct BuilderView: View {
                     } label: {
                         ToolbarBubbleLabel(text: "Render to Library", systemImage: "play.rectangle.fill")
                     }
-                    .disabled(model.document.videoTrack.isEmpty || store.isBuilderPreviewRendering)
-                    .help(store.isBuilderPreviewRendering
-                          ? "Wait for the temporary Render Preview to finish"
+                    .disabled(model.document.videoTrack.isEmpty || store.isBuilderPreviewRendering
+                              || FootageAvailability.missingSource(document: model.document, scenes: model.scenes) != nil)
+                    .help(FootageAvailability.missingSource(document: model.document, scenes: model.scenes) != nil
+                          ? VideoRecord.notPresentReason
+                          : store.isBuilderPreviewRendering ? "Wait for the temporary Render Preview to finish"
                           : "Render the timeline to a video in the Library")
                 }
             }

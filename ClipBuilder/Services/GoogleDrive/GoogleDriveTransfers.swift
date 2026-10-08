@@ -158,14 +158,14 @@ final class GoogleDriveTransfers {
     }
 
     nonisolated static func uploadCandidates(_ media: [DriveMedia]) -> [DriveMedia] {
-        media.filter { $0.fileID == nil }
+        media.filter { $0.fileID == nil && !$0.path.isEmpty }
     }
 
     /// A download or fetch of this media that is still in progress: the row
     /// shows it as activity next to the file name.
     func activeFetchJob(for media: DriveMedia, profile: String) -> DriveTransfer? {
         jobs.last {
-            $0.profile == profile && $0.media?.path == media.path
+            $0.profile == profile && $0.media?.id == media.id
                 && ($0.operation == .fetch || $0.operation == .download)
                 && ($0.status == .running || $0.status == .waiting || $0.status == .reconnect)
         }
@@ -183,7 +183,7 @@ final class GoogleDriveTransfers {
 
     func fetch(_ media: DriveMedia, profile: String) async throws -> URL {
         if let existing = jobs.first(where: {
-            $0.profile == profile && $0.media?.path == media.path && $0.operation == .fetch && tasks[$0.id] != nil
+            $0.profile == profile && $0.media?.id == media.id && $0.operation == .fetch && tasks[$0.id] != nil
         }),
             let task = tasks[existing.id]
         {

@@ -658,6 +658,7 @@ extension AppStore {
     }
 
     func transcribe(video: VideoRecord, force: Bool = false) {
+        guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         guard let database, !transcribingVideoIDs.contains(video.id) else { return }
         transcribingVideoIDs.insert(video.id)
         let transcription = transcription

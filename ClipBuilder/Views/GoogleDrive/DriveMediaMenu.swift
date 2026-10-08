@@ -12,11 +12,11 @@ struct DriveMediaMenu: View {
     @State private var error: String?
     private var currentMedia: [DriveMedia] {
         media.map { item in
-            if item.kind == .source { return store.videos.first(where: { $0.path == item.path })?.driveMedia ?? item }
+            if item.kind == .source { return store.videos.first(where: { $0.id == item.recordID })?.driveMedia ?? item }
             return store.generatedVideos.first(where: { $0.path == item.path })?.driveMedia ?? item
         }
     }
-    private var uploadCandidates: [DriveMedia] { currentMedia.filter { $0.fileID == nil } }
+    private var uploadCandidates: [DriveMedia] { currentMedia.filter { $0.fileID == nil && !$0.path.isEmpty } }
     private var copies: [DriveMedia] { currentMedia.filter { $0.fileID != nil } }
     /// Drive copies absent from disk, whether offloaded or simply gone, and
     /// the ones that are here: only the absent can be downloaded, only the
@@ -119,7 +119,7 @@ struct DriveMediaBadge: View {
     let media: DriveMedia
 
     private var current: DriveMedia {
-        if media.kind == .source { return store.videos.first(where: { $0.path == media.path })?.driveMedia ?? media }
+        if media.kind == .source { return store.videos.first(where: { $0.id == media.recordID })?.driveMedia ?? media }
         return store.generatedVideos.first(where: { $0.path == media.path })?.driveMedia ?? media
     }
 
@@ -211,5 +211,27 @@ struct DriveActivityRows: View {
                     : job.isAsset
                         ? "Dismiss this report or stop this asset Refresh"
                         : "Cancel this download and delete the partial file")
+    }
+}
+
+/// Explicit source action; transfers use the existing cancellable Drive queue.
+struct MissingFootageDownloadButton: View {
+    @Environment(AppStore.self) private var store
+    let video: VideoRecord
+
+    var body: some View {
+        if video.driveFileID != nil {
+            Button("Download", systemImage: "icloud.and.arrow.down") {
+                let profile = store.activeProfile.profileName
+                Task {
+                    do {
+                        _ = try await store.googleDrive.fetch(video.driveMedia, profile: profile)
+                        store.refreshAll()
+                    } catch { store.presentError("Download failed", error) }
+                }
+            }
+            .lineLimit(1).fixedSize()
+            .disabled(store.googleDrive.activeFetchJob(for: video.driveMedia, profile: store.activeProfile.profileName) != nil)
+        }
     }
 }

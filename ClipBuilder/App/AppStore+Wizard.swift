@@ -527,8 +527,8 @@ extension AppStore {
         })
         let podcastIDs = Set(projectScenes.filter { $0.tags.contains("podcast-exchange") }.map(\.videoID))
         let podcastPaths = Set(videos.filter {
-            sourcePaths.contains($0.path) && ($0.type == .podcast || $0.type == .interview || podcastIDs.contains($0.id))
-        }.map(\.path))
+            $0.path.map(sourcePaths.contains) == true && ($0.type == .podcast || $0.type == .interview || podcastIDs.contains($0.id))
+        }.compactMap(\.path))
         if !podcastPaths.isEmpty { options.sourcesRestricted = true; options.sourceVideoPaths = podcastPaths }
         let profile = activeProfile
         let review = try await wizard.findPodcastHighlights(options: options, settings: settings.podcast,

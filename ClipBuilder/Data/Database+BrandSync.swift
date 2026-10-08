@@ -1,7 +1,7 @@
 import Foundation
 
 extension Database {
-    nonisolated static func migrateBrandSync(_ db: SQLiteConnection) throws {
+    nonisolated static func migrateBrandSync(_ db: SQLiteConnection, tables: [SyncTable] = SyncTable.all) throws {
         try db.execute("CREATE TABLE IF NOT EXISTS profile_documents (document_json TEXT NOT NULL, sync_id TEXT)")
         if try !db.columnNames(of: "library_asset_metadata").contains("asset_id") {
             try db.execute("ALTER TABLE library_asset_metadata ADD COLUMN asset_id TEXT")
@@ -25,7 +25,7 @@ extension Database {
             try db.execute("INSERT INTO sync_bootstrap(id) VALUES (1)")
         }
         try db.execute("DELETE FROM sync_outbox WHERE NOT EXISTS (SELECT 1 FROM sync_binding)")
-        for table in SyncTable.all {
+        for table in tables {
             let name = table.name
             let portableNew = name == "reel_traits" ? " AND NEW.video_kind IN ('instagram', 'imported', 'external')" : ""
             let portableOld = name == "reel_traits" ? " AND OLD.video_kind IN ('instagram', 'imported', 'external')" : ""
@@ -38,6 +38,7 @@ extension Database {
                     substr('89ab', abs(random() % 4) + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' ||
                     lower(hex(randomblob(6))) WHERE sync_id IS NULL
                 """)
+            let runIdentity = name == "analysis_runs" ? "UPDATE analysis_runs SET run_key = lower(hex(randomblob(16))) WHERE rowid = NEW.rowid AND run_key IS NULL;" : ""
             try db.executeScript("""
                 CREATE UNIQUE INDEX IF NOT EXISTS \(name)_sync_id ON \(name)(sync_id);
                 DROP TRIGGER IF EXISTS \(name)_sync_identity;
@@ -50,6 +51,7 @@ extension Database {
                 BEGIN SELECT RAISE(ABORT, 'sync_id is immutable'); END;
                 CREATE TRIGGER \(name)_sync_insert AFTER INSERT ON \(name)
                 BEGIN
+                    \(runIdentity)
                     UPDATE \(name) SET sync_id = lower(hex(randomblob(4))) || '-' ||
                         lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' ||
                         substr('89ab', abs(random() % 4) + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' ||
@@ -136,7 +138,7 @@ extension Database {
         return SyncScope(teamID: team, profileID: profile)
     }
 
-    func bindSync(to scope: SyncScope) throws {
+    func bindSync(to scope: SyncScope) async throws {
         try connection.transaction {
             if let existing = try syncScope() {
                 guard existing == scope else { throw SyncError.scopeMismatch }
@@ -146,18 +148,11 @@ extension Database {
             try connection.execute("INSERT INTO sync_binding VALUES (1, ?, ?)",
                                    [.text(scope.teamID.uuidString), .text(scope.profileID.uuidString)])
             for table in SyncTable.all {
-                let portable = table.name == "reel_traits" ? " AND video_kind IN ('instagram', 'imported', 'external')" : ""
-                // Seed in local row order; a covering sync_id index otherwise
-                // queues pre-existing rows in random UUID order.
-                try connection.execute("""
-                    INSERT INTO sync_outbox("table", sync_id, op)
-                    SELECT ?, sync_id, 'upsert' FROM \(table.name)
-                    WHERE NOT EXISTS (SELECT 1 FROM sync_outbox WHERE "table" = ? AND sync_id = \(table.name).sync_id)\(portable)
-                    ORDER BY \(table.name).rowid
-                    """, [.text(table.name), .text(table.name)])
+                try connection.execute("INSERT OR IGNORE INTO sync_seed_progress(\"table\", after_rowid) VALUES (?, 0)", [.text(table.name)])
             }
-            _ = try initialSyncBoundary()
         }
+        try await seedSyncRows()
+        _ = try initialSyncBoundary()
     }
 
     /// Run by the app after a cycle, so files downloaded through Drive since
@@ -202,36 +197,58 @@ extension Database {
     /// Only queued legacy/random identities need work. Stable v5 IDs and all
     /// pulled IDs (including authoritative older random IDs) are left alone.
     /// Dependency order makes offline natural keys deterministic across Macs.
-    func canonicalizeSyncIdentities(scope: SyncScope, tables: [SyncTable] = SyncTable.all) throws {
-        try connection.transaction {
-            try connection.execute("UPDATE sync_control SET suspended = 1 WHERE id = 1")
-            for table in tables where !table.naturalKey.isEmpty {
+    func canonicalizeSyncIdentities(scope: SyncScope, tables: [SyncTable] = SyncTable.all) async throws {
+        for table in tables where !table.naturalKey.isEmpty {
+            var after: Int64 = 0
+            while true {
                 try Task.checkCancellation()
-                for var row in try connection.query("""
+                let rows = try connection.query("""
                     SELECT rowid AS local_rowid, * FROM \(table.name)
-                    WHERE substr(sync_id, 15, 1) != '5'
+                    WHERE rowid > ? AND substr(sync_id, 15, 1) != '5'
                         AND sync_id IN (SELECT sync_id FROM sync_outbox WHERE "table" = ?)
                         AND sync_id NOT IN (SELECT sync_id FROM sync_wire_rows WHERE "table" = ?)
-                    """, [.text(table.name), .text(table.name)]) {
-                    try Task.checkCancellation()
-                    if table.name == "library_asset_metadata", row["asset_id"]?.stringValue == nil {
-                        let asset = TeamSyncAsset.identity(path: row["path"]?.stringValue ?? "", kind: row["kind"]?.stringValue ?? "")
-                        row["asset_id"] = .text(asset)
-                        try connection.execute("UPDATE library_asset_metadata SET asset_id = ? WHERE rowid = ?",
-                                               [.text(asset), row["local_rowid"] ?? .null])
+                    ORDER BY rowid LIMIT 500
+                    """, [.integer(after), .text(table.name), .text(table.name)])
+                guard !rows.isEmpty else { break }
+                try connection.transaction {
+                    try connection.execute("UPDATE sync_control SET suspended = 1 WHERE id = 1")
+                    for var row in rows {
+                        try Task.checkCancellation()
+                        try connection.execute("SAVEPOINT sync_identity_row")
+                        do {
+                            if table.name == "library_asset_metadata", row["asset_id"]?.stringValue == nil {
+                                let asset = TeamSyncAsset.identity(path: row["path"]?.stringValue ?? "", kind: row["kind"]?.stringValue ?? "")
+                                row["asset_id"] = .text(asset)
+                                try connection.execute("UPDATE library_asset_metadata SET asset_id = ? WHERE rowid = ?",
+                                                       [.text(asset), row["local_rowid"] ?? .null])
+                            }
+                            if isPortableSyncRow(row, table: table), let portable = try portableSyncRow(row, table: table),
+                               let old = row["sync_id"]?.stringValue {
+                                var key = table.naturalKey.map { column -> String in
+                                    let value = portable[column]?.stringValue ?? "<null>"
+                                    return column == "username" ? value.lowercased() : value
+                                }
+                                // These keys have no local UNIQUE constraint. Preserve
+                                // each row, including two equal-time events/segments.
+                                if table.preservesDuplicateKeys { key.append(old) }
+                                let canonical = SyncMapping.stableID([scope.teamID.uuidString, scope.profileID.uuidString, table.name] + key)
+                                if old != canonical { try rekeySyncRow(table: table, old: old, new: canonical) }
+                            }
+                            try connection.execute("RELEASE sync_identity_row")
+                        } catch {
+                            try connection.execute("ROLLBACK TO sync_identity_row")
+                            try connection.execute("RELEASE sync_identity_row")
+                            if error is CancellationError { throw error }
+                            NSLog("Team Sync: skipping identity in %@: %@", table.name, error.localizedDescription)
+                        }
                     }
-                    guard isPortableSyncRow(row, table: table),
-                          let portable = try portableSyncRow(row, table: table) else { continue }
-                    let key = table.naturalKey.map { column -> String in
-                        let value = portable[column]?.stringValue ?? "<null>"
-                        return column == "username" ? value.lowercased() : value
-                    }
-                    let canonical = SyncMapping.stableID([scope.teamID.uuidString, scope.profileID.uuidString, table.name] + key)
-                    guard let old = row["sync_id"]?.stringValue, old != canonical else { continue }
-                    try rekeySyncRow(table: table, old: old, new: canonical)
+                    try connection.execute("UPDATE sync_control SET suspended = 0 WHERE id = 1")
                 }
+                after = rows.last?["local_rowid"]?.intValue ?? after
+                // Release the database actor between bounded transactions. Stop
+                // resumes using the already persisted canonical identities.
+                await Task.yield()
             }
-            try connection.execute("UPDATE sync_control SET suspended = 0 WHERE id = 1")
         }
     }
 
@@ -267,6 +284,7 @@ extension Database {
     private func portableSyncRow(_ row: SQLRow, table: SyncTable) throws -> SQLRow? {
         var row = row
         for (column, target) in references(for: table, row: row) {
+            if row[column] == nil || row[column]?.stringValue == nil { continue }
             guard let value = row[column]?.intValue,
                   let id = try connection.query("SELECT sync_id FROM \(target) WHERE id = ?", [.integer(value)]).first?["sync_id"]?.stringValue else {
                 if table.name == "reel_traits" || table.name == "taste_studies" { return nil }
@@ -283,9 +301,9 @@ extension Database {
         return row
     }
 
-    func pendingSyncChanges(scope: SyncScope, limit: Int, table: SyncTable = .lessons) throws -> [SyncPendingChange] {
+    func pendingSyncChanges(scope: SyncScope, limit: Int, table: SyncTable = .lessons) async throws -> [SyncPendingChange] {
         guard try syncScope() == scope else { throw SyncError.scopeMismatch }
-        try canonicalizeSyncIdentities(scope: scope, tables: [table])
+        try await canonicalizeSyncIdentities(scope: scope, tables: [table])
         return try connection.transaction {
             // Reads and edits lazily fill original-text lesson identities. Do
             // that before capturing sequences so an edit during a POST cannot
@@ -312,13 +330,16 @@ extension Database {
                     """)
             }
             var changes: [SyncPendingChange] = []
+            var scannedThrough: Int64 = 0
             while changes.isEmpty {
                 let entries = try connection.query("""
                     SELECT sync_id, MAX(sequence) AS sequence FROM sync_outbox
-                    WHERE "table" = ? GROUP BY sync_id ORDER BY sequence LIMIT ?
-                    """, [.text(table.name), .integer(Int64(max(1, limit)))])
+                    WHERE "table" = ? GROUP BY sync_id HAVING MAX(sequence) > ? ORDER BY sequence LIMIT ?
+                    """, [.text(table.name), .integer(scannedThrough), .integer(Int64(max(1, limit)))])
                 if entries.isEmpty { break }
+                scannedThrough = entries.last?["sequence"]?.intValue ?? scannedThrough
                 changes = try entries.compactMap { entry in
+                    do {
                     guard let id = entry["sync_id"]?.stringValue, let sequence = entry["sequence"]?.intValue else { throw SyncError.invalidRow("outbox") }
                     let local = try connection.query("SELECT * FROM \(table.name) WHERE sync_id = ?", [.text(id)]).first
                     let portable: SQLRow?
@@ -345,6 +366,11 @@ extension Database {
                     return SyncPendingChange(table: table, sequence: sequence, syncID: id,
                         wire: try SyncMapping.wire(local: portable, syncID: id,
                                                    scope: scope, preserved: preserved, table: table))
+                    } catch {
+                        if error is CancellationError { throw error }
+                        NSLog("Team Sync: skipping queued row in %@: %@", table.name, error.localizedDescription)
+                        return nil
+                    }
                 }
             }
             return changes
@@ -395,9 +421,10 @@ extension Database {
                 }
                 if !SyncMapping.isDeleted(wire) {
                     for (column, target) in references(for: table, row: local) {
+                        if local[column]?.stringValue == nil { continue }
                         guard let ref = local[column]?.stringValue,
                               let value = try connection.query("SELECT id FROM \(target) WHERE sync_id = ?", [.text(ref)]).first?["id"] else {
-                            if table.name == "reel_traits" || table.name == "taste_studies" {
+                            if !table.references.isEmpty || table.name == "reel_traits" {
                                 let json = String(decoding: try JSONEncoder().encode(wire), as: UTF8.self)
                                 try connection.execute("""
                                     INSERT INTO sync_pending_parents("table", sync_id, wire_json, server_wins_through)
@@ -408,9 +435,9 @@ extension Database {
                             }
                             throw SyncError.invalidRow("\(table.name).\(column) missing parent")
                         }
-                        local[column] = (column == "video_id") ? .text(value.stringValue ?? "") : value
+                        local[column] = (column == "video_id" && ["reel_traits", "reel_outcomes"].contains(table.name)) ? .text(value.stringValue ?? "") : value
                     }
-                    if !table.naturalKey.isEmpty {
+                    if !table.naturalKey.isEmpty && !table.preservesDuplicateKeys {
                         let predicate = table.naturalKey.map { "\"\($0)\" IS ?" }.joined(separator: " AND ")
                         if let old = try connection.query("SELECT sync_id FROM \(table.name) WHERE \(predicate)",
                                                            table.naturalKey.map { local[$0] ?? .null }).first?["sync_id"]?.stringValue, old != id {
@@ -445,6 +472,14 @@ extension Database {
                     try connection.execute("DELETE FROM \(table.name) WHERE sync_id = ?", [.text(id)])
                 } else {
                     let existing = try connection.query("SELECT * FROM \(table.name) WHERE sync_id = ?", [.text(id)]).first
+                    if table.name == "analysis_runs", existing == nil, let video = local["video_id"]?.intValue,
+                       try connection.query("SELECT 1 FROM analysis_runs WHERE video_id = ? LIMIT 1", [.integer(video)]).isEmpty {
+                        try connection.execute("INSERT OR IGNORE INTO sync_run_defaults(video_id) VALUES (?)", [.integer(video)])
+                    }
+                    if table.name == "videos", let driveID = existing?["drive_file_id"]?.stringValue, !driveID.isEmpty {
+                        local["drive_file_id"] = .text(driveID)
+                        local["drive_link"] = existing?["drive_link"] ?? .null
+                    }
                     if table.name == "profile_documents" { try beginSyncProfileAdoption(fallback: "{}") }
                     for column in table.columns where column.hasSuffix("_json") {
                         if let text = local[column]?.stringValue,
@@ -476,6 +511,10 @@ extension Database {
                            let rhs = try? JSONDecoder().decode(SyncJSON.self, from: Data(new.utf8)) {
                             return lhs != rhs
                         }
+                        if table.reals.contains(column), let lhs = existing?[column]?.doubleValue,
+                           let rhs = local[column]?.doubleValue {
+                            return abs(lhs - rhs) > max(1, abs(lhs), abs(rhs)) * 1e-12
+                        }
                         return old != new
                     }) {
                         changed = true
@@ -495,9 +534,6 @@ extension Database {
                     ON CONFLICT("table") DO UPDATE SET server_updated_at = excluded.server_updated_at, sync_id = excluded.sync_id
                     """, [.text(table.name), .text(cursor.timestamp), .text(cursor.syncID)])
             }
-            #if DEBUG
-            guard try connection.query("PRAGMA foreign_key_check").isEmpty else { throw SyncError.invalidRow("foreign keys") }
-            #endif
             try connection.execute("UPDATE sync_control SET suspended = 0 WHERE id = 1")
             return changed
         }

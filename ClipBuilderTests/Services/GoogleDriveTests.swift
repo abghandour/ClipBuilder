@@ -165,7 +165,7 @@ struct GoogleDriveTests {
         #expect(FileManager.default.fileExists(atPath: files.identity.path))
         #expect(
             !FileManager.default.fileExists(atPath: video.url.appendingPathExtension("drive-cache-identity.json").path))
-        #expect(!FileManager.default.fileExists(atPath: video.path))
+        #expect(!FileManager.default.fileExists(atPath: try #require(video.path)))
         #expect(try await temp.database.video(id: id)?.driveOffloaded == true)
         #expect(try await temp.database.fetchScenes() == scenes)
         #expect(try await media.ensure(registered) == video.url)
@@ -346,7 +346,7 @@ struct GoogleDriveTests {
         let registered = try #require(try await temp.database.video(id: id)).driveMedia
         try await media.offload(registered)
         await #expect(throws: GoogleDriveError.conflict) { try await media.ensure(registered) }
-        #expect(!FileManager.default.fileExists(atPath: video.path))
+        #expect(!FileManager.default.fileExists(atPath: try #require(video.path)))
         #expect(try await temp.database.video(id: id)?.driveOffloaded == true)
         #expect(try await temp.database.fetchScenes().count == 1)
     }
@@ -362,7 +362,7 @@ struct GoogleDriveTests {
         #expect(try await resolver.ensureLocal(unknown) == unknown)
         #expect(try await resolver.ensureLocal(video.url) == video.url)
         #expect(!FileManager.default.fileExists(atPath: unknown.path))
-        #expect(!FileManager.default.fileExists(atPath: video.path))
+        #expect(!FileManager.default.fileExists(atPath: try #require(video.path)))
     }
 
     @Test("Account mismatch names the required account and preserves the saved credentials")
@@ -482,7 +482,7 @@ struct GoogleDriveTests {
         #expect(FileManager.default.fileExists(atPath: DriveTransferFiles(for: video.url).identity.path))
         #expect(
             !FileManager.default.fileExists(atPath: video.url.appendingPathExtension("drive-cache-identity.json").path))
-        #expect(!FileManager.default.fileExists(atPath: video.path))
+        #expect(!FileManager.default.fileExists(atPath: try #require(video.path)))
     }
 
 }

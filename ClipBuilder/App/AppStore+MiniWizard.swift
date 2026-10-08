@@ -8,9 +8,10 @@ extension AppStore {
         }
         guard let video = flow.video, flow.effectiveFootageKind == .highlights,
               let database, let projectID = activeProjectID, !isWizardRunning else { return }
+        guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         var options = WizardOptions()
         options.projectID = projectID
-        options.sourceVideoPaths = [video.path]
+        options.sourceVideoPaths = [video.path ?? ""]
         options.sourcesRestricted = true
         options.formatPreset = flow.isPodcastOrInterview ? ReelRecipe.podcastHighlights.id : "custom"
         options.targetDurationSeconds = flow.length.seconds
@@ -151,9 +152,10 @@ extension AppStore {
     private func loadMiniQA(flow: MiniWizardFlow) {
         guard let video = flow.video, let database, let projectID = activeProjectID, !isWizardRunning else { return }
         let generation = profileGeneration
+        guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         var options = WizardOptions()
         options.projectID = projectID
-        options.sourceVideoPaths = [video.path]
+        options.sourceVideoPaths = [video.path ?? ""]
         options.sourcesRestricted = true
         options.formatPreset = "podcast"
         options.critiqueLoop = false

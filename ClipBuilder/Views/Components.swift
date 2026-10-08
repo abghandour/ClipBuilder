@@ -71,7 +71,10 @@ struct VideoThumbnail: View {
         ZStack {
             // A memory-cache hit paints immediately — a card scrolled back
             // into view doesn't flash its placeholder or re-read the JPEG.
-            if let image = image ?? ImageCache.cached(key: key) {
+            if !FootageAvailability.isPresent(path: url.path) {
+                Label("Not on this Mac", systemImage: "video.slash")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let image = image ?? ImageCache.cached(key: key) {
                 // Color.clear adopts exactly the proposed size; the overlay
                 // draws the aspect-fill image within it without inflating the
                 // view's own layout size the way a bare .fill image does.
@@ -103,6 +106,7 @@ struct VideoThumbnail: View {
         // Fill scaling overflows the frame; keep hit testing inside it too.
         .contentShape(Rectangle())
         .task(id: key) {
+
             // Track which key is loaded rather than guarding on image ==
             // nil, which froze the thumbnail on its first frame when the
             // same view was later given a different time (preview scrub).
@@ -755,7 +759,7 @@ struct SceneInlinePlayer: View {
 
     private func play() {
         playbackFetchTask = Task {
-            guard await DrivePlayback.prepare(scene.videoURL) else { return }
+            guard scene.isPresent, await DrivePlayback.prepare(scene.videoURL) else { return }
             guard let asset = try? await DriveLocalAsset.make(scene.videoURL) else { return }
             let item = AVPlayerItem(asset: asset)
             item.forwardPlaybackEndTime = CMTime(seconds: scene.endTime, preferredTimescale: 600)

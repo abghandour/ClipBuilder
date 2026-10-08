@@ -11,7 +11,7 @@ extension Database {
             if let videoID = person.avatarVideoID, let time = person.avatarTime,
                let box = person.avatarBox,
                let path = try connection.query("SELECT path FROM videos WHERE id = ?", [.integer(videoID)])
-                .first?["path"]?.stringValue {
+                .first?["path"]?.stringValue, FileManager.default.fileExists(atPath: path) {
                 references.append((person.key, path, time, box))
             } else if let reference = try markerReference(personID: person.id) {
                 let marker = reference.marker
@@ -34,7 +34,7 @@ extension Database {
             WHERE vp.person_id = ? AND vp.portrait_json IS NOT NULL
             ORDER BY vp.video_id DESC LIMIT 1
             """, [.integer(personID)]).first,
-            let path = row["path"]?.stringValue,
+            let path = row["path"]?.stringValue, FileManager.default.fileExists(atPath: path),
             let data = row["portrait_json"]?.stringValue?.data(using: .utf8),
             let box = try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: data)
         else { return nil }

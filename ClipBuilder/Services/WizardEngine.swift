@@ -2694,6 +2694,9 @@ actor WizardEngine {
             let scenes = try await database.fetchScenes(projectID: options.projectID, includeExcluded: true)
             let sceneMap = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
             let ids = Set(selection.clips.flatMap { [$0.sceneID] + $0.areaClips.map(\.sceneID) })
+            if let missing = ids.compactMap({ sceneMap[$0] }).first(where: { !$0.isPresent }) {
+                throw AIError.unusableResponse("\(missing.videoFilename): Not on this Mac. Download or import the source file first.")
+            }
             guard ids.allSatisfy({ sceneMap[$0] != nil }) else {
                 throw AIError.unusableResponse("Footage changed. Find the moments again before rendering this selection.")
             }

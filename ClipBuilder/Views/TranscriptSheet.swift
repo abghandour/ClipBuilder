@@ -11,6 +11,8 @@ struct TranscriptSheet: View {
     let video: VideoRecord
 
     @State private var rows: [TranscriptRow] = []
+    @State private var transcriptionSets: [TranscriptionSet] = []
+    @State private var selectedTranscriptionKey = ""
     /// Edited text per segment id; only segments whose text differs from
     /// the stored row are written on Apply.
     @State private var drafts: [Int64: String] = [:]
@@ -193,10 +195,53 @@ struct TranscriptSheet: View {
         Set(rows.map { "\($0.language)|\($0.isTranslation)" }).count > 1
     }
 
+    @ViewBuilder
+    private var transcriptionPicker: some View {
+        if transcriptionSets.count > 1 {
+            Picker("Transcription", selection: $selectedTranscriptionKey) {
+                Text("Newest").tag("")
+                ForEach(transcriptionSets) { set in
+                    Text("\(set.createdAt) · \(set.model ?? "Transcription") · \(set.id.prefix(6))").tag(set.id)
+                }
+            }
+            .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+            .disabled(hasChanges || isSaving)
+        }
+    }
+
     var body: some View {
+        Group {
+        if video.isPresent && selectedTranscriptionKey.isEmpty {
+            editableBody
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(video.filename).font(.headline).lineLimit(1)
+                    Spacer()
+                    Button("Done") { dismiss() }.lineLimit(1).fixedSize()
+                }
+                transcriptionPicker
+                Label(video.isPresent ? "Saved transcription · Read-only" : "Not on this Mac · Read-only transcript", systemImage: "text.quote")
+                    .foregroundStyle(.secondary)
+                if !video.isPresent { MissingFootageDownloadButton(video: video) }
+                List(rows) { row in
+                    HStack(alignment: .top) {
+                        Text(row.startTime.timecode).monospacedDigit()
+                        Text(row.text).textSelection(.enabled)
+                    }
+                }
+            }
+            .padding().frame(minWidth: 600, minHeight: 400)
+        }
+        }
+        .task(id: selectedTranscriptionKey) { await load() }
+    }
+
+    private var editableBody: some View {
         VStack(spacing: 0) {
             header
                 .padding()
+            transcriptionPicker.padding(.horizontal)
 
             Divider()
 
@@ -268,7 +313,6 @@ struct TranscriptSheet: View {
         .modalCloseButton {
             if hasChanges { confirmDiscard = true } else { dismiss() }
         }
-        .task { await load() }
         .onChange(of: mappingJob?.status) { _, status in
             if status == .done { Task { await refreshSpeakerMapping() } }
         }
@@ -996,10 +1040,17 @@ struct TranscriptSheet: View {
 
     private func load() async {
         guard let database = store.database else { return }
-        rows = (try? await database.fetchTranscripts(videoID: video.id)) ?? []
-        let speakers = await store.speakerTurns(videoID: video.id)
-        turns = speakers.turns
-        roster = speakers.roster
+        let selected = selectedTranscriptionKey
+        let key: String? = selected.isEmpty ? nil : selected
+        let sets = (try? await database.transcriptionSets(videoID: video.id)) ?? []
+        let loadedRows = (try? await database.fetchTranscripts(videoID: video.id, transcriptionKey: key)) ?? []
+        let loadedTurns = (try? await database.fetchSpeakerTurns(videoID: video.id, transcriptionKey: key)) ?? []
+        let loadedRoster = await store.videoPeople(for: video.id)
+        guard !Task.isCancelled, selected == selectedTranscriptionKey else { return }
+        transcriptionSets = sets
+        rows = loadedRows
+        turns = loadedTurns
+        roster = loadedRoster
         let people = store.people
         speakerLabels = rows.reduce(into: [:]) { labels, row in
             labels[row.id] = TranscriptSpeakers.label(for: row, turns: turns, roster: roster, people: people)

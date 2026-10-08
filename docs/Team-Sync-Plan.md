@@ -1,6 +1,6 @@
 # Team Sync Plan
 
-Date: October 2, 2026. Status: Phase 1 implemented, verified and live on October 6, 2026 (commit and release pending); Phase 2 designed October 6, 2026, implementation not started.
+Date: October 2, 2026. Status: Phase 1 shipped as 1.95 (e7e0d1b). Phase 2 (footage sync) implemented October 7, 2026 and verified October 8, 2026: Debug build clean, four TeamSync suites 94/94, review findings fixed, live two-member sync passed against a local Supabase stack with all migrations applied. Phase 2 server migration is pushed to production only with the Phase 2 release (schema version 3 makes 1.95 clients show "needs update").
 Implementation: Codex; build, tests and review: Claude (per the September 23 working rule).
 
 ## Problem
@@ -165,8 +165,16 @@ Tables (see "What syncs"): `videos`, `analysis_runs`, `scenes`, `scene_tags`,
   and adopts the synced row instead of creating a new one.
 - **Analysis.** Two members analyzing the same file keep both
   `analysis_runs` (conflict rules). The newest run is the default on every
-  Mac. `analysis_checkpoints`, `transcript_backups`, `voice_profiles` and
+  Mac (server-independent tie-break by sync ID). A nullable `run_key` is
+  assigned once per run; it joins video and creation time in the natural key
+  so independent runs started in the same second cannot collapse.
+  `analysis_checkpoints`, `transcript_backups`, `voice_profiles` and
   `center_stage_hints` stay local.
+- **Upgrade.** Local schema v28 rebuilds `videos` with a nullable path and
+  preserves its unique hash, IDs, children and local-only columns. Existing
+  attached profiles queue Phase 2 rows and reconcile the new tables before
+  upload. Server schema 3 adds the eighteen footage tables; the client waits
+  for that migration before syncing.
 - **Volume.** A profile can hold tens of thousands of transcript and turn
   rows. Batches stay at 200 rows; the initial upload runs through the
   existing AppJobs status-bar row with Stop. Pull applies per table in one
@@ -185,7 +193,7 @@ Tables (see "What syncs"): `videos`, `analysis_runs`, `scenes`, `scene_tags`,
    `sync_id` and outbox migration, engine round trip for `wizard_lessons`
    between two data folders on one Mac. Proves S3, S7, S8, S9.
 1. **Brand knowledge (M).** Phase 1 tables, Settings › Team, status-bar item.
-   Shipped October 6, 2026 (uncommitted at the time of writing).
+   Shipped October 6, 2026 in 1.95.
 2. **Footage analysis (L).** Phase 2 tables, "not on this Mac" state in
    Sources and Scenes.
 3. **Work (L).** Portable timelines, revision conflict copies, presence,

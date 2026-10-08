@@ -70,7 +70,7 @@ nonisolated enum SyncError: Error, LocalizedError, Equatable {
         case .invalidRow(let field): return "Invalid sync response: \(field)."
         case .scopeMismatch: return "This database is already bound to another team or profile."
         case .needsUpdate(let version): return "Team sync needs a newer app (server schema \(version)). Local work is still available."
-        case .serverNotReady: return "The Team server needs its Phase 1 migration. Local work is still available."
+        case .serverNotReady: return "The Team server needs its Phase 2 migration. Local work is still available."
         case .alreadySyncing: return "Team sync is already running."
         case .http(let code): return "Team sync request failed (HTTP \(code))."
         }
@@ -106,7 +106,11 @@ nonisolated enum SyncMapping {
                         result[column] = .string(try portableJSONString(json))
                     } else { result[column] = .string(v) }
                 case .integer(let v): result[column] = .number(Decimal(v))
-                case .real(let v) where v.isFinite: result[column] = .number(Decimal(v))
+                case .real(let v) where v.isFinite:
+                    guard let decimal = Decimal(string: String(v), locale: Locale(identifier: "en_US_POSIX")) else {
+                        throw SyncError.invalidRow(column)
+                    }
+                    result[column] = .number(decimal)
                 case .null: result[column] = .null
                 default: throw SyncError.invalidRow(column)
                 }
@@ -154,7 +158,9 @@ nonisolated enum SyncMapping {
             case .number(let v) where table.integers.contains(column):
                 guard let integer = Int64(NSDecimalNumber(decimal: v).stringValue) else { throw SyncError.invalidRow(column) }
                 result[column] = .integer(integer)
-            case .number(let v) where table.reals.contains(column): result[column] = .real(NSDecimalNumber(decimal: v).doubleValue)
+            case .number(let v) where table.reals.contains(column):
+                guard let real = Double(NSDecimalNumber(decimal: v).stringValue) else { throw SyncError.invalidRow(column) }
+                result[column] = .real(real)
             case .null: result[column] = .null
             default: throw SyncError.invalidRow(column)
             }
@@ -207,7 +213,7 @@ nonisolated enum SyncMapping {
 
     static func isLocalField(_ key: String) -> Bool {
         let key = key.lowercased()
-        return key == "path" || key.hasSuffix("path") || key == "fontfile" || key == "exemplar_frames"
+        return key == "path" || key.hasSuffix("path") || key.hasSuffix("paths") || key == "videofile" || key == "sourcefolder" || key == "source_folder" || key == "fontfile" || key == "exemplar_frames"
     }
 
     static func portableJSON(_ value: SyncJSON) -> SyncJSON {

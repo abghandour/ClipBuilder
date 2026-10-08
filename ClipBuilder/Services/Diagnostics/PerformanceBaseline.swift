@@ -375,7 +375,7 @@ enum PerformanceBaseline {
                 }
             }
             _ = try await measure("probe-under-load") {
-                try await FFmpeg.probe(["-v", "error", "-show_entries", "format=duration", "-of", "json", video.path])
+                try await FFmpeg.probe(["-v", "error", "-show_entries", "format=duration", "-of", "json", video.url.path])
             }
             try await measure("preview-under-load") {
                 store.startBuilderPreview(from: 30)
