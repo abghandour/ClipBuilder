@@ -356,6 +356,8 @@ struct GoogleDriveTests {
         let temp = try TempDatabase()
         let id = try await temp.seedVideo()
         let video = try #require(try await temp.database.video(id: id))
+        // The fixture registers a real file; this test is about one that is gone.
+        try FileManager.default.removeItem(atPath: try #require(video.path))
         let resolver = DriveMediaResolver()
         await resolver.register(database: temp.database, profile: profile)
         let unknown = temp.directory.url.appendingPathComponent("missing.mp4")
