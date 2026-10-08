@@ -14,10 +14,14 @@ struct TempDatabase {
 
     @discardableResult
     func seedVideo(sceneCount: Int = 1) async throws -> Int64 {
+        let videoURL = directory.url.appendingPathComponent("fixture.mp4")
+        if !FileManager.default.fileExists(atPath: videoURL.path) {
+            try Data("fixture".utf8).write(to: videoURL)
+        }
         let videoID = try await database.registerVideo(
             hash: UUID().uuidString,
             filename: "fixture.mp4",
-            path: directory.url.appendingPathComponent("fixture.mp4").path,
+            path: videoURL.path,
             duration: Double(max(sceneCount, 1) * 10),
             width: 1920,
             height: 1080,

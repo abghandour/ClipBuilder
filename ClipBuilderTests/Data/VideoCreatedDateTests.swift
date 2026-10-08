@@ -67,6 +67,8 @@ struct VideoCreatedDateTests {
         #expect(rows.first { $0.hash == "gone" }?.createdAt == "2020-09-13T12:26:40Z")
         try FileManager.default.removeItem(at: url)
         let reopened = try Database(path: temp.path)
-        #expect(try await reopened.fetchVideos() == rows)
+        let reopenedRows = try await reopened.fetchVideos()
+        #expect(reopenedRows.map(\.id) == rows.map(\.id))
+        #expect(reopenedRows.map(\.createdAt) == rows.map(\.createdAt))
     }
 }

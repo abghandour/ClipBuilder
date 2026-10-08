@@ -36,8 +36,8 @@ extension Database {
         let rows = try connection.query("""
             SELECT v.id AS video_id FROM videos v
             WHERE EXISTS (
-                SELECT 1 FROM transcripts t
-                WHERE t.video_id = v.id AND t.is_translation = 0
+                SELECT 1 FROM transcripts
+                WHERE video_id = v.id AND is_translation = 0 AND \(Self.activeTranscriptPredicate)
             )
             """)
         return Set(rows.compactMap { $0["video_id"]?.intValue })
@@ -73,8 +73,8 @@ extension Database {
         // delete + inserts must land atomically.
         try connection.transaction {
             let previous = try latestTranscription(videoID: videoID)
-            let key = isTranslation ? (previous.key ?? UUID().uuidString.lowercased()) : UUID().uuidString.lowercased()
-            let createdAt = isTranslation ? (previous.createdAt ?? Date().ISO8601Format()) : Date().ISO8601Format()
+            let key = previous.key ?? UUID().uuidString.lowercased()
+            let createdAt = previous.createdAt ?? Date().ISO8601Format()
             if !isTranslation {
                 if let seconds {
                     try connection.execute("UPDATE videos SET speech_seconds = ? WHERE id = ?",
@@ -157,8 +157,8 @@ extension Database {
                           source?.technique.map(SQLValue.text) ?? .null,
                           source?.seconds.map(SQLValue.real) ?? .null,
                           piece.speakerKey.map(SQLValue.text) ?? .null,
-                          source?.transcriptionKey.map(SQLValue.text) ?? .null,
-                          source?.transcriptionCreatedAt.map(SQLValue.text) ?? .null])
+                          current.first?.transcriptionKey.map(SQLValue.text) ?? .null,
+                          current.first?.transcriptionCreatedAt.map(SQLValue.text) ?? .null])
             }
         }
     }
