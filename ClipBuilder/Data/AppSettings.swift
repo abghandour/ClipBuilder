@@ -2,7 +2,8 @@ import Foundation
 import Synchronization
 
 /// App-level (profile-independent) settings — mirrors data/app_settings.json
-/// from the Python app: analysis mode, transcription provider, AI routing.
+/// from the Python app. Creative defaults remain Codable for older builds
+/// and as a fallback for profiles without an editing document.
 nonisolated struct AppSettings: Codable, Sendable {
     var supabaseURL: String?
     var supabasePublishableKey: String?
@@ -111,7 +112,7 @@ nonisolated struct PodcastSettings: Codable, Sendable {
 /// Transition rendering knobs. `xfadeDuration` replaces the render engine's
 /// old hardcoded 0.5s crossfade — action edits live at 0.1-0.3s. Flash cuts
 /// and action recipe bridges carry their own fixed timings.
-nonisolated struct TransitionSettings: Codable, Sendable {
+nonisolated struct TransitionSettings: Codable, Sendable, Hashable {
     /// Seconds a regular crossfade (xfade) overlaps — 0.1 (snappy) to 1.0.
     var xfadeDuration: Double = 0.35
     /// Mix synthesized whoosh/impact/slash sounds under action transitions.
@@ -274,7 +275,6 @@ nonisolated enum AICatalog {
         "route": "Wizard routing",
         "analysis": "Video analysis",
         "people": "People detection",
-        "roles": "People roles",
         "exchanges": "Podcast exchanges",
         "highlights": "Podcast highlights",
         "framing": "Camera focus choice",
@@ -283,6 +283,7 @@ nonisolated enum AICatalog {
         "critique": "Reel critique",
         "research": "Reels research",
         "fight_research": "Fight research",
+        "person_research": "Person research",
         "parse": "Request parsing",
         "captions": "Caption generation",
         "tag_text": "Name tag text",
@@ -305,7 +306,6 @@ nonisolated enum AICatalog {
         "route": "claude",
         "analysis": "claude",
         "people": "claude",
-        "roles": "claude",
         "exchanges": "claude",
         "highlights": "claude",
         "framing": "claude",
@@ -314,6 +314,7 @@ nonisolated enum AICatalog {
         "critique": "claude",
         "research": "claude",
         "fight_research": "claude",
+        "person_research": "claude",
         "parse": "claude",
         "captions": "claude",
         "tag_text": "claude",
@@ -400,6 +401,9 @@ nonisolated enum AICatalog {
                      ("qwen", "qwen3-coder-flash"),
                      ("kimi", "kimi-code/kimi-for-coding"),
                      ("gemini", "gemini-3.8-flash")],
+        // Person research: prefer the Claude CLI's live web tools.
+        "person_research": [("claude", "claude-sonnet-5-5"),
+                            ("gemini", "gemini-3.1-pro-preview")],
         // Fight research: turns crawled fan chatter into the reel's story —
         // strong summarization matters more than speed.
         "fight_research": [("claude", "claude-sonnet-5-5"),
@@ -487,13 +491,6 @@ nonisolated enum AICatalog {
                  ("claude", "claude-sonnet-5-5"),
                  ("claude", "claude-haiku-4-5-20251001"),
                  ("gemini", "gemini-3.8-flash")],
-        // People roles reads scene tags and quotes per person — text only.
-        "roles": [("claude", "claude-sonnet-5-5"),
-                  ("antigravity", "gemini-3.1-pro-high"),
-                  ("codex", "gpt-6-astra"),
-                  ("qwen", "qwen3-coder-plus"),
-                  ("kimi", "kimi-code/kimi-for-coding"),
-                  ("gemini", "gemini-3.1-pro-preview")],
         // Content gap report reasons over the whole library's state.
         "gap": [("claude", "claude-sonnet-5-5"),
                 ("antigravity", "gemini-3.1-pro-high"),
@@ -509,6 +506,13 @@ nonisolated enum AICatalog {
                     ("codex", "gpt-6-astra"),
                     ("gemini", "gemini-3.1-pro-preview")],
     ]
+
+    /// The catalog's top pick, regardless of which providers are installed.
+    static func topRecommended(task: String) -> (provider: String, model: String) {
+        if let entry = recommendedChains[task]?.first { return entry }
+        let key = taskDefaults[task] ?? "claude"
+        return (key, provider(key)?.defaultModel ?? "")
+    }
 
     struct Provider: Sendable {
         var key: String

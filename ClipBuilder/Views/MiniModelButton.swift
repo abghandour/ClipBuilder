@@ -18,7 +18,7 @@ struct MiniModelButton: View {
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
             .help("Choose the AI model for: \(labels). Now: "
-                  + tasks.map { TaskModelPickers.routingSummary(task: $0, config: store.settings.ai) }.joined(separator: "; "))
+                  + tasks.map { TaskModelPickers.routingSummary(task: $0, config: store.effectiveAIConfig) }.joined(separator: "; "))
             .popover(isPresented: $showing, arrowEdge: .trailing) {
                 VStack(alignment: .leading, spacing: Theme.spaceM) {
                     Text("AI model").font(.headline)

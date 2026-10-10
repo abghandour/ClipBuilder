@@ -17,7 +17,7 @@ enum BuilderWizardLibrary {
         for (index, bumper) in store.bumpers.enumerated() { library.bumpers["bumper:\(index)"] = bumper }
         for (index, sound) in AssetStore.allFiles(of: .music).enumerated() { library.sounds["sound:\(index)"] = sound.name }
         for (index, image) in AssetStore.allFiles(of: .images).enumerated() { library.images["image:\(index)"] = image.url.path }
-        let language = store.settings.transcribeLanguage
+        let language = store.editingDefaults.footage.language
         if let database = store.database {
             library = try await library.refreshed(database: database, language: language)
         }

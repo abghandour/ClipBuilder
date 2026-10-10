@@ -609,7 +609,7 @@ actor RenderEngine {
     private func cachedXfade(clips: [URL], transitions: [String], output: URL,
                              maximumOverlap: Double?, transitionDuration: Double?,
                              cache: AssemblyCache?) async throws {
-        let duration = transitionDuration ?? SettingsStore.loadSettings().transitions.xfadeDuration
+        let duration = transitionDuration ?? RenderContext.transitions.xfadeDuration
         let key: String?
         if cache != nil {
             key = try? await RenderFinishingKey.make(segments: clips, transitions: transitions.map { $0 },
@@ -649,7 +649,7 @@ actor RenderEngine {
         let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
             await FFmpeg.duration(of: clip)
         }
-        let sfxEnabled = SettingsStore.loadSettings().transitions.sfxEnabled
+        let sfxEnabled = RenderContext.transitions.sfxEnabled
 
         // A clip must keep >= 0.4s of real content after losing its head to
         // the previous gap's recipe and its tail to the next gap's.
@@ -762,7 +762,7 @@ actor RenderEngine {
         let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
             await FFmpeg.duration(of: clip)
         }
-        let configured = transitionDuration ?? SettingsStore.loadSettings().transitions.xfadeDuration
+        let configured = transitionDuration ?? RenderContext.transitions.xfadeDuration
 
         // Resolve each gap to (xfade name, requested duration), then clamp to
         // what the adjoining clips can afford. Any gap that can't fit even a

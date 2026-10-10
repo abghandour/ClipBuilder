@@ -61,7 +61,8 @@ enum PerformanceBaseline {
             let database = try Database(path: data.appendingPathComponent("baseline.db"))
             let settings = SettingsStore.loadSettings()
             let store = AppStore(settings: settings, profiles: [profile], active: profile,
-                                 ai: AIService(config: settings.ai), database: database)
+                                 ai: AIService(config: AIRoutingResolver.effectiveConfig(local: settings.ai, team: profile.aiRouting)),
+                                 database: database)
             store.diagnosticLogSink = { channel, line in log("[\(channel)] \(line)") }
             return store
         } catch {
@@ -166,7 +167,7 @@ enum PerformanceBaseline {
                 try await retainFraming(video: video, database: database, name: "framing-tracked.json")
             }
         } else {
-            let analyzer = Analyzer(ai: AIService(config: store.settings.ai))
+            let analyzer = Analyzer(ai: AIService(config: store.effectiveAIConfig))
             _ = try await measure("analysis-ai-and-scene-tracking") {
                 try await analyzer.analyzeVisual(video: video, profile: store.activeProfile, database: database,
                     runName: "Performance baseline", provider: configuration.provider, model: configuration.model,

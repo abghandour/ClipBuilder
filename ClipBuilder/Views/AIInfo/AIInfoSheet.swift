@@ -33,7 +33,7 @@ struct AIInfoSheet: View {
         switch role {
         case "Soundbite finding": return .soundbites
         case "Naming", "File naming": return .naming
-        default: return AppStore.AnalysisStage.forRole(role, podcast: video.type == .podcast).map { .stage($0) }
+        default: return AppStore.AnalysisStage.forRole(role, podcast: video.type?.usesPodcastPass == true).map { .stage($0) }
         }
     }
 

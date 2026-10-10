@@ -114,13 +114,13 @@ final class WizardSheetModel {
         projectID = store.activeProjectID
         self.history = history.requests(profile: profile)
         // The saved provider choice is honoured only while that provider is enabled.
-        if let saved = BuilderAgentProvider(rawValue: store.settings.ai.tasks["builder_agent"] ?? ""),
+        if let saved = BuilderAgentProvider(rawValue: store.effectiveAIConfig.tasks["builder_agent"] ?? ""),
            saved.disabledReason == nil { provider = saved }
         self.loadLibrary = loadLibrary ?? { [weak store] in
             guard let store else { throw ApplyFailure.identityChanged }
             return try await BuilderWizardLibrary.snapshot(store: store)
         }
-        agentModel = Self.validModel(store.settings.ai.taskModels["builder_agent"], for: provider)
+        agentModel = Self.validModel(store.effectiveAIConfig.taskModels["builder_agent"], for: provider)
     }
 
     var scriptRevision: Int { store.builder.revision }
@@ -375,6 +375,8 @@ final class WizardSheetModel {
     func saveModelPreference() {
         guard !busy, phase != .awaitingPrerequisites else { return }
         agentModel = Self.validModel(agentModel, for: provider)
+        // A model edit while following the team becomes a local pair.
+        store.settings.ai.tasks["builder_agent"] = provider.rawValue
         store.settings.ai.taskModels["builder_agent"] = agentModel
         store.saveSettings()
     }
@@ -467,7 +469,7 @@ final class WizardSheetModel {
     private func executeJavaScript(source: String, header: ScriptHeader, params: Data,
                                    session: BuilderScriptSession, confirmed: [BuilderCommand], token: Int) async {
         let library = session.library
-        let language = store.settings.transcribeLanguage
+        let language = store.editingDefaults.footage.language
         let profileGeneration = store.profileGeneration
         let run = ScriptRunModel(session: session, header: header, params: params, confirmed: confirmed,
             origin: runOrigin == .routed ? "routed" : "script",
@@ -615,7 +617,10 @@ final class WizardSheetModel {
         routedScriptName = nil; routedRequest = nil; appliedRevision = nil
         runProvider = provider
         let configuredAgent = store.settings.ai.providers[runProvider.rawValue]
-        runModel = agentModel ?? store.settings.ai.taskModels["builder_agent"] ?? configuredAgent?.model
+        let config = store.effectiveAIConfig
+        let taskProvider = config.tasks["builder_agent"] ?? AICatalog.taskDefaults["builder_agent"]
+        let taskModel = taskProvider == runProvider.rawValue ? config.taskModels["builder_agent"] : nil
+        runModel = agentModel ?? taskModel ?? configuredAgent?.model
         runBinary = configuredAgent?.bin
         runLimits = store.settings.builderAgent
         duration = 0
@@ -833,7 +838,7 @@ final class WizardSheetModel {
         let token = generation
         let started = Date.now
         let library = session.library
-        let language = store.settings.transcribeLanguage
+        let language = store.editingDefaults.footage.language
         let profileGeneration = store.profileGeneration
         var result = await session.run(steps, prerequisites: prerequisites, confirmed: true,
             refreshLibrary: { [database] in
@@ -1067,7 +1072,7 @@ final class WizardSheetModel {
     private func executeAgent(session: BuilderScriptSession, confirmed: [BuilderCommand], token: Int, mode: BuilderTools.Mode = .edit) async {
         let budget = BuilderRunBudget(runLimits)
         let library = session.library
-        let language = store.settings.transcribeLanguage
+        let language = store.editingDefaults.footage.language
         let profileGeneration = store.profileGeneration
         let tools = BuilderTools(session: session, budget: budget, mode: mode, confirmedPrerequisites: confirmed,
             ensure: { [self] steps in

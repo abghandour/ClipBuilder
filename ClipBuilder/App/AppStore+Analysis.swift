@@ -70,7 +70,9 @@ extension AppStore {
         let localClassification = OnDevicePolicy.isEnabled(item: "long-recording", config: settings.ai)
         let localPodcast = OnDevicePolicy.isEnabled(item: "podcast-exchanges", config: settings.ai)
         let podcastAnalysis = podcastAnalysis
-        let language = settings.transcribeLanguage
+        let editingDefaults = editingDefaults
+        let podcastEditingSettings = podcastEditingSettings
+        let language = editingDefaults.footage.language
         if !instructions.isEmpty { appendLog(\.analysisLog, ["Using analysis instructions: \(instructions)"]) }
         let generation = profileGeneration
         analysisTask = Task {
@@ -211,7 +213,7 @@ extension AppStore {
                         runID = savedRunID
                         videoNewPeople = checkpoint.newPeople
                         suggestedFilename = checkpoint.suggestedFilename
-                    } else if video.type == .podcast {
+                    } else if video.type?.usesPodcastPass == true {
                         let result = try await podcastAnalysis.analyze(
                             video: video, profile: profile, database: database,
                             runName: runName, provider: provider, model: model,
@@ -220,9 +222,10 @@ extension AppStore {
                             // intentionally limited to non-podcast footage.
                             languageCode: "", analyzer: analyzer,
                             transcription: transcription,
-                            highlightThreshold: settings.podcast.highlightThreshold,
-                            holdSeconds: settings.podcast.speakerHoldSeconds,
+                            highlightThreshold: editingDefaults.podcast.highlightThreshold,
+                            holdSeconds: editingDefaults.podcast.speakerHoldSeconds,
                             log: logSink(\.analysisLog), progress: progress, useLocal: localPodcast,
+                            capturedSettings: podcastEditingSettings,
                             checkpointing: PodcastCheckpointing(resume: checkpoint.podcast) { state in
                                 await self.updateAnalysisCheckpoint(videoID: videoID) { $0.podcast = state }
                             })
@@ -265,22 +268,30 @@ extension AppStore {
                         } ?? checkpoint
                     }
                     if let runID, checkpoint.runID == runID, !checkpoint.transcriptDone, !checkpoint.fightScoringDone {
+                        let savedRun = try await database.fetchAnalysisRuns().first { $0.id == runID }
+                        let pipeline = AISettingsJSON.decode(AnalysisRunSettings.self, savedRun?.settingsJSON)?.pipeline
                         try await database.saveAnalysisSettings(id: runID, settings: AnalysisRunSettings(
                             instructions: instructions, sampleInterval: sampleInterval ?? 0,
-                            includeTranscript: includeTranscript || video.type == .podcast, language: video.type == .podcast ? "" : language,
+                            includeTranscript: includeTranscript || video.type?.usesPodcastPass == true, language: video.type?.usesPodcastPass == true ? "" : language,
                             detectPeople: detectPeople, autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTags,
                             smartSampling: smartSampling,
                             trimRange: trimRange.map { [$0.start, $0.end] }, notes: notes.map { AnalysisRunNote(at: $0.atTime, note: $0.note) },
-                            provider: provider, model: model, videoPath: video.path, sourcePeople: requiredPeopleKeys, sourceProfile: profile.profileName))
+                            provider: provider, model: model, videoPath: video.path, sourcePeople: requiredPeopleKeys, sourceProfile: profile.profileName, pipeline: pipeline))
                     }
                     let pendingKeys = Set(newPeople.map(\.key))
                     newPeople.append(contentsOf: videoNewPeople.filter { !pendingKeys.contains($0.key) })
+                    if detectPeople || video.type?.usesPodcastPass == true,
+                       let roster = try? await database.fetchVideoPeople(videoID: video.id) {
+                        guard generation == profileGeneration else { return }
+                        await refreshPersonRecords(roster: roster, existingPeople: knownPeople)
+                        guard generation == profileGeneration else { return }
+                    }
                     if let suggestedFilename {
                         renameSuggestions.append(RenameSuggestion(videoID: video.id,
                                                                   currentFilename: video.filename,
                                                                   suggestedName: suggestedFilename))
                     }
-                    if includeTranscript && video.type != .podcast && !checkpoint.transcriptDone {
+                    if includeTranscript && video.type?.usesPodcastPass != true && !checkpoint.transcriptDone {
                         // A transcript failure shouldn't undo a good analysis
                         // — log it and keep going.
                         do {
@@ -307,7 +318,7 @@ extension AppStore {
                                 do {
                                     try await PodcastAnalysisService.mapSpeakers(
                                         video: video, database: database,
-                                        holdSeconds: settings.podcast.speakerHoldSeconds,
+                                        holdSeconds: editingDefaults.podcast.speakerHoldSeconds,
                                         log: logSink(\.analysisLog))
                                 } catch is CancellationError {
                                     break
@@ -404,7 +415,7 @@ extension AppStore {
 
 
     func enqueueAutoTranslation(videoID: Int64) {
-        guard !settings.podcast.autoTranslateLanguage.isEmpty, !autoTranslateQueue.contains(videoID) else { return }
+        guard !editingDefaults.podcast.autoTranslateLanguage.isEmpty, !autoTranslateQueue.contains(videoID) else { return }
         autoTranslateQueue.append(videoID)
     }
 
@@ -535,16 +546,23 @@ extension AppStore {
 
     func videoPeople(for videoID: Int64) async -> [VideoPersonRecord] {
         guard let database else { return [] }
-        return (try? await database.fetchVideoPeople(videoID: videoID)) ?? []
+        let generation = profileGeneration
+        let roster = (try? await database.fetchVideoPeople(videoID: videoID)) ?? []
+        guard generation == profileGeneration, self.database === database else { return [] }
+        for row in roster { personResearchVideoIDs[row.personID, default: []].insert(videoID) }
+        return roster
     }
 
     /// Every video in the library this person is known from: the people
     /// pass's roster plus any scene tagged with them, in library order.
     func personVideos(_ person: PersonRecord) async -> [VideoRecord] {
+        let generation = profileGeneration
         var ids = Set(scenes.filter { !$0.ignored && $0.tags.contains(person.tag) }.map(\.videoID))
         if let database, let roster = try? await database.fetchVideoIDs(personID: person.id) {
             ids.formUnion(roster)
         }
+        guard generation == profileGeneration else { return [] }
+        personResearchVideoIDs[person.id] = ids
         return videos.filter { ids.contains($0.id) }
     }
 
@@ -617,7 +635,7 @@ extension AppStore {
     enum AnalysisStage: String, CaseIterable, Sendable {
         /// Tagging for footage; the transcript-first pass for podcasts.
         case analysis
-        /// The podcast pass: exchanges from the transcript (podcasts only).
+        /// The podcast pass: exchanges from a podcast or interview transcript.
         case exchanges
         case people
         /// The transcript itself (on-device; no model to pick).
@@ -666,7 +684,7 @@ extension AppStore {
             transcribe(video: video, force: true)
         case .analysis, .exchanges:
             guard let database, !isAnalyzing else { return }
-            let podcast = video.type == .podcast || stage == .exchanges
+            let podcast = video.type?.usesPodcastPass == true || stage == .exchanges
             isAnalyzing = true
             analysisCompletion = nil
             analyzingVideoIDs = [video.id]
@@ -679,6 +697,8 @@ extension AppStore {
             let transcription = transcription
             let podcastAnalysis = podcastAnalysis
             let settings = settings
+            let editingDefaults = editingDefaults
+            let podcastEditingSettings = podcastEditingSettings
             let localPodcast = OnDevicePolicy.isEnabled(item: "podcast-exchanges", config: settings.ai)
             appendLog(\.analysisLog, ["\(video.filename): running \(stage.title) again"
                 + (model.map { " with \($0)" } ?? "")])
@@ -686,6 +706,7 @@ extension AppStore {
                 await AIRunCapture.context.withValue(AIRunCapture()) {
                     defer {
                         isAnalyzing = false
+                        analyzingVideoIDs = []
                         refreshAll()
                     }
                     do {
@@ -703,10 +724,10 @@ extension AppStore {
                                 video: video, profile: profile, database: database,
                                 runName: runName, provider: provider, model: model,
                                 languageCode: "", analyzer: analyzer, transcription: transcription,
-                                highlightThreshold: settings.podcast.highlightThreshold,
-                                holdSeconds: settings.podcast.speakerHoldSeconds,
+                                highlightThreshold: editingDefaults.podcast.highlightThreshold,
+                                holdSeconds: editingDefaults.podcast.speakerHoldSeconds,
                                 log: logSink(\.analysisLog), progress: progress, useLocal: localPodcast,
-                                capturedSettings: settings.podcast)
+                                capturedSettings: podcastEditingSettings)
                             runID = result.runID
                         } else {
                             let knownPeople = (try? await database.fetchPeople()) ?? []
@@ -722,9 +743,11 @@ extension AppStore {
                             runID = result.runID
                         }
                         if let runID {
+                            let savedRun = try await database.fetchAnalysisRuns().first { $0.id == runID }
+                            let pipeline = AISettingsJSON.decode(AnalysisRunSettings.self, savedRun?.settingsJSON)?.pipeline
                             try await database.saveAnalysisSettings(id: runID, settings: AnalysisRunSettings(
                                 includeTranscript: podcast, detectPeople: false, smartSampling: true,
-                                provider: provider, model: model, videoPath: video.path, sourceProfile: profile.profileName))
+                                provider: provider, model: model, videoPath: video.path, sourceProfile: profile.profileName, pipeline: pipeline))
                             try await database.updateAnalysisModels(id: runID)
                         }
                         appendLog(\.analysisLog, ["\(video.filename): \(stage.title) done"])
@@ -766,11 +789,17 @@ extension AppStore {
                                     refreshLibrary: Bool) async -> [VideoPersonRecord] {
         guard let database else { return [] }
         detectingPeopleVideoID = video.id
+        let generation = profileGeneration
         defer { detectingPeopleVideoID = nil }
         do {
+            let existingPeople = try await database.fetchPeople()
+            guard generation == profileGeneration, self.database === database else { return [] }
             let (roster, suggestedFilename) = try await analyzer.detectPeopleOnly(
                 video: video, profile: activeProfile, database: database,
                 provider: provider, model: model, log: logSink(\.analysisLog))
+            guard generation == profileGeneration, self.database === database else { return [] }
+            await refreshPersonRecords(roster: roster, existingPeople: existingPeople)
+            guard generation == profileGeneration else { return [] }
             // A filename fix the pass noticed (auto-generated or misspelled
             // name) goes through the same review sheet as end-of-analysis
             // proposals — it presents once no other sheet is in the way.

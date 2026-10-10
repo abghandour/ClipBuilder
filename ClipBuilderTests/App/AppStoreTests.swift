@@ -5,6 +5,265 @@ import Testing
 @MainActor
 @Suite("App store", .serialized)
 struct AppStoreTests {
+    @Test("Undo Merge returns false without a snapshot")
+    func undoPeopleMergeWithoutSnapshot() async throws {
+        let temp = try TempDatabase()
+        let profile = Fixtures.brand(name: "Merge Undo")
+        let settings = AppSettings()
+        let store = AppStore(settings: settings, profiles: [profile], active: profile,
+                             ai: AIService(config: settings.ai), database: temp.database)
+        #expect(await store.undoPeopleMerge() == false)
+        #expect(store.previousPeopleMerge == nil)
+    }
+
+    @Test("People merges save one snapshot and undo restores the people and clears it", arguments: [false, true])
+    func undoPeopleMergeClearsSnapshot(batch: Bool) async throws {
+        let temp = try TempDatabase()
+        let source = try await temp.database.createPerson(name: "Duplicate")
+        let survivor = try await temp.database.createPerson(name: "Original Name")
+        let extra = try await temp.database.createPerson(name: "Another Duplicate")
+        let profile = Fixtures.brand(name: "Merge Undo")
+        let settings = AppSettings()
+        let store = AppStore(settings: settings, profiles: [profile], active: profile,
+                             ai: AIService(config: settings.ai), database: temp.database)
+        await store.initializeProjectWorkspace()
+        if batch {
+            store.mergePeople([source, survivor, extra], into: survivor, renamingTo: "Merged Name")
+        } else {
+            store.mergePeople(source: source, into: survivor)
+        }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while clock.now < deadline {
+            if store.previousPeopleMerge != nil, store.people.count == (batch ? 1 : 2) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let snapshot = try #require(store.previousPeopleMerge)
+        #expect(snapshot.sources.count == (batch ? 2 : 1))
+        #expect(snapshot.survivor.name == "Original Name")
+        #expect(store.currentError == nil)
+        #expect(await store.undoPeopleMerge())
+        #expect(store.previousPeopleMerge == nil)
+        #expect(store.people.count == 3)
+        #expect(store.people.first { $0.id == survivor.id }?.name == "Original Name")
+        #expect(store.people.contains { $0.id == source.id })
+        let expected = "Undid the merge into Original Name: \(batch ? 2 : 1) people restored"
+        #expect(store.analysisLog.contains { $0.contains(expected) })
+        #expect(await store.undoPeopleMerge() == false)
+    }
+
+    @Test("Video person correction creates a named person, refreshes references and logs counts")
+    func reassignPersonToNewPerson() async throws {
+        let temp = try TempDatabase()
+        let fixture = try await Fixtures.personCorrection(in: temp)
+        let profile = Fixtures.brand(name: "Person Correction")
+        let settings = AppSettings()
+        let store = AppStore(settings: settings, profiles: [profile], active: profile,
+                             ai: AIService(config: settings.ai), database: temp.database)
+        await store.initializeProjectWorkspace()
+        let before = await store.speakerTurns(videoID: fixture.video.id)
+        _ = await store.transcriptRows(videoID: fixture.video.id)
+        store.previousSpeakerMaps[fixture.video.id] = before.turns
+        store.previousSpeakerMaps[fixture.otherVideo.id] = before.turns
+        let rosterVersion = store.videoPeopleVersion
+        store.reassignPerson(in: fixture.video, from: fixture.from, to: nil,
+                             newPersonName: "  Correct Interviewer  ")
+        // The UI-facing action owns its Task. Wait for the observable refresh,
+        // bounded so a failed write reports an assertion instead of hanging.
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while clock.now < deadline {
+            if store.people.contains(where: { $0.name == "Correct Interviewer" }),
+               store.scenes.filter({ $0.videoID == fixture.video.id }).allSatisfy({ !$0.tags.contains(fixture.from.tag) }),
+               store.personPortraitVersions[fixture.from.id] == 1,
+               !store.analysisLog.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let created = try #require(store.people.first { $0.name == "Correct Interviewer" })
+        #expect(store.currentError == nil)
+        let scenes = store.scenes.filter { $0.videoID == fixture.video.id }
+        #expect(scenes.count == 2)
+        #expect(scenes.allSatisfy { $0.tags.contains(created.tag) && !$0.tags.contains(fixture.from.tag) })
+        let after = await store.speakerTurns(videoID: fixture.video.id)
+        #expect(after.turns.first?.personKey == created.key)
+        #expect(after.roster.first?.personID == created.id)
+        #expect(await store.transcriptRows(videoID: fixture.video.id).first?.speakerKey == created.key)
+        #expect(store.previousSpeakerMaps[fixture.video.id] == nil)
+        #expect(store.previousSpeakerMaps[fixture.otherVideo.id] != nil)
+        #expect(store.personPortraitVersions[fixture.from.id] == 1)
+        #expect(store.personPortraitVersions[created.id] == 1)
+        #expect(store.videoPeopleVersion > rosterVersion)
+        let expected = "Moved Original Person to Correct Interviewer in fixture.mp4: 2 scenes, 1 speaker turns"
+        #expect(store.analysisLog.filter { $0.contains(expected) }.count == 1)
+        #expect(try await temp.database.fetchVideoPeople(videoID: fixture.otherVideo.id).first?.personID == fixture.from.id)
+    }
+
+    @Test("Switching profiles changes team routing while preserving this Mac's overrides")
+    func profileAIRoutingSwitch() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        var first = Fixtures.brand(name: "One")
+        first.aiRouting = ProfileAIRouting(tasks: ["wizard": "claude"], taskModels: ["wizard": "first-model"])
+        var second = Fixtures.brand(name: "Two")
+        second.aiRouting = ProfileAIRouting(tasks: ["wizard": "codex"], taskModels: ["wizard": "second-model"])
+        let store = makeStore(profiles: [first, second, Fixtures.brand(name: "Three")])
+        #expect(store.effectiveAIConfig.tasks["wizard"] == "claude")
+        #expect(store.effectiveAIConfig.taskModels["wizard"] == "first-model")
+        store.switchProfile(named: "Two")
+        #expect(store.effectiveAIConfig.tasks["wizard"] == "codex")
+        #expect(store.effectiveAIConfig.taskModels["wizard"] == "second-model")
+        // Sync adoption replaces the active profile without switching its name.
+        store.activeProfile.aiRouting?.taskModels["wizard"] = "synced-model"
+        #expect(store.effectiveAIConfig.taskModels["wizard"] == "synced-model")
+        store.settings.ai.tasks["wizard"] = "gemini"
+        store.settings.ai.taskModels["wizard"] = "mac-model"
+        store.switchProfile(named: "One")
+        #expect(store.effectiveAIConfig.tasks["wizard"] == "gemini")
+        #expect(store.effectiveAIConfig.taskModels["wizard"] == "mac-model")
+        store.useTeamAIChoice(task: "wizard")
+        #expect(store.effectiveAIConfig.taskModels["wizard"] == "first-model")
+        #expect(store.settings.ai.tasks["wizard"] == nil)
+        #expect(store.settings.ai.taskModels["wizard"] == nil)
+        store.switchProfile(named: "Three")
+        #expect(store.effectiveAIConfig.tasks.isEmpty)
+        #expect(store.activeProfile.aiRouting == nil)
+    }
+
+    @Test("Recommending routing saves all task choices and clears only their local overrides")
+    func recommendAIRouting() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        store.settings.ai.tasks = ["wizard": "codex", "translate": "claude", "future-task": "gemini"]
+        store.settings.ai.taskModels = ["wizard": "chosen-planner", "translate": "chosen-translator", "future-task": "future-model"]
+        store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/private/claude", model: "mac-default")
+        store.settings.ai.providerCooldownMinutes = 60
+        store.settings.ai.mutedDispatchPlans = ["analyze"]
+        #expect(store.activeProfile.aiRouting == nil)
+        store.activeProfile.aiRouting = ProfileAIRouting(tasks: ["critique": "claude"],
+                                                        taskModels: ["critique": "team-critic"])
+        store.recommendAIRoutingToTeam()
+        let routing = try #require(store.activeProfile.aiRouting)
+        #expect(Set(routing.tasks.keys) == Set(AICatalog.tasks + ["translate"]))
+        #expect(Set(routing.taskModels.keys) == Set(AICatalog.tasks + ["translate"]))
+        #expect(routing.tasks["wizard"] == "codex")
+        #expect(routing.taskModels["wizard"] == "chosen-planner")
+        #expect(routing.taskModels["translate"] == "chosen-translator")
+        #expect(routing.tasks["analysis"] == AICatalog.taskDefaults["analysis"])
+        #expect(routing.taskModels["analysis"] == "mac-default")
+        #expect(routing.taskModels["critique"] == "team-critic")
+        #expect(routing.taskModels["route"] == AICatalog.recommendedChains["route"]?.first?.model)
+        #expect(store.settings.ai.tasks == ["future-task": "gemini"])
+        #expect(store.settings.ai.taskModels == ["future-task": "future-model"])
+        #expect(store.settings.ai.providers["claude"]?.bin == "/private/claude")
+        #expect(store.settings.ai.providerCooldownMinutes == 60)
+        #expect(store.settings.ai.mutedDispatchPlans == ["analyze"])
+        #expect(AIRoutingResolver.source(task: "wizard", local: store.settings.ai, team: routing) == .team)
+        #expect(ProfileStore.load(name: store.activeProfile.profileName)?.aiRouting == routing)
+        #expect(SettingsStore.loadSettings().ai.tasks == store.settings.ai.tasks)
+        #expect(SettingsStore.loadSettings().ai.taskModels == store.settings.ai.taskModels)
+    }
+
+    @Test("Reset restores every catalog top pair without changing the team's recommendation")
+    func resetAIRoutingToRecommended() async throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        let matching = AICatalog.topRecommended(task: "critique")
+        let team = ProfileAIRouting(
+            tasks: ["analysis": "codex", "translate": "claude", "critique": matching.provider],
+            taskModels: ["analysis": "team-analysis", "translate": "team-translation", "critique": matching.model])
+        store.activeProfile.aiRouting = team
+        store.saveActiveProfile()
+        store.settings.ai.tasks = ["wizard": "gemini", "future-task": "codex"]
+        store.settings.ai.taskModels = ["wizard": "local-planner", "future-task": "future-model"]
+        store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/private/claude", model: "mac-default")
+        store.settings.ai.mutedDispatchPlans = ["analyze", "generate"]
+        store.settings.ai.providerCooldownMinutes = 60
+
+        store.resetDispatcher()
+
+        let ai = AIService(config: store.effectiveAIConfig)
+        for task in AICatalog.tasks + ["translate"] {
+            let top = AICatalog.topRecommended(task: task)
+            let resolved = await ai.resolveProviderModel(task: task)
+            #expect(resolved.provider == top.provider)
+            #expect(resolved.model == top.model)
+            #expect(AIRoutingResolver.flag(task: task, local: store.settings.ai, team: team) == .recommended)
+        }
+        for task in ["analysis", "translate"] {
+            let top = AICatalog.topRecommended(task: task)
+            #expect(store.settings.ai.tasks[task] == top.provider)
+            #expect(store.settings.ai.taskModels[task] == top.model)
+        }
+        #expect(store.settings.ai.tasks["critique"] == nil)
+        #expect(store.settings.ai.taskModels["critique"] == nil)
+        #expect(store.settings.ai.tasks["future-task"] == nil)
+        #expect(store.settings.ai.taskModels["future-task"] == nil)
+        #expect(store.settings.ai.mutedDispatchPlans.isEmpty)
+        #expect(store.settings.ai.providers["claude"]?.bin == "/private/claude")
+        #expect(store.settings.ai.providers["claude"]?.model == "mac-default")
+        #expect(store.settings.ai.providerCooldownMinutes == 60)
+        #expect(store.activeProfile.aiRouting == team)
+        #expect(ProfileStore.load(name: store.activeProfile.profileName)?.aiRouting == team)
+        #expect(SettingsStore.loadSettings().ai.tasks == store.settings.ai.tasks)
+        #expect(SettingsStore.loadSettings().ai.taskModels == store.settings.ai.taskModels)
+        #expect(SettingsStore.loadSettings().ai.mutedDispatchPlans.isEmpty)
+    }
+
+    @Test("Use recommended only keeps a local override when the inherited pair differs")
+    func useRecommendedAIChoice() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        let top = AICatalog.topRecommended(task: "wizard")
+        let team = ProfileAIRouting(tasks: ["wizard": top.provider, "analysis": "codex"],
+                                    taskModels: ["wizard": top.model, "analysis": "team-analysis"])
+        store.activeProfile.aiRouting = team
+        // A matching team choice, a differing team choice, a matching catalog
+        // fallback, and a differing catalog fallback cover the menu action.
+        for task in ["wizard", "analysis", "route", "people"] {
+            store.settings.ai.tasks[task] = "codex"
+            store.settings.ai.taskModels[task] = "local-model"
+            store.useRecommendedAIChoice(task: task)
+            #expect(AIRoutingResolver.flag(task: task, local: store.settings.ai, team: team) == .recommended)
+            #expect(SettingsStore.loadSettings().ai.tasks == store.settings.ai.tasks)
+            #expect(SettingsStore.loadSettings().ai.taskModels == store.settings.ai.taskModels)
+        }
+        for task in ["wizard", "route"] {
+            #expect(store.settings.ai.tasks[task] == nil)
+            #expect(store.settings.ai.taskModels[task] == nil)
+        }
+        for task in ["analysis", "people"] {
+            let choice = AICatalog.topRecommended(task: task)
+            #expect(store.settings.ai.tasks[task] == choice.provider)
+            #expect(store.settings.ai.taskModels[task] == choice.model)
+        }
+        #expect(store.activeProfile.aiRouting == team)
+    }
+
+    @Test("Editing a builder model while following the team writes a local provider and model pair")
+    func builderModelOverridesTeam() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let store = makeStore()
+        let suite = "BuilderTeamRouting.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let teamModel = try #require(AICatalog.models(for: "claude").first)
+        store.activeProfile.aiRouting = ProfileAIRouting(tasks: ["builder_agent": "claude"],
+                                                        taskModels: ["builder_agent": teamModel])
+        let model = WizardSheetModel(store: store, history: BuilderWizardHistory(defaults: defaults))
+        #expect(model.provider == .claude)
+        #expect(model.agentModel == teamModel)
+        model.agentModel = nil
+        model.saveModelPreference()
+        #expect(store.settings.ai.tasks["builder_agent"] == "claude")
+        #expect(store.settings.ai.taskModels["builder_agent"] == nil)
+        #expect(store.effectiveAIConfig.taskModels["builder_agent"] == nil)
+        #expect(store.activeProfile.aiRouting?.taskModels["builder_agent"] == teamModel)
+    }
+
     private func makeStore(profiles: [BrandProfile]? = nil) -> AppStore {
         let profiles = profiles ?? [Fixtures.brand(name: "One")]
         let settings = AppSettings()

@@ -253,7 +253,7 @@ struct ClipInspector: View {
                         // A whole-file clip has no scene: its file says whether
                         // the camera follows speakers or the action.
                         let podcast = scene?.tags.contains("podcast") == true
-                            || (scene == nil && store.videos.first { $0.path == clip.videoFile }?.type == .podcast)
+                            || (scene == nil && store.videos.first { $0.path == clip.videoFile }?.type?.usesPodcastPass == true)
                         InspectorRow("Framing") {
                             Picker("Framing", selection: Binding(
                                 get: { clip.framing },

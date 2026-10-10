@@ -457,6 +457,7 @@ extension AppStore {
         // Everything this run produces belongs to the profile (database) it
         // started in; after a profile switch its results must not land here.
         let generation = profileGeneration
+        let podcastEditingSettings = podcastEditingSettings
         wizardTask = Task {
             await AIRunCapture.context.withValue(AIRunCapture()) {
             defer {
@@ -467,7 +468,7 @@ extension AppStore {
             let previousIDs = Set(((try? await database.fetchGeneratedVideos(projectID: projectID)) ?? []).map(\.id))
             if options.formatPreset == "podcast_highlights" {
                 do {
-                    var review = try await wizard.findPodcastHighlights(options: options, settings: settings.podcast,
+                    var review = try await wizard.findPodcastHighlights(options: options, settings: podcastEditingSettings,
                                                                          database: database, profile: profile, emit: logSink(\.analysisLog),
                                                                          requestText: options.aiInstructions, interpretRequest: false, progress: { status, fraction in
                         await MainActor.run {
@@ -518,7 +519,7 @@ extension AppStore {
         var options = WizardOptions()
         options.projectID = projectID
         options.formatPreset = "podcast_highlights"
-        options.highlightMaxSeconds = maxSeconds ?? settings.podcast.highlightMaxSeconds
+        options.highlightMaxSeconds = maxSeconds ?? editingDefaults.podcast.highlightMaxSeconds
         options.highlightMaxCount = maxCount
         let videos = try await database.fetchVideos(projectID: projectID)
         let projectScenes = try await database.fetchScenes(projectID: projectID, includeExcluded: false)
@@ -531,7 +532,7 @@ extension AppStore {
         }.compactMap(\.path))
         if !podcastPaths.isEmpty { options.sourcesRestricted = true; options.sourceVideoPaths = podcastPaths }
         let profile = activeProfile
-        let review = try await wizard.findPodcastHighlights(options: options, settings: settings.podcast,
+        let review = try await wizard.findPodcastHighlights(options: options, settings: podcastEditingSettings,
                                                             database: database, profile: profile, emit: logSink(\.analysisLog), requestText: requestText)
         try Task.checkCancellation()
         guard generation == profileGeneration, activeProjectID == projectID else { throw CancellationError() }

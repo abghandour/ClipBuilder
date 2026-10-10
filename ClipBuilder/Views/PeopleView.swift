@@ -17,7 +17,6 @@ struct PeopleView: View {
     @State private var reassignScene: SceneRecord?
     @State private var newPersonName = ""
     @State private var showGenerateSheet = false
-    @State private var showRolesWizard = false
     @State private var mergeRequest: MergeRequest?
     /// Person whose avatar picker sheet is open.
     @State private var avatarPickerPerson: PersonRecord?
@@ -38,6 +37,16 @@ struct PeopleView: View {
 
     private var selectedPeople: [PersonRecord] {
         store.people.filter { selectedPersonIDs.contains($0.id) }
+    }
+
+    /// An explicit selection wins; otherwise research visible people still awaiting a role.
+    nonisolated static func researchTargets(selected: [PersonRecord], visible: [PersonRecord]) -> [PersonRecord] {
+        if !selected.isEmpty { return selected }
+        return visible.filter { $0.category == nil && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private var peopleToResearch: [PersonRecord] {
+        Self.researchTargets(selected: selectedPeople, visible: visiblePeople)
     }
 
     /// People with footage in the current project; Home (or no project)
@@ -217,6 +226,22 @@ struct PeopleView: View {
         }
         .screenTitle("People", subtitle: hiddenPeople.isEmpty ? "\(projectPeople.count) \(store.isHomeProject ? "detected" : "in this project")" : "\(visiblePeople.count) \(store.isHomeProject ? "detected" : "in this project") · \(hiddenPeople.count) hidden")
         .toolbar {
+            if let snapshot = store.previousPeopleMerge {
+                Button {
+                    Task { if await store.undoPeopleMerge() { selectedPersonIDs = [] } }
+                } label: {
+                    ToolbarBubbleLabel(text: "Undo Merge", systemImage: "arrow.uturn.backward")
+                }
+                .help("Put back the \(snapshot.sources.count) people merged into \(snapshot.survivor.displayName)")
+            }
+            Button {
+                store.researchPeople(peopleToResearch, reason: "refresh")
+            } label: {
+                ToolbarBubbleLabel(text: "Refresh Research", systemImage: "arrow.clockwise.circle")
+            }
+            .disabled(!peopleToResearch.contains { !$0.isUnnamed && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                      || peopleToResearch.allSatisfy { store.personResearchInFlight.contains($0.id) })
+            .help("Search the web for the selected people's profile fields and role — or, with nothing selected, propose a role for everyone without one. You review every value before it is saved.")
             if selectedPeople.count > 1 {
                 Button {
                     mergeRequest = MergeRequest(people: selectedPeople)
@@ -226,13 +251,6 @@ struct PeopleView: View {
                 }
                 .help("These are the same person — pick the main record and combine their scenes under one identity")
             }
-            Button {
-                showRolesWizard = true
-            } label: {
-                ToolbarBubbleLabel(text: "Infer Roles", systemImage: "person.crop.circle.badge.questionmark")
-            }
-            .disabled(store.uncategorizedPeople.isEmpty)
-            .help("Propose a category for everyone without one, from the scenes they appear in and what they say — you confirm each before it's saved")
             Button {
                 showGenerateSheet = true
             } label: {
@@ -246,9 +264,6 @@ struct PeopleView: View {
                 store.mergePeople(request.people, into: main, renamingTo: name)
                 selectedPersonIDs = [main.id]
             }
-        }
-        .sheet(isPresented: $showRolesWizard) {
-            PersonRolesWizardSheet()
         }
         .sheet(isPresented: $showGenerateSheet) {
             if let person = selectedPerson {
@@ -486,9 +501,12 @@ struct PeopleView: View {
                 }
                 .padding()
 
-                PersonTagFieldsView(person: person)
-                    .id(person.key)
-                    .padding(.horizontal)
+                ScrollView {
+                    PersonTagFieldsView(person: person)
+                        .id(person.key)
+                        .padding(.horizontal)
+                }
+                .frame(maxHeight: 280)
 
                 if filtered.isEmpty {
                     ContentUnavailableView(
@@ -617,6 +635,7 @@ private struct MergePeopleSheet: View {
 
     @State private var mainID: Int64
     @State private var name: String
+    @State private var showMergeConfirmation = false
 
     init(people: [PersonRecord], onMerge: @escaping (PersonRecord, String) -> Void) {
         self.people = people
@@ -624,6 +643,11 @@ private struct MergePeopleSheet: View {
         let main = people.first { !$0.name.isEmpty } ?? people[0]
         _mainID = State(initialValue: main.id)
         _name = State(initialValue: main.name)
+    }
+
+    private var mergeName: String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? (people.first { $0.id == mainID }?.displayName ?? "") : trimmed
     }
 
     var body: some View {
@@ -676,14 +700,21 @@ private struct MergePeopleSheet: View {
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
-                Button("Merge") {
-                    if let main = people.first(where: { $0.id == mainID }) {
-                        onMerge(main, name)
-                    }
-                    dismiss()
-                }
+                Button("Merge") { showMergeConfirmation = true }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
+                .confirmationDialog("Merge \(people.count) people into \(mergeName)?",
+                                    isPresented: $showMergeConfirmation, titleVisibility: .visible) {
+                    Button("Merge", role: .destructive) {
+                        if let main = people.first(where: { $0.id == mainID }) {
+                            onMerge(main, name)
+                            dismiss()
+                        }
+                    }
+                    Button("Cancel", role: .cancel) { }
+                } message: {
+                    Text("The other \(people.count - 1) records are removed and their scenes, roster entries, speaker turns, transcript lines, markers and name-tag fields move to \(mergeName). Undo Merge in the toolbar puts them back until you switch profiles.")
+                }
             }
         }
         .padding(20)

@@ -7,7 +7,8 @@ nonisolated enum TeamProfileDocument {
         "brand_name", "content_domain", "tag_schema", "socials", "hashtags", "captions",
         "caption_styles", "tag_style", "tag_styles", "accent_color", "tagline", "caption_languages",
         "default_pacing", "default_music_volume", "use_learned_editing_defaults", "learned_hook_style",
-        "learned_layout_preference", "taste_rubric", "taste_categories", "house_style", "critic_brief_use"
+        "learned_layout_preference", "taste_rubric", "taste_categories", "house_style", "critic_brief_use",
+        "editing", "ai_routing", "default_render_settings", "buzz_sources", "buzz_extra_sources", "mini_instructions"
     ]
 
     static func encode(_ profile: BrandProfile) throws -> String {
@@ -69,6 +70,15 @@ nonisolated enum TeamProfileDocument {
 }
 
 extension Database {
+    /// Read the bootstrap gate and document together before a profile save
+    /// considers seeding. A null key also counts as present.
+    func canSeedProfileEditingDefaults() throws -> Bool {
+        guard try !initialSyncPending() else { return false }
+        guard let document = try syncedProfileDocument() else { return true }
+        let fields = try JSONDecoder().decode(SyncMapping.WireRow.self, from: Data(document.utf8))
+        return fields["editing"] == nil
+    }
+
     /// This durable gate remains closed across Stop, errors and relaunch. The
     /// store saves the merged document before acknowledging adoption below.
     func beginSyncProfileAdoption(fallback: String? = nil) throws {
@@ -110,6 +120,14 @@ extension Database {
         var fields = try JSONDecoder().decode(SyncMapping.WireRow.self, from: Data(current.utf8))
         if let previous = try syncedProfileDocument() {
             let saved = try JSONDecoder().decode(SyncMapping.WireRow.self, from: Data(previous.utf8))
+            // An older client preserved editing in the wire document but
+            // could not apply it to BrandProfile. Adopt it before uploading;
+            // otherwise this upgraded Mac would delete the team's policy.
+            if profile.editing == nil, saved["editing"] != nil, saved["editing"] != .null {
+                try connection.execute("INSERT OR IGNORE INTO sync_profile_adoption(id, baseline_json) VALUES (1, ?)",
+                                       [.text(current)])
+                return
+            }
             for (key, value) in saved where !TeamProfileDocument.keys.contains(key) { fields[key] = value }
         }
         let json = try SyncMapping.portableJSONString(.object(fields))

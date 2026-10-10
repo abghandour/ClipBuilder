@@ -15,14 +15,14 @@ extension AppStore {
         options.sourcesRestricted = true
         options.formatPreset = flow.isPodcastOrInterview ? ReelRecipe.podcastHighlights.id : "custom"
         options.targetDurationSeconds = flow.length.seconds
-        options.highlightMaxSeconds = flow.length.seconds.map(Double.init) ?? settings.podcast.highlightMaxSeconds
+        options.highlightMaxSeconds = flow.length.seconds.map(Double.init) ?? editingDefaults.podcast.highlightMaxSeconds
         options.highlightMaxCount = 3
         options.aiInstructions = activeProfile.miniInstructions ?? ""
         options.critiqueLoop = false
         options.workflow = .automatic
         let profile = activeProfile
         let generation = profileGeneration
-        let podcastSettings = settings.podcast
+        let podcastSettings = podcastEditingSettings
         let wizard = wizard
         beginWizardSelectionWork(projectID: projectID, stage: "Finding Express highlights", options: options)
         wizardTask = Task {
@@ -79,7 +79,7 @@ extension AppStore {
         let profile = activeProfile
         let generation = profileGeneration
         let wizard = wizard
-        let podcastSettings = settings.podcast
+        let podcastSettings = podcastEditingSettings
         // Capture the current edited cuts, not the original planner response.
         let ranges = run.candidates.filter { $0.id != selectionID && $0.kept }
             .flatMap { WizardPlanRules.footageRanges($0.take.plan) }

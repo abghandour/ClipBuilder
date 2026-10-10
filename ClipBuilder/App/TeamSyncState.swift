@@ -3,6 +3,12 @@ import Foundation
 import Network
 import Observation
 
+nonisolated enum TeamSyncSchedule {
+    static func shouldRunAutomaticCycle(pendingChanges: Int, appActive: Bool) -> Bool {
+        appActive && pendingChanges > 0
+    }
+}
+
 @Observable
 final class TeamSyncState {
     var email = ""
@@ -88,7 +94,13 @@ final class TeamSyncState {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) } catch { return }
                 guard let self else { return }
-                if NSApp.isActive { self.syncNow() }
+                guard self.generation == configuredGeneration, !Task.isCancelled else { return }
+                guard NSApp.isActive, let db = self.store?.database else { continue }
+                let pending = (try? await db.syncPendingCount()) ?? 0
+                guard self.generation == configuredGeneration, !Task.isCancelled else { return }
+                if TeamSyncSchedule.shouldRunAutomaticCycle(pendingChanges: pending, appActive: NSApp.isActive) {
+                    self.syncNow()
+                }
             }
         }
         if startImmediately { syncNow() }

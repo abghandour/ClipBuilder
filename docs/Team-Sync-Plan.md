@@ -187,6 +187,61 @@ Tables (see "What syncs"): `videos`, `analysis_runs`, `scenes`, `scene_tags`,
   absent; `SyncEngineTests` covers two Macs analyzing the same file, a video
   arriving before its file, and a later import adopting the synced row; `SyncMigrationTests` covers the local schema bump.
 
+## Phase 2.1: transient connection errors
+
+Added October 9, 2026 after a field report: "A TLS error caused the secure
+connection to fail" shown by Team Sync on a Mac whose traffic runs through
+a Zscaler tunnel. Supabase answered and its certificate verified; the
+tunnel stretched each TLS handshake to 2–9 s and sometimes dropped it. The
+client has no retry and reports every `URLError` as "Offline", so a flaky
+VPN reads like a dead network.
+
+### Retry
+
+- `SupabaseClient.urlSessionTransport` keeps `URLSession.shared` but the
+  client gains one retry policy around `request(path:...)`: on a
+  `URLError` whose code is `secureConnectionFailed`, `networkConnectionLost`,
+  `timedOut`, `cannotConnectToHost` or `dnsLookupFailed`, retry the same
+  request up to three times with 1 s, 3 s and 7 s delays. Any other error,
+  any HTTP response, and cancellation return at once. Idempotency: pulls
+  are GETs; outbox pushes are upserts keyed by `sync_id` with server
+  ordering (S8), so a repeated push is harmless. Sign-in and code
+  verification do not retry; those paths surface the error unchanged.
+- The retry lives in the client, not the engine, so every call benefits
+  and the engine's cycle logic stays as is. Exposed as
+  `SupabaseClient.RetryPolicy` with `attempts`, `delays` and the error-code
+  set, injectable for tests (zero delays).
+- Per-request budget: `URLRequest.timeoutInterval` 30 s so a hung tunnel
+  does not hold a cycle for the default 60 s, and the cycle can still
+  finish inside the next timer tick.
+
+### Status line
+
+`TeamSyncState.syncNow`'s catch branch distinguishes the two cases:
+
+- `URLError` with `notConnectedToInternet` or when `NWPathMonitor` reports
+  the path unsatisfied: `online = false`, status "Offline · N changes
+  waiting" as today.
+- Any other `URLError` after the retries are exhausted: `online` stays
+  true, status "Connection failed · retrying in 60 s", and the next timer
+  tick or Sync Now retries. The Team tab's detail row shows the
+  `localizedDescription` under the status so the TLS wording is still
+  available, with one sentence: "Usually a VPN or proxy slowing the
+  connection; sync keeps retrying."
+- Status-bar text stays `lineLimit(1)` + `fixedSize`.
+
+### Tests
+
+- `SupabaseClientTests` (new, next to the TeamSync suites): a transport
+  stub that fails with `secureConnectionFailed` twice then succeeds
+  returns the data and made three calls; a stub failing with `badServerResponse`
+  makes one call; an HTTP 500 makes one call; cancellation during the delay
+  returns `CancellationError`; sign-in paths make one call.
+- `TeamSyncCoordinatorTests`: a cycle whose client throws
+  `secureConnectionFailed` after retries sets the "Connection failed"
+  status and leaves `online` true; `notConnectedToInternet` sets the
+  offline status.
+
 ## Phases
 
 0. **Foundations (M).** Supabase project, schema and RLS for one table, auth,
@@ -195,7 +250,9 @@ Tables (see "What syncs"): `videos`, `analysis_runs`, `scenes`, `scene_tags`,
 1. **Brand knowledge (M).** Phase 1 tables, Settings › Team, status-bar item.
    Shipped October 6, 2026 in 1.95.
 2. **Footage analysis (L).** Phase 2 tables, "not on this Mac" state in
-   Sources and Scenes.
+   Sources and Scenes. Shipped October 8, 2026 in 1.96.
+2.1. **Transient connection errors (S).** Client retry with backoff and the
+   "Connection failed · retrying" status. Planned October 9, 2026.
 3. **Work (L).** Portable timelines, revision conflict copies, presence,
    generated-video records.
 

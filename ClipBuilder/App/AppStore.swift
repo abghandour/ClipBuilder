@@ -52,14 +52,27 @@ final class AppStore {
     // MARK: - State
 
     var settings: AppSettings { didSet { updateBugReportContext() } }
+    var editingDefaults: ProfileEditingDefaults {
+        activeProfile.editing ?? ProfileEditingDefaults(seedingFrom: settings)
+    }
+    var podcastEditingSettings: PodcastSettings {
+        editingDefaults.podcast.settings(reviewCutsByDefault: settings.podcast.reviewCutsByDefault)
+    }
     var profiles: [BrandProfile] = []
     var activeProfile: BrandProfile {
         didSet {
             updateBugReportContext()
+            if oldValue.aiRouting != activeProfile.aiRouting {
+                let config = effectiveAIConfig
+                Task { await ai.updateConfig(config) }
+            }
             if oldValue.profileName != activeProfile.profileName {
                 logEvent("app", "Profile switched: \(activeProfile.profileName)")
             }
         }
+    }
+    var effectiveAIConfig: AIConfig {
+        AIRoutingResolver.effectiveConfig(local: settings.ai, team: activeProfile.aiRouting)
     }
     var createdOverlayName: String?
     let teamSync = TeamSyncState()
@@ -212,6 +225,8 @@ final class AppStore {
     static let logLineCap = 4000
     var analysisRuns: [AnalysisRun] = [] { didSet { analysisRunsVersion &+= 1 } }
     private(set) var analysisRunsVersion = 0
+    var transcriptCounts: [Int64: Int] = [:] { didSet { transcriptCountsVersion &+= 1 } }
+    private(set) var transcriptCountsVersion = 0
     /// Distinct people the people pass found per video; the Sources table
     /// shows them as soon as a detection finishes.
     var videoPeopleCounts: [Int64: Int] = [:] { didSet { videoPeopleVersion &+= 1 } }
@@ -226,6 +241,12 @@ final class AppStore {
     var fightResearch: [Int64: FightResearchRecord] = [:]
     /// Videos whose fight research is being crawled right now.
     var fightResearchInFlight: Set<Int64> = []
+    var personResearchInFlight: Set<Int64> = []
+    var personTagFieldsVersion = 0
+    /// Roster context observed by people passes, including people without scene tags.
+    @ObservationIgnored var personResearchVideoIDs: [Int64: Set<Int64>] = [:]
+    /// Injectable per-person operation for network-free job/trigger tests.
+    @ObservationIgnored var personResearchRunner: (@Sendable (PersonResearchRequest) async throws -> PersonResearchOutcome)?
     /// Scored fight-action events by video id — the pace/winning graphs
     /// under the video and scene timelines render from these.
     var fightEvents: [Int64: [FightEventRecord]] = [:]
@@ -600,7 +621,10 @@ final class AppStore {
         return adapters
     }
 
-    let transcription = TranscriptionService()
+    /// Each run captures this profile's cleanup policy before leaving the UI.
+    var transcription: TranscriptionService {
+        TranscriptionService(podcastSettings: podcastEditingSettings)
+    }
     let analyzer: Analyzer
     let podcastAnalysis: PodcastAnalysisService
     let wizard: WizardEngine
@@ -660,7 +684,8 @@ final class AppStore {
         let activeName = SettingsStore.loadActiveProfileName()
         let active = loaded.first { $0.profileName == activeName } ?? loaded[0]
         self.init(settings: settings, profiles: loaded, active: active,
-                  ai: AIService(config: settings.ai), startWatcher: true, openProfile: true)
+                  ai: AIService(config: AIRoutingResolver.effectiveConfig(local: settings.ai, team: active.aiRouting)),
+                  startWatcher: true, openProfile: true)
         do {
             try migrateInstagramConnection()
         } catch {
@@ -916,6 +941,7 @@ final class AppStore {
         videos = []
         scenes = []
         analysisRuns = []
+        transcriptCounts = [:]
         people = []
         generatedVideos = []
         feedback = []
@@ -926,6 +952,11 @@ final class AppStore {
         openTimelineID = nil
         isShowingProjectsHome = false
         fightResearch = [:]
+        previousSpeakerMaps = [:]
+        previousPeopleMerge = nil
+        personResearchInFlight = []
+        personResearchVideoIDs = [:]
+        personTagFieldsVersion &+= 1
         fightEvents = [:]
         igBenchmarks = nil
         pendingComparison = nil
@@ -1063,6 +1094,18 @@ final class AppStore {
     /// The speaker turns a video had before its last Map Speakers Again,
     /// for showing what the map changed and for putting it back.
     var previousSpeakerMaps: [Int64: [SpeakerTurn]] = [:]
+    /// One merge can be undone until another merge or a profile switch.
+    var previousPeopleMerge: PeopleMergeSnapshot?
+    /// Person avatars keep their crops in view state; bump only affected identities.
+    var personPortraitVersions: [Int64: Int] = [:]
+
+    func invalidatePersonReferences(videoID: Int64) {
+        blurbTranscripts[videoID] = nil
+        blurbSpeakers[videoID] = nil
+        previousSpeakerMaps[videoID] = nil
+        // A roster's identities can change without changing its count.
+        videoPeopleVersion &+= 1
+    }
 
     /// A video's speaker turns and roster, cached until the next refresh.
     func speakerTurns(videoID: Int64) async -> (turns: [SpeakerTurn], roster: [VideoPersonRecord]) {
@@ -1120,7 +1163,7 @@ final class AppStore {
         appendLog(\.analysisLog, ["\(video.filename): mapping speakers again"])
         let sink = logSink(\.analysisLog)
         let log: @Sendable (String) -> Void = { line in sink(line); status?(line) }
-        let holdSeconds = settings.podcast.speakerHoldSeconds
+        let holdSeconds = editingDefaults.podcast.speakerHoldSeconds
         let before = try await database.fetchSpeakerTurns(videoID: video.id)
         try await PodcastAnalysisService.mapSpeakers(video: video, database: database,
                                                      holdSeconds: holdSeconds,
@@ -1238,6 +1281,7 @@ final class AppStore {
             if self.builder.scenes != snapshot.scenes { self.builder.updateScenes(snapshot.scenes) }
         }
         if analysisRuns != snapshot.analysisRuns { analysisRuns = snapshot.analysisRuns }
+        if transcriptCounts != snapshot.transcriptCounts { transcriptCounts = snapshot.transcriptCounts }
         if videoPeopleCounts != snapshot.videoPeopleCounts { videoPeopleCounts = snapshot.videoPeopleCounts }
         if analysisCheckpoints != snapshot.analysisCheckpoints { analysisCheckpoints = snapshot.analysisCheckpoints }
         if people != snapshot.people { people = snapshot.people }
@@ -2056,7 +2100,7 @@ extension AppStore {
                         report.cases.append(.init(id: row.path, local: tag, model: model.text, agrees: agrees))
                     }
                 case "podcast-exchanges":
-                    for video in sourceVideos where video.type == .podcast {
+                    for video in sourceVideos where video.type?.usesPodcastPass == true {
                         let rows = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
                         let segments = rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: nil) }
                         let turns = try await database.fetchSpeakerTurns(videoID: video.id)

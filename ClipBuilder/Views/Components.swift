@@ -151,7 +151,7 @@ struct PersonFaceAvatar: View {
     /// Reload key: person plus their avatar override, so a fresh pick
     /// re-renders in place.
     private var avatarKey: String {
-        "\(person.id)|\(person.avatarVideoID ?? -1)|\(person.avatarTime ?? -1)"
+        "\(person.id)|\(person.avatarVideoID ?? -1)|\(person.avatarTime ?? -1)|\(store.personPortraitVersions[person.id, default: 0])"
     }
 
     var body: some View {
@@ -193,6 +193,7 @@ struct PersonFaceAvatar: View {
                     CGRect(x: box.x, y: 1 - box.y - box.h, width: box.w, height: box.h)
                 }
                 if faceBox == nil { faceBox = await Self.detectFace(in: frame) }
+                guard !Task.isCancelled else { return }
                 image = Self.avatarImage(from: frame, faceBox: faceBox)
                 if image != nil { return }
             }
@@ -204,8 +205,9 @@ struct PersonFaceAvatar: View {
                                                             at: reference.marker.atTime,
                                                             maxDimension: 720),
                let portrait = Analyzer.markerPortrait(from: frame, marker: reference.marker) {
-                image = Self.avatarImage(from: portrait,
-                                         faceBox: await Self.detectFace(in: portrait))
+                let faceBox = await Self.detectFace(in: portrait)
+                guard !Task.isCancelled else { return }
+                image = Self.avatarImage(from: portrait, faceBox: faceBox)
                 return
             }
             // The people pass already cropped this person out of a frame:
@@ -215,7 +217,9 @@ struct PersonFaceAvatar: View {
                let frame = await ThumbnailService.jpegFrame(url: portrait.url, at: portrait.marker.atTime,
                                                             maxDimension: 720),
                let cropped = Analyzer.markerPortrait(from: frame, marker: portrait.marker) {
-                image = Self.avatarImage(from: cropped, faceBox: await Self.detectFace(in: cropped))
+                let faceBox = await Self.detectFace(in: cropped)
+                guard !Task.isCancelled else { return }
+                image = Self.avatarImage(from: cropped, faceBox: faceBox)
                 if image != nil { return }
             }
             guard let scene = store.scenes.first(where: { $0.tags.contains(person.tag) })
@@ -224,7 +228,9 @@ struct PersonFaceAvatar: View {
             guard let data = await store.thumbnails.thumbnail(for: scene.videoURL, at: time)
             else { return }
             // Detection runs off the main actor; the cheap crop stays here.
-            image = Self.avatarImage(from: data, faceBox: await Self.detectFace(in: data))
+            let faceBox = await Self.detectFace(in: data)
+            guard !Task.isCancelled else { return }
+            image = Self.avatarImage(from: data, faceBox: faceBox)
         }
     }
 
@@ -937,11 +943,8 @@ struct ModelPicker: View {
     /// The catalog's true top pick for the task — flagged in the picker even
     /// when its provider isn't installed, so the ideal setup stays legible.
     static func topRecommendedTag(for task: String) -> String {
-        if let entry = AICatalog.recommendedChains[task]?.first {
-            return tag(provider: entry.provider, model: entry.model)
-        }
-        let key = AICatalog.taskDefaults[task] ?? "claude"
-        return tag(provider: key, model: AICatalog.provider(key)?.defaultModel ?? "")
+        let top = AICatalog.topRecommended(task: task)
+        return tag(provider: top.provider, model: top.model)
     }
 
     /// First recommended chain entry whose CLI is installed — what automatic

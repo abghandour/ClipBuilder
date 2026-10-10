@@ -1,6 +1,29 @@
 import Foundation
 
 nonisolated enum TagTextWriter {
+    static let profileFields = ["Role", "Profession", "MMA record", "Team", "Nationality", "Instagram", "X"]
+
+    static func isHandleField(_ field: String) -> Bool {
+        field == "Instagram" || field == "X"
+    }
+
+    /// Accept a bare handle, an @handle or a profile URL, without changing its case.
+    static func normalizeHandle(_ raw: String, field: String) -> String? {
+        guard isHandleField(field) else { return nil }
+        var handle = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["https://", "http://", "www.", "instagram.com/", "x.com/", "twitter.com/"] {
+            if handle.lowercased().hasPrefix(prefix) { handle.removeFirst(prefix.count) }
+        }
+        if let query = handle.firstIndex(of: "?") { handle = String(handle[..<query]) }
+        while handle.hasSuffix("/") { handle.removeLast() }
+        if handle.hasPrefix("@") { handle.removeFirst() }
+        let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_"
+            + (field == "Instagram" ? "." : ""))
+        guard !handle.isEmpty, handle.count <= (field == "Instagram" ? 30 : 15),
+              handle.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        return handle
+    }
+
     struct Person: Codable, Sendable {
         var key: String
         var name: String

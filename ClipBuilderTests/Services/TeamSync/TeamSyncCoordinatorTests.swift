@@ -25,6 +25,60 @@ private actor SyncCycleProbe {
 }
 
 struct TeamSyncCoordinatorTests {
+    @Test("Profile save seeds only after initial sync and only without a team editing document",
+          arguments: [false, true], [false, true])
+    @MainActor
+    func editingDefaultsSeeding(initialComplete: Bool, remoteHasEditing: Bool) async throws {
+        let folder = try SyncTestFolder()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        var profile = BrandProfile(name: "Editing seed \(UUID().uuidString)")
+        profile.profileID = scope.profileID
+        profile.teamID = scope.teamID
+        profile.sourceFolder = folder.url.appendingPathComponent("Input").path
+        profile.outputFolder = folder.url.appendingPathComponent("Output").path
+        defer { try? ProfileStore.delete(name: profile.profileName) }
+        try await folder.database.bindSync(to: scope)
+        var remote = profile
+        if remoteHasEditing {
+            remote.editing = ProfileEditingDefaults()
+            remote.editing?.podcast.deadAirSeconds = 4.5
+        }
+        try await folder.database.saveSyncProfile(remote)
+        if initialComplete { try await folder.database.completeInitialSync() }
+        var settings = AppSettings()
+        settings.podcast.deadAirSeconds = 2.75
+        settings.transcribeLanguage = "pt-BR"
+        let store = AppStore(settings: settings, profiles: [profile], active: profile,
+                             ai: AIService(config: settings.ai), database: folder.database)
+        // Neither construction nor a fallback read may materialize editing.
+        #expect(store.editingDefaults.podcast.deadAirSeconds == 2.75)
+        #expect(store.activeProfile.editing == nil)
+        await store.saveActiveProfile()?.value
+        let expected = initialComplete && !remoteHasEditing
+            ? ProfileEditingDefaults(seedingFrom: settings) : nil
+        #expect(store.activeProfile.editing == expected)
+        #expect(store.profiles.first?.editing == expected)
+        #expect(ProfileStore.load(name: profile.profileName)?.editing == expected)
+        if remoteHasEditing {
+            let json = try #require(try await folder.database.syncedProfileDocument())
+            #expect(try TeamProfileDocument.applying(json, to: profile).editing == remote.editing)
+        }
+    }
+
+    @Test("Team save waits for a database and first reconciliation")
+    @MainActor
+    func editingDefaultsWithoutSyncState() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        var profile = BrandProfile(name: "Waiting for team")
+        profile.teamID = UUID()
+        let store = AppStore(settings: AppSettings(), profiles: [profile], active: profile,
+                             ai: AIService(config: AIConfig()))
+        #expect(store.saveActiveProfile() == nil)
+        #expect(store.activeProfile.editing == nil)
+        #expect(ProfileStore.load(name: profile.profileName)?.editing == nil)
+    }
+
     @Test("Profile replacement blocks Resume until every replacement has finished")
     @MainActor
     func profileReplacementBlocksResume() async {

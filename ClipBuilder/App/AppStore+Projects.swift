@@ -60,6 +60,7 @@ extension AppStore {
         videos = []
         scenes = []
         analysisRuns = []
+        transcriptCounts = [:]
         generatedVideos = []
         fightResearch = [:]
         fightEvents = [:]
@@ -323,7 +324,11 @@ extension AppStore {
         }
     }
 
-    func saveActiveProfile() {
+    @discardableResult
+    func saveActiveProfile() -> Task<Void, Never>? {
+        if activeProfile.editing == nil, activeProfile.teamID == nil {
+            activeProfile.editing = editingDefaults
+        }
         LearnedCache.invalidate(profile: activeProfile.profileName)
         if let old = ProfileStore.load(name: activeProfile.profileName) {
             let date = Date()
@@ -342,11 +347,27 @@ extension AppStore {
         }
         do {
             try ProfileStore.save(activeProfile)
+            var syncTask: Task<Void, Never>?
             if activeProfile.teamID != nil, !teamSync.syncing, let database {
                 let generation = profileGeneration
-                Task {
+                let teamID = activeProfile.teamID
+                syncTask = Task {
                     guard generation == profileGeneration, !teamSync.syncing else { return }
-                    do { try await database.saveSyncProfile(activeProfile) }
+                    do {
+                        let canSeed = try await database.canSeedProfileEditingDefaults()
+                        guard generation == profileGeneration, teamID == activeProfile.teamID,
+                              !teamSync.syncing else { return }
+                        if activeProfile.editing == nil, canSeed {
+                            var seeded = activeProfile
+                            seeded.editing = editingDefaults
+                            try ProfileStore.save(seeded)
+                            activeProfile = seeded
+                            if let index = profiles.firstIndex(where: { $0.profileName == seeded.profileName }) {
+                                profiles[index] = seeded
+                            }
+                        }
+                        try await database.saveSyncProfile(activeProfile)
+                    }
                     catch {
                         guard generation == profileGeneration else { return }
                         presentError("Could not queue the shared profile", error)
@@ -358,8 +379,10 @@ extension AppStore {
             }
             ProfileStore.ensureFolders(for: activeProfile)
             watcher?.watch(activeProfile.sourceFolderURL)
+            return syncTask
         } catch {
             presentError("Could not save the profile", error)
+            return nil
         }
     }
 
@@ -409,16 +432,64 @@ extension AppStore {
 
     func saveSettings() {
         SettingsStore.save(settings)
-        let config = settings.ai
+        let config = effectiveAIConfig
         Task { await ai.updateConfig(config) }
     }
 
-    /// Forget the smart dispatcher's remembered choices: recommended models
-    /// apply again and the plan prompts return before Analyze and Generate.
+    func useTeamAIChoice(task: String) {
+        settings.ai.tasks[task] = nil
+        settings.ai.taskModels[task] = nil
+        saveSettings()
+    }
+
+    func useRecommendedAIChoice(task: String) {
+        settings.ai.tasks[task] = nil
+        settings.ai.taskModels[task] = nil
+        if AIRoutingResolver.flag(task: task, local: settings.ai, team: activeProfile.aiRouting) != .recommended {
+            let top = AICatalog.topRecommended(task: task)
+            settings.ai.tasks[task] = top.provider
+            settings.ai.taskModels[task] = top.model
+        }
+        saveSettings()
+    }
+
+    /// Publish explicit choices, including catalog fallbacks, without sharing
+    /// binaries, cooldowns, on-device policy, or other per-Mac settings.
+    func recommendAIRoutingToTeam() {
+        let config = effectiveAIConfig
+        var routing = activeProfile.aiRouting ?? ProfileAIRouting()
+        for task in AICatalog.tasks + ["translate"] {
+            let provider = config.tasks[task] ?? AICatalog.taskDefaults[task] ?? "claude"
+            // Match AIService's routing-task fallback before provider defaults.
+            let routeModel = task == "route"
+                ? AICatalog.recommendedChains[task]?.first(where: { $0.provider == provider })?.model : nil
+            let model = config.taskModels[task].flatMap { $0.isEmpty ? nil : $0 }
+                ?? routeModel
+                ?? config.providers[provider]?.model.flatMap { $0.isEmpty ? nil : $0 }
+                ?? AICatalog.provider(provider)?.defaultModel ?? ""
+            routing.tasks[task] = provider
+            routing.taskModels[task] = model
+            settings.ai.tasks[task] = nil
+            settings.ai.taskModels[task] = nil
+        }
+        activeProfile.aiRouting = routing
+        saveActiveProfile()
+        saveSettings()
+    }
+
+    /// Restore the catalog's top picks and the Analyze/Generate plan prompts,
+    /// overriding team choices or provider defaults only where they differ.
     func resetDispatcher() {
         settings.ai.tasks = [:]
         settings.ai.taskModels = [:]
         settings.ai.mutedDispatchPlans = []
+        for task in AICatalog.tasks + ["translate"] {
+            if AIRoutingResolver.flag(task: task, local: settings.ai, team: activeProfile.aiRouting) != .recommended {
+                let top = AICatalog.topRecommended(task: task)
+                settings.ai.tasks[task] = top.provider
+                settings.ai.taskModels[task] = top.model
+            }
+        }
         saveSettings()
     }
 }

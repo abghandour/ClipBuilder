@@ -131,4 +131,5 @@ nonisolated enum EncodeQuality: String, Codable, CaseIterable, Sendable, Identif
 /// without mutable global state.
 nonisolated enum RenderContext {
     @TaskLocal static var settings = RenderSettings()
+    @TaskLocal static var transitions = TransitionSettings()
 }

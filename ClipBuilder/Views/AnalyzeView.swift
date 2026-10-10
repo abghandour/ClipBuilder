@@ -18,6 +18,8 @@ struct AnalyzeView: View {
     @Environment(AppStore.self) private var store
 
     @State private var selection: Set<Int64> = []
+    @State private var typeFocusVideoID: Int64?
+    @State private var typeFocusRequest: UUID?
     @State private var isDropTargeted = false
     @State private var showGenerateSheet = false
     @State private var showNameWizard = false
@@ -40,6 +42,9 @@ struct AnalyzeView: View {
     /// Scene playing from the person popover (sheet owned here, not by the
     /// split-view child).
     @State private var previewScene: SceneRecord?
+    @State private var reassignPerson: PersonRecord?
+    @State private var reassignVideo: VideoRecord?
+    @State private var newPersonName = ""
     /// Exactly one selected video → the preview pane shows it.
     private var previewVideo: VideoRecord? {
         guard let previewVideoID else { return nil }
@@ -106,10 +111,20 @@ struct AnalyzeView: View {
                     // its min size mid-layout and trips AppKit's
                     // constraint-loop guard (crash).
                     VideoPreviewPane(video: video,
+                                     typeFocusRequest: typeFocusVideoID == video.id ? typeFocusRequest : nil,
                                      onResearch: { fightResearchTarget = video },
                                      onNameWizard: { showNameWizard = true },
                                      onPreviewScene: { previewScene = $0 },
-                                     onSelectVideo: { selection = [$0.id] })
+                                     onSelectVideo: { selection = [$0.id] },
+                                     onReassignNewPerson: { person, video, suggested in
+                                         newPersonName = suggested
+                                         reassignVideo = video
+                                         reassignPerson = person
+                                     })
+                        .rememberedPaneWidth("pane.analyze.preview", min: 240, initial: 320, max: 440)
+                        .frame(maxHeight: .infinity)
+                } else {
+                    SourcesPanePlaceholder(videoCount: store.videos.count, selectionCount: selection.count)
                         .rememberedPaneWidth("pane.analyze.preview", min: 240, initial: 320, max: 440)
                         .frame(maxHeight: .infinity)
                 }
@@ -248,6 +263,32 @@ struct AnalyzeView: View {
                 }
             }
         }
+        .sheet(item: $reassignPerson, onDismiss: {
+            reassignVideo = nil
+            newPersonName = ""
+        }) { person in
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Move to a new person")
+                    .font(.headline)
+                Text("Move \(person.displayName)'s references in \(reassignVideo?.filename ?? "this video") to:")
+                    .foregroundStyle(.secondary)
+                TextField("Name", text: $newPersonName)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { createReassignedPerson(from: person) }
+                HStack {
+                    Spacer()
+                    Button("Cancel", role: .cancel) { reassignPerson = nil }
+                        .keyboardShortcut(.cancelAction)
+                    Button("Create and Move") { createReassignedPerson(from: person) }
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(newPersonName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .lineLimit(1)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(20)
+            .frame(width: 380)
+        }
         .sheet(item: $previewScene) { scene in
             PlayerSheet(url: scene.videoURL, transcriptVideoID: scene.videoID,
                         title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
@@ -297,9 +338,17 @@ struct AnalyzeView: View {
         .onChange(of: store.projectStateVersion) { restoreProjectState() }
         .onChange(of: selection, initial: true) { old, new in
             // Mid-load the table's selection is the previous project's.
-            if !store.isLoadingProject { store.sourceSelection = new }
+            if !store.isLoadingProject {
+                if new.isEmpty { ensureSelection() }
+                store.sourceSelection = selection
+            }
             if old != new { UITiming.selectionChanged(screen: "Sources", count: new.count) }
-            syncPreview(to: new)
+            syncPreview(to: selection)
+        }
+        .onChange(of: store.videos.map(\.id)) { _, ids in
+            guard !store.isLoadingProject else { return }
+            selection.formIntersection(ids)
+            ensureSelection()
         }
     }
 
@@ -376,6 +425,7 @@ struct AnalyzeView: View {
         var runsVersion: Int
         var scenesVersion: Int
         var peopleVersion: Int
+        var transcriptCountsVersion: Int
         var sortOrder: [KeyPathComparator<VideoRecord>]
     }
 
@@ -385,6 +435,8 @@ struct AnalyzeView: View {
         var batchCounts: [Int64: Int]
         var transcriptCounts: [Int64: Int]
         var peopleCounts: [Int64: Int]
+        var qaCounts: [Int64: Int]
+        var coverage: [Int64: AnalysisCoverage.Report]
     }
 
     @State private var tableMemo = MemoBox<TableKey, TableSummary>()
@@ -393,7 +445,7 @@ struct AnalyzeView: View {
         let key = TableKey(storeID: ObjectIdentifier(store),
                            videosVersion: store.videosVersion, runsVersion: store.analysisRunsVersion,
                            scenesVersion: store.scenesVersion, peopleVersion: store.videoPeopleVersion,
-                           sortOrder: sortOrder)
+                           transcriptCountsVersion: store.transcriptCountsVersion, sortOrder: sortOrder)
         return tableMemo(key) { computeTableSummary() }
     }
 
@@ -401,9 +453,14 @@ struct AnalyzeView: View {
         // One pass over scenes/batches instead of an O(n) filter per table row.
         let sceneCounts = store.sceneIndex.countsByVideo
         let batchCounts = store.analysisRuns.reduce(into: [Int64: Int]()) { $0[$1.videoID, default: 0] += 1 }
-        let transcriptCounts = store.analysisRuns.reduce(into: [Int64: Int]()) {
-            if $1.hasTranscript { $0[$1.videoID, default: 0] += 1 }
-        }
+        let transcriptCounts = store.transcriptCounts
+        let runsByVideo = Dictionary(grouping: store.analysisRuns, by: \.videoID)
+        let scenesByVideo = Dictionary(grouping: store.scenes, by: \.videoID)
+        let coverage = Dictionary(uniqueKeysWithValues: store.videos.map { video in
+            (video.id, AnalysisCoverage.report(video: video, runs: runsByVideo[video.id] ?? [],
+                                               scenes: scenesByVideo[video.id] ?? [],
+                                               transcriptCount: transcriptCounts[video.id] ?? 0))
+        })
         // Distinct people tagged across a video's batches, or the roster the
         // people pass built when that is all there is yet.
         let personTagsByRun = store.sceneIndex.personTagsByRun
@@ -415,7 +472,43 @@ struct AnalyzeView: View {
         }
         return TableSummary(videos: store.videos.sorted(using: sortOrder), sceneCounts: sceneCounts,
                             batchCounts: batchCounts, transcriptCounts: transcriptCounts,
-                            peopleCounts: peopleCounts)
+                            peopleCounts: peopleCounts, qaCounts: store.sceneIndex.qaCountsByVideo,
+                            coverage: coverage)
+    }
+
+    @ViewBuilder
+    private func coverageControl(video: VideoRecord, report: AnalysisCoverage.Report?) -> some View {
+        if let report, report.state != .needsAnalysis,
+           let action = AnalysisCoverage.action(for: report.state) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel("Analysis update available")
+                Button(action.title) { performCoverageAction(action, video: video) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .disabled(store.isAnalyzing || (action != .setType && !video.isPresent))
+            }
+            .help(AnalysisCoverage.message(for: report, type: video.type))
+        } else {
+            Color.clear
+        }
+    }
+
+    private func performCoverageAction(_ action: AnalysisCoverage.Action, video: VideoRecord) {
+        switch action {
+        case .runExchanges:
+            store.rerun(.exchanges, video: video)
+        case .analyze:
+            selection = [video.id]
+            startAnalysis(of: [video])
+        case .setType:
+            selection = [video.id]
+            typeFocusVideoID = video.id
+            typeFocusRequest = UUID()
+        }
     }
 
     private var table: some View {
@@ -488,9 +581,8 @@ struct AnalyzeView: View {
                     let scenes = summary.sceneCounts[video.id] ?? 0
                     let people = summary.peopleCounts[video.id] ?? 0
                     let hasTranscript = (summary.transcriptCounts[video.id] ?? 0) > 0
-                    // One line of glyphs: analyzed check + scene count, then
-                    // a transcript mark and a people count, each only when
-                    // the video actually has them.
+                    // Analysis, people, transcript, Q&A, and update action.
+                    // Coverage is computed once per library snapshot.
                     // Fixed slots so the marks line up as columns down
                     // the table; empty slots keep their width.
                     HStack(spacing: 6) {
@@ -515,39 +607,55 @@ struct AnalyzeView: View {
                                 .accessibilityLabel("Analyzed, \(scenes) scenes")
                         } else {
                             Label("Needs analysis", systemImage: "circle.dashed")
+                                .labelStyle(.iconOnly)
                                 .foregroundStyle(.secondary)
+                                .frame(width: 58, alignment: .leading)
+                                .help("Needs analysis")
                         }
-                        // The people count shows as soon as the people pass
-                        // finishes, analyzed or not.
-                        if batches > 0 || people > 0 {
-                            Group {
-                                if hasTranscript {
-                                    Image(systemName: "text.quote")
-                                        .foregroundStyle(.secondary)
-                                        .help("Transcript ready")
-                                        .accessibilityLabel("Transcript ready")
-                                } else {
-                                    Color.clear
-                                }
+                        Group {
+                            if people > 0 {
+                                Label("\(people)", systemImage: "person.2.fill")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                                    .help("\(people) \(people == 1 ? "person" : "people") found")
+                                    .accessibilityLabel("\(people) people found")
+                            } else {
+                                Color.clear
                             }
-                            .frame(width: 18, alignment: .center)
-                            Group {
-                                if people > 0 {
-                                    Label("\(people)", systemImage: "person.2.fill")
-                                        .foregroundStyle(.secondary)
-                                        .monospacedDigit()
-                                        .help("\(people) \(people == 1 ? "person" : "people") found")
-                                        .accessibilityLabel("\(people) people found")
-                                } else {
-                                    Color.clear
-                                }
-                            }
-                            .frame(width: 44, alignment: .leading)
                         }
+                        .frame(width: 44, alignment: .leading)
+                        Group {
+                            if hasTranscript {
+                                Image(systemName: "text.quote")
+                                    .foregroundStyle(.secondary)
+                                    .help("Transcript ready")
+                                    .accessibilityLabel("Transcript ready")
+                            } else {
+                                Color.clear
+                            }
+                        }
+                        .frame(width: 18, alignment: .center)
+                        Group {
+                            let qaCount = summary.qaCounts[video.id] ?? 0
+                            if qaCount > 0 {
+                                Label("\(qaCount)", systemImage: "bubble.left.and.bubble.right")
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                                    .help("\(qaCount) Q&A exchanges")
+                                    .accessibilityLabel("\(qaCount) Q&A exchanges")
+                            } else {
+                                Color.clear
+                            }
+                        }
+                        .frame(width: 54, alignment: .leading)
+                        coverageControl(video: video, report: summary.coverage[video.id])
+                            .frame(width: 136, alignment: .leading)
                     }
+                    .lineLimit(1)
+                    .fixedSize()
                 }
             }
-            .width(min: 130, ideal: 160)
+            .width(min: 334, ideal: 350)
         }
         // The empty-row stripes render as detached gray bars on this macOS,
         // reading as debris under a short table — rows separate fine without
@@ -642,8 +750,24 @@ struct AnalyzeView: View {
     }
 
     private func restoreProjectState() {
+        guard !store.isLoadingProject else { return }
         selection = store.sourceSelection.intersection(Set(store.videos.map(\.id)))
         syncPreview(to: selection)
+        ensureSelection()
+    }
+
+    private func ensureSelection() {
+        guard !store.isLoadingProject, selection.isEmpty else { return }
+        let summary = tableSummary
+        guard let first = summary.videos.first else { return }
+        selection = [first.id]
+    }
+
+    private func createReassignedPerson(from person: PersonRecord) {
+        let name = newPersonName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let video = reassignVideo, !name.isEmpty else { return }
+        store.reassignPerson(in: video, from: person, to: nil, newPersonName: name)
+        reassignPerson = nil
     }
 
     private func removeFromProject(_ ids: Set<Int64>) {
@@ -667,11 +791,38 @@ struct AnalyzeView: View {
 }
 
 
+private struct SourcesPanePlaceholder: View {
+    var videoCount: Int
+    var selectionCount: Int
+
+    var body: some View {
+        ContentUnavailableView {
+            if videoCount == 0 {
+                Label("No source videos", systemImage: "film")
+            } else if selectionCount > 1 {
+                Label("\(selectionCount) videos selected", systemImage: "rectangle.stack")
+            } else {
+                Label("Select a video", systemImage: "film")
+            }
+        } description: {
+            if videoCount == 0 {
+                Text("Add a video to see its preview, type, transcript and people here.")
+            } else if selectionCount > 1 {
+                Text("Select a single video to see its preview, type, transcript and people.")
+            } else {
+                Text("Click a row to see its preview, type, transcript and people.")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
 /// Inline player for the single selected source video — watch the footage
 /// before deciding to analyze (or re-analyze) it.
 private struct VideoPreviewPane: View {
     @Environment(AppStore.self) private var store
     let video: VideoRecord
+    let typeFocusRequest: UUID?
     /// Opens the fight-research sheet — presented by the parent view, not
     /// here: a .sheet inside this split-view child crashes AppKit layout.
     let onResearch: () -> Void
@@ -682,6 +833,8 @@ private struct VideoPreviewPane: View {
     let onPreviewScene: (SceneRecord) -> Void
     /// Selects another video picked in the person popover.
     let onSelectVideo: (VideoRecord) -> Void
+    /// Requests the name sheet from AnalyzeView, outside the split view.
+    let onReassignNewPerson: (PersonRecord, VideoRecord, String) -> Void
 
     /// What the player area shows while there is no player.
     private enum Availability { case loading, downloading, ready, unavailable }
@@ -762,19 +915,7 @@ private struct VideoPreviewPane: View {
                 Text("Type")
                     .font(.caption.weight(.medium))
                 Spacer()
-                Picker("Type", selection: Binding(
-                    get: { video.videoType ?? "" },
-                    set: { store.setVideoType(video, type: VideoType(rawValue: $0)) }
-                )) {
-                    Text("—").tag("")
-                    ForEach(VideoType.allCases, id: \.rawValue) { type in
-                        Text(type.label).tag(type.rawValue)
-                    }
-                }
-                .labelsHidden()
-                .controlSize(.small)
-                .fixedSize()
-                .help("What this footage is — inferred during analysis, editable here. Non-fight types skip fight scoring and fight research, and the AI Wizard sees the type when planning.")
+                VideoTypePicker(video: video, focusRequest: typeFocusRequest)
             }
 
             // Transcription in flight: the grid only shows a spinner; the
@@ -909,7 +1050,8 @@ private struct VideoPreviewPane: View {
                                                                  toleranceBefore: .zero, toleranceAfter: .zero)
                                                 },
                                                 onSelectVideo: onSelectVideo,
-                                                onPreviewScene: onPreviewScene)
+                                                onPreviewScene: onPreviewScene,
+                                                onReassignNewPerson: onReassignNewPerson)
                                         }
                                     }
                                 }
@@ -1014,6 +1156,11 @@ private struct VideoPreviewPane: View {
         // show the roster it built.
         .onChange(of: store.isDetectingPeople) { _, running in
             if !running { Task { roster = await store.videoPeople(for: video.id) } }
+        }
+        .task(id: "\(video.id)|\(store.videoPeopleVersion)") {
+            let refreshed = await store.videoPeople(for: video.id)
+            guard !Task.isCancelled else { return }
+            roster = refreshed
         }
         // Re-check when a transcription for this video finishes.
         .task(id: "\(video.id)|\(store.transcribingVideoIDs.contains(video.id))") {

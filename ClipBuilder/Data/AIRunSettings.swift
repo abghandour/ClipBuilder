@@ -48,6 +48,8 @@ nonisolated struct AnalysisRunSettings: Codable, Sendable, Equatable {
     var sourcePeople: [String] = []
     var sourceProfile = ""
     var modelPrompts: [String: AIPromptPreview] = [:]
+    /// Pipeline version at run creation; nil for older runs. Not a copyable option.
+    var pipeline: Int?
 }
 
 nonisolated struct WizardRunSettings: Codable, Sendable {

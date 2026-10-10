@@ -89,17 +89,78 @@ extension SyncMappingTests {
         profile.logoPath = "/private/logo.png"
         profile.sourceFolder = "/private/footage"
         profile.houseStyle = "Keep the opening short"
+        profile.aiRouting = ProfileAIRouting(tasks: ["wizard": "codex"], taskModels: ["wizard": "team-model"])
+        profile.editing = ProfileEditingDefaults()
+        profile.editing?.podcast.deadAirSeconds = 2.75
+        profile.defaultRenderSettings.preset = .landscape1080
+        profile.buzzSources = ["news"]
+        profile.buzzExtraSources = "r/ufc"
+        profile.miniInstructions = "Keep the hook short"
         profile.tasteCategories = [TasteCategory(key: "fight", label: "Fights", exemplarFrames: ["/private/frame.jpg"])]
         let json = try TeamProfileDocument.encode(profile)
         #expect(!json.contains("/private"))
         #expect(!json.contains("team_id"))
+        let fields = try JSONDecoder().decode(SyncMapping.WireRow.self, from: Data(json.utf8))
+        for key in ["editing", "ai_routing", "default_render_settings", "buzz_sources", "buzz_extra_sources", "mini_instructions"] {
+            #expect(fields[key] != nil)
+        }
+        for key in ["logo_path", "source_folder", "output_folder", "taste_exemplar_frames",
+                    "instagram_publish_account", "learned_sharing", "team_sync_paused",
+                    "taste_rubric_provenance", "house_style_provenance"] {
+            #expect(fields[key] == nil)
+        }
         var receiver = profile
+        receiver.aiRouting = nil
+        receiver.editing = nil
+        receiver.defaultRenderSettings = RenderSettings()
+        receiver.buzzSources = []
+        receiver.buzzExtraSources = ""
+        receiver.miniInstructions = nil
         receiver.sourceFolder = "/private/receiver"
         receiver.houseStyle = "Old"
         let applied = try TeamProfileDocument.applying(json, to: receiver)
         #expect(applied.houseStyle == profile.houseStyle)
+        #expect(applied.aiRouting == profile.aiRouting)
+        #expect(applied.editing == profile.editing)
+        #expect(applied.defaultRenderSettings == profile.defaultRenderSettings)
+        #expect(applied.buzzSources == profile.buzzSources)
+        #expect(applied.buzzExtraSources == profile.buzzExtraSources)
+        #expect(applied.miniInstructions == profile.miniInstructions)
         #expect(applied.sourceFolder == receiver.sourceFolder)
         #expect(applied.tasteCategories[0].exemplarFrames == receiver.tasteCategories[0].exemplarFrames)
+    }
+
+    @Test("Routing merges retain recommendations for separate tasks from both members")
+    func mergeAIRouting() throws {
+        var original = BrandProfile(name: "Shared")
+        original.aiRouting = ProfileAIRouting(tasks: ["wizard": "claude", "critique": "claude"],
+                                              taskModels: ["wizard": "old-planner", "critique": "old-critic"])
+        let baseline = try TeamProfileDocument.encode(original)
+        var remote = original
+        remote.aiRouting?.tasks["wizard"] = "codex"
+        remote.aiRouting?.taskModels["wizard"] = "remote-planner"
+        var local = original
+        local.aiRouting?.tasks["critique"] = "gemini"
+        local.aiRouting?.taskModels["critique"] = "local-critic"
+        let merged = try TeamProfileDocument.merging(TeamProfileDocument.encode(remote), into: local, baseline: baseline)
+        #expect(merged.aiRouting?.tasks == ["wizard": "codex", "critique": "gemini"])
+        #expect(merged.aiRouting?.taskModels == ["wizard": "remote-planner", "critique": "local-critic"])
+    }
+
+    @Test("Nested editing merges retain independent remote and local edits")
+    func mergeEditingDefaults() throws {
+        var original = BrandProfile(name: "Shared")
+        original.editing = ProfileEditingDefaults()
+        let baseline = try TeamProfileDocument.encode(original)
+        var remote = original
+        remote.editing?.podcast.deadAirSeconds = 3
+        var local = original
+        local.editing?.transitions.xfadeDuration = 0.7
+        local.editing?.podcast.fillerRunSeconds = 4
+        let merged = try TeamProfileDocument.merging(TeamProfileDocument.encode(remote), into: local, baseline: baseline)
+        #expect(merged.editing?.podcast.deadAirSeconds == 3)
+        #expect(merged.editing?.podcast.fillerRunSeconds == 4)
+        #expect(merged.editing?.transitions.xfadeDuration == 0.7)
     }
 }
 

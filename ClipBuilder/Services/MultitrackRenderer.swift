@@ -218,11 +218,14 @@ actor MultitrackRenderer {
                 preview: Bool = false,
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         try FootageAvailability.requireSources(document: document, scenes: scenes)
-        return try await RenderContext.$settings.withValue(document.renderSettings) {
-            try await renderConfigured(document: document, scenes: scenes, profile: profile,
-                                       database: database, centerStageCamera: centerStageCamera,
-                                       projectID: projectID, outputName: outputName, batchID: batchID, wizardOptions: wizardOptions, roles: roles,
-                                       renderFingerprint: renderFingerprint, preview: preview, emit: emit)
+        let editing = profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())
+        return try await RenderContext.$transitions.withValue(editing.transitions) {
+            try await RenderContext.$settings.withValue(document.renderSettings) {
+                try await renderConfigured(document: document, scenes: scenes, profile: profile,
+                                           database: database, centerStageCamera: centerStageCamera,
+                                           projectID: projectID, outputName: outputName, batchID: batchID, wizardOptions: wizardOptions, roles: roles,
+                                           renderFingerprint: renderFingerprint, preview: preview, emit: emit)
+            }
         }
     }
 
@@ -532,7 +535,7 @@ actor MultitrackRenderer {
         // Reuse only a complete finishing pass. Its inputs are actual segment
         // bytes and raster pixels, not document JSON or scratch/overlay UUIDs.
         // Music, bumpers and recipe transitions retain their existing pipeline.
-        let transitionDuration = SettingsStore.loadSettings().transitions.xfadeDuration
+        let transitionDuration = RenderContext.transitions.xfadeDuration
         let canReuseAssembly = document.soundTrack.isEmpty && bumperSpans.isEmpty
             && !transitions.contains(where: { TransitionRecipes.isRecipe($0) })
             && artifacts.allSatisfy(\.reusable)

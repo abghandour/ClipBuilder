@@ -62,6 +62,52 @@ enum Fixtures {
         BrandProfile(name: name)
     }
 
+    /// Two videos with the same mistaken identity in every video-owned table.
+    static func personCorrection(in temp: TempDatabase) async throws
+        -> (from: PersonRecord, to: PersonRecord, video: VideoRecord, otherVideo: VideoRecord) {
+        let from = try await temp.database.createPerson(name: "Original Person")
+        let to = try await temp.database.createPerson(name: "Other Person")
+        let firstID = try await temp.seedVideo(sceneCount: 2)
+        let secondID = try await temp.seedVideo(sceneCount: 2)
+        let raw = try SQLiteConnection(path: temp.path.path)
+        for id in [firstID, secondID] {
+            try raw.execute("""
+                INSERT INTO scene_tags (scene_id, tag) SELECT id, ? FROM scenes WHERE video_id = ?
+                """, [.text(from.tag), .integer(id)])
+            try raw.execute("""
+                INSERT INTO speaker_turns (video_id, start_time, end_time, cluster, person_key)
+                VALUES (?, 0, 4, 0, ?)
+                """, [.integer(id), .text(from.key)])
+            try raw.execute("""
+                INSERT INTO transcripts (video_id, start_time, end_time, text, speaker_key)
+                VALUES (?, 0, 4, 'A hand-assigned line', ?)
+                """, [.integer(id), .text(from.key)])
+            try raw.execute("""
+                INSERT INTO topic_ranges (video_id, title, start_time, end_time, speaker_keys_json)
+                VALUES (?, 'Question', 0, 4, ?)
+                """, [.integer(id), .text(String(decoding: try JSONEncoder().encode([from.key, to.key]), as: UTF8.self))])
+            try raw.execute("""
+                INSERT INTO voice_profiles (video_id, person_key, vector_json, windows, correction_windows)
+                VALUES (?, ?, '[1,0]', 12, 2)
+                """, [.integer(id), .text(from.key)])
+            try raw.execute("""
+                INSERT INTO person_markers (video_id, at_time, x, y, width, height, person_id)
+                VALUES (?, 2, 0.1, 0.2, 0.3, 0.4, ?)
+                """, [.integer(id), .integer(from.id)])
+            try raw.execute("""
+                INSERT INTO video_people (video_id, person_id, portrait_at, portrait_json, ranges_json)
+                VALUES (?, ?, 2, '{"x":0.1,"y":0.2,"w":0.3,"h":0.4}',
+                    '[{"start":8,"end":12},{"start":0,"end":4}]')
+                """, [.integer(id), .integer(from.id)])
+        }
+        try raw.execute("INSERT INTO person_tag_fields (person_key, field, value) VALUES (?, 'role', 'Host')",
+                        [.text(from.key)])
+        var first = video(id: firstID), second = video(id: secondID)
+        first.path = temp.directory.url.appendingPathComponent("fixture.mp4").path
+        second.path = first.path
+        return (from, to, first, second)
+    }
+
     static func planClip(sceneID: Int64 = 1, start: Double = 2, end: Double = 6) -> WizardPlanClip {
         WizardPlanClip(sceneID: sceneID, start: start, end: end)
     }

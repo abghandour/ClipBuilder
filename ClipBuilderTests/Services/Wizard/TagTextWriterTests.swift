@@ -4,6 +4,33 @@ import Testing
 
 @Suite("Tag text writer")
 struct TagTextWriterTests {
+    @Test func normalizeHandlesAndProfileURLs() {
+        #expect(TagTextWriter.profileFields == ["Role", "Profession", "MMA record", "Team", "Nationality", "Instagram", "X"])
+        for field in ["Instagram", "X"] {
+            #expect(TagTextWriter.normalizeHandle("@name", field: field) == "name")
+            #expect(TagTextWriter.normalizeHandle(" \n @Name_1 \t", field: field) == "Name_1")
+            #expect(TagTextWriter.normalizeHandle("", field: field) == nil)
+            #expect(TagTextWriter.normalizeHandle("@", field: field) == nil)
+            #expect(TagTextWriter.normalizeHandle("first last", field: field) == nil)
+            #expect(TagTextWriter.normalizeHandle("first\nlast", field: field) == nil)
+            #expect(TagTextWriter.normalizeHandle("na-me", field: field) == nil)
+            #expect(TagTextWriter.normalizeHandle("namé", field: field) == nil)
+        }
+        #expect(TagTextWriter.normalizeHandle("https://www.instagram.com/name/?hl=en", field: "Instagram") == "name")
+        #expect(TagTextWriter.normalizeHandle("http://www.instagram.com/Name.1///?hl=en", field: "Instagram") == "Name.1")
+        #expect(TagTextWriter.normalizeHandle("x.com/name", field: "X") == "name")
+        #expect(TagTextWriter.normalizeHandle("twitter.com/name", field: "X") == "name")
+        #expect(TagTextWriter.normalizeHandle("https://www.twitter.com/name/?lang=en", field: "X") == "name")
+        #expect(TagTextWriter.normalizeHandle("https://instagram.com/?hl=en", field: "Instagram") == nil)
+        #expect(TagTextWriter.normalizeHandle("name.1", field: "X") == nil)
+        #expect(TagTextWriter.normalizeHandle("name/path", field: "Instagram") == nil)
+        for (field, limit) in [("Instagram", 30), ("X", 15)] {
+            let handle = String(repeating: "a", count: limit)
+            #expect(TagTextWriter.normalizeHandle(handle, field: field) == handle)
+            #expect(TagTextWriter.normalizeHandle(handle + "a", field: field) == nil)
+        }
+    }
+
     @Test func promptBatchesPeopleAndNamesTheField() {
         let people = [TagTextWriter.Person(key: "ann", name: "Ann", category: "Press", transcript: "I report on fights."),
                       TagTextWriter.Person(key: "bob", name: "Bob", category: "Fighter", transcript: "I train daily.")]

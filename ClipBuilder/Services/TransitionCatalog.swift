@@ -222,18 +222,21 @@ nonisolated enum EffectPreviewRenderer {
         ProfileStore.profilesDirectory.appendingPathComponent("assets/effects/previews", isDirectory: true)
     }
 
-    static func previewURL(for effect: TransitionEffect, samples: EffectSampleSet = .saved) -> URL {
-        directory.appendingPathComponent("\(effect.name)-v\(version)-\(samples.cacheTag).mp4")
+    static func previewURL(for effect: TransitionEffect, samples: EffectSampleSet = .saved,
+                           transitions: TransitionSettings = TransitionSettings()) -> URL {
+        directory.appendingPathComponent("\(effect.name)-v\(version)-\(samples.cacheTag)-\(transitions.xfadeDuration.bitPattern)-\(transitions.sfxEnabled).mp4")
     }
 
-    static func hasPreview(for effect: TransitionEffect, samples: EffectSampleSet = .saved) -> Bool {
-        FileManager.default.fileExists(atPath: previewURL(for: effect, samples: samples).path)
+    static func hasPreview(for effect: TransitionEffect, samples: EffectSampleSet = .saved,
+                           transitions: TransitionSettings = TransitionSettings()) -> Bool {
+        FileManager.default.fileExists(atPath: previewURL(for: effect, samples: samples, transitions: transitions).path)
     }
 
     /// Render (if missing) and return the preview clip for `effect`.
     static func preview(for effect: TransitionEffect,
-                        samples: EffectSampleSet = .saved) async throws -> URL {
-        let output = previewURL(for: effect, samples: samples)
+                        samples: EffectSampleSet = .saved,
+                        transitions: TransitionSettings = TransitionSettings()) async throws -> URL {
+        let output = previewURL(for: effect, samples: samples, transitions: transitions)
         if FileManager.default.fileExists(atPath: output.path) { return output }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let scratch = FileManager.default.temporaryDirectory
@@ -255,9 +258,11 @@ nonisolated enum EffectPreviewRenderer {
         }
         let render = RenderEngine()
         let joined = scratch.appendingPathComponent("joined.mp4")
-        try await render.concatenate(clips: [cardA, cardB],
-                                     transitions: [effect.name == "cut" ? nil : effect.name],
-                                     output: joined)
+        try await RenderContext.$transitions.withValue(transitions) {
+            try await render.concatenate(clips: [cardA, cardB],
+                                         transitions: [effect.name == "cut" ? nil : effect.name],
+                                         output: joined)
+        }
         try FileManager.default.copyItemReplacing(at: joined, to: output)
         return output
     }

@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 /// assets/effects. The bottom bar plays/pauses everything, sets playback
 /// speed, and swaps the test cards for stills from videos of your choice.
 struct TransitionsView: View {
+    @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(WizardDefaults.limitTransitionsKey) private var aiTransitionsLimited = false
     @AppStorage(WizardDefaults.allowedTransitionsKey) private var aiTransitionsRaw = ""
@@ -17,7 +18,7 @@ struct TransitionsView: View {
     @State private var rendering: Set<String> = []
     @State private var failures: [String: String] = [:]
     @State private var renderAllTask: Task<Void, Never>?
-    @State private var xfadeDuration = SettingsStore.loadSettings().transitions.xfadeDuration
+    private var xfadeDuration: Double { store.editingDefaults.transitions.xfadeDuration }
 
     /// Everything plays unless paused here; a card click flips just that
     /// card, Play All / Pause All reset every override.
@@ -117,6 +118,11 @@ struct TransitionsView: View {
             samplesChanged()
         }
         .onAppear { loadCached() }
+        .onChange(of: store.editingDefaults.transitions) { _, _ in
+            renderAllTask?.cancel()
+            renderAllTask = nil
+            loadCached()
+        }
         .onDisappear { renderAllTask?.cancel() }
     }
 
@@ -307,10 +313,9 @@ struct TransitionsView: View {
     private func loadCached() {
         previews = [:]
         failures = [:]
-        for effect in effects where EffectPreviewRenderer.hasPreview(for: effect, samples: samples) {
-            previews[effect.name] = EffectPreviewRenderer.previewURL(for: effect, samples: samples)
+        for effect in effects where EffectPreviewRenderer.hasPreview(for: effect, samples: samples, transitions: store.editingDefaults.transitions) {
+            previews[effect.name] = EffectPreviewRenderer.previewURL(for: effect, samples: samples, transitions: store.editingDefaults.transitions)
         }
-        xfadeDuration = SettingsStore.loadSettings().transitions.xfadeDuration
     }
 
     /// New sample stills: every visible card re-renders against them.
@@ -326,11 +331,12 @@ struct TransitionsView: View {
         rendering.insert(effect.name)
         failures[effect.name] = nil
         let samples = samples
+        let transitions = store.editingDefaults.transitions
         Task {
             do {
-                let url = try await EffectPreviewRenderer.preview(for: effect, samples: samples)
+                let url = try await EffectPreviewRenderer.preview(for: effect, samples: samples, transitions: transitions)
                 // A sample change mid-render makes this result stale.
-                if samples == self.samples { previews[effect.name] = url }
+                if samples == self.samples, transitions == store.editingDefaults.transitions { previews[effect.name] = url }
             } catch {
                 failures[effect.name] = error.userMessage
             }
@@ -340,12 +346,13 @@ struct TransitionsView: View {
 
     private func renderAll() {
         let samples = samples
+        let transitions = store.editingDefaults.transitions
         renderAllTask = Task {
             for effect in effects where previews[effect.name] == nil && !Task.isCancelled {
                 rendering.insert(effect.name)
                 do {
-                    let url = try await EffectPreviewRenderer.preview(for: effect, samples: samples)
-                    if samples == self.samples { previews[effect.name] = url }
+                    let url = try await EffectPreviewRenderer.preview(for: effect, samples: samples, transitions: transitions)
+                    if samples == self.samples, transitions == store.editingDefaults.transitions { previews[effect.name] = url }
                 } catch {
                     failures[effect.name] = error.userMessage
                 }

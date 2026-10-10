@@ -603,14 +603,16 @@ extension AppStore {
         let project = activeProjectID
         let generation = profileGeneration
         let settings = settings
-        let ai = AIService(config: settings.ai)
+        let editingDefaults = editingDefaults
+        let podcastEditingSettings = podcastEditingSettings
+        let ai = AIService(config: effectiveAIConfig)
         let analyzer = Analyzer(ai: ai)
         let transcription = TranscriptionService(
             cacheDirectory: SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
-            podcastSettings: settings.podcast, strictEnrichment: true)
+            podcastSettings: podcastEditingSettings, strictEnrichment: true)
         let podcast = PodcastAnalysisService(ai: ai)
         return BuilderPrerequisiteContext(database: database, profile: profile, projectID: project,
-            language: settings.transcribeLanguage, isCurrent: { [weak self] in
+            language: editingDefaults.footage.language, isCurrent: { [weak self] in
                 guard let self else { return false }
                 return self.database === database && self.profileGeneration == generation
                     && self.activeProjectID == project
@@ -619,7 +621,7 @@ extension AppStore {
                 switch kind {
                 case .transcript:
                     _ = try await transcription.transcribeForVideo(video: video, database: database,
-                        languageCode: settings.transcribeLanguage, force: false, log: { _ in })
+                        languageCode: editingDefaults.footage.language, force: false, log: { _ in })
                 case .people:
                     _ = try await analyzer.detectPeopleOnly(video: video, profile: profile,
                         database: database, log: { _ in })
@@ -632,14 +634,14 @@ extension AppStore {
                         try await database.setVideoType(id: video.id, type: type.rawValue)
                     }
                     let name = "Builder prerequisite: " + video.filename
-                    if video.type == .podcast {
+                    if video.type?.usesPodcastPass == true {
                         _ = try await podcast.analyze(video: video, profile: profile, database: database,
-                            runName: name, provider: nil, model: nil, languageCode: settings.transcribeLanguage,
+                            runName: name, provider: nil, model: nil, languageCode: editingDefaults.footage.language,
                             analyzer: analyzer, transcription: transcription,
-                            highlightThreshold: settings.podcast.highlightThreshold,
-                            holdSeconds: settings.podcast.speakerHoldSeconds, log: { _ in }, progress: { _, _ in },
+                            highlightThreshold: editingDefaults.podcast.highlightThreshold,
+                            holdSeconds: editingDefaults.podcast.speakerHoldSeconds, log: { _ in }, progress: { _, _ in },
                             useLocal: OnDevicePolicy.isEnabled(item: "podcast-exchanges", config: settings.ai),
-                            capturedSettings: settings.podcast)
+                            capturedSettings: podcastEditingSettings)
                     } else {
                         let people = try await database.fetchPeople()
                         let markers = try await database.personMarkers(videoID: video.id)
@@ -662,7 +664,7 @@ extension AppStore {
         guard let database, !transcribingVideoIDs.contains(video.id) else { return }
         transcribingVideoIDs.insert(video.id)
         let transcription = transcription
-        let language = settings.transcribeLanguage
+        let language = editingDefaults.footage.language
         transcriptionTasks[video.id] = Task {
             defer {
                 transcribingVideoIDs.remove(video.id)

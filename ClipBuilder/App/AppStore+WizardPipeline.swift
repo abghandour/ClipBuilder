@@ -73,7 +73,7 @@ extension AppStore {
         pipelineTask = Task {
             // Settings saves enqueue an actor update; Start and Resume must
             // apply the latest routing before any phase can dispatch AI.
-            await ai.updateConfig(settings.ai)
+            await ai.updateConfig(effectiveAIConfig)
             // The operation closure is nonisolated by type; pin it to the main
             // actor so the nested helpers that touch pipeline state are too.
             await SampledFrameCache.$current.withValue(SampledFrameCache()) { @MainActor in
@@ -118,7 +118,7 @@ extension AppStore {
             // 2. Transcription (skips videos that already have one).
             if options.transcribe {
                 let transcription = transcription
-                let language = settings.transcribeLanguage
+                let language = editingDefaults.footage.language
                 for video in targets where !completed("transcribe:\(video.id)") {
                     if Task.isCancelled { break }
                     pipelineStage = "transcribing — \(video.filename)"

@@ -588,7 +588,7 @@ private struct GeneralSettingsTab: View {
         @Bindable var store = store
         Form {
             FeedbackSettingsSection()
-            Section("Analysis") {
+            Section {
                 LabeledContent("Analysis mode") {
                     Text("Visual + transcript-first podcasts")
                         .foregroundStyle(.secondary)
@@ -596,6 +596,11 @@ private struct GeneralSettingsTab: View {
                 Text("Podcast sources use on-device transcription and sparse speaker frames. Other source types keep the visual analysis pipeline.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } header: {
+                Text("Analysis")
+            } footer: {
+                Text("Per profile. Shared with the team when the profile has one.")
+                    .lineLimit(1)
             }
 
             Section("Transcription") {
@@ -605,76 +610,89 @@ private struct GeneralSettingsTab: View {
                         Text("Apple SpeechAnalyzer (on-device)")
                     }
                 }
-                TextField("Language code", text: $store.settings.transcribeLanguage,
+                Toggle("Review podcast cuts before rendering",
+                       isOn: $store.settings.podcast.reviewCutsByDefault)
+            }
+
+            Section {
+                TextField("Language code", text: store.editingBinding(\.footage.language),
                           prompt: Text("Auto (current locale)"))
-                TextField("Vocabulary hint", text: $store.settings.transcribeHint,
+                TextField("Vocabulary hint", text: store.editingBinding(\.footage.vocabularyHint),
                           prompt: Text("Domain-specific names, code-switching notes…"))
                 LabeledContent("Dead air") {
-                    Stepper(value: $store.settings.podcast.deadAirSeconds, in: 0.5...10, step: 0.25) {
-                        Text(store.settings.podcast.deadAirSeconds,
+                    Stepper(value: store.editingBinding(\.podcast.deadAirSeconds), in: 0.5...10, step: 0.25) {
+                        Text(store.editingDefaults.podcast.deadAirSeconds,
                              format: .number.precision(.fractionLength(2)))
                             .monospacedDigit()
                     }
                 }
                 LabeledContent("Filler run") {
-                    Stepper(value: $store.settings.podcast.fillerRunSeconds, in: 0.5...10, step: 0.25) {
-                        Text(store.settings.podcast.fillerRunSeconds,
+                    Stepper(value: store.editingBinding(\.podcast.fillerRunSeconds), in: 0.5...10, step: 0.25) {
+                        Text(store.editingDefaults.podcast.fillerRunSeconds,
                              format: .number.precision(.fractionLength(2)))
                             .monospacedDigit()
                     }
                 }
-                Picker("Detected cuts", selection: $store.settings.podcast.cleanupCutPolicy) {
+                Picker("Detected cuts", selection: store.editingBinding(\.podcast.cleanupCutPolicy)) {
                     ForEach(CleanupCutPolicy.allCases) { policy in
                         Text(policy.label).tag(policy)
                     }
                 }
-                .help(store.settings.podcast.cleanupCutPolicy.help)
-                Toggle("Review podcast cuts before rendering",
-                       isOn: $store.settings.podcast.reviewCutsByDefault)
+                .help(store.editingDefaults.podcast.cleanupCutPolicy.help)
                 Text("Pauses and filler runs are detected after every transcription with these thresholds. The Wizard skips accepted cuts; Transcript Tools shows every cut and lets you change any decision.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Picker("Translate captions automatically", selection: $store.settings.podcast.autoTranslateLanguage) {
+                Picker("Translate captions automatically", selection: store.editingBinding(\.podcast.autoTranslateLanguage)) {
                     Text("Off").tag("")
                     Text("Português (Brasil)").tag("pt-BR")
                     Text("English (United States)").tag("en-US")
                 }
                 .help("Translate each new transcript to this language on the Mac in the background, so the SRT and translated captions are ready without a visit to Transcript Tools")
+            } header: {
+                Text("Transcription defaults")
+            } footer: {
+                Text("Per profile. Shared with the team when the profile has one.")
+                    .lineLimit(1)
             }
 
-            Section("Podcast highlights") {
+            Section {
                 LabeledContent("Automatic favorite score") {
-                    Stepper(value: $store.settings.podcast.highlightThreshold,
+                    Stepper(value: store.editingBinding(\.podcast.highlightThreshold),
                             in: 0...10, step: 0.5) {
-                        Text(store.settings.podcast.highlightThreshold,
+                        Text(store.editingDefaults.podcast.highlightThreshold,
                              format: .number.precision(.fractionLength(1)))
                             .monospacedDigit()
                     }
                 }
                 LabeledContent("Maximum reel length") {
-                    Stepper(value: $store.settings.podcast.highlightMaxSeconds, in: 5...120, step: 1) {
-                        Text("\(store.settings.podcast.highlightMaxSeconds, format: .number)s")
+                    Stepper(value: store.editingBinding(\.podcast.highlightMaxSeconds), in: 5...120, step: 1) {
+                        Text("\(store.editingDefaults.podcast.highlightMaxSeconds, format: .number)s")
                             .monospacedDigit()
                     }
                 }
                 LabeledContent("Speaker hold") {
-                    Stepper(value: $store.settings.podcast.speakerHoldSeconds,
+                    Stepper(value: store.editingBinding(\.podcast.speakerHoldSeconds),
                             in: 0.5...5, step: 0.25) {
-                        Text("\(store.settings.podcast.speakerHoldSeconds, format: .number.precision(.fractionLength(2)))s")
+                        Text("\(store.editingDefaults.podcast.speakerHoldSeconds, format: .number.precision(.fractionLength(2)))s")
                             .monospacedDigit()
                     }
                 }
                 Text("Exchanges at or above the score become favorites and receive a Reel chip. Follow-speaker framing waits at least the hold time before cutting sides.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } header: {
+                Text("Podcast highlights")
+            } footer: {
+                Text("Per profile. Shared with the team when the profile has one.")
+                    .lineLimit(1)
             }
 
-            Section("Transitions") {
+            Section {
                 LabeledContent("Crossfade duration") {
                     HStack {
-                        Slider(value: $store.settings.transitions.xfadeDuration, in: 0.1...1.0, step: 0.05)
+                        Slider(value: store.editingBinding(\.transitions.xfadeDuration), in: 0.1...1.0, step: 0.05)
                             .frame(width: 180)
-                        Text(String(format: "%.2fs", store.settings.transitions.xfadeDuration))
+                        Text(String(format: "%.2fs", store.editingDefaults.transitions.xfadeDuration))
                             .monospacedDigit()
                             .frame(width: 48, alignment: .trailing)
                     }
@@ -682,14 +700,19 @@ private struct GeneralSettingsTab: View {
                 Text("How long crossfade transitions overlap. Action edits feel best at 0.15-0.35s; flash cuts and action transitions (knife slash, zoom punch, whip…) carry their own fixed timings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Toggle("Transition sound effects", isOn: $store.settings.transitions.sfxEnabled)
+                Toggle("Transition sound effects", isOn: store.editingBinding(\.transitions.sfxEnabled))
                 Text("Mixes a synthesized whoosh, impact, or slash under action transitions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Toggle("Snap wizard cuts to music beats", isOn: $store.settings.transitions.beatSnap)
+                Toggle("Snap wizard cuts to music beats", isOn: store.editingBinding(\.transitions.beatSnap))
                 Text("After the AI plans a reel, each cut is nudged (up to ±0.35s) onto the nearest strong beat of the selected music.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } header: {
+                Text("Transitions")
+            } footer: {
+                Text("Per profile. Shared with the team when the profile has one.")
+                    .lineLimit(1)
             }
 
             Section("Storage") {
@@ -754,8 +777,9 @@ private struct GeneralSettingsTab: View {
             // A previous build exposed an unfinished mode. Keep saved
             // preferences on the supported path instead of offering a
             // selection that cannot complete its job.
-            if store.settings.analysisMode == "speech" {
-                store.settings.analysisMode = "visual"
+            // Do not materialize a fallback while a team profile awaits adoption.
+            if store.activeProfile.editing?.footage.analysisMode == "speech" {
+                store.editingBinding(\.footage.analysisMode).wrappedValue = "visual"
             }
         }
         .task {
@@ -779,16 +803,36 @@ private struct AISettingsTab: View {
     // Optimistic until the async CLI check lands, mirroring the plan sheet.
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
 
+    @ViewBuilder
+    private func routingFlag(for task: String) -> some View {
+        let team = store.activeProfile.aiRouting
+        if let flag = AIRoutingResolver.flag(task: task, local: store.settings.ai, team: team) {
+            Menu {
+                Button("Use recommended model") { store.useRecommendedAIChoice(task: task) }
+                    .disabled(flag == .recommended)
+                if team?.tasks[task] != nil {
+                    Button("Use team choice") { store.useTeamAIChoice(task: task) }
+                        .disabled(AIRoutingResolver.source(task: task, local: store.settings.ai, team: team) == .team)
+                }
+            } label: {
+                Text(flag.rawValue)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+        }
+    }
+
     /// One "provider|model" binding per task, writing both routing fields.
     private func routingBinding(for task: String) -> Binding<String> {
         Binding(
             get: {
-                let provider = store.settings.ai.tasks[task]
-                    ?? AICatalog.taskDefaults[task] ?? "claude"
-                let model = store.settings.ai.taskModels[task]
-                    ?? store.settings.ai.providers[provider]?.model
-                    ?? AICatalog.provider(provider)?.defaultModel ?? ""
-                return ModelPicker.tag(provider: provider, model: model)
+                let choice = AIRoutingResolver.choice(task: task, local: store.settings.ai,
+                                                      team: store.activeProfile.aiRouting)
+                return ModelPicker.tag(provider: choice.provider, model: choice.model)
             },
             set: {
                 let parsed = ModelPicker.parse($0)
@@ -803,11 +847,14 @@ private struct AISettingsTab: View {
         Form {
             Section("Critic Brief") { CriticBriefControls(showsUsePicker: true) }
             OnDeviceSettingsSection()
-            Section("Task Routing") {
+            Section {
                 ForEach(AICatalog.tasks, id: \.self) { task in
-                    ModelPicker(title: AICatalog.taskLabels[task] ?? task,
-                                task: task, selection: routingBinding(for: task),
-                                availableProviders: availableProviders)
+                    HStack {
+                        ModelPicker(title: AICatalog.taskLabels[task] ?? task,
+                                    task: task, selection: routingBinding(for: task),
+                                    availableProviders: availableProviders)
+                        routingFlag(for: task)
+                    }
                 }
                 Button("Reset to Recommended Models") {
                     store.resetDispatcher()
@@ -822,6 +869,19 @@ private struct AISettingsTab: View {
                     Text("Skip it for 1 hour").tag(60)
                 }
                 .help("When a provider fails to sign in, is out of quota or returns a CLI error, automatic fallback skips it for this long instead of paying the failed call on every video. Picking a provider explicitly still uses it, and changing these settings clears the wait.")
+            } header: {
+                Text("Task Routing")
+            } footer: {
+                VStack(alignment: .leading, spacing: 6) {
+                    Button("Recommend this routing to the team") {
+                        store.recommendAIRoutingToTeam()
+                    }
+                    .lineLimit(1)
+                    .fixedSize()
+                    Text("Saves the current routing on the profile. Shared with the team when the profile has one. Each Mac can still override a task.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("Learning") {

@@ -10,6 +10,15 @@ struct TranscriptSheet: View {
     @Environment(\.dismiss) private var dismiss
     let video: VideoRecord
 
+    private var currentVideo: VideoRecord {
+        store.videos.first { $0.id == video.id } ?? video
+    }
+
+    private var coverage: AnalysisCoverage.Report {
+        AnalysisCoverage.report(video: currentVideo, runs: store.analysisRuns,
+                                scenes: currentVideoScenes, transcriptCount: rows.count)
+    }
+
     @State private var rows: [TranscriptRow] = []
     @State private var transcriptionSets: [TranscriptionSet] = []
     @State private var selectedTranscriptionKey = ""
@@ -148,6 +157,29 @@ struct TranscriptSheet: View {
         return ends
     }
 
+    /// Bracket edges for consecutive visible lines in the same Q&A scene.
+    /// Hidden lines do not split a run; visible lines without an exchange do.
+    nonisolated static func exchangeSpans(_ rows: [TranscriptRow], exchange: (TranscriptRow) -> Int64?) -> [Int: ExchangeEdge] {
+        let exchanges = rows.map(exchange)
+        var edges: [Int: ExchangeEdge] = [:]
+        for index in exchanges.indices {
+            guard let id = exchanges[index] else { continue }
+            let continuesBefore = index > 0 && exchanges[index - 1] == id
+            let continuesAfter = index + 1 < exchanges.count && exchanges[index + 1] == id
+            switch (continuesBefore, continuesAfter) {
+            case (false, false): edges[index] = .only
+            case (false, true): edges[index] = .first
+            case (true, true): edges[index] = .middle
+            case (true, false): edges[index] = .last
+            }
+        }
+        return edges
+    }
+
+    private func exchangeScene(_ row: TranscriptRow) -> SceneRecord? {
+        lineScenes[row.id]?.first { !$0.ignored && $0.tags.contains("q&a") }
+    }
+
     /// Every tag any line carries, Reel first, then alphabetical.
     private var allLineTags: [String] {
         Self.orderTags(Array(Set(lineTags.values.flatMap { $0 })))
@@ -270,6 +302,9 @@ struct TranscriptSheet: View {
                             let blockEnds = groupBySpeaker
                                 ? Self.blockEnds(visible) { speakerLabel($0) == speakerLabel($1) && $0.isTranslation == $1.isTranslation }
                                 : []
+                            let exchangeSpans = groupBySpeaker
+                                ? Self.exchangeSpans(visible) { exchangeScene($0)?.id }
+                                : [:]
                             ForEach(Array(visible.enumerated()), id: \.element.id) { index, row in
                                 // Tags print where the line enters a
                                 // different scene, so a run of lines in one
@@ -278,13 +313,29 @@ struct TranscriptSheet: View {
                                 let sameSpeaker = index > 0 && speakerLabel(visible[index - 1]) == speakerLabel(row)
                                     && visible[index - 1].isTranslation == row.isTranslation
                                 let grouped = groupBySpeaker && speakerLabel(row) != nil
-                                segmentRow(row, showTags: index == 0 || previous != sceneIDs(row),
-                                           current: current == row.id, repeatedSpeaker: sameSpeaker,
-                                           grouped: grouped, blockEnd: grouped && !sameSpeaker ? blockEnds[index] : nil)
-                                if !(grouped && index + 1 < visible.count
-                                     && speakerLabel(visible[index + 1]) == speakerLabel(row)
-                                     && visible[index + 1].isTranslation == row.isTranslation) {
-                                    Divider()
+                                VStack(alignment: .leading, spacing: 0) {
+                                    segmentRow(row, showTags: index == 0 || previous != sceneIDs(row),
+                                               current: current == row.id, repeatedSpeaker: sameSpeaker,
+                                               grouped: grouped, blockEnd: grouped && !sameSpeaker ? blockEnds[index] : nil)
+                                    if !(grouped && index + 1 < visible.count
+                                         && speakerLabel(visible[index + 1]) == speakerLabel(row)
+                                         && visible[index + 1].isTranslation == row.isTranslation) {
+                                        Divider()
+                                    }
+                                }
+                                // Include the padding and divider so the bracket has no gaps.
+                                .overlay(alignment: .leading) {
+                                    if let edge = exchangeSpans[index] {
+                                        let bracket = ExchangeBracket(edge: edge)
+                                            .frame(width: 18)
+                                            .frame(maxHeight: .infinity)
+                                            .contentShape(Rectangle())
+                                        if (edge == .first || edge == .only), let scene = exchangeScene(row) {
+                                            bracket.help("Q&A exchange \(scene.startTime.timecode)–\(scene.endTime.timecode)")
+                                        } else {
+                                            bracket
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -321,6 +372,9 @@ struct TranscriptSheet: View {
         }
         .onChange(of: currentVideoScenes) { _, scenes in
             refreshSceneMapping(scenes)
+        }
+        .onChange(of: store.analysisRunsVersion) { _, _ in
+            Task { await load() }
         }
         .appJobSetupPresentation()
         .onDisappear { stopPlayback(releasePlayer: true) }
@@ -391,10 +445,43 @@ struct TranscriptSheet: View {
                 }
                 .fixedSize()
             }
+            coverageControls
             statusStrip
         }
         .lineLimit(1)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private var coverageControls: some View {
+        if currentVideo.type == nil {
+            HStack(spacing: 8) {
+                Text("Podcast exchanges run only for videos typed Podcast or Interview.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+                VideoTypePicker(video: currentVideo)
+                    .disabled(store.isAnalyzing)
+            }
+        } else if qaSections.isEmpty && currentVideo.type?.usesPodcastPass == true {
+            HStack(spacing: 8) {
+                Text(AnalysisCoverage.message(for: coverage, type: currentVideo.type))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(AnalysisCoverage.message(for: coverage, type: currentVideo.type))
+                Button("Run exchanges") { store.rerun(.exchanges, video: currentVideo) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .disabled(store.isAnalyzing || isLoading || isSaving || hasChanges || !currentVideo.isPresent)
+                    .help(hasChanges ? "Apply transcript edits before running exchanges" : "Run podcast exchanges to add the Q&A view")
+            }
+        }
     }
 
     @ViewBuilder
@@ -435,7 +522,7 @@ struct TranscriptSheet: View {
                 .fixedSize()
                 .controlSize(.small)
                 .lineLimit(1)
-                .help("Read each speaker's uninterrupted run as one block; every line still edits and attributes on its own")
+                .help("Read each speaker's uninterrupted run as one block with one play button; turn it off to play, time or re-attribute single lines")
         }
     }
 
@@ -505,61 +592,54 @@ struct TranscriptSheet: View {
     private func segmentRow(_ row: TranscriptRow, showTags: Bool, current: Bool, repeatedSpeaker: Bool,
                             grouped: Bool = false, blockEnd: Double? = nil) -> some View {
         let playing = self.playing?.rowID == row.id
-        // Grouped: the block's first line carries the speaker and the
-        // block's whole range; the lines after it show only their own
-        // start, faintly, so the run reads as one paragraph.
+        // Grouped: only the block's first line carries playback, time
+        // and speaker controls; empty columns keep the rest aligned.
         let continuation = grouped && repeatedSpeaker
+        let end = grouped ? (blockEnd ?? row.endTime) : row.endTime
         return HStack(alignment: .top, spacing: 10) {
-            Button {
-                Task { await togglePlayback(row) }
-            } label: {
-                Image(systemName: playing ? "stop.fill" : "play.fill")
-                    .font(.caption)
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(playing ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
-            .disabled(playbackUnavailable)
-            .help(playbackUnavailable ? "The video is not on this Mac — download it from the Drive menu to watch it"
-                  : playing ? "Stop" : "Watch this line in the panel on the right")
-            .accessibilityLabel(playing ? "Stop" : "Play line at \(row.startTime.timecode)")
-            .padding(.top, 2)
+            if continuation {
+                Spacer(minLength: 0).frame(width: 18)
+                Spacer(minLength: 0).frame(width: 84)
+                Spacer(minLength: 0).frame(width: 108)
+            } else {
+                Button {
+                    Task { await togglePlayback(row, end: grouped ? end : nil) }
+                } label: {
+                    Image(systemName: playing ? "stop.fill" : "play.fill")
+                        .font(.caption)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(playing ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                .disabled(playbackUnavailable)
+                .help(playbackUnavailable ? "The video is not on this Mac — download it from the Drive menu to watch it"
+                      : playing ? "Stop"
+                      : grouped ? "Watch this speaker's run (\(row.startTime.timecode)–\(end.timecode)) in the panel on the right"
+                      : "Watch this line in the panel on the right")
+                .accessibilityLabel(playing ? "Stop"
+                                    : grouped ? "Play \(speakerLabel(row) ?? "speaker") from \(row.startTime.timecode) to \(end.timecode)"
+                                    : "Play line at \(row.startTime.timecode)")
+                .padding(.top, 2)
 
-            VStack(alignment: .leading, spacing: 2) {
-                if continuation {
-                    Text(row.startTime.timecode)
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.quaternary)
-                } else if let blockEnd, blockEnd > row.endTime {
-                    Text("\(row.startTime.timecode)–\(blockEnd.timecode)")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(row.startTime.timecode)–\(end.timecode)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
-                    Text(row.endTime.timecode)
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.quaternary)
-                        .help("This line ends here; the block runs to \(blockEnd.timecode)")
-                } else {
-                    Text("\(row.startTime.timecode)–\(row.endTime.timecode)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    if showsLanguage {
+                        Text(row.isTranslation ? "\(row.language) · translation" : row.language)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
-                if showsLanguage {
-                    Text(row.isTranslation ? "\(row.language) · translation" : row.language)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .frame(width: 84, alignment: .leading)
-            .padding(.top, 3)
+                .frame(width: 84, alignment: .leading)
+                .padding(.top, 3)
 
-            // A run of rows by one speaker reads as a block: the name is
-            // bright on the first row and faint on the rest (the menu
-            // stays on every row).
-            speakerMenu(row)
-                .frame(width: 108, alignment: .leading)
-                .padding(.top, 1)
-                .opacity(continuation ? 0.2 : repeatedSpeaker ? 0.45 : 1)
+                speakerMenu(row)
+                    .frame(width: 108, alignment: .leading)
+                    .padding(.top, 1)
+                    .opacity(repeatedSpeaker ? 0.45 : 1)
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 TextField("Segment text", text: Binding(
@@ -580,6 +660,7 @@ struct TranscriptSheet: View {
             }
         }
         .padding(.horizontal)
+        .padding(.leading, groupBySpeaker ? 18 : 0)
         .padding(.top, continuation ? 1 : 6)
         .padding(.bottom, grouped ? 2 : 6)
         .background(current || (drafts[row.id] ?? row.text) != row.text
@@ -867,14 +948,15 @@ struct TranscriptSheet: View {
 
     // MARK: - Playback
 
-    /// Play the line in the panel, or stop it when it is the one playing.
-    private func togglePlayback(_ row: TranscriptRow) async {
+    /// Play the line or speaker block in the panel, or stop it when it is the one playing.
+    private func togglePlayback(_ row: TranscriptRow, end: Double? = nil) async {
         if playing?.rowID == row.id {
             stopPlayback(releasePlayer: false)
             return
         }
         let who = speakerLabel(row).map { "\($0) · " } ?? ""
-        await play(start: row.startTime, end: row.endTime, label: who + "line at \(row.startTime.timecode)", rowID: row.id)
+        let range = end.map { "\(row.startTime.timecode)–\($0.timecode)" } ?? "line at \(row.startTime.timecode)"
+        await play(start: row.startTime, end: end ?? row.endTime, label: who + range, rowID: row.id)
     }
 
     /// Seek the panel's player to a range and play it; a boundary observer
@@ -1116,6 +1198,37 @@ struct TranscriptSheet: View {
             try? await database.revertTranscriptText(id: row.id)
             drafts[row.id] = nil
             await load()
+        }
+    }
+}
+
+nonisolated enum ExchangeEdge: Equatable, Sendable {
+    case only, first, middle, last
+}
+
+private struct ExchangeBracket: View {
+    var edge: ExchangeEdge
+
+    var body: some View {
+        GeometryReader { geometry in
+            Path { path in
+                let x: CGFloat = 6
+                let top = edge == .first || edge == .only
+                let bottom = edge == .last || edge == .only
+                let startY = top ? 1.5 : 0
+                let endY = geometry.size.height - (bottom ? 1.5 : 0)
+                path.move(to: CGPoint(x: x, y: startY))
+                path.addLine(to: CGPoint(x: x, y: endY))
+                if top {
+                    path.move(to: CGPoint(x: x + 8, y: startY))
+                    path.addLine(to: CGPoint(x: x, y: startY))
+                }
+                if bottom {
+                    path.move(to: CGPoint(x: x + 8, y: endY))
+                    path.addLine(to: CGPoint(x: x, y: endY))
+                }
+            }
+            .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
         }
     }
 }

@@ -74,7 +74,7 @@ struct TagStyleEditor: View {
                 HStack {
                     TextField("Field", text: $style.description.field)
                     Menu("Suggestions") {
-                        ForEach(["Role", "Profession", "MMA record", "Team", "Nationality"], id: \.self) { field in
+                        ForEach(TagTextWriter.profileFields, id: \.self) { field in
                             Button(field) { style.description.field = field }
                         }
                     }.lineLimit(1).fixedSize()

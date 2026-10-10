@@ -36,7 +36,7 @@ struct AutoTranslationRunner: ViewModifier {
 
     private func startNext() async {
         guard current == nil else { return }
-        let target = store.settings.podcast.autoTranslateLanguage
+        let target = store.editingDefaults.podcast.autoTranslateLanguage
         guard !target.isEmpty else { store.autoTranslateQueue.removeAll(); return }
         while let database = store.database, let videoID = store.claimAutoTranslation() {
             let generation = store.profileGeneration

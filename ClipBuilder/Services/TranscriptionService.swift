@@ -39,7 +39,7 @@ actor TranscriptionService {
     func transcribeForVideo(video: VideoRecord, database: Database,
                             languageCode: String = "", force: Bool = false,
                             log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
-        if video.type == .podcast {
+        if video.type?.usesPodcastPass == true {
             return try await transcribePodcast(video: video, database: database,
                                                languageCode: languageCode, force: force, log: log)
         }
@@ -244,7 +244,7 @@ actor TranscriptionService {
         let people = try await database.fetchVideoPeople(videoID: video.id)
         let scenes = try await database.fetchScenes(includeExcluded: true)
             .filter { $0.videoID == video.id }
-        let settings = capturedPodcastSettings ?? SettingsStore.loadSettings().podcast
+        let settings = capturedPodcastSettings ?? PodcastSettings()
         let analysis = TranscriptFeatureAnalyzer.analyze(
             segments: segments, videoID: video.id,
             speakerKeys: people.map(\.key), mediaDuration: video.duration,

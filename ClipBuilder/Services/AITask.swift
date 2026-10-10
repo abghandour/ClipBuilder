@@ -18,9 +18,6 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     case analysis
     /// Finds people in a handful of frames. Prompt: `Analyzer` people pass.
     case people
-    /// People Roles wizard: proposes a category (fighter, press…) per person
-    /// from their scenes and speech. Prompt: `PersonRoleInference`.
-    case roles
     /// One-off image or asset analysis with frames attached (asset
     /// browser, image library captions). Prompt inline at the call site.
     case analyze
@@ -91,6 +88,8 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// Turns crawled fan chatter into the reel's story. Prompt:
     /// `FightResearchService`.
     case fightResearch = "fight_research"
+    /// Web-backed person profile fields. Prompt: `PersonResearch.prompt(for:)`.
+    case personResearch = "person_research"
     /// Legacy reels research. No live call site; kept so stored provenance
     /// and settings still resolve.
     case research
@@ -118,7 +117,7 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// Tasks the user can route in Settings (provider and model pickers).
     /// Order is the Settings order.
     static let configurable: [AITask] = [
-        .analysis, .people, .roles, .exchanges, .highlights, .framing, .broll, .wizard, .critique, .research, .fightResearch,
+        .analysis, .people, .exchanges, .highlights, .framing, .broll, .wizard, .critique, .research, .fightResearch, .personResearch,
         .parse, .captions, .tagText, .distill, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
         .gap, .onboard, .route,
     ]

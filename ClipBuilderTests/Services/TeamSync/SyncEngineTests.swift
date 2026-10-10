@@ -3,6 +3,43 @@ import Testing
 @testable import Clip_Builder
 
 struct SyncEngineTests {
+    @Test("Video person correction queues every synced reference table and no other video's rows",
+          arguments: [false, true])
+    func personReassignmentOutbox(nobody: Bool) async throws {
+        let temp = try TempDatabase()
+        let fixture = try await Fixtures.personCorrection(in: temp)
+        try await temp.database.bindSync(to: SyncScope(teamID: UUID(), profileID: UUID()))
+        let raw = try SQLiteConnection(path: temp.path.path)
+        let tables = ["scene_tags", "speaker_turns", "transcripts", "topic_ranges", "person_markers", "video_people"]
+        var changedIDs: [String: Set<String>] = [:]
+        var otherIDs: [String: Set<String>] = [:]
+        for table in tables {
+            for video in [fixture.video, fixture.otherVideo] {
+                let sql = table == "scene_tags"
+                    ? "SELECT st.sync_id FROM scene_tags st JOIN scenes s ON s.id = st.scene_id WHERE s.video_id = ? AND st.tag = ?"
+                    : "SELECT sync_id FROM \(table) WHERE video_id = ?"
+                let values: [SQLValue] = table == "scene_tags"
+                    ? [.integer(video.id), .text(fixture.from.tag)] : [.integer(video.id)]
+                let ids = Set(try raw.query(sql, values).compactMap { $0["sync_id"]?.stringValue })
+                if video.id == fixture.video.id { changedIDs[table] = ids }
+                else { otherIDs[table] = ids }
+            }
+        }
+        try raw.execute("DELETE FROM sync_outbox")
+        try await temp.database.reassignPerson(videoID: fixture.video.id, from: fixture.from,
+                                              to: nobody ? nil : fixture.to)
+        let pending = try raw.query("SELECT * FROM sync_outbox")
+        #expect(Set(pending.compactMap { $0["table"]?.stringValue }) == Set(tables))
+        for table in tables {
+            let ids = Set(pending.filter { $0["table"]?.stringValue == table }.compactMap { $0["sync_id"]?.stringValue })
+            #expect(!ids.isEmpty, "Missing outbox rows for \(table)")
+            #expect(ids == changedIDs[table])
+            #expect(ids.isDisjoint(with: otherIDs[table] ?? []))
+        }
+        #expect(try await temp.database.syncPendingCount() > 0)
+        #expect(!pending.contains { $0["table"]?.stringValue == "voice_profiles" })
+    }
+
     private func engine(_ folder: SyncTestFolder, _ server: StubSyncServer, _ scope: SyncScope) -> SyncEngine {
         SyncEngine(database: folder.database, client: server.client(), scope: scope, batchSize: 1)
     }
@@ -412,6 +449,43 @@ extension SyncEngineTests {
         try JSONEncoder().encode(merged).write(to: folder.appendingPathComponent("saved-profile.json"), options: .atomic)
         try await database.completeSyncProfileAdoption(merged)
         return merged
+    }
+
+    @Test("A legacy profile adopts remote editing through the durable baseline",
+          arguments: [false, true])
+    func editingDefaultsAdoption(upgradingAttachedMac: Bool) async throws {
+        let folder = try SyncTestFolder(), server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        var local = BrandProfile(name: "Legacy joiner")
+        local.profileID = scope.profileID
+        local.teamID = scope.teamID
+        var remote = local
+        remote.editing = ProfileEditingDefaults()
+        remote.editing?.podcast.deadAirSeconds = 4
+        remote.editing?.footage.language = "pt-BR"
+        let table = try SyncTable.named("profile_documents")
+        try await server.seed(SyncMapping.wire(local: ["document_json": .text(TeamProfileDocument.encode(remote))],
+            syncID: scope.profileID.uuidString.lowercased(), scope: scope, table: table), table: table.name)
+        try await folder.database.bindSync(to: scope)
+        if upgradingAttachedMac {
+            // Model a 1.96 Mac: remote editing survived in its wire document,
+            // but the old profile decoder could not retain the property.
+            try await folder.database.saveSyncProfile(remote)
+            try await folder.database.completeInitialSync()
+        }
+        try await folder.database.saveSyncProfile(local)
+        try await engine(folder, server, scope).sync()
+        let adoption = try #require(try await folder.database.syncProfileAdoption())
+        let baseline = try JSONDecoder().decode(SyncMapping.WireRow.self, from: Data(adoption.baseline.utf8))
+        #expect(baseline["editing"] == nil)
+        #expect(local.editing == nil)
+        local = try await adopt(local, database: folder.database, folder: folder.url)
+        #expect(local.editing == remote.editing)
+        #expect(try await folder.database.syncProfileAdoption() == nil)
+        #expect(try await !folder.database.initialSyncPending())
+        try await engine(folder, server, scope).sync()
+        let saved = try #require(try await folder.database.syncedProfileDocument())
+        #expect(try TeamProfileDocument.applying(saved, to: local).editing == remote.editing)
     }
 
     @Test("Stop or quit around adoption never replaces the team's profile", arguments: [false, true])

@@ -7,6 +7,117 @@ import Testing
 @Suite("Captured AI settings")
 @MainActor
 struct AISettingsTests {
+    @Test("Person research has a visible task and a web-capable default")
+    func personResearchCatalog() {
+        #expect(AITask.configurable.contains(.personResearch))
+        #expect(AICatalog.taskLabels["person_research"] == "Person research")
+        #expect(AICatalog.taskDefaults["person_research"] == "claude")
+        #expect(AICatalog.recommendedChains["person_research"]?.first?.provider == "claude")
+        #expect(AICatalog.recommendedChains["person_research"]?.first?.model == "claude-sonnet-5-5")
+        #expect(AICatalog.recommendedChains["person_research"]?.contains { $0.provider == "gemini" } == true)
+    }
+
+    @Test("AI routing uses local pairs, then the team, then catalog defaults")
+    func routingPrecedence() async {
+        var local = AIConfig()
+        local.tasks["wizard"] = "codex"
+        local.taskModels["wizard"] = "local-model"
+        let team = ProfileAIRouting(tasks: ["wizard": "claude", "critique": "claude"],
+                                    taskModels: ["wizard": "team-planner", "critique": "team-critic"])
+        let effective = AIRoutingResolver.effectiveConfig(local: local, team: team)
+        #expect(effective.tasks["wizard"] == "codex")
+        #expect(effective.taskModels["wizard"] == "local-model")
+        #expect(effective.tasks["critique"] == "claude")
+        #expect(effective.taskModels["critique"] == "team-critic")
+        #expect(effective.tasks["analysis"] == nil)
+        #expect(effective.taskModels["analysis"] == nil)
+        #expect(AIRoutingResolver.source(task: "wizard", local: local, team: team) == .localOverride)
+        #expect(AIRoutingResolver.source(task: "critique", local: local, team: team) == .team)
+        #expect(AIRoutingResolver.source(task: "analysis", local: local, team: team) == .catalogDefault)
+        let ai = AIService(config: effective)
+        #expect(await ai.providerKey(forTask: "analysis") == AICatalog.taskDefaults["analysis"])
+        #expect(await ai.resolveProviderModel(task: "critique").model == "team-critic")
+        #expect(local.tasks == ["wizard": "codex"])
+        #expect(local.taskModels == ["wizard": "local-model"])
+    }
+
+    @Test("Routing flags prefer the top pair, then team or custom, and hide other catalog defaults")
+    func routingFlags() {
+        let task = "analysis"
+        let top = AICatalog.topRecommended(task: task)
+        var local = AIConfig()
+        let customTeam = ProfileAIRouting(tasks: [task: top.provider], taskModels: [task: "team-model"])
+        let recommendedTeam = ProfileAIRouting(tasks: [task: top.provider], taskModels: [task: top.model])
+
+        #expect(AIRoutingResolver.flag(task: task, local: local, team: nil) == nil)
+        #expect(AIRoutingResolver.flag(task: task, local: local, team: customTeam) == .team)
+        #expect(AIRoutingResolver.flag(task: task, local: local, team: recommendedTeam) == .recommended)
+
+        local.tasks[task] = top.provider
+        local.taskModels[task] = "custom-model"
+        #expect(AIRoutingResolver.flag(task: task, local: local, team: recommendedTeam) == .custom)
+        #expect(AIRoutingResolver.flag(task: task, local: local, team: nil) == .custom)
+        local.taskModels[task] = top.model
+        #expect(AIRoutingResolver.flag(task: task, local: local, team: customTeam) == .recommended)
+        #expect(AIRoutingResolver.flag(task: task, local: local, team: nil) == .recommended)
+        // A matching model alone is not enough: the provider must also match.
+        local.tasks[task] = "codex"
+        #expect(AIRoutingResolver.flag(task: task, local: local, team: nil) == .custom)
+        // An override without a model resolves via the provider's local default.
+        local.tasks[task] = top.provider
+        local.taskModels[task] = nil
+        local.providers[top.provider] = AIProviderSettings(model: top.model)
+        #expect(AIRoutingResolver.flag(task: task, local: local, team: customTeam) == .recommended)
+
+        local = AIConfig()
+        local.providers["claude"] = AIProviderSettings(model: "mac-default")
+        #expect(AIRoutingResolver.flag(task: "route", local: local, team: nil) == .recommended)
+        #expect(AIRoutingResolver.flag(task: "translate", local: local, team: nil) == nil)
+        local.providers = [:]
+        #expect(AIRoutingResolver.flag(task: "translate", local: local, team: nil) == .recommended)
+    }
+
+    @Test("A local provider without a model never borrows the team's model")
+    func routingProviderOverrideIsAPair() async {
+        var local = AIConfig()
+        local.tasks["wizard"] = "codex"
+        local.tasks["critique"] = "claude"
+        local.providers["codex"] = AIProviderSettings(model: "mac-default")
+        let team = ProfileAIRouting(tasks: ["wizard": "claude", "critique": "claude"],
+                                    taskModels: ["wizard": "team-planner", "critique": "team-critic"])
+        let effective = AIRoutingResolver.effectiveConfig(local: local, team: team)
+        #expect(effective.taskModels["wizard"] == nil)
+        #expect(effective.taskModels["critique"] == nil)
+        let ai = AIService(config: effective)
+        let choice = await ai.resolveProviderModel(task: "wizard")
+        #expect(choice.provider == "codex")
+        #expect(choice.model == "mac-default")
+        #expect(await ai.resolveProviderModel(task: "critique").model == AICatalog.provider("claude")?.defaultModel)
+    }
+
+    @Test("Routing resolution copies every non-routing field unchanged and does not seed defaults")
+    func routingPreservesLocalSettings() throws {
+        var local = AIConfig()
+        local.providers["claude"] = AIProviderSettings(bin: "/private/mac/claude", model: "mac-model")
+        local.providerCooldownMinutes = 60
+        local.preferOnDevice = false
+        local.onDeviceOverrides = ["hashtags": true]
+        local.onDeviceAgreement = ["hashtags": 0.85]
+        local.mutedDispatchPlans = ["analyze"]
+        let team = ProfileAIRouting(tasks: ["wizard": "codex"], taskModels: ["wizard": "team-model"])
+        let effective = AIRoutingResolver.effectiveConfig(local: local, team: team)
+        var original = try JSONDecoder().decode(SyncMapping.WireRow.self, from: JSONEncoder().encode(local))
+        var resolved = try JSONDecoder().decode(SyncMapping.WireRow.self, from: JSONEncoder().encode(effective))
+        for key in ["tasks", "task_models"] {
+            original[key] = nil
+            resolved[key] = nil
+        }
+        #expect(resolved == original)
+        let legacy = AIRoutingResolver.effectiveConfig(local: local, team: nil)
+        #expect(legacy.tasks.isEmpty && legacy.taskModels.isEmpty)
+        #expect(AIRoutingResolver.source(task: "wizard", local: local, team: nil) == .catalogDefault)
+    }
+
     @Test("Analysis settings preserve optional choices and notes")
     func analysisRoundTrip() throws {
         let value = AnalysisRunSettings(

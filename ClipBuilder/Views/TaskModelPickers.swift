@@ -58,9 +58,10 @@ struct TaskModelPickers: View {
     private func routingBinding(for task: String) -> Binding<String> {
         Binding(
             get: {
-                let provider = store.settings.ai.tasks[task] ?? AICatalog.taskDefaults[task] ?? "claude"
-                let model = store.settings.ai.taskModels[task]
-                    ?? store.settings.ai.providers[provider]?.model
+                let config = store.effectiveAIConfig
+                let provider = config.tasks[task] ?? AICatalog.taskDefaults[task] ?? "claude"
+                let model = config.taskModels[task]
+                    ?? config.providers[provider]?.model
                     ?? AICatalog.provider(provider)?.defaultModel ?? ""
                 return ModelPicker.tag(provider: provider, model: model)
             },

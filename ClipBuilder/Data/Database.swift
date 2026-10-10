@@ -723,6 +723,9 @@ actor Database {
                     PRIMARY KEY (person_key, field)
                 )
                 """)
+            if try !connection.columnNames(of: "person_tag_fields").contains("source") {
+                try connection.execute("ALTER TABLE person_tag_fields ADD COLUMN source TEXT")
+            }
             if try !connection.columnNames(of: "wizard_selections").contains("mini_batch") {
                 try connection.execute("ALTER TABLE wizard_selections ADD COLUMN mini_batch TEXT")
             }
@@ -759,7 +762,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 29
+    static let schemaVersion: Int64 = 30
 
     // MARK: - Helpers
 

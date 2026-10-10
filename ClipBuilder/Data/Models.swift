@@ -117,6 +117,9 @@ nonisolated enum VideoType: String, CaseIterable, Sendable {
     /// Fight scoring and fan-reaction research only make sense for footage
     /// showing an actual bout — a recap still does.
     var supportsFightFeatures: Bool { self == .fight || self == .recap }
+
+    /// Transcript-first analysis with speaker turns and Q&A exchanges.
+    var usesPodcastPass: Bool { self == .podcast || self == .interview }
 }
 
 /// What role a person plays in the footage — the People screen groups and
@@ -948,6 +951,8 @@ nonisolated struct LibrarySnapshot: Sendable {
     /// People the people pass found per video (distinct roster entries),
     /// present before any tag analysis has run.
     var videoPeopleCounts: [Int64: Int] = [:]
+    /// Rows in each video's active transcript, including transcribe-only videos.
+    var transcriptCounts: [Int64: Int] = [:]
     /// Analyses that started and did not finish, by video.
     var analysisCheckpoints: [Int64: AnalysisCheckpoint] = [:]
 }

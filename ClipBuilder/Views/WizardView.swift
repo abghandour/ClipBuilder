@@ -404,7 +404,7 @@ struct WizardView: View {
             }
             if capabilities.sources == .scenes { lastSceneRecipeID = recipe.id }
             sourcesFocused = !fromIdea
-            highlightMaxSeconds = store.settings.podcast.highlightMaxSeconds
+            highlightMaxSeconds = store.editingDefaults.podcast.highlightMaxSeconds
             if highlightVideoPath.isEmpty { highlightVideoPath = podcastHighlightVideos.first?.path ?? "" }
         }
         .onChange(of: pastedSnapshot) { oldValue, newValue in
@@ -489,7 +489,7 @@ struct WizardView: View {
         .sheet(item: $pendingDispatch) { pending in
             DispatchPlanSheet(operation: pending.operation, onStart: pending.run)
         }
-        .task(id: WizardFormPlan.ProviderAvailabilityKey(task: formPlan.primaryTask, config: store.settings.ai)) {
+        .task(id: WizardFormPlan.ProviderAvailabilityKey(task: formPlan.primaryTask, config: store.effectiveAIConfig)) {
             let candidates = await store.ai.dispatchCandidates(task: formPlan.primaryTask)
             guard !Task.isCancelled else { return }
             primaryProviderUnavailable = candidates.isEmpty
@@ -666,7 +666,7 @@ struct WizardView: View {
             if (ReelRecipe.recipe(id: newValue) ?? .custom).capabilities.sources == .podcastRecording {
                 outcomeRaw = ReelRecipe.Workflow.highlights.rawValue
                 critiqueLoop = false
-                highlightMaxSeconds = store.settings.podcast.highlightMaxSeconds
+                highlightMaxSeconds = store.editingDefaults.podcast.highlightMaxSeconds
                 highlightVideoPath = podcastHighlightVideos.first?.path ?? ""
             } else {
                 if outcomeRaw == ReelRecipe.Workflow.highlights.rawValue {

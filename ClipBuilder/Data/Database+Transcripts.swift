@@ -10,6 +10,18 @@ extension Database {
             ORDER BY chosen.is_translation, chosen.transcription_created_at DESC, chosen.transcription_key DESC LIMIT 1)
         """
 
+    func fetchTranscriptCounts() throws -> [Int64: Int] {
+        let rows = try connection.query("""
+            SELECT video_id, COUNT(*) AS count FROM transcripts
+            WHERE \(Self.activeTranscriptPredicate)
+            GROUP BY video_id
+            """)
+        return Dictionary(uniqueKeysWithValues: rows.compactMap { row in
+            guard let videoID = row["video_id"]?.intValue, let count = row["count"]?.intValue else { return nil }
+            return (videoID, Int(count))
+        })
+    }
+
     func latestTranscription(videoID: Int64) throws -> (key: String?, createdAt: String?) {
         let row = try connection.query("""
             SELECT transcription_key, transcription_created_at FROM transcripts WHERE video_id = ?

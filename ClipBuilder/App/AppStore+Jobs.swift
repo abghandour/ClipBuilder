@@ -68,7 +68,7 @@ extension AppStore {
 
     func startTranscriptAnalysis(video: VideoRecord) {
         guard let database else { return }
-        let settings = settings.podcast
+        let settings = podcastEditingSettings
         jobs.start(.transcriptAnalysis, title: "Analyze Transcript — \(video.filename)", project: activeProject,
                    profileGeneration: profileGeneration, subjectID: String(video.id)) { log in
             let original = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }

@@ -68,6 +68,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var hashtags: [String] = []
     var captionLanguages: [String]
     var defaultRenderSettings: RenderSettings
+    var editing: ProfileEditingDefaults?
+    var aiRouting: ProfileAIRouting?
     var defaultPacing: EditPacing
     /// Step 2 music mix level (1–5); old profiles retain the existing 3/5 mix.
     var defaultMusicVolume: Int?
@@ -98,7 +100,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var tasteRubricProvenance: AIProvenance?
     /// The model that distilled the house style.
     var houseStyleProvenance: AIProvenance?
-    /// This judge belongs to the profile, unlike app-wide provider routing.
+    /// This judge belongs to the profile; per-Mac routing overrides stay local.
     var criticBriefUse: CriticBriefUse = .automatic
     /// Last successful Instagram publish target for this profile.
     var instagramPublishAccount: String?
@@ -135,6 +137,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case tagline
         case captionLanguages = "caption_languages"
         case defaultRenderSettings = "default_render_settings"
+        case editing
+        case aiRouting = "ai_routing"
         case defaultPacing = "default_pacing"
         case defaultMusicVolume = "default_music_volume"
         case useLearnedEditingDefaults = "use_learned_editing_defaults"
@@ -183,6 +187,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
             ?? ["en"]
         defaultRenderSettings = try container.decodeIfPresent(RenderSettings.self, forKey: .defaultRenderSettings)
             ?? RenderSettings()
+        editing = try container.decodeIfPresent(ProfileEditingDefaults.self, forKey: .editing)
+        aiRouting = try container.decodeIfPresent(ProfileAIRouting.self, forKey: .aiRouting)
         defaultPacing = try container.decodeIfPresent(EditPacing.self, forKey: .defaultPacing) ?? EditPacing()
         defaultMusicVolume = try container.decodeIfPresent(Int.self, forKey: .defaultMusicVolume)
         useLearnedEditingDefaults = try container.decodeIfPresent(Bool.self, forKey: .useLearnedEditingDefaults) ?? false

@@ -21,11 +21,15 @@ struct PersonDetailPopover: View {
     var onSelectVideo: ((VideoRecord) -> Void)?
     /// Plays a scene (the presenter owns the sheet).
     var onPreviewScene: ((SceneRecord) -> Void)?
+    /// Requests a name in the presenting screen, outside the split-view child.
+    var onReassignNewPerson: ((PersonRecord, VideoRecord, String) -> Void)?
 
     @State private var videos: [VideoRecord] = []
     @State private var ranges: [ScriptTimeRange] = []
     @State private var speakingSeconds: Double = 0
     @State private var loaded = false
+    @State private var confirmingNobody = false
+    @State private var showingPicker = false
 
     /// Every usable scene tagged with the person, by video then time.
     private var scenes: [SceneRecord] {
@@ -127,6 +131,7 @@ struct PersonDetailPopover: View {
     private func inThisVideo(_ video: VideoRecord) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             sectionTitle("In this video")
+            reassignMenu(video)
             if ranges.isEmpty {
                 Text(loaded ? "Seen in this video; the people pass did not note when." : "Loading…")
                     .font(.caption)
@@ -151,6 +156,52 @@ struct PersonDetailPopover: View {
                     }
                 }
             }
+        }
+    }
+
+    private func reassignMenu(_ video: VideoRecord) -> some View {
+        Button {
+            showingPicker.toggle()
+        } label: {
+            Label("Not \(person.displayName) in this video", systemImage: "person.crop.circle.badge.questionmark")
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .controlSize(.small)
+        .help("Move everything this video knows about \(person.displayName) (portrait, scene tags, speaker turns, transcript lines, markers) to another person. Other videos keep \(person.displayName).")
+        .popover(isPresented: $showingPicker, arrowEdge: .trailing) {
+            PersonPickerPopover(
+                people: store.people.filter { !$0.hidden && $0.id != person.id }.sorted {
+                    $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending
+                },
+                title: "Who is this in \(video.filename)?",
+                onPick: { other in
+                    showingPicker = false
+                    store.reassignPerson(in: video, from: person, to: other)
+                    dismiss()
+                },
+                onNewPerson: onReassignNewPerson.map { callback in
+                    { suggested in
+                        showingPicker = false
+                        dismiss()
+                        callback(person, video, suggested)
+                    }
+                },
+                onNobody: {
+                    showingPicker = false
+                    confirmingNobody = true
+                }
+            )
+        }
+        .confirmationDialog("Remove \(person.displayName) from this video?",
+                            isPresented: $confirmingNobody, titleVisibility: .visible) {
+            Button("Remove from This Video", role: .destructive) {
+                store.reassignPerson(in: video, from: person, to: nil)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Removes their scene tags, roster entry and learned voice from \(video.filename), and clears their speaker and marker assignments. Other videos keep \(person.displayName).")
         }
     }
 

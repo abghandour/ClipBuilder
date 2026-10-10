@@ -7,10 +7,12 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case generateRequest, instagramPublish, socialExport, resourceExport, resourceImport
     case mapSpeakers, suggestTrim, cameraPath, evaluateReelModel, publishLessons, transcriptAnalysis
     case teamSync
-    case personRoles
+    case personResearch
     case criticBrief, evaluateCritic
 
-    var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief || self == .teamSync }
+    var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief }
+    /// Routine cycles finish quietly; the outcome goes to the activity log only.
+    var logsCompletion: Bool { self == .teamSync }
 
     var shortTitle: String {
         switch self {
@@ -37,7 +39,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .publishLessons: "Publish AI Lessons"
         case .transcriptAnalysis: "Transcript Analysis"
         case .teamSync: "Team Sync"
-        case .personRoles: "People Roles"
+        case .personResearch: "Person Research"
         case .criticBrief: "Critic Brief"
         case .evaluateCritic: "Evaluate Critic"
         }
@@ -97,7 +99,7 @@ nonisolated enum AppJobResult: Equatable, Sendable {
     case socialExport(urls: [URL])
     case trim(start: Double, end: Double, reason: String, provenance: AIProvenance)
     case generateRequest(WizardPromptHandoff)
-    case personRoles(proposals: [PersonRoleInference.Proposal], provenance: AIProvenance?)
+    case personResearch(outcomes: [PersonResearchOutcome])
 
     var committedOnCancellation: Bool {
         switch self {
@@ -266,6 +268,8 @@ final class AppJobs {
                 if result?.needsReview == true { reviewQueue.append(id) }
                 else if kind.postsNotice {
                     store?.presentNotice(title, items[index].statusLine.isEmpty ? "Finished." : items[index].statusLine)
+                } else if kind.logsCompletion {
+                    store?.logEvent("job", "\(title): \(items[index].statusLine.isEmpty ? "Finished." : items[index].statusLine)")
                 }
             } catch {
                 relay.flush()

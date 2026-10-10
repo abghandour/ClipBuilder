@@ -2244,7 +2244,7 @@ actor WizardEngine {
     private func snapCutsToBeats(_ plan: WizardPlan, music: [(name: String, url: URL)],
                                  sceneMap: [Int64: SceneRecord],
                                  emit: @escaping @Sendable (String) -> Void) async -> WizardPlan {
-        let settings = SettingsStore.loadSettings().transitions
+        let settings = RenderContext.transitions
         guard settings.beatSnap, plan.clips.count > 1,
               let name = plan.musicName,
               let track = music.first(where: { $0.name == name }) else { return plan }
@@ -2689,6 +2689,8 @@ actor WizardEngine {
             recorder.append(line)
             rawEmit(line)
         }
+        let editing = profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())
+        try await RenderContext.$transitions.withValue(editing.transitions) {
         try await RenderContext.$settings.withValue(options.renderSettings) {
             // Rendering a saved selection must not shortlist or re-filter its sources.
             let scenes = try await database.fetchScenes(projectID: options.projectID, includeExcluded: true)
@@ -2805,6 +2807,7 @@ actor WizardEngine {
             }
             emit("VIDEO:\(result.url.lastPathComponent):\(result.duration.formatted(.number.precision(.fractionLength(1))))")
             emit("Video complete! \(result.url.lastPathComponent)")
+        }
         }
     }
 

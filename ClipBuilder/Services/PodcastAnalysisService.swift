@@ -12,6 +12,10 @@ actor PodcastAnalysisService {
         self.ai = ai
     }
 
+    nonisolated static func runSettings() -> AnalysisRunSettings {
+        AnalysisRunSettings(pipeline: AnalysisPipeline.podcastPass)
+    }
+
     struct Result: Sendable {
         var runID: Int64
         var newPeople: [DetectedNewPerson]
@@ -93,7 +97,7 @@ actor PodcastAnalysisService {
                                     audioTrust: tracked.audioTrust, log: log)
         try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
         await Self.recutTranscriptBySpeaker(video: video, database: database, turns: resolved, log: log)
-        let podcastSettings = capturedSettings ?? SettingsStore.loadSettings().podcast
+        let podcastSettings = capturedSettings ?? (profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())).podcast.settings()
         let enrichment = TranscriptFeatureAnalyzer.analyze(
             segments: segments, videoID: video.id,
             speakerKeys: Array(Set(resolved.compactMap(\.personKey))).sorted(),
@@ -142,7 +146,7 @@ actor PodcastAnalysisService {
             instructions: "Transcript-first podcast analysis; whole question-and-answer exchanges",
             sampleInterval: nil, notesJSON: nil, tagRanges: tagRanges, moments: [],
             analyzedTags: ["podcast"], provider: outcome.provenance?.provider,
-            model: outcome.provenance?.model, mode: "speech")
+            model: outcome.provenance?.model, mode: "speech", settings: Self.runSettings())
         try await database.markAnalysisRunTranscribed(id: runID)
 
         let sceneRows = try await database.sceneRanges(runID: runID)

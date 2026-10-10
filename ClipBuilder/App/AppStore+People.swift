@@ -5,14 +5,92 @@ import UniformTypeIdentifiers
 extension AppStore {
     // MARK: - People
 
+    /// One background batch; values remain proposals until the job's review is applied.
+    func researchPeople(_ targets: [PersonRecord], fields: [String]? = nil, reason: String) {
+        guard database != nil else { return }
+        var seen = personResearchInFlight
+        let targets = targets.filter {
+            !$0.isUnnamed && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && seen.insert($0.id).inserted
+        }
+        let requestedFields = (fields ?? TagTextWriter.profileFields).map(TagTextWriter.fieldKey)
+        guard !targets.isEmpty, !requestedFields.isEmpty else { return }
+        let requests = targets.map { person in
+            var ids = personResearchVideoIDs[person.id] ?? []
+            ids.formUnion(scenes.filter { $0.tags.contains(person.tag) }.map(\.videoID))
+            let context = [person.descriptor] + videos.filter { ids.contains($0.id) }.map { video in
+                let fight = fightResearch[video.id]
+                return ([video.filename, fight?.fightLabel, fight?.event, fight?.fightDate]
+                    .compactMap { $0 }.filter { !$0.isEmpty }).joined(separator: " · ")
+            }
+            return PersonResearchRequest(person: person, fields: requestedFields, context: context.joined(separator: "\n"))
+        }
+        let ids = Set(targets.map(\.id)), generation = profileGeneration
+        personResearchInFlight.formUnion(ids)
+        let ai = ai, runner = personResearchRunner
+        jobs.start(.personResearch, title: "Person Research — \(targets.count) people",
+                   project: activeProject, profileGeneration: generation,
+                   cleanup: { [weak self] in
+                       guard let self, self.profileGeneration == generation else { return }
+                       self.personResearchInFlight.subtract(ids)
+                   }) { log in
+            log("Person research: \(reason)")
+            let outcomes = try await PersonResearchService().runBatch(requests, ai: ai, runner: runner, log: log)
+            guard outcomes.contains(where: { !$0.proposals.isEmpty || $0.category != nil }) else {
+                throw AppJobEmptyResult(message: "No supported profile values were found. See the job log for details.")
+            }
+            return .personResearch(outcomes: outcomes)
+        }
+    }
+
+    /// Called with the pre-pass registry so newly guessed identities are never researched.
+    func refreshPersonRecords(roster: [VideoPersonRecord], existingPeople: [PersonRecord], now: Date = Date()) async {
+        guard let database else { return }
+        let generation = profileGeneration
+        for row in roster { personResearchVideoIDs[row.personID, default: []].insert(row.videoID) }
+        let rosterIDs = Set(roster.map(\.personID))
+        let fighters = existingPeople.filter { rosterIDs.contains($0.id) && $0.category == .fighter && !$0.isUnnamed }
+        guard !fighters.isEmpty else { return }
+        do {
+            let fields = try await database.personTagFieldsByPerson()
+            guard generation == profileGeneration, self.database === database else { return }
+            let stale = fighters.filter {
+                PersonResearch.needsRecordRefresh(fields: fields[$0.key] ?? [], person: $0, now: now)
+            }
+            researchPeople(stale, fields: ["MMA record"], reason: "record refresh")
+        } catch {
+            guard generation == profileGeneration else { return }
+            appendLog(\.analysisLog, ["Could not check person records: \(error.localizedDescription)"])
+        }
+    }
+
+    func applyPersonResearch(_ outcomes: [PersonResearchOutcome], proposalIDs: Set<String>,
+                             categoryKeys: Set<String>, generation: Int) async throws {
+        guard generation == profileGeneration, let database else { throw CancellationError() }
+        try await database.applyPersonResearch(outcomes, proposalIDs: proposalIDs, categoryKeys: categoryKeys)
+        guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+        let updated = try await database.fetchPeople()
+        guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+        people = updated
+        personTagFieldsVersion &+= 1
+        await refreshAllNow()
+    }
+
     func renamePerson(_ person: PersonRecord, to name: String) {
         guard let database else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let generation = profileGeneration
         Task {
             do {
                 try await database.renamePerson(id: person.id, name: trimmed)
-                people = try await database.fetchPeople()
+                let updated = try await database.fetchPeople()
+                guard generation == profileGeneration, self.database === database else { return }
+                people = updated
+                if person.isUnnamed, !trimmed.isEmpty, let named = updated.first(where: { $0.id == person.id }) {
+                    researchPeople([named], reason: "named")
+                }
             } catch {
+                guard generation == profileGeneration else { return }
                 presentError("Could not rename the person", error)
             }
         }
@@ -31,36 +109,58 @@ extension AppStore {
     }
 
     func mergePeople(source: PersonRecord, into target: PersonRecord) {
-        guard let database, source.id != target.id else { return }
+        guard source.id != target.id else { return }
+        mergePeople([source], into: target)
+    }
+
+    /// The entire selection and optional rename share one undo snapshot.
+    func mergePeople(_ selected: [PersonRecord], into survivor: PersonRecord,
+                     renamingTo name: String? = nil) {
+        guard let database else { return }
+        var seen: Set<Int64> = [survivor.id]
+        let sources = selected.filter { seen.insert($0.id).inserted }
+        guard !sources.isEmpty else { return }
+        let generation = profileGeneration
         Task {
             do {
-                try await database.mergePeople(source: source, into: target)
+                let snapshot = try await database.mergePeople(sources: sources, into: survivor, renamingTo: name)
+                guard generation == profileGeneration, self.database === database else { return }
+                previousPeopleMerge = snapshot
+                refreshPeopleMergeReferences(snapshot)
                 await refreshAllNow()
             } catch {
+                guard generation == profileGeneration, self.database === database else { return }
                 presentError("Could not merge the people", error)
             }
         }
     }
 
-    /// Merge several people into one: every other selected person's scenes
-    /// are retagged onto the survivor. The survivor keeps its name unless
-    /// the merge sheet supplied an edited one.
-    func mergePeople(_ selected: [PersonRecord], into survivor: PersonRecord,
-                     renamingTo name: String? = nil) {
-        guard let database else { return }
-        Task {
-            do {
-                for person in selected where person.id != survivor.id {
-                    try await database.mergePeople(source: person, into: survivor)
-                }
-                if let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   !trimmed.isEmpty, trimmed != survivor.name {
-                    try await database.renamePerson(id: survivor.id, name: trimmed)
-                }
-                await refreshAllNow()
-            } catch {
-                presentError("Could not merge the people", error)
-            }
+    func undoPeopleMerge() async -> Bool {
+        guard let database, let snapshot = previousPeopleMerge else { return false }
+        let generation = profileGeneration
+        do {
+            try await database.restorePeopleMerge(snapshot)
+            guard generation == profileGeneration, self.database === database else { return false }
+            previousPeopleMerge = nil
+            refreshPeopleMergeReferences(snapshot)
+            await refreshAllNow()
+            guard generation == profileGeneration, self.database === database else { return false }
+            appendLog(\.analysisLog, ["Undid the merge into \(snapshot.survivor.displayName): \(snapshot.sources.count) people restored"])
+            return true
+        } catch {
+            guard generation == profileGeneration, self.database === database else { return false }
+            presentError("Could not undo the people merge", error)
+            return false
+        }
+    }
+
+    private func refreshPeopleMergeReferences(_ snapshot: PeopleMergeSnapshot) {
+        // Speaker/transcript caches can contain identities even without roster rows.
+        for video in videos { invalidatePersonReferences(videoID: video.id) }
+        personTagFieldsVersion &+= 1
+        personPortraitVersions[snapshot.survivor.id, default: 0] &+= 1
+        for row in snapshot.sources {
+            if let id = row["id"]?.intValue { personPortraitVersions[id, default: 0] &+= 1 }
         }
     }
 
@@ -70,14 +170,17 @@ extension AppStore {
     /// assignments in one review can't point at a person that just vanished.
     func applyPeopleReview(names: [String: String], merges: [String: Int64]) {
         guard let database else { return }
+        let generation = profileGeneration
         Task {
             do {
                 var current = try await database.fetchPeople()
+                var confirmedIDs: Set<Int64> = []
                 for (key, name) in names {
                     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard merges[key] == nil, !trimmed.isEmpty,
                           let record = current.first(where: { $0.key == key }) else { continue }
                     try await database.renamePerson(id: record.id, name: trimmed)
+                    confirmedIDs.insert(record.id)
                 }
                 current = try await database.fetchPeople()
                 let mergesByID: [Int64: Int64] = Dictionary(uniqueKeysWithValues:
@@ -101,8 +204,14 @@ extension AppStore {
                           source.id != target.id else { continue }
                     try await database.mergePeople(source: source, into: target)
                 }
+                let survivors = try await database.fetchPeople()
+                guard generation == profileGeneration, self.database === database else { return }
+                people = survivors
                 await refreshAllNow()
+                guard generation == profileGeneration, self.database === database else { return }
+                researchPeople(survivors.filter { confirmedIDs.contains($0.id) }, reason: "new people")
             } catch {
+                guard generation == profileGeneration else { return }
                 presentError("Could not apply the people review", error)
             }
         }
@@ -124,6 +233,41 @@ extension AppStore {
                 await refreshAllNow()
             } catch {
                 presentError("Could not reassign the scene", error)
+            }
+        }
+    }
+
+    /// Correct a mistaken identity everywhere within one source video.
+    func reassignPerson(in video: VideoRecord, from person: PersonRecord,
+                        to target: PersonRecord?, newPersonName: String? = nil) {
+        guard let database else { return }
+        let generation = profileGeneration
+        let profileName = activeProfile.profileName
+        Task {
+            do {
+                var destination = target
+                if let newPersonName {
+                    let name = newPersonName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !name.isEmpty else { return }
+                    destination = try await database.createPerson(name: name)
+                }
+                guard destination?.id != person.id else { return }
+                let counts = try await database.personReferenceCounts(videoID: video.id, person: person)
+                try await database.reassignPerson(videoID: video.id, from: person, to: destination)
+                LearnedCache.invalidate(profile: profileName)
+                guard generation == profileGeneration else { return }
+                invalidatePersonReferences(videoID: video.id)
+                appendLog(\.analysisLog, ["Moved \(person.displayName) to \(destination?.displayName ?? "Nobody") in \(video.filename): \(counts.scenes) scenes, \(counts.turns) speaker turns"])
+                await refreshAllNow()
+                guard generation == profileGeneration else { return }
+                // Avatar fallback reads scene tags from the store. Reload after
+                // the snapshot so it cannot crop a scene under the old identity.
+                for id in [person.id] + (destination.map { [$0.id] } ?? []) {
+                    personPortraitVersions[id, default: 0] &+= 1
+                }
+            } catch {
+                guard generation == profileGeneration else { return }
+                presentError("Could not reassign the person in this video", error)
             }
         }
     }
@@ -244,73 +388,6 @@ extension AppStore {
                 presentError("Could not update the person", error)
             }
         }
-    }
-
-    /// File several people at once — the People Roles review's Apply.
-    func setPersonCategories(_ assignments: [(id: Int64, category: PersonCategory?)]) async throws {
-        guard let database else { return }
-        try await database.setPersonCategories(assignments)
-        people = try await database.fetchPeople()
-    }
-
-    /// People with no role yet whom the wizard can reason about — hidden
-    /// people are skipped, they were tucked away on purpose.
-    var uncategorizedPeople: [PersonRecord] {
-        people.filter { $0.category == nil && !$0.hidden }
-    }
-
-    /// People Roles wizard: gather what the footage says about each
-    /// uncategorized person and ask the model for a role per person. The
-    /// answer is a proposal list for the review sheet; nothing is written.
-    func inferPersonRoles(people targets: [PersonRecord], provider: String?, model: String?,
-                          log: @escaping @Sendable (String) -> Void) async throws
-        -> AIOutcome<[PersonRoleInference.Proposal]> {
-        guard let database else { throw AIError.notConfigured("No profile is open.") }
-        guard !targets.isEmpty else { throw AppJobEmptyResult(message: "Everyone already has a category.") }
-        let scenes = scenes, videos = videos, domain = activeProfile.effectiveDomain
-        let videosByID = Dictionary(uniqueKeysWithValues: videos.map { ($0.id, $0) })
-
-        log("Reading scenes and transcripts for \(targets.count) people…")
-        var dossiers: [PersonRoleInference.Dossier] = []
-        var transcriptCache: [Int64: (rows: [TranscriptRow], turns: [SpeakerTurn])] = [:]
-        for (index, person) in targets.enumerated() {
-            try Task.checkCancellation()
-            let theirScenes = scenes.filter { !$0.ignored && $0.tags.contains(person.tag) }
-            var videoIDs = Set(theirScenes.map(\.videoID))
-            videoIDs.formUnion(try await database.fetchVideoIDs(personID: person.id))
-            let videoLines = videoIDs.compactMap { videosByID[$0] }
-                .sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
-                .map { "\($0.filename) (\($0.type?.label ?? "untyped"))" }
-            let sceneLines = theirScenes.prefix(PersonRoleInference.maxScenesPerPerson).map { scene in
-                let tags = scene.tags.filter { !$0.hasPrefix("person:") && !$0.hasPrefix("vip:") }
-                let narrative = scene.narrative?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return "\(scene.videoFilename): [\(tags.joined(separator: ", "))]"
-                    + (narrative.isEmpty ? "" : " \(narrative.prefix(PersonRoleInference.maxQuoteLength))")
-            }
-            var quotes: [String] = []
-            for videoID in videoIDs.sorted() where quotes.count < PersonRoleInference.maxQuotesPerPerson {
-                if transcriptCache[videoID] == nil {
-                    transcriptCache[videoID] = (try await database.fetchTranscripts(videoID: videoID),
-                                                try await database.fetchSpeakerTurns(videoID: videoID))
-                }
-                let cached = transcriptCache[videoID]!
-                quotes += PersonRoleInference.quotes(for: person.key, transcripts: cached.rows, turns: cached.turns)
-            }
-            dossiers.append(.init(personID: person.id, name: person.displayName, descriptor: person.descriptor,
-                                  videos: videoLines, scenes: Array(sceneLines),
-                                  quotes: Array(quotes.prefix(PersonRoleInference.maxQuotesPerPerson))))
-            log("PROGRESS:\(Double(index + 1) / Double(targets.count) * 0.4)")
-        }
-
-        log("Asking the model for a role per person…")
-        let response = try await ai.call(prompt: PersonRoleInference.prompt(dossiers: dossiers, domain: domain),
-                                         task: .roles, model: model, provider: provider, timeout: 240, log: log)
-        let proposals = PersonRoleInference.parse(response.text, personIDs: targets.map(\.id))
-        guard !proposals.isEmpty else {
-            throw AIError.unusableResponse("No roles could be read from the model's reply.")
-        }
-        log("Proposed roles for \(proposals.count) of \(targets.count) people.")
-        return AIOutcome(value: proposals, provenance: response.provenance)
     }
 
     /// Hand-pick a person's avatar frame — or reset to automatic with nils.

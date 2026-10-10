@@ -6,6 +6,8 @@ import Foundation
 nonisolated struct SceneIndex: Sendable {
     /// Scene count per video.
     var countsByVideo: [Int64: Int] = [:]
+    /// Non-ignored Q&A scenes per video, matching the transcript sheet.
+    var qaCountsByVideo: [Int64: Int] = [:]
     /// Distinct `person:` tags per video.
     var personTagsByVideo: [Int64: Set<String>] = [:]
     /// Distinct `person:` tags per analysis run.
@@ -23,6 +25,9 @@ nonisolated struct SceneIndex: Sendable {
         var tags = Set<String>()
         for scene in scenes {
             countsByVideo[scene.videoID, default: 0] += 1
+            if !scene.ignored && scene.tags.contains("q&a") {
+                qaCountsByVideo[scene.videoID, default: 0] += 1
+            }
             if !scene.excluded && !scene.ignored { usableCount += 1 }
             if scene.favorite && !scene.ignored { favorites.append(scene) }
             for tag in scene.tags {

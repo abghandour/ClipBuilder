@@ -435,8 +435,9 @@ final class GoogleDriveTransfers {
                     log("AI Lessons: downloaded shared lessons; enter a device nickname on AI Lessons to publish yours")
                     return
                 }
-                let wizard = WizardEngine(ai: AIService(config: SettingsStore.loadSettings().ai), render: RenderEngine())
-                try await LearnedSync.run(executor: runner, profile: current, database: context.database, log: log, config: SettingsStore.loadSettings().ai) {
+                let config = AIRoutingResolver.effectiveConfig(local: SettingsStore.loadSettings().ai, team: current.aiRouting)
+                let wizard = WizardEngine(ai: AIService(config: config), render: RenderEngine())
+                try await LearnedSync.run(executor: runner, profile: current, database: context.database, log: log, config: config) {
                     _ = try await wizard.distillLessons(database: context.database, emit: { _ in })
                 }
             }, log: log)
@@ -453,9 +454,10 @@ final class GoogleDriveTransfers {
         let task = Task {
             let runner = AssetSyncExecutor(roots: AssetSyncRoots(), client: context.client, transfers: self,
                 profile: profile.profileName, group: group, journal: AssetSyncJournal(homeID: home.selection.id))
-            let wizard = WizardEngine(ai: AIService(config: SettingsStore.loadSettings().ai), render: RenderEngine())
+            let config = AIRoutingResolver.effectiveConfig(local: SettingsStore.loadSettings().ai, team: profile.aiRouting)
+            let wizard = WizardEngine(ai: AIService(config: config), render: RenderEngine())
             try await LearnedSync.run(executor: runner, profile: profile, database: context.database,
-                                      library: library, benchmarks: benchmarks, config: SettingsStore.loadSettings().ai) {
+                                      library: library, benchmarks: benchmarks, config: config) {
                 _ = try await wizard.distillLessons(database: context.database, emit: { _ in })
             }
         }

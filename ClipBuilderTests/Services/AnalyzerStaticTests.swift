@@ -5,6 +5,24 @@ import Testing
 
 @Suite("Analyzer static logic")
 struct AnalyzerStaticTests {
+    @Test("Visual runs persist their own pipeline stamp and preserve captured settings")
+    func pipelineStamp() async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        let original = AnalysisRunSettings(instructions: "Keep action", sampleInterval: 2,
+                                           smartSampling: true, pipeline: 999)
+        let settings = Analyzer.runSettings(original)
+        let runID = try await temp.database.saveAnalysis(
+            videoID: videoID, runName: "Visual", instructions: settings.instructions, sampleInterval: 2,
+            notesJSON: nil, tagRanges: [:], moments: [], analyzedTags: [],
+            provider: nil, model: nil, mode: "visual", settings: settings)
+        let run = try #require(try await temp.database.fetchAnalysisRuns().first { $0.id == runID })
+        let restored = try #require(AISettingsJSON.decode(AnalysisRunSettings.self, run.settingsJSON))
+        #expect(restored.pipeline == AnalysisPipeline.visualPass)
+        #expect(restored.instructions == original.instructions && restored.sampleInterval == original.sampleInterval)
+        #expect(restored.smartSampling == true)
+    }
+
     @Test("frame sampling covers short and long windows")
     func frameTimestamps() {
         #expect(Analyzer.frameTimestamps(duration: 0.4) == [0.2])

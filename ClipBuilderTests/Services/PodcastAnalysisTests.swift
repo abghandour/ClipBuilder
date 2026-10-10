@@ -5,6 +5,33 @@ import Testing
 
 @Suite("Podcast analysis")
 struct PodcastAnalysisTests {
+    @Test("Podcast and interview runs persist the podcast pipeline stamp",
+          arguments: [VideoType.podcast, .interview])
+    func pipelineStamp(type: VideoType) async throws {
+        let temp = try TempDatabase()
+        let videoID = try await temp.seedVideo()
+        try await temp.database.setVideoType(id: videoID, type: type.rawValue)
+        let video = try #require(try await temp.database.video(id: videoID))
+        #expect(video.type?.usesPodcastPass == true)
+        #expect(AppStore.AnalysisStage.forRole("Tagging", podcast: video.type?.usesPodcastPass == true) == .exchanges)
+        #expect(AppStore.AnalysisStage.forRole("Transcript", podcast: video.type?.usesPodcastPass == true) == .exchanges)
+        let runID = try await temp.database.saveAnalysis(
+            videoID: videoID, runName: "Exchanges", instructions: "", sampleInterval: nil,
+            notesJSON: nil, tagRanges: [:], moments: [], analyzedTags: ["podcast"],
+            provider: nil, model: nil, mode: "speech", settings: PodcastAnalysisService.runSettings())
+        let run = try #require(try await temp.database.fetchAnalysisRuns().first { $0.id == runID })
+        #expect(AISettingsJSON.decode(AnalysisRunSettings.self, run.settingsJSON)?.pipeline == AnalysisPipeline.podcastPass)
+        #expect(AnalysisPipeline.current(for: type) == AnalysisPipeline.podcastPass)
+    }
+
+    @Test("Only podcast and interview select the transcript-first pass")
+    func podcastPassTypes() {
+        for type in VideoType.allCases {
+            #expect(type.usesPodcastPass == (type == .podcast || type == .interview))
+        }
+        #expect(AnalysisPipeline.current(for: nil) == AnalysisPipeline.visualPass)
+    }
+
     @Test("language selection prefers a confident primary locale")
     func languageSelection() {
         let chosen = TranscriptionService.choosePodcastLanguage(

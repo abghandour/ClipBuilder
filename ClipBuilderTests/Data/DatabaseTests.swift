@@ -553,6 +553,132 @@ struct DatabaseTests {
         #expect(try await temp.database.fetchPeople().map(\.key) == ["beta"])
     }
 
+    @Test("Merging people keeps roster rows, unions ranges and only fills a missing avatar", arguments: [false, true])
+    func mergePeoplePreservesRosterAndAvatar(existingAvatar: Bool) async throws {
+        let temp = try TempDatabase()
+        let fixture = try await Fixtures.personCorrection(in: temp)
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("""
+            INSERT INTO video_people (video_id, person_id, portrait_at, portrait_json, ranges_json)
+            VALUES (?, ?, 7, '{"x":0.5,"y":0.1,"w":0.2,"h":0.3}',
+                '[{"start":20,"end":24},{"start":3,"end":9},{"start":0,"end":4}]')
+            """, [.integer(fixture.video.id), .integer(fixture.to.id)])
+        let targetBefore = try #require(try raw.query("SELECT * FROM video_people WHERE video_id = ? AND person_id = ?",
+                                                     [.integer(fixture.video.id), .integer(fixture.to.id)]).first)
+        var movedBefore = try #require(try raw.query("SELECT * FROM video_people WHERE video_id = ?",
+                                                    [.integer(fixture.otherVideo.id)]).first)
+        movedBefore["person_id"] = .integer(fixture.to.id)
+        let sourceBox = "{\"x\":0.1,\"y\":0.2,\"w\":0.3,\"h\":0.4}"
+        try await temp.database.setPersonAvatar(id: fixture.from.id, videoID: fixture.video.id, time: 2, boxJSON: sourceBox)
+        if existingAvatar {
+            try await temp.database.setPersonAvatar(id: fixture.to.id, videoID: fixture.otherVideo.id, time: 7, boxJSON: sourceBox)
+        }
+        // Deliberately use the earlier records: avatar inheritance reads the database.
+        try await temp.database.mergePeople(source: fixture.from, into: fixture.to)
+        let ranges = try await temp.database.fetchVideoPeopleRanges(videoID: fixture.video.id)
+        #expect(ranges.count == 1)
+        #expect(ranges.first?.ranges == [.init(start: 0, end: 12), .init(start: 20, end: 24)])
+        let targetAfter = try #require(try raw.query("SELECT * FROM video_people WHERE video_id = ?",
+                                                    [.integer(fixture.video.id)]).first)
+        for column in ["portrait_at", "portrait_json", "detected_at", "sync_id"] {
+            #expect(targetAfter[column]?.stringValue == targetBefore[column]?.stringValue)
+        }
+        let movedAfter = try #require(try raw.query("SELECT * FROM video_people WHERE video_id = ?",
+                                                   [.integer(fixture.otherVideo.id)]).first)
+        #expect(movedAfter.mapValues { $0.stringValue ?? "NULL" } == movedBefore.mapValues { $0.stringValue ?? "NULL" })
+        let survivor = try #require(try await temp.database.fetchPeople().first { $0.id == fixture.to.id })
+        #expect(survivor.avatarVideoID == (existingAvatar ? fixture.otherVideo.id : fixture.video.id))
+        #expect(survivor.avatarTime == (existingAvatar ? 7 : 2))
+        #expect(survivor.avatarBoxJSON == sourceBox)
+    }
+
+    @Test("Merge snapshots restore both sides of every relationship and their original row identities")
+    func peopleMergeSnapshotRestoresAllRows() async throws {
+        let temp = try TempDatabase()
+        try await temp.database.bindSync(to: SyncScope(teamID: UUID(), profileID: UUID()))
+        let fixture = try await Fixtures.personCorrection(in: temp)
+        let extra = try await temp.database.createPerson(name: "Third Person")
+        let raw = try SQLiteConnection(path: temp.path.path)
+        let scenes = try await temp.database.fetchScenes(videoID: fixture.video.id)
+        try await temp.database.addSceneTag(sceneID: scenes[0].id, tag: fixture.to.tag)
+        // Three-way collision on one scene, two sources without the survivor on another.
+        for scene in scenes { try await temp.database.addSceneTag(sceneID: scene.id, tag: extra.tag) }
+        try await temp.database.setPersonCategory(id: fixture.from.id, category: .fighter)
+        try await temp.database.setPersonHidden(id: fixture.from.id, hidden: true)
+        try await temp.database.setPersonCategory(id: fixture.to.id, category: .fighter)
+        try await temp.database.setPersonHidden(id: fixture.to.id, hidden: true)
+        try await temp.database.setPersonAvatar(id: fixture.from.id, videoID: fixture.video.id, time: 2,
+                                                boxJSON: "{\"x\":0.1,\"y\":0.2,\"w\":0.3,\"h\":0.4}")
+        for (person, field, value) in [(fixture.to, "role", "Guest"), (fixture.to, "team", "Original Team"),
+                                      (fixture.from, "instagram", "@original"), (extra, "role", "Coach")] {
+            try await temp.database.savePersonTagField(personKey: person.key, field: field, value: value,
+                provenance: AIProvenance(provider: "test", model: "research", task: "personResearch"), source: "https://example.com/profile")
+        }
+        for person in [fixture.to, extra] {
+            try raw.execute("""
+                INSERT INTO video_people (video_id, person_id, portrait_at, ranges_json)
+                VALUES (?, ?, 7, '[{"start":3,"end":9}]')
+                """, [.integer(fixture.video.id), .integer(person.id)])
+            try raw.execute("""
+                INSERT INTO voice_profiles (video_id, person_key, vector_json, windows)
+                VALUES (?, ?, '[0,1]', 8)
+                """, [.integer(fixture.video.id), .text(person.key)])
+        }
+        // Third source also has independently attributed turns, lines and markers.
+        try raw.execute("""
+            INSERT INTO speaker_turns (video_id, start_time, end_time, cluster, person_key)
+            VALUES (?, 4, 8, 1, ?)
+            """, [.integer(fixture.video.id), .text(extra.key)])
+        try raw.execute("""
+            INSERT INTO transcripts (video_id, start_time, end_time, text, speaker_key)
+            VALUES (?, 4, 8, 'Third speaker', ?)
+            """, [.integer(fixture.video.id), .text(extra.key)])
+        try raw.execute("""
+            INSERT INTO person_markers (video_id, at_time, x, y, width, height, person_id)
+            VALUES (?, 6, 0.1, 0.2, 0.3, 0.4, ?)
+            """, [.integer(fixture.video.id), .integer(extra.id)])
+        let before = try peopleMergeRows(raw)
+        let snapshot = try await temp.database.peopleMergeSnapshot(sources: [fixture.from, extra], survivor: fixture.to)
+        #expect(snapshot.sources.count == 2)
+        try await temp.database.mergePeople(source: fixture.from, into: fixture.to)
+        try await temp.database.mergePeople(source: extra, into: fixture.to)
+        #expect(try await temp.database.fetchPeople().count == 1)
+        try await temp.database.setPersonHidden(id: fixture.to.id, hidden: false)
+        try await temp.database.setPersonCategory(id: fixture.to.id, category: nil)
+        try raw.execute("DELETE FROM sync_outbox")
+        try await temp.database.restorePeopleMerge(snapshot)
+        #expect(try peopleMergeRows(raw) == before)
+        let restoredSyncIDs = Set(try raw.query("SELECT sync_id FROM sync_outbox WHERE \"table\" = 'people' AND op = 'upsert'")
+            .compactMap { $0["sync_id"]?.stringValue })
+        for source in snapshot.sources {
+            let syncID = try #require(source["sync_id"]?.stringValue)
+            #expect(restoredSyncIDs.contains(syncID))
+        }
+    }
+
+    @Test("Undoing a merge restores the survivor's name before the merge sheet rename")
+    func peopleMergeRestoreSurvivorName() async throws {
+        let temp = try TempDatabase()
+        let source = try await temp.database.createPerson(name: "Duplicate")
+        let survivor = try await temp.database.createPerson(name: "Original Name")
+        let snapshot = try await temp.database.mergePeople(sources: [source], into: survivor, renamingTo: "Merged Name")
+        #expect(try await temp.database.fetchPeople().first?.name == "Merged Name")
+        try await temp.database.restorePeopleMerge(snapshot)
+        #expect(try await temp.database.fetchPeople().first { $0.id == survivor.id }?.name == "Original Name")
+    }
+
+    private func peopleMergeRows(_ raw: SQLiteConnection) throws -> [String: [[String: String]]] {
+        var result: [String: [[String: String]]] = [:]
+        for (table, order) in [("people", "id"), ("video_people", "video_id, person_id"),
+                               ("person_tag_fields", "person_key, field"), ("scene_tags", "scene_id, tag"),
+                               ("speaker_turns", "id"), ("transcripts", "id"), ("person_markers", "id"),
+                               ("voice_profiles", "person_key, video_id")] {
+            result[table] = try raw.query("SELECT * FROM \(table) ORDER BY \(order)")
+                .map { $0.mapValues { $0.stringValue ?? "NULL" } }
+        }
+        return result
+    }
+
     @Test("video notes round trip in time order with provenance")
     func videoNotes() async throws {
         let temp = try TempDatabase()
@@ -939,7 +1065,7 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 29)
+        #expect(Database.schemaVersion == 30)
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))

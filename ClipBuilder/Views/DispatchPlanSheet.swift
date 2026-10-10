@@ -176,14 +176,14 @@ struct DispatchPlanSheet: View {
     private var copiedAnalysis: Binding<AnalysisRunSettings> {
         Binding(get: {
             AnalysisRunSettings(instructions: instructions, sampleInterval: sampleInterval,
-                includeTranscript: includeTranscript, language: store.settings.transcribeLanguage, detectPeople: detectPeople,
+                includeTranscript: includeTranscript, language: store.editingDefaults.footage.language, detectPeople: detectPeople,
                 autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTagsRaw.split(separator: ",").map(String.init),
                 smartSampling: smartSampling,
                 trimRange: [trimStart, trimEnd], notes: AISettingsJSON.decode([AnalysisRunNote].self, UserDefaults.standard.string(forKey: "analysis.pastedNotes")) ?? [], provider: analysisChoice.provider, model: analysisChoice.model,
                 videoPath: videos.count == 1 ? videos.first?.path : nil, sourcePeople: Array(selectedPeopleKeys), sourceProfile: store.activeProfile.profileName)
         }, set: { value in
             instructions = value.instructions; sampleInterval = value.sampleInterval
-            includeTranscript = value.includeTranscript; store.settings.transcribeLanguage = value.language
+            includeTranscript = value.includeTranscript; store.editingBinding(\.footage.language).wrappedValue = value.language
             detectPeople = value.detectPeople
             autoZoomUnframed = value.autoZoomUnframed
             breakdownTagsRaw = value.breakdownTags.joined(separator: ","); autoBreakdown = !value.breakdownTags.isEmpty
@@ -594,7 +594,7 @@ struct DispatchPlanSheet: View {
                                         availableProviders: availableProviders)
                                 .help(Self.taskHelp[task] ?? "")
                         }
-                        Text("Video analysis tags the footage (and attributes people inside that same call). People detection is the Identify people step. Podcast exchanges groups a podcast or interview transcript into question-and-answer scenes; who is speaking is worked out on this Mac. These choices become the defaults in Settings ▸ AI ▸ Task Routing.")
+                        Text("Video analysis tags the footage (and attributes people inside that same call). People detection is the Identify people step. Podcast exchanges groups a podcast or interview transcript into question-and-answer scenes; who is speaking is worked out on this Mac. These choices become the defaults in Settings ▸ AI ▸ Task Routing. Exchanges run for videos typed Podcast or Interview; other types get visual analysis.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -741,7 +741,7 @@ struct DispatchPlanSheet: View {
                 // Keep a hand-typed Settings value selectable even if it
                 // doesn't match a listed locale identifier.
                 if !currentLanguageIsListed {
-                    Text(store.settings.transcribeLanguage).tag(store.settings.transcribeLanguage)
+                    Text(store.editingDefaults.footage.language).tag(store.editingDefaults.footage.language)
                 }
             }
             // The transcript tools' automatic parts, decided here as well
@@ -751,7 +751,7 @@ struct DispatchPlanSheet: View {
                     Text(policy.label).tag(policy)
                 }
             }
-            .help(store.settings.podcast.cleanupCutPolicy.help)
+            .help(store.editingDefaults.podcast.cleanupCutPolicy.help)
             Picker("Translate captions", selection: autoTranslateBinding) {
                 Text("Only when asked").tag("")
                 Text("Português (Brasil)").tag("pt-BR")
@@ -762,22 +762,19 @@ struct DispatchPlanSheet: View {
     }
 
     private var cleanupCutPolicyBinding: Binding<CleanupCutPolicy> {
-        Binding(get: { store.settings.podcast.cleanupCutPolicy },
-                set: { store.settings.podcast.cleanupCutPolicy = $0 })
+        store.editingBinding(\.podcast.cleanupCutPolicy)
     }
 
     private var autoTranslateBinding: Binding<String> {
-        Binding(get: { store.settings.podcast.autoTranslateLanguage },
-                set: { store.settings.podcast.autoTranslateLanguage = $0 })
+        store.editingBinding(\.podcast.autoTranslateLanguage)
     }
 
     private var transcribeLanguageBinding: Binding<String> {
-        Binding(get: { store.settings.transcribeLanguage },
-                set: { store.settings.transcribeLanguage = $0 })
+        store.editingBinding(\.footage.language)
     }
 
     private var currentLanguageIsListed: Bool {
-        let current = store.settings.transcribeLanguage
+        let current = store.editingDefaults.footage.language
         return current.isEmpty || transcriptionLocales.contains { $0.identifier == current }
     }
 
@@ -857,14 +854,15 @@ struct DispatchPlanSheet: View {
         ModelPicker.bestAvailableTag(for: task, available: availableProviders)
     }
 
-    /// Current effective choice: the user's saved routing when present,
-    /// otherwise the recommendation.
+    /// Current effective choice: local override, then team recommendation,
+    /// otherwise the available catalog recommendation.
     private func seedChoices() {
         guard choices.isEmpty else { return }
+        let config = store.effectiveAIConfig
         for task in operation.aiTasks {
-            if let provider = store.settings.ai.tasks[task] {
-                let model = store.settings.ai.taskModels[task]
-                    ?? store.settings.ai.providers[provider]?.model
+            if let provider = config.tasks[task] {
+                let model = config.taskModels[task]
+                    ?? config.providers[provider]?.model
                     ?? AICatalog.provider(provider)?.defaultModel ?? ""
                 choices[task] = "\(provider)|\(model)"
             } else {

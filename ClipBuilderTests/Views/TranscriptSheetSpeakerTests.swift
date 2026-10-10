@@ -38,6 +38,50 @@ struct TranscriptSheetSpeakerTests {
         #expect(TranscriptSheet.blockEnds([]) { _, _ in true }.isEmpty)
     }
 
+    @Test("three visible lines in one exchange have first, middle and last edges")
+    func exchangeSpansThreeRows() {
+        let rows = [row(1, 0, 2), row(2, 2, 5), row(3, 5, 7)]
+        let spans = TranscriptSheet.exchangeSpans(rows) { _ in 10 }
+        #expect(spans == [0: .first, 1: .middle, 2: .last])
+    }
+
+    @Test("a single visible line in an exchange has both bracket ends")
+    func exchangeSpansSingleRow() {
+        let spans = TranscriptSheet.exchangeSpans([row(1, 0, 2)]) { _ in 10 }
+        #expect(spans == [0: .only])
+    }
+
+    @Test("back-to-back exchanges close one bracket before opening the next")
+    func exchangeSpansAdjacentExchanges() {
+        let rows = [row(1, 0, 2), row(2, 2, 5), row(3, 5, 7), row(4, 7, 9)]
+        let spans = TranscriptSheet.exchangeSpans(rows) { $0.id <= 2 ? 10 : 20 }
+        #expect(spans == [0: .first, 1: .last, 2: .first, 3: .last])
+    }
+
+    @Test("lines outside exchanges have no bracket edge")
+    func exchangeSpansOmitUnmatchedRows() {
+        let rows = [row(1, 0, 2), row(2, 2, 5), row(3, 5, 7), row(4, 7, 9)]
+        let spans = TranscriptSheet.exchangeSpans(rows) { $0.id == 2 || $0.id == 3 ? 10 : nil }
+        #expect(spans == [1: .first, 2: .last])
+        #expect(TranscriptSheet.exchangeSpans(rows) { _ in nil }.isEmpty)
+        #expect(TranscriptSheet.exchangeSpans([]) { _ in 10 }.isEmpty)
+    }
+
+    @Test("a visible gap splits the same exchange into separate bracket runs")
+    func exchangeSpansVisibleGap() {
+        let rows = [row(1, 0, 2), row(2, 2, 5), row(3, 5, 7)]
+        let spans = TranscriptSheet.exchangeSpans(rows) { $0.id == 2 ? nil : 10 }
+        #expect(spans == [0: .only, 2: .only])
+    }
+
+    @Test("filtering out a gap keeps the remaining exchange lines in one run")
+    func exchangeSpansFilteredGap() {
+        let rows = [row(1, 0, 2), row(2, 2, 5), row(3, 5, 7)]
+        let visible = rows.filter { $0.id != 2 }
+        let spans = TranscriptSheet.exchangeSpans(visible) { _ in 10 }
+        #expect(spans == [0: .first, 1: .last])
+    }
+
     @Test("the mapping status drops the filename prefix and keeps other lines whole")
     func statusLine() {
         #expect(TranscriptSheet.statusLine("Podcast 02.mp4: transcript re-cut by speaker — 3 rows split") == "transcript re-cut by speaker — 3 rows split")

@@ -459,7 +459,9 @@ struct MainWindowView: View {
         // Rightmost control on every screen: a trailing title-bar accessory,
         // not a toolbar item (root toolbar items sort before a screen's own).
         .background(QATitlebarAccessoryInstaller(
-            visible: BugReporting.qaButtonVisible(preference: showsQAButton, isDebug: BugReporting.isDebugBuild)))
+            store: store,
+            visible: BugReporting.qaButtonVisible(preference: showsQAButton, isDebug: BugReporting.isDebugBuild),
+            syncVisible: store.teamSync.attached))
     }
 
     private var jobReviewBlocked: Bool {

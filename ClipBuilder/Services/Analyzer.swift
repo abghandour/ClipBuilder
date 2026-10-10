@@ -26,6 +26,13 @@ actor Analyzer {
         self.ai = ai
     }
 
+    /// The visual pass owns its stamp even when it infers a talking-footage type.
+    nonisolated static func runSettings(_ settings: AnalysisRunSettings) -> AnalysisRunSettings {
+        var settings = settings
+        settings.pipeline = AnalysisPipeline.visualPass
+        return settings
+    }
+
     // MARK: - Discovery
 
     /// Probe format version. v3 reports display (rotation-applied)
@@ -1015,7 +1022,7 @@ actor Analyzer {
 
         log("Detecting people in \(video.filename) (\(frames.count) frames)…")
         var profilePortraits: [AIFrame] = []
-        if video.type == .podcast {
+        if video.type?.usesPodcastPass == true {
             for reference in try await database.podcastPortraitReferences() {
                 try Task.checkCancellation()
                 let images = await ThumbnailService.jpegFrames(
@@ -2107,12 +2114,12 @@ actor Analyzer {
                                                     provider: attribution.provider,
                                                     model: attribution.model,
                                                     mode: "visual",
-                                                    settings: AnalysisRunSettings(instructions: instructions, sampleInterval: sampleInterval ?? 0,
+                                                    settings: Self.runSettings(AnalysisRunSettings(instructions: instructions, sampleInterval: sampleInterval ?? 0,
                                                         detectPeople: detectPeople, autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTags,
                                                         smartSampling: smart,
                                                         trimRange: trimRange.map { [$0.start, $0.end] }, notes: noteSnapshot,
                                                         provider: provider, model: model, videoPath: video.path, sourceProfile: profile.profileName,
-                                                        modelPrompts: AIRunCapture.current?.prompts ?? [:]),
+                                                        modelPrompts: AIRunCapture.current?.prompts ?? [:])),
                                                     roles: [AIRole(role: "Tagging", provenance: AIProvenance(provider: attribution.provider, model: attribution.model, task: "analysis", at: Date(), fellBack: provider != nil && provider != attribution.provider))])
 
         // A type already on the row wins — it's either the user's manual
