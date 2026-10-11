@@ -1,88 +1,93 @@
 import SwiftUI
 
-// MAP: saved form state; source/layout controls; Find the moments card;
-// Make the reel card; selections; run summary; handoffs and step options.
+// MAP: persisted answers, lifecycle, source policy, handoffs and submission.
+// WizardView+Steps: seven cards and navigation; WizardView+Fields: source/outcome/planning rows;
+// WizardView+Look: presentation controls. WizardStepFlow owns pure progression rules.
 
 /// Footage and idea entry converge on one reviewable run configuration.
 struct WizardView: View {
-    @Environment(AppStore.self) private var store
+    // Internal members are shared only with this view's step/field extensions.
+    @Environment(AppStore.self) var store
     @Environment(\.openSettings) private var openSettings
     @AppStorage("settings.selectedTab") private var settingsTab = "profile"
 
-    @AppStorage("wizard.entryMode") private var entryMode = "footage"
-    @AppStorage("wizard.sourceGridExpanded") private var sourceGridExpanded = true
-    @FocusState private var sourcesFocused: Bool
-    @State private var enteredWithHandoff = false
-    @State private var reviewingIdea = false
-    @State private var proposedSceneIDs: Set<Int64>?
+    @AppStorage("wizard.entryMode") var entryMode = "footage"
+    @AppStorage("wizard.sourceGridExpanded") var sourceGridExpanded = true
+    @FocusState var sourcesFocused: Bool
+    @State var enteredWithHandoff = false
+    @State var reviewingIdea = false
+    @State var proposedSceneIDs: Set<Int64>?
 
-    @AppStorage("wizard.aiInstructions") private var aiInstructions = ""
-    @AppStorage("wizard.highlightMaxCount") private var highlightMaxCount = 0
-    @State private var highlightMaxSeconds = 30.0
-    @State private var highlightVideoPath = ""
-    @AppStorage("wizard.formatPreset") private var formatPreset = "custom"
+    @AppStorage("wizard.aiInstructions") var aiInstructions = ""
+    @AppStorage("wizard.highlightMaxCount") var highlightMaxCount = 0
+    @State var highlightMaxSeconds = 30.0
+    @State var highlightVideoPath = ""
+    @AppStorage("wizard.formatPreset") var formatPreset = "custom"
     @AppStorage("wizard.lastSceneRecipe") private var lastSceneRecipeID = "custom"
-    @AppStorage("wizard.tastePreset") private var tastePreset = ""
+    @AppStorage("wizard.tastePreset") var tastePreset = ""
     @AppStorage(WizardDefaults.durationModeKey) private var durationModeRaw = WizardDurationMode.automatic.rawValue
-    @AppStorage(WizardDefaults.customDurationKey) private var customDuration = 20
+    @AppStorage(WizardDefaults.customDurationKey) var customDuration = 20
     @AppStorage(WizardDefaults.audioModeKey) private var audioModeRaw = WizardAudioMode.mix.rawValue
     @AppStorage(WizardDefaults.textModeKey) private var textModeRaw = WizardTextMode.automatic.rawValue
     @AppStorage("wizard.useFightResearch") private var useFightResearch = true
     @AppStorage("wizard.critiqueLoop") private var critiqueLoop = true
     @AppStorage("wizard.outcome") private var outcomeRaw = "oneReel"
-    @AppStorage("wizard.critiqueTargetScore") private var critiqueTargetScore = 85
-    @AppStorage("wizard.critiqueMaxVersions") private var critiqueMaxVersions = 3
-    @AppStorage("wizard.nameTags") private var nameTags = false
+    @AppStorage("wizard.critiqueTargetScore") var critiqueTargetScore = 85
+    @AppStorage("wizard.critiqueMaxVersions") var critiqueMaxVersions = 3
+    @AppStorage("wizard.nameTags") var nameTags = false
     @AppStorage("wizard.nameTagContent") private var nameTagContent: String?
     @AppStorage("wizard.nameTagStyle") private var nameTagStyle: String?
-    @AppStorage("wizard.nameTagStyleID") private var nameTagStyleID: String?
-    @AppStorage("wizard.nameTagPosition") private var nameTagPosition: String?
-    @State private var captionPosition: String?
-    @State private var captionStyleID: String?
-    @AppStorage("wizard.captionLanguage") private var captionLanguage = ""
-    @AppStorage(WizardDefaults.workflowKey) private var reviewWorkflowRaw = WizardWorkflow.automatic.rawValue
-    @AppStorage("wizard.musicTrack") private var musicTrackRaw = ""
-    @AppStorage("wizard.overlayStyle") private var overlayStyleRaw = ""
-    @AppStorage("wizard.pinnedOverlayTemplate") private var overlayTemplateRaw = ""
-    @AppStorage("wizard.overlayAnimation") private var overlayAnimationRaw = ""
-    @AppStorage("wizard.overlayPlacement") private var overlayPlacementRaw = ""
-    @AppStorage("wizard.framingCamera") private var framingCameraRaw = WizardDefaults.fallbackFramingCamera
-    @AppStorage(WizardDefaults.limitTransitionsKey) private var limitTransitions = false
-    @AppStorage(WizardDefaults.allowedTransitionsKey) private var transitionsRaw = ""
-    @State private var lookExpanded = false
-    @State private var deletingSelection: WizardSelectionSummary?
-    @State private var musicTracks: [String] = []
-    @State private var overlayTemplates: [String] = []
+    @AppStorage("wizard.nameTagStyleID") var nameTagStyleID: String?
+    @AppStorage("wizard.nameTagPosition") var nameTagPosition: String?
+    @State var captionPosition: String?
+    @State var captionStyleID: String?
+    @AppStorage("wizard.captionLanguage") var captionLanguage = ""
+    @AppStorage(WizardDefaults.workflowKey) var reviewWorkflowRaw = WizardWorkflow.automatic.rawValue
+    @AppStorage("wizard.musicTrack") var musicTrackRaw = ""
+    @AppStorage("wizard.overlayStyle") var overlayStyleRaw = ""
+    @AppStorage("wizard.pinnedOverlayTemplate") var overlayTemplateRaw = ""
+    @AppStorage("wizard.overlayAnimation") var overlayAnimationRaw = ""
+    @AppStorage("wizard.overlayPlacement") var overlayPlacementRaw = ""
+    @AppStorage("wizard.framingCamera") var framingCameraRaw = WizardDefaults.fallbackFramingCamera
+    @AppStorage(WizardDefaults.limitTransitionsKey) var limitTransitions = false
+    @AppStorage(WizardDefaults.allowedTransitionsKey) var transitionsRaw = ""
+    @State var confirmedSteps: Set<WizardStepFlow.Step> = []
+    @State var requestedStep: WizardStepFlow.Step?
+    @State var collapsedStep: WizardStepFlow.Step?
+    @Environment(\.accessibilityReduceMotion) var reduceMotion
+    @State var deletingSelection: WizardSelectionSummary?
+    @State var musicTracks: [String] = []
+    @State var overlayTemplates: [String] = []
     @AppStorage("wizard.highlightFraming") private var highlightFramingRaw = ""
-    @AppStorage("wizard.useBRoll") private var useBRoll = true
-    @AppStorage("wizard.brollInstructions") private var brollInstructions = ""
+    @AppStorage("wizard.useBRoll") var useBRoll = true
+    @AppStorage("wizard.brollInstructions") var brollInstructions = ""
     @AppStorage("wizard.podcastFraming") private var podcastFramingRaw = PodcastFramingMode.followSpeaker.rawValue
     @AppStorage(WizardDefaults.layoutModeKey) private var layoutModeRaw = WizardLayoutMode.automatic.rawValue
     @AppStorage(WizardDefaults.selectedLayoutsKey) private var selectedLayoutsRaw = ""
-    @AppStorage("wizard.bumperIntro") private var includeIntroBumper = false
-    @AppStorage("wizard.bumperOutro") private var includeOutroBumper = false
-    @AppStorage("wizard.bumperMiddle") private var includeMiddleBumper = false
+    @AppStorage("wizard.bumperIntro") var includeIntroBumper = false
+    @AppStorage("wizard.bumperOutro") var includeOutroBumper = false
+    @AppStorage("wizard.bumperMiddle") var includeMiddleBumper = false
     @AppStorage(WizardDefaults.brandingOverrideKey) private var brandingOverrideRaw = WizardBrandingOverride.savedDefault.rawValue
-    @AppStorage("wizard.limitToSelection") private var limitToSelection = false
-    @AppStorage("wizard.favoritesOnly") private var favoritesOnly = false
+    @AppStorage("wizard.limitToSelection") var limitToSelection = false
+    @AppStorage("wizard.favoritesOnly") var favoritesOnly = false
     /// Comma-joined Analyze batch IDs — AppStorage cannot persist a Set.
-    @AppStorage("wizard.selectedRunIDs") private var selectedRunIDsRaw = ""
+    @AppStorage("wizard.selectedRunIDs") var selectedRunIDsRaw = ""
     /// Comma-joined person keys (empty means anyone in the selected scenes).
-    @AppStorage("wizard.sourcePeople") private var sourcePeopleRaw = ""
-    @AppStorage(SceneStacks.levelKey) private var stackLevelRaw = SceneStackLevel.standard.rawValue
+    @AppStorage("wizard.sourcePeople") var sourcePeopleRaw = ""
+    @AppStorage(SceneStacks.levelKey) var stackLevelRaw = SceneStackLevel.standard.rawValue
 
-    @AppStorage("wizard.modelOverride") private var copiedModelOverride = ""
-    @AppStorage(AISettingsPreferences.sourceNameKey) private var pastedSourceName = "another run"
-    @AppStorage(AISettingsPreferences.snapshotKey) private var pastedSnapshot = ""
-    @AppStorage(WizardDefaults.musicFolderKey) private var musicFolderRaw = ""
-    @State private var runPacing: EditPacing?
-    @State private var runRenderSettings: RenderSettings?
-    @State private var musicCount = 0
+    @AppStorage("wizard.modelOverride") var copiedModelOverride = ""
+    @AppStorage(AISettingsPreferences.sourceNameKey) var pastedSourceName = "another run"
+    @AppStorage(AISettingsPreferences.snapshotKey) var pastedSnapshot = ""
+    @AppStorage(WizardDefaults.musicFolderKey) var musicFolderRaw = ""
+    @State var runPacing: EditPacing?
+    @State var runRenderSettings: RenderSettings?
+    @State var musicCount = 0
     @State private var libraryMusicCount = 0
-    @State private var musicFolders: [String] = []
+    @State var musicFolders: [String] = []
     @State private var showTrainingGuide = false
     @State private var primaryProviderUnavailable = false
-    @State private var showSourcePicker = false
+    @State var showSourcePicker = false
     @State private var showManualBuild = false
     @State private var transcriptVideoIDs: Set<Int64> = []
     @State private var pendingDispatch: PendingDispatch?
@@ -99,16 +104,16 @@ struct WizardView: View {
     }
     @State private var sourcePoolMemo = MemoBox<SourcePoolKey, [SceneRecord]>()
 
-    private var recipe: ReelRecipe { ReelRecipe.recipe(id: formatPreset) ?? .custom }
-    private var formPlan: WizardFormPlan { WizardFormPlan(recipe: recipe) }
-    private var capabilities: ReelRecipe.Capabilities { formPlan.capabilities }
+    var recipe: ReelRecipe { ReelRecipe.recipe(id: formatPreset) ?? .custom }
+    var formPlan: WizardFormPlan { WizardFormPlan(recipe: recipe) }
+    var capabilities: ReelRecipe.Capabilities { formPlan.capabilities }
 
-    private var fromIdea: Bool { entryMode == "idea" && !enteredWithHandoff }
-    private var needsFootageProposal: Bool { fromIdea && !reviewingIdea }
-    private var isFindingFootage: Bool {
+    var fromIdea: Bool { entryMode == "idea" && !enteredWithHandoff }
+    var needsFootageProposal: Bool { fromIdea && !reviewingIdea }
+    var isFindingFootage: Bool {
         store.jobs.running.contains { $0.kind == .generateRequest && $0.projectID == store.activeProjectID }
     }
-    private var canStart: Bool {
+    var canStart: Bool {
         if needsFootageProposal {
             return !aiInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 && !store.scenes.isEmpty && !isFindingFootage && !store.isWizardRunning
@@ -122,7 +127,7 @@ struct WizardView: View {
         captionStyleID = saved.captionStyleID
     }
 
-    private func captionChoice(_ path: WritableKeyPath<WizardCaptionChoices, String?>) -> Binding<String?> {
+    func captionChoice(_ path: WritableKeyPath<WizardCaptionChoices, String?>) -> Binding<String?> {
         Binding(get: {
             let choices = WizardCaptionChoices(captionPosition: captionPosition, captionStyleID: captionStyleID)
             return choices[keyPath: path]
@@ -135,32 +140,32 @@ struct WizardView: View {
         })
     }
 
-    private var copiedOptions: WizardOptions? {
+    var copiedOptions: WizardOptions? {
         AISettingsJSON.decode(WizardOptions.self, pastedSnapshot)
     }
 
-    private var effectivePacing: EditPacing {
+    var effectivePacing: EditPacing {
         WizardDefaults.resolvedPacing(run: runPacing, copied: copiedOptions, profile: store.activeProfile.defaultPacing)
     }
 
-    private var effectiveRenderSettings: RenderSettings {
+    var effectiveRenderSettings: RenderSettings {
         WizardDefaults.resolvedRenderSettings(run: runRenderSettings, copied: copiedOptions,
                                              profile: store.activeProfile.defaultRenderSettings)
     }
 
-    private var pacingBinding: Binding<EditPacing> {
+    var pacingBinding: Binding<EditPacing> {
         Binding(get: { effectivePacing }, set: { runPacing = $0 })
     }
 
-    private var renderSettingsBinding: Binding<RenderSettings> {
+    var renderSettingsBinding: Binding<RenderSettings> {
         Binding(get: { effectiveRenderSettings }, set: { runRenderSettings = $0 })
     }
 
-    private func settingOrigin(edited: Bool, copied: Bool) -> String {
+    func settingOrigin(edited: Bool, copied: Bool) -> String {
         edited ? "This run" : copied ? "Copied override" : "Profile default"
     }
 
-    private var fightResearchBinding: Binding<Bool> {
+    var fightResearchBinding: Binding<Bool> {
         Binding(
             get: {
                 AISettingsJSON.decode(WizardOptions.self, pastedSnapshot)?.useFightResearch ?? useFightResearch
@@ -172,40 +177,40 @@ struct WizardView: View {
         )
     }
 
-    private var durationMode: WizardDurationMode {
+    var durationMode: WizardDurationMode {
         WizardDurationMode(rawValue: durationModeRaw) ?? .automatic
     }
 
-    private var durationModeBinding: Binding<WizardDurationMode> {
+    var durationModeBinding: Binding<WizardDurationMode> {
         Binding(
             get: { durationMode },
             set: { durationModeRaw = $0.rawValue }
         )
     }
 
-    private var audioMode: WizardAudioMode {
+    var audioMode: WizardAudioMode {
         WizardAudioMode(rawValue: audioModeRaw) ?? .mix
     }
 
-    private var audioModeBinding: Binding<WizardAudioMode> {
+    var audioModeBinding: Binding<WizardAudioMode> {
         Binding(
             get: { audioMode },
             set: { audioModeRaw = $0.rawValue }
         )
     }
 
-    private var textMode: WizardTextMode {
+    var textMode: WizardTextMode {
         WizardTextMode(rawValue: textModeRaw) ?? .automatic
     }
 
-    private var textModeBinding: Binding<WizardTextMode> {
+    var textModeBinding: Binding<WizardTextMode> {
         Binding(
             get: { textMode },
             set: { textModeRaw = $0.rawValue }
         )
     }
 
-    private var layoutMode: WizardLayoutMode {
+    var layoutMode: WizardLayoutMode {
         WizardLayoutMode(rawValue: layoutModeRaw) ?? .automatic
     }
 
@@ -214,7 +219,7 @@ struct WizardView: View {
         Set(selectedLayoutsRaw.split(separator: ",").map(String.init))
     }
 
-    private var layoutChecklist: some View {
+    var layoutChecklist: some View {
         let layouts = ScreenCropStore.all().filter { !$0.areas.isEmpty }
         return VStack(alignment: .leading, spacing: 4) {
             if layouts.isEmpty {
@@ -250,7 +255,7 @@ struct WizardView: View {
         .padding(.leading, 4)
     }
 
-    private var layoutModeBinding: Binding<WizardLayoutMode> {
+    var layoutModeBinding: Binding<WizardLayoutMode> {
         Binding(
             get: { layoutMode },
             set: { layoutModeRaw = $0.rawValue }
@@ -261,7 +266,7 @@ struct WizardView: View {
         WizardBrandingOverride(rawValue: brandingOverrideRaw) ?? .savedDefault
     }
 
-    private var brandingOverrideBinding: Binding<WizardBrandingOverride> {
+    var brandingOverrideBinding: Binding<WizardBrandingOverride> {
         Binding(
             get: { brandingOverride },
             set: {
@@ -274,13 +279,13 @@ struct WizardView: View {
         )
     }
 
-    private var resolvedBranding: WizardBrandingMode {
+    var resolvedBranding: WizardBrandingMode {
         brandingOverride.resolved()
     }
 
     /// The saved batch selection is a global preference; only batches that
     /// belong to the current project count (Home: every batch).
-    private var selectedRunIDs: Set<Int64> {
+    var selectedRunIDs: Set<Int64> {
         let saved = Set(selectedRunIDsRaw.split(separator: ",").compactMap { Int64($0) })
         return saved.intersection(Set(store.analysisRuns.map(\.id)))
     }
@@ -308,14 +313,14 @@ struct WizardView: View {
     /// People who appear in this project's scenes. Identities are
     /// profile-wide, but a project can only plan around people it has
     /// footage of.
-    private var projectPeople: [PersonRecord] {
+    var projectPeople: [PersonRecord] {
         let tags = Set(store.sceneIndex.personTagsByVideo.values.flatMap { $0 })
         return store.people.filter { tags.contains($0.tag) }
     }
 
     /// The saved people filter is a global preference; names without
     /// footage in this project are ignored rather than filtering to nothing.
-    private var selectedSourcePeople: Set<String> {
+    var selectedSourcePeople: Set<String> {
         let saved = Set(sourcePeopleRaw.split(separator: ",").map(String.init))
         return saved.intersection(Set(projectPeople.map(\.key)))
     }
@@ -343,11 +348,11 @@ struct WizardView: View {
         }
     }
 
-    private var podcastHighlightVideos: [VideoRecord] {
+    var podcastHighlightVideos: [VideoRecord] {
         WizardFormPlan.podcastHighlightVideos(videos: store.videos, scenes: store.scenes)
     }
 
-    private var readiness: [WizardFormPlan.Readiness] {
+    var readiness: [WizardFormPlan.Readiness] {
         formPlan.readiness(pool: capabilities.sources == .podcastRecording ? store.scenes : sourcePool,
                            videos: store.videos, transcripts: transcriptVideoIDs,
                            selectedVideoPath: highlightVideoPath, limitToSelection: limitToSelection,
@@ -360,11 +365,11 @@ struct WizardView: View {
         !store.isWizardRunning && !readiness.contains(where: \.isBlocking)
     }
 
-    private var workflow: ReelRecipe.Workflow {
+    var workflow: ReelRecipe.Workflow {
         recipe.workflow == .highlights ? .highlights : (ReelRecipe.Workflow(rawValue: outcomeRaw) == .iterate ? .iterate : .oneReel)
     }
 
-    private var workflowBinding: Binding<ReelRecipe.Workflow> {
+    var workflowBinding: Binding<ReelRecipe.Workflow> {
         Binding(get: { workflow }, set: { workflow in
             outcomeRaw = workflow.rawValue
             critiqueLoop = workflow == .iterate
@@ -388,14 +393,8 @@ struct WizardView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if store.pendingWizardPrompt?.statusMessage != nil || store.pendingWizardPrompt?.parseFailed == true {
-                generateRequestBanner
-            }
-            configurationForm
-        }
-            .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        configurationForm
+        .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             loadCaptionChoices()
             enteredWithHandoff = store.pendingWizardPrompt?.proposesFootage == false || store.pendingWizardTemplate != nil
@@ -403,6 +402,7 @@ struct WizardView: View {
                 formatPreset = WizardFormPlan.recipeForSceneHandoff(current: recipe, lastSceneRecipeID: lastSceneRecipeID).id
             }
             if capabilities.sources == .scenes { lastSceneRecipeID = recipe.id }
+            if enteredWithHandoff { confirmedSteps.insert(.start); requestedStep = .sources }
             sourcesFocused = !fromIdea
             highlightMaxSeconds = store.editingDefaults.podcast.highlightMaxSeconds
             if highlightVideoPath.isEmpty { highlightVideoPath = podcastHighlightVideos.first?.path ?? "" }
@@ -413,6 +413,14 @@ struct WizardView: View {
             if old?.pacing != new?.pacing { runPacing = nil }
             if old?.renderSettings != new?.renderSettings { runRenderSettings = nil }
             loadCaptionChoices()
+            if old?.sourcesRestricted != new?.sourcesRestricted
+                || old?.sourceSceneSelection != new?.sourceSceneSelection
+                || old?.sourceSceneIDs != new?.sourceSceneIDs
+                || old?.sourceVideoPaths != new?.sourceVideoPaths
+                || old?.selectedRunIDs != new?.selectedRunIDs
+                || old?.sourcePeople != new?.sourcePeople {
+                invalidateSourceConfirmation()
+            }
         }
         .onChange(of: store.activeProfile.id) { _, _ in
             loadCaptionChoices()
@@ -420,8 +428,10 @@ struct WizardView: View {
             runRenderSettings = nil
             proposedSceneIDs = nil
             reviewingIdea = false
+            resetStepProgress()
         }
         .onChange(of: store.activeProjectID) { _, _ in
+            resetStepProgress()
             proposedSceneIDs = nil
             reviewingIdea = false
             enteredWithHandoff = store.pendingWizardPrompt?.proposesFootage == false || store.pendingWizardTemplate != nil
@@ -430,6 +440,8 @@ struct WizardView: View {
         .onChange(of: store.pendingWizardTemplate) { _, handoff in
             if handoff != nil {
                 enteredWithHandoff = true
+                confirmedSteps.insert(.start)
+                requestedStep = .sources
                 formatPreset = WizardFormPlan.recipeForSceneHandoff(current: recipe, lastSceneRecipeID: lastSceneRecipeID).id
                 sourcesFocused = true
             }
@@ -440,12 +452,45 @@ struct WizardView: View {
             }
         }
         .onChange(of: entryMode) { _, _ in
+            invalidateSourceConfirmation()
+            requestedStep = .start
             reviewingIdea = false
             if store.pendingWizardPrompt?.proposesFootage == true {
                 store.cancelGenerateRequest()
                 proposedSceneIDs = nil
             }
         }
+        .onChange(of: formatPreset) { oldValue, newValue in
+            invalidateSourceConfirmation()
+            if let previous = ReelRecipe.recipe(id: oldValue), previous.capabilities.sources == .scenes {
+                lastSceneRecipeID = previous.id
+            }
+            if (ReelRecipe.recipe(id: newValue) ?? .custom).capabilities.sources == .podcastRecording {
+                outcomeRaw = ReelRecipe.Workflow.highlights.rawValue
+                critiqueLoop = false
+                highlightMaxSeconds = store.editingDefaults.podcast.highlightMaxSeconds
+                highlightVideoPath = podcastHighlightVideos.first?.path ?? ""
+            } else {
+                if outcomeRaw == ReelRecipe.Workflow.highlights.rawValue {
+                    outcomeRaw = ReelRecipe.Workflow.oneReel.rawValue
+                    critiqueLoop = false
+                }
+                lastSceneRecipeID = newValue
+            }
+        }
+        .onChange(of: customDuration) { _, value in
+            let clamped = min(180, max(3, value))
+            if clamped != value { customDuration = clamped }
+        }
+        .onChange(of: limitTransitions) { _, limited in
+            updateCopiedOption("allowedTransitions", limited
+                ? .array(transitionsRaw.split(separator: ",").map { .string(String($0)) }) : .null)
+        }
+        .onChange(of: includeIntroBumper) { _, enabled in updateCopiedOption("includeIntroBumper", .bool(enabled)) }
+        .onChange(of: includeOutroBumper) { _, enabled in updateCopiedOption("includeOutroBumper", .bool(enabled)) }
+        .onChange(of: includeMiddleBumper) { _, enabled in updateCopiedOption("includeMiddleBumper", .bool(enabled)) }
+        .onChange(of: musicFolderRaw) { refreshMusicCount() }
+        .onChange(of: sourceConfirmationKey) { _, _ in invalidateSourceConfirmation() }
         .onChange(of: podcastHighlightVideos.compactMap(\.path)) {
             if !podcastHighlightVideos.contains(where: { $0.path == highlightVideoPath }) {
                 highlightVideoPath = podcastHighlightVideos.first?.path ?? ""
@@ -507,6 +552,7 @@ struct WizardView: View {
         .onChange(of: store.pendingWizardPrompt) { _, handoff in
             if let handoff {
                 applyPromptHandoff(handoff)
+                if handoff.statusMessage != nil || handoff.parseFailed { requestedStep = .start }
             }
         }
         .onDisappear {
@@ -514,7 +560,7 @@ struct WizardView: View {
         }
     }
 
-    private var reviewWorkflow: WizardWorkflow {
+    var reviewWorkflow: WizardWorkflow {
         WizardWorkflow(rawValue: reviewWorkflowRaw) ?? .automatic
     }
 
@@ -524,16 +570,16 @@ struct WizardView: View {
         store.currentWizardSelection.flatMap { ReelRecipe.recipe(id: $0.selection.recipe) } ?? recipe
     }
 
-    private var lookFormPlan: WizardFormPlan { WizardFormPlan(recipe: lookRecipe) }
-    private var lookCapabilities: ReelRecipe.Capabilities { lookFormPlan.capabilities }
+    var lookFormPlan: WizardFormPlan { WizardFormPlan(recipe: lookRecipe) }
+    var lookCapabilities: ReelRecipe.Capabilities { lookFormPlan.capabilities }
 
-    private var lookTranscriptsAvailable: Bool {
+    var lookTranscriptsAvailable: Bool {
         guard let take = store.currentWizardSelection?.bestTake else { return transcriptsAvailable }
         let videoIDs = Set((take.plan.footage ?? []).compactMap(\.videoID))
         return !transcriptVideoIDs.isDisjoint(with: videoIDs)
     }
 
-    private func presentationOptions(for selection: WizardSelectionSummary? = nil) -> WizardOptions {
+    func presentationOptions(for selection: WizardSelectionSummary? = nil) -> WizardOptions {
         let selectedRecipe = selection.flatMap { ReelRecipe.recipe(id: $0.selection.recipe) } ?? lookRecipe
         let videoIDs = Set((selection?.bestTake?.plan.footage ?? []).compactMap(\.videoID))
         let available = selection == nil ? lookTranscriptsAvailable : !transcriptVideoIDs.isDisjoint(with: videoIDs)
@@ -552,491 +598,11 @@ struct WizardView: View {
         return options.neutralized(for: selectedRecipe)
     }
 
-    private var step2Collapsed: Bool {
-        WizardFormPlan.step2Collapsed(hasSelection: store.currentWizardSelection != nil, workflow: reviewWorkflow)
-    }
-
-    private var configurationForm: some View {
-        Form {
-            if !enteredWithHandoff {
-                Picker("Start with", selection: $entryMode) {
-                    Text("From footage").tag("footage")
-                    Text("From an idea").tag("idea")
-                }
-                .pickerStyle(.segmented)
-            }
-            Picker("Workflow", selection: $reviewWorkflowRaw) {
-                ForEach(WizardWorkflow.allCases, id: \.self) { Text($0.title).tag($0.rawValue) }
-            }
-            .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-            if !pastedSnapshot.isEmpty {
-                HStack {
-                    Label("Pasted from \(pastedSourceName)", systemImage: "doc.on.clipboard")
-                    Spacer()
-                    Button("Clear") { AISettingsPreferences.clearWizardPaste(defaults: .standard) }
-                        .lineLimit(1).fixedSize()
-                }
-            }
-            Section("1 Find the moments") {
-                FormGroupHeader("Sources")
-                sourceFields
-                FormGroupHeader("Outcome")
-                outcomeFields
-                planningFields
-                selectionsRow
-                Button(needsFootageProposal ? "Find footage" : "Find the moments", systemImage: "wand.and.stars") {
-                    findMoments()
-                }
-                .lineLimit(1).fixedSize()
-                .disabled(!canStart)
-            }
-            Section("2 Make the reel") {
-                if let selection = store.currentWizardSelection, let take = selection.bestTake {
-                    Text("From \(selection.selection.name) · \(WizardSelectionRules.takeLabel(take))")
-                        .font(.callout.weight(.medium)).lineLimit(1)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if WizardSelectionRules.resolvedPlan(take.plan, scenes: store.scenes) == nil {
-                        FormCaption("Footage changed. Open the selection and ask for another take.", tone: .warning)
-                    }
-                }
-                if step2Collapsed {
-                    FormCaption(editingSummary)
-                } else {
-                    DisclosureGroup(isExpanded: $lookExpanded) {
-                        lookFields
-                    } label: {
-                        Text(editingSummary).lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                if let selection = store.currentWizardSelection, let take = selection.bestTake {
-                    Button("Render", systemImage: "film") {
-                        store.renderWizardSelection(selection.id, takeID: take.id, options: presentationOptions())
-                    }
-                    .lineLimit(1).fixedSize()
-                    .disabled(store.isWizardRunning || WizardSelectionRules.resolvedPlan(take.plan, scenes: store.scenes) == nil)
-                } else {
-                    FormCaption("Find the moments first")
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .disabled(isFindingFootage)
-        .safeAreaInset(edge: .bottom, spacing: 0) { generationBar }
-        .task(id: "\(store.profileGeneration):\(store.activeProjectID ?? 0):\(store.isWizardRunning):\(store.scenesVersion)") {
-            await store.refreshWizardSelections()
-        }
-        .onChange(of: store.wizardLookRevision) { _, _ in lookExpanded = true }
-        .confirmationDialog("Delete this selection and its takes? Rendered outputs are kept.",
-            isPresented: Binding(get: { deletingSelection != nil }, set: { if !$0 { deletingSelection = nil } })) {
-            Button("Delete selection", role: .destructive) {
-                if let selection = deletingSelection { store.deleteWizardSelection(selection.id) }
-                deletingSelection = nil
-            }
-        }
-    }
-
-    @ViewBuilder private var outcomeFields: some View {
-        Picker("Outcome", selection: workflowBinding) {
-            ForEach(ReelRecipe.Workflow.allCases) { workflow in
-                Text(workflow.title).tag(workflow)
-            }
-        }
-        .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-        .help("Choose one take, or let the content critic compare takes on small previews. Only the best take is rendered.")
-        if workflow == .iterate {
-            Stepper("Target score: \(critiqueTargetScore)", value: $critiqueTargetScore, in: 60...95, step: 5)
-                .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-            Stepper("Attempts: \(critiqueMaxVersions)", value: $critiqueMaxVersions, in: 2...5)
-                .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-            FormCaption("The critic can request a better version until it approves or the attempt limit is reached. Every version is kept in the Library.")
-        }
-        if WizardFormPlan.showsCriticBriefControls(outcome: workflow) { CriticBriefControls() }
-        Picker("Recipe", selection: $formatPreset) {
-            ForEach(Array(ReelRecipe.menuSections(workflow: workflow, preferredSources: capabilities.sources).enumerated()), id: \.offset) { index, section in
-                if index > 0 { Divider() }
-                ForEach(section) { recipe in
-                    Text(recipe.title).tag(recipe.id)
-                }
-            }
-        }
-        .onChange(of: formatPreset) { oldValue, newValue in
-            if let previous = ReelRecipe.recipe(id: oldValue), previous.capabilities.sources == .scenes {
-                lastSceneRecipeID = previous.id
-            }
-            if (ReelRecipe.recipe(id: newValue) ?? .custom).capabilities.sources == .podcastRecording {
-                outcomeRaw = ReelRecipe.Workflow.highlights.rawValue
-                critiqueLoop = false
-                highlightMaxSeconds = store.editingDefaults.podcast.highlightMaxSeconds
-                highlightVideoPath = podcastHighlightVideos.first?.path ?? ""
-            } else {
-                if outcomeRaw == ReelRecipe.Workflow.highlights.rawValue {
-                    outcomeRaw = ReelRecipe.Workflow.oneReel.rawValue
-                    critiqueLoop = false
-                }
-                lastSceneRecipeID = newValue
-            }
-        }
-        .fieldHelp(WizardFieldHelp.recipe)
-
-        if let recipe = ReelRecipe.recipe(id: formatPreset) {
-            FormCaption(recipe.summary)
-        }
-
-        if capabilities.length == .maxSecondsAndCount {
-            Picker("Maximum highlights", selection: $highlightMaxCount) {
-                Text("No limit").tag(0)
-                Text("Choose a count").tag(max(1, highlightMaxCount))
-            }
-            if highlightMaxCount > 0 {
-                Stepper("Up to \(highlightMaxCount) highlights", value: $highlightMaxCount, in: 1...Int.max)
-            }
-            Stepper(value: $highlightMaxSeconds, in: 5...120, step: 1) {
-                Text("Maximum reel length: \(highlightMaxSeconds, format: .number)s")
-            }
-            FormCaption("Every candidate is reviewed before rendering. No captions, branding or music.")
-        }
-
-        if capabilities.length == .targetDuration {
-            Picker("Length", selection: durationModeBinding) {
-                ForEach(WizardDurationMode.allCases, id: \.self) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .fieldHelp(WizardFormPlan.lengthHelp(recipe: recipe))
-            FieldCaption(WizardFormPlan.lengthHelp(recipe: recipe))
-
-            if durationMode == .custom {
-                HStack {
-                    Text("Custom length")
-                    Spacer()
-                    TextField("Seconds", value: $customDuration, format: .number)
-                        .labelsHidden()
-                        .multilineTextAlignment(.trailing)
-                        .frame(width: 58)
-                        .fieldHelp(WizardFieldHelp.customLength)
-                    Stepper("Custom length", value: $customDuration, in: 3...180)
-                        .labelsHidden()
-                        .fieldHelp(WizardFieldHelp.customLength)
-                    Text("seconds")
-                        .foregroundStyle(.secondary)
-                }
-                .onChange(of: customDuration) { _, value in
-                    let clamped = min(180, max(3, value))
-                    if clamped != value { customDuration = clamped }
-                }
-                .formDependent()
-            }
-        }
-        FormGroupHeader("Brief")
-        briefFields
-        if !pastedSnapshot.isEmpty {
-            DisclosureGroup("Copied planning details") {
-                ForEach(["pinnedOverlayText", "templateLabel"], id: \.self) { key in
-                    TextField(key == "pinnedOverlayText" ? "Exact on-screen wording" : "Reference label", text: Binding(get: {
-                        AISettingsJSON.decode([String: JSONSetting].self, pastedSnapshot)?[key]?.string ?? ""
-                    }, set: { updateCopiedOption(key, $0.isEmpty ? .null : .string($0)) }))
-                        .textFieldStyle(.roundedBorder)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder private var planningFields: some View {
-        FormGroupHeader("Planning")
-        if formPlan.step1Controls.contains(.fightResearch) {
-            Toggle("Fight research and learned rules", isOn: fightResearchBinding)
-        }
-        if capabilities.styleReference {
-            Picker("Style reference", selection: $tastePreset) {
-                Text("Profile taste").tag("")
-                Text("No style reference").tag("none")
-                if !store.activeProfile.tasteCategories.isEmpty {
-                    Divider()
-                    ForEach(store.activeProfile.tasteCategories) { category in
-                        Text(category.label).tag("cat:\(category.key)")
-                    }
-                }
-            }
-            .fieldHelp(WizardFieldHelp.styleReference)
-            FieldCaption(WizardFieldHelp.styleReference)
-        }
-
-        if capabilities.layouts {
-            Picker("Layouts", selection: layoutModeBinding) {
-                ForEach(WizardLayoutMode.allCases, id: \.self) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .fieldHelp(WizardFieldHelp.layouts)
-            if layoutMode == .selected {
-                layoutChecklist
-            } else {
-                FormCaption(layoutMode == .singleScene
-                     ? "Every clip fills the frame on its own."
-                     : "Layouts approved under Resources → Screen Crop may be used.")
-            }
-        }
-
-        DisclosureGroup("Planning AI settings") {
-            TaskModelPickers(tasks: formPlan.step1Models)
-            TextField("Model override", text: $copiedModelOverride, prompt: Text("Automatic"))
-                .textFieldStyle(.roundedBorder)
-                .fieldHelp(WizardFieldHelp.modelOverride)
-            FormCaption("Routing rows are shared defaults saved to Settings. Model override applies to planning for this run.")
-        }
-    }
-
-    @ViewBuilder private var lookFields: some View {
-        FormGroupHeader("Output")
-        RenderSettingsControls(settings: renderSettingsBinding)
-        HStack {
-            Text(settingOrigin(edited: runRenderSettings != nil, copied: copiedOptions?.renderSettings != nil))
-                .font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Button("Save as default") {
-                store.activeProfile.defaultRenderSettings = effectiveRenderSettings
-                store.saveActiveProfile()
-            }
-            .controlSize(.small).lineLimit(1).fixedSize()
-        }
-
-        if lookCapabilities.audioMusic || lookCapabilities.onScreenText || lookCapabilities.offersCameraFocus {
-            FormGroupHeader("Sound and text")
-        }
-        if lookCapabilities.audioMusic {
-            Picker("Audio", selection: audioModeBinding) {
-                ForEach(WizardAudioMode.allCases, id: \.self) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .fieldHelp(WizardFieldHelp.audio)
-            FieldCaption(WizardFieldHelp.audio)
-
-            if audioMode.useMusic, !musicFolders.isEmpty {
-                Picker("Music from", selection: $musicFolderRaw) {
-                    Text("Whole library").tag("")
-                    Divider()
-                    ForEach(musicFolders, id: \.self) { folder in
-                        Text(folder).tag(folder)
-                    }
-                }
-                .fieldHelp(WizardFieldHelp.musicFolder)
-                .onChange(of: musicFolderRaw) { refreshMusicCount() }
-                .formDependent()
-            }
-
-            if audioMode.useMusic {
-                Picker("Track", selection: $musicTrackRaw) {
-                    Text("Automatic").tag("")
-                    ForEach(musicTracks, id: \.self) { Text($0).tag($0) }
-                }
-                FormCaption("Automatic picks a track long enough for this take from the chosen folder.")
-            }
-            if audioMode.useMusic && musicCount == 0 {
-                HStack {
-                    Label(musicFolderRaw.isEmpty
-                          ? "No music has been added yet"
-                          : "The “\(musicFolderRaw)” folder has no music — the whole library will be used",
-                          systemImage: "music.note.list")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                    Spacer()
-                    Button("Open Music") {
-                        store.requestedSection = .music
-                    }
-                    .controlSize(.small)
-                }
-            }
-        }
-
-        if lookCapabilities.onScreenText {
-            Picker("On-screen text", selection: textModeBinding) {
-                ForEach(WizardTextMode.allCases, id: \.self) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .fieldHelp(WizardFieldHelp.onScreenText)
-            FieldCaption(WizardFieldHelp.onScreenText)
-
-            if (textMode == .captions || textMode == .both), !lookTranscriptsAvailable {
-                FormCaption("No transcript is available in these sources, so captions will be skipped.", tone: .warning)
-            }
-
-            if textMode == .captions || textMode == .both {
-                CaptionPositionPicker(selection: captionChoice(\.captionPosition))
-                    .formDependent()
-                FormCaption("Auto keeps clear of the platform buttons; the other choices use the edge of the frame.")
-                    .formDependent()
-                CaptionStylePicker(selection: captionChoice(\.captionStyleID), profile: store.activeProfile)
-                    .formDependent()
-                Picker("Caption language", selection: $captionLanguage) {
-                    Text("Original audio language").tag("")
-                    ForEach(store.activeProfile.captionLanguages, id: \.self) { language in
-                        Text(Locale.current.localizedString(forIdentifier: language) ?? language)
-                            .tag(language)
-                    }
-                }
-                .fieldHelp(WizardFieldHelp.captionLanguage)
-                .formDependent()
-                FieldCaption(WizardFieldHelp.captionLanguage)
-                    .formDependent()
-            }
-        }
-
-        if lookFormPlan.step2Controls.contains(.nameTags) {
-            MiniRow("Name tags") { Toggle("Name tags", isOn: $nameTags) }
-            if nameTags {
-                NameTagControls(style: $nameTagStyleID, position: $nameTagPosition, profile: store.activeProfile)
-                    .formDependent()
-            }
-        }
-        if lookFormPlan.step2Controls.contains(.overlayStyle) { overlayControls }
-        FormGroupHeader("Pacing and transitions")
-        EditPacingControls(pacing: pacingBinding)
-        HStack {
-            Text(settingOrigin(edited: runPacing != nil, copied: copiedOptions?.pacing != nil))
-                .font(.caption).foregroundStyle(.secondary)
-            Spacer()
-            Button("Save as default") {
-                store.activeProfile.defaultPacing = effectivePacing
-                store.saveActiveProfile()
-            }
-            .controlSize(.small).lineLimit(1).fixedSize()
-        }
-
-        transitionControls
-        if lookFormPlan.step2Controls.contains(.cameraFocus) {
-            FormGroupHeader("Camera focus")
-            WizardCameraFocusPicker(selection: cameraFocusBinding, allowsOriginal: lookCapabilities.offersOriginalFraming)
-        }
-        if lookFormPlan.step2Controls.contains(.framingCamera) {
-            Picker("Framing camera", selection: $framingCameraRaw) {
-                Text("Smooth").tag("smooth")
-                Text("Balanced").tag("balanced")
-                Text("Fast").tag("fast")
-            }
-        }
-        if lookFormPlan.step2Controls.contains(.bRoll) {
-            FormGroupHeader("B-roll")
-            WizardPodcastControls(plan: lookFormPlan, useBRoll: $useBRoll, instructions: $brollInstructions)
-        }
-        if lookCapabilities.bumpers {
-            FormGroupHeader("Bumpers")
-            bumperToggle("Include an intro", placement: .intro, value: $includeIntroBumper)
-            bumperToggle("Include an outro", placement: .outro, value: $includeOutroBumper)
-            bumperToggle("Include one at random in the middle", placement: .anywhere, value: $includeMiddleBumper)
-        }
-
-        if lookCapabilities.branding {
-            FormGroupHeader("Branding")
-            Picker("Brand elements", selection: brandingOverrideBinding) {
-                ForEach(WizardBrandingOverride.allCases, id: \.self) { option in
-                    Text(option.title).tag(option)
-                }
-            }
-            .fieldHelp(WizardFieldHelp.branding)
-            FieldCaption(WizardFieldHelp.branding)
-            if store.activeProfile.logoPath.isEmpty,
-               resolvedBranding.includeWatermark || resolvedBranding.includeOutro {
-                FormCaption("No brand logo is set. Add one in Settings → Profile to use the watermark or outro.", tone: .warning)
-            }
-        }
-
-        if !lookFormPlan.step2Models(useBRoll: useBRoll, instructions: brollInstructions).isEmpty {
-            DisclosureGroup(lookFormPlan.capabilities.podcastFraming
-                ? "Caption, B-roll and camera focus AI settings" : "Caption and B-roll AI settings") {
-                TaskModelPickers(tasks: lookFormPlan.step2Models(useBRoll: useBRoll, instructions: brollInstructions))
-            }
-        }
-    }
-
-    private var overlayControls: some View {
-        Group {
-            Picker("Overlay template", selection: $overlayTemplateRaw) {
-                Text("Preset style").tag("")
-                ForEach(overlayTemplates, id: \.self) { Text($0).tag($0) }
-            }
-            if overlayTemplateRaw.isEmpty {
-                Picker("Overlay style", selection: $overlayStyleRaw) {
-                    Text("Automatic").tag("")
-                    ForEach(WizardTextStyle.allCases, id: \.rawValue) { Text($0.rawValue.capitalized).tag($0.rawValue) }
-                }
-            }
-            Picker("Animation", selection: $overlayAnimationRaw) {
-                Text("Automatic").tag("")
-                ForEach(WizardTextStyle.animations, id: \.self) { Text($0.replacingOccurrences(of: "_", with: " ").capitalized).tag($0) }
-            }
-            Picker("Placement", selection: $overlayPlacementRaw) {
-                Text("Automatic").tag("")
-                ForEach(WizardTextStyle.placements, id: \.self) { Text($0.capitalized).tag($0) }
-            }
-        }
-    }
-
-    private var transitionControls: some View {
-        DisclosureGroup("Allowed transitions") {
-            Toggle("Use all approved transitions", isOn: Binding(get: { !limitTransitions }, set: { limitTransitions = !$0 }))
-            if limitTransitions {
-                ForEach(RenderEngine.allTransitions.filter { $0 != "cut" }, id: \.self) { name in
-                    Toggle(name.replacingOccurrences(of: "_", with: " ").capitalized, isOn: Binding(get: {
-                        transitionsRaw.split(separator: ",").map(String.init).contains(name)
-                    }, set: { enabled in
-                        var names = Set(transitionsRaw.split(separator: ",").map(String.init))
-                        if enabled { names.insert(name) } else { names.remove(name) }
-                        transitionsRaw = names.sorted().joined(separator: ",")
-                        updateCopiedOption("allowedTransitions", .array(names.sorted().map(JSONSetting.string)))
-                    }))
-                }
-            }
-            FormCaption("Hard cuts form the backbone. Allowed effects add an accent every third boundary; no effects means cuts only.")
-        }
-        .onChange(of: limitTransitions) { _, limited in
-            updateCopiedOption("allowedTransitions", limited
-                ? .array(transitionsRaw.split(separator: ",").map { .string(String($0)) }) : .null)
-        }
-    }
-
-    private var projectSelections: [WizardSelectionSummary] {
+    var projectSelections: [WizardSelectionSummary] {
         store.wizardSelections.filter { $0.selection.projectID == store.activeProjectID }
     }
 
-    private var selectionsRow: some View {
-        Group {
-            FormGroupHeader("Selections")
-            if projectSelections.isEmpty {
-                FormCaption("Find the moments to save a selection you can return to and render in different styles.")
-            } else {
-                ForEach(projectSelections) { summary in
-                    HStack(spacing: Theme.spaceS) {
-                        Button(summary.selection.name) {
-                            store.openWizardSelection(summary.id, options: presentationOptions(for: summary))
-                        }
-                        .buttonStyle(.link)
-                        .lineLimit(1).truncationMode(.tail)
-                        .fixedSize(horizontal: false, vertical: true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(summary.takes.count) \(summary.takes.count == 1 ? "take" : "takes")")
-                            Text(summary.selection.editedAt ?? "")
-                        }
-                        .font(.caption).foregroundStyle(.secondary)
-                        .lineLimit(1).fixedSize()
-                        Spacer(minLength: 0)
-                        Button("Render") {
-                            store.activeWizardSelectionID = summary.id
-                            lookExpanded = true
-                        }
-                        .lineLimit(1).fixedSize()
-                        .help("Use this selection's best take in Make the reel")
-                        Button("Delete selection", systemImage: "trash") { deletingSelection = summary }
-                            .labelStyle(.iconOnly).help("Delete selection")
-                    }
-                    .disabled(store.isWizardRunning)
-                }
-            }
-        }
-    }
-
-    private var editingSummary: String {
+    var editingSummary: String {
         let text = textMode.output(transcriptsAvailable: lookTranscriptsAvailable, recipe: lookRecipe.id)
         let effectiveAudio = libraryMusicCount == 0 && audioMode.useMusic ? WizardAudioMode.original : audioMode
         return lookFormPlan.editingSummary(audio: effectiveAudio, captions: text.captions, headlines: text.headlines,
@@ -1044,68 +610,8 @@ struct WizardView: View {
             useBRoll: useBRoll)
     }
 
-    private var sourceFields: some View {
-        Group {
-            if reviewingIdea {
-                Text("Review the matched footage, then confirm below to continue.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            if let proposedSceneIDs, capabilities.sources == .scenes {
-                restrictionChip("Idea match: \(proposedSceneIDs.count) scenes") { self.proposedSceneIDs = nil }
-            }
-            if capabilities.sources == .podcastRecording {
-                // One recording at a time: clicking another swaps, clicking
-                // the selected one clears.
-                WizardSourceGrid(videos: podcastHighlightVideos,
-                                 selectedPaths: highlightVideoPath.isEmpty ? [] : [highlightVideoPath],
-                                 isExpanded: $sourceGridExpanded,
-                                 subtitle: { recordingSubtitle($0) }) { video in
-                    highlightVideoPath = highlightVideoPath == video.path ? "" : (video.path ?? "")
-                }
-            } else {
-                HStack {
-                    Text("\(sourcePool.count) usable scenes · \(Set(sourcePool.map(\.videoID)).count) videos")
-                    Spacer()
-                    Button("Edit") { showSourcePicker = true }
-                        .lineLimit(1).fixedSize()
-                        .focused($sourcesFocused)
-                }
-                // Every analyzed video contributes until one is clicked off;
-                // the grid then narrows the run to the videos still selected.
-                WizardSourceGrid(videos: analyzedVideos,
-                                 selectedPaths: Set(analyzedVideos.filter(videoContributes).compactMap(\.path)),
-                                 isExpanded: $sourceGridExpanded,
-                                 subtitle: { analyzedSubtitle($0) }) { video in
-                    toggleVideo(video)
-                }
-                Text(sourceSummary).font(.caption).foregroundStyle(.secondary)
-                if favoritesOnly {
-                    restrictionChip("Favorites only") { favoritesOnly = false }
-                }
-                if limitToSelection {
-                    restrictionChip("Selected Analyze batches: \(selectedRunIDs.count)") { limitToSelection = false }
-                }
-                WizardSourceEvidence(scenes: Array(sourcePool.prefix(6)),
-                    people: projectPeople.filter { selectedSourcePeople.contains($0.key) })
-                copiedSourceRestrictions
-                Text(framingStatus).font(.caption).foregroundStyle(.secondary)
-            }
-            ForEach(Array(readiness.enumerated()), id: \.offset) { _, item in
-                if case let .warning(message, action) = item {
-                    HStack {
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .font(.caption).foregroundStyle(.orange)
-                        Spacer()
-                        Button(action.rawValue) { recover(action) }
-                            .controlSize(.small).lineLimit(1).fixedSize()
-                    }
-                }
-            }
-        }
-    }
-
     /// Videos with at least one Analyze batch, in library order.
-    private var analyzedVideos: [VideoRecord] {
+    var analyzedVideos: [VideoRecord] {
         let ids = Set(store.analysisRuns.map(\.videoID))
         return store.videos.filter { ids.contains($0.id) }
     }
@@ -1116,12 +622,12 @@ struct WizardView: View {
 
     /// Whether this video's scenes are in the pool: everything contributes
     /// until the run is limited to chosen batches.
-    private func videoContributes(_ video: VideoRecord) -> Bool {
+    func videoContributes(_ video: VideoRecord) -> Bool {
         WizardFormPlan.videoContributes(runIDs: runs(of: video).map(\.id),
                                         limitToSelection: limitToSelection, selectedRunIDs: selectedRunIDs)
     }
 
-    private func toggleVideo(_ video: VideoRecord) {
+    func toggleVideo(_ video: VideoRecord) {
         let change = WizardFormPlan.togglingVideo(
             runIDs: runs(of: video).map(\.id),
             newestRunID: runs(of: video).max { ($0.createdAt ?? "") < ($1.createdAt ?? "") }?.id,
@@ -1133,20 +639,20 @@ struct WizardView: View {
         setSelectedRunIDs(change.selectedRunIDs)
     }
 
-    private func recordingSubtitle(_ video: VideoRecord) -> String {
+    func recordingSubtitle(_ video: VideoRecord) -> String {
         let exchanges = store.scenes.count {
             $0.videoID == video.id && !$0.excluded && !$0.ignored && $0.tags.contains("podcast-exchange")
         }
         return "\(video.duration.timecode) · \(transcriptVideoIDs.contains(video.id) ? "transcript" : "no transcript") · \(exchanges) exchange\(exchanges == 1 ? "" : "s")"
     }
 
-    private func analyzedSubtitle(_ video: VideoRecord) -> String {
+    func analyzedSubtitle(_ video: VideoRecord) -> String {
         let scenes = sourcePool.count { $0.videoID == video.id }
         let batches = runs(of: video).count
         return "\(video.duration.timecode) · \(scenes) scene\(scenes == 1 ? "" : "s") · \(batches) batch\(batches == 1 ? "" : "es")"
     }
 
-    private func recover(_ action: WizardFormPlan.RecoveryAction) {
+    func recover(_ action: WizardFormPlan.RecoveryAction) {
         switch action {
         case .sources:
             sourceGridExpanded = true
@@ -1160,17 +666,7 @@ struct WizardView: View {
         }
     }
 
-    @ViewBuilder private var briefFields: some View {
-        TextField(recipe.briefPrompt, text: $aiInstructions, axis: .vertical)
-            .lineLimit(3...6)
-            .textFieldStyle(.roundedBorder)
-            .fieldHelp(WizardFieldHelp.instructions(for: recipe))
-        if capabilities.referenceTemplate, let handoff = store.pendingWizardTemplate {
-            referenceTemplateChip(handoff)
-        }
-    }
-
-    private var cameraFocusBinding: Binding<String> {
+    var cameraFocusBinding: Binding<String> {
         Binding(get: {
             lookCapabilities.offersOriginalFraming && podcastFramingRaw == PodcastFramingMode.original.rawValue
                 ? WizardCameraFocus.original : highlightFramingRaw
@@ -1195,30 +691,25 @@ struct WizardView: View {
             + (capabilities.offersCameraFocus ? " · " + WizardCameraFocus.name(cameraFocusBinding.wrappedValue) : "")
     }
 
-    private func bumperToggle(_ title: String, placement: BumperPlacement, value: Binding<Bool>) -> some View {
+    func bumperToggle(_ title: String, placement: BumperPlacement, value: Binding<Bool>) -> some View {
         let count = store.bumpers.count { $0.placements.contains(placement) }
-        let optionKey: String = switch placement {
-        case .intro: "includeIntroBumper"
-        case .outro: "includeOutroBumper"
-        case .anywhere: "includeMiddleBumper"
-        }
         let help: FieldHelp = switch placement {
         case .intro: WizardFieldHelp.bumperIntro
         case .outro: WizardFieldHelp.bumperOutro
         case .anywhere: WizardFieldHelp.bumperMiddle
         }
         return Group {
-            Toggle(title, isOn: value).disabled(count == 0)
-                .onChange(of: value.wrappedValue) { _, enabled in
-                    updateCopiedOption(optionKey, .bool(enabled))
-                }
-                .fieldHelp(help)
+            WizardControlRow(title) {
+                Toggle(title, isOn: value).disabled(count == 0)
+            }
+            .fieldHelp(help)
             FormCaption(count == 0 ? "No bumpers allow this placement. Add one in Resources → Bumpers."
                         : "\(count) bumper\(count == 1 ? "" : "s") allow\(count == 1 ? "s" : "") this placement.")
+                .formDependent()
         }
     }
 
-    private func referenceTemplateChip(_ handoff: WizardTemplateHandoff) -> some View {
+    func referenceTemplateChip(_ handoff: WizardTemplateHandoff) -> some View {
         HStack(spacing: 10) {
             if let url = handoff.thumbnailURL {
                 CachedImage(url: url, maxPixel: 160)
@@ -1249,55 +740,86 @@ struct WizardView: View {
         }
     }
 
-    private var generationBar: some View {
-        VStack(spacing: 8) {
-            Text(needsFootageProposal ? "Find matching footage in this project, then review the selection before generating." : runSummary)
+    var generationBar: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceS) {
+            Text(generationSummary)
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 10) {
-                if isFindingFootage {
-                    Button("Stop finding footage", role: .destructive) { store.cancelGenerateRequest() }
-                        .lineLimit(1).fixedSize()
-                } else if store.isWizardRunning {
-                    Button(role: .destructive) {
-                        store.cancelWizard()
-                    } label: {
-                        Label("Stop", systemImage: "stop.fill")
-                    }
-                    .controlSize(.large)
-                } else if reviewWorkflow == .automatic || needsFootageProposal || capabilities.sources == .podcastRecording {
-                    Button {
-                        startGeneration()
-                    } label: {
-                        Label(needsFootageProposal ? "Find footage" : (capabilities.sources == .podcastRecording ? "Find highlights" : "Generate reel"), systemImage: "wand.and.stars")
-                    }
-                    .controlSize(.large)
-                    .lineLimit(1).fixedSize()
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!canStart)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.spaceM) {
+                    generationAction
+                    Spacer(minLength: Theme.spaceS)
+                    manualBuildAction
                 }
-
-                Spacer()
-
-                if capabilities.sources == .scenes {
-                    Button("Build manually…") {
-                        showManualBuild = true
-                    }
-                    .lineLimit(1).fixedSize()
-                    .disabled(!canGenerate || isFindingFootage || store.isManualBuildRendering)
-                    .help("Build this reel yourself from the same source selection, scene by scene")
+                VStack(alignment: .leading, spacing: Theme.spaceS) {
+                    generationAction
+                    manualBuildAction
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, Theme.spaceL)
+        .padding(.vertical, Theme.spaceM)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
     }
 
-    @ViewBuilder private var copiedSourceRestrictions: some View {
+    var generationSummary: String {
+        if needsFootageProposal {
+            return "Find matching footage in this project, then review the selection before generating."
+        }
+        if stepFlow.openStep == .render, store.currentWizardSelection?.bestTake != nil {
+            return stepFlow.summary(for: .render) + " · " + editingSummary
+        }
+        return runSummary
+    }
+
+    @ViewBuilder var generationAction: some View {
+        if isFindingFootage {
+            Button("Stop finding footage", role: .destructive) { store.cancelGenerateRequest() }
+                .lineLimit(1).fixedSize()
+        } else if store.isWizardRunning {
+            Button(role: .destructive) { store.cancelWizard() } label: {
+                Label("Stop", systemImage: "stop.fill")
+            }
+            .controlSize(.large).lineLimit(1).fixedSize()
+        } else if stepFlow.openStep == .render,
+                  let selection = store.currentWizardSelection, let take = selection.bestTake {
+            Button("Render", systemImage: "film") {
+                store.renderWizardSelection(selection.id, takeID: take.id, options: presentationOptions())
+            }
+            .controlSize(.large).lineLimit(1).fixedSize()
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(!stepFlow.canRenderTake)
+        } else if reviewWorkflow == .automatic || needsFootageProposal || capabilities.sources == .podcastRecording {
+            Button {
+                startGeneration()
+            } label: {
+                Label(needsFootageProposal ? "Find footage" : (capabilities.sources == .podcastRecording ? "Find highlights" : "Generate reel"), systemImage: "wand.and.stars")
+            }
+            .controlSize(.large).lineLimit(1).fixedSize()
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(!canStart)
+        } else {
+            Button("Find the moments", systemImage: "wand.and.stars", action: findMoments)
+                .controlSize(.large).lineLimit(1).fixedSize()
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(!canStart)
+        }
+    }
+
+    @ViewBuilder var manualBuildAction: some View {
+        if capabilities.sources == .scenes {
+            Button("Build manually…") { showManualBuild = true }
+                .lineLimit(1).fixedSize()
+                .disabled(!canGenerate || isFindingFootage || store.isManualBuildRendering)
+                .help("Build this reel yourself from the same source selection, scene by scene")
+        }
+    }
+
+    @ViewBuilder var copiedSourceRestrictions: some View {
         if let copied = copiedOptions, copied.sourcesRestricted {
             VStack(alignment: .leading, spacing: 6) {
                 if copied.sourceSceneSelection {
@@ -1323,7 +845,7 @@ struct WizardView: View {
         }
     }
 
-    private func restrictionChip(_ title: String, remove: @escaping () -> Void) -> some View {
+    func restrictionChip(_ title: String, remove: @escaping () -> Void) -> some View {
         HStack {
             Label(title, systemImage: "line.3.horizontal.decrease.circle")
                 .font(.caption).lineLimit(1)
@@ -1332,7 +854,7 @@ struct WizardView: View {
         }
     }
 
-    private var sourceSummary: String {
+    var sourceSummary: String {
         var summary: String
         if limitToSelection {
             summary = selectedRunIDs.isEmpty
@@ -1355,7 +877,7 @@ struct WizardView: View {
         return summary
     }
 
-    private var framingStatus: String {
+    var framingStatus: String {
         let wideScenes = sourcePool.filter(\.wide)
         guard !wideScenes.isEmpty else {
             return "No wide scenes in this source selection."
@@ -1369,7 +891,7 @@ struct WizardView: View {
 
     /// Shared source policy for both AI planning and the manual alternative.
     /// Memoized because the form reads the eligible selection in several rows.
-    private var sourcePool: [SceneRecord] {
+    var sourcePool: [SceneRecord] {
         let personTags = Set(store.people
             .filter { selectedSourcePeople.contains($0.key) }
             .map(\.tag))
@@ -1493,7 +1015,7 @@ struct WizardView: View {
         }
     }
 
-    private func startGeneration() {
+    func startGeneration() {
         if needsFootageProposal {
             guard canStart else { return }
             store.proposeFootage(for: aiInstructions)
@@ -1513,46 +1035,13 @@ struct WizardView: View {
         }
     }
 
-    private var generateRequestBanner: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label("Generate Video Request", systemImage: "wand.and.stars")
-                .font(.headline)
-            Text("“\(store.pendingWizardPrompt?.description ?? "")”")
-            if let pendingStatus = store.pendingWizardPrompt?.statusMessage {
-                let line = store.jobs.running.last(where: {
-                    $0.kind == .generateRequest && $0.projectID == store.activeProjectID
-                })?.statusLine ?? ""
-                let status = line.isEmpty ? pendingStatus : line
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(status)
-                        .foregroundStyle(.secondary)
-                }
-            } else if store.pendingWizardPrompt?.parseFailed == true {
-                Label(store.pendingWizardPrompt?.proposesFootage == true
-                      ? "Couldn't finish interpreting the idea. Review Sources and the original brief before continuing."
-                      : "Couldn't interpret the request with AI — it was added to the brief as written.",
-                      systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            HStack {
-                Spacer()
-                Button(store.pendingWizardPrompt?.statusMessage != nil ? "Stop" : "Close") {
-                    store.cancelGenerateRequest()
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quinary)
-    }
-
     private func applyPromptHandoff(_ handoff: WizardPromptHandoff) {
         if handoff.proposesFootage {
             guard handoff.statusMessage == nil else { return }
             reviewingIdea = true
+            confirmedSteps.insert(.start)
+            invalidateSourceConfirmation()
+            requestedStep = .sources
             sourcesFocused = true
             proposedSceneIDs = handoff.proposedSceneIDs ?? []
             limitToSelection = false
@@ -1566,6 +1055,9 @@ struct WizardView: View {
             return
         }
         enteredWithHandoff = true
+        confirmedSteps.insert(.start)
+        invalidateSourceConfirmation()
+        requestedStep = .sources
         proposedSceneIDs = nil
         if !handoff.runIDs.isEmpty || !handoff.videoIDs.isEmpty {
             formatPreset = WizardFormPlan.recipeForSceneHandoff(
@@ -1648,13 +1140,13 @@ struct WizardView: View {
             : "Only use footage tagged: \(tags.joined(separator: ", ")). Skip everything else."
     }
 
-    private func updateCopiedOption(_ key: String, _ value: JSONSetting) {
+    func updateCopiedOption(_ key: String, _ value: JSONSetting) {
         guard var settings = AISettingsJSON.decode([String: JSONSetting].self, pastedSnapshot) else { return }
         settings[key] = value
         pastedSnapshot = AISettingsJSON.encode(settings) ?? ""
     }
 
-    private func findMoments() {
+    func findMoments() {
         if needsFootageProposal { startGeneration(); return }
         guard canGenerate, !isFindingFootage else { return }
         let options = formOptions()

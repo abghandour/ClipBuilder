@@ -876,9 +876,10 @@ struct TranscriptSheet: View {
     }
 
     /// The scene tags under a line, each a button that plays the scene
-    /// carrying the tag.
+    /// carrying the tag. Whole chips wrap onto new rows; an HStack squeezed
+    /// every chip until its label broke letter by letter.
     private func tagLine(_ row: TranscriptRow, tags: [String]) -> some View {
-        HStack(spacing: 4) {
+        FlowLayout(spacing: 4) {
             ForEach(tags, id: \.self) { tag in
                 let scene = lineScenes[row.id]?.first { $0.tags.contains(tag) }
                 Button {
@@ -888,7 +889,7 @@ struct TranscriptSheet: View {
                                    label: "Scene tagged \(tag == "reel-highlight" ? "Reel" : tag)", rowID: nil)
                     }
                 } label: {
-                    TagChip(tag: tag)
+                    TagChip(tag: tag).lineLimit(1).fixedSize()
                 }
                 .buttonStyle(.plain)
                 .disabled(scene == nil)

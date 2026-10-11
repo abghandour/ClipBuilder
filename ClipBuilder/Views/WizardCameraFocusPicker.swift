@@ -6,13 +6,15 @@ struct WizardCameraFocusPicker: View {
     var showsSummary: Bool = true
 
     var body: some View {
-        Picker("Camera focus", selection: $selection) {
-            Text("Let AI choose the best").tag("")
-            ForEach(CropRecipe.Kind.allCases, id: \.rawValue) { kind in
-                Text(kind.name).tag(kind.rawValue)
-            }
-            if allowsOriginal {
-                Text("Original framing").tag(WizardCameraFocus.original)
+        WizardControlRow("Camera focus") {
+            Picker("Camera focus", selection: $selection) {
+                Text("Let AI choose the best").tag("")
+                ForEach(CropRecipe.Kind.allCases, id: \.rawValue) { kind in
+                    Text(kind.name).tag(kind.rawValue)
+                }
+                if allowsOriginal {
+                    Text("Original framing").tag(WizardCameraFocus.original)
+                }
             }
         }
         .lineLimit(1).fixedSize(horizontal: false, vertical: true)

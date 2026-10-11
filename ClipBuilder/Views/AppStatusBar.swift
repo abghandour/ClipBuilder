@@ -102,11 +102,6 @@ struct AppStatusBar: View {
                     .lineLimit(1).fixedSize()
             }
             .help("Open Team settings")
-            if store.teamSync.attached && !store.teamSync.paused {
-                Button("Sync Now") { store.teamSync.syncNow() }
-                    .lineLimit(1).fixedSize()
-                    .disabled(store.teamSync.syncing || store.teamSync.replacingProfile)
-            }
             Picker("App Log section", selection: $channelFilter) {
                 Text("All sections").tag("")
                 ForEach(AppLogChannels.available(in: store.unifiedLog, selection: channelFilter), id: \.self) { channel in

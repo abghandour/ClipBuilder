@@ -11,6 +11,7 @@ struct PeopleView: View {
     /// Which bucket the list shows — every category, one role, the people
     /// still waiting on a confirmed name, or the Hidden bucket.
     @State private var bucketFilter: PeopleBucket = .all
+    @State private var nameQuery = ""
     @State private var tagFilter = ""            // empty = all tags
     @State private var searchText = ""
     @State private var confirmDelete: PersonRecord?
@@ -125,7 +126,13 @@ struct PeopleView: View {
         let buckets: [PeopleBucket] = bucketFilter == .all
             ? PersonCategory.allCases.map(PeopleBucket.category) + [.uncategorized, .unknown, .hidden]
             : [bucketFilter]
-        return buckets.map { ($0, people(in: $0)) }.filter { !$0.people.isEmpty }
+        return buckets.map { bucket in
+            (bucket: bucket, people: PersonNameMatcher.rank(people(in: bucket), query: nameQuery))
+        }.filter { !$0.people.isEmpty }
+    }
+
+    private var hasNameQuery: Bool {
+        !nameQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Detail only follows an explicit list selection. Falling back to the
@@ -333,6 +340,26 @@ struct PeopleView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .help("Show one role, the people whose name still needs confirming, or the Hidden bucket")
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                TextField("Find by name", text: $nameQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1)
+                if !nameQuery.isEmpty {
+                    Button("Clear name search", systemImage: "xmark.circle.fill") {
+                        nameQuery = ""
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .help("Find people by name — close spellings count, e.g. 'carlso' finds Carlos")
             Divider()
             List(selection: $selectedPersonIDs) {
                 // Roles first, then the people still waiting on a confirmed
@@ -352,10 +379,17 @@ struct PeopleView: View {
             .listStyle(.inset)
             .overlay {
                 if listSections.isEmpty {
-                    ContentUnavailableView(
-                        "No \(bucketFilter.label.lowercased())",
-                        systemImage: bucketFilter.systemImage,
-                        description: Text(emptyBucketHint))
+                    if hasNameQuery {
+                        ContentUnavailableView(
+                            "No one named “\(nameQuery)”",
+                            systemImage: "person.fill.questionmark",
+                            description: Text("Try fewer letters or a different spelling."))
+                    } else {
+                        ContentUnavailableView(
+                            "No \(bucketFilter.label.lowercased())",
+                            systemImage: bucketFilter.systemImage,
+                            description: Text(emptyBucketHint))
+                    }
                 }
             }
         }

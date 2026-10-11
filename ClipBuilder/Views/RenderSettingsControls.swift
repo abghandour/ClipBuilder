@@ -6,9 +6,11 @@ struct RenderSettingsControls: View {
     @Binding var settings: RenderSettings
 
     var body: some View {
-        Picker("Canvas", selection: $settings.preset) {
-            ForEach(RenderPreset.allCases) { preset in
-                Text(preset.label).tag(preset)
+        WizardControlRow("Canvas") {
+            Picker("Canvas", selection: $settings.preset) {
+                ForEach(RenderPreset.allCases) { preset in
+                    Text(preset.label).tag(preset)
+                }
             }
         }
         .fieldHelp(WizardFieldHelp.canvas)
@@ -25,18 +27,24 @@ struct RenderSettingsControls: View {
                 }
             }
             .fieldHelp(WizardFieldHelp.customSize)
+            .formDependent()
         }
 
-        Toggle("Keep clear of platform buttons", isOn: $settings.platformSafeArea.enabled)
-            .fieldHelp(WizardFieldHelp.platformSafeArea)
+        WizardControlRow("Keep clear of platform buttons") {
+            Toggle("Keep clear of platform buttons", isOn: $settings.platformSafeArea.enabled)
+        }
+        .fieldHelp(WizardFieldHelp.platformSafeArea)
         if settings.platformSafeArea.enabled {
             PlatformTargetsPicker(platforms: $settings.platformSafeArea.platforms)
+                .formDependent()
         }
         FieldCaption(WizardFieldHelp.platformSafeArea)
 
-        Picker("Encode quality", selection: $settings.quality) {
-            ForEach(EncodeQuality.allCases) { quality in
-                Text(quality.label).tag(quality)
+        WizardControlRow("Encode quality") {
+            Picker("Encode quality", selection: $settings.quality) {
+                ForEach(EncodeQuality.allCases) { quality in
+                    Text(quality.label).tag(quality)
+                }
             }
         }
         .fieldHelp(WizardFieldHelp.encodeQuality)
@@ -49,7 +57,9 @@ struct RenderSettingsControls: View {
                 }
             }
             .fieldHelp(WizardFieldHelp.customCRF)
+            .formDependent()
             FormCaption("Lower CRF is higher quality and creates a larger file.")
+                .formDependent()
         }
     }
 }
@@ -60,7 +70,7 @@ struct PlatformTargetsPicker: View {
 
     var body: some View {
         LabeledContent("Platforms") {
-            HStack(spacing: Theme.spaceM) {
+            FlowLayout(spacing: Theme.spaceM) {
                 ForEach(SocialPlatform.allCases) { platform in
                     Toggle(platform.label, isOn: Binding(
                         get: { platforms.contains(platform) },
@@ -69,6 +79,7 @@ struct PlatformTargetsPicker: View {
                             else { platforms.removeAll { $0 == platform } }
                         }))
                     .toggleStyle(.checkbox)
+                    .lineLimit(1).fixedSize()
                 }
             }
         }

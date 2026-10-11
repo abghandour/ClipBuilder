@@ -102,23 +102,8 @@ struct PersonPickerPopover: View {
         }
     }
 
-    /// Prefix matches lead; both groups retain the caller's ordering.
+    /// Fuzzy name matches lead by score, preserving caller order for ties.
     nonisolated static func filtered(_ people: [PersonRecord], query: String) -> [PersonRecord] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return people }
-        let query = trimmed.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        var prefixes: [PersonRecord] = []
-        var substrings: [PersonRecord] = []
-        for person in people {
-            let names = [person.displayName, person.name, person.keyName ?? ""].map {
-                $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            }
-            if names.contains(where: { $0.hasPrefix(query) }) {
-                prefixes.append(person)
-            } else if names.contains(where: { $0.localizedCaseInsensitiveContains(query) }) {
-                substrings.append(person)
-            }
-        }
-        return prefixes + substrings
+        PersonNameMatcher.rank(people, query: query)
     }
 }

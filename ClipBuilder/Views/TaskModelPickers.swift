@@ -29,9 +29,11 @@ struct TaskModelPickers: View {
                 }
                 .help(help)
             } else {
-                ModelPicker(title: title, task: task,
-                            selection: routingBinding(for: task), availableProviders: availableProviders)
-                    .help(help)
+                WizardControlRow(title) {
+                    ModelPicker(title: title, task: task,
+                                selection: routingBinding(for: task), availableProviders: availableProviders)
+                        .help(help)
+                }
             }
         }
         .task { availableProviders = await ModelPicker.probeAvailability(ai: store.ai) }

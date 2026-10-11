@@ -4,6 +4,7 @@ import SwiftUI
 /// a thumbnail skims the video (a frame every 10 s), clicking toggles it, and
 /// the grid collapses to a one-line list of the selected names.
 struct WizardSourceGrid: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let videos: [VideoRecord]
     let selectedPaths: Set<String>
     @Binding var isExpanded: Bool
@@ -18,7 +19,8 @@ struct WizardSourceGrid: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+                if reduceMotion { isExpanded.toggle() }
+                else { withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() } }
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
@@ -32,6 +34,7 @@ struct WizardSourceGrid: View {
                          : selectedNames.count == 1 ? "1 selected" : "\(selectedNames.count) selected")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1).fixedSize()
                 }
                 .contentShape(Rectangle())
             }
