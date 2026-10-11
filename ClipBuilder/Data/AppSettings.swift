@@ -403,6 +403,7 @@ nonisolated enum AICatalog {
                      ("gemini", "gemini-3.8-flash")],
         // Person research: prefer the Claude CLI's live web tools.
         "person_research": [("claude", "claude-sonnet-5-5"),
+                            ("antigravity", "gemini-3.1-pro-high"),
                             ("gemini", "gemini-3.1-pro-preview")],
         // Fight research: turns crawled fan chatter into the reel's story —
         // strong summarization matters more than speed.
