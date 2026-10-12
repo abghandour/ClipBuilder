@@ -89,23 +89,7 @@ extension AppStore {
                 }
             }
         }
-        let type = request.videoType.flatMap(VideoType.init(rawValue:))
-        request.requestedPasses = ["scenes"]
-        if plan.detectPeople || type?.usesPodcastPass == true { request.requestedPasses.append("people") }
-        if plan.includeTranscript || type?.usesPodcastPass == true { request.requestedPasses.append("transcript") }
-        if type?.usesPodcastPass == true { request.requestedPasses.append("exchanges") }
-        if plan.includeFightScoring && type?.supportsFightFeatures == true { request.requestedPasses.append("fightScore") }
-        request.passVersions = Dictionary(uniqueKeysWithValues: request.requestedPasses.map { pass in
-            let version: Int
-            switch pass {
-            case "people": version = AnalysisPipeline.peoplePass
-            case "transcript": version = AnalysisPipeline.transcriptPass
-            case "exchanges": version = AnalysisPipeline.exchangesPass
-            case "fightScore": version = AnalysisPipeline.fightScorePass
-            default: version = request.pipeline
-            }
-            return (pass, version)
-        })
+        request.refreshPasses()
         return request.normalized
     }
 

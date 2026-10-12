@@ -19,4 +19,10 @@ extension Database {
             }
         }
     }
+
+    /// Replace a run's stored request, e.g. once the run inferred the video type.
+    func updateAnalysisRunRequest(id: Int64, request: AnalysisRequest) throws {
+        try connection.execute("UPDATE analysis_runs SET request_hash = ?, request_json = ? WHERE id = ?",
+                               [.text(request.fingerprint), .text(request.json), .integer(id)])
+    }
 }

@@ -2186,6 +2186,12 @@ actor Analyzer {
                 try? await database.setVideoType(id: video.id, type: inferredType.rawValue)
                 log("\(video.filename): video type — \(inferredType.label)")
             }
+            // The request was captured with the type unknown; the saved run
+            // names the type now on the row so a repeat with it matches.
+            if let request = AnalysisRequestContext.current, request.videoType == nil,
+               let effective = ((try? await database.video(id: video.id)) ?? nil)?.type {
+                try? await database.updateAnalysisRunRequest(id: runID, request: request.resolvingVideoType(effective))
+            }
         }
 
         if let outcome {

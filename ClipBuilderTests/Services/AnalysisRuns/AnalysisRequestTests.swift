@@ -32,6 +32,29 @@ struct AnalysisRequestTests {
         #expect(decoded == first.normalized)
     }
 
+    @Test func inferredTypeResolvesIntoTheSavedRequestAndKeepsAKnownOne() {
+        var untyped = Self.request()
+        untyped.videoType = nil
+        untyped.plan.includeFightScoring = true
+        untyped.plan.detectPeople = false
+        untyped.refreshPasses()
+        #expect(untyped.requestedPasses == ["scenes"])
+        var typed = untyped
+        typed.videoType = "fight"
+        typed.refreshPasses()
+        let resolved = untyped.resolvingVideoType(.fight)
+        #expect(resolved.fingerprint == typed.normalized.fingerprint)
+        #expect(resolved.requestedPasses.contains("fightScore"))
+        #expect(untyped.fingerprint != resolved.fingerprint)
+        #expect(typed.resolvingVideoType(.podcast) == typed)
+        var spoken = untyped
+        spoken.language = "en"
+        let podcast = spoken.resolvingVideoType(.podcast)
+        #expect(podcast.language == "")
+        #expect(podcast.pipeline == AnalysisPipeline.podcastPass)
+        #expect(Set(podcast.requestedPasses) == ["scenes", "people", "transcript", "exchanges"])
+    }
+
     @Test func everyDifferingComponentIsNamed() {
         let old = Self.request()
         let cases: [(String, (inout AnalysisRequest) -> Void)] = [

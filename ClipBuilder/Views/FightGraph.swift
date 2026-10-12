@@ -17,6 +17,8 @@ struct FightGraphView: View {
     var showsLegend = true
     /// Tap-to-seek (source seconds); nil = inert graph.
     var onSeek: ((Double) -> Void)?
+    /// Source time to mark with a vertical line (the action picked in the list).
+    var markerTime: Double? = nil
 
     private struct ActivityKey: Equatable {
         var events: [FightEventRecord]
@@ -150,6 +152,16 @@ struct FightGraphView: View {
                             divergingLine(values: model.bottom, peak: model.peak, size: size, up: false)
                                 .stroke(Self.bottomColor, lineWidth: 1.5)
                         }
+                    }
+                }
+                .overlay {
+                    if let markerTime, range.contains(markerTime) {
+                        let x = size.width * CGFloat((markerTime - range.lowerBound) / span)
+                        Path { path in
+                            path.move(to: CGPoint(x: x, y: 0))
+                            path.addLine(to: CGPoint(x: x, y: size.height))
+                        }
+                        .stroke(Color.accentColor, lineWidth: 1.5)
                     }
                 }
                 .contentShape(Rectangle())

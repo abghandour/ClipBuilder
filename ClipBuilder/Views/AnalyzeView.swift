@@ -20,6 +20,8 @@ struct AnalyzeView: View {
     @State private var selection: Set<Int64> = []
     @State private var typeFocusVideoID: Int64?
     @State private var typeFocusRequest: UUID?
+    @State private var fightStatsFocusVideoID: Int64?
+    @State private var fightStatsFocusRequest: UUID?
     @State private var isDropTargeted = false
     @State private var showGenerateSheet = false
     @State private var showNameWizard = false
@@ -115,6 +117,7 @@ struct AnalyzeView: View {
                     // constraint-loop guard (crash).
                     VideoPreviewPane(video: video,
                                      typeFocusRequest: typeFocusVideoID == video.id ? typeFocusRequest : nil,
+                                     fightStatsFocusRequest: fightStatsFocusVideoID == video.id ? fightStatsFocusRequest : nil,
                                      onResearch: { fightResearchTarget = video },
                                      onNameWizard: { showNameWizard = true },
                                      onPreviewScene: { previewScene = $0 },
@@ -527,7 +530,11 @@ struct AnalyzeView: View {
             Label("Up to date, same settings", systemImage: "checkmark.circle")
                 .lineLimit(1).fixedSize().foregroundStyle(.secondary)
         } else if video.type?.supportsFightFeatures == true {
-            FightStatsCoverageCell(video: video)
+            FightStatsCoverageCell(video: video) {
+                selection = [video.id]
+                fightStatsFocusVideoID = video.id
+                fightStatsFocusRequest = UUID()
+            }
         } else if let report, report.state != .needsAnalysis,
            let action = AnalysisCoverage.action(for: report.state) {
             HStack(spacing: 6) {
@@ -851,6 +858,45 @@ private struct VideoPreviewPane: View {
     @Environment(AppStore.self) private var store
     let video: VideoRecord
     let typeFocusRequest: UUID?
+    /// A new value scrolls the info sections to Fight Action.
+    let fightStatsFocusRequest: UUID?
+    /// Which fighter's count is expanded into its frame list.
+    private struct FightListPick: Equatable {
+        var videoID: Int64
+        var fighterKey: String
+        var category: FightScoreDigest.Category
+    }
+    @State private var fightListPick: FightListPick?
+    @State private var fightMarkerTime: Double?
+    /// The action playing on repeat: its entry id and the player's time
+    /// observer that rewinds it. Dropped with the player.
+    @State private var fightLoopEntryID: Int64?
+    @State private var fightLoopObserver: Any?
+
+    private func stopFightLoop() {
+        if let fightLoopObserver { player?.removeTimeObserver(fightLoopObserver) }
+        fightLoopObserver = nil
+        fightLoopEntryID = nil
+    }
+
+    /// Seek to the action's window and keep rewinding to its start.
+    private func loopFightAction(_ entry: FightScoreDigest.Entry) {
+        let wasLooping = fightLoopEntryID == entry.id
+        stopFightLoop()
+        fightMarkerTime = entry.time
+        guard let player, !wasLooping else { player?.pause(); return }
+        let range = entry.loopRange
+        let start = CMTime(seconds: range.lowerBound, preferredTimescale: 600)
+        player.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero)
+        player.play()
+        fightLoopEntryID = entry.id
+        fightLoopObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main
+        ) { [weak player] time in
+            guard time.seconds >= range.upperBound else { return }
+            player?.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+    }
     /// Opens the fight-research sheet — presented by the parent view, not
     /// here: a .sheet inside this split-view child crashes AppKit layout.
     let onResearch: () -> Void
@@ -871,6 +917,52 @@ private struct VideoPreviewPane: View {
     /// The registry record behind a roster entry (the popover reads the
     /// hand-picked avatar and hidden flag from it); a roster row whose
     /// person was deleted mid-session still opens on what the row knows.
+    /// "Name  3 strikes  0/2 TD  1/1 sub": each count toggles its frame list.
+    private func fightCountsRow(_ fighter: FightScoreDigest.Fighter, events: [FightEventRecord]) -> some View {
+        let name = store.people.first { $0.key == fighter.key }?.displayName
+            ?? (fighter.key.isEmpty ? "Unattributed" : fighter.key)
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(name)
+                .font(.caption2.weight(.medium))
+                .lineLimit(1)
+            HStack(spacing: 6) {
+            ForEach(FightScoreDigest.Category.allCases, id: \.self) { category in
+                let count = FightScoreDigest.count(fighter, category)
+                if count > 0 || category == .strikes {
+                    let picked = fightListPick == FightListPick(videoID: video.id, fighterKey: fighter.key, category: category)
+                    Button {
+                        stopFightLoop()
+                        fightMarkerTime = nil
+                        fightListPick = picked ? nil : FightListPick(videoID: video.id, fighterKey: fighter.key, category: category)
+                    } label: {
+                        Text(countLabel(fighter, category))
+                            .font(.caption2.monospacedDigit())
+                            .lineLimit(1)
+                            .fixedSize()
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(picked ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.12),
+                                        in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(count == 0)
+                    .help(count == 0 ? "No \(category.label.lowercased()) scored" : "Show the frames behind these \(category.label.lowercased())")
+                }
+            }
+            Spacer(minLength: 0)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func countLabel(_ fighter: FightScoreDigest.Fighter, _ category: FightScoreDigest.Category) -> String {
+        switch category {
+        case .strikes: "\(fighter.strikes) strike" + (fighter.strikes == 1 ? "" : "s")
+        case .takedowns: "\(fighter.takedowns)/\(fighter.takedownAttempts) TD"
+        case .submissions: "\(fighter.submissions)/\(fighter.submissionAttempts) sub"
+        }
+    }
+
     private func person(for entry: VideoPersonRecord) -> PersonRecord {
         store.people.first { $0.id == entry.personID }
             ?? PersonRecord(id: entry.personID, key: entry.key, name: entry.name, descriptor: entry.descriptor)
@@ -1003,6 +1095,7 @@ private struct VideoPreviewPane: View {
             // fixed-height sections here made the pane's min size oscillate
             // against the player during layout, tripping AppKit's
             // constraint-loop guard (uncaught NSGenericException crash).
+            ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 VStack(spacing: 8) {
                     // Fight action graph: per-fighter activity from the scoring
@@ -1030,10 +1123,14 @@ private struct VideoPreviewPane: View {
                                 FightGraphView(events: events,
                                                range: 0...max(1, video.duration),
                                                people: store.people,
-                                               height: 64) { time in
-                                    player?.seek(to: CMTime(seconds: time, preferredTimescale: 600),
-                                                 toleranceBefore: .zero, toleranceAfter: .zero)
-                                }
+                                               height: 64,
+                                               onSeek: { time in
+                                                   stopFightLoop()
+                                                   fightMarkerTime = nil
+                                                   player?.seek(to: CMTime(seconds: time, preferredTimescale: 600),
+                                                                toleranceBefore: .zero, toleranceAfter: .zero)
+                                               },
+                                               markerTime: fightListPick?.videoID == video.id ? fightMarkerTime : nil)
                             } else if let pass = store.analysisPasses.last(where: { $0.videoID == video.id && $0.pass == .fightScore && $0.status != .running }) {
                                 Text(pass.status == .completed
                                      ? "Scored v\(pass.version): no scoring actions found (\(pass.note ?? "no detail")). Check the Fight Scoring job log in the status bar."
@@ -1045,8 +1142,23 @@ private struct VideoPreviewPane: View {
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
                             }
+                            if let events = store.fightEvents[video.id], !events.isEmpty {
+                                // Per-fighter totals behind the graph; the grid's
+                                // stats badge lands here. Each count opens the
+                                // frames behind it.
+                                ForEach(FightScoreDigest.fighters(events: events)) { fighter in
+                                    fightCountsRow(fighter, events: events)
+                                }
+                                if let pick = fightListPick, pick.videoID == video.id {
+                                    FightActionListView(video: video, events: events, fighterKey: pick.fighterKey,
+                                                        category: pick.category, looping: fightLoopEntryID) { entry in
+                                        loopFightAction(entry)
+                                    }
+                                }
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .id("fightAction")
                     }
 
                     // The video's people roster: build it here, ahead of any run —
@@ -1118,6 +1230,11 @@ private struct VideoPreviewPane: View {
 
                 }
             }
+            .onChange(of: fightStatsFocusRequest) { _, request in
+                guard request != nil else { return }
+                withAnimation { proxy.scrollTo("fightAction", anchor: .top) }
+            }
+            }
 
             // Fight research: the same view/refresh/run controls as the
             // table's Fight Research column, pinned at the pane's bottom
@@ -1176,6 +1293,7 @@ private struct VideoPreviewPane: View {
             // Drop the old player right away so the pane follows the selection
             // instantly, then open the file off the main thread: creating the
             // player synchronously probes the file and stalled the click.
+            stopFightLoop()
             player?.pause()
             player = nil
             roster = []
@@ -1237,6 +1355,7 @@ private struct VideoPreviewPane: View {
             TranscriptSheet(video: video, focusSetsPicker: true)
         }
         .onDisappear {
+            stopFightLoop()
             player?.pause()
             player = nil
         }

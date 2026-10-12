@@ -66,6 +66,40 @@ nonisolated struct AnalysisRequest: Codable, Sendable, Equatable {
         }
     }
 
+    /// Passes and their versions follow the plan and the video type.
+    mutating func refreshPasses() {
+        let type = videoType.flatMap(VideoType.init(rawValue:))
+        pipeline = AnalysisPipeline.current(for: type)
+        requestedPasses = ["scenes"]
+        if plan.detectPeople || type?.usesPodcastPass == true { requestedPasses.append("people") }
+        if plan.includeTranscript || type?.usesPodcastPass == true { requestedPasses.append("transcript") }
+        if type?.usesPodcastPass == true { requestedPasses.append("exchanges") }
+        if plan.includeFightScoring && type?.supportsFightFeatures == true { requestedPasses.append("fightScore") }
+        passVersions = Dictionary(uniqueKeysWithValues: requestedPasses.map { pass in
+            let version: Int
+            switch pass {
+            case "people": version = AnalysisPipeline.peoplePass
+            case "transcript": version = AnalysisPipeline.transcriptPass
+            case "exchanges": version = AnalysisPipeline.exchangesPass
+            case "fightScore": version = AnalysisPipeline.fightScorePass
+            default: version = pipeline
+            }
+            return (pass, version)
+        })
+    }
+
+    /// A run captured before the type was known infers it. Saving the request
+    /// with that type lets an identical re-run, now captured with the known
+    /// type, match the run instead of analyzing again. A known type is kept.
+    func resolvingVideoType(_ type: VideoType) -> Self {
+        guard videoType == nil else { return self }
+        var value = self
+        value.videoType = type.rawValue
+        if type.usesPodcastPass { value.language = "" }
+        value.refreshPasses()
+        return value.normalized
+    }
+
     var normalized: Self {
         var value = self
         value.plan.requiredPeopleKeys = Array(Set(plan.requiredPeopleKeys)).sorted()
