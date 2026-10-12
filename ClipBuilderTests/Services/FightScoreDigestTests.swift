@@ -53,9 +53,12 @@ extension FightScoreDigestTests {
         let subs = FightScoreDigest.entries(events: events, fighter: "b", category: .submissions)
         #expect(subs.map(\.summary) == ["Submission attempt · armbar · completed"])
         #expect(subs[0].frameTimes == [20])
-        #expect(strikes[0].loopRange == 0.2...2.7)
-        #expect(takedowns[0].loopRange == 9...13.5)
-        #expect(subs[0].loopRange == 19...20.9)
+        func close(_ range: ClosedRange<Double>, _ lower: Double, _ upper: Double) -> Bool {
+            abs(range.lowerBound - lower) < 1e-9 && abs(range.upperBound - upper) < 1e-9
+        }
+        #expect(close(strikes[0].loopRange, 0.2, 2.7))
+        #expect(close(takedowns[0].loopRange, 9, 13.5))
+        #expect(close(subs[0].loopRange, 19, 20.9))
         #expect(FightScoreDigest.entries(events: events, fighter: "b", category: .takedowns).map(\.label) == ["Takedown"])
 
         for fighter in FightScoreDigest.fighters(events: events) {
