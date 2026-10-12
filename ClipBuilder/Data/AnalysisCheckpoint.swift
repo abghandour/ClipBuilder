@@ -21,6 +21,7 @@ nonisolated struct AnalysisCheckpoint: Codable, Sendable, Equatable {
     var lastError: String?
     /// The options the run started with — a resumed run keeps them.
     var plan: Plan
+    var request: AnalysisRequest?
     /// The visual pass's finished pieces (non-podcast footage).
     var visual: VisualState?
     /// The podcast pass's finished pieces.
@@ -138,6 +139,7 @@ nonisolated struct AnalysisCheckpoint: Codable, Sendable, Equatable {
         var exchanges: [PodcastExchange]?
         var exchangesProvider: String?
         var exchangesModel: String?
+        var transcriptionKey: String?
     }
 }
 

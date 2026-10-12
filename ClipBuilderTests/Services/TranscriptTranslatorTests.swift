@@ -8,7 +8,7 @@ struct TranscriptTranslatorTests {
         let segments = (0..<count).map { index in
             TranscriptSegment(start: Double(index * 2), end: Double(index * 2 + 2), text: "Original \(index)", words: nil)
         }
-        try await temp.database.replaceTranscripts(videoID: id, language: "pt", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "pt", isTranslation: false,
             segments: segments, provider: "fixture", model: nil)
         return (id, try await temp.database.fetchTranscripts(videoID: id))
     }
@@ -33,7 +33,7 @@ struct TranscriptTranslatorTests {
     @Test func retriesOnlyUnansweredRowsThenFallsBackAndPreservesStoredRows() async throws {
         let temp = try TempDatabase()
         let (id, originals) = try await seed(temp, count: 5)
-        try await temp.database.replaceTranscripts(videoID: id, language: "en", isTranslation: true,
+        try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en", isTranslation: true,
             segments: [.init(start: 0, end: 2, text: "Old answer", words: nil),
                        .init(start: 8, end: 10, text: "Stored unanswered", words: nil),
                        .init(start: 100, end: 102, text: "Outside cut", words: nil)], provider: "fixture", model: nil)
@@ -62,7 +62,7 @@ struct TranscriptTranslatorTests {
     @Test func cancellationBetweenChunksDoesNotWritePartialTrack() async throws {
         let temp = try TempDatabase()
         let (id, originals) = try await seed(temp, count: 26)
-        try await temp.database.replaceTranscripts(videoID: id, language: "en", isTranslation: true,
+        try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en", isTranslation: true,
             segments: [.init(start: 100, end: 102, text: "Keep me", words: nil)], provider: "fixture", model: nil)
         let before = try await temp.database.fetchTranscripts(videoID: id)
         let stub = CaptionTranslationStub()
@@ -141,4 +141,31 @@ struct TranscriptTranslatorTests {
         #expect(stub.calls().isEmpty && stub.logs().isEmpty)
         #expect(try await temp.database.fetchTranscripts(videoID: id) == before)
     }
+    @Test func translationKeepsCapturedSetWhenNewerOriginalArrivesDuringAwait() async throws {
+        let temp = try TempDatabase()
+        let (id, originals) = try await seed(temp, count: 2)
+        try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en",
+            isTranslation: true, segments: [.init(start: 40, end: 42, text: "Keep source translation", words: nil)],
+            provider: "fixture", model: nil)
+        let database = temp.database
+        let stub = CaptionTranslationStub()
+        _ = try await TranscriptTranslator.translateBatched(videoID: id, originals: originals, target: "en",
+            ai: stub.service(), database: database, onDevice: { rows, _ in
+                // This callback suspends the translator while another original lands.
+                try await database.replaceTranscripts(videoID: id, transcriptionKey: "newer", language: "fr",
+                    isTranslation: false, segments: [.init(start: 0, end: 4, text: "New original", words: nil)],
+                    provider: "fixture", model: nil)
+                try await database.setActiveTranscriptionKey(videoID: id, key: "newer")
+                try await database.replaceTranscripts(videoID: id, transcriptionKey: "newer", language: "en",
+                    isTranslation: true, segments: [.init(start: 80, end: 82, text: "Other set translation", words: nil)],
+                    provider: "fixture", model: nil)
+                return Dictionary(uniqueKeysWithValues: rows.map { ($0.id, "Translated \($0.text)") })
+            })
+        let source = try await database.fetchTranscripts(videoID: id, transcriptionKey: "test-transcription")
+        #expect(source.filter(\.isTranslation).map(\.text) == ["Translated Original 0", "Translated Original 1", "Keep source translation"])
+        #expect(source.allSatisfy { $0.transcriptionKey == "test-transcription" })
+        let active = try await database.fetchTranscripts(videoID: id)
+        #expect(active.map(\.text) == ["New original", "Other set translation"])
+    }
+
 }

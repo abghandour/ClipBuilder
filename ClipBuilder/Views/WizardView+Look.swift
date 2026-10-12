@@ -112,6 +112,11 @@ extension WizardView {
         if lookFormPlan.step2Controls.contains(.overlayStyle) {
             FormGroupHeader("Overlays")
             overlayControls
+            if lookHasFightSources {
+                StrikeStatsLookControls(enabled: $strikeStats, units: $strikeUnits,
+                                        speedCallouts: $strikeSpeedCallouts,
+                                        grapplingCard: $strikeGrapplingCard, roundCard: $strikeRoundCard)
+            }
         }
         FormGroupHeader("Pacing and transitions")
         EditPacingControls(pacing: pacingBinding)

@@ -78,6 +78,15 @@ struct BuilderAddMenu: View {
                 _ = store.builder.addText()
             }
 
+            Button("Grappling card", systemImage: "list.bullet.rectangle") {
+                store.addStrikeStatsCard(.grapplingCard)
+            }
+            .help("Add AI-scored takedown and submission counts for the selected fight clip")
+            Button("Round card", systemImage: "chart.bar.xaxis") {
+                store.addStrikeStatsCard(.roundCard)
+            }
+            .help("Add AI-scored strike and grappling counts in analyzed footage")
+
             Button("Image…", systemImage: "photo") {
                 showImagePicker = true
             }

@@ -344,14 +344,25 @@ extension Database {
                 JOIN project_videos pv ON pv.video_id = v.id
                 WHERE pv.project_id = ?
                 ORDER BY v.filename COLLATE NOCASE
-                """, [.integer(projectID)]).map(Self.videoRecord)
+                """, [.integer(projectID)]).map(resolvedVideoRecord)
         }
         return try connection.query("SELECT * FROM videos ORDER BY filename COLLATE NOCASE")
-            .map(Self.videoRecord)
+            .map(resolvedVideoRecord)
     }
 
     func video(id: Int64) throws -> VideoRecord? {
-        try connection.query("SELECT * FROM videos WHERE id = ?", [.integer(id)]).first.map(Self.videoRecord)
+        try connection.query("SELECT * FROM videos WHERE id = ?", [.integer(id)]).first.map(resolvedVideoRecord)
+    }
+
+    private func resolvedVideoRecord(_ row: SQLRow) throws -> VideoRecord {
+        var video = Self.videoRecord(row)
+        if row["podcast_transcription_key"]?.stringValue != (try activeTranscription(videoID: video.id).key) {
+            video.podcastLayout = nil
+            video.podcastSeamX = nil
+            video.podcastLayoutConfidence = nil
+            video.podcastTilesJSON = nil
+        }
+        return video
     }
 
     static func videoRecord(_ row: SQLRow) -> VideoRecord {
@@ -385,6 +396,8 @@ extension Database {
             podcastSeamX: row["podcast_seam_x"]?.doubleValue,
             podcastLayoutConfidence: row["podcast_layout_confidence"]?.doubleValue,
             podcastTilesJSON: row["podcast_tiles_json"]?.stringValue,
+            activeRunKey: row["active_run_key"]?.stringValue,
+            activeTranscriptionKey: row["active_transcription_key"]?.stringValue,
             driveFileID: row["drive_file_id"]?.stringValue,
             driveLink: row["drive_link"]?.stringValue,
             driveOffloaded: row["drive_offloaded"]?.boolValue ?? false,
@@ -398,23 +411,23 @@ extension Database {
                                [type.map(SQLValue.text) ?? .null, .integer(id)])
     }
 
-    func setPodcastLayout(videoID: Int64, layout: PodcastLayout,
+    func setPodcastLayout(videoID: Int64, transcriptionKey: String?, layout: PodcastLayout,
                           seamX: Double?, confidence: Double, tiles: [PodcastTile] = []) throws {
         let tilesJSON = tiles.isEmpty ? nil
             : (try? JSONEncoder().encode(tiles)).flatMap { String(data: $0, encoding: .utf8) }
         try connection.execute("""
             UPDATE videos SET podcast_layout = ?, podcast_seam_x = ?, podcast_layout_confidence = ?,
-                podcast_tiles_json = ?
+                podcast_tiles_json = ?, podcast_transcription_key = ?
             WHERE id = ?
             """, [.text(layout.rawValue), seamX.map(SQLValue.real) ?? .null,
-                  .real(confidence), tilesJSON.map(SQLValue.text) ?? .null, .integer(videoID)])
+                  .real(confidence), tilesJSON.map(SQLValue.text) ?? .null, transcriptionKey.map(SQLValue.text) ?? .null, .integer(videoID)])
     }
 
-    func replaceSpeakerTurns(videoID: Int64, turns: [SpeakerTurn]) throws {
+    func replaceSpeakerTurns(videoID: Int64, transcriptionKey: String, turns: [SpeakerTurn]) throws {
         try connection.transaction {
-            let transcript = try latestTranscription(videoID: videoID)
-            let key = transcript.key ?? UUID().uuidString.lowercased()
-            let createdAt = transcript.createdAt ?? Date().ISO8601Format()
+            let key = transcriptionKey
+            let createdAt = try connection.query("SELECT transcription_created_at FROM transcripts WHERE video_id = ? AND transcription_key = ? LIMIT 1",
+                [.integer(videoID), .text(key)]).first?["transcription_created_at"]?.stringValue ?? Date().ISO8601Format()
             try connection.execute("DELETE FROM speaker_turns WHERE video_id = ? AND transcription_key IS ?", [.integer(videoID), .text(key)])
             for turn in turns {
                 try connection.execute("""
@@ -435,16 +448,17 @@ extension Database {
     // MARK: - Voice profiles (what each file taught about a person's voice)
 
     /// Replace what this video remembers about its people's voices.
-    func replaceVoiceProfiles(videoID: Int64, profiles: [VoiceProfile]) throws {
+    func replaceVoiceProfiles(videoID: Int64, transcriptionKey: String?, profiles: [VoiceProfile]) throws {
         try connection.transaction {
+            // A re-map replaces the video's whole contribution, whichever set produced it.
             try connection.execute("DELETE FROM voice_profiles WHERE video_id = ?", [.integer(videoID)])
             for profile in profiles where profile.videoID == videoID {
                 let json = String(decoding: try JSONEncoder().encode(profile.vector), as: UTF8.self)
                 try connection.execute("""
-                    INSERT INTO voice_profiles (person_key, video_id, vector_json, windows, correction_windows)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO voice_profiles (person_key, video_id, vector_json, windows, correction_windows, transcription_key)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """, [.text(profile.personKey), .integer(videoID), .text(json),
-                          .integer(Int64(profile.windows)), .integer(Int64(profile.correctionWindows))])
+                          .integer(Int64(profile.windows)), .integer(Int64(profile.correctionWindows)), transcriptionKey.map(SQLValue.text) ?? .null])
             }
         }
     }
@@ -454,7 +468,7 @@ extension Database {
     func fetchVoiceProfiles(excludingVideoID excluded: Int64? = nil) throws -> [VoiceProfile] {
         try connection.query("""
             SELECT person_key, video_id, vector_json, windows, correction_windows
-            FROM voice_profiles WHERE video_id != ? ORDER BY person_key, video_id
+            FROM voice_profiles WHERE video_id != ? AND \(Self.activeDerivedPredicate(table: "voice_profiles")) ORDER BY person_key, video_id
             """, [.integer(excluded ?? -1)]).compactMap { row in
                 guard let key = row["person_key"]?.stringValue, let videoID = row["video_id"]?.intValue,
                       let data = row["vector_json"]?.stringValue?.data(using: .utf8),
@@ -466,8 +480,7 @@ extension Database {
     }
 
     func fetchSpeakerTurns(videoID: Int64, transcriptionKey: String? = nil) throws -> [SpeakerTurn] {
-        let transcript = try latestTranscription(videoID: videoID)
-        let key = try transcriptionKey ?? transcript.key ?? connection.query("SELECT transcription_key FROM speaker_turns WHERE video_id = ? ORDER BY transcription_created_at DESC, transcription_key DESC LIMIT 1", [.integer(videoID)]).first?["transcription_key"]?.stringValue
+        let key = try transcriptionKey ?? activeTranscription(videoID: videoID).key
         return try connection.query("""
             SELECT * FROM speaker_turns WHERE video_id = ? AND transcription_key IS ? ORDER BY start_time, id
             """, [.integer(videoID), key.map(SQLValue.text) ?? .null]).map { row in

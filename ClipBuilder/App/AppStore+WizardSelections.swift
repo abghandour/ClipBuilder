@@ -19,6 +19,10 @@ extension AppStore {
                 summaries.append(WizardSelectionSummary(selection: selection, takes: takes))
             }
             guard generation == profileGeneration, activeProjectID == projectID else { return }
+            let ids = summaries.flatMap { $0.takes }.reduce(into: Set<Int64>()) { $0.formUnion(SceneReferences.ids(in: $1.plan)) }
+            let savedScenes = try await database.fetchScenes(ids: ids)
+            guard generation == profileGeneration, activeProjectID == projectID else { return }
+            referencedScenes = SceneReferences.combining(savedScenes, referenced: referencedScenes)
             wizardSelections = summaries
             if !summaries.contains(where: { $0.id == activeWizardSelectionID }) {
                 activeWizardSelectionID = summaries.first?.id
@@ -39,7 +43,7 @@ extension AppStore {
                 guard let chosen = takes.first(where: { $0.id == (takeID ?? selection.bestTakeID) }) ?? takes.last else {
                     throw WizardSelectionError.missingTake
                 }
-                let scenes = try await database.fetchScenes(projectID: selection.projectID)
+                let scenes = try await database.scenesForSavedPlans(takes.map(\.plan), projectID: selection.projectID)
                 let transcriptIDs = try await database.videoIDsWithOriginalTranscripts()
                 let transcriptsAvailable = !transcriptIDs.isDisjoint(with: scenes.map(\.videoID))
                 let options = options ?? wizardSelectionRenderOptions(transcriptsAvailable: transcriptsAvailable)
@@ -74,7 +78,7 @@ extension AppStore {
                   let selection = try await database.wizardSelection(id: take.selectionID) else {
                 throw WizardSelectionError.missingTake
             }
-            let scenes = try await database.fetchScenes(projectID: selection.projectID)
+            let scenes = try await database.scenesForSavedPlan(plan, projectID: selection.projectID)
             guard let resolved = WizardSelectionRules.resolvedPlan(plan, scenes: scenes) else {
                 throw WizardSelectionError.footageChanged
             }
@@ -136,7 +140,7 @@ extension AppStore {
                           selection.projectID == self.activeProjectID,
                           let take = try await database.wizardSelectionTake(id: takeID),
                           take.selectionID == selectionID else { throw WizardSelectionError.missingTake }
-                    let scenes = try await database.fetchScenes(projectID: selection.projectID)
+                    let scenes = try await database.scenesForSavedPlan(take.plan, projectID: selection.projectID)
                     guard let plan = WizardSelectionRules.resolvedPlan(take.plan, scenes: scenes) else {
                         throw WizardSelectionError.footageChanged
                     }
@@ -218,7 +222,7 @@ extension AppStore {
                         options = WizardOptions.merge(step1: selection.step1Options, step2: options.step2, base: options)
                         options.workflow = workflow
                         previous = try await database.fetchWizardSelectionTakes(selectionID: selectionID)
-                        let scenes = try await database.fetchScenes(projectID: projectID)
+                        let scenes = try await database.fetchScenes(projectID: projectID, scope: .history)
                         let liveIDs = Set(scenes.map(\.id))
                         let liveRuns = Set(scenes.compactMap(\.runID))
                         let footageChanged = previous.contains { WizardSelectionRules.resolvedPlan($0.plan, scenes: scenes) == nil }

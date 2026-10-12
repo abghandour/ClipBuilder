@@ -60,8 +60,8 @@ struct ScenesView: View {
     /// The batches to filter by; nil = show everything (nothing selected,
     /// or "All Batches" is part of the selection).
     private var runFilter: Set<Int64>? {
-        selectedRunIDs.isEmpty || selectedRunIDs.contains(Self.allBatchesID)
-            ? nil : selectedRunIDs
+        selectedRunIDs.contains(Self.allBatchesID)
+            ? nil : (selectedRunIDs.isEmpty ? store.activeRunIDs : selectedRunIDs)
     }
 
     private var selectedRuns: [AnalysisRun] {
@@ -126,7 +126,7 @@ struct ScenesView: View {
     private func computeGridContents() -> GridContents {
         let needle = searchText.lowercased()
         let runFilter = runFilter
-        var result = store.scenes.filter { scene in
+        var result = store.historyScenes.filter { scene in
             if favoritesOnly && !scene.favorite { return false }
             if let runFilter, !(scene.runID.map(runFilter.contains) ?? false) { return false }
             if !showHidden && scene.excluded { return false }
@@ -191,8 +191,10 @@ struct ScenesView: View {
         return selected.count >= 2 ? selected : pool
     }
 
+    @State private var tagMemo = MemoBox<Int, [String]>()
+
     private var allTags: [String] {
-        store.sceneIndex.allTags
+        tagMemo(store.scenesVersion) { Set(store.historyScenes.flatMap(\.tags)).sorted() }
     }
 
     /// Any non-default grid filter — fills the toolbar Filter icon.
@@ -360,6 +362,9 @@ struct ScenesView: View {
                         startTime: scene.startTime, endTime: scene.endTime)
         }
         .onAppear { restoreProjectState() }
+        .onChange(of: store.activeRunIDs) { old, new in
+            if selectedRunIDs.isEmpty || selectedRunIDs == old { selectedRunIDs = new }
+        }
         .onChange(of: store.projectStateVersion) { aiMatches = nil; restoreProjectState(); applySearchResult() }
         .onChange(of: searchJob, initial: true) { applySearchResult() }
         .onChange(of: persistedSceneState) { saveProjectState() }
@@ -406,9 +411,9 @@ struct ScenesView: View {
             Section("Analyze Batches") {
                 HStack {
                     Image(systemName: "square.grid.3x3")
-                    Text("All Analyze Batches")
+                    Text("All batches (\(store.analysisRuns.count))")
                     Spacer()
-                    Text("\(store.scenes.count)")
+                    Text("\(store.historyScenes.count)")
                         .foregroundStyle(.secondary)
                 }
                 .tag(Self.allBatchesID)
@@ -419,6 +424,10 @@ struct ScenesView: View {
                         VStack(alignment: .leading) {
                             Text(run.name)
                                 .lineLimit(2)
+                            if store.activeRunIDs.contains(run.id) {
+                                Text("Active · \(store.activeLayer(videoID: run.videoID).reason)")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
                             if !run.instructions.isEmpty {
                                 Text(run.instructions)
                                     .font(.caption)
@@ -443,13 +452,13 @@ struct ScenesView: View {
                             renamingRun = run
                         }
                         Button("Delete Analyze Batch…", role: .destructive) {
-                            deletingRuns = [run]
+                            store.prepareBatchDeletion { deletingRuns = [run] }
                         }
                         // Right-clicking inside a multi-selection offers the
                         // whole selection; Delete (⌫) does the same.
                         if selectedRunIDs.contains(run.id), selectedRuns.count > 1 {
                             Button("Delete \(selectedRuns.count) Selected Analyze Batches…", role: .destructive) {
-                                deletingRuns = selectedRuns
+                                store.prepareBatchDeletion { deletingRuns = selectedRuns }
                             }
                         }
                         if selectedRunIDs.contains(run.id), let runs = comparableRuns {
@@ -473,7 +482,7 @@ struct ScenesView: View {
         .listStyle(.sidebar)
         .onDeleteCommand {
             let runs = selectedRuns
-            if !runs.isEmpty { deletingRuns = runs }
+            if !runs.isEmpty { store.prepareBatchDeletion { deletingRuns = runs } }
         }
         .alert("Rename Analyze Batch", isPresented: Binding(
             get: { renamingRun != nil },
@@ -504,9 +513,7 @@ struct ScenesView: View {
             }
             Button("Cancel", role: .cancel) { deletingRuns = [] }
         } message: {
-            Text(deletingRuns.count == 1
-                 ? "This deletes the analyze batch's scenes along with their tags and ratings. The source video is not touched."
-                 : "This deletes these analyze batches' scenes along with their tags and ratings. The source videos are not touched.")
+            Text(store.batchDeletionMessage(deletingRuns))
         }
     }
 
@@ -608,8 +615,9 @@ struct ScenesView: View {
     }
 
     private func restoreProjectState() {
-        selectedRunIDs = store.sceneRunSelection.intersection(Set(store.analysisRuns.map(\.id)))
-        selectedSceneIDs = store.sceneSelection.intersection(Set(store.scenes.map(\.id)))
+        selectedRunIDs = store.sceneRunSelection.intersection(Set(store.analysisRuns.map(\.id)).union([Self.allBatchesID]))
+        if selectedRunIDs.isEmpty { selectedRunIDs = store.activeRunIDs }
+        selectedSceneIDs = store.sceneSelection.intersection(Set(store.historyScenes.map(\.id)))
         selectionAnchorID = selectedSceneIDs.first
         tagFilter = store.sceneTagFilter
         searchText = store.sceneSearchText
@@ -940,7 +948,7 @@ struct SceneCard: View {
 
     /// Actions broken out of this scene (it's a sequence when > 0).
     private var childCount: Int {
-        store.scenes.count(where: { $0.parentSceneID == scene.id })
+        store.historyScenes.count(where: { $0.parentSceneID == scene.id })
     }
 
     /// Takes hidden behind this card (0 when it isn't a stack).

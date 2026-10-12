@@ -14,22 +14,22 @@ struct DatabaseTests {
         _ = try await temp.seedVideo(sceneCount: 0) // No transcript at all.
         let rows = [TranscriptSegment(start: 0, end: 1, text: "First.", words: nil),
                     TranscriptSegment(start: 1, end: 2, text: "Second.", words: nil)]
-        try await database.replaceTranscripts(videoID: original, language: "fr", isTranslation: false,
+        try await database.replaceTranscripts(videoID: original, transcriptionKey: "test-transcription", language: "fr", isTranslation: false,
             segments: rows, provider: "test", model: "test")
-        try await database.replaceTranscripts(videoID: translatedOnly, language: "en", isTranslation: true,
+        try await database.replaceTranscripts(videoID: translatedOnly, transcriptionKey: "test-transcription", language: "en", isTranslation: true,
             segments: rows, provider: "test", model: "test")
-        try await database.replaceTranscripts(videoID: mixed, language: "en", isTranslation: false,
+        try await database.replaceTranscripts(videoID: mixed, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: rows, provider: "test", model: "test")
-        try await database.replaceTranscripts(videoID: mixed, language: "fr", isTranslation: true,
+        try await database.replaceTranscripts(videoID: mixed, transcriptionKey: "test-transcription", language: "fr", isTranslation: true,
             segments: rows, provider: "test", model: "test")
         #expect(try await database.videoIDsWithOriginalTranscripts() == Set([original, mixed]))
 
         // Translations alone must not keep a video ready after its original
         // transcript is removed or replaced by an empty transcription.
-        try await database.replaceTranscripts(videoID: mixed, language: "en", isTranslation: false,
+        try await database.replaceTranscripts(videoID: mixed, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: [], provider: "test", model: "test")
         #expect(try await database.videoIDsWithOriginalTranscripts() == Set([original]))
-        try await database.replaceTranscripts(videoID: original, language: "fr", isTranslation: false,
+        try await database.replaceTranscripts(videoID: original, transcriptionKey: "test-transcription", language: "fr", isTranslation: false,
             segments: [], provider: "test", model: "test")
         #expect(try await database.videoIDsWithOriginalTranscripts().isEmpty)
     }
@@ -40,12 +40,12 @@ struct DatabaseTests {
         let database = temp.database
         let first = try await temp.seedVideo()
         let second = try await temp.seedVideo()
-        try await database.replaceVoiceProfiles(videoID: first, profiles: [
+        try await database.replaceVoiceProfiles(videoID: first, transcriptionKey: nil, profiles: [
             VoiceProfile(personKey: "a", videoID: first, vector: [1, 0], windows: 12, correctionWindows: 2),
             VoiceProfile(personKey: "b", videoID: first, vector: [0, 1], windows: 8),
             VoiceProfile(personKey: "stray", videoID: second, vector: [0, 1], windows: 8),
         ])
-        try await database.replaceVoiceProfiles(videoID: second, profiles: [
+        try await database.replaceVoiceProfiles(videoID: second, transcriptionKey: nil, profiles: [
             VoiceProfile(personKey: "a", videoID: second, vector: [0.6, 0.8], windows: 5),
         ])
         let all = try await database.fetchVoiceProfiles()
@@ -54,13 +54,13 @@ struct DatabaseTests {
         let seeding = try await database.fetchVoiceProfiles(excludingVideoID: first)
         #expect(seeding.map(\.videoID) == [second])
         // A re-map replaces the video's own contribution.
-        try await database.replaceVoiceProfiles(videoID: first, profiles: [])
+        try await database.replaceVoiceProfiles(videoID: first, transcriptionKey: nil, profiles: [])
         #expect(try await database.fetchVoiceProfiles().count == 1)
-        try await database.replaceVoiceProfiles(videoID: first, profiles: [
+        try await database.replaceVoiceProfiles(videoID: first, transcriptionKey: nil, profiles: [
             VoiceProfile(personKey: "a", videoID: first, vector: [1, 0], windows: 12),
             VoiceProfile(personKey: "b", videoID: first, vector: [0, 1], windows: 8),
         ])
-        try await database.replaceVoiceProfiles(videoID: second, profiles: [
+        try await database.replaceVoiceProfiles(videoID: second, transcriptionKey: nil, profiles: [
             VoiceProfile(personKey: "b", videoID: second, vector: [0, 1], windows: 3),
         ])
         // Merging b into a keeps a's own profile where both have one and moves the rest.
@@ -222,7 +222,7 @@ struct DatabaseTests {
         let temp = try TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
-        try await database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                                               segments: [.init(start: 0, end: 2, text: "one"),
                                                          .init(start: 2, end: 4, text: "two")],
                                               provider: "apple", model: "m", seconds: nil)
@@ -277,10 +277,10 @@ struct DatabaseTests {
         let database = temp.database
         let videoID = try await temp.seedVideo()
         let words = [TranscriptWord(word: "one", start: 0, end: 1), TranscriptWord(word: " two", start: 3, end: 4)]
-        try await database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                                               segments: [.init(start: 0, end: 4, text: "one two", words: words)],
                                               provider: "apple", model: "m", seconds: nil)
-        try await database.replaceTranscripts(videoID: videoID, language: "pt", isTranslation: true,
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "pt", isTranslation: true,
                                               segments: [.init(start: 0, end: 4, text: "um dois", words: nil)],
                                               provider: "claude", model: "m", seconds: nil)
         let original = try await database.fetchTranscripts(videoID: videoID)
@@ -291,7 +291,7 @@ struct DatabaseTests {
             TranscriptSpeakerRecut.Piece(start: 0, end: 3, text: "one", words: [words[0]], sourceRowID: source.id, speakerKey: "ann", split: true),
             TranscriptSpeakerRecut.Piece(start: 3, end: 4, text: "two", words: [words[1]], sourceRowID: source.id, speakerKey: "ann", split: true),
         ]
-        try await database.recutTranscript(videoID: videoID, pieces: pieces)
+        try await database.recutTranscript(videoID: videoID, transcriptionKey: "test-transcription", pieces: pieces)
         #expect(try await database.hasTranscriptBackup(videoID: videoID))
         let recut = try await database.fetchTranscripts(videoID: videoID)
         let originals = recut.filter { !$0.isTranslation }
@@ -301,7 +301,7 @@ struct DatabaseTests {
         #expect(recut.filter(\.isTranslation).map(\.text) == ["um dois"])
 
         // A second re-cut keeps the first backup: Undo returns to the transcriber's cut.
-        try await database.recutTranscript(videoID: videoID, pieces: [pieces[0]])
+        try await database.recutTranscript(videoID: videoID, transcriptionKey: "test-transcription", pieces: [pieces[0]])
         #expect(try await database.restoreTranscriptBackup(videoID: videoID))
         let restored = try await database.fetchTranscripts(videoID: videoID).filter { !$0.isTranslation }
         #expect(restored.map(\.text) == ["one two"])
@@ -330,7 +330,7 @@ struct DatabaseTests {
     func personMaintenanceKeepsSpeakerKeys() async throws {
         let temp = try TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 0)
-        try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                                                    segments: [.init(start: 0, end: 4, text: "hi", words: nil)],
                                                    provider: "apple", model: "m", seconds: nil)
         try await temp.database.upsertPerson(key: "alpha", descriptor: "")
@@ -346,12 +346,12 @@ struct DatabaseTests {
         #expect(try await temp.database.fetchTranscripts(videoID: videoID).first?.speakerKey == nil)
     }
 
-    @Test("a re-cut keeps edit history on rows passed through, starts over from the backup only while nothing was corrected, and a new transcription drops the backup")
+    @Test("a re-cut keeps edit history on rows passed through, starts over from the backup only while nothing was corrected, and overwriting the same set drops its backup")
     func transcriptRecutKeepsCorrections() async throws {
         let temp = try TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
-        try await database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                                               segments: [.init(start: 0, end: 4, text: "one two", words: nil),
                                                          .init(start: 4, end: 6, text: "three", words: nil)],
                                               provider: "apple", model: "m", seconds: nil)
@@ -362,14 +362,14 @@ struct DatabaseTests {
             TranscriptSpeakerRecut.Piece(start: 2, end: 4, text: "two", words: nil, sourceRowID: rows[0].id, speakerKey: nil, split: true),
             TranscriptSpeakerRecut.Piece(start: 4, end: 6, text: "tree", words: nil, sourceRowID: rows[1].id, speakerKey: nil, split: false),
         ]
-        try await database.recutTranscript(videoID: videoID, pieces: pieces)
+        try await database.recutTranscript(videoID: videoID, transcriptionKey: "test-transcription", pieces: pieces)
         let recut = try await database.fetchTranscripts(videoID: videoID)
         #expect(recut.map(\.text) == ["one", "two", "tree"])
         #expect(recut[2].originalText == "three")
 
         // Nothing corrected since: the base is the transcriber's cut again.
         #expect(try await database.transcriptRecutBase(videoID: videoID).map(\.text) == ["one two", "tree"])
-        try await database.recutTranscript(videoID: videoID, pieces: pieces)
+        try await database.recutTranscript(videoID: videoID, transcriptionKey: "test-transcription", pieces: pieces)
         // A speaker set after the re-cut: the base keeps the current rows.
         let again = try await database.fetchTranscripts(videoID: videoID)
         try await database.setTranscriptSpeaker(ids: [again[0].id], speaker: .person(key: "ann"))
@@ -378,8 +378,8 @@ struct DatabaseTests {
         #expect(base[0].speakerKey == "ann")
         #expect(try await database.hasTranscriptBackup(videoID: videoID))
 
-        // A fresh transcription cannot be undone into the old one.
-        try await database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+        // An explicit overwrite of this set invalidates its old backup.
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                                               segments: [.init(start: 0, end: 6, text: "fresh", words: nil)],
                                               provider: "apple", model: "m", seconds: nil)
         #expect(!(try await database.hasTranscriptBackup(videoID: videoID)))
@@ -741,7 +741,7 @@ struct DatabaseTests {
                          reason: "fixture", decision: .pending)
         }
         try await temp.database.replaceTranscriptFeatures(
-            videoID: videoID, features: [],
+            videoID: videoID, transcriptionKey: nil, features: [],
             proposals: [proposal(.silence, 0, 2), proposal(.filler, 5, 7), proposal(.silence, 9, 12)])
         var rows = try await temp.database.fetchEditProposals(videoID: videoID)
         #expect(rows.count == 3)
@@ -753,7 +753,7 @@ struct DatabaseTests {
         // Re-transcribing proposes the same silence (shifted a frame), the
         // same filler, and a new range instead of the third one.
         try await temp.database.replaceTranscriptFeatures(
-            videoID: videoID, features: [],
+            videoID: videoID, transcriptionKey: nil, features: [],
             proposals: [proposal(.silence, 0.1, 2.05), proposal(.filler, 5, 7), proposal(.silence, 20, 23)])
         let after = try await temp.database.fetchEditProposals(videoID: videoID)
         #expect(after.map(\.decision) == [.accepted, .rejected, .pending])
@@ -1008,10 +1008,10 @@ struct OnDevicePassTimingTests {
         let database = temp.database
         let videoID = try await database.registerVideo(hash: "h", filename: "a.mp4", path: "/tmp/a.mp4",
                                                        duration: 30, width: 1920, height: 1080, wide: true)
-        try await database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                                               segments: [.init(start: 0, end: 2, text: "hi")],
                                               provider: "apple", model: "SpeechTranscriber", seconds: 41.5)
-        try await database.replaceTranscripts(videoID: videoID, language: "pt", isTranslation: true,
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "pt", isTranslation: true,
                                               segments: [.init(start: 0, end: 2, text: "oi")],
                                               provider: "claude", model: "m", seconds: 3)
         let rows = try await database.fetchTranscripts(videoID: videoID)
@@ -1065,7 +1065,7 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 30)
+        #expect(Database.schemaVersion == 34)
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))
@@ -1127,17 +1127,17 @@ extension DatabaseTests {
         let videoID = try await temp.seedVideo()
         let otherID = try await temp.seedVideo()
         let rows = [TranscriptSegment(start: 0, end: 2, text: "Hello", words: nil)]
-        try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: rows, provider: "test", model: nil)
         #expect(try await !temp.database.hasTranscriptTranslation(videoID: videoID, language: "en"))
-        try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: true,
+        try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: true,
             segments: rows, provider: "test", model: nil)
         #expect(try await temp.database.hasTranscriptTranslation(videoID: videoID, language: "en"))
         #expect(try await !temp.database.hasTranscriptTranslation(videoID: otherID, language: "en"))
         #expect(try await !temp.database.hasTranscriptTranslation(videoID: videoID, language: "pt"))
         #expect(try await temp.database.hasTranscriptTranslation(videoID: videoID, language: "en", start: 1, end: 3))
         #expect(try await !temp.database.hasTranscriptTranslation(videoID: videoID, language: "en", start: 2, end: 3))
-        try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: true,
+        try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: true,
             segments: [], provider: "test", model: nil)
         #expect(try await !temp.database.hasTranscriptTranslation(videoID: videoID, language: "en"))
     }

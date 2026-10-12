@@ -9,19 +9,24 @@ struct TranscriptSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let video: VideoRecord
+    var focusSetsPicker = false
 
     private var currentVideo: VideoRecord {
         store.videos.first { $0.id == video.id } ?? video
     }
 
     private var coverage: AnalysisCoverage.Report {
-        AnalysisCoverage.report(video: currentVideo, runs: store.analysisRuns,
+        AnalysisCoverage.report(video: currentVideo, activeRun: store.activeLayer(videoID: video.id).run,
                                 scenes: currentVideoScenes, transcriptCount: rows.count)
     }
 
     @State private var rows: [TranscriptRow] = []
     @State private var transcriptionSets: [TranscriptionSet] = []
     @State private var selectedTranscriptionKey = ""
+    @State private var activeTranscriptionKey: String?
+    @State private var pinnedTranscriptionKey: String?
+    @State private var missingTranscriptionPin = false
+    @FocusState private var setsPickerFocused: Bool
     /// Edited text per segment id; only segments whose text differs from
     /// the stored row are written on Apply.
     @State private var drafts: [Int64: String] = [:]
@@ -229,21 +234,49 @@ struct TranscriptSheet: View {
 
     @ViewBuilder
     private var transcriptionPicker: some View {
-        if transcriptionSets.count > 1 {
-            Picker("Transcription", selection: $selectedTranscriptionKey) {
-                Text("Newest").tag("")
-                ForEach(transcriptionSets) { set in
-                    Text("\(set.createdAt) · \(set.model ?? "Transcription") · \(set.id.prefix(6))").tag(set.id)
+        if !transcriptionSets.isEmpty || missingTranscriptionPin {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Picker("Transcription", selection: $selectedTranscriptionKey) {
+                        ForEach(transcriptionSets) { set in
+                            Text("\(set.createdAt) · \(set.model ?? "Transcription") · \(set.language ?? "—") · \(set.segmentCount) segments\(set.hasTranslations ? " · translated" : "")\(set.isActive ? " · active" : "")\(set.isPinned ? " · pinned" : "")")
+                                .tag(set.id)
+                        }
+                    }
+                    .focused($setsPickerFocused)
+                    .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                    Button("Pin this set") { changePin(selectedTranscriptionKey) }
+                        .lineLimit(1).fixedSize()
+                        .disabled(selectedTranscriptionKey.isEmpty || pinnedTranscriptionKey == selectedTranscriptionKey)
+                    Button("Use automatic") { changePin(nil) }
+                        .lineLimit(1).fixedSize()
+                        .disabled(pinnedTranscriptionKey == nil)
+                }
+                .disabled(hasChanges || isSaving)
+                if missingTranscriptionPin {
+                    Text("Pinned set not on this Mac yet")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-            .disabled(hasChanges || isSaving)
+        }
+    }
+
+    private func changePin(_ key: String?) {
+        guard let database = store.database else { return }
+        Task {
+            do {
+                try await database.setActiveTranscriptionKey(videoID: video.id, key: key)
+                store.invalidatePersonReferences(videoID: video.id)
+                await store.refreshAllNow()
+                selectedTranscriptionKey = ""
+                await load()
+            } catch { store.presentError("Could not change the active transcript", error) }
         }
     }
 
     var body: some View {
         Group {
-        if video.isPresent && selectedTranscriptionKey.isEmpty {
+        if video.isPresent && (selectedTranscriptionKey.isEmpty || selectedTranscriptionKey == activeTranscriptionKey) {
             editableBody
         } else {
             VStack(alignment: .leading, spacing: 12) {
@@ -1124,13 +1157,22 @@ struct TranscriptSheet: View {
     private func load() async {
         guard let database = store.database else { return }
         let selected = selectedTranscriptionKey
-        let key: String? = selected.isEmpty ? nil : selected
+        let resolution = try? await database.activeTranscription(videoID: video.id)
+        let key: String? = selected.isEmpty ? resolution?.key : selected
         let sets = (try? await database.transcriptionSets(videoID: video.id)) ?? []
         let loadedRows = (try? await database.fetchTranscripts(videoID: video.id, transcriptionKey: key)) ?? []
         let loadedTurns = (try? await database.fetchSpeakerTurns(videoID: video.id, transcriptionKey: key)) ?? []
         let loadedRoster = await store.videoPeople(for: video.id)
         guard !Task.isCancelled, selected == selectedTranscriptionKey else { return }
+        activeTranscriptionKey = resolution?.key
+        missingTranscriptionPin = resolution?.missingPin ?? false
+        pinnedTranscriptionKey = (try? await database.video(id: video.id))?.activeTranscriptionKey
         transcriptionSets = sets
+        if selected.isEmpty, let key {
+            selectedTranscriptionKey = key
+            return
+        }
+        if focusSetsPicker { setsPickerFocused = true }
         rows = loadedRows
         turns = loadedTurns
         roster = loadedRoster

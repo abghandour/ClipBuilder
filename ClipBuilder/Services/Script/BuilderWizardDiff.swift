@@ -58,7 +58,7 @@ enum BuilderWizardDiff {
     }
 
     private static func name(_ clip: TimelineClip, library: ScriptLibrarySnapshot) -> String {
-        let name = library.scenes.first { $0.id == clip.sceneID }?.videoFilename
+        let name = library.scenesForReferences.first { $0.id == clip.sceneID }?.videoFilename
             ?? URL(fileURLWithPath: clip.videoFile ?? "").lastPathComponent
         return "\(name) at \(clip.startTime.timecode)"
     }

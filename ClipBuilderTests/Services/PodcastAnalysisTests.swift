@@ -208,7 +208,7 @@ struct PodcastAnalysisTests {
         let turns = try await PodcastAnalysisService.mapSpeakers(video: video, database: temp.database,
                                                                  holdSeconds: 1.5, log: { _ in })
         #expect(turns.isEmpty)
-        #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID).isEmpty)
+        #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID, transcriptionKey: "test-transcription").isEmpty)
         #expect(try await temp.database.video(id: videoID)?.podcastLayout == nil)
     }
 
@@ -267,14 +267,14 @@ struct PodcastAnalysisTests {
         let videoID = try await temp.seedVideo(sceneCount: 0)
         let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "host"),
                      PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1)]
-        try await temp.database.setPodcastLayout(videoID: videoID, layout: .grid, seamX: nil, confidence: 0.8, tiles: tiles)
+        try await temp.database.setPodcastLayout(videoID: videoID, transcriptionKey: nil, layout: .grid, seamX: nil, confidence: 0.8, tiles: tiles)
         let video = try #require(try await temp.database.video(id: videoID))
         #expect(video.podcastLayout == "grid" && video.podcastTiles == tiles)
         let turn = SpeakerTurn(videoID: videoID, start: 1, end: 4, cluster: 1, confidence: 0.75,
                                resolvedSide: .right, personKey: "guest", tile: 1)
-        try await temp.database.replaceSpeakerTurns(videoID: videoID, turns: [turn])
-        #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID).first?.tile == 1)
-        try await temp.database.setPodcastLayout(videoID: videoID, layout: .singleCamera, seamX: nil, confidence: 1)
+        try await temp.database.replaceSpeakerTurns(videoID: videoID, transcriptionKey: "test-transcription", turns: [turn])
+        #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID, transcriptionKey: "test-transcription").first?.tile == 1)
+        try await temp.database.setPodcastLayout(videoID: videoID, transcriptionKey: nil, layout: .singleCamera, seamX: nil, confidence: 1)
         #expect(try await temp.database.video(id: videoID)?.podcastTiles.isEmpty == true)
     }
 
@@ -326,14 +326,14 @@ struct PodcastAnalysisTests {
         let references = try await temp.database.podcastPortraitReferences()
         #expect(references.first?.key == "guest")
         #expect(references.first?.time == 1)
-        try await temp.database.replaceSpeakerTurns(videoID: videoID, turns: [
+        try await temp.database.replaceSpeakerTurns(videoID: videoID, transcriptionKey: "test-transcription", turns: [
             SpeakerTurn(videoID: videoID, start: 0, end: 3, cluster: 0,
                         confidence: 1, personKey: guest.key),
         ])
         try await temp.database.mergePeople(source: guest, into: known)
-        #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID).first?.personKey == known.key)
+        #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID, transcriptionKey: "test-transcription").first?.personKey == known.key)
         try await temp.database.deletePerson(known)
-        #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID).first?.personKey == nil)
+        #expect(try await temp.database.fetchSpeakerTurns(videoID: videoID, transcriptionKey: "test-transcription").first?.personKey == nil)
     }
 
     @Test("speaker turns persist with resolved identity and picture evidence")
@@ -344,8 +344,8 @@ struct PodcastAnalysisTests {
                                confidence: 0.75, pictureSide: .right,
                                pictureConfidence: 0.88, resolvedSide: .right,
                                personKey: "guest")
-        try await temp.database.replaceSpeakerTurns(videoID: videoID, turns: [turn])
-        let fetched = try await temp.database.fetchSpeakerTurns(videoID: videoID)
+        try await temp.database.replaceSpeakerTurns(videoID: videoID, transcriptionKey: "test-transcription", turns: [turn])
+        let fetched = try await temp.database.fetchSpeakerTurns(videoID: videoID, transcriptionKey: "test-transcription")
         #expect(fetched.count == 1)
         #expect(fetched[0].personKey == "guest")
         #expect(fetched[0].pictureConfidence == 0.88)
@@ -597,7 +597,7 @@ struct PodcastAnalysisTests {
         // A corrupt earlier entry cannot hide a valid cache in another language.
         try Data("invalid".utf8).write(to: directory.url.appendingPathComponent("\(hash).apple.SpeechTranscriber.en.json"))
         let result = try await service.transcribeForVideo(video: video, database: temp.database, log: { _ in })
-        #expect(result.map(\.text) == ["Uma conversa"])
+        #expect(result.segments.map(\.text) == ["Uma conversa"])
         let persisted = try await temp.database.fetchTranscripts(videoID: id)
         #expect(persisted.first?.language == "pt-BR")
         // Corrections survive the next cache hit: the stored rows are the transcript.
@@ -605,7 +605,7 @@ struct PodcastAnalysisTests {
         try await temp.database.setTranscriptSpeaker(ids: [row.id], speaker: .person(key: "ann"))
         try await temp.database.updateTranscriptText(id: row.id, text: "Uma conversa boa")
         let again = try await service.transcribeForVideo(video: video, database: temp.database, log: { _ in })
-        #expect(again.map(\.text) == ["Uma conversa boa"])
+        #expect(again.segments.map(\.text) == ["Uma conversa boa"])
         let kept = try await temp.database.fetchTranscripts(videoID: id)
         #expect(kept.count == 1 && kept.first?.speakerKey == "ann" && kept.first?.originalText == "Uma conversa")
         #expect(try await service.cachedPodcast(video: video, force: true) == nil)

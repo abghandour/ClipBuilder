@@ -564,6 +564,17 @@ final class BuilderTimelineModel {
 
     /// Called whenever the scene cache refreshes; fills in the scene-derived
     /// fields the timeline JSON doesn't carry (duration, source path, wide).
+    /// Document references are hydrated independently from the discovery pool.
+    /// Scenes the (loading) document references are never dropped by a refresh
+    /// that has not fetched them yet: identity beats discovery.
+    func updateScenes(_ scenes: [SceneRecord], referencedScenes: [SceneRecord], keeping documentIDs: Set<Int64>? = nil) {
+        let ids = documentIDs ?? Set(document.videoTrack.compactMap(\.sceneID))
+        let retained = self.scenes.filter { ids.contains($0.id) }
+        let hydrated = SceneReferences.combining(SceneReferences.combining(scenes, referenced: referencedScenes),
+                                                referenced: retained)
+        if self.scenes != hydrated { updateScenes(hydrated) }
+    }
+
     func updateScenes(_ scenes: [SceneRecord]) {
         self.scenes = scenes
         scenesByID = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
@@ -2025,10 +2036,25 @@ final class BuilderTimelineModel {
     func updateText(_ uid: UUID, _ mutate: (inout TextOverlayItem) -> Void) {
         guard let index = textIndex(uid) else { return }
         registerUndo("Edit Text", coalescing: "text-\(uid)")
+        let previous = document.textOverlays[index]
         mutate(&document.textOverlays[index])
+        StrikeStatSourceBinding.detachAfterTextEdit(&document.textOverlays[index], previous: previous)
         let item = document.textOverlays[index]
         document.textOverlays[index].startTime = max(0, item.startTime)
         document.textOverlays[index].endTime = max(item.startTime + 0.5, item.endTime)
+        documentDidChange()
+    }
+
+    func updateStat(_ uid: UUID, payload: StrikeStatPayload) {
+        guard let index = textIndex(uid) else { return }
+        registerUndo("Edit Stat Card", coalescing: "stat-\(uid)")
+        if document.textOverlays[index].stat == nil {
+            document.textOverlays[index].yFrac = 0.55
+            document.textOverlays[index].boxOpacity = 0.9
+        }
+        document.textOverlays[index].stat = payload
+        document.textOverlays[index].design = payload.kind?.rawValue
+        document.textOverlays[index].text = StrikeStatsCopy.text(payload)
         documentDidChange()
     }
 

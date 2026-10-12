@@ -12,8 +12,8 @@ actor PodcastAnalysisService {
         self.ai = ai
     }
 
-    nonisolated static func runSettings() -> AnalysisRunSettings {
-        AnalysisRunSettings(pipeline: AnalysisPipeline.podcastPass)
+    nonisolated static func runSettings(transcriptionKey: String? = nil) -> AnalysisRunSettings {
+        AnalysisRunSettings(pipeline: AnalysisPipeline.podcastPass, transcriptionKey: transcriptionKey)
     }
 
     struct Result: Sendable {
@@ -36,9 +36,18 @@ actor PodcastAnalysisService {
         // transcript is cached on disk and the rest is local).
         var state = checkpointing?.resume ?? AnalysisCheckpoint.PodcastState()
         progress(0.03, "transcribing podcast")
-        let segments = try await transcription.transcribePodcast(
+        let transcript = try await transcription.transcribePodcast(
             video: video, database: database, languageCode: languageCode, log: log)
 
+        let segments = transcript.segments
+        let transcriptionKey = transcript.transcriptionKey
+        if state.transcriptionKey != transcriptionKey {
+            state.exchanges = nil
+            state.exchangesProvider = nil
+            state.exchangesModel = nil
+            state.transcriptionKey = transcriptionKey
+            await checkpointing?.save(state)
+        }
         progress(0.30, "separating speakers")
         let turns = try await PodcastSpeakerSeparator.separate(video: video, segments: segments)
 
@@ -75,7 +84,7 @@ actor PodcastAnalysisService {
         var visual = await PodcastVisualAnalyzer.analyze(video: video, turns: turns)
         // Who sits in which tile: the People pass's portraits name the cells.
         visual.tiles = PodcastVisualAnalyzer.named(visual.tiles, roster: roster)
-        try await database.setPodcastLayout(videoID: video.id, layout: visual.layout,
+        try await database.setPodcastLayout(videoID: video.id, transcriptionKey: transcriptionKey, layout: visual.layout,
                                             seamX: visual.seamX,
                                             confidence: visual.layoutConfidence, tiles: visual.tiles)
         if visual.layout == .grid {
@@ -85,18 +94,18 @@ actor PodcastAnalysisService {
         }
         progress(0.60, "tracking who is talking")
         let corrections = Self.voiceCorrections(
-            rows: (try? await database.fetchTranscripts(videoID: video.id)) ?? [], tiles: visual.tiles, log: log)
+            rows: (try? await database.fetchTranscripts(videoID: video.id, transcriptionKey: transcriptionKey)) ?? [], tiles: visual.tiles, log: log)
         let voices = await Self.rememberedVoices(video: video, database: database, tiles: visual.tiles, log: log)
         let tracked = try await Self.resolveTurns(video: video, audioTurns: turns, visual: visual,
                                                   roster: roster, holdSeconds: holdSeconds,
                                                   corrections: corrections,
                                                   priors: VoiceProfiles.priors(tiles: visual.tiles, voices: voices), log: log)
-        let learned = await Self.learnVoices(video: video, database: database, visual: visual,
+        let learned = await Self.learnVoices(video: video, database: database, transcriptionKey: transcriptionKey, visual: visual,
                                              turns: tracked.turns, enrollment: tracked.enrollment, voices: voices, log: log)
         let resolved = Self.cleaned(learned, words: segments.flatMap { $0.words ?? [] },
                                     audioTrust: tracked.audioTrust, log: log)
-        try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
-        await Self.recutTranscriptBySpeaker(video: video, database: database, turns: resolved, log: log)
+        try await database.replaceSpeakerTurns(videoID: video.id, transcriptionKey: transcriptionKey, turns: resolved)
+        await Self.recutTranscriptBySpeaker(video: video, database: database, transcriptionKey: transcriptionKey, turns: resolved, log: log)
         let podcastSettings = capturedSettings ?? (profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())).podcast.settings()
         let enrichment = TranscriptFeatureAnalyzer.analyze(
             segments: segments, videoID: video.id,
@@ -109,11 +118,11 @@ actor PodcastAnalysisService {
             },
             deadAirThreshold: podcastSettings.deadAirSeconds,
             fillerRunThreshold: podcastSettings.fillerRunSeconds)
-        try await database.replaceTranscriptFeatures(videoID: video.id,
+        try await database.replaceTranscriptFeatures(videoID: video.id, transcriptionKey: transcriptionKey,
                                                      features: enrichment.features,
                                                      proposals: podcastSettings.cleanupCutPolicy.applied(to: enrichment.proposals))
         let topics = TopicSegmenter.segment(enrichment.features, videoID: video.id)
-        try await database.replaceTopicRanges(videoID: video.id, topics: topics)
+        try await database.replaceTopicRanges(videoID: video.id, transcriptionKey: transcriptionKey, topics: topics)
         let accepted = enrichment.proposals.count { podcastSettings.cleanupCutPolicy.decision(for: $0.kind) == .accepted }
         if accepted > 0 {
             log("Cleanup cuts: \(accepted) of \(enrichment.proposals.count) accepted by the \(podcastSettings.cleanupCutPolicy.label.lowercased()) policy")
@@ -146,7 +155,7 @@ actor PodcastAnalysisService {
             instructions: "Transcript-first podcast analysis; whole question-and-answer exchanges",
             sampleInterval: nil, notesJSON: nil, tagRanges: tagRanges, moments: [],
             analyzedTags: ["podcast"], provider: outcome.provenance?.provider,
-            model: outcome.provenance?.model, mode: "speech", settings: Self.runSettings())
+            model: outcome.provenance?.model, mode: "speech", settings: Self.runSettings(transcriptionKey: transcriptionKey))
         try await database.markAnalysisRunTranscribed(id: runID)
 
         let sceneRows = try await database.sceneRanges(runID: runID)
@@ -229,7 +238,7 @@ actor PodcastAnalysisService {
     /// remembered voice that matches what this file taught about them (the
     /// stored layout and the turns follow), and what this file taught
     /// about each named person's voice is remembered for the next file.
-    static func learnVoices(video: VideoRecord, database: Database, visual: PodcastVisualAnalyzer.Result,
+    static func learnVoices(video: VideoRecord, database: Database, transcriptionKey: String, visual: PodcastVisualAnalyzer.Result,
                             turns: [SpeakerTurn], enrollment: SpeakerTracker.Enrollment?,
                             voices: [String: VoiceProfiles.Voice],
                             log: @escaping @Sendable (String) -> Void) async -> [SpeakerTurn] {
@@ -246,7 +255,7 @@ actor PodcastAnalysisService {
                            naming.tile + 1, naming.personKey, naming.cosine))
             }
             do {
-                try await database.setPodcastLayout(videoID: video.id, layout: visual.layout, seamX: visual.seamX,
+                try await database.setPodcastLayout(videoID: video.id, transcriptionKey: transcriptionKey, layout: visual.layout, seamX: visual.seamX,
                                                     confidence: visual.layoutConfidence, tiles: tiles)
             } catch {
                 log("Could not store the tiles named by voice: \(error.localizedDescription)")
@@ -254,7 +263,7 @@ actor PodcastAnalysisService {
         }
         let profiles = VoiceProfiles.learned(videoID: video.id, tiles: tiles, enrollment: enrollment)
         do {
-            try await database.replaceVoiceProfiles(videoID: video.id, profiles: profiles)
+            try await database.replaceVoiceProfiles(videoID: video.id, transcriptionKey: transcriptionKey, profiles: profiles)
             if profiles.isEmpty {
                 if let enrollment, enrollment.featureKind == .embedding, enrollment.trust < VoiceProfiles.storeTrust {
                     log(String(format: "Voices not remembered: audio trusted %.0f%%, below the %.0f%% needed", enrollment.trust * 100, VoiceProfiles.storeTrust * 100))
@@ -272,13 +281,13 @@ actor PodcastAnalysisService {
     /// split at the word gap so every row has one speaker (captions and the
     /// transcript editor both read better). A failure only logs: the turns
     /// are already saved and the rows still work unsplit.
-    static func recutTranscriptBySpeaker(video: VideoRecord, database: Database, turns: [SpeakerTurn],
+    static func recutTranscriptBySpeaker(video: VideoRecord, database: Database, transcriptionKey: String, turns: [SpeakerTurn],
                                          log: @Sendable (String) -> Void) async {
-        guard !turns.isEmpty, let rows = try? await database.transcriptRecutBase(videoID: video.id) else { return }
+        guard !turns.isEmpty, let rows = try? await database.transcriptRecutBase(videoID: video.id, transcriptionKey: transcriptionKey) else { return }
         let plan = TranscriptSpeakerRecut.plan(rows: rows, turns: turns)
         guard plan.hasChanges else { return }
         do {
-            try await database.recutTranscript(videoID: video.id, pieces: plan.pieces)
+            try await database.recutTranscript(videoID: video.id, transcriptionKey: transcriptionKey, pieces: plan.pieces)
             log("\(video.filename): transcript re-cut by speaker — \(plan.splitRows) row\(plan.splitRows == 1 ? "" : "s") split where the speaker changed")
         } catch {
             log("\(video.filename): could not re-cut the transcript by speaker — \(error.localizedDescription)")
@@ -292,17 +301,18 @@ actor PodcastAnalysisService {
     /// them. Needs transcript rows; returns the turns it stored.
     @discardableResult
     static func mapSpeakers(video: VideoRecord, database: Database, holdSeconds: Double,
+                            transcriptionKey sourceKey: String? = nil,
                             outcomeSink: (@Sendable (SpeakerTracker.Outcome) -> Void)? = nil,
                             log: @escaping @Sendable (String) -> Void) async throws -> [SpeakerTurn] {
-        let rows = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
-        guard !rows.isEmpty else { return [] }
+        let rows = try await database.fetchTranscripts(videoID: video.id, transcriptionKey: sourceKey).filter { !$0.isTranslation }
+        guard !rows.isEmpty, let transcriptionKey = rows.first?.transcriptionKey else { return [] }
         let segments = rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }
         let turns = try await PodcastSpeakerSeparator.separate(video: video, segments: segments)
         guard !turns.isEmpty else { return [] }
         let roster = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
         var visual = await PodcastVisualAnalyzer.analyze(video: video, turns: turns)
         visual.tiles = PodcastVisualAnalyzer.named(visual.tiles, roster: roster)
-        try await database.setPodcastLayout(videoID: video.id, layout: visual.layout, seamX: visual.seamX,
+        try await database.setPodcastLayout(videoID: video.id, transcriptionKey: transcriptionKey, layout: visual.layout, seamX: visual.seamX,
                                             confidence: visual.layoutConfidence, tiles: visual.tiles)
         let corrections = voiceCorrections(rows: rows, tiles: visual.tiles, log: log)
         let voices = await rememberedVoices(video: video, database: database, tiles: visual.tiles, log: log)
@@ -311,12 +321,12 @@ actor PodcastAnalysisService {
                                              corrections: corrections,
                                              priors: VoiceProfiles.priors(tiles: visual.tiles, voices: voices),
                                              outcomeSink: outcomeSink, log: log)
-        let learned = await learnVoices(video: video, database: database, visual: visual,
+        let learned = await learnVoices(video: video, database: database, transcriptionKey: transcriptionKey, visual: visual,
                                         turns: tracked.turns, enrollment: tracked.enrollment, voices: voices, log: log)
         let resolved = cleaned(learned, words: segments.flatMap { $0.words ?? [] },
                                audioTrust: tracked.audioTrust, log: log)
-        try await database.replaceSpeakerTurns(videoID: video.id, turns: resolved)
-        await recutTranscriptBySpeaker(video: video, database: database, turns: resolved, log: log)
+        try await database.replaceSpeakerTurns(videoID: video.id, transcriptionKey: transcriptionKey, turns: resolved)
+        await recutTranscriptBySpeaker(video: video, database: database, transcriptionKey: transcriptionKey, turns: resolved, log: log)
         let named = Set(resolved.compactMap(\.personKey)).count
         log("Speaker map for \(video.filename): \(resolved.count) turns, layout \(visual.layout.label.lowercased())"
             + (visual.tiles.isEmpty ? "" : " with \(visual.tiles.count) tiles") + ", \(named) named speaker(s)")

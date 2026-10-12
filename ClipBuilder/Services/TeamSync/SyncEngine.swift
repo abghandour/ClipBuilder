@@ -3,7 +3,7 @@ import Foundation
 /// Cancellable, dependency-ordered multi-table cycle. Nothing instantiates this
 /// for unattached profiles. The coordinator owns scheduling and admission.
 actor SyncEngine {
-    static let understoodSchemaVersion = 3
+    static let understoodSchemaVersion = 6
 
     enum Status: Sendable, Equatable {
         case idle, syncing, synced

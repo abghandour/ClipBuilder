@@ -35,6 +35,11 @@ nonisolated extension WizardOptions {
         workflow = try values.decodeIfPresent(WizardWorkflow.self, forKey: .workflow)
         muteSource = try values.decodeIfPresent(Bool.self, forKey: .muteSource) ?? muteSource
         addCaptions = try values.decodeIfPresent(Bool.self, forKey: .addCaptions) ?? addCaptions
+        strikeStats = try values.decodeIfPresent(Bool.self, forKey: .strikeStats)
+        strikeUnits = try values.decodeIfPresent(String.self, forKey: .strikeUnits)
+        strikeSpeedCallouts = try values.decodeIfPresent(Bool.self, forKey: .strikeSpeedCallouts)
+        strikeGrapplingCard = try values.decodeIfPresent(Bool.self, forKey: .strikeGrapplingCard)
+        strikeRoundCard = try values.decodeIfPresent(Bool.self, forKey: .strikeRoundCard)
         nameTags = try values.decodeIfPresent(Bool.self, forKey: .nameTags)
         nameTagContent = try values.decodeIfPresent(String.self, forKey: .nameTagContent)
         nameTagStyle = try values.decodeIfPresent(String.self, forKey: .nameTagStyle)

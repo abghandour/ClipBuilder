@@ -262,6 +262,12 @@ struct DispatchPlanSheet: View {
             }
         }
         .onAppear {
+            if let video = videos.first, videos.count == 1, let request = store.restoredAnalysisRequests[video.id] {
+                selectedPeopleKeys = Set(request.plan.requiredPeopleKeys)
+                requirePeople = !selectedPeopleKeys.isEmpty
+                trimStart = request.plan.trimRange?.first ?? 0
+                trimEnd = request.plan.trimRange?.last ?? video.duration
+            }
             seedChoices()
             savedPrompts = PromptStore.load()
             // Land on the tab with work left: identities first, tags once
@@ -860,7 +866,10 @@ struct DispatchPlanSheet: View {
         guard choices.isEmpty else { return }
         let config = store.effectiveAIConfig
         for task in operation.aiTasks {
-            if let provider = config.tasks[task] {
+            if videos.count == 1, let id = videos.first?.id,
+               let route = store.restoredAnalysisRequests[id]?.routing[task]?.first {
+                choices[task] = "\(route.provider)|\(route.model ?? "")"
+            } else if let provider = config.tasks[task] {
                 let model = config.taskModels[task]
                     ?? config.providers[provider]?.model
                     ?? AICatalog.provider(provider)?.defaultModel ?? ""
@@ -899,6 +908,11 @@ struct DispatchPlanSheet: View {
             guard parts.count == 2 else { continue }
             store.settings.ai.tasks[task] = String(parts[0])
             store.settings.ai.taskModels[task] = String(parts[1])
+            if videos.count == 1, let id = videos.first?.id, var request = store.restoredAnalysisRequests[id] {
+                let route = AnalysisRequest.Route(provider: String(parts[0]), model: String(parts[1]))
+                request.routing[task] = [route] + (request.routing[task] ?? []).filter { $0.provider != route.provider }
+                store.restoredAnalysisRequests[id] = request
+            }
         }
         if remember, !store.settings.ai.mutedDispatchPlans.contains(operation.rawValue) {
             store.settings.ai.mutedDispatchPlans.append(operation.rawValue)

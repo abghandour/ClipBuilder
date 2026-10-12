@@ -51,10 +51,10 @@ struct WizardSheetModelTests {
                 language: "en", isCurrent: { true }, perform: { kind, row in
                     #expect(kind == .transcript && row.id == video)
                     calls += 1
-                    try await temp.database.replaceTranscripts(videoID: row.id, language: "en", isTranslation: false,
+                    try await temp.database.replaceTranscripts(videoID: row.id, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                         segments: [.init(start: 2, end: 6, text: "fixture", words: nil)], provider: "fake", model: "fake")
                     if failAfterSaving { throw ScriptError.invalid("fake failure after transcript save") }
-                    try await temp.database.replaceTranscriptFeatures(videoID: row.id,
+                    try await temp.database.replaceTranscriptFeatures(videoID: row.id, transcriptionKey: "test-transcription",
                         features: [.init(id: 0, videoID: row.id, startTime: 3, endTime: 4,
                                          text: "", speakerKey: nil, energy: 0, kind: .silence)], proposals: [])
                 })

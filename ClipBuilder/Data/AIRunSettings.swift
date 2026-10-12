@@ -50,6 +50,7 @@ nonisolated struct AnalysisRunSettings: Codable, Sendable, Equatable {
     var modelPrompts: [String: AIPromptPreview] = [:]
     /// Pipeline version at run creation; nil for older runs. Not a copyable option.
     var pipeline: Int?
+    var transcriptionKey: String?
 }
 
 nonisolated struct WizardRunSettings: Codable, Sendable {
@@ -133,6 +134,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
             return [
                 "renderSettings", "pacing", "captionLanguage", "captionPosition", "captionStyleID", "muteSource",
                 "addCaptions", "enableTextOverlays", "nameTagsOnly", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition",
+                "strikeStats", "strikeUnits", "strikeSpeedCallouts", "strikeGrapplingCard", "strikeRoundCard",
                 "useMusic", "musicFolder", "useFightResearch",
                 "workflow", "musicTrack", "overlayStyle", "overlayAnimation", "overlayPlacement",
                 "targetDurationSeconds", "framingCamera", "podcastFraming", "highlightFraming", "useBRoll", "screenCropLayouts",

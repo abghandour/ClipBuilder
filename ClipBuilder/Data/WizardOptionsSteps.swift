@@ -39,6 +39,11 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var musicTrack: String?
     var addCaptions: Bool?
     var enableTextOverlays: Bool?
+    var strikeStats: Bool?
+    var strikeUnits: String?
+    var strikeSpeedCallouts: Bool?
+    var strikeGrapplingCard: Bool?
+    var strikeRoundCard: Bool?
     var nameTagsOnly: Bool?
     var nameTags: Bool?
     var nameTagContent: String?
@@ -108,6 +113,11 @@ nonisolated extension WizardOptions {
         result.musicTrack = musicTrack
         result.addCaptions = addCaptions
         result.enableTextOverlays = enableTextOverlays
+        result.strikeStats = strikeStats
+        result.strikeUnits = strikeUnits
+        result.strikeSpeedCallouts = strikeSpeedCallouts
+        result.strikeGrapplingCard = strikeGrapplingCard
+        result.strikeRoundCard = strikeRoundCard
         result.nameTagsOnly = nameTagsOnly
         result.nameTags = nameTags
         result.nameTagContent = nameTagContent
@@ -175,6 +185,11 @@ nonisolated extension WizardOptions {
         result.musicTrack = step2.musicTrack
         result.addCaptions = step2.addCaptions ?? base.addCaptions
         result.enableTextOverlays = step2.enableTextOverlays ?? base.enableTextOverlays
+        result.strikeStats = step2.strikeStats
+        result.strikeUnits = step2.strikeUnits
+        result.strikeSpeedCallouts = step2.strikeSpeedCallouts
+        result.strikeGrapplingCard = step2.strikeGrapplingCard
+        result.strikeRoundCard = step2.strikeRoundCard
         result.nameTagsOnly = step2.nameTagsOnly
         result.nameTags = step2.nameTags
         result.nameTagContent = step2.nameTagContent

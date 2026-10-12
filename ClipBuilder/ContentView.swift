@@ -360,6 +360,9 @@ struct MainWindowView: View {
         .sheet(item: $store.pendingComparison) { batch in
             ComparisonSheet(batch: batch)
         }
+        .sheet(item: $store.pendingAnalysisDuplicate) { prompt in
+            AnalysisDuplicateSheet(prompt: prompt)
+        }
         .sheet(item: $store.pendingPeopleReview) { request in
             PersonReviewSheet(request: request)
         }
@@ -467,7 +470,7 @@ struct MainWindowView: View {
     private var jobReviewBlocked: Bool {
         store.wizardResults != nil || store.pendingPodcastHighlights != nil
             || store.pendingWizardSelectionReview != nil || store.pendingComparison != nil
-            || store.pendingPeopleReview != nil || store.pendingRenameReview != nil
+            || store.pendingPeopleReview != nil || store.pendingRenameReview != nil || store.pendingAnalysisDuplicate != nil
             || store.showTrainingGuide || store.showResourceExport || store.resourceImportURL != nil
             || store.currentError != nil || store.currentNotice != nil || store.isLoadingProject
     }

@@ -12,7 +12,13 @@ extension Database {
                              action: row["action"]?.stringValue ?? "",
                              points: row["points"]?.doubleValue ?? 1,
                              provider: row["provider"]?.stringValue,
-                             model: row["model"]?.stringValue)
+                             model: row["model"]?.stringValue,
+                             targetKey: row["target_key"]?.stringValue,
+                             endTime: row["end_time"]?.doubleValue,
+                             outcome: row["outcome"]?.stringValue,
+                             detail: row["detail"]?.stringValue,
+                             scoringVersion: row["scoring_version"]?.intValue.map(Int.init),
+                             generation: row["generation"]?.intValue)
         }
     }
 
@@ -22,17 +28,65 @@ extension Database {
                             events: [(time: Double, fighterKey: String,
                                       action: String, points: Double)],
                             provenance: AIProvenance? = nil) throws {
+        try replaceFightEventRecords(videoID: videoID, events: events.map {
+            FightEventRecord(id: 0, videoID: videoID, time: $0.time, fighterKey: $0.fighterKey,
+                             action: $0.action, points: $0.points, provider: provenance?.provider,
+                             model: provenance?.model)
+        })
+    }
+
+    /// The local generation is durable even for a completed pass with zero events.
+    func fightEventGeneration(videoID: Int64) throws -> Int64 {
+        try connection.query("SELECT generation FROM fight_event_generations WHERE video_id = ?",
+                             [.integer(videoID)]).first?["generation"]?.intValue ?? 0
+    }
+
+    func isFightEventGenerationCurrent(videoID: Int64, generation: Int64) throws -> Bool {
+        try fightEventGeneration(videoID: videoID) == generation
+    }
+
+    @discardableResult
+    func advanceFightEventGeneration(videoID: Int64) throws -> Int64 {
+        let generation = try fightEventGeneration(videoID: videoID) + 1
+        try connection.execute("""
+            INSERT INTO fight_event_generations(video_id, generation) VALUES (?, ?)
+            ON CONFLICT(video_id) DO UPDATE SET generation = excluded.generation
+            """, [.integer(videoID), .integer(generation)])
+        // Phase E will invalidate local metrics here. No metric table exists in A/B.
+        return generation
+    }
+
+    @discardableResult
+    func replaceFightEventRecords(videoID: Int64, events: [FightEventRecord],
+                                  expectedGeneration: Int64? = nil,
+                                  roundRanges: [FightRoundRange] = []) throws -> Bool {
         try connection.transaction {
+            try Task.checkCancellation()
+            if let expectedGeneration,
+               try !isFightEventGenerationCurrent(videoID: videoID, generation: expectedGeneration) { return false }
+            let generation = try advanceFightEventGeneration(videoID: videoID)
             try connection.execute("DELETE FROM fight_events WHERE video_id = ?", [.integer(videoID)])
             for event in events {
                 try connection.execute("""
-                    INSERT INTO fight_events (video_id, at_time, fighter_key, action, points, provider, model)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO fight_events (video_id, at_time, fighter_key, action, points, provider, model,
+                                              target_key, end_time, outcome, detail, scoring_version, generation)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .real(event.time), .text(event.fighterKey),
-                          .text(event.action), .real(event.points),
-                          provenance.map { SQLValue.text($0.provider) } ?? .null,
-                          provenance?.model.map(SQLValue.text) ?? .null])
+                          .text(event.action), .real(event.points), event.provider.map(SQLValue.text) ?? .null,
+                          event.model.map(SQLValue.text) ?? .null, event.targetKey.map(SQLValue.text) ?? .null,
+                          event.endTime.map(SQLValue.real) ?? .null, event.outcome.map(SQLValue.text) ?? .null,
+                          event.detail.map(SQLValue.text) ?? .null,
+                          event.scoringVersion.map { .integer(Int64($0)) } ?? .null, .integer(generation)])
             }
+            for range in roundRanges {
+                // Existing round tags may be editor-supplied; never overwrite them.
+                try connection.execute("""
+                    INSERT OR IGNORE INTO scene_tags(scene_id, tag)
+                    SELECT id, ? FROM scenes WHERE video_id = ? AND start_time >= ? AND end_time <= ?
+                    AND NOT EXISTS (SELECT 1 FROM scene_tags WHERE scene_id = scenes.id AND tag LIKE 'round:%')
+                    """, [.text("round:\(range.round)"), .integer(videoID), .real(range.start), .real(range.end)])
+            }
+            return true
         }
     }
 

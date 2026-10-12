@@ -89,8 +89,8 @@ extension Database {
                                            proxyPath: String? = nil, criticScore: Int? = nil,
                                            criticNotes: String? = nil) throws -> WizardSelectionTake {
         // Caller holds a write transaction, including when creating Selection + Take 1.
-        guard let selection = try wizardSelection(id: selectionID) else { throw WizardSelectionError.missingSelection }
-        let plan = WizardSelectionRules.snapshot(plan, scenes: try fetchScenes(projectID: selection.projectID))
+        guard try wizardSelection(id: selectionID) != nil else { throw WizardSelectionError.missingSelection }
+        let plan = WizardSelectionRules.snapshot(plan, scenes: try fetchScenes(ids: SceneReferences.ids(in: plan)))
         let ordinal = (try connection.query(
             "SELECT MAX(ordinal) AS n FROM wizard_selection_takes WHERE selection_id = ?",
             [.integer(selectionID)]).first?["n"]?.intValue ?? 0) + 1
@@ -114,8 +114,8 @@ extension Database {
 
     func updateWizardSelectionTakePlan(id: Int64, plan: WizardPlan) throws {
         guard let take = try wizardSelectionTake(id: id) else { throw WizardSelectionError.missingTake }
-        guard let selection = try wizardSelection(id: take.selectionID) else { throw WizardSelectionError.missingSelection }
-        let plan = WizardSelectionRules.snapshot(plan, scenes: try fetchScenes(projectID: selection.projectID))
+        guard try wizardSelection(id: take.selectionID) != nil else { throw WizardSelectionError.missingSelection }
+        let plan = WizardSelectionRules.snapshot(plan, scenes: try fetchScenes(ids: SceneReferences.ids(in: plan)))
         try connection.transaction {
             try connection.execute("""
                 UPDATE wizard_selection_takes SET plan_json = ?, scene_ids_json = ?,
@@ -186,7 +186,7 @@ extension Database {
                                  kept: Set<Int64>, rows: [TranscriptRow], labels: [Int64: String],
                                  turns: [SpeakerTurn], options: WizardStep1Options) throws -> [MiniWizardCandidate] {
         try connection.transaction {
-            let scenes = try fetchScenes(projectID: projectID, includeExcluded: true).filter { $0.videoID == videoID }
+            let scenes = try fetchScenes(projectID: projectID, scope: .history, includeExcluded: true).filter { $0.videoID == videoID }
             let sections = TranscriptQASections.sections(scenes: scenes, rows: rows, labels: labels)
             let plans = MiniWizardQARules.plans(sections: sections, kept: kept, rows: rows, turns: turns)
             try connection.execute("DELETE FROM wizard_selections WHERE project_id = ? AND mini_batch = ? AND recipe = 'podcast'",
@@ -211,7 +211,7 @@ extension Database {
                                 takes: [WizardSelectionTake], options: WizardStep1Options) throws -> WizardSelectionTake {
         try connection.transaction {
             guard !takes.isEmpty else { throw WizardSelectionError.missingTake }
-            let scenes = try fetchScenes(projectID: projectID, includeExcluded: true)
+            let scenes = try fetchScenes(projectID: projectID, scope: .history, includeExcluded: true)
             let resolved = try takes.map { take in
                 guard let selection = try wizardSelection(id: take.selectionID),
                       selection.projectID == projectID, selection.miniBatch == miniBatch else {
@@ -260,7 +260,7 @@ extension Database {
         guard original.plan.footage == nil,
               let selection = try wizardSelection(id: original.selectionID),
               let plan = WizardSelectionRules.resolvedPlan(original.plan,
-                  scenes: try fetchScenes(projectID: selection.projectID)) else { return original }
+                  scenes: try fetchScenes(projectID: selection.projectID, scope: .history)) else { return original }
         var take = original
         take.plan = plan
         take.sceneIDs = Self.wizardSceneIDs(plan)

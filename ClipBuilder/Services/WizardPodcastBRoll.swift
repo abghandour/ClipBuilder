@@ -80,7 +80,7 @@ enum WizardPodcastBRoll {
     private static func plan(main: [TimelineClip], options: WizardOptions, database: Database,
                              ai: AIService, log: @escaping @Sendable (String) -> Void) async throws -> Planned {
         let videos = try await database.fetchVideos(projectID: options.projectID)
-        let scenes = try await database.fetchScenes(projectID: options.projectID, includeExcluded: false)
+        let scenes = try await database.fetchScenes(projectID: options.projectID, scope: .active, includeExcluded: false)
         let sceneMap = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
         let sourceIDs = Set(main.compactMap { $0.sceneID.flatMap { sceneMap[$0]?.videoID } })
         // Transcript segmentation, speaker data and tile detection are properties

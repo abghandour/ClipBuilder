@@ -52,7 +52,7 @@ struct BuilderPrerequisitesTests {
 
     private static func transcript(_ database: Database, video: Int64, language: String = "en",
                                    translation: Bool = false, text: String = "new") async throws {
-        try await database.replaceTranscripts(videoID: video, language: language, isTranslation: translation,
+        try await database.replaceTranscripts(videoID: video, transcriptionKey: "test-transcription", language: language, isTranslation: translation,
             segments: [.init(start: 0, end: 1, text: text, words: nil)], provider: "fake", model: "fake")
     }
 
@@ -211,7 +211,7 @@ struct BuilderPrerequisitesTests {
                                     reason: "old", decision: .rejected)
         let unrelated = EditProposal(id: 0, videoID: video, kind: .bRoll, startTime: 5, endTime: 6,
                                       reason: "keep", decision: .accepted)
-        try await h.database.replaceTranscriptFeatures(videoID: video, features: [], proposals: [proposal, unrelated])
+        try await h.database.replaceTranscriptFeatures(videoID: video, transcriptionKey: "test-transcription", features: [], proposals: [proposal, unrelated])
         // A partial earlier pass requires retry; it must not reuse its raw rows.
         let row = try #require(try await h.database.video(id: video))
         try await h.database.savePrerequisiteResult(kind: .transcript, videoID: video,
@@ -222,7 +222,7 @@ struct BuilderPrerequisitesTests {
             var replacement = proposal
             replacement.decision = .pending
             replacement.reason = "regenerated"
-            try await db.replaceTranscriptFeatures(videoID: video.id, features: [], proposals: [replacement])
+            try await db.replaceTranscriptFeatures(videoID: video.id, transcriptionKey: "test-transcription", features: [], proposals: [replacement])
         }
         let result = await h.adapters().ensureTranscript(video: video)
         #expect(result.outcome.isComplete)

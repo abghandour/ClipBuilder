@@ -89,19 +89,30 @@ extension AppStore {
         guard let database, !fightScoringInFlight.contains(video.id) else { return }
         fightScoringInFlight.insert(video.id)
         let profile = activeProfile
-        Task {
+        let generation = profileGeneration
+        let projectID = activeProjectID
+        jobs.start(.fightScore, title: "Score v2 — \(video.filename)", project: activeProject,
+                   profileGeneration: generation, subjectID: String(video.id), cleanup: { [weak self] in
+            self?.fightScoringInFlight.remove(video.id)
+        }) { [self] jobLog in
+            // The job row keeps lines in memory only; the analysis log persists them to app.log.
+            let fileLog = logSink(\.analysisLog)
+            let log: @Sendable (String) -> Void = { line in jobLog(line); fileLog(line) }
             do {
-                let scenes = ((try? await database.fetchScenes(includeExcluded: true)) ?? [])
-                    .filter { $0.videoID == video.id }
-                _ = try await analyzer.scoreFightAction(
-                    video: video, scenes: scenes, profile: profile, database: database,
-                    log: logSink(\.analysisLog))
-                let events = (try? await database.fetchFightEvents()) ?? []
-                fightEvents = Dictionary(grouping: events, by: \.videoID)
+                let scenes = try await database.fetchScenes(includeExcluded: true).filter { $0.videoID == video.id }
+                _ = try await analyzer.scoreFightAction(video: video, scenes: scenes, profile: profile,
+                                                        database: database, log: log)
             } catch {
-                presentError("Fight scoring failed for \(video.filename)", error)
+                if generation == profileGeneration {
+                    analysisPasses = (try? await database.fetchAnalysisPasses()) ?? []
+                }
+                throw error
             }
-            fightScoringInFlight.remove(video.id)
+            guard generation == profileGeneration, projectID == activeProjectID else { return nil }
+            let events = try await database.fetchFightEvents()
+            fightEvents = Dictionary(grouping: events, by: \.videoID)
+            analysisPasses = try await database.fetchAnalysisPasses()
+            return nil
         }
     }
 

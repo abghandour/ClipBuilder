@@ -136,7 +136,7 @@ struct BuilderRequestParser {
                     guard !clip.bumper, clip.sourceStart != nil else {
                         throw ScriptError.invalid("Silence cuts require a non-bumper clip with source timing.")
                     }
-                    let videoID = context.library.scenes.first { $0.id == clip.sceneID }?.videoID
+                    let videoID = context.library.scenesForReferences.first { $0.id == clip.sceneID }?.videoID
                         ?? context.library.videos.first { $0.path == clip.videoFile }?.id
                     guard let videoID, context.library.videos.contains(where: { $0.id == videoID }) else {
                         throw ScriptError.invalid("Video is missing or outside this project.")

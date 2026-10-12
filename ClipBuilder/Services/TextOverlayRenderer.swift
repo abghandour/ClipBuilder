@@ -167,6 +167,8 @@ nonisolated struct TextOverlayRenderer {
             context.beginTransparencyLayer(auxiliaryInfo: nil)
         }
         switch item.design {
+        case "grapplingCard", "roundCard":
+            drawStrikeStats(in: context, item: item)
         case "nameTag":
             drawNameTag(in: context, item: item)
         case "hero":

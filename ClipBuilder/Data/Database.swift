@@ -313,13 +313,33 @@ actor Database {
         researched_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS fight_event_generations (
+        video_id INTEGER PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
+        generation INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS analysis_passes (
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        pass TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'cancelled', 'failed')),
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        note TEXT,
+        PRIMARY KEY(video_id, pass, started_at)
+    );
     CREATE TABLE IF NOT EXISTS fight_events (
         id INTEGER PRIMARY KEY,
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
         at_time REAL NOT NULL,
         fighter_key TEXT NOT NULL DEFAULT '',
         action TEXT NOT NULL,
-        points REAL NOT NULL DEFAULT 1
+        points REAL NOT NULL DEFAULT 1,
+        target_key TEXT,
+        end_time REAL,
+        outcome TEXT,
+        detail TEXT,
+        scoring_version INTEGER,
+        generation INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS wizard_feedback (
@@ -732,6 +752,24 @@ actor Database {
             if try !connection.columnNames(of: "generated_videos").contains("selection_take_id") {
                 try connection.execute("ALTER TABLE generated_videos ADD COLUMN selection_take_id INTEGER REFERENCES wizard_selection_takes(id) ON DELETE SET NULL")
             }
+            let requestColumns = try connection.columnNames(of: "analysis_runs")
+            for name in ["request_hash", "request_json"] where !requestColumns.contains(name) {
+                try connection.execute("ALTER TABLE analysis_runs ADD COLUMN \(name) TEXT")
+            }
+            let videoColumns = try connection.columnNames(of: "videos")
+            for name in ["active_run_key", "active_transcription_key"] where !videoColumns.contains(name) {
+                try connection.execute("ALTER TABLE videos ADD COLUMN \(name) TEXT")
+            }
+            if try !connection.columnNames(of: "analysis_passes").contains("run_key") {
+                try connection.execute("ALTER TABLE analysis_passes ADD COLUMN run_key TEXT")
+            }
+            let eventColumns = try connection.columnNames(of: "fight_events")
+            for (name, type) in [("target_key", "TEXT"), ("end_time", "REAL"), ("outcome", "TEXT"),
+                                 ("detail", "TEXT"), ("scoring_version", "INTEGER"), ("generation", "INTEGER")] {
+                if !eventColumns.contains(name) {
+                    try connection.execute("ALTER TABLE fight_events ADD COLUMN \(name) \(type)")
+                }
+            }
             // SQLite ignores foreign_keys changes within a transaction.
             try connection.execute("PRAGMA foreign_keys=OFF")
             defer { try? connection.execute("PRAGMA foreign_keys=ON") }
@@ -743,6 +781,7 @@ actor Database {
                 try Self.migrateTeamSync(connection)
                 if stamped < 28 { try Self.migrateFootageSync(connection) }
                 try Self.migrateTranscriptionSets(connection)
+                try Self.migrateTranscriptPreservation(connection)
                 try Self.migrateBrandSync(connection)
                 if stamped < 28 { try Self.seedFootageSync(connection) }
                 // Legacy orphan data must not prevent opening the profile.
@@ -762,7 +801,73 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 30
+    static let schemaVersion: Int64 = 34
+
+    nonisolated static func migrateTranscriptPreservation(_ db: SQLiteConnection) throws {
+        if try !db.columnNames(of: "transcript_backups").contains("transcription_key") {
+            try db.executeScript("""
+                ALTER TABLE transcript_backups RENAME TO transcript_backups_legacy;
+                CREATE TABLE transcript_backups (
+                    video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+                    transcription_key TEXT NOT NULL,
+                    json TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    PRIMARY KEY (video_id, transcription_key)
+                );
+                INSERT INTO transcript_backups (video_id, transcription_key, json, created_at)
+                SELECT b.video_id, COALESCE(
+                    (SELECT t.transcription_key FROM transcripts t WHERE t.video_id = b.video_id
+                     ORDER BY CASE WHEN t.transcription_created_at = '1970-01-01T00:00:00Z' THEN 0 ELSE 1 END,
+                              t.transcription_created_at, t.transcription_key LIMIT 1),
+                    (SELECT t.transcription_key FROM speaker_turns t WHERE t.video_id = b.video_id
+                     ORDER BY t.transcription_created_at, t.transcription_key LIMIT 1),
+                    lower(hex(randomblob(16)))), b.json, b.created_at
+                FROM transcript_backups_legacy b;
+                DROP TABLE transcript_backups_legacy;
+                """)
+        }
+        for table in ["transcript_features", "edit_proposals", "topic_ranges", "voice_profiles"] {
+            if try !db.columnNames(of: table).contains("transcription_key") {
+                try db.execute("ALTER TABLE \(table) ADD COLUMN transcription_key TEXT")
+                // Existing derived data belongs to the set that was current before pins.
+                try db.execute("""
+                    UPDATE \(table) SET transcription_key = (
+                        SELECT transcription_key FROM transcripts t WHERE t.video_id = \(table).video_id
+                        ORDER BY transcription_created_at DESC, transcription_key DESC LIMIT 1)
+                    """)
+            }
+        }
+        if try !db.columnNames(of: "videos").contains("podcast_transcription_key") {
+            try db.execute("ALTER TABLE videos ADD COLUMN podcast_transcription_key TEXT")
+            try db.execute("""
+                UPDATE videos SET podcast_transcription_key = (
+                    SELECT transcription_key FROM transcripts t WHERE t.video_id = videos.id
+                    ORDER BY transcription_created_at DESC, transcription_key DESC LIMIT 1)
+                WHERE podcast_layout IS NOT NULL
+                """)
+        }
+        // A person's voice in a video is one row (people merges rely on the
+        // (person_key, video_id) conflict); the set key is provenance only.
+        // Undo a composite key an earlier development build created.
+        let voicePK = try db.query("PRAGMA table_info(voice_profiles)")
+        if (voicePK.first(where: { $0["name"]?.stringValue == "transcription_key" })?["pk"]?.intValue ?? 0) > 0 {
+            try db.executeScript("""
+                ALTER TABLE voice_profiles RENAME TO voice_profiles_legacy;
+                CREATE TABLE voice_profiles (
+                    person_key TEXT NOT NULL,
+                    video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+                    vector_json TEXT NOT NULL, windows INTEGER NOT NULL,
+                    correction_windows INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT DEFAULT (datetime('now')), transcription_key TEXT,
+                    PRIMARY KEY (person_key, video_id)
+                );
+                INSERT OR REPLACE INTO voice_profiles (person_key, video_id, vector_json, windows, correction_windows, updated_at, transcription_key)
+                SELECT person_key, video_id, vector_json, windows, correction_windows, updated_at, transcription_key
+                FROM voice_profiles_legacy ORDER BY updated_at;
+                DROP TABLE voice_profiles_legacy;
+                """)
+        }
+    }
 
     // MARK: - Helpers
 

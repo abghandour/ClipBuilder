@@ -1183,6 +1183,7 @@ nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable 
 /// the web serializer (bold/italic only when true, fractions only when set).
 nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     var uid = UUID()
+    var stat: StrikeStatPayload?
     var text: String = ""
     var startTime: Double = 0
     var endTime: Double = 3
@@ -1228,6 +1229,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     static let transitionChoices = ["fade", "slide_left", "slide_right", "slide_up", "slide_down", "pop", "cut"]
 
     enum CodingKeys: String, CodingKey {
+        case stat
         case text, fontsize, fontcolor, fontfamily, bold, italic, bgcolor, position
         case startTime = "start_time"
         case endTime = "end_time"
@@ -1258,6 +1260,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        stat = try container.decodeIfPresent(StrikeStatPayload.self, forKey: .stat)
         text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
         startTime = try container.decodeIfPresent(Double.self, forKey: .startTime) ?? 0
         endTime = try container.decodeIfPresent(Double.self, forKey: .endTime) ?? 3
@@ -1291,6 +1294,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(stat, forKey: .stat)
         try container.encode(text, forKey: .text)
         try container.encode(startTime, forKey: .startTime)
         try container.encode(endTime, forKey: .endTime)
@@ -1329,7 +1333,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     }
 
     static func == (lhs: TextOverlayItem, rhs: TextOverlayItem) -> Bool {
-        lhs.uid == rhs.uid && lhs.text == rhs.text && lhs.startTime == rhs.startTime
+        lhs.stat == rhs.stat && lhs.uid == rhs.uid && lhs.text == rhs.text && lhs.startTime == rhs.startTime
             && lhs.endTime == rhs.endTime && lhs.fontsize == rhs.fontsize
             && lhs.fontcolor == rhs.fontcolor && lhs.fontfamily == rhs.fontfamily
             && lhs.boxOpacity == rhs.boxOpacity && lhs.bold == rhs.bold && lhs.italic == rhs.italic

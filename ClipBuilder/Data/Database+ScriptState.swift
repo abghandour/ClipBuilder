@@ -213,7 +213,7 @@ extension Database {
             if let grade = scene.gradeAverage, scene.gradeCount > 0 { votes.append(grade >= 3 ? 1 : 0) }
             let reviews = try connection.query("SELECT verdict FROM clip_reviews WHERE scene_id = ?", [.integer(scene.id)])
             votes += reviews.compactMap { $0["verdict"]?.intValue }.filter { $0 != 0 }.map { $0 > 0 ? 1 : 0 }
-            let proposals = try connection.query("SELECT decision FROM edit_proposals WHERE video_id = ? AND start_time < ? AND end_time > ? AND decision != 'pending'",
+            let proposals = try connection.query("SELECT decision FROM edit_proposals WHERE video_id = ? AND \(Self.activeDerivedPredicate(table: "edit_proposals")) AND start_time < ? AND end_time > ? AND decision != 'pending'",
                 [.integer(scene.videoID), .real(scene.endTime), .real(scene.startTime)])
             // Accepting a proposed CUT means reject this footage, not keep it.
             votes += proposals.compactMap { $0["decision"]?.stringValue }.map { $0 == "accepted" ? 0 : 1 }

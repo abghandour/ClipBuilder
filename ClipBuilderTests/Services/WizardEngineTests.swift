@@ -892,7 +892,7 @@ extension WizardEngineTests {
         let videoID = try await temp.seedVideo()
         let projectID = try await database.createProject(profileName: "Captions", name: "Captions", videoIDs: [videoID])
         let scene = try #require(try await database.fetchScenes(projectID: projectID).first)
-        try await database.replaceTranscripts(videoID: videoID, language: "pt", isTranslation: false,
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "pt", isTranslation: false,
             segments: [.init(start: 0, end: 4, text: "Olá", words: nil)], provider: "test", model: nil)
         var options = WizardOptions()
         options.projectID = projectID
@@ -913,7 +913,7 @@ extension WizardEngineTests {
                 #expect(id == videoID && target == "en" && originals.map(\.text) == ["Olá"])
                 if outcome == "cancelled" { throw CancellationError() }
                 if outcome == "failure" { throw AIError.unusableResponse("Translator unavailable") }
-                try await database.replaceTranscripts(videoID: id, language: target, isTranslation: true,
+                try await database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: target, isTranslation: true,
                     segments: [.init(start: 0, end: 4, text: "Hello", words: nil)], provider: "test", model: nil)
                 return 1
             })
@@ -959,7 +959,7 @@ extension WizardEngineTests {
         let temp = try TempDatabase()
         let videoID = try await temp.seedVideo()
         let scene = try #require(try await temp.database.fetchScenes().first)
-        try await temp.database.replaceTranscripts(videoID: videoID, language: "en", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: [.init(start: 0, end: 4, text: "Hello", words: nil)], provider: "test", model: nil)
         let engine = WizardEngine(ai: AIService(config: AIConfig()), render: RenderEngine(),
             translateCaptions: { _, _, _, _ in
@@ -989,7 +989,7 @@ extension WizardEngineTests {
         let temp = try TempDatabase()
         let videoID = try await temp.seedVideo()
         let scene = try #require(try await temp.database.fetchScenes().first)
-        try await temp.database.replaceTranscripts(videoID: videoID, language: "pt", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "pt", isTranslation: false,
             segments: [.init(start: 0, end: 4, text: "Olá", words: nil)], provider: "test", model: nil)
         var config = AIConfig()
         config.tasks["translate"] = "claude"
@@ -1023,7 +1023,7 @@ extension WizardEngineTests {
         let transcript = (0..<276).map {
             TranscriptSegment(start: Double($0), end: Double($0 + 1), text: "Portuguese line \($0)", words: nil)
         }
-        try await temp.database.replaceTranscripts(videoID: videoID, language: "pt", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "pt", isTranslation: false,
             segments: transcript, provider: "fixture", model: nil)
         let stub = CaptionTranslationStub()
         let engine = WizardEngine(ai: stub.service(), render: RenderEngine(), captionOnDevice: { _, _ in [:] })
@@ -1056,13 +1056,13 @@ extension WizardEngineTests {
         let first = try #require(scenes.first { $0.videoID == firstID })
         let second = try #require(scenes.first { $0.videoID == secondID })
         for id in [firstID, secondID] {
-            try await temp.database.replaceTranscripts(videoID: id, language: "pt", isTranslation: false,
+            try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "pt", isTranslation: false,
                 segments: [.init(start: 0, end: 2, text: "First \(id)", words: nil),
                            .init(start: 2, end: 4, text: "Second \(id)", words: nil),
                            .init(start: 20, end: 22, text: "Area \(id)", words: nil),
                            .init(start: 90, end: 92, text: "Unused \(id)", words: nil)], provider: "fixture", model: nil)
         }
-        try await temp.database.replaceTranscripts(videoID: firstID, language: "en", isTranslation: true,
+        try await temp.database.replaceTranscripts(videoID: firstID, transcriptionKey: "test-transcription", language: "en", isTranslation: true,
             segments: [.init(start: 0, end: 2, text: "Already translated", words: nil)], provider: "fixture", model: nil)
         var cut = Fixtures.planClip(sceneID: first.id, start: 0, end: 4)
         cut.areaClips = [.init(area: "Same source", sceneID: first.id, start: 20, end: 22),
@@ -1089,8 +1089,10 @@ extension WizardEngineTests {
         let scene = try #require(try await database.fetchScenes(projectID: projectID).first)
         try await database.addSceneTag(sceneID: scene.id, tag: "podcast")
         try await database.addSceneTag(sceneID: scene.id, tag: "q&a")
-        try await database.setPodcastLayout(videoID: videoID, layout: .splitHorizontal, seamX: 0.5, confidence: 1)
-        try await database.replaceSpeakerTurns(videoID: videoID, turns: [
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en",
+            isTranslation: false, segments: [.init(start: 0, end: 8, text: "Fixture exchange", words: nil)], provider: "fixture", model: nil)
+        try await database.setPodcastLayout(videoID: videoID, transcriptionKey: "test-transcription", layout: .splitHorizontal, seamX: 0.5, confidence: 1)
+        try await database.replaceSpeakerTurns(videoID: videoID, transcriptionKey: "test-transcription", turns: [
             SpeakerTurn(videoID: videoID, start: 0, end: 2, cluster: 0, confidence: 1),
             SpeakerTurn(videoID: videoID, start: 2, end: 8, cluster: 1, confidence: 1)
         ])
@@ -1211,7 +1213,7 @@ extension WizardEngineTests {
     @Test func cameraFocusRejectsMultiCellResponseForASingleFeed() async throws {
         let (temp, options, take) = try await cameraFocusFixture()
         let scene = try #require(try await temp.database.fetchScenes(projectID: options.projectID).first)
-        try await temp.database.setPodcastLayout(videoID: scene.videoID, layout: .singleCamera, seamX: nil, confidence: 1)
+        try await temp.database.setPodcastLayout(videoID: scene.videoID, transcriptionKey: nil, layout: .singleCamera, seamX: nil, confidence: 1)
         let calls = WizardCaptionTestLog()
         let engine = WizardEngine(ai: cameraFocusService(calls: calls,
             reply: #"{"choices":[{"id":\#(take.id),"framing":"grid","reason":"Invalid for this recording."}]}"#),

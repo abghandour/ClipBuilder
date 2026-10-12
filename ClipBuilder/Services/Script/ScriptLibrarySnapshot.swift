@@ -7,6 +7,8 @@ nonisolated struct ScriptLibrarySnapshot: Sendable {
     var prerequisiteOutcomes: [Int64: [BuilderPrerequisiteKind: PrerequisiteOutcome]] = [:]
     var videos: [VideoRecord] = []
     var scenes: [SceneRecord] = []
+    var referencedScenes: [SceneRecord] = []
+    var scenesForReferences: [SceneRecord] { SceneReferences.combining(scenes, referenced: referencedScenes) }
     var people: [PersonRecord] = []
     var videoPeople: [Int64: [VideoPersonRanges]] = [:]
     var videosWithPeople: Set<Int64> = []
@@ -63,7 +65,8 @@ nonisolated struct ScriptLibrarySnapshot: Sendable {
     func refreshed(database: Database, language: String = "") async throws -> Self {
         var copy = self
         copy.videos = try await database.fetchVideos(projectID: projectID)
-        copy.scenes = try await database.fetchScenes(projectID: projectID)
+        copy.scenes = try await database.fetchScenes(projectID: projectID, scope: .active)
+        copy.referencedScenes = try await database.fetchScenes(ids: Set(referencedScenes.map(\.id)))
         copy.people = try await database.fetchPeople()
         copy.transcripts = []; copy.features = []; copy.proposals = []
         copy.videoPeople = [:]; copy.videosWithPeople = []; copy.prerequisiteOutcomes = [:]; copy.speakerTurns = [:]
@@ -107,7 +110,7 @@ nonisolated struct ScriptLibrarySnapshot: Sendable {
 
     func videoID(for clip: TimelineClip, scene: SceneRecord?) -> Int64? {
         if let scene { return scene.videoID }
-        if let id = clip.sceneID, let linked = scenes.first(where: { $0.id == id }) { return linked.videoID }
+        if let id = clip.sceneID, let linked = scenesForReferences.first(where: { $0.id == id }) { return linked.videoID }
         return videos.first { $0.path == clip.videoFile }?.id
     }
 
@@ -132,7 +135,7 @@ nonisolated struct ScriptLibrarySnapshot: Sendable {
     }
 
     func sourceDuration(for clip: TimelineClip) -> Double? {
-        if let id = clip.sceneID, let scene = scenes.first(where: { $0.id == id }) { return scene.videoDuration }
+        if let id = clip.sceneID, let scene = scenesForReferences.first(where: { $0.id == id }) { return scene.videoDuration }
         return videos.first { $0.path == clip.videoFile }?.duration
     }
 }

@@ -3,12 +3,25 @@ import Foundation
 extension Database {
     // MARK: - Transcripts
 
-    /// Deterministic newest original set; translations stay with that original.
-    static let activeTranscriptPredicate = """
-        transcription_key IS (SELECT chosen.transcription_key FROM transcripts chosen
-            WHERE chosen.video_id = transcripts.video_id
-            ORDER BY chosen.is_translation, chosen.transcription_created_at DESC, chosen.transcription_key DESC LIMIT 1)
+    /// The SQL counterpart of ActiveLayers.resolveTranscription, shared by bulk readers.
+    static func resolvedTranscriptionKeySQL(videoID: String) -> String {
         """
+        COALESCE((SELECT v.active_transcription_key FROM videos v WHERE v.id = \(videoID)
+            AND EXISTS (SELECT 1 FROM transcripts pinned WHERE pinned.video_id = v.id
+                AND pinned.transcription_key = v.active_transcription_key)),
+            (SELECT chosen.transcription_key FROM transcripts chosen WHERE chosen.video_id = \(videoID)
+                GROUP BY chosen.transcription_key
+                ORDER BY MAX(chosen.transcription_created_at) DESC, chosen.transcription_key DESC LIMIT 1))
+        """
+    }
+
+    static let activeTranscriptPredicate = "transcription_key IS (\(resolvedTranscriptionKeySQL(videoID: "transcripts.video_id")))"
+
+    /// Derived rows with no recorded set (older clients, legacy rows) have unknown
+    /// provenance, not wrong provenance: they stay visible until recomputed.
+    static func activeDerivedPredicate(table: String) -> String {
+        "(\(table).transcription_key IS NULL OR \(table).transcription_key IS (\(resolvedTranscriptionKeySQL(videoID: "\(table).video_id"))))"
+    }
 
     func fetchTranscriptCounts() throws -> [Int64: Int] {
         let rows = try connection.query("""
@@ -25,22 +38,50 @@ extension Database {
     func latestTranscription(videoID: Int64) throws -> (key: String?, createdAt: String?) {
         let row = try connection.query("""
             SELECT transcription_key, transcription_created_at FROM transcripts WHERE video_id = ?
-            ORDER BY is_translation, transcription_created_at DESC, transcription_key DESC LIMIT 1
+            ORDER BY transcription_created_at DESC, transcription_key DESC LIMIT 1
             """, [.integer(videoID)]).first
         return (row?["transcription_key"]?.stringValue, row?["transcription_created_at"]?.stringValue)
     }
 
-    func transcriptionSets(videoID: Int64) throws -> [TranscriptionSet] {
+    func activeTranscription(videoID: Int64) throws -> ActiveLayers.TranscriptionResolution {
+        let pin = try connection.query("SELECT active_transcription_key FROM videos WHERE id = ?", [.integer(videoID)])
+            .first?["active_transcription_key"]?.stringValue
+        return ActiveLayers.resolveTranscription(pinnedKey: pin, sets: try transcriptionSetRows(videoID: videoID))
+    }
+
+    func setActiveTranscriptionKey(videoID: Int64, key: String?) throws {
+        try connection.execute("UPDATE videos SET active_transcription_key = ? WHERE id = ?",
+                               [key.map(SQLValue.text) ?? .null, .integer(videoID)])
+    }
+
+    private func transcriptionSetRows(videoID: Int64) throws -> [TranscriptionSet] {
         try connection.query("""
-            SELECT transcription_key, MAX(transcription_created_at) AS created_at, MAX(model) AS model
+            SELECT transcription_key, MAX(transcription_created_at) AS created_at,
+                MAX(CASE WHEN is_translation = 0 THEN model END) AS model,
+                MAX(CASE WHEN is_translation = 0 THEN provider END) AS provider,
+                MAX(CASE WHEN is_translation = 0 THEN language END) AS language,
+                SUM(CASE WHEN is_translation = 0 THEN 1 ELSE 0 END) AS segment_count,
+                MAX(is_translation) AS has_translations
             FROM transcripts WHERE video_id = ? AND transcription_key IS NOT NULL
             GROUP BY transcription_key ORDER BY created_at DESC, transcription_key DESC
             """, [.integer(videoID)]).compactMap { row in
                 guard let key = row["transcription_key"]?.stringValue else { return nil }
-                return TranscriptionSet(id: key, createdAt: row["created_at"]?.stringValue ?? "", model: row["model"]?.stringValue)
+                return TranscriptionSet(id: key, createdAt: row["created_at"]?.stringValue ?? "",
+                    model: row["model"]?.stringValue, provider: row["provider"]?.stringValue,
+                    language: row["language"]?.stringValue, segmentCount: Int(row["segment_count"]?.intValue ?? 0),
+                    hasTranslations: row["has_translations"]?.boolValue ?? false)
             }
     }
 
+    func transcriptionSets(videoID: Int64) throws -> [TranscriptionSet] {
+        let resolution = try activeTranscription(videoID: videoID)
+        return try transcriptionSetRows(videoID: videoID).map { set in
+            var set = set
+            set.isActive = set.id == resolution.key
+            set.isPinned = set.isActive && resolution.isPinned
+            return set
+        }
+    }
 
     /// Availability only: return one ID per video without materializing
     /// transcript text, word timestamps, or translated rows.
@@ -78,23 +119,24 @@ extension Database {
 
     /// `seconds` is how long the pass that produced these segments took; it
     /// is stamped on every row and, for the original language, on the video.
-    func replaceTranscripts(videoID: Int64, language: String, isTranslation: Bool,
+    @discardableResult
+    func replaceTranscripts(videoID: Int64, transcriptionKey: String, language: String, isTranslation: Bool,
                             segments: [TranscriptSegment], provider: String?, model: String?, technique: String? = nil,
-                            seconds: TimeInterval? = nil) throws {
+                            seconds: TimeInterval? = nil) throws -> String {
         // One transaction: long videos have thousands of segments, and the
         // delete + inserts must land atomically.
         try connection.transaction {
-            let previous = try latestTranscription(videoID: videoID)
-            let key = previous.key ?? UUID().uuidString.lowercased()
-            let createdAt = previous.createdAt ?? Date().ISO8601Format()
+            let key = transcriptionKey
+            let createdAt = try connection.query("SELECT transcription_created_at FROM transcripts WHERE video_id = ? AND transcription_key = ? LIMIT 1",
+                [.integer(videoID), .text(key)]).first?["transcription_created_at"]?.stringValue
+                ?? Date().ISO8601Format(.iso8601(timeZone: .gmt, includingFractionalSeconds: true))
             if !isTranslation {
                 if let seconds {
                     try connection.execute("UPDATE videos SET speech_seconds = ? WHERE id = ?",
                                            [.real(seconds), .integer(videoID)])
                 }
-                // A new transcription replaces the rows a re-cut backed up:
-                // Undo must never bring an older transcription back.
-                try connection.execute("DELETE FROM transcript_backups WHERE video_id = ?", [.integer(videoID)])
+                // Only an overwrite of this set invalidates its re-cut backup.
+                try connection.execute("DELETE FROM transcript_backups WHERE video_id = ? AND transcription_key = ?", [.integer(videoID), .text(key)])
             }
             try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND language = ? AND is_translation = ? AND transcription_key IS ?",
                                    [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0), .text(key)])
@@ -112,10 +154,11 @@ extension Database {
                           seconds.map(SQLValue.real) ?? .null, .text(key), .text(createdAt)])
             }
         }
+        return transcriptionKey
     }
 
     func fetchTranscripts(videoID: Int64, transcriptionKey: String? = nil) throws -> [TranscriptRow] {
-        let key = try transcriptionKey ?? latestTranscription(videoID: videoID).key
+        let key = try transcriptionKey ?? activeTranscription(videoID: videoID).key
         return try connection.query("SELECT * FROM transcripts WHERE video_id = ? AND transcription_key IS ? ORDER BY is_translation, start_time, id",
                              [.integer(videoID), key.map(SQLValue.text) ?? .null]).map {
             TranscriptRow(id: $0["id"]?.intValue ?? 0,
@@ -140,15 +183,15 @@ extension Database {
     /// re-cut. The rows as they were are kept in `transcript_backups` (the
     /// first backup wins, so Undo always returns to the transcriber's cut);
     /// translations are untouched.
-    func recutTranscript(videoID: Int64, pieces: [TranscriptSpeakerRecut.Piece]) throws {
-        let current = try fetchTranscripts(videoID: videoID).filter { !$0.isTranslation }
+    func recutTranscript(videoID: Int64, transcriptionKey: String, pieces: [TranscriptSpeakerRecut.Piece]) throws {
+        let current = try fetchTranscripts(videoID: videoID, transcriptionKey: transcriptionKey).filter { !$0.isTranslation }
         guard !current.isEmpty, !pieces.isEmpty else { return }
         let byID = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
         let encoder = JSONEncoder()
         let backup = String(decoding: try encoder.encode(current), as: UTF8.self)
         try connection.transaction {
-            try connection.execute("INSERT OR IGNORE INTO transcript_backups (video_id, json) VALUES (?, ?)",
-                                   [.integer(videoID), .text(backup)])
+            try connection.execute("INSERT OR IGNORE INTO transcript_backups (video_id, transcription_key, json) VALUES (?, ?, ?)",
+                                   [.integer(videoID), .text(transcriptionKey), .text(backup)])
             try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND is_translation = 0 AND transcription_key IS ?", [.integer(videoID), current.first?.transcriptionKey.map(SQLValue.text) ?? .null])
             for piece in pieces {
                 let source = byID[piece.sourceRowID]
@@ -176,15 +219,23 @@ extension Database {
     }
 
     func hasTranscriptBackup(videoID: Int64) throws -> Bool {
-        try !connection.query("SELECT 1 FROM transcript_backups WHERE video_id = ?", [.integer(videoID)]).isEmpty
+        try transcriptBackup(videoID: videoID) != nil
     }
 
     /// The transcriber's rows as a re-cut backed them up; nil without one.
-    func transcriptBackup(videoID: Int64) throws -> [TranscriptRow]? {
-        guard let json = try connection.query("SELECT json FROM transcript_backups WHERE video_id = ?",
-                                              [.integer(videoID)]).first?["json"]?.stringValue else { return nil }
-        let rows = try JSONDecoder().decode([TranscriptRow].self, from: Data(json.utf8))
-        return rows.first?.transcriptionKey == (try latestTranscription(videoID: videoID).key) ? rows : nil
+    func transcriptBackup(videoID: Int64, transcriptionKey: String? = nil) throws -> [TranscriptRow]? {
+        guard let key = try transcriptionKey ?? activeTranscription(videoID: videoID).key,
+              let json = try connection.query("SELECT json FROM transcript_backups WHERE video_id = ? AND transcription_key = ?",
+                                              [.integer(videoID), .text(key)]).first?["json"]?.stringValue else { return nil }
+        var rows = try JSONDecoder().decode([TranscriptRow].self, from: Data(json.utf8))
+        // Legacy backups predate portable keys in their JSON payload.
+        let createdAt = try connection.query("SELECT transcription_created_at FROM transcripts WHERE video_id = ? AND transcription_key = ? LIMIT 1",
+            [.integer(videoID), .text(key)]).first?["transcription_created_at"]?.stringValue ?? "1970-01-01T00:00:00Z"
+        for index in rows.indices {
+            rows[index].transcriptionKey = key
+            if rows[index].transcriptionCreatedAt == nil { rows[index].transcriptionCreatedAt = createdAt }
+        }
+        return rows
     }
 
     /// The rows a re-cut should plan from. Cutting from the transcriber's
@@ -192,23 +243,22 @@ extension Database {
     /// the first, so the backup is put back first — unless the user has
     /// corrected text or speakers since, which the backup would erase: then
     /// the current rows are the base and stay as they are.
-    func transcriptRecutBase(videoID: Int64) throws -> [TranscriptRow] {
-        let current = try fetchTranscripts(videoID: videoID)
-        if let backup = try transcriptBackup(videoID: videoID),
+    func transcriptRecutBase(videoID: Int64, transcriptionKey: String? = nil) throws -> [TranscriptRow] {
+        let key = try transcriptionKey ?? activeTranscription(videoID: videoID).key
+        let current = try fetchTranscripts(videoID: videoID, transcriptionKey: key)
+        if let backup = try transcriptBackup(videoID: videoID, transcriptionKey: key),
            !TranscriptSpeakerRecut.hasEdits(current, beyond: backup) {
-            _ = try restoreTranscriptBackup(videoID: videoID)
-            return try fetchTranscripts(videoID: videoID)
+            _ = try restoreTranscriptBackup(videoID: videoID, transcriptionKey: key)
+            return try fetchTranscripts(videoID: videoID, transcriptionKey: key)
         }
         return current
     }
 
     /// Put the transcriber's rows back and drop the backup. False when
     /// there is nothing to restore.
-    func restoreTranscriptBackup(videoID: Int64) throws -> Bool {
-        guard let json = try connection.query("SELECT json FROM transcript_backups WHERE video_id = ?",
-                                              [.integer(videoID)]).first?["json"]?.stringValue else { return false }
-        let rows = try JSONDecoder().decode([TranscriptRow].self, from: Data(json.utf8))
-        guard rows.first?.transcriptionKey == (try latestTranscription(videoID: videoID).key) else { return false }
+    func restoreTranscriptBackup(videoID: Int64, transcriptionKey: String? = nil) throws -> Bool {
+        guard let rows = try transcriptBackup(videoID: videoID, transcriptionKey: transcriptionKey),
+              let key = rows.first?.transcriptionKey else { return false }
         try connection.transaction {
             try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND is_translation = 0 AND transcription_key IS ?", [.integer(videoID), rows.first?.transcriptionKey.map(SQLValue.text) ?? .null])
             for row in rows {
@@ -225,7 +275,7 @@ extension Database {
                           row.transcriptionKey.map(SQLValue.text) ?? .null,
                           row.transcriptionCreatedAt.map(SQLValue.text) ?? .null])
             }
-            try connection.execute("DELETE FROM transcript_backups WHERE video_id = ?", [.integer(videoID)])
+            try connection.execute("DELETE FROM transcript_backups WHERE video_id = ? AND transcription_key = ?", [.integer(videoID), .text(key)])
         }
         return true
     }
@@ -302,30 +352,30 @@ extension Database {
     /// proposal the user already accepted or rejected keeps its decision
     /// when the fresh analysis proposes the same range again (within 0.25 s
     /// at either end); only still-pending rows are replaced outright.
-    func replaceTranscriptFeatures(videoID: Int64, features: [TranscriptFeatureSegment],
+    func replaceTranscriptFeatures(videoID: Int64, transcriptionKey: String?, features: [TranscriptFeatureSegment],
                                    proposals: [EditProposal]) throws {
         try connection.transaction {
             let decided = try connection.query("""
                 SELECT kind, start_time, end_time, decision FROM edit_proposals
-                WHERE video_id = ? AND decision != 'pending'
+                WHERE video_id = ? AND transcription_key IS ? AND decision != 'pending'
                   AND kind IN ('silence', 'filler', 'falseStart', 'noise')
-                """, [.integer(videoID)]).compactMap { row -> (kind: String, start: Double, end: Double, decision: String)? in
+                """, [.integer(videoID), transcriptionKey.map(SQLValue.text) ?? .null]).compactMap { row -> (kind: String, start: Double, end: Double, decision: String)? in
                 guard let kind = row["kind"]?.stringValue, let start = row["start_time"]?.doubleValue,
                       let end = row["end_time"]?.doubleValue, let decision = row["decision"]?.stringValue
                 else { return nil }
                 return (kind, start, end, decision)
             }
-            try connection.execute("DELETE FROM transcript_features WHERE video_id = ?", [.integer(videoID)])
-            try connection.execute("DELETE FROM edit_proposals WHERE video_id = ? AND kind IN ('silence', 'filler', 'falseStart', 'noise')",
-                                   [.integer(videoID)])
+            try connection.execute("DELETE FROM transcript_features WHERE video_id = ? AND transcription_key IS ?", [.integer(videoID), transcriptionKey.map(SQLValue.text) ?? .null])
+            try connection.execute("DELETE FROM edit_proposals WHERE video_id = ? AND transcription_key IS ? AND kind IN ('silence', 'filler', 'falseStart', 'noise')",
+                                   [.integer(videoID), transcriptionKey.map(SQLValue.text) ?? .null])
             for feature in features {
                 try connection.execute("""
                     INSERT INTO transcript_features
-                        (video_id, start_time, end_time, text, speaker_key, energy, kind)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                        (video_id, start_time, end_time, text, speaker_key, energy, kind, transcription_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .real(feature.startTime), .real(feature.endTime),
                           .text(feature.text), feature.speakerKey.map(SQLValue.text) ?? .null,
-                          .real(feature.energy), .text(feature.kind.rawValue)])
+                          .real(feature.energy), .text(feature.kind.rawValue), transcriptionKey.map(SQLValue.text) ?? .null])
             }
             for proposal in proposals {
                 let kept = decided.first {
@@ -335,17 +385,17 @@ extension Database {
                 }
                 try connection.execute("""
                     INSERT INTO edit_proposals
-                        (video_id, kind, start_time, end_time, reason, decision)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                        (video_id, kind, start_time, end_time, reason, decision, transcription_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .text(proposal.kind.rawValue),
                           .real(proposal.startTime), .real(proposal.endTime),
-                          .text(proposal.reason), .text(kept?.decision ?? proposal.decision.rawValue)])
+                          .text(proposal.reason), .text(kept?.decision ?? proposal.decision.rawValue), transcriptionKey.map(SQLValue.text) ?? .null])
             }
         }
     }
 
     func fetchTranscriptFeatures(videoID: Int64) throws -> [TranscriptFeatureSegment] {
-        try connection.query("SELECT * FROM transcript_features WHERE video_id = ? ORDER BY start_time", [.integer(videoID)]).compactMap { row in
+        try connection.query("SELECT * FROM transcript_features WHERE video_id = ? AND \(Self.activeDerivedPredicate(table: "transcript_features")) ORDER BY start_time", [.integer(videoID)]).compactMap { row in
             guard let kind = TranscriptFeatureSegment.Kind(rawValue: row["kind"]?.stringValue ?? "") else { return nil }
             return TranscriptFeatureSegment(id: row["id"]?.intValue ?? 0, videoID: videoID,
                                             startTime: row["start_time"]?.doubleValue ?? 0,
@@ -357,7 +407,7 @@ extension Database {
     }
 
     func fetchEditProposals(videoID: Int64) throws -> [EditProposal] {
-        try connection.query("SELECT * FROM edit_proposals WHERE video_id = ? ORDER BY start_time", [.integer(videoID)]).compactMap { row in
+        try connection.query("SELECT * FROM edit_proposals WHERE video_id = ? AND \(Self.activeDerivedPredicate(table: "edit_proposals")) ORDER BY start_time", [.integer(videoID)]).compactMap { row in
             guard let kind = EditProposal.Kind(rawValue: row["kind"]?.stringValue ?? ""),
                   let decision = EditProposal.Decision(rawValue: row["decision"]?.stringValue ?? "") else { return nil }
             return EditProposal(id: row["id"]?.intValue ?? 0, videoID: videoID, kind: kind,
@@ -373,24 +423,24 @@ extension Database {
                                 .text(proposal.decision.rawValue), .integer(proposal.id)])
     }
 
-    func replaceTopicRanges(videoID: Int64, topics: [TopicRange]) throws {
+    func replaceTopicRanges(videoID: Int64, transcriptionKey: String?, topics: [TopicRange]) throws {
         try connection.transaction {
-            try connection.execute("DELETE FROM topic_ranges WHERE video_id = ?", [.integer(videoID)])
+            try connection.execute("DELETE FROM topic_ranges WHERE video_id = ? AND transcription_key IS ?", [.integer(videoID), transcriptionKey.map(SQLValue.text) ?? .null])
             for topic in topics {
                 let speakersData = try JSONEncoder().encode(topic.speakerKeys)
                 let speakers = String(data: speakersData, encoding: .utf8) ?? "[]"
                 try connection.execute("""
                     INSERT INTO topic_ranges
-                        (video_id, title, start_time, end_time, summary, speaker_keys_json)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                        (video_id, title, start_time, end_time, summary, speaker_keys_json, transcription_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .text(topic.title), .real(topic.startTime),
-                          .real(topic.endTime), .text(topic.summary), .text(speakers)])
+                          .real(topic.endTime), .text(topic.summary), .text(speakers), transcriptionKey.map(SQLValue.text) ?? .null])
             }
         }
     }
 
     func fetchTopicRanges(videoID: Int64) throws -> [TopicRange] {
-        try connection.query("SELECT * FROM topic_ranges WHERE video_id = ? ORDER BY start_time", [.integer(videoID)]).map { row in
+        try connection.query("SELECT * FROM topic_ranges WHERE video_id = ? AND \(Self.activeDerivedPredicate(table: "topic_ranges")) ORDER BY start_time", [.integer(videoID)]).map { row in
             let speakers = row["speaker_keys_json"]?.stringValue
                 .flatMap { $0.data(using: .utf8) }
                 .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []

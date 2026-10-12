@@ -1001,9 +1001,11 @@ actor Analyzer {
             throw FFmpegError.commandFailed(tool: "frame extraction", exitCode: 1,
                                             stderr: "no frames could be extracted from \(video.filename)")
         }
-        let knownPeople = (try? await database.fetchPeople()) ?? []
+        let currentPeople = (try? await database.fetchPeople()) ?? []
+        let knownPeople = AnalysisRequestContext.current?.resolvedPeople(current: currentPeople) ?? currentPeople
         let peopleByID = Dictionary(uniqueKeysWithValues: knownPeople.map { ($0.id, $0) })
-        let allMarkers = (try? await database.personMarkers(videoID: video.id)) ?? []
+        let currentMarkers = (try? await database.personMarkers(videoID: video.id)) ?? []
+        let allMarkers = AnalysisRequestContext.current?.resolvedMarkers(videoID: video.id, people: knownPeople) ?? currentMarkers
         let namedMarkers: [(marker: PersonMarker, person: PersonRecord)] = allMarkers
             .compactMap { marker in
                 guard !marker.ignored else { return nil }
@@ -1198,6 +1200,7 @@ actor Analyzer {
                 "  - key \"\(person.key)\": \(person.displayName) — \(person.descriptor)"
             }.joined(separator: "\n")
         let actions = FightScoring.actionPoints
+            .filter { $0.action != "takedown" }
             .map { "  - \"\($0.action)\" — \($0.label)" }
             .joined(separator: "\n")
         let referenceNote = hasReferences
@@ -1219,14 +1222,34 @@ actor Analyzer {
         - A "takedown" or "reversal" is credited to the fighter who completes it (ends up in control), not the one taken down.
         - When you genuinely cannot tell which of the two threw it, use "unknown" — but prefer a confident attribution using the kit references. Do not default to "unknown" out of laziness, and do not guess randomly between the two.
 
+        ATTEMPT SEQUENCES (scoring v2):
+        - Emit takedown_attempt, never takedown: at_time is entry, end_time is resolution or last observed frame,
+          target_key is the OTHER fighter, outcome is completed, defended, or unresolved. Never report an attempt as an instant.
+        - completed requires the opponent's hips/back on the mat with the attacker on top or in dominant control.
+          A later reversal or escape does not undo completion. defended ends on the feet and free.
+          unresolved means the window ends mid-attempt or the resolution is not visible. A continuing chain is ONE attempt.
+        - Examples: sprawled single leg = defended; completed double leg then scramble up = completed plus a separate
+          reversal if the opponent gains control; window ends in a fence clinch = unresolved.
+        - submission_attempt: at_time is committed entry/locked hold, end_time is resolution or last observed frame,
+          target_key, outcome, and detail from: rear-naked choke, guillotine, arm triangle, triangle, D'Arce/anaconda,
+          armbar, kimura, americana, heel hook, kneebar, ankle lock, other choke, other lock, unknown.
+        - Submission completed requires a tap, unconscious defender or referee stoppage during the hold and ends the fight.
+          defended means escape, release or loss of the hold; unresolved means resolution is not visible.
+          A hold transition is ONE attempt with the final hold in detail. A release and fresh entry more than 3 s later is new.
+        - Examples: guillotine released on a standing pass = defended; rear-naked choke with a tap = completed;
+          mounted triangle into armbar at window end = ONE unresolved attempt, detail armbar.
+        - significant_strike, hurt and knockdown REPLACE strike for the same physical blow; never log both.
+
         OTHER RULES:
         - Only log actions you can actually SEE happen in the frames. When consecutive frames show one exchange, log it conservatively — one event per landed action, never one per frame.
         - Skip officials, coaches, and crowd shots. Skip broadcast replays of an action you already logged.
-        - "t" is the timestamp in seconds, within the window above.
+        - "at_time" is the timestamp in seconds, within the window above.
         - An empty list is a valid answer for a lull with no scoring action.
+        - When a round card or clock identifies the round, include round_ranges with round, start_time and end_time
+          for the observed source-time span of that round. Do not guess unseen boundaries or extrapolate beyond this window.
 
         Return ONLY a JSON object, no markdown fences:
-        {"events": [{"t": <seconds>, "fighter": "<key or \"unknown\">", "action": "<one of the action types above>"}]}
+        {"events": [{"at_time": <seconds>, "fighter": "<key>", "action": "<action>", "end_time": <seconds or null>, "target_key": "<other key>", "outcome": "<completed|defended|unresolved or null>", "detail": "<hold or null>"}], "round_ranges": [{"round": <number>, "start_time": <seconds>, "end_time": <seconds>}]}
         """
     }
 
@@ -1236,122 +1259,156 @@ actor Analyzer {
     /// graph and per-fighter score lines render from these events. Returns
     /// the number of events saved.
     func scoreFightAction(video: VideoRecord, scenes: [SceneRecord], profile: BrandProfile,
-                          database: Database, provider: String? = nil, model: String? = nil,
+                          database: Database, provider: String? = nil, model: String? = nil, runKey: String? = nil,
                           log: @escaping @Sendable (String) -> Void) async throws -> Int {
-        try video.requirePresent()
-        guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
-        // Only footage typed fight/recap gets the pass — anything else
-        // (including untyped) shouldn't burn a dense AI pass, and the UI
-        // only shows the graph for fight footage. Read the row fresh: the
-        // caller's record predates this run's inference.
-        let currentType = ((try? await database.video(id: video.id)) ?? nil)?.type
-        guard currentType?.supportsFightFeatures == true else {
-            log("\(video.filename): \(currentType?.label ?? "untyped") video — skipping the fight scoring pass (set the Type to Fight to score it)")
-            return 0
-        }
-        let fightTags = SmartSampling.actionTags
-        let targets = scenes
-            .filter { $0.videoID == video.id && $0.tags.contains(where: fightTags.contains) }
-            .sorted { $0.startTime < $1.startTime }
-        guard !targets.isEmpty else {
-            log("\(video.filename): no fight-action scenes — skipping the fight scoring pass")
-            return 0
-        }
-        // Merge overlapping/adjacent scene ranges, then split into ≤45s
-        // scoring windows so each call stays within the frame budget at 1s.
-        var windows: [(start: Double, end: Double)] = []
-        for scene in targets {
-            if let last = windows.last, scene.startTime - last.end <= 2 {
-                windows[windows.count - 1].end = max(last.end, scene.endTime)
+        let scenes: [SceneRecord]
+        if let runKey { scenes = try await database.fetchScenes(videoID: video.id, runKey: runKey) }
+        else { scenes = try await database.fetchScenes(videoID: video.id, scope: .active) }
+        let pass = try await database.startAnalysisPass(videoID: video.id, pass: .fightScore,
+                                                         version: AnalysisPipeline.fightScorePass, runKey: runKey)
+        do {
+            let generation = try await database.fightEventGeneration(videoID: video.id)
+            try video.requirePresent()
+            guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
+            // Only footage typed fight/recap gets the pass — anything else
+            // (including untyped) shouldn't burn a dense AI pass, and the UI
+            // only shows the graph for fight footage. Read the row fresh: the
+            // caller's record predates this run's inference.
+            let storedType = ((try? await database.video(id: video.id)) ?? nil)?.type
+            let currentType = AnalysisRequestContext.current?.videoType.flatMap(VideoType.init(rawValue:)) ?? storedType
+            guard currentType?.supportsFightFeatures == true else {
+                log("\(video.filename): \(currentType?.label ?? "untyped") video — skipping the fight scoring pass (set the Type to Fight to score it)")
+                try await database.finishAnalysisPass(pass, status: .cancelled, note: "Video does not support fight scoring")
+                return 0
+            }
+            let fightTags = SmartSampling.actionTags
+            let targets = scenes
+                .filter { $0.videoID == video.id && $0.tags.contains(where: fightTags.contains) }
+                .sorted { $0.startTime < $1.startTime }
+            guard !targets.isEmpty else {
+                try Task.checkCancellation()
+                guard try await database.replaceFightEventRecords(videoID: video.id, events: [], expectedGeneration: generation) else {
+                    throw CancellationError()
+                }
+                try await database.finishAnalysisPass(pass, status: .completed, note: "No fight-action scenes")
+                return 0
+            }
+            // Merge overlapping/adjacent scene ranges, then split into ≤45s
+            // scoring windows so each call stays within the frame budget at 1s.
+            var windows: [(start: Double, end: Double)] = []
+            for scene in targets {
+                if let last = windows.last, scene.startTime - last.end <= 2 {
+                    windows[windows.count - 1].end = max(last.end, scene.endTime)
+                } else {
+                    windows.append((scene.startTime, scene.endTime))
+                }
+            }
+            windows = windows.flatMap { window -> [(start: Double, end: Double)] in
+                guard window.end - window.start > 45 else { return [window] }
+                var chunks: [(start: Double, end: Double)] = []
+                var cursor = window.start
+                while cursor < window.end {
+                    chunks.append((cursor, min(cursor + 45, window.end)))
+                    cursor += 45
+                }
+                return chunks
+            }
+            // The video's roster carries the portrait boxes needed for the
+            // visual attribution references.
+            let roster = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
+            let validKeys = Set(roster.map(\.key))
+            // Resolve either the key or the fighter's display name (the model
+            // sometimes answers with the name) to a canonical key.
+            var keyByName: [String: String] = [:]
+            for person in roster where !person.name.isEmpty {
+                keyByName[person.name.lowercased()] = person.key
+            }
+            // One cropped reference image per fighter, so the model can tell
+            // them apart by kit/build instead of guessing from a text descriptor.
+            let referenceFrames = await fighterReferenceFrames(url: video.url, roster: roster)
+            if roster.isEmpty {
+                log("\(video.filename): no identified fighters — scoring action but leaving it unattributed. Detect and name the fighters (People) for per-fighter momentum.")
             } else {
-                windows.append((scene.startTime, scene.endTime))
+                log("Attributing action to \(roster.count) fighter(s): \(roster.map(\.displayName).joined(separator: ", "))"
+                    + (referenceFrames.count == roster.count ? " (with visual references)"
+                       : " (\(referenceFrames.count) visual reference(s))"))
             }
-        }
-        windows = windows.flatMap { window -> [(start: Double, end: Double)] in
-            guard window.end - window.start > 45 else { return [window] }
-            var chunks: [(start: Double, end: Double)] = []
-            var cursor = window.start
-            while cursor < window.end {
-                chunks.append((cursor, min(cursor + 45, window.end)))
-                cursor += 45
-            }
-            return chunks
-        }
-        // The video's roster carries the portrait boxes needed for the
-        // visual attribution references.
-        let roster = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
-        let validKeys = Set(roster.map(\.key))
-        // Resolve either the key or the fighter's display name (the model
-        // sometimes answers with the name) to a canonical key.
-        var keyByName: [String: String] = [:]
-        for person in roster where !person.name.isEmpty {
-            keyByName[person.name.lowercased()] = person.key
-        }
-        let validActions = Set(FightScoring.actionKeys)
-        // One cropped reference image per fighter, so the model can tell
-        // them apart by kit/build instead of guessing from a text descriptor.
-        let referenceFrames = await fighterReferenceFrames(url: video.url, roster: roster)
-        if roster.isEmpty {
-            log("\(video.filename): no identified fighters — scoring action but leaving it unattributed. Detect and name the fighters (People) for per-fighter momentum.")
-        } else {
-            log("Attributing action to \(roster.count) fighter(s): \(roster.map(\.displayName).joined(separator: ", "))"
-                + (referenceFrames.count == roster.count ? " (with visual references)"
-                   : " (\(referenceFrames.count) visual reference(s))"))
-        }
 
-        var events: [(time: Double, fighterKey: String, action: String, points: Double)] = []
-        // The model that answered the (last) scoring window — stamped on
-        // every event row.
-        var scoringProvenance: AIProvenance?
-        for (index, window) in windows.enumerated() {
-            try Task.checkCancellation()
-            log(String(format: "Scoring fight action %d/%d [%.1fs–%.1fs]…",
-                       index + 1, windows.count, window.start, window.end))
-            let frames = await extractFrames(url: video.url, start: window.start,
-                                             end: window.end, interval: 1.0, log: log)
-            guard !frames.isEmpty else { continue }
-            let prompt = Self.fightScorePrompt(domain: profile.effectiveDomain,
-                                               windowStart: window.start, windowEnd: window.end,
-                                               roster: roster, hasReferences: !referenceFrames.isEmpty)
-            do {
-                let response = try await callThinningFrames(prompt: prompt,
-                                                            auxiliary: referenceFrames,
-                                                            sampled: frames, model: model,
-                                                            provider: provider, log: log)
-                scoringProvenance = response.provenance
-                guard let object = AIResponseParser.jsonObject(from: response.text),
-                      let raw = object["events"] as? [[String: Any]] else {
-                    log("Scoring window returned no usable events JSON — continuing")
-                    continue
+            var events: [FightEventRecord] = []
+            var roundRanges: [FightRoundRange] = []
+            var failedWindows = 0
+            var emptyWindows = 0
+            // The model that answered the (last) scoring window — stamped on
+            // every event row.
+            var scoringProvenance: AIProvenance?
+            for (index, window) in windows.enumerated() {
+                try Task.checkCancellation()
+                log(String(format: "Scoring fight action %d/%d [%.1fs–%.1fs]…",
+                           index + 1, windows.count, window.start, window.end))
+                let frames = await extractFrames(url: video.url, start: window.start,
+                                                 end: window.end, interval: 1.0, log: log)
+                guard !frames.isEmpty else { emptyWindows += 1; continue }
+                let prompt = Self.fightScorePrompt(domain: profile.effectiveDomain,
+                                                   windowStart: window.start, windowEnd: window.end,
+                                                   roster: roster, hasReferences: !referenceFrames.isEmpty)
+                do {
+                    let response = try await callThinningFrames(prompt: prompt,
+                                                                auxiliary: referenceFrames,
+                                                                sampled: frames, model: model,
+                                                                provider: provider, log: log)
+                    scoringProvenance = response.provenance
+                    guard let object = AIResponseParser.jsonObject(from: response.text),
+                          let raw = object["events"] as? [[String: Any]] else {
+                        log("Scoring window returned no usable events JSON — continuing")
+                        failedWindows += 1
+                        continue
+                    }
+                    let parsed = raw.compactMap {
+                        FightAttemptParser.parse($0, videoID: video.id, start: window.start, end: window.end,
+                                                 validKeys: validKeys, keyByName: keyByName)
+                    }
+                    if parsed.count < raw.count {
+                        log("Skipped \(raw.count - parsed.count) malformed event(s) in this window")
+                    }
+                    events += parsed
+                    roundRanges += StrikeStatsScope.parseRanges(object["round_ranges"], start: window.start, end: window.end)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    failedWindows += 1
+                    log("Fight scoring window failed (\(error)) — continuing")
                 }
-                for entry in raw {
-                    guard let action = entry["action"] as? String, validActions.contains(action),
-                          let time = (entry["t"] as? NSNumber)?.doubleValue else { continue }
-                    let raw = (entry["fighter"] as? String ?? "")
-                        .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                    let resolved = validKeys.contains(raw) ? raw : (keyByName[raw] ?? "")
-                    events.append((time: min(max(window.start, time), window.end),
-                                   fighterKey: resolved,
-                                   action: action,
-                                   points: FightScoring.points(for: action)))
-                }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                log("Fight scoring window failed (\(error)) — continuing")
             }
+            events = StrikeStatsSummary.attemptSequences(events).sorted { $0.time < $1.time }
+            for index in events.indices {
+                events[index].provider = scoringProvenance?.provider
+                events[index].model = scoringProvenance?.model
+            }
+            try Task.checkCancellation()
+            guard try await database.replaceFightEventRecords(videoID: video.id, events: events,
+                                                              expectedGeneration: generation,
+                                                              roundRanges: StrikeStatsScope.merged(roundRanges)) else {
+                throw CancellationError()
+            }
+            let summary = "\(windows.count) window(s), \(events.count) event(s)"
+                + (failedWindows > 0 ? ", \(failedWindows) failed" : "")
+                + (emptyWindows > 0 ? ", \(emptyWindows) without frames" : "")
+            // Every window failing is a failed pass, not a completed pass with no action.
+            try await database.finishAnalysisPass(pass, status: failedWindows + emptyWindows >= windows.count ? .failed : .completed,
+                                                  note: summary)
+            let attributed = events.count { !$0.fighterKey.isEmpty }
+            let share = events.isEmpty ? 0 : Int(Double(attributed) / Double(events.count) * 100)
+            log("\(video.filename): fight action scored — \(events.count) event(s), "
+                + "\(attributed) attributed to a fighter (\(share)%)")
+            if !events.isEmpty, share < 60, !roster.isEmpty {
+                log("Low attribution rate — the fighters may look too similar at this sampling; naming them and adding clearer person markers helps.")
+            }
+            return events.count
+        } catch {
+            try? await database.finishAnalysisPass(pass, status: error is CancellationError ? .cancelled : .failed,
+                                                   note: error.localizedDescription)
+            throw error
         }
-        events.sort { $0.time < $1.time }
-        try await database.replaceFightEvents(videoID: video.id, events: events,
-                                              provenance: scoringProvenance)
-        let attributed = events.count { !$0.fighterKey.isEmpty }
-        let share = events.isEmpty ? 0 : Int(Double(attributed) / Double(events.count) * 100)
-        log("\(video.filename): fight action scored — \(events.count) event(s), "
-            + "\(attributed) attributed to a fighter (\(share)%)")
-        if !events.isEmpty, share < 60, !roster.isEmpty {
-            log("Low attribution rate — the fighters may look too similar at this sampling; naming them and adding clearer person markers helps.")
-        }
-        return events.count
     }
 
     /// One cropped reference image per identified fighter (from their stored

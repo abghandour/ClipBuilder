@@ -1,5 +1,7 @@
 import Foundation
 
+/// ContentHash samples the first/last megabyte plus size; this unchanged
+/// sampled identity is the sync natural key, not a whole-file hash.
 /// Metadata is a rescan shortcut, not deep verification. All disk access is
 /// serialized; callers run on an actor or an explicit concurrent worker.
 nonisolated final class SourceIdentityCache: @unchecked Sendable {
@@ -35,8 +37,8 @@ nonisolated final class SourceIdentityCache: @unchecked Sendable {
                 entries = (try? JSONDecoder().decode([String: Entry].self, from: Data(contentsOf: index))) ?? [:]
             }
             let resolved = url.resolvingSymlinksInPath().standardizedFileURL
-            let values = try resolved.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-            if !force, let size = values.fileSize, let modified = values.contentModificationDate,
+            let values = try FileManager.default.attributesOfItem(atPath: resolved.path)
+            if !force, let size = (values[.size] as? NSNumber)?.intValue, let modified = values[.modificationDate] as? Date,
                let entry = entries?[resolved.path], entry.size == size, entry.modified == modified {
                 return entry.fingerprint
             }
@@ -44,10 +46,9 @@ nonisolated final class SourceIdentityCache: @unchecked Sendable {
             defer { PerfSignpost.end(timing) }
             let fingerprint = try hash(resolved)
             // Don't record a file that changed while it was being read.
-            let after = try URL(fileURLWithPath: resolved.path).resourceValues(
-                forKeys: [.fileSizeKey, .contentModificationDateKey])
-            if let size = values.fileSize, let modified = values.contentModificationDate,
-               after.fileSize == size, after.contentModificationDate == modified {
+            let after = try FileManager.default.attributesOfItem(atPath: resolved.path)
+            if let size = (values[.size] as? NSNumber)?.intValue, let modified = values[.modificationDate] as? Date,
+               (after[.size] as? NSNumber)?.intValue == size, after[.modificationDate] as? Date == modified {
                 entries?[resolved.path] = Entry(size: size, modified: modified, fingerprint: fingerprint)
                 try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 if let data = try? JSONEncoder().encode(entries ?? [:]) { try? data.write(to: index, options: .atomic) }

@@ -31,7 +31,7 @@ nonisolated enum CriticEvaluator {
         guard !holdout.isEmpty else {
             throw AppJobEmptyResult(message: "No labeled local reels outside the exemplar pool. Generate and rate more reels first.")
         }
-        let sceneMap = Dictionary(uniqueKeysWithValues: try await database.fetchScenes(includeExcluded: true).map { ($0.id, $0) })
+        let sceneMap = Dictionary(uniqueKeysWithValues: try await database.fetchScenes(scope: .history, includeExcluded: true).map { ($0.id, $0) })
         var rows: [CriticAgreement.Row] = []
         emit("Evaluating \(holdout.count) reels: \(holdout.count * 2) critique calls, about 12 frames each.")
         for (index, video) in holdout.enumerated() {

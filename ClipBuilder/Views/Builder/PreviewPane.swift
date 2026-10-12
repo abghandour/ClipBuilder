@@ -54,9 +54,12 @@ struct PreviewPane: View {
                     }) { overlay in
                         ImageOverlayLayer(overlay: overlay, frame: frame)
                     }
-                    ForEach(overlays.textOverlays.filter {
+                    let boundText = overlays.textOverlays.flatMap {
+                        StrikeStatSourceBinding.mapped($0, clips: overlays.videoTrack, scenes: store.scenes, videos: store.videos)
+                    }
+                    ForEach(Array(boundText.filter {
                         $0.startTime <= time && time < $0.endTime
-                    }) { overlay in
+                    }.enumerated()), id: \.offset) { _, overlay in
                         TextOverlayLayer(overlay: overlay, frame: frame)
                     }
                     if case .clip(let uid) = model.selection,
@@ -542,7 +545,7 @@ private struct TextOverlayLayer: View {
             default: return 0.85
             }
         }()
-        Text(overlay.text)
+        Text(overlay.stat.map(StrikeStatsCopy.text) ?? overlay.text)
             .font(.system(size: CGFloat(overlay.fontsize) * frame.height / 1920,
                           weight: overlay.bold ? .bold : .regular))
             .italic(overlay.italic)

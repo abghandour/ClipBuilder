@@ -107,6 +107,9 @@ extension AppStore {
         } else {
             view = TimelineViewState()
         }
+        builder.updateScenes(scenes, referencedScenes: referencedScenes,
+                             keeping: Set(document.videoTrack.compactMap(\.sceneID)))
+        sceneHydration = hydrateReferencedScenes(ids: Set(document.videoTrack.compactMap(\.sceneID)))
         builder.loadTimeline(id: timeline.id, document: document, revision: timeline.documentRevision,
                              playhead: view.playhead, zoom: view.zoom,
                              selection: view.selection,
@@ -234,8 +237,8 @@ extension AppStore {
         pendingTimelineSaves[key] = TimelineSaveSnapshot(
             version: timelineSaveVersion, revision: builder.revision,
             runUUID: builder.scriptRunStatus?.uuid, runStatus: builder.scriptRunStatus?.status, document: document,
-            thumbnailVideoID: document.videoTrack.first?.sceneID
-                .flatMap { sceneID in scenes.first(where: { $0.id == sceneID })?.videoID })
+            thumbnailVideoID: knownVideoID(document.videoTrack.first?.sceneID
+                .flatMap { sceneID in builder.scenes.first(where: { $0.id == sceneID })?.videoID }))
         guard timelineSaveTasks[key] == nil else { return }
         // One drain per database/timeline serializes writes; newer snapshots
         // replace queued snapshots and invalidate an encode still in progress.
@@ -417,7 +420,14 @@ extension AppStore {
     }
 
     private func wizardThumbnail(_ document: TimelineDocument) -> Int64? {
-        document.videoTrack.first?.sceneID.flatMap { id in scenes.first { $0.id == id }?.videoID }
+        knownVideoID(document.videoTrack.first?.sceneID.flatMap { id in historyScenes.first { $0.id == id }?.videoID })
+    }
+
+    /// Identity-hydrated scenes can outlive their video row; `timelines.thumbnail_video_id`
+    /// is a foreign key, so an unknown video must save as no thumbnail, not fail the save.
+    private func knownVideoID(_ id: Int64?) -> Int64? {
+        guard let id, videos.contains(where: { $0.id == id }) else { return nil }
+        return id
     }
 
     private func updateCommittedTimeline(id: Int64, json: String, revision: Int) {
@@ -442,7 +452,7 @@ extension AppStore {
                 .videoTrack.first?.sceneID
             let thumbnailVideoID: Int64?
             if let sceneID {
-                thumbnailVideoID = try? await database.fetchScenes(sceneID: sceneID).first?.videoID
+                thumbnailVideoID = try? await database.fetchScenes(ids: [sceneID]).first?.videoID
             } else {
                 thumbnailVideoID = nil
             }
@@ -777,10 +787,12 @@ extension AppStore {
         appendLog(\.wizardLog, ["— Manual build: rendering \(document.videoTrack.count) clip(s) —"])
         let profile = activeProfile
         let renderer = multitrackRenderer
-        let scenes = self.scenes
+        let discoveryScenes = scenes
         let projectID = activeProjectID
         Task {
             do {
+                let referenced = try await database.fetchScenes(ids: Set(document.videoTrack.compactMap(\.sceneID)))
+                let scenes = SceneReferences.combining(discoveryScenes, referenced: referenced)
                 let document = try await manualBuildDocument(document, includeOutro: includeOutro,
                                                          profile: profile)
                 let result = try await renderer.render(document: document, scenes: scenes,
@@ -860,8 +872,10 @@ extension AppStore {
         appendLog(\.wizardLog, ["— Exact preview: rendering \(document.videoTrack.count) clip(s) —"])
         let profile = activeProfile
         let renderer = multitrackRenderer
-        let scenes = self.scenes
+        let discoveryScenes = scenes
         do {
+            let referenced = try await database.fetchScenes(ids: Set(document.videoTrack.compactMap(\.sceneID)))
+            let scenes = SceneReferences.combining(discoveryScenes, referenced: referenced)
             let document = try await manualBuildDocument(document, includeOutro: includeOutro,
                                                      profile: profile)
             let result = try await renderer.render(document: document, scenes: scenes,

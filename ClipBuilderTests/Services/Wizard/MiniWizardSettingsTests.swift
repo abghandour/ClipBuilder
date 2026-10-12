@@ -120,10 +120,10 @@ extension MiniWizardSettingsTests {
         let video = try await temp.seedVideo()
         #expect(try await temp.database.originalTranscriptLanguage(videoID: video) == nil)
         let rows = [TranscriptSegment(start: 0, end: 4, text: "Question", words: nil)]
-        try await temp.database.replaceTranscripts(videoID: video, language: "en", isTranslation: true,
+        try await temp.database.replaceTranscripts(videoID: video, transcriptionKey: "test-transcription", language: "en", isTranslation: true,
             segments: rows, provider: nil, model: nil)
         #expect(try await temp.database.originalTranscriptLanguage(videoID: video) == nil)
-        try await temp.database.replaceTranscripts(videoID: video, language: "pt", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: video, transcriptionKey: "test-transcription", language: "pt", isTranslation: false,
             segments: rows, provider: nil, model: nil)
         #expect(try await temp.database.originalTranscriptLanguage(videoID: video) == "pt")
     }

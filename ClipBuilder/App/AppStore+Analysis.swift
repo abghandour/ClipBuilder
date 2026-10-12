@@ -21,7 +21,8 @@ extension AppStore {
     /// Every run is a full pass that lands in a new analyze batch alongside
     /// any earlier ones — delete unwanted batches from the Scenes screen.
     func analyze(videos targets: [VideoRecord], provider: String? = nil, model: String? = nil,
-                 includeFightScoring: Bool = true, originatingProjectName: String? = nil) {
+                 includeFightScoring: Bool = true, originatingProjectName: String? = nil,
+                 capturedRequests: [Int64: AnalysisRequest]? = nil, duplicatePolicy: AnalysisDuplicatePolicy = .ask) {
         guard let database, !isAnalyzing else { return }
         guard targets.allSatisfy(\.isPresent) else { presentError(VideoRecord.notPresentReason); return }
         isAnalyzing = true
@@ -32,48 +33,15 @@ extension AppStore {
         analysisProgress = 0
         let profile = activeProfile
         let analyzer = analyzer
-        // Instructions and sampling density come from the dispatch plan
-        // sheet (persisted, so muted runs keep the last-used values).
-        let instructions = UserDefaults.standard.string(forKey: "analysis.instructions") ?? ""
-        let storedInterval = UserDefaults.standard.double(forKey: "analysis.sampleInterval")
-        // People attribution is mandatory: the people-detection pass gates
-        // tagging, and every scene must carry whoever is in it.
-        let detectPeople = UserDefaults.standard.object(forKey: "analysis.detectPeople") as? Bool ?? true
-        let autoZoomUnframed = UserDefaults.standard.bool(forKey: "analysis.autoZoomUnframed")
-        let breakdownTags: [String] = UserDefaults.standard.bool(forKey: "analysis.autoBreakdown")
-            ? (UserDefaults.standard.string(forKey: "analysis.breakdownTags") ?? "")
-                .split(separator: ",").map(String.init)
-            : []
-        // Center Stage moved to curation: paths are computed per scene from
-        // the Raw Scenes "Edit Scene" modal, never during analysis.
-        // One-shot trim from the plan sheet — consumed and cleared here so a
-        // leftover range never silently applies to a later run.
-        let trimStart = UserDefaults.standard.object(forKey: "analysis.trimStart") as? Double
-        let trimEnd = UserDefaults.standard.object(forKey: "analysis.trimEnd") as? Double
-        UserDefaults.standard.removeObject(forKey: "analysis.trimStart")
-        UserDefaults.standard.removeObject(forKey: "analysis.trimEnd")
-        let trimRange: (start: Double, end: Double)? = {
-            guard targets.count == 1, let trimStart, let trimEnd, trimEnd > trimStart else { return nil }
-            return (trimStart, trimEnd)
-        }()
-        // One-shot required-people filter from the plan sheet's roster.
-        let requiredPeopleKeys = (UserDefaults.standard.string(forKey: "analysis.requiredPeople") ?? "")
-            .split(separator: ",").map(String.init)
-        UserDefaults.standard.removeObject(forKey: "analysis.requiredPeople")
-        let sampleInterval: Double? = storedInterval > 0 ? storedInterval : nil
-        // Smart Sampling: phased analysis for long files, on unless switched off.
-        let smartSampling = UserDefaults.standard.object(forKey: "analysis.smartSampling") as? Bool ?? true
-        let pastedNotes = AISettingsJSON.decode([AnalysisRunNote].self, UserDefaults.standard.string(forKey: "analysis.pastedNotes"))
-        UserDefaults.standard.removeObject(forKey: "analysis.pastedNotes")
-        let includeTranscript = UserDefaults.standard.bool(forKey: "analysis.includeTranscript")
+        let capturedPlan = AnalysisRequest.capturePlan(defaults: .standard, singleVideo: targets.count == 1,
+            provider: provider, model: model, includeFightScoring: includeFightScoring)
+        let capturedConfig = AIRoutingResolver.effectiveConfig(local: settings.ai, team: profile.aiRouting)
         let transcription = transcription
-        let localClassification = OnDevicePolicy.isEnabled(item: "long-recording", config: settings.ai)
         let localPodcast = OnDevicePolicy.isEnabled(item: "podcast-exchanges", config: settings.ai)
         let podcastAnalysis = podcastAnalysis
         let editingDefaults = editingDefaults
         let podcastEditingSettings = podcastEditingSettings
         let language = editingDefaults.footage.language
-        if !instructions.isEmpty { appendLog(\.analysisLog, ["Using analysis instructions: \(instructions)"]) }
         let generation = profileGeneration
         analysisTask = Task {
             await AIRunCapture.context.withValue(AIRunCapture()) {
@@ -81,40 +49,43 @@ extension AppStore {
                 isAnalyzing = false
                 refreshAll()
             }
-            // The roster's checked people become a hard filter: every kept
-            // range must show ALL of them with most of their body visible.
-            var instructions = instructions
-            if !requiredPeopleKeys.isEmpty {
-                let people = (try? await database.fetchPeople()) ?? []
-                let names = requiredPeopleKeys.map { key in
-                    people.first { $0.key == key }
-                        .map { "\($0.displayName) (key \"\($0.key)\")" } ?? key
+            var requests = capturedRequests ?? [:]
+            do {
+                for video in targets where requests[video.id] != nil {
+                    let actual = try await Task.detached(priority: .utility) {
+                        try SourceIdentityCache.shared.fingerprint(of: video.url, force: true)
+                    }.value
+                    if duplicatePolicy == .missingOnly, requests[video.id]?.sourceIdentity != actual {
+                        throw ScriptError.invalid("The source file changed. Start Analyze again to capture its new inputs.")
+                    }
+                    requests[video.id]?.sourceIdentity = actual
                 }
-                let filterLine = "HARD FILTER: Only include time ranges where ALL of these people are on screen AT THE SAME TIME, each with more than half of their body visible: "
-                    + names.joined(separator: ", ")
-                    + ". Omit every range where any of them is absent, mostly occluded, or barely in frame."
-                instructions = instructions.isEmpty ? filterLine : filterLine + "\n" + instructions
-                appendLog(\.analysisLog, ["Requiring people in every scene: \(names.joined(separator: ", "))"])
+                for video in targets where requests[video.id] == nil {
+                    requests[video.id] = try await captureAnalysisRequest(video: video, plan: restoredAnalysisRequests[video.id].map { saved in
+                            var plan = capturedPlan
+                            plan.includeFightScoring = saved.plan.includeFightScoring
+                            return plan
+                        } ?? capturedPlan,
+                        profile: profile, config: capturedConfig, podcast: podcastEditingSettings, language: language, resolveType: true)
+                }
+            } catch {
+                analyzingVideoIDs = []
+                presentError("Could not capture analysis settings", error)
+                return
             }
-            // The plan a fresh video's checkpoint carries, so a resumed run
-            // keeps the settings it started with; the one-shot options were
-            // consumed above and cannot be re-read later.
-            let freshPlan = AnalysisCheckpoint.Plan(
-                instructions: instructions, sampleInterval: sampleInterval,
-                detectPeople: detectPeople, autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTags,
-                trimRange: trimRange.map { [$0.start, $0.end] }, requiredPeopleKeys: requiredPeopleKeys,
-                pastedNotes: pastedNotes, smartSampling: smartSampling,
-                includeTranscript: includeTranscript, includeFightScoring: includeFightScoring,
-                provider: provider, model: model)
-            // People first seen anywhere in this batch — reviewed once at the
-            // end. Later videos already treat them as known (people are
-            // refetched per video), so keys never repeat across videos.
+            guard generation == profileGeneration, !Task.isCancelled else { analyzingVideoIDs = []; return }
+            for (id, request) in requests { analysisRequestPreviews[id] = request }
+            // Every request is now immutable, including the one-shot values.
+            // This precedes even reading an interrupted checkpoint below.
+            AnalysisRequest.consumeOneShotDefaults(.standard)
+            // People first seen anywhere in this batch are reviewed once at
+            // the end; each video's input identities remain its captured set.
             var newPeople: [DetectedNewPerson] = []
             var renameSuggestions: [RenameSuggestion] = []
             let runStarted = ContinuousClock.now
-            var analyzed = 0, failed = 0
+            var analyzed = 0, failed = 0, skipped = 0
             for (index, video) in targets.enumerated() {
-                if Task.isCancelled { break }
+                if Task.isCancelled || generation != profileGeneration { break }
                 analyzingVideoIDs = Set(targets[index...].map(\.id))
                 AIRunCapture.current?.reset()
                 var video = video
@@ -123,20 +94,79 @@ extension AppStore {
                 // An interrupted run of this video carries on from its
                 // checkpoint, under the settings it started with; anything
                 // else starts a checkpoint of its own.
+                guard var request = requests[video.id] else { continue }
                 var checkpoint: AnalysisCheckpoint
                 var stopped = analysisCheckpoints[video.id]
                 if stopped == nil { stopped = (try? await database.fetchAnalysisCheckpoint(videoID: video.id)) ?? nil }
                 if let stopped {
                     checkpoint = stopped
+                    if let saved = stopped.request, saved.sourceIdentity != request.sourceIdentity {
+                        appendLog(\.analysisLog, ["\(video.filename): source file changed; choose Start Over instead of resuming."])
+                        failed += 1
+                        continue
+                    }
+                    request = stopped.request ?? request
+                    if stopped.request == nil {
+                        request.plan = stopped.plan
+                        // Old checkpoints predate full requests. Preserve their
+                        // explicit provider/model overrides as the old runner did.
+                        let routing = AIService(config: capturedConfig)
+                        for task in Array(request.routing.keys) {
+                            let primary = await routing.resolveProviderModel(task: task,
+                                provider: stopped.plan.provider, model: stopped.plan.model)
+                            request.routing[task] = [.init(provider: primary.provider, model: primary.model)]
+                                + (request.routing[task] ?? []).filter { $0.provider != primary.provider }
+                        }
+                    }
+                    checkpoint.request = request
                     checkpoint.lastError = nil
                     appendLog(\.analysisLog, ["\(video.filename): resuming the analysis stopped at \(stopped.percent)%"
                         + (stopped.stage.isEmpty ? "" : " (\(stopped.stage))") + " — keeping the settings of that run"])
                 } else {
                     checkpoint = AnalysisCheckpoint(videoID: video.id, startedAt: .now, updatedAt: .now,
-                                                    runName: "", plan: freshPlan)
+                                                    runName: "", plan: request.plan, request: request)
                 }
+                if stopped == nil {
+                    let runs = (try? await database.fetchAnalysisRuns()) ?? analysisRuns
+                    let passes = (try? await database.fetchAnalysisPasses()) ?? analysisPasses
+                    if let duplicate = AnalysisDuplicates.duplicate(videoID: video.id, request: request, runs: runs, passes: passes) {
+                        if targets.count > 1 && duplicatePolicy == .ask {
+                            skipped += 1
+                            analysisProgress = base + span
+                            analysisStage = "\(analyzed) analyzed, \(skipped) skipped as up to date"
+                            appendLog(\.analysisLog, ["\(video.filename): skipped as up to date"])
+                            continue
+                        }
+                        let coverageScenes = (try? await database.fetchScenes(videoID: video.id, scope: .history)) ?? []
+                        let coveragePeople = (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
+                        let coverageTranscript = (try? await database.fetchTranscripts(videoID: video.id, transcriptionKey: request.transcriptKey)) ?? []
+                        let missing = AnalysisDuplicates.missingPasses(request: request, run: duplicate, passes: passes,
+                            qaCount: coverageScenes.count { $0.runID == duplicate.id && $0.tags.contains("q&a") },
+                            peopleCount: coveragePeople.count, hasTranscript: coverageTranscript.contains { !$0.isTranslation })
+                        if duplicatePolicy == .ask {
+                            pendingAnalysisDuplicate = AnalysisDuplicatePrompt(video: video, request: request, run: duplicate, missingPasses: missing)
+                            analyzingVideoIDs = []
+                            return
+                        }
+                        if duplicatePolicy == .missingOnly {
+                            do {
+                                try await runMissingAnalysisPasses(video: video, request: request, run: duplicate, missing: missing)
+                                analyzed += 1
+                            } catch {
+                                failed += 1
+                                appendLog(\.analysisLog, ["\(video.filename): \(error.userMessage)"])
+                            }
+                            continue
+                        }
+                    }
+                }
+                restoredAnalysisRequests[video.id] = nil
                 let plan = checkpoint.plan
-                let instructions = plan.instructions
+                var instructions = plan.instructions
+                if !plan.requiredPeopleKeys.isEmpty {
+                    instructions = "HARD FILTER: Only include time ranges where ALL of these people are on screen together with more than half of their body visible: "
+                        + plan.requiredPeopleKeys.joined(separator: ", ") + ".\n" + instructions
+                }
                 let sampleInterval = plan.sampleInterval
                 let detectPeople = plan.detectPeople
                 let autoZoomUnframed = plan.autoZoomUnframed
@@ -145,41 +175,31 @@ extension AppStore {
                 let includeTranscript = plan.includeTranscript
                 let includeFightScoring = plan.includeFightScoring
                 let requiredPeopleKeys = plan.requiredPeopleKeys
-                let pastedNotes = plan.pastedNotes
                 let provider = plan.provider
                 let model = plan.model
                 let trimRange: (start: Double, end: Double)? = plan.trimRange.flatMap {
                     $0.count == 2 && $0[1] > $0[0] ? (start: $0[0], end: $0[1]) : nil
                 }
                 do {
-                    let transcriptFeatures = localClassification ? ((try? await database.fetchTranscriptFeatures(videoID: video.id)) ?? []) : []
-                    let speechFraction = transcriptFeatures.isEmpty ? nil : transcriptFeatures.filter { $0.kind == .speech }.reduce(0) { $0 + $1.endTime - $1.startTime } / max(1, video.duration)
-                    let wantsCuts = (localClassification && video.type == nil && video.duration >= 300)
-                        || (smartSampling && SmartSampling.appliesTo(duration: video.duration, customInterval: sampleInterval,
-                                                                     trimmed: trimRange != nil, nativeVideo: false))
+                    let profile = try await analysisProfile(for: request, current: profile)
+                    let localPodcast = request.onDevice["podcast-exchanges"] ?? localPodcast
+                    let podcastEditingSettings = AISettingsJSON.decode(PodcastSettings.self, request.podcastJSON) ?? podcastEditingSettings
+                    let language = request.language
+                    video.videoType = request.videoType
+                    try await AnalysisRequestContext.$current.withValue(request) {
+                    let wantsCuts = smartSampling && SmartSampling.appliesTo(duration: video.duration, customInterval: sampleInterval,
+                                                                              trimmed: trimRange != nil, nativeVideo: false)
                     let cuts = wantsCuts ? await cachedDetectors(for: video)?.cuts : nil
-                    if video.type == nil, video.duration >= 300,
-                       let type = try await analyzer.classifyLongRecording(
-                        video: video, provider: provider, model: model, log: logSink(\.analysisLog),
-                        useLocal: localClassification, speechFraction: speechFraction, cuts: cuts) {
-                        video.videoType = type.rawValue
-                        try await database.setVideoType(id: video.id, type: type.rawValue)
-                    }
-                    let notes: [VideoNote]
-                    if let pastedNotes {
-                        notes = pastedNotes.enumerated().map {
-                            VideoNote(id: Int64($0.offset), videoID: video.id, atTime: $0.element.at, note: $0.element.note)
-                        }
-                    } else {
-                        notes = (try? await database.videoNotes(videoID: video.id)) ?? []
+                    let notes = request.notes.enumerated().map {
+                        VideoNote(id: Int64($0.offset), videoID: video.id, atTime: $0.element.at, note: $0.element.note)
                     }
                     if !notes.isEmpty {
                         appendLog(\.analysisLog, ["\(video.filename): applying \(notes.count) timestamped note(s)"])
                     }
-                    // Refetched per video so people discovered earlier in this
-                    // batch keep their identity in the following videos.
-                    let knownPeople = (try? await database.fetchPeople()) ?? []
-                    let markers = (try? await database.personMarkers(videoID: video.id)) ?? []
+                    // Resolve portable captured identities to local IDs.
+                    let currentPeople = (try? await database.fetchPeople()) ?? []
+                    let knownPeople = request.resolvedPeople(current: currentPeople)
+                    let markers = request.resolvedMarkers(videoID: video.id, people: knownPeople)
                     // Counted from the DB right before the run, so mid-batch
                     // additions are seen and the v-counter never repeats.
                     let existingBatches = ((try? await database.fetchAnalysisRuns()) ?? [])
@@ -222,8 +242,8 @@ extension AppStore {
                             // intentionally limited to non-podcast footage.
                             languageCode: "", analyzer: analyzer,
                             transcription: transcription,
-                            highlightThreshold: editingDefaults.podcast.highlightThreshold,
-                            holdSeconds: editingDefaults.podcast.speakerHoldSeconds,
+                            highlightThreshold: podcastEditingSettings.highlightThreshold,
+                            holdSeconds: podcastEditingSettings.speakerHoldSeconds,
                             log: logSink(\.analysisLog), progress: progress, useLocal: localPodcast,
                             capturedSettings: podcastEditingSettings,
                             checkpointing: PodcastCheckpointing(resume: checkpoint.podcast) { state in
@@ -269,14 +289,16 @@ extension AppStore {
                     }
                     if let runID, checkpoint.runID == runID, !checkpoint.transcriptDone, !checkpoint.fightScoringDone {
                         let savedRun = try await database.fetchAnalysisRuns().first { $0.id == runID }
-                        let pipeline = AISettingsJSON.decode(AnalysisRunSettings.self, savedRun?.settingsJSON)?.pipeline
+                        let savedSettings = AISettingsJSON.decode(AnalysisRunSettings.self, savedRun?.settingsJSON)
+                        let pipeline = savedSettings?.pipeline
                         try await database.saveAnalysisSettings(id: runID, settings: AnalysisRunSettings(
                             instructions: instructions, sampleInterval: sampleInterval ?? 0,
                             includeTranscript: includeTranscript || video.type?.usesPodcastPass == true, language: video.type?.usesPodcastPass == true ? "" : language,
                             detectPeople: detectPeople, autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTags,
                             smartSampling: smartSampling,
                             trimRange: trimRange.map { [$0.start, $0.end] }, notes: notes.map { AnalysisRunNote(at: $0.atTime, note: $0.note) },
-                            provider: provider, model: model, videoPath: video.path, sourcePeople: requiredPeopleKeys, sourceProfile: profile.profileName, pipeline: pipeline))
+                            provider: provider, model: model, videoPath: video.path, sourcePeople: requiredPeopleKeys, sourceProfile: profile.profileName, pipeline: pipeline,
+                            transcriptionKey: savedSettings?.transcriptionKey))
                     }
                     let pendingKeys = Set(newPeople.map(\.key))
                     newPeople.append(contentsOf: videoNewPeople.filter { !pendingKeys.contains($0.key) })
@@ -318,17 +340,17 @@ extension AppStore {
                                 do {
                                     try await PodcastAnalysisService.mapSpeakers(
                                         video: video, database: database,
-                                        holdSeconds: editingDefaults.podcast.speakerHoldSeconds,
+                                        holdSeconds: podcastEditingSettings.speakerHoldSeconds,
                                         log: logSink(\.analysisLog))
                                 } catch is CancellationError {
-                                    break
+                                    throw CancellationError()
                                 } catch {
                                     appendLog(\.analysisLog, ["\(video.filename): speaker map failed — \(error.userMessage)"])
                                 }
                             }
                             await updateAnalysisCheckpoint(videoID: videoID) { $0.transcriptDone = true }
                         } catch is CancellationError {
-                            break
+                            throw CancellationError()
                         } catch {
                             appendLog(\.analysisLog, ["\(video.filename): transcription failed — \(error.userMessage)"])
                         }
@@ -339,14 +361,15 @@ extension AppStore {
                         do {
                             analysisStage = "scoring fight action"
                             let allScenes = (try? await database.fetchScenes(includeExcluded: true)) ?? []
+                            let scoreRunKey = try await database.fetchAnalysisRuns().first { $0.id == runID }?.runKey
                             _ = try await analyzer.scoreFightAction(
                                 video: video, scenes: allScenes.filter { $0.videoID == video.id },
                                 profile: profile, database: database,
-                                provider: provider, model: model,
+                                provider: provider, model: model, runKey: scoreRunKey,
                                 log: logSink(\.analysisLog))
                             await updateAnalysisCheckpoint(videoID: videoID) { $0.fightScoringDone = true }
                         } catch is CancellationError {
-                            break
+                            throw CancellationError()
                         } catch {
                             appendLog(\.analysisLog, ["\(video.filename): fight scoring failed — \(error.userMessage)"])
                         }
@@ -355,6 +378,7 @@ extension AppStore {
                     await clearAnalysisCheckpoint(videoID: videoID)
                     analyzed += 1
                     appendLog(\.analysisLog, ["\(video.filename): done"])
+                    }
                 } catch is CancellationError {
                     break
                 } catch let error as AIError {
@@ -389,7 +413,7 @@ extension AppStore {
                 analysisStage = "done"
                 let names = targets.count == 1 ? targets[0].filename : "\(analyzed) of \(targets.count) videos"
                 analysisCompletion = AnalysisCompletion(
-                    summary: failed == 0 ? "Analyzed \(names) in \(clock). Scenes and people are ready on the Scenes screen."
+                    summary: targets.count > 1 ? "\(analyzed) analyzed, \(skipped) skipped as up to date" + (failed > 0 ? ", \(failed) failed" : "") : failed == 0 ? "Analyzed \(names) in \(clock). Scenes and people are ready on the Scenes screen."
                         : "Analyzed \(names) in \(clock); \(failed) failed — see the App Log.",
                     failed: failed, stopped: false)
             }
@@ -482,6 +506,13 @@ extension AppStore {
     func reanalyzeBatch(_ run: AnalysisRun) {
         guard let video = videos.first(where: { $0.id == run.videoID }) else {
             presentError("The source video for this analyze batch is no longer in the library.")
+            return
+        }
+        if let request = AISettingsJSON.decode(AnalysisRequest.self, run.requestJSON) {
+            restoredAnalysisRequests[video.id] = request
+            request.restorePlan(to: .standard)
+            pendingAnalyzeSetup = video
+            requestedSection = .analyze
             return
         }
         let defaults = UserDefaults.standard

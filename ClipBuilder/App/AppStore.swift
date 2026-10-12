@@ -199,6 +199,11 @@ final class AppStore {
     var videos: [VideoRecord] = [] { didSet { videosVersion &+= 1 } }
     private(set) var videosVersion = 0
     @ObservationIgnored var rebuildSceneIndexAfterWrite = true
+    var historyScenes: [SceneRecord] = [] { didSet { scenesVersion &+= 1 } }
+    var referencedScenes: [SceneRecord] = []
+    /// The last timeline open's reference hydration; await `.value` to let an open settle.
+    var sceneHydration: Task<Void, Never>?
+    var sceneReferences: [AnalysisRunReference] = []
     var scenes: [SceneRecord] = [] {
         didSet {
             if rebuildSceneIndexAfterWrite { sceneIndex = SceneIndex(scenes) }
@@ -223,6 +228,7 @@ final class AppStore {
     /// Logs are capped at this many lines; a multi-hour run otherwise grows
     /// an observed array without bound.
     static let logLineCap = 4000
+    var analysisPasses: [AnalysisPassRecord] = []
     var analysisRuns: [AnalysisRun] = [] { didSet { analysisRunsVersion &+= 1 } }
     private(set) var analysisRunsVersion = 0
     var transcriptCounts: [Int64: Int] = [:] { didSet { transcriptCountsVersion &+= 1 } }
@@ -234,6 +240,9 @@ final class AppStore {
     /// offers to resume and the Sources table marks. Mirrors the
     /// `analysis_checkpoints` table.
     var analysisCheckpoints: [Int64: AnalysisCheckpoint] = [:]
+    var analysisRequestPreviews: [Int64: AnalysisRequest] = [:]
+    var restoredAnalysisRequests: [Int64: AnalysisRequest] = [:]
+    var pendingAnalysisDuplicate: AnalysisDuplicatePrompt?
     private(set) var videoPeopleVersion = 0
     var people: [PersonRecord] = []
     /// Saved fight research by video id — the Analyze page's column and the
@@ -940,6 +949,13 @@ final class AppStore {
         jobs.profileDidChange()
         videos = []
         scenes = []
+        historyScenes = []
+        referencedScenes = []
+        sceneReferences = []
+        analysisPasses = []
+        analysisRequestPreviews = [:]
+        restoredAnalysisRequests = [:]
+        pendingAnalysisDuplicate = nil
         analysisRuns = []
         transcriptCounts = [:]
         people = []
@@ -1079,6 +1095,7 @@ final class AppStore {
 
     /// Transcript rows per video for scene blurbs; dropped on every refresh.
     private var blurbTranscripts: [Int64: [TranscriptRow]] = [:]
+    private var blurbSpeakerKeys: [Int64: String] = [:]
 
     /// What a scene is about: its narrative, else the first words of its
     /// transcript, else nothing.
@@ -1094,6 +1111,7 @@ final class AppStore {
     /// The speaker turns a video had before its last Map Speakers Again,
     /// for showing what the map changed and for putting it back.
     var previousSpeakerMaps: [Int64: [SpeakerTurn]] = [:]
+    private var previousSpeakerMapKeys: [Int64: String] = [:]
     /// One merge can be undone until another merge or a profile switch.
     var previousPeopleMerge: PeopleMergeSnapshot?
     /// Person avatars keep their crops in view state; bump only affected identities.
@@ -1109,9 +1127,11 @@ final class AppStore {
 
     /// A video's speaker turns and roster, cached until the next refresh.
     func speakerTurns(videoID: Int64) async -> (turns: [SpeakerTurn], roster: [VideoPersonRecord]) {
-        if let cached = blurbSpeakers[videoID] { return cached }
         guard let database else { return ([], []) }
-        let turns = (try? await database.fetchSpeakerTurns(videoID: videoID)) ?? []
+        let key = try? await database.activeTranscription(videoID: videoID).key
+        if let cached = blurbSpeakers[videoID], blurbSpeakerKeys[videoID] == key { return cached }
+        let turns = (try? await database.fetchSpeakerTurns(videoID: videoID, transcriptionKey: key)) ?? []
+        blurbSpeakerKeys[videoID] = key
         let roster = (try? await database.fetchVideoPeople(videoID: videoID)) ?? []
         blurbSpeakers[videoID] = (turns, roster)
         return (turns, roster)
@@ -1136,14 +1156,15 @@ final class AppStore {
     func recutTranscriptBySpeaker(videoID: Int64) async -> Int? {
         guard let database else { return nil }
         do {
-            let turns = try await database.fetchSpeakerTurns(videoID: videoID)
+            guard let transcriptionKey = try await database.activeTranscription(videoID: videoID).key else { return nil }
+            let turns = try await database.fetchSpeakerTurns(videoID: videoID, transcriptionKey: transcriptionKey)
             guard !turns.isEmpty else { return nil }
             // The transcriber's rows when nothing was corrected since the
             // last re-cut (so re-cuts never compound), else the current rows.
-            let rows = try await database.transcriptRecutBase(videoID: videoID)
+            let rows = try await database.transcriptRecutBase(videoID: videoID, transcriptionKey: transcriptionKey)
             let plan = TranscriptSpeakerRecut.plan(rows: rows, turns: turns)
             if plan.hasChanges {
-                try await database.recutTranscript(videoID: videoID, pieces: plan.pieces)
+                try await database.recutTranscript(videoID: videoID, transcriptionKey: transcriptionKey, pieces: plan.pieces)
             }
             blurbTranscripts[videoID] = nil
             return plan.splitRows
@@ -1164,13 +1185,17 @@ final class AppStore {
         let sink = logSink(\.analysisLog)
         let log: @Sendable (String) -> Void = { line in sink(line); status?(line) }
         let holdSeconds = editingDefaults.podcast.speakerHoldSeconds
-        let before = try await database.fetchSpeakerTurns(videoID: video.id)
+        let sourceKey = try await database.activeTranscription(videoID: video.id).key
+        let before = try await database.fetchSpeakerTurns(videoID: video.id, transcriptionKey: sourceKey)
         try await PodcastAnalysisService.mapSpeakers(video: video, database: database,
-                                                     holdSeconds: holdSeconds,
+                                                     holdSeconds: holdSeconds, transcriptionKey: sourceKey,
                                                      log: log)
         try Task.checkCancellation()
         guard generation == profileGeneration else { throw CancellationError() }
-        if !before.isEmpty { previousSpeakerMaps[video.id] = before }
+        if !before.isEmpty {
+            previousSpeakerMaps[video.id] = before
+            previousSpeakerMapKeys[video.id] = sourceKey
+        }
         blurbSpeakers[video.id] = nil
         blurbTranscripts[video.id] = nil
         return true
@@ -1179,10 +1204,11 @@ final class AppStore {
     /// Put the speaker map from before the last Map Speakers Again back,
     /// and re-cut the rows to it.
     func undoSpeakerMap(video: VideoRecord) async -> Bool {
-        guard let database, let before = previousSpeakerMaps[video.id] else { return false }
+        guard let database, let before = previousSpeakerMaps[video.id],
+              let transcriptionKey = previousSpeakerMapKeys[video.id] else { return false }
         do {
-            try await database.replaceSpeakerTurns(videoID: video.id, turns: before)
-            await PodcastAnalysisService.recutTranscriptBySpeaker(video: video, database: database, turns: before,
+            try await database.replaceSpeakerTurns(videoID: video.id, transcriptionKey: transcriptionKey, turns: before)
+            await PodcastAnalysisService.recutTranscriptBySpeaker(video: video, database: database, transcriptionKey: transcriptionKey, turns: before,
                                                                   log: logSink(\.analysisLog))
             appendLog(\.analysisLog, ["\(video.filename): previous speaker map restored (\(before.count) turns)"])
             previousSpeakerMaps[video.id] = nil
@@ -1215,9 +1241,10 @@ final class AppStore {
 
     /// A video's transcript rows, cached until the next refresh.
     func transcriptRows(videoID: Int64) async -> [TranscriptRow] {
-        if let cached = blurbTranscripts[videoID] { return cached }
         guard let database else { return [] }
-        let rows = (try? await database.fetchTranscripts(videoID: videoID)) ?? []
+        let key = try? await database.activeTranscription(videoID: videoID).key
+        if let cached = blurbTranscripts[videoID], cached.first?.transcriptionKey == key { return cached }
+        let rows = (try? await database.fetchTranscripts(videoID: videoID, transcriptionKey: key)) ?? []
         blurbTranscripts[videoID] = rows
         return rows
     }
@@ -1247,7 +1274,8 @@ final class AppStore {
         let generation = profileGeneration
         await googleDrive.attach(profile: activeProfile, database: database)
         do {
-            let snapshot = try await database.fetchLibrarySnapshot(projectID: activeProjectID)
+            let snapshot = try await database.fetchLibrarySnapshot(projectID: activeProjectID,
+                referencedSceneIDs: Set(builder.document.videoTrack.compactMap(\.sceneID)))
             applyLibrarySnapshot(snapshot, generation: generation)
             timelines = (try? await database.fetchTimelines(projectID: activeProjectID)) ?? timelines
             projects = (try? await database.fetchProjects()) ?? projects
@@ -1272,14 +1300,18 @@ final class AppStore {
         if fightEvents != events { fightEvents = events }
         if videos != snapshot.videos { videos = snapshot.videos }
         if scenes != snapshot.scenes { scenes = snapshot.scenes }
+        if historyScenes != snapshot.historyScenes { historyScenes = snapshot.historyScenes }
+        if referencedScenes != snapshot.referencedScenes { referencedScenes = snapshot.referencedScenes }
+        sceneReferences = snapshot.sceneReferences
         // Published Library lists can refresh while an open script retains its
         // fixed document baseline. Only the latest ordinary hydration is queued.
         let paths = Set(snapshot.videos.filter { $0.driveFileID != nil }.compactMap(\.path))
         builderLibraryHydration.refresh { [weak self] in
             guard let self, generation == self.profileGeneration else { return }
             if self.builder.driveBackedPaths != paths { self.builder.updateDriveBackedPaths(paths) }
-            if self.builder.scenes != snapshot.scenes { self.builder.updateScenes(snapshot.scenes) }
+            self.builder.updateScenes(snapshot.scenes, referencedScenes: snapshot.referencedScenes)
         }
+        analysisPasses = snapshot.analysisPasses
         if analysisRuns != snapshot.analysisRuns { analysisRuns = snapshot.analysisRuns }
         if transcriptCounts != snapshot.transcriptCounts { transcriptCounts = snapshot.transcriptCounts }
         if videoPeopleCounts != snapshot.videoPeopleCounts { videoPeopleCounts = snapshot.videoPeopleCounts }
@@ -1299,6 +1331,9 @@ final class AppStore {
             refreshAll()
             return
         }
+        if let index = historyScenes.firstIndex(where: { $0.id == id }) { historyScenes[index] = fresh }
+        if let index = referencedScenes.firstIndex(where: { $0.id == id }) { referencedScenes[index] = fresh }
+        builder.updateScene(fresh)
         guard let index = scenes.firstIndex(where: { $0.id == id }) else {
             refreshAll()
             return

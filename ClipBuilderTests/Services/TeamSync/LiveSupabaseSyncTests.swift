@@ -74,7 +74,7 @@ struct LiveSupabaseSyncTests {
                              [.integer(onlyA), .real(points)])
         }
         for (folder, id, label, date) in [(a, sharedA, "A", "2026-10-08T10:00:00Z"), (b, sharedB, "B", "2026-10-08T11:00:00Z")] {
-            try await folder.database.replaceTranscripts(videoID: id, language: "en", isTranslation: false,
+            try await folder.database.replaceTranscripts(videoID: id, transcriptionKey: UUID().uuidString.lowercased(), language: "en", isTranslation: false,
                 segments: [TranscriptSegment(start: 0, end: 1, text: label + "1"), TranscriptSegment(start: 1, end: 2, text: label + "2")],
                 provider: "test", model: label)
             let raw = folder === a ? rawA : rawB

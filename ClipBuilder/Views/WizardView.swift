@@ -34,6 +34,11 @@ struct WizardView: View {
     @AppStorage("wizard.outcome") private var outcomeRaw = "oneReel"
     @AppStorage("wizard.critiqueTargetScore") var critiqueTargetScore = 85
     @AppStorage("wizard.critiqueMaxVersions") var critiqueMaxVersions = 3
+    @AppStorage("wizard.strikeStats") var strikeStats = false
+    @AppStorage("wizard.strikeUnits") var strikeUnits = "km/h"
+    @AppStorage("wizard.strikeSpeedCallouts") var strikeSpeedCallouts = true
+    @AppStorage("wizard.strikeGrapplingCard") var strikeGrapplingCard = true
+    @AppStorage("wizard.strikeRoundCard") var strikeRoundCard = true
     @AppStorage("wizard.nameTags") var nameTags = false
     @AppStorage("wizard.nameTagContent") private var nameTagContent: String?
     @AppStorage("wizard.nameTagStyle") private var nameTagStyle: String?
@@ -294,16 +299,8 @@ struct WizardView: View {
         selectedRunIDsRaw = ids.sorted().map(String.init).joined(separator: ",")
     }
 
-    /// The latest Analyze batch of each handed-off video.
-    private func latestRunIDs(forVideoIDs videoIDs: Set<Int64>) -> Set<Int64> {
-        var latest: [Int64: AnalysisRun] = [:]
-        for run in store.analysisRuns where videoIDs.contains(run.videoID) {
-            let current = latest[run.videoID]
-            if current == nil || (run.createdAt ?? "") > (current?.createdAt ?? "") {
-                latest[run.videoID] = run
-            }
-        }
-        return Set(latest.values.map(\.id))
+    private func activeRunIDs(forVideoIDs videoIDs: Set<Int64>) -> Set<Int64> {
+        Set(videoIDs.compactMap { store.activeLayer(videoID: $0).run?.id })
     }
 
     private var analyzedSceneCount: Int {
@@ -573,6 +570,13 @@ struct WizardView: View {
     var lookFormPlan: WizardFormPlan { WizardFormPlan(recipe: lookRecipe) }
     var lookCapabilities: ReelRecipe.Capabilities { lookFormPlan.capabilities }
 
+    var lookHasFightSources: Bool {
+        guard lookCapabilities.fightResearch else { return false }
+        let planned = store.currentWizardSelection?.bestTake?.plan.footage?.compactMap(\.videoID) ?? []
+        let videoIDs = Set(planned.isEmpty ? sourcePool.map(\.videoID) : planned)
+        return store.videos.contains { videoIDs.contains($0.id) && $0.type?.supportsFightFeatures == true }
+    }
+
     var lookTranscriptsAvailable: Bool {
         guard let take = store.currentWizardSelection?.bestTake else { return transcriptsAvailable }
         let videoIDs = Set((take.plan.footage ?? []).compactMap(\.videoID))
@@ -595,6 +599,12 @@ struct WizardView: View {
         options.nameTagStyle = nameTagStyle
         options.nameTagStyleID = nameTagStyleID
         options.nameTagPosition = nameTagPosition
+        options.strikeStats = strikeStats
+        options.strikeUnits = strikeUnits
+        options.strikeSpeedCallouts = strikeSpeedCallouts
+        options.strikeGrapplingCard = strikeGrapplingCard
+        options.strikeRoundCard = strikeRoundCard
+
         return options.neutralized(for: selectedRecipe)
     }
 
@@ -905,18 +915,20 @@ struct WizardView: View {
     }
 
     private func computeSourcePool(personTags: Set<String>) -> [SceneRecord] {
-        var pool = store.scenes.filter { !$0.excluded && !$0.ignored }
-        if let copied = AISettingsJSON.decode(WizardOptions.self, pastedSnapshot), copied.sourcesRestricted {
+        let copied = AISettingsJSON.decode(WizardOptions.self, pastedSnapshot)
+        let explicitSources = (limitToSelection && !selectedRunIDs.isEmpty) || copied?.sourceSceneSelection == true || !(copied?.selectedRunIDs.isEmpty ?? true)
+        var pool = (explicitSources ? store.historyScenes : store.scenes).filter { !$0.excluded && !$0.ignored }
+        if let copied, copied.sourcesRestricted {
             pool = pool.filter { copied.includesCopiedSource($0) }
         }
         if let proposedSceneIDs { pool = pool.filter { proposedSceneIDs.contains($0.id) } }
-        pool = SceneStacks.tops(pool, level: .from(stackLevelRaw))
-        if favoritesOnly {
-            pool = pool.filter(\.favorite)
-        }
         if limitToSelection {
             let runIDs = selectedRunIDs
             pool = pool.filter { $0.runID.map(runIDs.contains) ?? false }
+        }
+        pool = SceneStacks.tops(pool, level: .from(stackLevelRaw))
+        if favoritesOnly {
+            pool = pool.filter(\.favorite)
         }
 
         if !personTags.isEmpty {
@@ -1068,7 +1080,7 @@ struct WizardView: View {
             limitToSelection = true
             favoritesOnly = false
         } else if !handoff.videoIDs.isEmpty {
-            setSelectedRunIDs(latestRunIDs(forVideoIDs: handoff.videoIDs))
+            setSelectedRunIDs(activeRunIDs(forVideoIDs: handoff.videoIDs))
             limitToSelection = true
             favoritesOnly = false
         }
@@ -1193,6 +1205,12 @@ struct WizardView: View {
         options.nameTagStyle = nameTagStyle
         options.nameTagStyleID = nameTagStyleID
         options.nameTagPosition = nameTagPosition
+        options.strikeStats = strikeStats
+        options.strikeUnits = strikeUnits
+        options.strikeSpeedCallouts = strikeSpeedCallouts
+        options.strikeGrapplingCard = strikeGrapplingCard
+        options.strikeRoundCard = strikeRoundCard
+
         options.framingCamera = framingCameraRaw
         options.screenCropLayouts = WizardDefaults.screenCropLayouts(for: layoutMode)
         options.allowedTransitions = pasted?.allowedTransitions ?? WizardOptions.allowedTransitionsFromDefaults()

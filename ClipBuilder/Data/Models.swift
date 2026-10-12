@@ -48,6 +48,9 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
         return (try? JSONDecoder().decode([PodcastTile].self, from: data)) ?? []
     }
 
+    /// Manual choices only; missing local targets are preserved during sync.
+    var activeRunKey: String? = nil
+    var activeTranscriptionKey: String? = nil
     var driveFileID: String? = nil
     var driveLink: String? = nil
     var driveOffloaded: Bool = false
@@ -299,6 +302,13 @@ nonisolated struct FightEventRecord: Identifiable, Sendable, Hashable {
     var provider: String? = nil
     var model: String? = nil
 
+    var targetKey: String? = nil
+    var endTime: Double? = nil
+    var outcome: String? = nil
+    var detail: String? = nil
+    var scoringVersion: Int? = nil
+    var generation: Int64? = nil
+
     var provenance: AIProvenance? {
         AIProvenance(provider: provider, model: model, task: "analysis")
     }
@@ -314,13 +324,15 @@ nonisolated enum FightScoring {
         ("knockdown", 8, "Knockdown"),
         ("hurt", 5, "Opponent hurt/wobbled"),
         ("takedown", 4, "Takedown"),
+        ("takedown_attempt", 0, "Takedown attempt"),
         ("submission_attempt", 5, "Submission attempt"),
         ("dominant_position", 3, "Dominant position gained"),
         ("reversal", 2, "Reversal/sweep"),
     ]
 
-    static func points(for action: String) -> Double {
-        actionPoints.first { $0.action == action }?.points ?? 1
+    static func points(for action: String, outcome: String? = nil) -> Double {
+        if action == "takedown_attempt" { return outcome == "completed" ? 4 : 0 }
+        return actionPoints.first { $0.action == action }?.points ?? 1
     }
 
     static var actionKeys: [String] { actionPoints.map(\.action) }
@@ -454,6 +466,9 @@ nonisolated struct PersonMarker: Identifiable, Sendable, Hashable {
 /// context it used, and which model produced it. Scenes belong to a batch,
 /// so re-analyzing a video adds a new batch alongside the old one.
 nonisolated struct AnalysisRun: Identifiable, Sendable, Hashable {
+    var requestHash: String? = nil
+    var requestJSON: String? = nil
+    var runKey: String? = nil
     var id: Int64
     var videoID: Int64
     var name: String
@@ -596,6 +611,12 @@ nonisolated struct TranscriptionSet: Identifiable, Sendable, Hashable {
     var id: String
     var createdAt: String
     var model: String?
+    var provider: String? = nil
+    var language: String? = nil
+    var segmentCount = 0
+    var hasTranslations = false
+    var isActive = false
+    var isPinned = false
 }
 
 nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable, Codable {
@@ -941,12 +962,16 @@ nonisolated struct TranscriptWord: Codable, Sendable, Equatable {
 nonisolated struct LibrarySnapshot: Sendable {
     var videos: [VideoRecord]
     var scenes: [SceneRecord]
+    var historyScenes: [SceneRecord] = []
+    var referencedScenes: [SceneRecord] = []
+    var sceneReferences: [AnalysisRunReference] = []
     var analysisRuns: [AnalysisRun]
     var people: [PersonRecord]
     var generatedVideos: [GeneratedVideoRecord]
     var feedback: [FeedbackRecord]
     var lessons: [WizardLesson]
     var fightResearch: [FightResearchRecord]
+    var analysisPasses: [AnalysisPassRecord] = []
     var fightEvents: [FightEventRecord]
     /// People the people pass found per video (distinct roster entries),
     /// present before any tag analysis has run.

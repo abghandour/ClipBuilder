@@ -40,12 +40,13 @@ struct AutoTranslationRunner: ViewModifier {
         guard !target.isEmpty else { store.autoTranslateQueue.removeAll(); return }
         while let database = store.database, let videoID = store.claimAutoTranslation() {
             let generation = store.profileGeneration
-            if await TranscriptTranslator.hasTranslation(videoID: videoID, language: target, database: database) {
+            let originals = (try? await TranscriptTranslator.originals(videoID: videoID, database: database)) ?? []
+            guard !originals.isEmpty, generation == store.profileGeneration else {
                 store.finishAutoTranslation(videoID: videoID)
                 continue
             }
-            let originals = (try? await TranscriptTranslator.originals(videoID: videoID, database: database)) ?? []
-            guard !originals.isEmpty, generation == store.profileGeneration else {
+            if await TranscriptTranslator.hasTranslation(videoID: videoID, language: target,
+                transcriptionKey: originals.first?.transcriptionKey, database: database) {
                 store.finishAutoTranslation(videoID: videoID)
                 continue
             }

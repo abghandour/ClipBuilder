@@ -40,11 +40,15 @@ final class BuilderScriptSession {
         profileName = live.profileName
         projectID = library.projectID
         baseline = live.document
+        var library = library
+        let ids = Set(baseline.videoTrack.compactMap(\.sceneID))
+        library.referencedScenes = SceneReferences.combining(library.referencedScenes,
+            referenced: live.scenes.filter { ids.contains($0.id) })
         replay = ScriptReplayTranscript(capture: ScriptCapture(model: live, library: library))
         self.library = library
         let model = BuilderTimelineModel(mode: .transient)
         library.withLayouts {
-            model.seed(document: baseline, scenes: library.scenes,
+            model.seed(document: baseline, scenes: library.scenesForReferences,
                        driveBackedPaths: live.driveBackedPaths, selection: live.selection,
                        playhead: live.playhead, focusedTrack: live.focusedTrack, zoom: live.pointsPerSecond)
         }
@@ -233,7 +237,7 @@ final class BuilderScriptSession {
                         library = refreshed
                         if let working {
                             library.withLayouts {
-                                working.seed(document: working.document, scenes: library.scenes,
+                                working.seed(document: working.document, scenes: library.scenesForReferences,
                                              driveBackedPaths: working.driveBackedPaths, selection: working.selection,
                                              playhead: working.playhead, focusedTrack: working.focusedTrack,
                                              zoom: working.pointsPerSecond)
@@ -287,7 +291,7 @@ final class BuilderScriptSession {
         library = refreshed
         if let working {
             library.withLayouts {
-                working.seed(document: working.document, scenes: library.scenes,
+                working.seed(document: working.document, scenes: library.scenesForReferences,
                     driveBackedPaths: working.driveBackedPaths, selection: working.selection,
                     playhead: working.playhead, focusedTrack: working.focusedTrack, zoom: working.pointsPerSecond)
             }

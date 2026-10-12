@@ -167,7 +167,7 @@ struct MultitrackRenderTests {
         late.transIn = "none"
         late.transOut = "none"
         document.textOverlays = [title, late]
-        try await temp.database.replaceTranscripts(videoID: scene.videoID, language: "en", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: scene.videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: [TranscriptSegment(start: 0.2, end: 1.2, text: "Caption")], provider: nil, model: nil)
         var outputs: [URL] = []
         defer { for url in outputs { try? FileManager.default.removeItem(at: url) } }
@@ -307,7 +307,7 @@ extension MultitrackRenderTests {
         var outputs: [URL] = []
         defer { for url in outputs { try? FileManager.default.removeItem(at: url) } }
         for text in ["FIRST", "EDITED FIRST"] {
-            try await temp.database.replaceTranscripts(videoID: scene.videoID, language: "en", isTranslation: false,
+            try await temp.database.replaceTranscripts(videoID: scene.videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                 segments: [TranscriptSegment(start: 0, end: 1, text: text),
                            TranscriptSegment(start: 1, end: 2, text: "SECOND")], provider: nil, model: nil)
             messages.withLock { $0.removeAll() }
@@ -400,7 +400,7 @@ extension MultitrackRenderTests {
         let renderer = MultitrackRenderer(render: RenderEngine(), segmentCache: RenderSegmentCache(directory: root))
         var decoded: [String] = []
         for caption in ["BEFORE", "CHANGED BEFORE"] {
-            try await temp.database.replaceTranscripts(videoID: scene.videoID, language: "en", isTranslation: false,
+            try await temp.database.replaceTranscripts(videoID: scene.videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                 segments: [TranscriptSegment(start: 0, end: 1, text: caption),
                            TranscriptSegment(start: 1, end: 2, text: "RIGHT CAPTION")], provider: nil, model: nil)
             let messages = Mutex<[String]>([])
@@ -438,7 +438,7 @@ extension MultitrackRenderTests {
         block.duration = 4
         block.composition.texts = [TextOverlayItem(text: "Block", startTime: 0, endTime: 4)]
         document.overlayBlocks = [block]
-        try await temp.database.replaceTranscripts(videoID: scene.videoID, language: "en", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: scene.videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: [TranscriptSegment(start: 0.2, end: 1.2, text: "Original caption")], provider: nil, model: nil)
         let cache = RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("segments"))
         let renderer = MultitrackRenderer(render: RenderEngine(), segmentCache: cache)
@@ -485,7 +485,7 @@ extension MultitrackRenderTests {
         #expect(warmFrames == referenceFrames)
         #expect(abs(warm.duration - reference.duration) < 0.001)
         messages.withLock { $0.removeAll() }
-        try await temp.database.replaceTranscripts(videoID: scene.videoID, language: "en", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: scene.videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: [TranscriptSegment(start: 0.2, end: 1.2, text: "Edited caption")], provider: nil, model: nil)
         let captionEdit = try await renderer.render(document: document, scenes: [scene], profile: Fixtures.brand(),
             database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
@@ -523,10 +523,10 @@ extension MultitrackRenderTests {
         title.transIn = "fade"
         title.transOut = "slide_up"
         document.textOverlays = [title]
-        try await temp.database.replaceTranscripts(videoID: sceneB.videoID, language: "en", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: sceneB.videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: [TranscriptSegment(start: 0.2, end: 1.2, text: "Right caption")], provider: nil, model: nil)
         func caption(_ text: String) async throws {
-            try await temp.database.replaceTranscripts(videoID: sceneA.videoID, language: "en", isTranslation: false,
+            try await temp.database.replaceTranscripts(videoID: sceneA.videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                 segments: [TranscriptSegment(start: 0.2, end: 1.2, text: text)], provider: nil, model: nil)
         }
         try await caption("Original caption")
@@ -735,7 +735,7 @@ extension MultitrackRenderTests {
         document.textOverlays = [TextOverlayItem(text: "Across all clips", startTime: 0.1, endTime: 4.4)]
         let input = document
         func captions(_ firstText: String, _ laterText: String) async throws {
-            try await temp.database.replaceTranscripts(videoID: scene.videoID, language: "en", isTranslation: false,
+            try await temp.database.replaceTranscripts(videoID: scene.videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                 segments: [TranscriptSegment(start: 0.1, end: 1.2, text: firstText),
                            TranscriptSegment(start: 1.6, end: 2.8, text: laterText)], provider: nil, model: nil)
         }

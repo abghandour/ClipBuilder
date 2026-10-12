@@ -1,7 +1,7 @@
 # Strike Stats Overlay Plan
 
-Date: October 11, 2026. Status: draft, revised the same day after the Codex
-review in docs/Strike-Stats-Overlay-Codex-Review.md. Nothing implemented.
+Date: October 11, 2026. Status: phases A and B implemented October 12, 2026 (Codex), uncommitted; Debug build passes, 22 new tests and the 3 team-sync suites pass. Phases C to G not started. Revised October 11 after the Codex
+review in docs/Strike-Stats-Overlay-Codex-Review.md.
 Implementation: Codex; build, tests and review: Claude (per the September 23 working rule).
 
 ## Problem

@@ -13,7 +13,7 @@ struct AnalysisCoverageTests {
 
     private func run(id: Int64 = 1, videoID: Int64 = 1, pipeline: Int? = nil,
                      createdAt: String = "2026-10-09 12:00:00") -> AnalysisRun {
-        AnalysisRun(id: id, videoID: videoID, name: "Coverage", instructions: "",
+        AnalysisRun(runKey: String(id), id: id, videoID: videoID, name: "Coverage", instructions: "",
                     provider: nil, model: nil, hasTranscript: true, sampleInterval: 0,
                     notesJSON: nil, createdAt: createdAt, videoFilename: "fixture.mp4",
                     videoPath: "/tmp/fixture.mp4", sceneCount: 0,
@@ -89,7 +89,7 @@ struct AnalysisCoverageTests {
                                         transcriptCount: 0).state == .outdated(stage: "Visual analysis"))
     }
 
-    @Test("Latest run wins by date then id, and other videos cannot contribute coverage")
+    @Test("Automatic run wins by date then portable key, and other videos cannot contribute coverage")
     func latestAndScope() {
         let older = run(id: 10, pipeline: AnalysisPipeline.podcastPass, createdAt: "2026-10-08 12:00:00")
         let latest = run(id: 2)
@@ -114,7 +114,7 @@ struct AnalysisCoverageTests {
             path: temp.directory.url.appendingPathComponent("transcript.mp4").path,
             duration: 10, width: 1920, height: 1080, wide: true)
         try await temp.database.replaceTranscripts(
-            videoID: videoID, language: "en", isTranslation: false,
+            videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: [.init(start: 0, end: 2, text: "Question?", words: nil),
                        .init(start: 2, end: 5, text: "Answer.", words: nil)],
             provider: "fixture", model: nil)

@@ -236,7 +236,7 @@ enum PerformanceBaseline {
         let transcripts = ranges.enumerated().map { index, range in
             TranscriptSegment(start: range.start, end: range.end, text: "Baseline caption \(index + 1)")
         }
-        try await database.replaceTranscripts(videoID: video.id, language: "en", isTranslation: false,
+        try await database.replaceTranscripts(videoID: video.id, transcriptionKey: UUID().uuidString.lowercased(), language: "en", isTranslation: false,
             segments: transcripts, provider: nil, model: nil)
         var document = TimelineDocument()
         for index in 0..<40 {
@@ -318,7 +318,7 @@ enum PerformanceBaseline {
                     end: video.duration, language: "en")
                 guard !captions.isEmpty else { throw failure("Missing fixture captions") }
                 captions[0].text = text
-                try await database.replaceTranscripts(videoID: video.id, language: "en", isTranslation: false,
+                try await database.replaceTranscripts(videoID: video.id, transcriptionKey: UUID().uuidString.lowercased(), language: "en", isTranslation: false,
                     segments: captions, provider: nil, model: nil)
             }
             let result = try await measure(name) {

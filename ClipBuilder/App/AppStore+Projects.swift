@@ -59,6 +59,10 @@ extension AppStore {
         wizardFailureMessage = nil
         videos = []
         scenes = []
+        historyScenes = []
+        referencedScenes = []
+        sceneReferences = []
+        analysisPasses = []
         analysisRuns = []
         transcriptCounts = [:]
         generatedVideos = []

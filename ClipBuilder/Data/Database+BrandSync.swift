@@ -405,6 +405,7 @@ extension Database {
         guard try syncScope() == scope else { throw SyncError.scopeMismatch }
         return try connection.transaction {
             var changed = false
+            var fightVideos = Set<Int64>()
             try connection.execute("UPDATE sync_control SET suspended = 1 WHERE id = 1")
             rowLoop: for wire in rows {
                 let id = try SyncMapping.identity(wire, scope: scope)
@@ -467,6 +468,17 @@ extension Database {
                 }
                 if try !connection.query("SELECT 1 FROM sync_outbox WHERE \"table\" = ? AND sync_id = ? LIMIT 1",
                                          [.text(table.name), .text(id)]).isEmpty { continue }
+                if table.name == "fight_events" {
+                    let previous = try connection.query("SELECT * FROM fight_events WHERE sync_id = ?", [.text(id)]).first
+                    let eventChanged = SyncMapping.isDeleted(wire) ? previous != nil :
+                        previous == nil || table.columns.contains {
+                            previous?[$0]?.stringValue != local[$0]?.stringValue
+                        }
+                    if eventChanged {
+                        if let videoID = previous?["video_id"]?.intValue { fightVideos.insert(videoID) }
+                        if let videoID = local["video_id"]?.intValue { fightVideos.insert(videoID) }
+                    }
+                }
                 if SyncMapping.isDeleted(wire) {
                     if try !connection.query("SELECT 1 FROM \(table.name) WHERE sync_id = ?", [.text(id)]).isEmpty { changed = true }
                     try connection.execute("DELETE FROM \(table.name) WHERE sync_id = ?", [.text(id)])
@@ -526,6 +538,15 @@ extension Database {
                         ON CONFLICT(sync_id) DO UPDATE SET \(quoted.map { "\($0) = excluded.\($0)" }.joined(separator: ", "))
                         """, [.text(id)] + columns.map { local[$0] ?? .null })
                 }
+            }
+            for videoID in fightVideos {
+                let generation = try advanceFightEventGeneration(videoID: videoID)
+                try connection.execute("UPDATE fight_events SET generation = ? WHERE video_id = ?",
+                                       [.integer(generation), .integer(videoID)])
+                let version = try connection.query("SELECT MIN(COALESCE(scoring_version, 1)) AS v FROM fight_events WHERE video_id = ?",
+                                                   [.integer(videoID)]).first?["v"]?.intValue ?? 1
+                let pass = try startAnalysisPass(videoID: videoID, pass: .fightScore, version: Int(version))
+                try finishAnalysisPass(pass, status: .completed, note: "Synced event snapshot")
             }
             if advanceCursor {
                 let cursor = try SyncMapping.cursor(rows[rows.count - 1], scope: scope)

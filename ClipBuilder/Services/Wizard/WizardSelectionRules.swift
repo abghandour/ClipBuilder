@@ -42,12 +42,14 @@ nonisolated enum WizardSelectionRules {
         var matches: [Int64: SceneRecord] = [:]
         for id in ids {
             guard let reference = plan.footage?.first(where: { $0.sceneID == id }),
-                  let start = reference.start, let end = reference.end,
-                  let scene = scenes.filter({
-                      $0.videoID == reference.videoID && $0.videoPath == reference.videoPath
-                          && abs($0.startTime - start) < 0.001 && abs($0.endTime - end) < 0.001
-                          && (reference.videoDuration == nil || abs($0.videoDuration - reference.videoDuration!) < 0.001)
-                  }).max(by: { $0.id < $1.id }) else { return nil }
+                  let start = reference.start, let end = reference.end else { return nil }
+            let matching = scenes.filter {
+                $0.videoID == reference.videoID && $0.videoPath == reference.videoPath
+                    && abs($0.startTime - start) < 0.001 && abs($0.endTime - end) < 0.001
+                    && (reference.videoDuration == nil || abs($0.videoDuration - reference.videoDuration!) < 0.001)
+            }
+            guard let scene = matching.first(where: { $0.id == id })
+                    ?? matching.max(by: { $0.id < $1.id }) else { return nil }
             matches[id] = scene
         }
         var resolved = plan

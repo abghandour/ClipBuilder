@@ -167,7 +167,7 @@ extension AppStore {
                 try await sceneEditSaveTask?.value
                 try Task.checkCancellation()
                 let rows = try await database.fetchTranscripts(videoID: video.id)
-                let scenes = try await database.fetchScenes(projectID: projectID, includeExcluded: true)
+                let scenes = try await database.fetchScenes(projectID: projectID, scope: .active, includeExcluded: true)
                     .filter { $0.videoID == video.id }
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
                 let speakers = await speakerTurns(videoID: video.id)
@@ -303,7 +303,7 @@ extension AppStore {
                     var tagFields: [PersonTagField] = []
                     if options.usesNameTags, var tagPlan = takes.first?.plan {
                         tagPlan.clips = takes.flatMap { $0.plan.clips }
-                        let scenes = try await database.fetchScenes(projectID: run.projectID, includeExcluded: true)
+                        let scenes = try await database.fetchScenes(ids: SceneReferences.ids(in: tagPlan))
                         tagFields = try await wizard.prepareTagText(plan: tagPlan, options: options, profile: profile,
                             sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
                             database: database, emit: wizardSelectionLogSink())

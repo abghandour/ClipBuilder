@@ -38,7 +38,7 @@ actor TranscriptionService {
     @discardableResult
     func transcribeForVideo(video: VideoRecord, database: Database,
                             languageCode: String = "", force: Bool = false,
-                            log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+                            log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], transcriptionKey: String) {
         if video.type?.usesPodcastPass == true {
             return try await transcribePodcast(video: video, database: database,
                                                languageCode: languageCode, force: force, log: log)
@@ -65,7 +65,7 @@ actor TranscriptionService {
     }
 
     private func restore(_ cached: CachedTranscript, video: VideoRecord, database: Database,
-                         log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+                         log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], transcriptionKey: String) {
         log("Using cached transcript for \(video.filename)")
         try Task.checkCancellation()
         // The rows already stored are the user's: re-cut by speaker,
@@ -73,20 +73,22 @@ actor TranscriptionService {
         // transcript; otherwise the stored rows are the transcript.
         let stored = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
         let segments: [TranscriptSegment]
+        let transcriptionKey: String
         if stored.isEmpty {
-            try await database.replaceTranscripts(videoID: video.id, language: cached.detectedLanguage,
-                                                  isTranslation: false, segments: cached.segments,
-                                                  provider: Self.providerName, model: Self.modelName)
+            transcriptionKey = try await Self.storeOriginal(videoID: video.id, language: cached.detectedLanguage,
+                segments: cached.segments, database: database)
             segments = cached.segments
         } else {
+            guard let key = stored.first?.transcriptionKey else { throw ScriptError.invalid("The stored transcript has no set key.") }
+            transcriptionKey = key
             segments = stored.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }
         }
-        do { try await enrich(segments, video: video, database: database) }
+        do { try await enrich(segments, transcriptionKey: transcriptionKey, video: video, database: database) }
         catch {
             if strictEnrichment { throw error }
             log("Transcript feature analysis failed: \(error)")
         }
-        return segments
+        return (segments, transcriptionKey)
     }
 
     /// English and Brazilian Portuguese are the fast path. Installed
@@ -107,8 +109,13 @@ actor TranscriptionService {
     @discardableResult
     func transcribePodcast(video: VideoRecord, database: Database,
                            languageCode: String = "", force: Bool = false,
-                           log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+                           log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], transcriptionKey: String) {
         try video.requirePresent()
+        if let key = AnalysisRequestContext.current?.transcriptKey {
+            let rows = try await database.fetchTranscripts(videoID: video.id, transcriptionKey: key).filter { !$0.isTranslation }
+            guard !rows.isEmpty else { throw ScriptError.invalid("The saved transcript set is not available on this Mac.") }
+            return (rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }, key)
+        }
         if !languageCode.isEmpty {
             return try await transcribe(video: video, database: database,
                                         languageCode: languageCode, force: force, log: log)
@@ -187,7 +194,7 @@ actor TranscriptionService {
                     database: Database,
                     languageCode: String = "",
                     force: Bool = false,
-                    log: @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
+                    log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], transcriptionKey: String) {
         try video.requirePresent()
         let locale = languageCode.isEmpty ? Locale.current : Locale(identifier: languageCode)
         guard let supportedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
@@ -227,24 +234,33 @@ actor TranscriptionService {
         }
 
         try Task.checkCancellation()
-        try await database.replaceTranscripts(videoID: video.id, language: languageTag,
-                                              isTranslation: false, segments: segments,
-                                              provider: Self.providerName, model: Self.modelName,
-                                              seconds: seconds)
-        do { try await enrich(segments, video: video, database: database) }
+        let transcriptionKey = try await Self.storeOriginal(videoID: video.id, language: languageTag,
+            segments: segments, database: database, seconds: seconds)
+        do { try await enrich(segments, transcriptionKey: transcriptionKey, video: video, database: database) }
         catch {
             if strictEnrichment { throw error }
             log("Transcript feature analysis failed: \(error)")
         }
-        return segments
+        return (segments, transcriptionKey)
     }
 
-    private func enrich(_ segments: [TranscriptSegment], video: VideoRecord,
+    /// A completed recognizer result always starts a new set. Cache hits that
+    /// reuse stored rows bypass this write and retain their existing key.
+    static func storeOriginal(videoID: Int64, language: String, segments: [TranscriptSegment],
+                              database: Database, seconds: TimeInterval? = nil) async throws -> String {
+        let key = UUID().uuidString.lowercased()
+        return try await database.replaceTranscripts(videoID: videoID, transcriptionKey: key,
+            language: language, isTranslation: false, segments: segments,
+            provider: providerName, model: modelName, seconds: seconds)
+    }
+
+    private func enrich(_ segments: [TranscriptSegment], transcriptionKey: String, video: VideoRecord,
                         database: Database) async throws {
         let people = try await database.fetchVideoPeople(videoID: video.id)
         let scenes = try await database.fetchScenes(includeExcluded: true)
             .filter { $0.videoID == video.id }
-        let settings = capturedPodcastSettings ?? PodcastSettings()
+        let settings = AnalysisRequestContext.current.flatMap { AISettingsJSON.decode(PodcastSettings.self, $0.podcastJSON) }
+            ?? capturedPodcastSettings ?? PodcastSettings()
         let analysis = TranscriptFeatureAnalyzer.analyze(
             segments: segments, videoID: video.id,
             speakerKeys: people.map(\.key), mediaDuration: video.duration,
@@ -253,11 +269,11 @@ actor TranscriptionService {
             deadAirThreshold: settings.deadAirSeconds,
             fillerRunThreshold: settings.fillerRunSeconds)
         try Task.checkCancellation()
-        try await database.replaceTranscriptFeatures(videoID: video.id,
+        try await database.replaceTranscriptFeatures(videoID: video.id, transcriptionKey: transcriptionKey,
                                                      features: analysis.features,
                                                      proposals: settings.cleanupCutPolicy.applied(to: analysis.proposals))
         // Topics are cheap and the Wizard plans with them: keep them current.
-        try await database.replaceTopicRanges(videoID: video.id,
+        try await database.replaceTopicRanges(videoID: video.id, transcriptionKey: transcriptionKey,
                                               topics: TopicSegmenter.segment(analysis.features, videoID: video.id))
     }
 

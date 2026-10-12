@@ -9,6 +9,7 @@ enum BuilderWizardLibrary {
         var library = ScriptLibrarySnapshot(projectID: store.activeProjectID)
         library.videos = store.videos
         library.scenes = store.scenes
+        library.referencedScenes = store.referencedScenes
         library.people = store.people
         library.layouts = ScreenCropStore.all()
         library.templates = OverlayTemplateStore.list()
@@ -19,6 +20,8 @@ enum BuilderWizardLibrary {
         for (index, image) in AssetStore.allFiles(of: .images).enumerated() { library.images["image:\(index)"] = image.url.path }
         let language = store.editingDefaults.footage.language
         if let database = store.database {
+            let ids = Set(store.builder.document.videoTrack.compactMap(\.sceneID))
+            library.referencedScenes = try await database.fetchScenes(ids: ids)
             library = try await library.refreshed(database: database, language: language)
         }
         try Task.checkCancellation()

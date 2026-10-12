@@ -18,7 +18,7 @@ struct PodcastHighlightIntegrationTests {
         for scene in scenes {
             try await temp.database.setSceneNarrative(scene.id, narrative: "Lesson \(Int(scene.startTime)) — A strong answer.", score: 8)
         }
-        try await temp.database.replaceTranscripts(videoID: id, language: "en", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: ranges.map { TranscriptSegment(start: $0.start, end: $0.end, text: "A full answer.", words: nil) },
             provider: "fixture", model: "fixture")
         let project = try await temp.database.createProject(profileName: profile.profileName, name: "Podcasts", videoIDs: [id])
@@ -89,8 +89,10 @@ struct PodcastHighlightIntegrationTests {
         let json = String(decoding: try JSONEncoder().encode(original), as: UTF8.self)
         let timelineID = try await temp.database.createTimeline(projectID: input.project, name: "Original", documentJSON: json)
         store.openTimelineRecord(try #require(try await temp.database.fetchTimeline(id: timelineID)))
-        // Opening hydrates the document (derived track count, defaults), so
-        // the untouched state to compare against is what is open now.
+        // Opening hydrates the document (derived track count, defaults, and the
+        // referenced scenes it fetches by identity), so the untouched state to
+        // compare against is what is open once that settles.
+        await store.sceneHydration?.value
         let opened = store.builder.document
         #expect(opened.videoTrack.count == 1)
         let names = try await store.createPodcastHighlightTimelines(maxSeconds: 25)
@@ -234,7 +236,7 @@ struct PodcastHighlightIntegrationTests {
         let project = try await temp.database.createProject(profileName: profile.profileName, name: "Placement",
             videoIDs: [input.video.id, other])
         let source = Array(try await temp.database.fetchScenes(videoID: input.video.id).sorted { $0.startTime < $1.startTime }.prefix(2))
-        try await temp.database.replaceTranscripts(videoID: input.video.id, language: "en", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: input.video.id, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: source.flatMap { scene in
                 [TranscriptSegment(start: scene.startTime, end: scene.startTime + 3, text: "Hook.", words: nil),
                  TranscriptSegment(start: scene.startTime + 3, end: scene.endTime, text: "A fight.", words: nil)]
@@ -312,7 +314,7 @@ struct PodcastHighlightIntegrationTests {
         let project = try await temp.database.createProject(profileName: profile.profileName, name: "Cached B-roll",
             videoIDs: [input.video.id, other])
         let source = try #require(try await temp.database.fetchScenes(videoID: input.video.id).first)
-        try await temp.database.replaceTranscripts(videoID: input.video.id, language: "en", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: input.video.id, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
             segments: [.init(start: source.startTime, end: source.startTime + 3, text: "Hook.", words: nil),
                        .init(start: source.startTime + 3, end: source.endTime, text: "Answer.", words: nil)],
             provider: "fixture", model: "fixture")

@@ -460,8 +460,12 @@ actor MultitrackRenderer {
             overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,
                 transIn: item.transIn, transOut: item.transOut, identity: identity))
         }
-        for item in document.textOverlays.map({ $0.keptClear(of: safeArea) })
-        where !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let statVideos = document.textOverlays.contains { $0.stat != nil } ? try await database.fetchVideos() : []
+        let boundText = document.textOverlays.flatMap {
+            StrikeStatSourceBinding.mapped($0, clips: document.videoTrack, scenes: scenes, videos: statVideos)
+        }
+        for item in boundText.map({ $0.keptClear(of: safeArea) })
+        where item.stat != nil || !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
             guard end > start, let png = try? textRenderer.render(item, to: scratch) else { continue }
             overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,

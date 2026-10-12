@@ -522,9 +522,9 @@ extension AppStore {
         options.highlightMaxSeconds = maxSeconds ?? editingDefaults.podcast.highlightMaxSeconds
         options.highlightMaxCount = maxCount
         let videos = try await database.fetchVideos(projectID: projectID)
-        let projectScenes = try await database.fetchScenes(projectID: projectID, includeExcluded: false)
+        let projectScenes = try await database.fetchScenes(projectID: projectID, scope: .active, includeExcluded: false)
         let sourcePaths = Set(builder.document.videoTrack.filter { !$0.isCutaway }.compactMap { clip in
-            clip.videoFile ?? projectScenes.first { $0.id == clip.sceneID }?.videoPath
+            clip.videoFile ?? builder.scene(for: clip)?.videoPath
         })
         let podcastIDs = Set(projectScenes.filter { $0.tags.contains("podcast-exchange") }.map(\.videoID))
         let podcastPaths = Set(videos.filter {

@@ -277,7 +277,7 @@ struct MiniWizardView: View {
         loadError = nil
         do {
             let fetchedVideos = try await database.fetchVideos(projectID: projectID)
-            let scenes = try await database.fetchScenes(projectID: projectID)
+            let scenes = try await database.fetchScenes(projectID: projectID, scope: .active)
             guard !Task.isCancelled, key == sourceKey, store.activeProfile.profileName == profileName else { return }
             let analyzedIDs = Set(scenes.map(\.videoID))
             videos = fetchedVideos.filter { $0.analyzedAt != nil && analyzedIDs.contains($0.id) }

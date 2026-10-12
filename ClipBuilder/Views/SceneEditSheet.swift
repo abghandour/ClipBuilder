@@ -9,7 +9,7 @@ struct SceneEditSheet: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let scene = store.scenes.first(where: { $0.id == sceneID }) {
+            if let scene = store.historyScenes.first(where: { $0.id == sceneID }) {
                 SceneEditor(scene: scene)
                 HStack {
                     Toggle("Favorite", isOn: Binding(

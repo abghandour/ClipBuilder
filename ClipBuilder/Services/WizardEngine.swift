@@ -21,6 +21,7 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
+        case strikeStats, strikeUnits, strikeSpeedCallouts, strikeGrapplingCard, strikeRoundCard
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case captionPosition, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
@@ -45,6 +46,11 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var muteSource = false
     var addCaptions = false
     var enableTextOverlays = false
+    var strikeStats: Bool?
+    var strikeUnits: String?
+    var strikeSpeedCallouts: Bool?
+    var strikeGrapplingCard: Bool?
+    var strikeRoundCard: Bool?
     var nameTagsOnly: Bool?
     var nameTags: Bool?
     var nameTagContent: String?
@@ -440,7 +446,7 @@ actor WizardEngine {
         }
         options.formatPreset = ReelRecipe.podcastHighlights.id
         options = options.neutralized(for: .podcastHighlights)
-        let scenes = try await database.fetchScenes(projectID: options.projectID, includeExcluded: false)
+        let scenes = try await database.fetchScenes(projectID: options.projectID, scope: options.selectedRunIDs.isEmpty && !options.sourceSceneSelection ? .active : .history, includeExcluded: false)
             .filter { !$0.ignored }
         let videos = try await database.fetchVideos(projectID: options.projectID)
         var exchanges = scenes.filter { $0.tags.contains("podcast-exchange") }
@@ -1852,16 +1858,11 @@ actor WizardEngine {
         let editingInsights = PerformanceAnalytics.build(videos: generated, traits: traits,
                                                           people: people, followersGained: 0)
         var scenes = try await database.fetchScenes(projectID: options.projectID,
+                                                    scope: options.selectedRunIDs.isEmpty && !options.sourceSceneSelection ? .active : .history,
                                                     includeExcluded: false)
             .filter { !$0.ignored }
         if options.sourcesRestricted {
             scenes = scenes.filter { options.includesCopiedSource($0) }
-        }
-        scenes = SceneStacks.tops(scenes, level: .from(options.stackLevel))
-        if options.favoritesOnly {
-            let before = scenes.count
-            scenes = scenes.filter(\.favorite)
-            emit("Favorite scenes only: \(scenes.count) of \(before) scene(s)")
         }
         if !options.selectedRunIDs.isEmpty {
             let before = scenes.count
@@ -1869,6 +1870,12 @@ actor WizardEngine {
                 scene.runID.map { options.selectedRunIDs.contains($0) } ?? false
             }
             emit("Filtered to \(scenes.count) scenes from \(options.selectedRunIDs.count) selected analyze batch(es) (was \(before))")
+        }
+        scenes = SceneStacks.tops(scenes, level: .from(options.stackLevel))
+        if options.favoritesOnly {
+            let before = scenes.count
+            scenes = scenes.filter(\.favorite)
+            emit("Favorite scenes only: \(scenes.count) of \(before) scene(s)")
         }
         if !options.sourcePeople.isEmpty {
             let before = scenes.count
@@ -2489,7 +2496,7 @@ actor WizardEngine {
         guard options.highlightFraming == nil, options.podcastFraming != .original,
               (ReelRecipe.recipe(id: options.formatPreset) ?? .custom).capabilities.offersCameraFocus else { return takes }
         try Task.checkCancellation()
-        let scenes = try await database.fetchScenes(projectID: options.projectID, includeExcluded: true)
+        let scenes = try await database.scenesForSavedPlans(takes.map(\.plan), projectID: options.projectID)
         let sceneMap = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
         var result = takes
         var pending: [Int] = []
@@ -2584,7 +2591,7 @@ actor WizardEngine {
         }
         var options = WizardOptions.merge(step1: selection.step1Options, step2: options.step2, base: options)
         options.projectID = selection.projectID
-        let scenes = try await database.fetchScenes(projectID: selection.projectID, includeExcluded: true)
+        let scenes = try await database.scenesForSavedPlan(saved.plan, projectID: selection.projectID)
         guard let resolvedPlan = WizardSelectionRules.resolvedPlan(saved.plan, scenes: scenes) else {
             throw AIError.unusableResponse("Footage changed. Find the moments again before rendering this selection.")
         }
@@ -2693,7 +2700,7 @@ actor WizardEngine {
         try await RenderContext.$transitions.withValue(editing.transitions) {
         try await RenderContext.$settings.withValue(options.renderSettings) {
             // Rendering a saved selection must not shortlist or re-filter its sources.
-            let scenes = try await database.fetchScenes(projectID: options.projectID, includeExcluded: true)
+            let scenes = try await database.fetchScenes(ids: SceneReferences.ids(in: selection))
             let sceneMap = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
             let ids = Set(selection.clips.flatMap { [$0.sceneID] + $0.areaClips.map(\.sceneID) })
             if let missing = ids.compactMap({ sceneMap[$0] }).first(where: { !$0.isPresent }) {
@@ -2861,7 +2868,7 @@ actor WizardEngine {
                     take = try await findMoments(options: options, note: feedback, previousTakes: history,
                         profile: profile, database: database, emit: emit).take
                 }
-                let scenes = try await database.fetchScenes(projectID: options.projectID, includeExcluded: true)
+                let scenes = try await database.scenesForSavedPlan(take.plan, projectID: options.projectID)
                 guard let plan = WizardSelectionRules.resolvedPlan(take.plan, scenes: scenes) else {
                     throw WizardSelectionError.footageChanged
                 }
@@ -3674,7 +3681,7 @@ actor WizardEngine {
             // Bumpers and cutaways are added here, using the same exclusive
             // compositor as Builder. The editable document retains originals.
             let prepared = Self.preparedDocument(from: document, clipURLs: clipURLs, transitions: clipTransitions)
-            let brollScenes = cutaways.isEmpty ? [] : try await database.fetchScenes(projectID: options.projectID, includeExcluded: false)
+            let brollScenes = cutaways.isEmpty ? [] : try await database.fetchScenes(projectID: options.projectID, scope: options.selectedRunIDs.isEmpty && !options.sourceSceneSelection ? .active : .history, includeExcluded: false)
             let result = try await MultitrackRenderer(render: render).render(document: prepared, scenes: brollScenes,
                 profile: profile, database: database, preview: true, emit: emit)
             defer { try? FileManager.default.removeItem(at: result.url) }

@@ -40,7 +40,7 @@ extension WizardView {
         return WizardStepFlow(answers: answers, confirmed: confirmedSteps, requestedStep: requested, collapsedStep: collapsedStep,
             sourcesReady: !readiness.contains(where: \.isBlocking), needsFootageProposal: needsFootageProposal,
             automatic: reviewWorkflow == .automatic, hasTake: take != nil,
-            takeIsValid: take.map { WizardSelectionRules.resolvedPlan($0.plan, scenes: store.scenes) != nil } ?? false,
+            takeIsValid: take.map { WizardSelectionRules.resolvedPlan($0.plan, scenes: SceneReferences.combining(store.referencedScenes, referenced: store.historyScenes)) != nil } ?? false,
             isBusy: store.isWizardRunning || isFindingFootage)
     }
 

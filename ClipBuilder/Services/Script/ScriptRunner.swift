@@ -180,7 +180,7 @@ final class ScriptRunner {
             return value
         }
         @MainActor func scene(_ id: Int64) throws -> SceneRecord {
-            guard let value = library.scenes.first(where: { $0.id == id }),
+            guard let value = library.scenesForReferences.first(where: { $0.id == id }),
                   value.videoDuration.isFinite, value.videoDuration > 0 else {
                 throw ScriptError.invalid("Scene is unavailable or outside this project.")
             }

@@ -19,7 +19,7 @@ nonisolated final class SyncTestFolder: Sendable {
 /// JSON, scoping, upsert and keyset filters; it is not an alternate sync engine.
 actor StubSyncServer {
     var rows: [String: SyncMapping.WireRow] = [:]
-    var version = 3
+    var version = SyncEngine.understoodSchemaVersion
     var offline = false
     var clock = 0
     var requests: [URLRequest] = []

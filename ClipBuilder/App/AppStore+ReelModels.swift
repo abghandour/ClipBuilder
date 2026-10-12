@@ -22,7 +22,7 @@ extension AppStore {
     } else {
       if item == .ranker {
         let labeledIDs = Set(try await database.clipModelRows().map(\.id))
-        let scenes = try await database.fetchScenes().filter { labeledIDs.contains(String($0.id)) }
+        let scenes = try await database.fetchScenes(scope: .history).filter { labeledIDs.contains(String($0.id)) }
         let videos = try await database.fetchVideos()
         for scene in scenes {
           try Task.checkCancellation()
@@ -39,7 +39,7 @@ extension AppStore {
       }
       rows = try await database.clipModelRows()
       if item == .taste {
-        let scenes = try await database.fetchScenes()
+        let scenes = try await database.fetchScenes(scope: .history)
         let byID = Dictionary(uniqueKeysWithValues: scenes.map { (String($0.id), $0) })
         let printer = VisionTasteFeaturePrinter()
         var printed: [ReelModelRow] = []

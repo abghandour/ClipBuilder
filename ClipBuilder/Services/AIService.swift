@@ -176,6 +176,7 @@ actor AIService {
     private var resolvedModels: [String: String] = [:]
 
     func resolveProviderModel(task: String, provider: String? = nil, model: String? = nil) -> (provider: String, model: String?) {
+        if let route = AnalysisRequestContext.current?.routing[task]?.first { return (route.provider, route.model) }
         let key = provider?.isEmpty == false ? provider! : providerKey(forTask: task)
         if let model, !model.isEmpty {
             return (key, model)
@@ -210,6 +211,9 @@ actor AIService {
         }
         for entry in AICatalog.recommendedChains[task] ?? [] {
             raw.append((entry.provider, entry.model))
+        }
+        if let captured = AnalysisRequestContext.current?.routing[task] {
+            raw = captured.map { ($0.provider, $0.model) }
         }
 
         var seen = Set<String>()

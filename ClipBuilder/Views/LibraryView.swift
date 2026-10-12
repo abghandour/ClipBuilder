@@ -148,7 +148,7 @@ struct LibraryView: View {
     }
 
     private func rebuildFolders() {
-        folders = OutputFolders.build(records: store.generatedVideos, scenes: store.scenes, timelines: store.timelines)
+        folders = OutputFolders.build(records: store.generatedVideos, scenes: store.historyScenes, timelines: store.timelines)
         selectedFolder = OutputFolders.resolvedSelection(selectedFolder, in: folders)
     }
 

@@ -28,6 +28,8 @@ struct AnalyzeView: View {
     @State private var soundbiteVideo: VideoRecord?
     @State private var showDuplicateScan = false
     @State private var showAnalyzeWizard = false
+    @State private var comparisonRevision = 0
+    @State private var checkingAnalysis = false
     /// Analyze was pressed on videos whose last analysis did not finish:
     /// the prompt asks whether to resume or start over.
     @State private var resumePrompt: ResumePrompt?
@@ -41,6 +43,7 @@ struct AnalyzeView: View {
     @State private var previewVideoID: Int64?
     /// Scene playing from the person popover (sheet owned here, not by the
     /// split-view child).
+    @State private var batchComparison: ScenesView.CompareRequest?
     @State private var previewScene: SceneRecord?
     @State private var reassignPerson: PersonRecord?
     @State private var reassignVideo: VideoRecord?
@@ -115,6 +118,7 @@ struct AnalyzeView: View {
                                      onResearch: { fightResearchTarget = video },
                                      onNameWizard: { showNameWizard = true },
                                      onPreviewScene: { previewScene = $0 },
+                                     onCompareBatches: { batchComparison = ScenesView.CompareRequest(runs: $0, video: video) },
                                      onSelectVideo: { selection = [$0.id] },
                                      onReassignNewPerson: { person, video, suggested in
                                          newPersonName = suggested
@@ -170,7 +174,7 @@ struct AnalyzeView: View {
                 pendingBatchRemoval = []
             }
         } message: {
-            Text("Every analyze batch of the video goes, with its scenes, tags and grades. Transcripts, people and the video itself stay. Timelines that used those scenes lose them.")
+            Text(store.batchDeletionMessage(store.analysisRuns.filter { pendingBatchRemoval.contains($0.videoID) }))
         }
         .confirmationDialog(
             pendingRemoval.count == 1 ? "Remove this video from the project?"
@@ -227,13 +231,14 @@ struct AnalyzeView: View {
                     let videos = selectedVideos
                     if !videos.isEmpty { startAnalysis(of: videos) }
                 } label: {
-                    Label(selection.count > 1 ? "Analyze \(selection.count)" : "Analyze",
+                    Label(selection.count > 1 ? "Analyze \(selection.count)" : selectedVideos.first.map { store.duplicateAnalysis(for: $0) != nil ? "Analyze again" : "Analyze" } ?? "Analyze",
                           systemImage: "sparkles")
+                        .lineLimit(1).fixedSize()
                 }
-                .disabled(selection.isEmpty || store.isAnalyzing || selectedVideos.contains { !$0.isPresent })
+                .disabled(selection.isEmpty || store.isAnalyzing || checkingAnalysis || selectedVideos.contains { !$0.isPresent })
                 .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason : selection.count > 1
                       ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
-                      : "Runs a fresh analysis of the selected video. Each run lands in its own analyze batch on the Scenes screen — earlier batches stay until you delete them there.")
+                      : selectedVideos.first.map { store.analysisRequestHelp(for: $0) } ?? "Select a video to analyze.")
 
                 Button("Run Full Pipeline", systemImage: "wand.and.rays") {
                     showAnalyzeWizard = true
@@ -289,6 +294,9 @@ struct AnalyzeView: View {
             .padding(20)
             .frame(width: 380)
         }
+        .sheet(item: $batchComparison) { request in
+            CompareBatchesSheet(runs: request.runs, video: request.video)
+        }
         .sheet(item: $previewScene) { scene in
             PlayerSheet(url: scene.videoURL, transcriptVideoID: scene.videoID,
                         title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
@@ -334,6 +342,20 @@ struct AnalyzeView: View {
         .onChange(of: store.pendingAnalyzeSetup) { _, video in
             if let video { presentPrefilledPlan(for: video) }
         }
+        .task(id: comparisonRevision) {
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            await store.refreshAnalysisComparisons()
+        }
+        .onChange(of: store.analysisRuns) { _, _ in comparisonRevision += 1 }
+        .onChange(of: store.videos) { _, _ in comparisonRevision += 1 }
+        .onChange(of: store.people) { _, _ in comparisonRevision += 1 }
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+            comparisonRevision += 1
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            comparisonRevision += 1
+        }
         .onAppear { restoreProjectState() }
         .onChange(of: store.projectStateVersion) { restoreProjectState() }
         .onChange(of: selection, initial: true) { old, new in
@@ -357,7 +379,7 @@ struct AnalyzeView: View {
     private func presentPrefilledPlan(for video: VideoRecord) {
         store.pendingAnalyzeSetup = nil
         selection = [video.id]
-        startAnalysis(of: [video])
+        presentPlan(for: [video])
     }
 
     /// The model plan always shows for analysis — it carries the options
@@ -368,7 +390,25 @@ struct AnalyzeView: View {
         guard videos.allSatisfy(\.isPresent) else { store.presentError(VideoRecord.notPresentReason); return }
         let unfinished = videos.filter { store.analysisCheckpoints[$0.id] != nil }
         if unfinished.isEmpty {
-            presentPlan(for: videos)
+            if videos.count == 1, let video = videos.first,
+               store.analysisRuns.contains(where: { $0.videoID == video.id && $0.requestHash != nil }) {
+                checkingAnalysis = true
+                let generation = store.profileGeneration
+                Task {
+                    defer { checkingAnalysis = false }
+                    do {
+                        let plan = AnalysisRequest.capturePlan(defaults: .standard, singleVideo: true,
+                            provider: nil, model: nil, includeFightScoring: true)
+                        let request = try await store.captureAnalysisRequest(video: video, plan: plan, profile: store.activeProfile,
+                            config: store.effectiveAIConfig, podcast: store.podcastEditingSettings, language: store.editingDefaults.footage.language)
+                        guard generation == store.profileGeneration else { return }
+                        store.analysisRequestPreviews[video.id] = request
+                        if store.duplicateAnalysis(for: video) != nil {
+                            store.analyze(videos: videos, capturedRequests: [video.id: request])
+                        } else { presentPlan(for: videos) }
+                    } catch { store.presentError("Could not check the analysis settings", error) }
+                }
+            } else { presentPlan(for: videos) }
         } else {
             resumePrompt = ResumePrompt(videos: videos, unfinished: unfinished)
         }
@@ -426,6 +466,8 @@ struct AnalyzeView: View {
         var scenesVersion: Int
         var peopleVersion: Int
         var transcriptCountsVersion: Int
+        var passes: [AnalysisPassRecord]
+        var unfinishedVideoIDs: Set<Int64>
         var sortOrder: [KeyPathComparator<VideoRecord>]
     }
 
@@ -445,7 +487,9 @@ struct AnalyzeView: View {
         let key = TableKey(storeID: ObjectIdentifier(store),
                            videosVersion: store.videosVersion, runsVersion: store.analysisRunsVersion,
                            scenesVersion: store.scenesVersion, peopleVersion: store.videoPeopleVersion,
-                           transcriptCountsVersion: store.transcriptCountsVersion, sortOrder: sortOrder)
+                           transcriptCountsVersion: store.transcriptCountsVersion,
+                           passes: store.analysisPasses, unfinishedVideoIDs: Set(store.analysisCheckpoints.keys),
+                           sortOrder: sortOrder)
         return tableMemo(key) { computeTableSummary() }
     }
 
@@ -454,12 +498,13 @@ struct AnalyzeView: View {
         let sceneCounts = store.sceneIndex.countsByVideo
         let batchCounts = store.analysisRuns.reduce(into: [Int64: Int]()) { $0[$1.videoID, default: 0] += 1 }
         let transcriptCounts = store.transcriptCounts
-        let runsByVideo = Dictionary(grouping: store.analysisRuns, by: \.videoID)
         let scenesByVideo = Dictionary(grouping: store.scenes, by: \.videoID)
         let coverage = Dictionary(uniqueKeysWithValues: store.videos.map { video in
-            (video.id, AnalysisCoverage.report(video: video, runs: runsByVideo[video.id] ?? [],
+            (video.id, AnalysisCoverage.report(video: video, activeRun: store.activeLayer(videoID: video.id).run,
                                                scenes: scenesByVideo[video.id] ?? [],
-                                               transcriptCount: transcriptCounts[video.id] ?? 0))
+                                               transcriptCount: transcriptCounts[video.id] ?? 0,
+                                               passes: store.analysisPasses, hasCheckpoint: store.analysisCheckpoints[video.id] != nil,
+                                               duplicateOf: store.duplicateAnalysis(for: video)))
         })
         // Distinct people tagged across a video's batches, or the roster the
         // people pass built when that is all there is yet.
@@ -478,7 +523,12 @@ struct AnalyzeView: View {
 
     @ViewBuilder
     private func coverageControl(video: VideoRecord, report: AnalysisCoverage.Report?) -> some View {
-        if let report, report.state != .needsAnalysis,
+        if store.duplicateAnalysis(for: video) != nil {
+            Label("Up to date, same settings", systemImage: "checkmark.circle")
+                .lineLimit(1).fixedSize().foregroundStyle(.secondary)
+        } else if video.type?.supportsFightFeatures == true {
+            FightStatsCoverageCell(video: video)
+        } else if let report, report.state != .needsAnalysis,
            let action = AnalysisCoverage.action(for: report.state) {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.triangle.2.circlepath")
@@ -578,7 +628,6 @@ struct AnalyzeView: View {
                     .help("The people pass is watching this video in the background")
                 } else {
                     let batches = summary.batchCounts[video.id] ?? 0
-                    let scenes = summary.sceneCounts[video.id] ?? 0
                     let people = summary.peopleCounts[video.id] ?? 0
                     let hasTranscript = (summary.transcriptCounts[video.id] ?? 0) > 0
                     // Analysis, people, transcript, Q&A, and update action.
@@ -586,32 +635,11 @@ struct AnalyzeView: View {
                     // Fixed slots so the marks line up as columns down
                     // the table; empty slots keep their width.
                     HStack(spacing: 6) {
-                        if let checkpoint = store.analysisCheckpoints[video.id] {
-                            // Started and never finished: how far it got.
-                            // Analyze offers to resume from here.
-                            Label("\(checkpoint.percent)%", systemImage: "exclamationmark.arrow.circlepath")
-                                .foregroundStyle(.orange)
-                                .monospacedDigit()
-                                .frame(width: 58, alignment: .leading)
-                                .help("Analysis unfinished — stopped at \(checkpoint.percent)%"
-                                      + (checkpoint.stage.isEmpty ? "" : " while \(checkpoint.stage)")
-                                      + (checkpoint.lastError.map { " — \($0)" } ?? "")
-                                      + ". Analyze to resume or start over.")
-                                .accessibilityLabel("Analysis unfinished, stopped at \(checkpoint.percent) percent")
-                        } else if batches > 0 {
-                            Label("\(scenes)", systemImage: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
-                                .monospacedDigit()
-                                .frame(width: 58, alignment: .leading)
-                                .help("Analyzed — \(scenes) scene\(scenes == 1 ? "" : "s") ready")
-                                .accessibilityLabel("Analyzed, \(scenes) scenes")
-                        } else {
-                            Label("Needs analysis", systemImage: "circle.dashed")
-                                .labelStyle(.iconOnly)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 58, alignment: .leading)
-                                .help("Needs analysis")
+                        AnalysisBatchControl(video: video, compact: true) { runs in
+                            batchComparison = ScenesView.CompareRequest(runs: runs, video: video)
                         }
+                        .foregroundStyle(batches > 0 ? Color.green : Color.secondary)
+                        .frame(width: 58, alignment: .leading)
                         Group {
                             if people > 0 {
                                 Label("\(people)", systemImage: "person.2.fill")
@@ -700,7 +728,7 @@ struct AnalyzeView: View {
             let batches = store.analysisRuns.filter { ids.contains($0.videoID) }.count
             if batches > 0 {
                 Button(batches == 1 ? "Remove Analyze Batch" : "Remove \(batches) Analyze Batches", role: .destructive) {
-                    pendingBatchRemoval = ids
+                    store.prepareBatchDeletion { pendingBatchRemoval = ids }
                 }
             }
             Divider()
@@ -831,6 +859,7 @@ private struct VideoPreviewPane: View {
     let onNameWizard: () -> Void
     /// Plays a scene picked in the person popover — same rule.
     let onPreviewScene: (SceneRecord) -> Void
+    let onCompareBatches: ([AnalysisRun]) -> Void
     /// Selects another video picked in the person popover.
     let onSelectVideo: (VideoRecord) -> Void
     /// Requests the name sheet from AnalyzeView, outside the split view.
@@ -854,6 +883,8 @@ private struct VideoPreviewPane: View {
     @State private var detailPersonID: Int64?
     /// Whether any transcript rows exist for this video — shows the editor.
     @State private var hasTranscript = false
+    @State private var transcriptSetLabel = ""
+    @State private var transcriptPinMissing = false
     @State private var showTranscript = false
 
     var body: some View {
@@ -891,6 +922,18 @@ private struct VideoPreviewPane: View {
                         EmptyView()
                     }
                 }
+            VStack(alignment: .leading, spacing: 4) {
+                let active = store.activeLayer(videoID: video.id)
+                Text("Active batch: \(active.run?.name ?? "None") (\(active.reason))")
+                    .font(.caption).lineLimit(1)
+                HStack {
+                    AnalysisBatchControl(video: video, onCompare: onCompareBatches)
+                    Spacer(minLength: 0)
+                }
+                if active.missingPin {
+                    Text("pinned batch not on this Mac yet").font(.caption2).foregroundStyle(.orange)
+                }
+            }
             VStack(spacing: 2) {
                 HStack(spacing: 4) {
                     Text(video.filename)
@@ -937,14 +980,21 @@ private struct VideoPreviewPane: View {
             } else if hasTranscript {
                 // The whole transcript, editable segment by segment.
                 HStack {
-                    Text("Transcript")
-                        .font(.caption.weight(.medium))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Transcript").font(.caption.weight(.medium))
+                        Text(transcriptSetLabel).font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).fixedSize()
+                        if transcriptPinMissing {
+                            Text("Pinned set not on this Mac yet").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     Spacer()
-                    Button("Edit Transcript…", systemImage: "text.quote") {
+                    Button("Change…", systemImage: "text.quote") {
                         showTranscript = true
                     }
                     .controlSize(.small)
-                    .help("Open the full transcript of this file and edit any segment's text")
+                    .lineLimit(1).fixedSize()
+                    .help("Choose the active transcript set or edit its text")
                 }
             }
 
@@ -969,7 +1019,7 @@ private struct VideoPreviewPane: View {
                                     ProgressView()
                                         .controlSize(.small)
                                 }
-                                Button(store.fightEvents[video.id]?.isEmpty == false ? "Re-score" : "Score") {
+                                Button(store.fightEvents[video.id]?.isEmpty == false ? "Re-score v2" : "Score v2") {
                                     store.scoreFightAction(video: video)
                                 }
                                 .controlSize(.small)
@@ -984,6 +1034,12 @@ private struct VideoPreviewPane: View {
                                     player?.seek(to: CMTime(seconds: time, preferredTimescale: 600),
                                                  toleranceBefore: .zero, toleranceAfter: .zero)
                                 }
+                            } else if let pass = store.analysisPasses.last(where: { $0.videoID == video.id && $0.pass == .fightScore && $0.status != .running }) {
+                                Text(pass.status == .completed
+                                     ? "Scored v\(pass.version): no scoring actions found (\(pass.note ?? "no detail")). Check the Fight Scoring job log in the status bar."
+                                     : "Scoring \(pass.status.rawValue): \(pass.note ?? "no detail"). Check the Fight Scoring job log in the status bar.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
                             } else {
                                 Text("Not scored yet — analyzed fight footage scores automatically; use Score to run it now.")
                                     .font(.caption2)
@@ -1163,12 +1219,22 @@ private struct VideoPreviewPane: View {
             roster = refreshed
         }
         // Re-check when a transcription for this video finishes.
-        .task(id: "\(video.id)|\(store.transcribingVideoIDs.contains(video.id))") {
+        .task(id: "\(video.id)|\(store.transcribingVideoIDs.contains(video.id))|\(store.transcriptCountsVersion)|\(video.activeTranscriptionKey ?? "")|\(showTranscript)") {
             guard let database = store.database else { return }
-            hasTranscript = ((try? await database.fetchTranscripts(videoID: video.id)) ?? []).isEmpty == false
+            let sets = (try? await database.transcriptionSets(videoID: video.id)) ?? []
+            let resolution = try? await database.activeTranscription(videoID: video.id)
+            guard !Task.isCancelled else { return }
+            hasTranscript = !sets.isEmpty || resolution?.missingPin == true
+            transcriptPinMissing = resolution?.missingPin ?? false
+            if let index = Array(sets.reversed()).firstIndex(where: { $0.isActive }) {
+                let number = index + 1
+                transcriptSetLabel = "Set \(number) of \(sets.count) (\(resolution?.reason ?? "newest"))"
+            } else {
+                transcriptSetLabel = "No local set"
+            }
         }
         .sheet(isPresented: $showTranscript) {
-            TranscriptSheet(video: video)
+            TranscriptSheet(video: video, focusSetsPicker: true)
         }
         .onDisappear {
             player?.pause()

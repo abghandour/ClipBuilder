@@ -57,6 +57,7 @@ enum TranscriptTranslator {
                                              log: @Sendable (String) async -> Void = { _ in }) async throws -> Outcome {
         try Task.checkCancellation()
         guard !originals.isEmpty else { return Outcome(segments: 0, summary: "") }
+        guard let transcriptionKey = originals.first?.transcriptionKey else { throw ScriptError.invalid("The source transcript has no set key.") }
         let size = max(1, batchSize)
         var answered: [Int64: String] = [:]
         var provenance: AIProvenance?
@@ -115,7 +116,7 @@ enum TranscriptTranslator {
             await log("Captions: translated \(offset + chunk.count) of \(originals.count) lines")
         }
         try Task.checkCancellation()
-        let stored = try await database.fetchTranscripts(videoID: videoID)
+        let stored = try await database.fetchTranscripts(videoID: videoID, transcriptionKey: transcriptionKey)
             .filter { $0.isTranslation && $0.language == target }
         // An unanswered row must not overwrite an already stored translation.
         let segments = originals.compactMap { row -> TranscriptSegment? in
@@ -127,7 +128,7 @@ enum TranscriptTranslator {
             !segments.contains { $0.start == row.startTime && $0.end == row.endTime }
         }.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: nil) }
         try Task.checkCancellation()
-        try await database.replaceTranscripts(videoID: videoID, language: target, isTranslation: true,
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: transcriptionKey, language: target, isTranslation: true,
             segments: (segments + kept).sorted { $0.start < $1.start },
             provider: provenance?.provider ?? (answered.isEmpty ? "original" : "apple"), model: provenance?.model,
             technique: "numbered-translation-batch")
@@ -143,8 +144,8 @@ enum TranscriptTranslator {
         try await database.fetchTranscripts(videoID: videoID).filter { !$0.isTranslation }
     }
 
-    static func hasTranslation(videoID: Int64, language: String, database: Database) async -> Bool {
-        ((try? await database.fetchTranscripts(videoID: videoID)) ?? [])
+    static func hasTranslation(videoID: Int64, language: String, transcriptionKey: String? = nil, database: Database) async -> Bool {
+        ((try? await database.fetchTranscripts(videoID: videoID, transcriptionKey: transcriptionKey)) ?? [])
             .contains { $0.isTranslation && $0.language == language }
     }
 
@@ -164,6 +165,7 @@ enum TranscriptTranslator {
                           session: TranslationSession, store: AppStore,
                           database: Database? = nil) async throws -> Outcome {
         guard let database = database ?? store.database else { throw ScriptError.invalid("No profile database is open.") }
+        guard let transcriptionKey = originals.first?.transcriptionKey else { throw ScriptError.invalid("The source transcript has no set key.") }
         let batchFallback = OnDevicePolicy.isEnabled(item: "translation-batch", config: store.settings.ai)
         do {
             try await session.prepareTranslation()
@@ -183,7 +185,7 @@ enum TranscriptTranslator {
                 return try await translateWithAI(videoID: videoID, originals: missing, target: target,
                                                  existing: segments, store: store, database: database)
             }
-            try await database.replaceTranscripts(videoID: videoID, language: target, isTranslation: true,
+            try await database.replaceTranscripts(videoID: videoID, transcriptionKey: transcriptionKey, language: target, isTranslation: true,
                                                   segments: segments, provider: "apple", model: "Translation")
             store.appendLog(\.pipelineLog, ["Translation answered by Apple Translation"])
             return Outcome(segments: segments.count,
@@ -213,6 +215,7 @@ enum TranscriptTranslator {
                                       existing: [TranscriptSegment] = [], ai: AIService, database: Database,
                                       log: @Sendable (String) async -> Void = { _ in }) async throws -> Outcome {
         try Task.checkCancellation()
+        guard let transcriptionKey = originals.first?.transcriptionKey else { throw ScriptError.invalid("The source transcript has no set key.") }
         let batchFallback = OnDevicePolicy.isEnabled(item: "translation-batch", config: await ai.config)
         var segments: [TranscriptSegment] = []
         var provenance: AIProvenance?
@@ -242,14 +245,14 @@ enum TranscriptTranslator {
             throw AIError.unusableResponse("The translator returned no caption lines.")
         }
         let answered = existing + segments
-        let kept = try await database.fetchTranscripts(videoID: videoID)
+        let kept = try await database.fetchTranscripts(videoID: videoID, transcriptionKey: transcriptionKey)
             .filter { row in
                 row.isTranslation && row.language == target
                     && !answered.contains { $0.start == row.startTime && $0.end == row.endTime }
             }
             .map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: nil) }
         let merged = (answered + kept).sorted { $0.start < $1.start }
-        try await database.replaceTranscripts(videoID: videoID, language: target, isTranslation: true,
+        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: transcriptionKey, language: target, isTranslation: true,
                                               segments: merged, provider: provenance?.provider ?? "ai",
                                               model: provenance?.model,
                                               technique: existing.isEmpty

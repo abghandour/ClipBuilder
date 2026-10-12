@@ -262,7 +262,7 @@ extension ScriptRunner {
                   let area = model.area(forTrack: item.track, at: item.startTime) else {
                 throw BuilderCommandFailure.invalid("Area framing requires a clip assigned to a crop area.")
             }
-            let videoID = library.scenes.first { $0.id == item.sceneID }?.videoID
+            let videoID = library.scenesForReferences.first { $0.id == item.sceneID }?.videoID
             guard let video = library.videos.first(where: { $0.id == videoID || $0.path == item.videoFile }),
                   video.width > 0, video.height > 0 else {
                 throw BuilderCommandFailure.invalid("Area framing requires captured source dimensions.")

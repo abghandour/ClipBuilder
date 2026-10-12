@@ -419,7 +419,7 @@ extension BuilderQuery {
                 targetClip = found
             }
             let videoID = video ?? targetClip.flatMap { target in
-                library.scenes.first { $0.id == target.sceneID }?.videoID
+                library.scenesForReferences.first { $0.id == target.sceneID }?.videoID
                     ?? library.videos.first { $0.path == target.videoFile }?.id
             }
             guard let videoID, library.videos.contains(where: { $0.id == videoID }) else {

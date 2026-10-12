@@ -70,7 +70,7 @@ struct BuilderScriptDebugView: View {
             for (index, image) in AssetStore.allFiles(of: .images).enumerated() { library.images["image:\(index)"] = image.url.path }
             if let database = store.database {
                 library.videos = try await database.fetchVideos(projectID: library.projectID)
-                library.scenes = try await database.fetchScenes(projectID: library.projectID)
+                library.scenes = try await database.fetchScenes(projectID: library.projectID, scope: .active)
                 for video in library.videos {
                     library.transcripts += try await database.fetchTranscripts(videoID: video.id)
                     library.features += try await database.fetchTranscriptFeatures(videoID: video.id)

@@ -88,9 +88,9 @@ extension CaptionPagingTests {
         let temp = try TempDatabase()
         let id = try await temp.seedVideo()
         let words = [TranscriptWord(word: "Original", start: 1.2, end: 1.8)]
-        try await temp.database.replaceTranscripts(videoID: id, language: "pt", isTranslation: false,
+        try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "pt", isTranslation: false,
             segments: [.init(start: 1, end: 2, text: "Original", words: words)], provider: nil, model: nil)
-        try await temp.database.replaceTranscripts(videoID: id, language: "en", isTranslation: true,
+        try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en", isTranslation: true,
             segments: [.init(start: 1, end: 2, text: "Translation", words: words)], provider: nil, model: nil)
         let originals = try await temp.database.transcriptSegments(videoID: id, start: 0, end: 3)
         let translated = try await temp.database.transcriptSegments(videoID: id, start: 0, end: 3, language: "en")

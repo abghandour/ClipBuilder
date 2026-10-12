@@ -623,6 +623,7 @@ struct TextInspector: View {
             Text("Text Overlay")
                 .font(.headline)
 
+            if item.stat != nil { StrikeStatsInspector(item: item) }
             TextOverlayForm(item: itemBinding)
 
             Picker("Enter", selection: itemBinding.transIn) {

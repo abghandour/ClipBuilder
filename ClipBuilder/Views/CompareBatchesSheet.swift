@@ -19,7 +19,7 @@ struct CompareBatchesSheet: View {
     @State private var pendingMerge: AnalysisRun?
 
     private var comparison: BatchComparison {
-        BatchComparison.compare(runIDs: runs.map(\.id), scenes: store.scenes, duration: video.duration)
+        BatchComparison.compare(runIDs: runs.map(\.id), scenes: store.historyScenes, duration: video.duration)
     }
 
     private func label(_ run: AnalysisRun) -> String {
@@ -72,7 +72,7 @@ struct CompareBatchesSheet: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { run in
-            Text("The other \(runs.count - 1) batch\(runs.count == 2 ? "" : "es") and their scenes, tags and grades are deleted. \"\(run.name)\" stays as it is. The video is not touched.")
+            Text(store.batchDeletionMessage(runs.filter { $0.id != run.id }))
         }
         .confirmationDialog("Merge into \"\(pendingMerge?.name ?? "")\"?",
                             isPresented: Binding(get: { pendingMerge != nil }, set: { if !$0 { pendingMerge = nil } }),
@@ -83,7 +83,7 @@ struct CompareBatchesSheet: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { run in
-            Text("Every batch stays. Where another batch found the same moment as \"\(run.name)\", that other take is hidden; scenes only the other batches found stay visible. Nothing is deleted.")
+            Text("Creates and pins a new batch containing the union of unique scene ranges and all their tags. Existing batches stay unchanged. Framing for equal ranges comes from this batch.")
         }
         .task {
             gradingOrder = comparison.allUnique.map(\.id).shuffled()
@@ -252,24 +252,18 @@ struct CompareBatchesSheet: View {
                     Text(run.name)
                         .lineLimit(1)
                         .frame(width: 260, alignment: .leading)
-                    Button("Keep Only This Batch…", role: .destructive) { pendingKeep = run }
+                    Button("Keep Only This Batch…", role: .destructive) { store.prepareBatchDeletion { pendingKeep = run } }
                         .help("Delete the other batches; this one stays untouched")
-                    Button("Merge Into This Batch…") { pendingMerge = run }
-                        .help("Keep every batch, but hide the other batches' takes of moments this one also found")
+                    Button("Create Merged Batch…") { pendingMerge = run }
+                        .help("Create and pin a new batch with the union of scenes")
                 }
-                .controlSize(.small)
+                .controlSize(.small).lineLimit(1).fixedSize()
             }
         }
     }
 
-    /// Hide the other batches' takes of every moment `run` also found;
-    /// their unique scenes stay.
     private func merge(into run: AnalysisRun, comparison: BatchComparison) {
-        for moment in comparison.moments where moment.runIDs.contains(run.id) {
-            for scene in moment.members where scene.runID != run.id && !scene.excluded {
-                store.setExcluded(scene, excluded: true)
-            }
-        }
+        store.mergeAnalysisRuns(runs, preferred: run)
     }
 
     private func sectionTitle(_ title: String) -> some View {

@@ -11,13 +11,18 @@ extension AppStore {
     func updateScene(_ id: Int64, rebuildSceneIndex: Bool = true,
                              rehydrateBuilder: Bool = true,
                              _ mutate: (inout SceneRecord) -> Void) {
-        guard let index = scenes.firstIndex(where: { $0.id == id }) else { return }
-        rebuildSceneIndexAfterWrite = rebuildSceneIndex
-        mutate(&scenes[index])
-        // The index keeps record copies for the Favorites filter; when the
-        // rebuild is skipped those copies still have to follow the change.
-        if !rebuildSceneIndex { sceneIndex.replaceCopy(of: scenes[index]) }
-        builder.updateScene(scenes[index], rehydrateClips: rehydrateBuilder)
+        guard var updated = scenes.first(where: { $0.id == id })
+            ?? historyScenes.first(where: { $0.id == id })
+            ?? referencedScenes.first(where: { $0.id == id }) else { return }
+        mutate(&updated)
+        if let index = historyScenes.firstIndex(where: { $0.id == id }) { historyScenes[index] = updated }
+        if let index = referencedScenes.firstIndex(where: { $0.id == id }) { referencedScenes[index] = updated }
+        if let index = scenes.firstIndex(where: { $0.id == id }) {
+            rebuildSceneIndexAfterWrite = rebuildSceneIndex
+            scenes[index] = updated
+            if !rebuildSceneIndex { sceneIndex.replaceCopy(of: updated) }
+        }
+        builder.updateScene(updated, rehydrateClips: rehydrateBuilder)
     }
 
     /// Apply a bulk mutation to one array copy, so the `scenes` observer
@@ -25,19 +30,21 @@ extension AppStore {
     func updateScenes(_ sceneIDs: Set<Int64>, rebuildSceneIndex: Bool = true,
                               _ mutate: (inout SceneRecord) -> Void) {
         guard !sceneIDs.isEmpty else { return }
-        var updatedScenes = scenes
-        var affectedScenes: [SceneRecord] = []
-        for index in updatedScenes.indices where sceneIDs.contains(updatedScenes[index].id) {
-            mutate(&updatedScenes[index])
-            affectedScenes.append(updatedScenes[index])
+        let all = SceneReferences.combining(scenes, referenced: historyScenes)
+        var updates: [Int64: SceneRecord] = [:]
+        for var scene in all where sceneIDs.contains(scene.id) {
+            mutate(&scene)
+            updates[scene.id] = scene
         }
-        guard !affectedScenes.isEmpty else { return }
+        guard !updates.isEmpty else { return }
+        historyScenes = historyScenes.map { updates[$0.id] ?? $0 }
+        referencedScenes = referencedScenes.map { updates[$0.id] ?? $0 }
         rebuildSceneIndexAfterWrite = rebuildSceneIndex
-        scenes = updatedScenes
+        scenes = scenes.map { updates[$0.id] ?? $0 }
         if !rebuildSceneIndex {
-            for scene in affectedScenes { sceneIndex.replaceCopy(of: scene) }
+            for scene in updates.values { sceneIndex.replaceCopy(of: scene) }
         }
-        builder.updateChangedScenes(affectedScenes, rehydrateClips: false)
+        builder.updateChangedScenes(Array(updates.values), rehydrateClips: false)
     }
 
     func toggleFavorite(_ scene: SceneRecord) {

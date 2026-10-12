@@ -8,7 +8,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case mapSpeakers, suggestTrim, cameraPath, evaluateReelModel, publishLessons, transcriptAnalysis
     case teamSync
     case personResearch
-    case criticBrief, evaluateCritic
+    case criticBrief, evaluateCritic, fightScore
 
     var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief }
     /// Routine cycles finish quietly; the outcome goes to the activity log only.
@@ -27,6 +27,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .sceneSearch: "Scene Search"
         case .imageSearch: "Image Search"
         case .fightResearch: "Fight Research"
+        case .fightScore: "Fight Scoring"
         case .generateRequest: "Video Request"
         case .instagramPublish: "Instagram Publish"
         case .socialExport: "Social Export"

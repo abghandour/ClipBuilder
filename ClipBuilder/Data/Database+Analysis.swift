@@ -6,25 +6,31 @@ extension Database {
     /// All scenes joined with their video, tags, and grade summary.
     /// One scene by id, with the same tags/grades hydration as the list.
     func fetchScene(id: Int64) throws -> SceneRecord? {
-        try fetchScenes(sceneID: id).first
+        try fetchScenes(ids: [id]).first
     }
 
     /// Everything the main window's library state is built from, in one
     /// actor hop, so a refresh is a single round trip instead of nine.
-    func fetchLibrarySnapshot(projectID: Int64? = nil) async throws -> LibrarySnapshot {
+    func fetchLibrarySnapshot(projectID: Int64? = nil, referencedSceneIDs: Set<Int64> = []) async throws -> LibrarySnapshot {
         let projectID = try scopedProjectID(projectID)
         let videos = try await fetchVideos(projectID: projectID)
         let videoIDs = Set(videos.map(\.id))
         let generatedVideos = try fetchGeneratedVideos(projectID: projectID)
         let generatedIDs = Set(generatedVideos.map(\.id))
+        let references = try fetchSceneReferences()
+        let ids = references.reduce(into: referencedSceneIDs) { $0.formUnion($1.sceneIDs) }
         return LibrarySnapshot(videos: videos,
-                        scenes: try fetchScenes(projectID: projectID),
+                        scenes: try fetchScenes(projectID: projectID, scope: .active),
+                        historyScenes: try fetchScenes(projectID: projectID, scope: .history),
+                        referencedScenes: try fetchScenes(ids: ids),
+                        sceneReferences: references,
                         analysisRuns: try fetchAnalysisRuns().filter { videoIDs.contains($0.videoID) },
                         people: try fetchPeople(),
                         generatedVideos: generatedVideos,
                         feedback: try fetchAllFeedback().filter { generatedIDs.contains($0.generatedVideoID) },
                         lessons: try fetchLessons(),
                         fightResearch: ((try? fetchFightResearch()) ?? []).filter { videoIDs.contains($0.videoID) },
+                        analysisPasses: try fetchAnalysisPasses(),
                         fightEvents: ((try? fetchFightEvents()) ?? []).filter { videoIDs.contains($0.videoID) },
                         videoPeopleCounts: try fetchVideoPeopleCounts().filter { videoIDs.contains($0.key) },
                         transcriptCounts: try fetchTranscriptCounts().filter { videoIDs.contains($0.key) },
@@ -79,10 +85,29 @@ extension Database {
         return counts
     }
 
+    enum SceneScope: Sendable { case active, history }
+
     func fetchScenes(videoID: Int64? = nil, sceneID: Int64? = nil,
-                     projectID: Int64? = nil,
+                     projectID: Int64? = nil, scope: SceneScope = .history,
                      includeExcluded: Bool = true) throws -> [SceneRecord] {
-        let projectID = try scopedProjectID(projectID)
+        try readScenes(videoID: videoID, sceneID: sceneID, projectID: try scopedProjectID(projectID),
+                       scope: scope, includeExcluded: includeExcluded)
+    }
+
+    /// Identity lookups never inherit the current project or active batch.
+    func fetchScenes(ids: Set<Int64>) throws -> [SceneRecord] {
+        guard !ids.isEmpty else { return [] }
+        return try readScenes(ids: ids)
+    }
+
+    func fetchScenes(videoID: Int64, runKey: String) throws -> [SceneRecord] {
+        try readScenes(videoID: videoID, runKey: runKey)
+    }
+
+    private func readScenes(videoID: Int64? = nil, sceneID: Int64? = nil,
+                            projectID: Int64? = nil, scope: SceneScope = .history,
+                            includeExcluded: Bool = true, ids: Set<Int64>? = nil,
+                            runKey: String? = nil) throws -> [SceneRecord] {
         var sql = """
             SELECT s.*, v.path AS video_path, v.filename AS video_filename,
                    v.duration AS video_duration, v.wide AS video_wide,
@@ -104,6 +129,26 @@ extension Database {
             conditions.append("s.id = ?")
             params.append(.integer(sceneID))
         }
+        if let ids {
+            conditions.append("s.id IN (" + ids.sorted().map(String.init).joined(separator: ",") + ")")
+        }
+        if let runKey {
+            conditions.append("s.run_id IN (SELECT id FROM analysis_runs WHERE run_key = ?)")
+            params.append(.text(runKey))
+        }
+        if scope == .active {
+            let runs = Dictionary(grouping: try fetchAnalysisRuns(), by: \.videoID)
+            let passes = Dictionary(grouping: try fetchAnalysisPasses(), by: \.videoID)
+            let pins = try connection.query("SELECT id, active_run_key FROM videos")
+            let activeIDs = pins.compactMap { row -> Int64? in
+                let id = row["id"]?.intValue ?? 0
+                return ActiveLayers.resolve(videoID: id,
+                                     pinnedRunKey: row["active_run_key"]?.stringValue,
+                                     runs: runs[id] ?? [], passes: passes[id] ?? []).run?.id
+            }
+            let list = activeIDs.map(String.init).joined(separator: ",")
+            conditions.append("(s.run_id IN (\(list.isEmpty ? "NULL" : list)) OR (s.run_id IS NULL AND NOT EXISTS (SELECT 1 FROM analysis_runs r WHERE r.video_id = s.video_id)))")
+        }
         if !includeExcluded {
             conditions.append("s.excluded = 0")
         }
@@ -116,24 +161,10 @@ extension Database {
 
         // Scope the tag/grade lookups to the filter — otherwise a
         // single-video fetch pays for the whole library's tags and grades.
-        let sceneScope: String
-        let scopeParams: [SQLValue]
-        if let sceneID {
-            sceneScope = " WHERE scene_id = ?"
-            scopeParams = [.integer(sceneID)]
-        } else if let videoID {
-            sceneScope = " WHERE scene_id IN (SELECT id FROM scenes WHERE video_id = ?)"
-            scopeParams = [.integer(videoID)]
-        } else if projectID != nil {
-            // Reuse the scene-row predicate, including exclusion filtering.
-            sceneScope = " WHERE scene_id IN (SELECT s.id FROM scenes s"
-                + " JOIN project_videos pv ON pv.video_id = s.video_id WHERE "
-                + conditions.joined(separator: " AND ") + ")"
-            scopeParams = params
-        } else {
-            sceneScope = ""
-            scopeParams = []
-        }
+        let sceneScope = " WHERE scene_id IN (SELECT s.id FROM scenes s JOIN videos v ON v.id = s.video_id"
+            + (projectID == nil ? "" : " JOIN project_videos pv ON pv.video_id = s.video_id")
+            + (conditions.isEmpty ? "" : " WHERE " + conditions.joined(separator: " AND ")) + ")"
+        let scopeParams = params
 
         let tagRows = try connection.query("SELECT scene_id, tag FROM scene_tags" + sceneScope, scopeParams)
         var tagsByScene: [Int64: [String]] = [:]
@@ -313,9 +344,10 @@ extension Database {
             SELECT r.*, v.filename AS video_filename, v.path AS video_path,
                    (SELECT COUNT(*) FROM scenes s WHERE s.run_id = r.id) AS scene_count
             FROM analysis_runs r JOIN videos v ON v.id = r.video_id
-            ORDER BY r.created_at DESC, r.sync_id DESC
+            ORDER BY r.created_at DESC, r.run_key DESC
             """).map { row in
-            AnalysisRun(id: row["id"]?.intValue ?? 0,
+            AnalysisRun(requestHash: row["request_hash"]?.stringValue, requestJSON: row["request_json"]?.stringValue,
+                        runKey: row["run_key"]?.stringValue, id: row["id"]?.intValue ?? 0,
                         videoID: row["video_id"]?.intValue ?? 0,
                         name: row["name"]?.stringValue ?? "",
                         instructions: row["instructions"]?.stringValue ?? "",
@@ -351,10 +383,19 @@ extension Database {
     }
 
     /// Delete a batch and its scenes; scene_tags and grades cascade.
-    func deleteAnalysisRun(id: Int64) throws {
+    @discardableResult
+    func deleteAnalysisRun(id: Int64) throws -> ActiveLayers.Resolution? {
         try connection.transaction {
+            let row = try connection.query("SELECT video_id, run_key FROM analysis_runs WHERE id = ?", [.integer(id)]).first
+            if let key = row?["run_key"]?.stringValue, let videoID = row?["video_id"]?.intValue {
+                try connection.execute("UPDATE videos SET active_run_key = NULL WHERE id = ? AND active_run_key = ?",
+                                       [.integer(videoID), .text(key)])
+                try connection.execute("DELETE FROM analysis_passes WHERE video_id = ? AND run_key = ?",
+                                       [.integer(videoID), .text(key)])
+            }
             try connection.execute("DELETE FROM scenes WHERE run_id = ?", [.integer(id)])
             try connection.execute("DELETE FROM analysis_runs WHERE id = ?", [.integer(id)])
+            return try row?["video_id"]?.intValue.map { try activeAnalysisRun(videoID: $0) }
         }
     }
 
@@ -375,7 +416,8 @@ extension Database {
                       moments: [(at: Double, note: String, dialog: String?)],
                       analyzedTags: [String],
                       provider: String?, model: String?, mode: String,
-                      settings: AnalysisRunSettings? = nil, roles: [AIRole] = []) throws -> Int64 {
+                      settings: AnalysisRunSettings? = nil, roles: [AIRole] = [],
+                      request: AnalysisRequest? = AnalysisRequestContext.current) throws -> Int64 {
         // (start, end) → set of tags, so one range shared by many tags makes one scene.
         var rangeTags: [String: (start: Double, end: Double, tags: Set<String>)] = [:]
         for (tag, ranges) in tagRanges {
@@ -389,15 +431,17 @@ extension Database {
         // half-saved analysis on failure).
         return try connection.transaction {
             try connection.execute("""
-                INSERT INTO analysis_runs (video_id, name, instructions, provider, model, sample_interval, notes_json, settings_json, models_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO analysis_runs (video_id, name, instructions, provider, model, sample_interval, notes_json, settings_json, models_json, request_hash, request_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, [.integer(videoID), .text(runName), .text(instructions),
                       provider.map(SQLValue.text) ?? .null,
                       model.map(SQLValue.text) ?? .null,
                       .real(sampleInterval ?? 0),
                       notesJSON.map(SQLValue.text) ?? .null,
                       settings.flatMap(AISettingsJSON.encode).map(SQLValue.text) ?? .null,
-                      AISettingsJSON.encode((AIRunCapture.current?.roles ?? []) + roles).map(SQLValue.text) ?? .null])
+                      AISettingsJSON.encode((AIRunCapture.current?.roles ?? []) + roles).map(SQLValue.text) ?? .null,
+                      request.map { .text($0.fingerprint) } ?? .null,
+                      request.map { .text($0.json) } ?? .null])
             let runID = connection.lastInsertRowID
             for (_, entry) in rangeTags {
                 // The no-op DO UPDATE makes RETURNING yield the id for the
@@ -447,6 +491,16 @@ extension Database {
                 try connection.execute("""
                     UPDATE videos SET analyzer_model = ?, \(modeColumn)_analyzer_model = ? WHERE id = ?
                     """, [.text(model), .text(model), .integer(videoID)])
+            }
+            let runKey = try connection.query("SELECT run_key FROM analysis_runs WHERE id = ?", [.integer(runID)]).first?["run_key"]?.stringValue
+            let pass = try startAnalysisPass(videoID: videoID, pass: .scenes,
+                                             version: settings?.pipeline ?? 0, runKey: runKey)
+            try finishAnalysisPass(pass, status: .completed)
+            for name in ["people", "exchanges"] where request?.requestedPasses.contains(name) == true {
+                if let kind = AnalysisPassRecord.Pass(rawValue: name) {
+                    let receipt = try startAnalysisPass(videoID: videoID, pass: kind, version: request?.passVersions[name] ?? 1, runKey: runKey)
+                    try finishAnalysisPass(receipt, status: .completed)
+                }
             }
             return runID
         }

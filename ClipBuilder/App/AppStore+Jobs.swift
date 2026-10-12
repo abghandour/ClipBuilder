@@ -72,6 +72,7 @@ extension AppStore {
         jobs.start(.transcriptAnalysis, title: "Analyze Transcript — \(video.filename)", project: activeProject,
                    profileGeneration: profileGeneration, subjectID: String(video.id)) { log in
             let original = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
+            let transcriptionKey = original.first?.transcriptionKey
             let people = try await database.fetchVideoPeople(videoID: video.id)
             let scenes = try await database.fetchScenes(includeExcluded: true).filter { $0.videoID == video.id }
             log("Finding topics, pauses, and filler…")
@@ -86,8 +87,8 @@ extension AppStore {
                         TopicSegmenter.segment(result.features, videoID: video.id))
             }
             try Task.checkCancellation()
-            try await database.replaceTranscriptFeatures(videoID: video.id, features: features, proposals: proposals)
-            try await database.replaceTopicRanges(videoID: video.id, topics: topics)
+            try await database.replaceTranscriptFeatures(videoID: video.id, transcriptionKey: transcriptionKey, features: features, proposals: proposals)
+            try await database.replaceTopicRanges(videoID: video.id, transcriptionKey: transcriptionKey, topics: topics)
             log("Created \(topics.count) topics and \(proposals.count) cleanup proposals.")
             return nil
         }

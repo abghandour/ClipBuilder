@@ -124,10 +124,10 @@ struct SyncEngineTests {
         _ = try await a.database.addLesson(text: "Local", pinned: true, evidence: "")
         let raw = try SQLiteConnection(path: a.url.appendingPathComponent("profile.db").path)
         let before = try raw.query("SELECT sequence FROM sync_outbox").compactMap { $0["sequence"]?.intValue }
-        await server.setVersion(4)
+        await server.setVersion(SyncEngine.understoodSchemaVersion + 1)
         let sync = engine(a, server, scope)
-        await #expect(throws: SyncError.needsUpdate(4)) { try await sync.sync() }
-        #expect(await sync.status == .needsUpdate(serverVersion: 4))
+        await #expect(throws: SyncError.needsUpdate(SyncEngine.understoodSchemaVersion + 1)) { try await sync.sync() }
+        #expect(await sync.status == .needsUpdate(serverVersion: SyncEngine.understoodSchemaVersion + 1))
         #expect(try raw.query("SELECT sequence FROM sync_outbox").compactMap { $0["sequence"]?.intValue } == before)
         #expect(try raw.query("SELECT * FROM sync_binding").isEmpty)
         #expect(try raw.query("SELECT * FROM sync_cursors").isEmpty)
@@ -871,7 +871,7 @@ extension SyncEngineTests {
         for (folder, label, date) in [(a, "A", "2026-10-07T10:00:00Z"), (b, "B", "2026-10-07T11:00:00Z")] {
             let raw = try SQLiteConnection(path: folder.url.appendingPathComponent("profile.db").path)
             try raw.execute("INSERT INTO videos(id, hash, filename, path) VALUES (1, 'same', 'Interview.mov', NULL)")
-            try await folder.database.replaceTranscripts(videoID: 1, language: "en", isTranslation: false,
+            try await folder.database.replaceTranscripts(videoID: 1, transcriptionKey: UUID().uuidString.lowercased(), language: "en", isTranslation: false,
                 segments: [TranscriptSegment(start: 0, end: 1, text: label + "1"), TranscriptSegment(start: 1, end: 2, text: label + "2")], provider: "test", model: label)
             try raw.execute("UPDATE transcripts SET transcription_created_at = ?", [.text(date)])
             try raw.execute("""

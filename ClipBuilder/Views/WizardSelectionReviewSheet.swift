@@ -96,7 +96,7 @@ struct WizardSelectionReviewSheet: View {
         .frame(minWidth: 1220, idealWidth: 1300, minHeight: 640, idealHeight: 760)
         .task(id: store.scenesVersion) {
             guard let database = store.database else { return }
-            if let current = try? await database.fetchScenes(projectID: request.selection.projectID), !Task.isCancelled {
+            if let current = try? await database.scenesForSavedPlans(request.takes.map(\.plan), projectID: request.selection.projectID), !Task.isCancelled {
                 scenes = current
             }
         }
