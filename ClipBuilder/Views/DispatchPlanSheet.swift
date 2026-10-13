@@ -1613,17 +1613,15 @@ struct VideoPersonAvatar: View {
             guard loadedID != record.personID else { return }
             loadedID = record.personID
             image = nil
-            guard let box = record.portraitBox,
-                  let frame = await ThumbnailService.jpegFrame(url: videoURL,
-                                                               at: record.portraitAt,
-                                                               maxDimension: 720) else { return }
+            guard let box = record.portraitBox else { return }
             let marker = PersonMarker(id: 0, videoID: record.videoID,
                                       atTime: record.portraitAt,
                                       x: box.x, y: box.y, width: box.w, height: box.h)
-            if let portrait = Analyzer.markerPortrait(from: frame, marker: marker),
-               let cropped = NSImage(data: portrait) {
-                image = cropped
-            }
+            // The portrait box is the whole person; the circle wants the
+            // head, so the face inside the box is found and zoomed on.
+            let avatar = await PersonFaceAvatar.markedAvatar(url: videoURL, marker: marker)
+            guard !Task.isCancelled else { return }
+            image = avatar
         }
     }
 }

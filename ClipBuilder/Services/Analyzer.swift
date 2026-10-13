@@ -1095,6 +1095,23 @@ actor Analyzer {
             }
             let rangesJSON = (try? JSONSerialization.data(withJSONObject: ranges))
                 .flatMap { String(data: $0, encoding: .utf8) }
+            // The portrait becomes the avatar: it must show the face. When
+            // the model's moment does not, the nearest frame that does
+            // (within the person's on-screen ranges) replaces it.
+            if let portraitJSON,
+               let box = try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: Data(portraitJSON.utf8)) {
+                let marker = PersonMarker(id: 0, videoID: video.id, atTime: portraitAt,
+                                          x: box.x, y: box.y, width: box.w, height: box.h)
+                let onScreen = ranges.compactMap { range -> ClosedRange<Double>? in
+                    guard let start = range["start"], let end = range["end"], end > start else { return nil }
+                    return start...end
+                }
+                if let found = await PortraitMoment.faceFrame(url: video.url, marker: marker, duration: duration,
+                                                              ranges: onScreen), found.time != portraitAt {
+                    log("Portrait for \(key): no face at \(portraitAt.timecode), using \(found.time.timecode)")
+                    portraitAt = found.time
+                }
+            }
             entries.append((key, descriptor, portraitAt, portraitJSON, rangesJSON))
         }
 

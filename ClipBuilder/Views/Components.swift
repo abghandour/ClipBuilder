@@ -198,28 +198,19 @@ struct PersonFaceAvatar: View {
                 if image != nil { return }
             }
             // A user-drawn marker is ground truth for who's in the box —
-            // crop to it first, then find the face INSIDE it. Without this,
-            // two people sharing a scene both get the frame's largest face.
-            if let reference = await store.personMarkerReference(for: person.id),
-               let frame = await ThumbnailService.jpegFrame(url: reference.url,
-                                                            at: reference.marker.atTime,
-                                                            maxDimension: 720),
-               let portrait = Analyzer.markerPortrait(from: frame, marker: reference.marker) {
-                let faceBox = await Self.detectFace(in: portrait)
+            // find the face INSIDE it. Without this, two people sharing a
+            // scene both get the frame's largest face.
+            if let reference = await store.personMarkerReference(for: person.id) {
+                image = await Self.markedAvatar(url: reference.url, marker: reference.marker)
                 guard !Task.isCancelled else { return }
-                image = Self.avatarImage(from: portrait, faceBox: faceBox)
                 return
             }
             // The people pass already cropped this person out of a frame:
             // that box is the right face even when a scene shows several
             // people (a podcast grid), where the largest face is anyone's.
-            if let portrait = await store.personRosterPortrait(for: person.id),
-               let frame = await ThumbnailService.jpegFrame(url: portrait.url, at: portrait.marker.atTime,
-                                                            maxDimension: 720),
-               let cropped = Analyzer.markerPortrait(from: frame, marker: portrait.marker) {
-                let faceBox = await Self.detectFace(in: cropped)
+            if let portrait = await store.personRosterPortrait(for: person.id) {
+                image = await Self.markedAvatar(url: portrait.url, marker: portrait.marker)
                 guard !Task.isCancelled else { return }
-                image = Self.avatarImage(from: cropped, faceBox: faceBox)
                 if image != nil { return }
             }
             guard let scene = store.scenes.first(where: { $0.tags.contains(person.tag) })
@@ -232,6 +223,33 @@ struct PersonFaceAvatar: View {
             guard !Task.isCancelled else { return }
             image = Self.avatarImage(from: data, faceBox: faceBox)
         }
+    }
+
+    /// The marked person's head. Faces are looked for in the whole frame
+    /// first — a wide fight shot leaves each face only a few dozen pixels
+    /// and a crop to the body box loses context Vision needs — and the one
+    /// inside the marker wins; when the chosen moment shows none (turned
+    /// away), nearby frames are tried. Then inside the body crop itself.
+    /// With no face at all, the head zone at the top of the body box is
+    /// used; the old centred crop of the box gave a torso.
+    nonisolated static func markedAvatar(url: URL, marker: PersonMarker) async -> NSImage? {
+        // The chosen moment, then nearby frames, for a face inside the box.
+        if let found = await PortraitMoment.faceFrame(url: url, marker: marker,
+                                                      duration: await PortraitMoment.duration(of: url)) {
+            return avatarImage(from: found.frame, faceBox: found.face)
+        }
+        guard !Task.isCancelled,
+              let frame = await ThumbnailService.jpegFrame(url: url, at: marker.atTime, maxDimension: 1280)
+        else { return nil }
+        if let portrait = Analyzer.markerPortrait(from: frame, marker: marker),
+           let faceBox = await detectFace(in: portrait) {
+            return avatarImage(from: portrait, faceBox: faceBox)
+        }
+        guard let source = NSImage(data: frame),
+              let cg = source.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let rect = AvatarCrop.headRect(imageSize: CGSize(width: cg.width, height: cg.height), marker: marker)
+        guard !rect.isEmpty, let cropped = cg.cropping(to: rect) else { return nil }
+        return NSImage(cgImage: cropped, size: rect.size)
     }
 
     /// Largest detected face as a normalized bounding box (bottom-left
@@ -258,33 +276,15 @@ struct PersonFaceAvatar: View {
             .sorted { $0.width > $1.width }
     }
 
-    /// Square crop centered on the face (with generous headroom), falling
-    /// back to a centered square when no face was detected.
-    static func avatarImage(from data: Data, faceBox: CGRect?) -> NSImage? {
+    /// Square crop around the face (see `AvatarCrop.rect`), falling back to
+    /// the image centre when no face was detected.
+    nonisolated static func avatarImage(from data: Data, faceBox: CGRect?) -> NSImage? {
         guard let source = NSImage(data: data),
               let cg = source.cgImage(forProposedRect: nil, context: nil, hints: nil)
         else { return nil }
-        let width = CGFloat(cg.width), height = CGFloat(cg.height)
-        let side: CGFloat
-        let center: CGPoint
-        if let faceBox {
-            // Normalized bottom-left origin → pixel top-left origin.
-            let face = CGRect(x: faceBox.minX * width,
-                              y: (1 - faceBox.maxY) * height,
-                              width: faceBox.width * width,
-                              height: faceBox.height * height)
-            side = min(max(face.width, face.height) * 2.2, min(width, height))
-            center = CGPoint(x: face.midX, y: face.midY)
-        } else {
-            side = min(width, height)
-            center = CGPoint(x: width / 2, y: height / 2)
-        }
-        let origin = CGPoint(x: min(max(0, center.x - side / 2), width - side),
-                             y: min(max(0, center.y - side / 2), height - side))
-        guard let cropped = cg.cropping(to: CGRect(origin: origin,
-                                                   size: CGSize(width: side, height: side)))
-        else { return source }
-        return NSImage(cgImage: cropped, size: NSSize(width: side, height: side))
+        let rect = AvatarCrop.rect(imageSize: CGSize(width: cg.width, height: cg.height), faceBox: faceBox)
+        guard !rect.isEmpty, let cropped = cg.cropping(to: rect) else { return source }
+        return NSImage(cgImage: cropped, size: rect.size)
     }
 }
 
