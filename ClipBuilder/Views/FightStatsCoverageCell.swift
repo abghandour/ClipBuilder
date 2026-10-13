@@ -3,7 +3,10 @@ import SwiftUI
 /// Status cell for fight footage: a badge when scoring data exists (press to
 /// show it in the inspector), the scoring state otherwise, and Re-score.
 struct FightStatsCoverageCell: View {
-    @Environment(AppStore.self) private var store
+    /// Passed in, not read from the environment: a Table cell can be updated
+    /// after its row is recycled (selection change, project switch), when the
+    /// environment no longer carries the store, and the lookup then asserts.
+    let store: AppStore
     let video: VideoRecord
     /// Selects the video and reveals the Fight Action section in the inspector.
     let onShowStats: () -> Void
@@ -45,7 +48,10 @@ struct FightStatsCoverageCell: View {
             }
         }
         .task(id: store.fightEvents[video.id]) {
+            let events = self.events
+            guard !events.isEmpty else { outcomeCheck = false; return }
             let outcomes = (try? await store.database?.fetchOutcomes()) ?? []
+            guard !Task.isCancelled else { return }
             outcomeCheck = StrikeStatsSummary.pairs(events: events, outcomes: outcomes).contains { $0.outcomeCheck }
         }
     }

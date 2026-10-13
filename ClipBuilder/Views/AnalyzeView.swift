@@ -530,7 +530,7 @@ struct AnalyzeView: View {
             Label("Up to date, same settings", systemImage: "checkmark.circle")
                 .lineLimit(1).fixedSize().foregroundStyle(.secondary)
         } else if video.type?.supportsFightFeatures == true {
-            FightStatsCoverageCell(video: video) {
+            FightStatsCoverageCell(store: store, video: video) {
                 selection = [video.id]
                 fightStatsFocusVideoID = video.id
                 fightStatsFocusRequest = UUID()
@@ -642,7 +642,7 @@ struct AnalyzeView: View {
                     // Fixed slots so the marks line up as columns down
                     // the table; empty slots keep their width.
                     HStack(spacing: 6) {
-                        AnalysisBatchControl(video: video, compact: true) { runs in
+                        AnalysisBatchControl(store: store, video: video, compact: true) { runs in
                             batchComparison = ScenesView.CompareRequest(runs: runs, video: video)
                         }
                         .foregroundStyle(batches > 0 ? Color.green : Color.secondary)
@@ -1019,7 +1019,7 @@ private struct VideoPreviewPane: View {
                 Text("Active batch: \(active.run?.name ?? "None") (\(active.reason))")
                     .font(.caption).lineLimit(1)
                 HStack {
-                    AnalysisBatchControl(video: video, onCompare: onCompareBatches)
+                    AnalysisBatchControl(store: store, video: video, onCompare: onCompareBatches)
                     Spacer(minLength: 0)
                 }
                 if active.missingPin {

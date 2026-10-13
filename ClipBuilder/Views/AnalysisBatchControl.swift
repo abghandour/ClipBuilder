@@ -2,7 +2,10 @@ import SwiftUI
 
 /// Shared popover for the status slot and the preview's Change control.
 struct AnalysisBatchControl: View {
-    @Environment(AppStore.self) private var store
+    /// Passed in, not read from the environment: a Table cell can be updated
+    /// after its row is recycled, when the environment no longer carries the
+    /// store, and an environment lookup then asserts.
+    let store: AppStore
     let video: VideoRecord
     var compact = false
     let onCompare: ([AnalysisRun]) -> Void
