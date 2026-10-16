@@ -18,12 +18,22 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     let onPreview: (TranscriptQATrim.Edge, TranscriptQATrim.Word) -> Void
     let onCommit: () -> Void
     let onCancel: () -> Void
+    /// Press a word and drag to select; a click on the selection clears it.
+    /// Word clicks then no longer move the nearer end; the anchors still adjust.
+    var spanSelection = false
+    /// Tint the line being spoken. Off in Transcript picks, where it reads as part of the selection.
+    var highlightsCurrentLine = true
+    var onSpanPreview: ((ClosedRange<Double>) -> Void)? = nil
+    var onSpanClear: (() -> Void)? = nil
 
     @State private var followsPlayback = true
     @AppStorage("transcriptQA.showTranslation") private var showTranslation = false
     @State private var selectedTranslationLanguages: [Int64: String] = [:]
     @State private var frames: [Int: CGRect] = [:]
     @State private var dragging: TranscriptQATrim.Edge?
+    /// The word the span drag started on.
+    @State private var spanAnchor: Int?
+    @State private var spanMoved = false
     @State private var pointer: CGPoint?
     @State private var dragFrame: CGRect?
     @State private var scrollDirection = 0
@@ -133,6 +143,9 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                         }
                         .padding(Theme.spaceS)
                         .frame(width: contentWidth, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .gesture(spanGesture(viewportHeight: geometry.size.height),
+                                 including: spanSelection && canTrim && isEnabled ? .all : .subviews)
                     }
                     .onPreferenceChange(TranscriptQAWordFrames.self) { updated in
                         frames = updated
@@ -156,7 +169,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                 }
                 .task(id: scrollDirection) {
                     guard scrollDirection != 0 else { return }
-                    while !Task.isCancelled, dragging != nil, isEnabled {
+                    while !Task.isCancelled, dragging != nil || spanAnchor != nil, isEnabled {
                         scrollOneLine(proxy, viewportHeight: geometry.size.height)
                         do { try await Task.sleep(for: .milliseconds(120)) }
                         catch { return }
@@ -177,7 +190,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         }
         .padding(.horizontal, Theme.spaceS)
         .padding(.vertical, 4)
-        .background(line.id == currentLine ? Color.accentColor.opacity(0.12) : Color.clear,
+        .background(highlightsCurrentLine && line.id == currentLine ? Color.accentColor.opacity(0.12) : Color.clear,
                     in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
     }
 
@@ -219,8 +232,10 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     private func wordToken(_ word: TranscriptQATrim.Word) -> some View {
         let inside = TranscriptQATrim.contains(word, in: range)
         let other = otherRanges.contains { TranscriptQATrim.contains(word, in: $0) }
-        let spoken = playback.player != nil && playback.time >= word.start && playback.time < word.end
-        return Button { onSelect(word) } label: {
+        // The spoken word is marked only while playing; a parked playhead would
+        // otherwise sit yellow inside the selection being made.
+        let spoken = playback.isPlaying && playback.time >= word.start && playback.time < word.end
+        return Button { if !spanSelection { onSelect(word) } } label: {
             Text(word.text)
                 .font(.callout).fontWeight(spoken ? .bold : .regular)
                 .foregroundStyle(spoken ? Color.black : inside ? Color.primary : Color.secondary)
@@ -235,6 +250,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         }
         .buttonStyle(.plain)
         .disabled(!canTrim)
+        // In span mode the drag gesture on the content owns the pointer.
+        .allowsHitTesting(!spanSelection)
         .background {
             // Measure the words in the scroll content using the stationary
             // viewport space, also used by the anchors' pointer coordinates.
@@ -243,7 +260,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                                        value: [word.id: geometry.frame(in: .named(Self.scrollSpace))])
             }
         }
-        .help("Move the \(TranscriptQATrim.nearestEdge(for: word, in: range) == .start ? "start" : "end") to this word")
+        .help(spanSelection ? (inside ? "Click to clear the selection, or drag to select" : "Press and drag to select")
+              : "Move the \(TranscriptQATrim.nearestEdge(for: word, in: range) == .start ? "start" : "end") to this word")
         .accessibilityLabel("\(word.text), \(word.start.timecode)")
         .accessibilityAddTraits(inside ? .isSelected : [])
     }
@@ -300,11 +318,54 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     }
 
     private func previewAtPointer() {
-        guard isEnabled, let dragging, let pointer,
+        guard isEnabled, let pointer,
               let id = TranscriptQATrim.word(at: pointer, frames: frames), id != lastPreviewedWord,
               transcript.words.indices.contains(id) else { return }
-        lastPreviewedWord = id
-        onPreview(dragging, transcript.words[id])
+        if let spanAnchor, transcript.words.indices.contains(spanAnchor) {
+            lastPreviewedWord = id
+            onSpanPreview?(Self.span(from: transcript.words[spanAnchor], to: transcript.words[id]))
+        } else if let dragging {
+            lastPreviewedWord = id
+            onPreview(dragging, transcript.words[id])
+        }
+    }
+
+    /// The words between two ends, whichever order they were dragged in.
+    nonisolated static func span(from a: TranscriptQATrim.Word, to b: TranscriptQATrim.Word) -> ClosedRange<Double> {
+        min(a.start, b.start)...max(a.end, b.end)
+    }
+
+    private func spanGesture(viewportHeight: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.scrollSpace))
+            .onChanged { value in
+                guard isEnabled, canTrim, spanSelection else { return }
+                if spanAnchor == nil {
+                    guard dragging == nil, let id = TranscriptQATrim.word(at: value.startLocation, frames: frames) else { return }
+                    spanAnchor = id
+                    spanMoved = false
+                    lastPreviewedWord = nil
+                    playback.pause()
+                }
+                if abs(value.translation.width) > 3 || abs(value.translation.height) > 3 { spanMoved = true }
+                pointer = value.location
+                scrollDirection = value.location.y < 32 ? -1 : value.location.y > viewportHeight - 32 ? 1 : 0
+                if spanMoved { previewAtPointer() }
+            }
+            .onEnded { value in
+                guard let anchor = spanAnchor else { return }
+                let moved = spanMoved
+                clearDrag()
+                guard isEnabled, transcript.words.indices.contains(anchor) else { onCancel(); return }
+                let word = transcript.words[anchor]
+                if moved {
+                    onCommit()
+                } else if TranscriptQATrim.contains(word, in: range) {
+                    onSpanClear?()
+                } else {
+                    onSpanPreview?(Self.span(from: word, to: word))
+                    onCommit()
+                }
+            }
     }
 
     /// Advance one visible line per tick; the gesture and pointer stay in the
@@ -325,6 +386,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
 
     private func clearDrag() {
         dragging = nil
+        spanAnchor = nil
+        spanMoved = false
         pointer = nil
         dragFrame = nil
         scrollDirection = 0
@@ -332,7 +395,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     }
 
     private func cancelDrag() {
-        guard dragging != nil else { return }
+        guard dragging != nil || spanAnchor != nil else { return }
         clearDrag()
         onCancel()
     }

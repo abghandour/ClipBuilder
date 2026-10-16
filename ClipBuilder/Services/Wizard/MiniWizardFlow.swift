@@ -7,9 +7,15 @@ nonisolated struct MiniWizardFlow: Sendable {
     }
 
     enum FootageKind: String, CaseIterable, Sendable {
-        case qa, highlights
+        case qa, highlights, transcript
 
-        var label: String { self == .qa ? "Q&A" : "Highlights" }
+        var label: String {
+            switch self {
+            case .qa: "Q&A"
+            case .highlights: "Highlights"
+            case .transcript: "Transcript"
+            }
+        }
     }
 
     enum Length: String, CaseIterable, Sendable {
@@ -27,6 +33,8 @@ nonisolated struct MiniWizardFlow: Sendable {
 
     var video: VideoRecord?
     var hasPodcastExchangeScenes = false
+    /// The video has an original transcript, so passages can be picked from it.
+    var hasTranscript = false
     var footageKind: FootageKind = .highlights
     var length: Length = .automatic
     var captionsEnabled = false
@@ -34,6 +42,9 @@ nonisolated struct MiniWizardFlow: Sendable {
     var hasFootage = false
     var hasKeptFootage = false
     var requestedCard: Card = .source
+    /// The open card the user collapsed by clicking its header; cleared by
+    /// the next header click or navigation.
+    var collapsedCard: Card?
     var outputMode: OutputMode = .separateVideos
 
     var isPodcastOrInterview: Bool {
@@ -41,10 +52,12 @@ nonisolated struct MiniWizardFlow: Sendable {
         return video.type == .podcast || video.type == .interview || hasPodcastExchangeScenes
     }
 
-    var footageKinds: [FootageKind] { isPodcastOrInterview ? [.qa, .highlights] : [.highlights] }
-    var showsFootageKind: Bool { isPodcastOrInterview }
-    /// A remembered Q&A choice must never apply to ordinary footage.
-    var effectiveFootageKind: FootageKind { isPodcastOrInterview ? footageKind : .highlights }
+    var footageKinds: [FootageKind] {
+        (isPodcastOrInterview ? [.qa, .highlights] : [.highlights]) + (hasTranscript ? [.transcript] : [])
+    }
+    var showsFootageKind: Bool { footageKinds.count > 1 }
+    /// A remembered Q&A or Transcript choice must never apply to footage that cannot offer it.
+    var effectiveFootageKind: FootageKind { footageKinds.contains(footageKind) ? footageKind : .highlights }
     var showsLength: Bool { effectiveFootageKind == .highlights }
     var lengthOptions: [Length] { Length.allCases }
     var showsCameraFocus: Bool { isPodcastOrInterview }
@@ -61,7 +74,8 @@ nonisolated struct MiniWizardFlow: Sendable {
     func canExpand(_ card: Card) -> Bool {
         switch card {
         case .source: true
-        case .footage: video != nil && hasFootage
+        // Footage is chosen (kind, length, instructions) and generated on its own card.
+        case .footage: video != nil
         case .settings: video != nil && hasFootage && hasKeptFootage
         }
     }
@@ -72,10 +86,24 @@ nonisolated struct MiniWizardFlow: Sendable {
         return requestedCard == .settings && canExpand(.footage) ? .footage : .source
     }
 
-    func isCollapsed(_ card: Card) -> Bool { card != openCard }
+    /// What the page shows open: the open card unless the user collapsed it.
+    var visibleCard: Card? { collapsedCard == openCard ? nil : openCard }
+
+    func isCollapsed(_ card: Card) -> Bool { card != visibleCard }
+
+    /// A header click: an expandable collapsed card opens; the open card collapses.
+    func headerClick(_ card: Card) -> (requested: Card, collapsed: Card?)? {
+        guard canExpand(card) else { return nil }
+        if visibleCard == card { return (requestedCard, card) }
+        return (card, nil)
+    }
 
     static func footageSummary(kind: FootageKind, count: Int, keptCount: Int) -> String {
-        "\(count) \(kind == .qa ? "exchanges" : "candidates") · \(keptCount) kept"
+        switch kind {
+        case .qa: "\(count) exchanges · \(keptCount) kept"
+        case .highlights: "\(count) candidates · \(keptCount) kept"
+        case .transcript: count == 1 ? "1 pick" : "\(count) picks"
+        }
     }
 
     func outputCount(keptCount: Int) -> Int {
@@ -125,7 +153,7 @@ nonisolated struct MiniWizardFlow: Sendable {
     func summary(for card: Card) -> String {
         switch card {
         case .source: video?.filename ?? "Pick a source first"
-        case .footage: canExpand(.footage) ? "Review footage" : "Pick a source first"
+        case .footage: video == nil ? "Pick a source first" : hasFootage ? "Review footage" : "Choose footage"
         case .settings: canExpand(.settings) ? "Ready to generate" : "Choose footage first"
         }
     }

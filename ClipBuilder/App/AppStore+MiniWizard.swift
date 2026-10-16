@@ -6,6 +6,10 @@ extension AppStore {
             loadMiniQA(flow: flow)
             return
         }
+        if flow.effectiveFootageKind == .transcript {
+            loadMiniTranscript(flow: flow)
+            return
+        }
         guard let video = flow.video, flow.effectiveFootageKind == .highlights,
               let database, let projectID = activeProjectID, !isWizardRunning else { return }
         guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }

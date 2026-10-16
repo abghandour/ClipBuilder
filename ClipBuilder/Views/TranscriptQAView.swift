@@ -12,7 +12,7 @@ struct TranscriptQAView: View {
 
     var body: some View {
         RangeReviewView(items: items, rows: rows, labels: labels, kept: kept,
-                        preferredTranslationLanguage: preferredTranslationLanguage,
+                        preferredTranslationLanguage: preferredTranslationLanguage, autoplay: false,
                         onSave: { item, start, end in
                             guard let section = sections.first(where: { $0.id == item.id.ownerID }) else { return }
                             onSave(section.scene, start, end)

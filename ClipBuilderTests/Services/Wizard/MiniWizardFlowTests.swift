@@ -50,11 +50,28 @@ struct MiniWizardFlowTests {
         let podcast = type == .podcast || type == .interview
         for kind in MiniWizardFlow.FootageKind.allCases {
             let flow = MiniWizardFlow(video: video, footageKind: kind)
-            #expect(flow.effectiveFootageKind == (podcast ? kind : .highlights))
-            #expect(flow.showsLength == (!podcast || kind == .highlights))
+            // Without a transcript, Transcript falls back like Q&A does without exchanges.
+            let expected: MiniWizardFlow.FootageKind = podcast && kind != .transcript ? kind : .highlights
+            #expect(flow.effectiveFootageKind == expected)
+            #expect(flow.showsLength == (expected == .highlights))
             #expect(flow.showsCameraFocus == podcast)
             #expect(flow.showsNameTags == podcast)
         }
+    }
+
+    @Test("A transcript offers Transcript picks for any video type", arguments: VideoType.allCases)
+    func transcriptChoice(type: VideoType) {
+        var video = Fixtures.video()
+        video.videoType = type.rawValue
+        let podcast = type == .podcast || type == .interview
+        let flow = MiniWizardFlow(video: video, hasTranscript: true, footageKind: .transcript)
+        #expect(flow.footageKinds == (podcast ? [.qa, .highlights, .transcript] : [.highlights, .transcript]))
+        #expect(flow.showsFootageKind)
+        #expect(flow.effectiveFootageKind == .transcript)
+        #expect(!flow.showsLength)
+        #expect(flow.footageKinds.last == .transcript, "Transcript sits after Q&A and Highlights")
+        #expect(MiniWizardFlow(video: video, hasTranscript: false, footageKind: .transcript).effectiveFootageKind == .highlights)
+        #expect(MiniWizardFlow.footageSummary(kind: .transcript, count: 3, keptCount: 3) == "3 picks")
     }
 
     @Test("Lengths are 10, 15, 30 seconds or Auto")
@@ -90,9 +107,9 @@ struct MiniWizardFlowTests {
             #expect(flow.isCollapsed(.footage))
             #expect(flow.isCollapsed(.settings))
             #expect(flow.canExpand(.source))
-            #expect(!flow.canExpand(.footage))
+            #expect(flow.canExpand(.footage) == (video != nil))
             #expect(!flow.canExpand(.settings))
-            #expect(flow.summary(for: .footage) == "Pick a source first")
+            #expect(flow.summary(for: .footage) == (video == nil ? "Pick a source first" : "Choose footage"))
             #expect(flow.summary(for: .settings) == "Choose footage first")
             #expect(flow.summary(for: .source) == (video?.filename ?? "Pick a source first"))
         }
@@ -107,14 +124,13 @@ struct MiniWizardFlowTests {
                         let flow = MiniWizardFlow(video: hasSource ? Fixtures.video() : nil,
                                                   hasFootage: hasFootage, hasKeptFootage: hasKeptFootage,
                                                   requestedCard: requested)
-                        let canReview = hasSource && hasFootage
-                        let canConfigure = canReview && hasKeptFootage
+                        let canConfigure = hasSource && hasFootage && hasKeptFootage
                         let expected: MiniWizardFlow.Card = switch requested {
                         case .source: .source
-                        case .footage: canReview ? .footage : .source
-                        case .settings: canConfigure ? .settings : canReview ? .footage : .source
+                        case .footage: hasSource ? .footage : .source
+                        case .settings: canConfigure ? .settings : hasSource ? .footage : .source
                         }
-                        #expect(flow.canExpand(.footage) == canReview)
+                        #expect(flow.canExpand(.footage) == hasSource)
                         #expect(flow.canExpand(.settings) == canConfigure)
                         #expect(flow.openCard == expected)
                         for card in MiniWizardFlow.Card.allCases {
@@ -124,6 +140,37 @@ struct MiniWizardFlowTests {
                 }
             }
         }
+    }
+
+    @Test("A header click collapses the open card and reopens or switches cards")
+    func headerClickTogglesTheVisibleCard() {
+        var flow = MiniWizardFlow(video: Fixtures.video(), hasFootage: true, hasKeptFootage: true,
+                                  requestedCard: .settings)
+        #expect(flow.visibleCard == .settings)
+        // Clicking the open header collapses it; nothing else opens.
+        let collapse = flow.headerClick(.settings)
+        #expect(collapse?.collapsed == .settings && collapse?.requested == .settings)
+        flow.collapsedCard = collapse?.collapsed
+        #expect(flow.visibleCard == nil)
+        #expect(MiniWizardFlow.Card.allCases.allSatisfy { flow.isCollapsed($0) })
+        // Clicking it again reopens it.
+        let reopen = flow.headerClick(.settings)
+        #expect(reopen?.requested == .settings && reopen?.collapsed == nil)
+        flow.collapsedCard = reopen?.collapsed
+        #expect(flow.visibleCard == .settings)
+        // Clicking another expandable header opens that one instead.
+        let other = flow.headerClick(.source)
+        #expect(other?.requested == .source && other?.collapsed == nil)
+        flow.requestedCard = other!.requested
+        flow.collapsedCard = other?.collapsed
+        #expect(flow.visibleCard == .source)
+        #expect(flow.isCollapsed(.settings))
+        // A stale collapse of a different card does not hide the open one.
+        flow.collapsedCard = .footage
+        #expect(flow.visibleCard == .source)
+        // Headers behind a prerequisite ignore the click.
+        flow.hasKeptFootage = false
+        #expect(flow.headerClick(.settings) == nil)
     }
 
     @Test("Completed cards can reopen; removing inputs returns to the preceding card")
@@ -143,7 +190,8 @@ struct MiniWizardFlowTests {
         flow.hasKeptFootage = false
         #expect(flow.openCard == .footage)
         flow.hasFootage = false
-        #expect(flow.openCard == .source)
+        #expect(flow.openCard == .footage)
+        #expect(flow.summary(for: .footage) == "Choose footage")
         flow.hasFootage = true
         flow.hasKeptFootage = true
         flow.video = nil

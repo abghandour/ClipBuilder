@@ -15,21 +15,28 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
     }
 
     enum TrimPolicy: Sendable {
-        case qa, wizard
+        /// `pick` is Q&A trimming that also allows an empty range (nothing selected yet).
+        case qa, wizard, pick
 
-        var minimumSpan: Double { self == .qa ? TranscriptQATrim.minimumSpan : ProposedCutTrim.minimumSpan }
+        var minimumSpan: Double { self == .wizard ? ProposedCutTrim.minimumSpan : TranscriptQATrim.minimumSpan }
 
         func clamp(_ range: ClosedRange<Double>, limits: ClosedRange<Double>) -> ClosedRange<Double> {
             switch self {
-            case .qa: TranscriptQATrim.clamped(range, limits: limits)
-            case .wizard: ProposedCutTrim.clamp(start: range.lowerBound, end: range.upperBound, scene: limits)
+            case .qa: return TranscriptQATrim.clamped(range, limits: limits)
+            case .pick:
+                if range.upperBound <= range.lowerBound {
+                    let at = min(max(limits.lowerBound, range.lowerBound), limits.upperBound)
+                    return at...at
+                }
+                return TranscriptQATrim.clamped(range, limits: limits)
+            case .wizard: return ProposedCutTrim.clamp(start: range.lowerBound, end: range.upperBound, scene: limits)
             }
         }
 
         func setting(_ edge: TranscriptQATrim.Edge, at time: Double, in range: ClosedRange<Double>,
                      limits: ClosedRange<Double>) -> ClosedRange<Double> {
             switch self {
-            case .qa: TranscriptQATrim.setting(edge, at: time, in: range, limits: limits)
+            case .qa, .pick: TranscriptQATrim.setting(edge, at: time, in: range, limits: limits)
             case .wizard:
                 edge == .start ? ProposedCutTrim.settingStart(at: time, in: range, scene: limits)
                     : ProposedCutTrim.settingEnd(at: time, in: range, scene: limits)
@@ -39,7 +46,7 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
         func releasing(_ draft: ClosedRange<Double>, from original: ClosedRange<Double>,
                        words: [TranscriptQATrim.Word], limits: ClosedRange<Double>) -> ClosedRange<Double> {
             switch self {
-            case .qa: TranscriptQATrim.releasing(draft, from: original, words: words, limits: limits)
+            case .qa, .pick: TranscriptQATrim.releasing(draft, from: original, words: words, limits: limits)
             case .wizard: clamp(draft, limits: limits)
             }
         }
@@ -57,6 +64,10 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
     var trimPolicy: TrimPolicy
     var isAvailable = true
     var children: [RangeReviewItem] = []
+    /// The span being composed (Transcript picks): not movable or deletable, shown apart.
+    var isDraft = false
+    /// Rows show this many lines of the title.
+    var titleLines = 1
 
     var isTrimmed: Bool {
         ProposedCutTrim.differs(range, proposedStart: originalRange.lowerBound, proposedEnd: originalRange.upperBound)

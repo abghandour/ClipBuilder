@@ -11,6 +11,13 @@ struct MiniFootageCard: View {
         FormCaption(run.summary)
         if run.footageKind == .qa {
             qaReview
+        } else if run.footageKind == .transcript {
+            MiniTranscriptPickView(run: run)
+                .id(run.batchID)
+                .frame(maxWidth: .infinity)
+                .frame(height: max(560, pageHeight - 220))
+                .padding(.horizontal, -Theme.spaceS)
+                .disabled(store.isWizardRunning)
         } else {
             MiniHighlightReviewView(run: run)
                 .id(run.batchID)
@@ -20,8 +27,11 @@ struct MiniFootageCard: View {
                 .disabled(store.isWizardRunning)
         }
         Button {
-            if run.footageKind == .qa { store.recordMiniQASelections() }
-            else { store.miniRun?.requestedCard = .settings }
+            switch run.footageKind {
+            case .qa: store.recordMiniQASelections()
+            case .transcript: store.recordMiniTranscriptSelections()
+            case .highlights: store.miniRun?.requestedCard = .settings
+            }
         } label: {
             Text("Video Generation Settings").lineLimit(1).fixedSize()
         }

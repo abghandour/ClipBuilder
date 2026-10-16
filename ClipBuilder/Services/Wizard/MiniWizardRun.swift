@@ -12,17 +12,32 @@ nonisolated struct MiniWizardRun: Sendable {
     var requestedCard: MiniWizardFlow.Card = .footage
     var selectedSelectionID: Int64?
     var qa: MiniWizardQA? = nil
+    var transcript: MiniWizardTranscript? = nil
 
-    var hasFootage: Bool { footageKind == .qa ? qa != nil : !candidates.isEmpty }
+    var hasFootage: Bool {
+        switch footageKind {
+        case .qa: qa != nil
+        case .transcript: transcript != nil
+        case .highlights: !candidates.isEmpty
+        }
+    }
     var keptCount: Int {
-        if footageKind == .qa {
+        switch footageKind {
+        case .qa:
             guard let qa else { return 0 }
             return qa.kept.intersection(Set(qa.sections.map(\.id))).count
+        case .transcript:
+            return transcript?.picks.count ?? 0
+        case .highlights:
+            return candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }.count
         }
-        return candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }.count
     }
     var summary: String {
-        MiniWizardFlow.footageSummary(kind: footageKind,
-            count: footageKind == .qa ? qa?.sections.count ?? 0 : candidates.count, keptCount: keptCount)
+        let count = switch footageKind {
+        case .qa: qa?.sections.count ?? 0
+        case .transcript: transcript?.picks.count ?? 0
+        case .highlights: candidates.count
+        }
+        return MiniWizardFlow.footageSummary(kind: footageKind, count: count, keptCount: keptCount)
     }
 }

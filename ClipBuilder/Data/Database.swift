@@ -13,6 +13,7 @@ import CryptoKit
 //   Database+TagFields.swift     cached person tag descriptions
 //   Database+Transcripts.swift   transcripts, speaker attribution
 //   Database+WizardSelections.swift selections and their saved takes
+//   Database+TranscriptPicks.swift  Express transcript picks and their saved selections
 //   Database+Generated.swift     generated videos, reviews, preferences, lessons, wizard research
 //   Database+Fights.swift        fight events, fight research
 //   Database+Instagram.swift     Instagram accounts, media, reports
@@ -96,6 +97,18 @@ actor Database {
         scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
         tag TEXT NOT NULL,
         PRIMARY KEY (scene_id, tag)
+    );
+
+    CREATE TABLE IF NOT EXISTS transcript_picks (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        start_time REAL NOT NULL,
+        end_time REAL NOT NULL,
+        original_start REAL NOT NULL,
+        original_end REAL NOT NULL,
+        scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL,
+        created_at TEXT DEFAULT (datetime('now'))
     );
 
     CREATE TABLE IF NOT EXISTS moments (

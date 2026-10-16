@@ -7,6 +7,8 @@ struct TranscriptQAColumnDivider: View {
     let width: CGFloat
     let onResize: (CGFloat) -> Void
     let onReset: () -> Void
+    /// The resized column sits on the left of this divider (default) or on its right.
+    var isLeading = true
     @State private var dragStartWidth: CGFloat?
     @State private var cursorPushed = false
 
@@ -28,7 +30,7 @@ struct TranscriptQAColumnDivider: View {
             .gesture(DragGesture(coordinateSpace: .named("transcriptQA.columns"))
                 .onChanged { value in
                     if dragStartWidth == nil { dragStartWidth = width }
-                    let delta = column == .list ? value.translation.width : -value.translation.width
+                    let delta = isLeading ? value.translation.width : -value.translation.width
                     onResize((dragStartWidth ?? width) + delta)
                 }
                 .onEnded { _ in dragStartWidth = nil })

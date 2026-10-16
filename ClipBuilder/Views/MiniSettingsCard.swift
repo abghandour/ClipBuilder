@@ -31,14 +31,14 @@ struct MiniSettingsCard: View {
                         WizardCameraFocusPicker(selection: $settings.cameraFocus, allowsOriginal: true,
                                                 showsSummary: false)
                             .pickerStyle(.menu)
-                        if settings.cameraFocus.isEmpty, run.footageKind == .qa {
+                        if settings.cameraFocus.isEmpty, run.footageKind != .highlights {
                             MiniModelButton(tasks: ["framing"])
                         }
                     }
                 }
                 FormCaption(settings.cameraFocus.isEmpty
-                    ? (run.footageKind == .qa
-                        ? "The AI picks the layout for each exchange when you generate."
+                    ? (run.footageKind != .highlights
+                        ? "The AI picks the layout for each \(run.footageKind == .qa ? "exchange" : "pick") when you generate."
                         : "Chosen by the highlights model when the candidates were found.")
                     : WizardCameraFocus.summary(settings.cameraFocus))
             }

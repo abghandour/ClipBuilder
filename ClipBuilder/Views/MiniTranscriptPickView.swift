@@ -1,0 +1,110 @@
+import SwiftUI
+
+/// Express Transcript mode: words on the left, the player in the middle, picks on
+/// the right. A "New pick" row holds the span being composed; Add stores it and
+/// clears the selection for the next one.
+struct MiniTranscriptPickView: View {
+    @Environment(AppStore.self) private var store
+    let run: MiniWizardRun
+    /// nil = nothing selected yet.
+    @State private var draftRange: ClosedRange<Double>?
+    /// Where the empty draft sits while the just-added pick is still being written.
+    @State private var lastAddedEnd: Double?
+
+    /// The draft's owner ID can never collide with a stored pick.
+    private static let draftOwnerID: Int64 = -1
+    /// Enough words for two lines of the list column.
+    private static let labelLimit = 90
+
+    private var transcript: MiniWizardTranscript? {
+        store.miniRun?.batchID == run.batchID ? store.miniRun?.transcript : run.transcript
+    }
+    private var picks: [TranscriptPick] { transcript?.picks ?? [] }
+    private var rows: [TranscriptRow] { transcript?.rows ?? [] }
+    private var limits: ClosedRange<Double> { 0...max(run.video.duration, TranscriptQATrim.minimumSpan) }
+
+    /// An empty range marks "nothing selected"; it sits where the next pick would start.
+    private var draft: ClosedRange<Double> {
+        if let draftRange { return draftRange }
+        let at = min(limits.upperBound, max(0, [picks.last?.end, lastAddedEnd].compactMap { $0 }.max() ?? 0))
+        return at...at
+    }
+
+    private var items: [RangeReviewItem] {
+        let empty = draft.upperBound <= draft.lowerBound
+        let draftItem = RangeReviewItem(id: .init(ownerID: Self.draftOwnerID), title: "New pick",
+            titleHelp: "Press a word in the transcript and drag to select a passage, adjust it, then press Add.",
+            keepLabel: "New pick",
+            captions: [empty ? .init(text: "Press a word and drag to select")
+                             : .init(text: RangeReviewItem.rangeCaption(draft), monospaced: true)],
+            video: run.video, range: draft, originalRange: draft, limits: limits, trimPolicy: .pick,
+            isAvailable: run.video.isPresent, isDraft: true)
+        let pickItems = picks.enumerated().map { index, pick in
+            RangeReviewItem(id: .init(ownerID: pick.id),
+                title: "\(index + 1). " + MiniWizardTranscriptRules.title(for: pick, rows: rows, number: index + 1,
+                                                                           limit: Self.labelLimit),
+                titleHelp: MiniWizardTranscriptRules.text(for: pick.range, rows: rows),
+                keepLabel: "Pick \(index + 1)",
+                captions: [.init(text: RangeReviewItem.rangeCaption(pick.range), monospaced: true)],
+                video: run.video, range: pick.range, originalRange: pick.originalRange, limits: limits,
+                trimPolicy: .qa, isAvailable: run.video.isPresent, titleLines: 2)
+        }
+        return [draftItem] + pickItems
+    }
+
+    var body: some View {
+        RangeReviewView(items: items, rows: rows, labels: transcript?.labels ?? [:],
+                        preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
+                        emptyTitle: "Pick a passage",
+                        emptyMessage: "Select New pick, press a word in the transcript and drag, then press Add.",
+                        resetTitle: "Reset to Added", autoplay: false, transcriptLeading: true,
+                        listTitle: picks.isEmpty ? "Picks" : (picks.count == 1 ? "1 pick" : "\(picks.count) picks"),
+                        onMove: { store.reorderMiniTranscriptPicks($0) },
+                        onDelete: { item in store.deleteMiniTranscriptPick(item.id.ownerID) },
+                        spanSelection: true, playAll: true,
+                        onSave: save) { item in
+            if item.isDraft {
+                draftFooter(item)
+            } else if let pick = picks.first(where: { $0.id == item.id.ownerID }) {
+                pickFooter(pick)
+            }
+        }
+        .onChange(of: run.batchID) { _, _ in draftRange = nil; lastAddedEnd = nil }
+    }
+
+    private func save(_ item: RangeReviewItem, start: Double, end: Double) {
+        if item.isDraft {
+            draftRange = end > start ? start...end : nil
+        } else {
+            store.setMiniTranscriptPickRange(item.id.ownerID, start: start, end: end)
+        }
+    }
+
+    private func draftFooter(_ item: RangeReviewItem) -> some View {
+        let empty = item.range.upperBound <= item.range.lowerBound
+        return HStack(spacing: Theme.spaceS) {
+            Button {
+                store.addMiniTranscriptPick(range: item.range)
+                lastAddedEnd = item.range.upperBound
+                draftRange = nil
+            } label: {
+                Text("Add").lineLimit(1).fixedSize()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(empty || store.isWizardRunning || !item.isAvailable)
+            .help("Add the selected passage to the picks")
+            FormCaption(empty ? "Select a passage first." : "Adds the selected words as a pick and clears the selection.")
+                .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func pickFooter(_ pick: TranscriptPick) -> some View {
+        Button(role: .destructive) {
+            store.deleteMiniTranscriptPick(pick.id)
+        } label: {
+            Text("Delete").lineLimit(1).fixedSize()
+        }
+        .disabled(store.isWizardRunning)
+        .help("Remove this pick")
+    }
+}

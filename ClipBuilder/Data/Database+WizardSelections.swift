@@ -85,7 +85,7 @@ extension Database {
         }
     }
 
-    private func insertWizardSelectionTake(selectionID: Int64, plan: WizardPlan, note: String? = nil,
+    func insertWizardSelectionTake(selectionID: Int64, plan: WizardPlan, note: String? = nil,
                                            proxyPath: String? = nil, criticScore: Int? = nil,
                                            criticNotes: String? = nil) throws -> WizardSelectionTake {
         // Caller holds a write transaction, including when creating Selection + Take 1.

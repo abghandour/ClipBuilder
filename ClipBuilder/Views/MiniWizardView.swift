@@ -21,6 +21,10 @@ struct MiniWizardView: View {
     @State private var miniSettings = MiniWizardSettings()
     @State private var settingsProfile: String?
     @State private var transcriptLanguage: String?
+    @State private var hasTranscript = false
+    @State private var collapsedCard: MiniWizardFlow.Card?
+    /// Navigation before a run exists; a run carries its own requested card.
+    @State private var pendingCard: MiniWizardFlow.Card = .source
 
     init(profileName: String) {
         self.profileName = profileName
@@ -51,7 +55,7 @@ struct MiniWizardView: View {
 
     private var currentRun: MiniWizardRun? {
         guard let run = store.miniRun, run.projectID == store.activeProjectID,
-              run.video.path == selectedVideo?.path, (run.footageKind == .qa || run.length == length),
+              run.video.path == selectedVideo?.path, (run.footageKind != .highlights || run.length == length),
               run.footageKind == (podcastVideoIDs.contains(run.video.id) || run.video.type == .podcast || run.video.type == .interview
                   ? footageKind : .highlights) else { return nil }
         return run
@@ -60,11 +64,13 @@ struct MiniWizardView: View {
     private var flow: MiniWizardFlow {
         MiniWizardFlow(video: selectedVideo,
                        hasPodcastExchangeScenes: selectedVideo.map { podcastVideoIDs.contains($0.id) } ?? false,
+                       hasTranscript: hasTranscript,
                        footageKind: footageKind, length: length,
                        captionsEnabled: miniSettings.captions, transcriptLanguage: transcriptLanguage,
                        hasFootage: currentRun?.hasFootage == true,
                        hasKeptFootage: (currentRun?.keptCount ?? 0) > 0,
-                       requestedCard: currentRun?.requestedCard ?? .source, outputMode: miniSettings.outputMode)
+                       requestedCard: currentRun?.requestedCard ?? pendingCard, collapsedCard: collapsedCard,
+                       outputMode: miniSettings.outputMode)
     }
 
     private var instructions: Binding<String> {
@@ -83,24 +89,34 @@ struct MiniWizardView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.spaceL) {
                     MiniCard(number: 1, title: "Source", summary: flow.summary(for: .source),
-                             isOpen: !flow.isCollapsed(.source)) {
+                             isOpen: !flow.isCollapsed(.source), headerTap: headerTap(.source)) {
                         if flow.isCollapsed(.source) {
-                            Button { store.miniRun?.requestedCard = .source } label: {
+                            Button { open(.source) } label: {
                                 Text("Change source").lineLimit(1).fixedSize()
                             }
                         } else {
-                            sourceControls.disabled(store.isWizardRunning)
+                            sourceGrid.disabled(store.isWizardRunning)
+                            Button { open(.footage) } label: {
+                                Text("Continue").lineLimit(1).fixedSize()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(selectedVideo == nil || store.isWizardRunning)
                         }
                     }
                     .frame(maxWidth: .infinity)
                     MiniCard(number: 2, title: "Footage",
                              summary: currentRun?.summary ?? flow.summary(for: .footage),
-                             isOpen: currentRun != nil && !flow.isCollapsed(.footage)) {
-                        if let run = currentRun, !flow.isCollapsed(.footage) {
-                            MiniFootageCard(run: run, pageHeight: page.size.height)
+                             isOpen: !flow.isCollapsed(.footage),
+                             headerTap: headerTap(.footage)) {
+                        if !flow.isCollapsed(.footage) {
+                            footageControls.disabled(store.isWizardRunning)
+                            if let run = currentRun {
+                                Divider()
+                                MiniFootageCard(run: run, pageHeight: page.size.height)
+                            }
                         } else if flow.canExpand(.footage) {
-                            Button { store.miniRun?.requestedCard = .footage } label: {
-                                Text("Review footage").lineLimit(1).fixedSize()
+                            Button { open(.footage) } label: {
+                                Text(currentRun == nil ? "Choose footage" : "Review footage").lineLimit(1).fixedSize()
                             }
                         }
                     }
@@ -111,8 +127,9 @@ struct MiniWizardView: View {
                                 introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
                                 outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) }))
                             : flow.summary(for: .settings),
-                        isOpen: currentRun != nil && flow.openCard == .settings && settingsProfile == profileName) {
-                        if let run = currentRun, flow.openCard == .settings, settingsProfile == profileName {
+                        isOpen: currentRun != nil && flow.visibleCard == .settings && settingsProfile == profileName,
+                        headerTap: headerTap(.settings)) {
+                        if let run = currentRun, flow.visibleCard == .settings, settingsProfile == profileName {
                             MiniSettingsCard(settings: $miniSettings, flow: flow, run: run)
                         }
                     }
@@ -132,15 +149,36 @@ struct MiniWizardView: View {
         }
         .task(id: transcriptKey) { await loadTranscriptLanguage() }
         .onChange(of: store.scenesVersion) { _, _ in store.refreshMiniQASections() }
+        // Navigation from a finished step (generate, keep) reopens the page.
+        .onChange(of: currentRun?.requestedCard) { _, _ in collapsedCard = nil }
+        .onChange(of: autoLoadKey, initial: true) { _, key in autoLoad(key) }
         .onChange(of: instructionsFocused) { _, focused in
             if !focused { saveInstructions() }
         }
         .onDisappear { saveInstructions() }
     }
 
+    private func open(_ card: MiniWizardFlow.Card) {
+        collapsedCard = nil
+        pendingCard = card
+        store.miniRun?.requestedCard = card
+    }
+
+    /// Clicking a card's header toggles it, like the full Wizard's step cards.
+    private func headerTap(_ card: MiniWizardFlow.Card) -> (() -> Void)? {
+        guard flow.canExpand(card) else { return nil }
+        return {
+            guard let click = flow.headerClick(card) else { return }
+            collapsedCard = click.collapsed
+            if click.collapsed == nil {
+                pendingCard = click.requested
+                store.miniRun?.requestedCard = click.requested
+            }
+        }
+    }
+
     @ViewBuilder
-    private var sourceControls: some View {
-        sourceGrid
+    private var footageControls: some View {
         if flow.showsFootageKind {
             MiniRow("Footage") {
                 Picker("Footage", selection: $footageKind) {
@@ -175,23 +213,50 @@ struct MiniWizardView: View {
                 .accessibilityLabel("Instructions for the AI")
                 .onSubmit { saveInstructions() }
             FormCaption("Optional. Saved with this profile and shared by its projects.")
-        } else {
-            FormCaption("Q&A lists the question-and-answer exchanges found when this video was analyzed. No AI model runs for this step, so there is nothing to instruct or choose.")
-        }
-        HStack(spacing: Theme.spaceS) {
-            Button {
-                instructionsFocused = false
-                saveInstructions()
-                store.generateMiniFootage(flow: flow)
-            } label: {
-                Text(usesAI ? "Generate footage" : "Show Q&A exchanges").lineLimit(1).fixedSize()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(selectedVideo == nil || store.isWizardRunning)
-            if usesAI {
+            HStack(spacing: Theme.spaceS) {
+                Button {
+                    instructionsFocused = false
+                    saveInstructions()
+                    store.generateMiniFootage(flow: flow)
+                } label: {
+                    Text("Generate footage").lineLimit(1).fixedSize()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedVideo == nil || store.isWizardRunning)
                 MiniModelButton(tasks: [flow.isPodcastOrInterview ? "highlights" : "wizard"])
             }
+        } else {
+            // Q&A and Transcript load on their own (see autoLoadKey); no button to press.
+            let isQA = flow.effectiveFootageKind == .qa
+            FormCaption(isQA
+                ? "Q&A lists the question-and-answer exchanges found when this video was analyzed. No AI model runs for this step."
+                : "Transcript shows every spoken line. Mark a passage, press Add, and the AI titles it. Picks are kept with this video.")
+            if let selectedVideo, !selectedVideo.isPresent {
+                FormCaption(VideoRecord.notPresentReason, tone: .warning)
+            } else if currentRun == nil, store.isWizardRunning {
+                ProgressView(isQA ? "Loading Q&A exchanges…" : "Loading transcript…")
+            }
         }
+    }
+
+    private struct AutoLoadKey: Equatable {
+        var videoID: Int64?
+        var kind: MiniWizardFlow.FootageKind?
+        var hasRun: Bool
+    }
+
+    /// Choosing Q&A or Transcript with the Footage card open loads it without a button press.
+    private var autoLoadKey: AutoLoadKey {
+        let kind = flow.effectiveFootageKind
+        return AutoLoadKey(videoID: selectedVideo?.id,
+                           kind: flow.visibleCard == .footage && kind != .highlights ? kind : nil,
+                           hasRun: currentRun != nil)
+    }
+
+    private func autoLoad(_ key: AutoLoadKey) {
+        guard key.kind != nil, !key.hasRun, let selectedVideo, selectedVideo.isPresent,
+              !store.isWizardRunning, !isLoading else { return }
+        store.generateMiniFootage(flow: flow)
     }
 
     @ViewBuilder
@@ -308,12 +373,14 @@ struct MiniWizardView: View {
 
     private func loadTranscriptLanguage() async {
         transcriptLanguage = nil
+        hasTranscript = false
         let key = transcriptKey
         guard let video = selectedVideo, let database = store.database else { return }
         // Original segments carry the language; translated English rows must not hide this choice.
         let language = try? await database.originalTranscriptLanguage(videoID: video.id)
         guard !Task.isCancelled, key == transcriptKey else { return }
         transcriptLanguage = language
+        hasTranscript = language != nil
     }
 
     private func restoreAnswers() {
