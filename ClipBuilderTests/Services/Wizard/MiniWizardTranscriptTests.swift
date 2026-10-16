@@ -23,6 +23,8 @@ struct MiniWizardTranscriptTests {
     }
 
     @Test func textAndTitleFollowTheWordsInsideTheRange() {
+        // Callers pass one video's rows; translations are skipped here.
+        let rows = rows.filter { $0.videoID == 1 }
         #expect(MiniWizardTranscriptRules.text(for: 3...9, rows: rows) == "four Five six seven eight Nine")
         #expect(MiniWizardTranscriptRules.title(for: 3...9, rows: rows, number: 2) == "four Five six seven eight Nine")
         #expect(MiniWizardTranscriptRules.title(for: 50...60, rows: rows, number: 2) == "Pick 2")
