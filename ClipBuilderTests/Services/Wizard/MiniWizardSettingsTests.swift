@@ -40,7 +40,7 @@ struct MiniWizardSettingsTests {
         }
     }
 
-    @Test func overlayMapsToAFixedOverlayOnlyWhenOnAndNamed() {
+    @Test func overlayMapsToAFixedOverlayOnlyWhenOnAndNamed() throws {
         var settings = MiniWizardSettings()
         settings.overlayTemplate = "Lower third"
         settings.overlayStart = 3
@@ -62,8 +62,16 @@ struct MiniWizardSettingsTests {
         #expect(settings.step2Options(base: WizardStep2Options()).fixedOverlayTemplate == nil)
         let merged = WizardOptions.merge(step1: WizardStep1Options(), step2: on)
         #expect(merged.fixedOverlayTemplate == "Lower third" && merged.step2.fixedOverlayDuration == 4)
-        let decoded = try? JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(merged))
-        #expect(decoded?.fixedOverlayStart == 3)
+        let decoded = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(merged))
+        #expect(decoded.fixedOverlayStart == 3 && decoded.fixedOverlayTexts == ["Hook", ""] && decoded.fixedOverlayDuration == 4)
+        var full = merged
+        full.introBumperPath = "/a.mp4"
+        full.outroBumperPath = "/b.mp4"
+        full.watermarkOverlayTemplate = "Main"
+        full.watermarkOpacity = 0.3
+        let again = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(full))
+        #expect(again.introBumperPath == "/a.mp4" && again.outroBumperPath == "/b.mp4")
+        #expect(again.watermarkOverlayTemplate == "Main" && again.watermarkOpacity == 0.3)
         #expect(MiniWizardFlow().settingsSummary(settings).contains("overlay") == false)
         settings.overlayTemplate = "Lower third"
         #expect(MiniWizardFlow().settingsSummary(settings).contains("overlay Lower third"))

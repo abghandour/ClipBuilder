@@ -89,5 +89,13 @@ nonisolated extension WizardOptions {
         includeOutroBumper = try values.decodeIfPresent(Bool.self, forKey: .includeOutroBumper) ?? includeOutroBumper
         includeMiddleBumper = try values.decodeIfPresent(Bool.self, forKey: .includeMiddleBumper) ?? includeMiddleBumper
         musicFolder = try values.decodeIfPresent(String.self, forKey: .musicFolder)
+        fixedOverlayTemplate = try values.decodeIfPresent(String.self, forKey: .fixedOverlayTemplate)
+        fixedOverlayStart = try values.decodeIfPresent(Double.self, forKey: .fixedOverlayStart)
+        fixedOverlayDuration = try values.decodeIfPresent(Double.self, forKey: .fixedOverlayDuration)
+        fixedOverlayTexts = try values.decodeIfPresent([String].self, forKey: .fixedOverlayTexts)
+        introBumperPath = try values.decodeIfPresent(String.self, forKey: .introBumperPath)
+        outroBumperPath = try values.decodeIfPresent(String.self, forKey: .outroBumperPath)
+        watermarkOverlayTemplate = try values.decodeIfPresent(String.self, forKey: .watermarkOverlayTemplate)
+        watermarkOpacity = try values.decodeIfPresent(Double.self, forKey: .watermarkOpacity)
     }
 }

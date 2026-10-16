@@ -40,8 +40,8 @@ struct TextOverlayLayoutTests {
                 minY = min(minY, y); maxY = max(maxY, y)
             }
         }
-        // CGContext rows are bottom-up; flip to top-down like the video frame.
-        return CGRect(x: minX, y: height - 1 - maxY, width: maxX - minX + 1, height: maxY - minY + 1)
+        // Bitmap rows run top-down, like the video frame.
+        return CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
     }
 
     private func render(_ item: TextOverlayItem) throws -> CGRect {

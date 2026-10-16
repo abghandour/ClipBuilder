@@ -135,9 +135,12 @@ struct PlatformSafeAreaTests {
     func rendererClampsInPixels() throws {
         let area = try #require(PlatformSafeArea.resolve(platforms: SocialPlatform.allCases, aspectRatio: portrait))
         let renderer = TextOverlayRenderer(videoWidth: 1080, videoHeight: 1920, safeArea: area)
-        // Inside the area: untouched (the header - subheader template's title box).
-        let inside = renderer.clamped(centerX: 1080 * 0.5146, centerY: 1920 * 0.1362, width: 1080 * 0.75, height: 1920 * 0.07)
-        #expect(abs(inside.x - 1080 * 0.5146) < 0.01 && abs(inside.y - 1920 * 0.1362) < 0.01)
+        // Inside the area: untouched.
+        let inside = renderer.clamped(centerX: 1080 * 0.5146, centerY: 1920 * 0.4, width: 1080 * 0.5, height: 1920 * 0.07)
+        #expect(abs(inside.x - 1080 * 0.5146) < 0.01 && abs(inside.y - 1920 * 0.4) < 0.01)
+        // Under the Instagram header: pushed down to the area's top edge, in pixels.
+        let high = renderer.clamped(centerX: 540, centerY: 1920 * 0.1362, width: 1080 * 0.75, height: 1920 * 0.07)
+        #expect(abs(high.y - 1920 * (area.rect.minY + 0.035)) < 0.01 && high.x == 540)
         // Under the footer: lifted to the area's bottom edge, still in pixels.
         let low = renderer.clamped(centerX: 540, centerY: 1920 * 0.946, width: 1080 * 0.48, height: 1920 * 0.06)
         #expect(abs(low.y - 1920 * (area.rect.maxY - 0.03)) < 0.01 && low.x == 540)
