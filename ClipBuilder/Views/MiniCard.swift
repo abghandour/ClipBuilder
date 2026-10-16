@@ -10,6 +10,8 @@ struct MiniCard<Content: View>: View {
     var change: (() -> Void)? = nil
     /// Clicking the header toggles the card when the caller provides this.
     var headerTap: (() -> Void)? = nil
+    /// Small controls at the header's trailing edge (e.g. Save / Load).
+    var accessory: AnyView? = nil
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -40,6 +42,10 @@ struct MiniCard<Content: View>: View {
                     Button("Change", action: change)
                         .lineLimit(1).fixedSize()
                         .accessibilityLabel("Change \(title)")
+                }
+                if let accessory {
+                    Spacer(minLength: Theme.spaceS)
+                    accessory
                 }
             }
             if !isOpen {

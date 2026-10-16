@@ -6,7 +6,8 @@ import Testing
 struct MiniWizardMemoryTests {
     @Test func everyAnswerHasAStableDistinctProfileKey() {
         let names: Set<String> = ["videoPath", "footageKind", "length", "quality", "preset", "cameraFocus",
-            "captions", "englishCaptions", "captionPosition", "captionStyleID", "introVideo", "outroVideo", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "watermark", "outputMode"]
+            "captions", "englishCaptions", "captionPosition", "captionStyleID", "introVideo", "outroVideo", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "watermark", "outputMode",
+            "overlay", "overlayTemplate", "overlayStart", "overlayDuration", "overlayTexts", "introBumperPath", "outroBumperPath", "watermarkOverlay", "watermarkOpacity"]
         #expect(Set(MiniWizardMemory.Field.allCases.map(\.rawValue)) == names)
         for profile in ["First", "First.Second", "Profile with spaces", "عربي"] {
             let keys = MiniWizardMemory.Field.allCases.map { MiniWizardMemory.key(for: $0, profileName: profile) }
@@ -49,9 +50,18 @@ struct MiniWizardMemoryTests {
         first.englishCaptions = true
         first.introVideo = true
         first.outroVideo = true
+        first.introBumperPath = "/bumpers/open.mp4"
+        first.outroBumperPath = "/bumpers/close.mp4"
         first.nameTags = true
         first.nameTagStyleID = UUID().uuidString
         first.watermark = false
+        first.watermarkOverlay = "Main"
+        first.watermarkOpacity = 0.25
+        first.overlay = true
+        first.overlayTemplate = "Lower third"
+        first.overlayStart = 2.5
+        first.overlayDuration = 4
+        first.overlayTexts = ["Watch the full fight", ""]
         first.outputMode = .oneReel
         let second = MiniWizardSettings()
         first.remember(profileName: "First", defaults: defaults)
@@ -62,7 +72,7 @@ struct MiniWizardMemoryTests {
                          forKey: MiniWizardMemory.key(for: .footageKind, profileName: name))
             defaults.set(MiniWizardFlow.Length.fifteen.rawValue,
                          forKey: MiniWizardMemory.key(for: .length, profileName: name))
-            for field in MiniWizardMemory.Field.allCases where ![.captionPosition, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition].contains(field) {
+            for field in MiniWizardMemory.Field.allCases where ![.captionPosition, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition, .overlayTemplate, .overlayDuration, .introBumperPath, .outroBumperPath, .watermarkOverlay, .watermarkOpacity].contains(field) {
                 #expect(defaults.object(forKey: MiniWizardMemory.key(for: field, profileName: name)) != nil)
             }
         }

@@ -18,11 +18,15 @@ nonisolated struct TextOverlayRenderer {
     /// Platform chrome to stay clear of; name tags retain their planned placement.
     var safeArea: PlatformSafeArea? = PlatformSafeArea.resolve(RenderContext.settings)
 
-    /// A box centre (fractions of the frame) moved into the safe area.
-    private func clamped(centerX: Double, centerY: Double, width: Double, height: Double) -> (x: Double, y: Double) {
-        guard let safeArea else { return (centerX, centerY) }
-        return safeArea.clampedCenter(x: centerX, y: centerY,
-                                      width: width / Double(videoWidth), height: height / Double(videoHeight))
+    /// A box centre and size IN PIXELS moved into the safe area. The safe
+    /// area works in frame fractions, so everything converts on the way in
+    /// and back out; feeding it pixels clamps every box to the top-left
+    /// corner (the 1.101 Express overlay bug).
+    func clamped(centerX: Double, centerY: Double, width: Double, height: Double) -> (x: Double, y: Double) {
+        guard let safeArea, videoWidth > 0, videoHeight > 0 else { return (centerX, centerY) }
+        let w = Double(videoWidth), h = Double(videoHeight)
+        let center = safeArea.clampedCenter(x: centerX / w, y: centerY / h, width: width / w, height: height / h)
+        return (center.x * w, center.y * h)
     }
 
     // MARK: - Markup
@@ -286,54 +290,159 @@ nonisolated struct TextOverlayRenderer {
         }
     }
 
-    /// WYSIWYG mode: auto-fit the largest font whose wrapped lines fill the
-    /// destination box, then center the block (port of the w_frac/h_frac
-    /// branch, including the binary search and 0.15em line spacing).
+    /// WYSIWYG mode. Text that fits its box at the design size auto-fits the
+    /// largest font whose wrapped lines fill the box (port of the
+    /// w_frac/h_frac branch, binary search and 0.15em line spacing). Text
+    /// that overflows keeps its design size and grows the box toward the
+    /// side opposite its alignment (left-aligned grows right, right-aligned
+    /// grows left, centred grows both ways) until the frame margin; what
+    /// still does not fit wraps to further rows, growing the box downward
+    /// (upward when the frame's bottom is near). Only when even the frame
+    /// cannot hold the wrapped block does the text shrink.
     private func drawFittedBox(in context: CGContext, item: TextOverlayItem,
                                words: [Word], visibleWords: Int?,
                                boxWidth: Int, boxHeight: Int, centerX: Int, centerY: Int) {
         guard !words.isEmpty else { return }
-        func metrics(for size: CGFloat) -> (font: CTFont, lines: [[Word]], lineHeight: CGFloat,
-                                            spacing: CGFloat, totalHeight: CGFloat, maxWidth: CGFloat) {
-            let font = resolveFont(size: size, family: item.fontfamily,
-                                   bold: item.bold, italic: item.italic)
-            let lines = wrap(words, font: font, maxWidth: CGFloat(boxWidth))
-            let lineHeight = CTFontGetAscent(font) + CTFontGetDescent(font)
-            let spacing = (size * 0.15).rounded(.down)
-            let total = lineHeight * CGFloat(lines.count) + spacing * CGFloat(max(0, lines.count - 1))
-            let maxLineWidth = lines.map { lineWidth(Self.plainText($0), font: font) }.max() ?? 0
-            return (font, lines, lineHeight, spacing, total, maxLineWidth)
+        let layout = Self.fittedLayout(item: item, words: words, boxWidth: boxWidth, boxHeight: boxHeight,
+                                       centerX: centerX, centerY: centerY,
+                                       videoWidth: videoWidth, videoHeight: videoHeight,
+                                       measure: { size, maxWidth in self.metrics(item: item, words: words, size: size, maxWidth: maxWidth) })
+        if item.boxOpacity > 0 {
+            fillRoundedBackground(in: context, item: item,
+                                  topLeft: (layout.boxLeft, layout.boxTop), size: (layout.boxWidth, layout.boxHeight))
+        }
+        let m = layout.metrics
+        var cursorTop = CGFloat(layout.boxTop) + (CGFloat(layout.boxHeight) - m.totalHeight) / 2
+        let ascent = CTFontGetAscent(m.font)
+        for lineWords in m.lines {
+            let width = lineWidth(Self.plainText(lineWords), font: m.font)
+            let x = Self.alignedX(boxLeft: CGFloat(layout.boxLeft), boxWidth: CGFloat(layout.boxWidth),
+                                  lineWidth: width, alignment: item.alignment)
+            drawStyledLine(lineWords, font: m.font, item: item, visibleWords: visibleWords,
+                           in: context, x: x, baselineFromTop: cursorTop + ascent)
+            cursorTop += m.lineHeight + m.spacing
+        }
+    }
+
+    struct LineMetrics {
+        var font: CTFont
+        var lines: [[Word]]
+        var lineHeight: CGFloat
+        var spacing: CGFloat
+        var totalHeight: CGFloat
+        var maxWidth: CGFloat
+    }
+
+    private func metrics(item: TextOverlayItem, words: [Word], size: CGFloat, maxWidth: CGFloat) -> LineMetrics {
+        let font = resolveFont(size: size, family: item.fontfamily, bold: item.bold, italic: item.italic)
+        let lines = wrap(words, font: font, maxWidth: maxWidth)
+        let lineHeight = CTFontGetAscent(font) + CTFontGetDescent(font)
+        let spacing = (size * 0.15).rounded(.down)
+        let total = lineHeight * CGFloat(lines.count) + spacing * CGFloat(max(0, lines.count - 1))
+        let maxLineWidth = lines.map { lineWidth(Self.plainText($0), font: font) }.max() ?? 0
+        return LineMetrics(font: font, lines: lines, lineHeight: lineHeight, spacing: spacing,
+                           totalHeight: total, maxWidth: maxLineWidth)
+    }
+
+    /// The box a fitted item finally occupies, in pixels, plus its lines.
+    struct FittedLayout {
+        var boxLeft: Int
+        var boxTop: Int
+        var boxWidth: Int
+        var boxHeight: Int
+        var metrics: LineMetrics
+        var grew: Bool
+    }
+
+    /// The left x of a line inside a box for an alignment name.
+    static func alignedX(boxLeft: CGFloat, boxWidth: CGFloat, lineWidth: CGFloat, alignment: String) -> CGFloat {
+        switch alignment {
+        case "left": boxLeft
+        case "right": boxLeft + boxWidth - lineWidth
+        default: boxLeft + (boxWidth - lineWidth) / 2
+        }
+    }
+
+    /// Pure layout for the fitted box; `measure(size, maxWidth)` wraps and
+    /// measures the item's words at a font size.
+    static func fittedLayout(item: TextOverlayItem, words: [Word], boxWidth: Int, boxHeight: Int,
+                             centerX: Int, centerY: Int, videoWidth: Int, videoHeight: Int,
+                             measure: (CGFloat, CGFloat) -> LineMetrics) -> FittedLayout {
+        var boxLeft = centerX - boxWidth / 2
+        var boxTop = centerY - boxHeight / 2
+        var boxWidth = boxWidth
+        var boxHeight = boxHeight
+        let margin = Int((Double(videoWidth) * 0.02).rounded())
+        let designSize = max(6, (CGFloat(item.fontsize) * CGFloat(videoHeight) / 1920).rounded())
+        let single = measure(designSize, .greatestFiniteMagnitude)
+        var grew = false
+
+        if single.maxWidth > CGFloat(boxWidth) || single.lineHeight > CGFloat(boxHeight) {
+            grew = true
+            // Widen toward the side opposite the alignment, up to the margin.
+            let needed = Int(single.maxWidth.rounded(.up))
+            let minLeft = margin, maxRight = videoWidth - margin
+            var left = boxLeft, right = boxLeft + boxWidth
+            // The aligned edge never moves; growth stops at the frame margin
+            // and whatever is still too wide wraps onto further rows.
+            switch item.alignment {
+            case "left": right = min(maxRight, max(right, left + needed))
+            case "right": left = max(minLeft, min(left, right - needed))
+            default:
+                let extra = max(0, needed - (right - left))
+                left = max(minLeft, left - extra / 2)
+                right = min(maxRight, right + extra - extra / 2)
+            }
+            boxLeft = left
+            boxWidth = max(1, right - left)
+
+            // Wrap at the grown width; rows grow the box downward, or upward
+            // when the frame's bottom is near.
+            var m = measure(designSize, CGFloat(boxWidth))
+            var neededHeight = Int(m.totalHeight.rounded(.up))
+            if neededHeight > videoHeight - margin * 2 {
+                // Even the frame cannot hold it at the design size: shrink.
+                var low = 6, high = Int(designSize), best = 6
+                while low <= high {
+                    let mid = (low + high) / 2
+                    let probe = measure(CGFloat(mid), CGFloat(boxWidth))
+                    if probe.totalHeight <= CGFloat(videoHeight - margin * 2) && probe.maxWidth <= CGFloat(boxWidth) {
+                        best = mid
+                        low = mid + 1
+                    } else {
+                        high = mid - 1
+                    }
+                }
+                m = measure(CGFloat(best), CGFloat(boxWidth))
+                neededHeight = Int(m.totalHeight.rounded(.up))
+            }
+            if neededHeight > boxHeight {
+                let bottomLimit = videoHeight - margin
+                if boxTop + neededHeight <= bottomLimit {
+                    boxHeight = neededHeight
+                } else {
+                    boxTop = max(margin, bottomLimit - neededHeight)
+                    boxHeight = min(neededHeight, bottomLimit - boxTop)
+                }
+            }
+            return FittedLayout(boxLeft: boxLeft, boxTop: boxTop, boxWidth: boxWidth, boxHeight: boxHeight,
+                                metrics: m, grew: grew)
         }
 
+        // Fits: the largest font whose wrapped lines fill the box.
         var low = 6, high = max(boxWidth, boxHeight), best = 6
         while low <= high {
             let mid = (low + high) / 2
-            let m = metrics(for: CGFloat(mid))
-            if m.totalHeight <= CGFloat(boxHeight) && m.maxWidth <= CGFloat(boxWidth) {
+            let probe = measure(CGFloat(mid), CGFloat(boxWidth))
+            if probe.totalHeight <= CGFloat(boxHeight) && probe.maxWidth <= CGFloat(boxWidth) {
                 best = mid
                 low = mid + 1
             } else {
                 high = mid - 1
             }
         }
-        let m = metrics(for: CGFloat(best))
-
-        let boxLeft = centerX - boxWidth / 2
-        let boxTop = centerY - boxHeight / 2
-        if item.boxOpacity > 0 {
-            fillRoundedBackground(in: context, item: item,
-                                  topLeft: (boxLeft, boxTop), size: (boxWidth, boxHeight))
-        }
-
-        var cursorTop = CGFloat(boxTop) + (CGFloat(boxHeight) - m.totalHeight) / 2
-        let ascent = CTFontGetAscent(m.font)
-        for lineWords in m.lines {
-            let width = lineWidth(Self.plainText(lineWords), font: m.font)
-            let x = CGFloat(boxLeft) + (CGFloat(boxWidth) - width) / 2
-            drawStyledLine(lineWords, font: m.font, item: item, visibleWords: visibleWords,
-                           in: context, x: x, baselineFromTop: cursorTop + ascent)
-            cursorTop += m.lineHeight + m.spacing
-        }
+        return FittedLayout(boxLeft: boxLeft, boxTop: boxTop, boxWidth: boxWidth, boxHeight: boxHeight,
+                            metrics: measure(CGFloat(best), CGFloat(boxWidth)), grew: grew)
     }
 
     /// Legacy mode: one unwrapped line at a fractional point or a named

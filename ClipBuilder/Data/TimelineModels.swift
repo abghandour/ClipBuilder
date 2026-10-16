@@ -1223,9 +1223,13 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     /// Template-only: ignore endTime and last as long as the whole overlay
     /// is visible (resolved to a concrete endTime when applied).
     var unbounded: Bool = false
+    /// Horizontal alignment inside the box: "left", "center" or "right".
+    /// Text that overflows the box grows it toward the opposite side.
+    var alignment: String = "center"
 
     var duration: Double { max(0, endTime - startTime) }
 
+    static let alignmentChoices = ["left", "center", "right"]
     static let transitionChoices = ["fade", "slide_left", "slide_right", "slide_up", "slide_down", "pop", "cut"]
 
     enum CodingKeys: String, CodingKey {
@@ -1248,7 +1252,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         case design, kicker
         case accentColor = "accent_color"
         case isDynamic = "dynamic"
-        case opacity, unbounded
+        case opacity, unbounded, alignment
         case boxRadius = "box_radius"
     }
 
@@ -1290,6 +1294,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         opacity = try container.decodeIfPresent(Double.self, forKey: .opacity) ?? 1
         boxRadius = try container.decodeIfPresent(Double.self, forKey: .boxRadius)
         unbounded = try container.decodeIfPresent(Bool.self, forKey: .unbounded) ?? false
+        alignment = try container.decodeIfPresent(String.self, forKey: .alignment) ?? "center"
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1330,6 +1335,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         if opacity < 1 { try container.encode(opacity, forKey: .opacity) }
         if let boxRadius { try container.encode(boxRadius, forKey: .boxRadius) }
         if unbounded { try container.encode(true, forKey: .unbounded) }
+        if alignment != "center" { try container.encode(alignment, forKey: .alignment) }
     }
 
     static func == (lhs: TextOverlayItem, rhs: TextOverlayItem) -> Bool {
@@ -1346,7 +1352,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
             && lhs.design == rhs.design && lhs.kicker == rhs.kicker
             && lhs.accentColor == rhs.accentColor && lhs.isDynamic == rhs.isDynamic
             && lhs.opacity == rhs.opacity && lhs.boxRadius == rhs.boxRadius
-            && lhs.unbounded == rhs.unbounded
+            && lhs.unbounded == rhs.unbounded && lhs.alignment == rhs.alignment
     }
 
     var id: UUID { uid }

@@ -706,6 +706,9 @@ private struct PreviewTextLayer: View {
             .bold(item.bold)
             .italic(item.italic)
             .foregroundStyle(Color(red: r, green: g, blue: b))
+            .multilineTextAlignment(textAlignment)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: item.wFrac.map { frame.width * $0 }, alignment: frameAlignment)
             .padding(4)
             .background(item.boxOpacity > 0 ? backgroundColor.opacity(item.boxOpacity) : .clear,
                         in: RoundedRectangle(cornerRadius: radius))
@@ -743,6 +746,22 @@ private struct PreviewTextLayer: View {
     private var backgroundColor: Color {
         let (r, g, b) = TextOverlayRenderer.parseColor(item.bgcolor, fallback: (0, 0, 0))
         return Color(red: r, green: g, blue: b)
+    }
+
+    private var textAlignment: TextAlignment {
+        switch item.alignment {
+        case "left": .leading
+        case "right": .trailing
+        default: .center
+        }
+    }
+
+    private var frameAlignment: Alignment {
+        switch item.alignment {
+        case "left": .leading
+        case "right": .trailing
+        default: .center
+        }
     }
 
     private var dragGesture: some Gesture {

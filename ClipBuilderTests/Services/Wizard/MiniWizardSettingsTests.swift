@@ -40,6 +40,57 @@ struct MiniWizardSettingsTests {
         }
     }
 
+    @Test func overlayMapsToAFixedOverlayOnlyWhenOnAndNamed() {
+        var settings = MiniWizardSettings()
+        settings.overlayTemplate = "Lower third"
+        settings.overlayStart = 3
+        settings.overlayDuration = 4
+        let off = settings.step2Options(base: WizardStep2Options())
+        #expect(off.fixedOverlayTemplate == nil && off.fixedOverlayStart == nil && off.fixedOverlayDuration == nil)
+        #expect(settings.overlayName == nil)
+        settings.overlay = true
+        settings.overlayTexts = ["Hook", ""]
+        let on = settings.step2Options(base: WizardStep2Options())
+        #expect(on.fixedOverlayTemplate == "Lower third" && on.fixedOverlayStart == 3 && on.fixedOverlayDuration == 4)
+        #expect(on.fixedOverlayTexts == ["Hook", ""] && off.fixedOverlayTexts == nil)
+        #expect(settings.overlayName == "Lower third")
+        settings.overlayDuration = nil
+        settings.overlayStart = -2
+        let whole = settings.step2Options(base: WizardStep2Options())
+        #expect(whole.fixedOverlayStart == 0 && whole.fixedOverlayDuration == nil)
+        settings.overlayTemplate = "  "
+        #expect(settings.step2Options(base: WizardStep2Options()).fixedOverlayTemplate == nil)
+        let merged = WizardOptions.merge(step1: WizardStep1Options(), step2: on)
+        #expect(merged.fixedOverlayTemplate == "Lower third" && merged.step2.fixedOverlayDuration == 4)
+        let decoded = try? JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(merged))
+        #expect(decoded?.fixedOverlayStart == 3)
+        #expect(MiniWizardFlow().settingsSummary(settings).contains("overlay") == false)
+        settings.overlayTemplate = "Lower third"
+        #expect(MiniWizardFlow().settingsSummary(settings).contains("overlay Lower third"))
+    }
+
+    @Test func watermarkOverlayOnlyMapsWhileTheWatermarkIsOn() {
+        var settings = MiniWizardSettings()
+        settings.watermark = true
+        settings.watermarkOverlay = "Main"
+        #expect(settings.step2Options(base: WizardStep2Options()).watermarkOverlayTemplate == "Main")
+        #expect(MiniWizardFlow().settingsSummary(settings).contains("watermark Main"))
+        settings.watermark = false
+        #expect(settings.step2Options(base: WizardStep2Options()).watermarkOverlayTemplate == nil)
+        settings.watermark = true
+        settings.watermarkOverlay = " "
+        #expect(settings.step2Options(base: WizardStep2Options()).watermarkOverlayTemplate == nil)
+        #expect(MiniWizardFlow().settingsSummary(settings).hasSuffix("watermark · separate videos"))
+        #expect(settings.effectiveWatermarkOpacity == BrandRenderer.logoWatermarkOpacity)
+        settings.watermarkOverlay = "Main"
+        #expect(settings.effectiveWatermarkOpacity == WizardFixedOverlay.watermarkOpacity)
+        settings.watermarkOpacity = 0.3
+        #expect(settings.effectiveWatermarkOpacity == 0.3)
+        #expect(settings.step2Options(base: WizardStep2Options()).watermarkOpacity == 0.3)
+        settings.watermark = false
+        #expect(settings.step2Options(base: WizardStep2Options()).watermarkOpacity == nil)
+    }
+
     @Test func everyCameraFocusMapsLikeTheFullWizard() {
         var settings = MiniWizardSettings()
         for kind in CropRecipe.Kind.allCases {

@@ -25,6 +25,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case captionPosition, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
+        case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity
     }
 
     var localHashtags = false
@@ -150,6 +151,26 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var includeIntroBumper = false
     var includeOutroBumper = false
     var includeMiddleBumper = false
+    /// A saved overlay template laid over the finished video as one block
+    /// (Express "Overlay"): starts at `fixedOverlayStart` seconds (0 when
+    /// nil) and runs `fixedOverlayDuration` seconds, or to the end when nil.
+    var fixedOverlayTemplate: String?
+    var fixedOverlayStart: Double?
+    var fixedOverlayDuration: Double?
+    /// Replacement text for the template's AI-replaceable text items, in
+    /// template order; an empty entry keeps the template's own text.
+    var fixedOverlayTexts: [String]?
+    /// A saved overlay template used as the watermark instead of the brand
+    /// logo (faded, no boxes or effects, over the whole video). Only applies
+    /// when `includeWatermark` is on.
+    var watermarkOverlayTemplate: String?
+    /// Watermark strength 0...1; nil = the design's default (logo 0.85,
+    /// overlay template 0.4).
+    var watermarkOpacity: Double?
+    /// A chosen bumper (by file path) for the intro / outro slot; nil lets
+    /// the planner pick any bumper that allows the placement.
+    var introBumperPath: String?
+    var outroBumperPath: String?
 
     mutating func readBumperDefaults(_ defaults: UserDefaults = .standard) {
         includeIntroBumper = defaults.bool(forKey: "wizard.bumperIntro")
@@ -3535,8 +3556,10 @@ actor WizardEngine {
         // the full-video result headline. Rendered once, reused per clip.
         let accent = profile.accentColor.isEmpty ? BrandRenderer.defaultAccent : profile.accentColor
         var brandOverlays: [URL] = []
-        if options.includeWatermark, let logoURL = profile.logoURL,
-           let png = BrandRenderer.watermark(logoURL: logoURL, to: scratch) {
+        if options.includeWatermark, options.watermarkOverlayTemplate?.isEmpty != false,
+           let logoURL = profile.logoURL,
+           let png = BrandRenderer.watermark(logoURL: logoURL, to: scratch,
+                                             opacity: options.watermarkOpacity ?? BrandRenderer.logoWatermarkOpacity) {
             brandOverlays.append(png)
         }
         if options.includeHeadline, let headline = plan.headline,
@@ -3674,13 +3697,42 @@ actor WizardEngine {
             emit("B-roll off")
         }
         let cutaways = document.videoTrack.filter(\.isCutaway)
+        // The Express "Overlay": one template block over the whole cut, placed
+        // after bumpers so its start counts from the finished video's start.
+        // Planned per-clip overlays are already burned into the clips; only
+        // this block rides the final compositor pass.
+        let overlayTemplates = OverlayTemplateStore.list()
+        let totalDuration = document.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0
+        var finalOverlayBlocks: [OverlayBlockItem] = []
+        if let fixedOverlay = WizardFixedOverlay.block(options: options, templates: overlayTemplates,
+                                                       totalDuration: totalDuration) {
+            finalOverlayBlocks.append(fixedOverlay)
+            emit("Overlay '\(fixedOverlay.name)' at \(String(format: "%.1f", fixedOverlay.startTime))s for \(String(format: "%.1f", fixedOverlay.duration))s")
+        } else if let name = options.fixedOverlayTemplate, !name.isEmpty {
+            emit("Overlay '\(name)' skipped: template missing or empty")
+        }
+        // An overlay template as the watermark replaces the brand logo.
+        if let watermark = WizardFixedOverlay.watermarkBlock(options: options, templates: overlayTemplates,
+                                                             totalDuration: totalDuration) {
+            finalOverlayBlocks.append(watermark)
+            emit("Watermark overlay '\(watermark.name)'")
+        } else if options.includeWatermark, let name = options.watermarkOverlayTemplate, !name.isEmpty {
+            emit("Watermark overlay '\(name)' skipped: template missing or empty")
+        }
+        document.overlayBlocks += finalOverlayBlocks
         emit("Assembling \(clipURLs.count) segments...")
         let assembled = scratch.appendingPathComponent("assembled.mp4")
-        if !bumperLog.isEmpty || !cutaways.isEmpty {
+        if !bumperLog.isEmpty || !cutaways.isEmpty || !finalOverlayBlocks.isEmpty {
             // Ordinary clips already contain their captions/branding/layouts.
-            // Bumpers and cutaways are added here, using the same exclusive
-            // compositor as Builder. The editable document retains originals.
-            let prepared = Self.preparedDocument(from: document, clipURLs: clipURLs, transitions: clipTransitions)
+            // Bumpers, cutaways and the whole-video overlays are added here, using the
+            // same exclusive compositor as Builder. The editable document retains originals.
+            var prepared = Self.preparedDocument(from: document, clipURLs: clipURLs, transitions: clipTransitions)
+            if !finalOverlayBlocks.isEmpty {
+                // The user placed these designs by hand; they land exactly where
+                // the Overlays editor shows them, not nudged clear of platform chrome.
+                prepared.overlayBlocks = finalOverlayBlocks
+                prepared.renderSettings.platformSafeArea.enabled = false
+            }
             let brollScenes = cutaways.isEmpty ? [] : try await database.fetchScenes(projectID: options.projectID, scope: options.selectedRunIDs.isEmpty && !options.sourceSceneSelection ? .active : .history, includeExcluded: false)
             let result = try await MultitrackRenderer(render: render).render(document: prepared, scenes: brollScenes,
                 profile: profile, database: database, preview: true, emit: emit)

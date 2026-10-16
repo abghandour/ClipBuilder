@@ -18,6 +18,14 @@ struct TextOverlayForm: View {
                 Toggle("Italic", isOn: $item.italic)
             }
             FontFamilyPicker(family: $item.fontfamily)
+            Picker("Alignment", selection: $item.alignment) {
+                Label("Left", systemImage: "text.alignleft").tag("left")
+                Label("Center", systemImage: "text.aligncenter").tag("center")
+                Label("Right", systemImage: "text.alignright").tag("right")
+            }
+            .pickerStyle(.segmented)
+            .labelStyle(.iconOnly)
+            .help("Where the text sits in its box. Text that outgrows the box extends toward the other side, then wraps.")
 
             ColorPicker("Text color",
                         selection: overlayColorBinding($item.fontcolor),

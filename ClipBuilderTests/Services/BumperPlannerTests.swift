@@ -123,4 +123,31 @@ struct BumperPlannerTests {
         #expect(pieces[0].duration == 8 && pieces[0].sourceEnd == 26)
         #expect(pieces[1].startTime == 10 && pieces[1].sourceStart == 26 && pieces[1].duration == 4)
     }
+
+    @Test("a named bumper wins its slot; a missing or ineligible one falls back to any")
+    func chosenBumper() throws {
+        let bumpers = [asset("A"), asset("B"), asset("C"), asset("IntroOnly", placements: [.intro])]
+        var options = WizardOptions()
+        options.includeIntroBumper = true
+        options.includeOutroBumper = true
+        options.introBumperPath = "/C.mp4"
+        options.outroBumperPath = "/B.mp4"
+        for _ in 0..<5 {
+            var doc = document()
+            var rng = Generator()
+            _ = BumperPlanner.apply(to: &doc, bumpers: bumpers, options: options, using: &rng)
+            let placed = doc.videoTrack.filter(\.bumper).sorted { $0.startTime < $1.startTime }
+            #expect(placed.map(\.bumperName) == ["C", "B"])
+        }
+        options.outroBumperPath = "/IntroOnly.mp4"
+        var doc = document()
+        var rng = Generator()
+        _ = BumperPlanner.apply(to: &doc, bumpers: bumpers, options: options, using: &rng)
+        let outro = try #require(doc.videoTrack.filter(\.bumper).max(by: { $0.startTime < $1.startTime }))
+        #expect(outro.bumperName != "IntroOnly")
+        options.introBumperPath = "/gone.mp4"
+        doc = document()
+        _ = BumperPlanner.apply(to: &doc, bumpers: bumpers, options: options, using: &rng)
+        #expect(doc.videoTrack.filter(\.bumper).count == 2)
+    }
 }

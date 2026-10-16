@@ -30,7 +30,9 @@ nonisolated enum BrandRenderer {
     // MARK: - Elements
 
     /// Full-frame transparent PNG with the logo in the top-left corner.
-    static func watermark(logoURL: URL, to directory: URL) -> URL? {
+    static let logoWatermarkOpacity = 0.85
+
+    static func watermark(logoURL: URL, to directory: URL, opacity: Double = logoWatermarkOpacity) -> URL? {
         guard let logo = NSImage(contentsOf: logoURL) else { return nil }
         let s = scale
         let frame = canvasFrame
@@ -41,7 +43,7 @@ nonisolated enum BrandRenderer {
             drawImage(logo, in: context,
                       rect: fittedRect(for: logo, width: 150 * s,
                                        topLeft: CGPoint(x: 48 * s, y: top), frame: frame),
-                      opacity: 0.85)
+                      opacity: min(1, max(0, opacity)))
         }
     }
 

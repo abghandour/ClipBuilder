@@ -130,4 +130,19 @@ struct PlatformSafeAreaTests {
         #expect(roundTrip == custom)
         #expect(roundTrip.platformSafeArea.platforms == [.tiktok])
     }
+
+    @Test("The text renderer clamps pixel centres in pixels, not fractions")
+    func rendererClampsInPixels() throws {
+        let area = try #require(PlatformSafeArea.resolve(platforms: SocialPlatform.allCases, aspectRatio: portrait))
+        let renderer = TextOverlayRenderer(videoWidth: 1080, videoHeight: 1920, safeArea: area)
+        // Inside the area: untouched (the header - subheader template's title box).
+        let inside = renderer.clamped(centerX: 1080 * 0.5146, centerY: 1920 * 0.1362, width: 1080 * 0.75, height: 1920 * 0.07)
+        #expect(abs(inside.x - 1080 * 0.5146) < 0.01 && abs(inside.y - 1920 * 0.1362) < 0.01)
+        // Under the footer: lifted to the area's bottom edge, still in pixels.
+        let low = renderer.clamped(centerX: 540, centerY: 1920 * 0.946, width: 1080 * 0.48, height: 1920 * 0.06)
+        #expect(abs(low.y - 1920 * (area.rect.maxY - 0.03)) < 0.01 && low.x == 540)
+        // No safe area: identity.
+        #expect(TextOverlayRenderer(videoWidth: 1080, videoHeight: 1920, safeArea: nil)
+            .clamped(centerX: 10, centerY: 1900, width: 100, height: 100) == (10, 1900))
+    }
 }

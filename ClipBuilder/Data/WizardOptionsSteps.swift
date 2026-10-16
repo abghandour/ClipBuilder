@@ -70,6 +70,14 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var includeHeadline: Bool?
     var includeOutro: Bool?
     var localHashtags: Bool?
+    var fixedOverlayTemplate: String?
+    var fixedOverlayStart: Double?
+    var fixedOverlayDuration: Double?
+    var fixedOverlayTexts: [String]?
+    var introBumperPath: String?
+    var outroBumperPath: String?
+    var watermarkOverlayTemplate: String?
+    var watermarkOpacity: Double?
 }
 
 nonisolated extension WizardOptions {
@@ -144,6 +152,14 @@ nonisolated extension WizardOptions {
         result.includeHeadline = includeHeadline
         result.includeOutro = includeOutro
         result.localHashtags = localHashtags
+        result.fixedOverlayTemplate = fixedOverlayTemplate
+        result.fixedOverlayStart = fixedOverlayStart
+        result.fixedOverlayDuration = fixedOverlayDuration
+        result.fixedOverlayTexts = fixedOverlayTexts
+        result.introBumperPath = introBumperPath
+        result.outroBumperPath = outroBumperPath
+        result.watermarkOverlayTemplate = watermarkOverlayTemplate
+        result.watermarkOpacity = watermarkOpacity
         return result
     }
 
@@ -216,6 +232,14 @@ nonisolated extension WizardOptions {
         result.includeHeadline = step2.includeHeadline ?? base.includeHeadline
         result.includeOutro = step2.includeOutro ?? base.includeOutro
         result.localHashtags = step2.localHashtags ?? base.localHashtags
+        result.fixedOverlayTemplate = step2.fixedOverlayTemplate
+        result.fixedOverlayStart = step2.fixedOverlayStart
+        result.fixedOverlayDuration = step2.fixedOverlayDuration
+        result.fixedOverlayTexts = step2.fixedOverlayTexts
+        result.introBumperPath = step2.introBumperPath
+        result.outroBumperPath = step2.outroBumperPath
+        result.watermarkOverlayTemplate = step2.watermarkOverlayTemplate
+        result.watermarkOpacity = step2.watermarkOpacity
         return result
     }
 }

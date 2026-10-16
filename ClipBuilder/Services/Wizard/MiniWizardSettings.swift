@@ -1,7 +1,7 @@
 import Foundation
 
 /// Mini's visible presentation choices; mapping never changes the selected footage.
-nonisolated struct MiniWizardSettings: Equatable, Sendable {
+nonisolated struct MiniWizardSettings: Equatable, Sendable, Codable {
     var quality: EncodeQuality = .balanced
     var preset: RenderPreset = .portrait1080
     var cameraFocus = ""
@@ -11,13 +11,72 @@ nonisolated struct MiniWizardSettings: Equatable, Sendable {
     var captionStyleID: String?
     var introVideo = false
     var outroVideo = false
+    /// Bumper file paths for each slot; nil = any bumper that allows it.
+    var introBumperPath: String?
+    var outroBumperPath: String?
     var nameTags = false
     var nameTagContent: String?
     var nameTagStyle: String?
     var nameTagStyleID: String?
     var nameTagPosition: String?
     var watermark = true
+    /// A saved overlay used as the watermark; nil or empty = the brand logo.
+    var watermarkOverlay: String?
+    /// Watermark strength 0...1; nil = the design's default.
+    var watermarkOpacity: Double?
+    /// A saved overlay template over the finished video: starts at
+    /// `overlayStart` seconds, runs `overlayDuration` seconds or to the end.
+    var overlay = false
+    var overlayTemplate: String?
+    var overlayStart: Double = 0
+    var overlayDuration: Double?
+    /// Overrides for the template's AI-replaceable texts, in template order.
+    var overlayTexts: [String] = []
     var outputMode: MiniWizardFlow.OutputMode = .separateVideos
+
+    init() {}
+
+    enum CodingKeys: String, CodingKey {
+        case quality, preset, cameraFocus, captions, englishCaptions, captionPosition, captionStyleID
+        case introVideo, outroVideo, introBumperPath, outroBumperPath
+        case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
+        case watermark, watermarkOverlay, watermarkOpacity
+        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, outputMode
+    }
+
+    /// Saved presets: every key optional so a preset written by an older
+    /// build (or a hand-edited file) still loads with defaults for the rest.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let base = Self()
+        quality = try c.decodeIfPresent(EncodeQuality.self, forKey: .quality) ?? base.quality
+        preset = try c.decodeIfPresent(RenderPreset.self, forKey: .preset) ?? base.preset
+        cameraFocus = try c.decodeIfPresent(String.self, forKey: .cameraFocus) ?? base.cameraFocus
+        captions = try c.decodeIfPresent(Bool.self, forKey: .captions) ?? base.captions
+        englishCaptions = try c.decodeIfPresent(Bool.self, forKey: .englishCaptions) ?? base.englishCaptions
+        captionPosition = try c.decodeIfPresent(String.self, forKey: .captionPosition)
+        captionStyleID = try c.decodeIfPresent(String.self, forKey: .captionStyleID)
+        introVideo = try c.decodeIfPresent(Bool.self, forKey: .introVideo) ?? base.introVideo
+        outroVideo = try c.decodeIfPresent(Bool.self, forKey: .outroVideo) ?? base.outroVideo
+        introBumperPath = try c.decodeIfPresent(String.self, forKey: .introBumperPath)
+        outroBumperPath = try c.decodeIfPresent(String.self, forKey: .outroBumperPath)
+        nameTags = try c.decodeIfPresent(Bool.self, forKey: .nameTags) ?? base.nameTags
+        nameTagContent = try c.decodeIfPresent(String.self, forKey: .nameTagContent)
+        nameTagStyle = try c.decodeIfPresent(String.self, forKey: .nameTagStyle)
+        nameTagStyleID = try c.decodeIfPresent(String.self, forKey: .nameTagStyleID)
+        nameTagPosition = try c.decodeIfPresent(String.self, forKey: .nameTagPosition)
+        watermark = try c.decodeIfPresent(Bool.self, forKey: .watermark) ?? base.watermark
+        watermarkOverlay = try c.decodeIfPresent(String.self, forKey: .watermarkOverlay)
+        watermarkOpacity = try c.decodeIfPresent(Double.self, forKey: .watermarkOpacity)
+        overlay = try c.decodeIfPresent(Bool.self, forKey: .overlay) ?? base.overlay
+        overlayTemplate = try c.decodeIfPresent(String.self, forKey: .overlayTemplate)
+        overlayStart = try c.decodeIfPresent(Double.self, forKey: .overlayStart) ?? base.overlayStart
+        overlayDuration = try c.decodeIfPresent(Double.self, forKey: .overlayDuration)
+        overlayTexts = try c.decodeIfPresent([String].self, forKey: .overlayTexts) ?? base.overlayTexts
+        outputMode = try c.decodeIfPresent(MiniWizardFlow.OutputMode.self, forKey: .outputMode) ?? base.outputMode
+        if quality == .custom { quality = .balanced }
+        if preset == .custom { preset = .portrait1080 }
+    }
 
     func step2Options(base: WizardStep2Options) -> WizardStep2Options {
         var result = base
@@ -33,7 +92,12 @@ nonisolated struct MiniWizardSettings: Equatable, Sendable {
         result.captionLanguage = englishCaptions ? "en" : nil
         result.includeIntroBumper = introVideo
         result.includeOutroBumper = outroVideo
+        result.introBumperPath = introVideo ? introBumperPath : nil
+        result.outroBumperPath = outroVideo ? outroBumperPath : nil
         result.includeWatermark = watermark
+        let watermarkName = watermarkOverlay?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        result.watermarkOverlayTemplate = watermark && !watermarkName.isEmpty ? watermarkName : nil
+        result.watermarkOpacity = watermark ? watermarkOpacity.map { min(1, max(0, $0)) } : nil
         result.includeHeadline = false
         result.includeOutro = false
         result.useMusic = false
@@ -44,7 +108,25 @@ nonisolated struct MiniWizardSettings: Equatable, Sendable {
         result.nameTagStyle = nameTagStyle
         result.nameTagStyleID = nameTagStyleID
         result.nameTagPosition = nameTagPosition
+        let overlayName = overlayTemplate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        result.fixedOverlayTemplate = overlay && !overlayName.isEmpty ? overlayName : nil
+        result.fixedOverlayStart = result.fixedOverlayTemplate == nil ? nil : max(0, overlayStart)
+        result.fixedOverlayDuration = result.fixedOverlayTemplate == nil ? nil : overlayDuration.map { max(0, $0) }
+        result.fixedOverlayTexts = result.fixedOverlayTemplate == nil || overlayTexts.isEmpty ? nil : overlayTexts
         return result
+    }
+
+    /// The strength the watermark will render at: the slider value, else
+    /// the design's default (logo 0.85, overlay 0.4).
+    var effectiveWatermarkOpacity: Double {
+        let usesOverlay = watermarkOverlay?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        return min(1, max(0, watermarkOpacity ?? (usesOverlay ? WizardFixedOverlay.watermarkOpacity : BrandRenderer.logoWatermarkOpacity)))
+    }
+
+    /// The overlay as the render will apply it; nil when off or unnamed.
+    var overlayName: String? {
+        let name = overlayTemplate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return overlay && !name.isEmpty ? name : nil
     }
 
     /// Hidden questions must not leak a remembered answer into another video type.
@@ -74,6 +156,20 @@ nonisolated struct MiniWizardSettings: Equatable, Sendable {
         result.nameTagStyleID = defaults.string(forKey: key(.nameTagStyleID))
         result.nameTagPosition = defaults.string(forKey: key(.nameTagPosition))
         result.cameraFocus = defaults.string(forKey: key(.cameraFocus)) ?? ""
+        result.overlayTemplate = defaults.string(forKey: key(.overlayTemplate))
+        result.overlayTexts = defaults.stringArray(forKey: key(.overlayTexts)) ?? []
+        result.watermarkOverlay = defaults.string(forKey: key(.watermarkOverlay))
+        if defaults.object(forKey: key(.watermarkOpacity)) != nil {
+            result.watermarkOpacity = min(1, max(0, defaults.double(forKey: key(.watermarkOpacity))))
+        }
+        result.introBumperPath = defaults.string(forKey: key(.introBumperPath))
+        result.outroBumperPath = defaults.string(forKey: key(.outroBumperPath))
+        if defaults.object(forKey: key(.overlayStart)) != nil {
+            result.overlayStart = max(0, defaults.double(forKey: key(.overlayStart)))
+        }
+        if defaults.object(forKey: key(.overlayDuration)) != nil {
+            result.overlayDuration = max(0, defaults.double(forKey: key(.overlayDuration)))
+        }
         result.outputMode = MiniWizardFlow.OutputMode(rawValue: defaults.string(forKey: key(.outputMode)) ?? "")
             ?? .separateVideos
         result.watermark = WizardDefaults.brandingMode(defaults: defaults).includeWatermark
@@ -94,12 +190,20 @@ nonisolated struct MiniWizardSettings: Equatable, Sendable {
         defaults.set(nameTagStyleID, forKey: key(.nameTagStyleID))
         defaults.set(nameTagPosition, forKey: key(.nameTagPosition))
         defaults.set(cameraFocus, forKey: key(.cameraFocus))
+        defaults.set(overlayTemplate, forKey: key(.overlayTemplate))
+        defaults.set(overlayTexts, forKey: key(.overlayTexts))
+        defaults.set(watermarkOverlay, forKey: key(.watermarkOverlay))
+        defaults.set(watermarkOpacity, forKey: key(.watermarkOpacity))
+        defaults.set(introBumperPath, forKey: key(.introBumperPath))
+        defaults.set(outroBumperPath, forKey: key(.outroBumperPath))
+        defaults.set(overlayStart, forKey: key(.overlayStart))
+        defaults.set(overlayDuration, forKey: key(.overlayDuration))
         defaults.set(outputMode.rawValue, forKey: key(.outputMode))
         for (field, path) in Self.booleanFields { defaults.set(self[keyPath: path], forKey: key(field)) }
     }
 
     private static var booleanFields: [(MiniWizardMemory.Field, WritableKeyPath<Self, Bool>)] {
         [(.captions, \.captions), (.englishCaptions, \.englishCaptions), (.introVideo, \.introVideo),
-         (.outroVideo, \.outroVideo), (.nameTags, \.nameTags), (.watermark, \.watermark)]
+         (.outroVideo, \.outroVideo), (.nameTags, \.nameTags), (.watermark, \.watermark), (.overlay, \.overlay)]
     }
 }

@@ -42,6 +42,7 @@ struct MiniSettingsCard: View {
                         : "Chosen by the highlights model when the candidates were found.")
                     : WizardCameraFocus.summary(settings.cameraFocus))
             }
+            overlayRows
             MiniRow("Captions") {
                 Toggle("Captions", isOn: $settings.captions)
             }
@@ -71,8 +72,6 @@ struct MiniSettingsCard: View {
                     }
                 }
             }
-            bumperToggle("Intro video", placement: .intro, value: $settings.introVideo)
-            bumperToggle("Outro video", placement: .outro, value: $settings.outroVideo)
             if flow.showsNameTags {
                 MiniRow("Name tags") {
                     HStack {
@@ -90,6 +89,44 @@ struct MiniSettingsCard: View {
             MiniRow("Watermark") {
                 Toggle("Watermark", isOn: $settings.watermark)
             }
+            if settings.watermark {
+                let templates = overlayTemplates
+                MiniDependents {
+                    if !templates.isEmpty {
+                        MiniRow("Watermark design") {
+                            Picker("Watermark design", selection: Binding(
+                                get: { templates.contains { $0.name == settings.watermarkOverlay } ? settings.watermarkOverlay ?? "" : "" },
+                                set: { settings.watermarkOverlay = $0.isEmpty ? nil : $0 })) {
+                                Text("Brand logo").lineLimit(1).fixedSize().tag("")
+                                ForEach(templates) { template in
+                                    Text(template.name).lineLimit(1).fixedSize().tag(template.name)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                        }
+                    }
+                    MiniRow("Watermark opacity") {
+                        HStack(spacing: Theme.spaceS) {
+                            Slider(value: Binding(
+                                get: { settings.effectiveWatermarkOpacity },
+                                set: { settings.watermarkOpacity = (($0 * 100).rounded()) / 100 }), in: 0.05...1)
+                                .frame(width: 160)
+                                .accessibilityLabel("Watermark opacity")
+                            Text("\(Int((settings.effectiveWatermarkOpacity * 100).rounded()))%")
+                                .monospacedDigit().foregroundStyle(.secondary)
+                                .frame(width: 40, alignment: .trailing)
+                        }
+                    }
+                    FormCaption(settings.watermarkOverlay?.isEmpty == false
+                        ? "The overlay renders faded to this strength with no boxes or effects, for the whole video."
+                        : "The brand logo sits top-left at this strength.")
+                        .lineLimit(nil)
+                }
+            }
+            bumperToggle("Intro video", placement: .intro, value: $settings.introVideo,
+                         bumper: $settings.introBumperPath)
+            bumperToggle("Outro video", placement: .outro, value: $settings.outroVideo,
+                         bumper: $settings.outroBumperPath)
             MiniRow("Output") {
                 Picker("Output", selection: $settings.outputMode) {
                     ForEach(MiniWizardFlow.OutputMode.allCases, id: \.self) { mode in
@@ -117,6 +154,123 @@ struct MiniSettingsCard: View {
         .disabled(store.isWizardRunning)
     }
 
+    /// Overlay: a saved template over the finished video, from a chosen
+    /// second, for a chosen length or to the end.
+    @ViewBuilder
+    private var overlayRows: some View {
+        let templates = overlayTemplates
+        MiniRow("Overlay") {
+            Toggle("Overlay", isOn: $settings.overlay)
+        }
+        .disabled(templates.isEmpty)
+        if templates.isEmpty {
+            FormCaption("No overlays yet. Add one in Resources → Overlays.")
+                .lineLimit(nil)
+        } else if settings.overlay {
+            MiniDependents {
+                MiniRow("Overlay design") {
+                    Picker("Overlay design", selection: Binding(
+                        get: { overlaySelection(in: templates) },
+                        set: { selectOverlay($0, in: templates) })) {
+                        ForEach(templates) { template in
+                            Text(template.name).lineLimit(1).fixedSize().tag(template.name)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                overlayTextRows(in: templates)
+                MiniRow("Starts at") {
+                    HStack(spacing: Theme.spaceXS) {
+                        TextField("Start", value: $settings.overlayStart, format: .number.precision(.fractionLength(0...1)))
+                            .textFieldStyle(.roundedBorder)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 64)
+                            .accessibilityLabel("Overlay start")
+                        Text("s").foregroundStyle(.secondary)
+                    }
+                }
+                MiniRow("Duration") {
+                    HStack(spacing: Theme.spaceS) {
+                        Picker("Duration", selection: Binding(
+                            get: { settings.overlayDuration == nil },
+                            set: { whole in settings.overlayDuration = whole ? nil : 5 })) {
+                            Text("Whole video").lineLimit(1).fixedSize().tag(true)
+                            Text("Seconds").lineLimit(1).fixedSize().tag(false)
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityLabel("Overlay duration")
+                        if settings.overlayDuration != nil {
+                            TextField("Seconds", value: Binding(
+                                get: { settings.overlayDuration ?? 5 },
+                                set: { settings.overlayDuration = max(0, $0) }),
+                                format: .number.precision(.fractionLength(0...1)))
+                                .textFieldStyle(.roundedBorder)
+                                .multilineTextAlignment(.trailing)
+                                .frame(width: 64)
+                                .accessibilityLabel("Overlay seconds")
+                            Text("s").foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                FormCaption("The overlay starts this many seconds into the finished video and stays on for the whole video unless you give it a length.")
+                    .lineLimit(nil)
+            }
+            .onAppear {
+                // A remembered design that was renamed or removed falls back to the first one.
+                let selected = overlaySelection(in: templates)
+                if selected != settings.overlayTemplate { selectOverlay(selected, in: templates) }
+                let count = dynamicTexts(of: selected, in: templates).count
+                if settings.overlayTexts.count != count { selectOverlay(selected, in: templates) }
+            }
+        }
+    }
+
+    /// One field per text the template lets the AI Wizard replace, prefilled
+    /// with the template's own words so the user only edits what should change.
+    @ViewBuilder
+    private func overlayTextRows(in templates: [OverlayTemplate]) -> some View {
+        let texts = dynamicTexts(of: overlaySelection(in: templates), in: templates)
+        ForEach(Array(texts.enumerated()), id: \.offset) { index, original in
+            MiniRow(texts.count == 1 ? "Text" : "Text \(index + 1)") {
+                TextField(original, text: Binding(
+                    get: { settings.overlayTexts[safe: index] ?? original },
+                    set: { value in
+                        var updated = settings.overlayTexts
+                        while updated.count < texts.count { updated.append(texts[updated.count]) }
+                        updated[index] = value
+                        settings.overlayTexts = updated
+                    }))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 320)
+                    .accessibilityLabel("Overlay text \(index + 1)")
+            }
+        }
+        if !texts.isEmpty {
+            FormCaption("These are the texts the overlay lets the AI Wizard replace. Edit them here; the other items stay as designed.")
+                .lineLimit(nil)
+        }
+    }
+
+    private var overlayTemplates: [OverlayTemplate] {
+        OverlayTemplateStore.list().filter { !$0.composition.isEmpty }
+    }
+
+    private func overlaySelection(in templates: [OverlayTemplate]) -> String {
+        let chosen = settings.overlayTemplate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return templates.first { $0.name.caseInsensitiveCompare(chosen) == .orderedSame }?.name
+            ?? templates.first?.name ?? ""
+    }
+
+    private func dynamicTexts(of name: String, in templates: [OverlayTemplate]) -> [String] {
+        templates.first { $0.name == name }.map { WizardFixedOverlay.dynamicTexts(in: $0.composition) } ?? []
+    }
+
+    /// Choosing a design resets the text fields to that design's own words.
+    private func selectOverlay(_ name: String, in templates: [OverlayTemplate]) {
+        settings.overlayTemplate = name
+        settings.overlayTexts = dynamicTexts(of: name, in: templates)
+    }
+
     private var runSummary: String {
         flow.runSummary(candidates: run.candidates, exchangeCount: run.keptCount,
             settings: settings.effective(for: flow,
@@ -124,16 +278,35 @@ struct MiniSettingsCard: View {
                 outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) }))
     }
 
+    /// The toggle, then (when on) a menu of the bumpers that allow this
+    /// placement. "Any" keeps the planner's pick; a chosen bumper that was
+    /// removed falls back to Any.
     @ViewBuilder
-    private func bumperToggle(_ title: String, placement: BumperPlacement, value: Binding<Bool>) -> some View {
-        let available = store.bumpers.contains { $0.placements.contains(placement) }
+    private func bumperToggle(_ title: String, placement: BumperPlacement, value: Binding<Bool>,
+                              bumper: Binding<String?>) -> some View {
+        let eligible = store.bumpers.filter { $0.placements.contains(placement) }
         MiniRow(title) {
             Toggle(title, isOn: value)
         }
-        .disabled(!available)
-        if !available {
+        .disabled(eligible.isEmpty)
+        if eligible.isEmpty {
             FormCaption("No bumpers allow this placement. Add one in Resources → Bumpers.")
                 .lineLimit(nil)
+        } else if value.wrappedValue {
+            MiniDependents {
+                MiniRow("\(placement == .intro ? "Intro" : "Outro") bumper") {
+                    Picker(title, selection: Binding(
+                        get: { eligible.contains { $0.path == bumper.wrappedValue } ? bumper.wrappedValue ?? "" : "" },
+                        set: { bumper.wrappedValue = $0.isEmpty ? nil : $0 })) {
+                        Text("Any").lineLimit(1).fixedSize().tag("")
+                        ForEach(eligible) { asset in
+                            Text(asset.displayName).lineLimit(1).fixedSize().tag(asset.path)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .accessibilityLabel("\(title) bumper")
+                }
+            }
         }
     }
 }

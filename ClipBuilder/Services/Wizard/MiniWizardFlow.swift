@@ -25,7 +25,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         var label: String { seconds.map { "\($0) s" } ?? "Auto" }
     }
 
-    enum OutputMode: String, CaseIterable, Sendable {
+    enum OutputMode: String, CaseIterable, Codable, Sendable {
         case separateVideos, oneReel
 
         var label: String { self == .oneReel ? "One reel" : "Separate videos" }
@@ -52,8 +52,9 @@ nonisolated struct MiniWizardFlow: Sendable {
         return video.type == .podcast || video.type == .interview || hasPodcastExchangeScenes
     }
 
+    /// Order: Q&A, Transcript, Highlights. The two that need no AI come first.
     var footageKinds: [FootageKind] {
-        (isPodcastOrInterview ? [.qa, .highlights] : [.highlights]) + (hasTranscript ? [.transcript] : [])
+        (isPodcastOrInterview ? [.qa] : []) + (hasTranscript ? [.transcript] : []) + [.highlights]
     }
     var showsFootageKind: Bool { footageKinds.count > 1 }
     /// A remembered Q&A or Transcript choice must never apply to footage that cannot offer it.
@@ -143,10 +144,14 @@ nonisolated struct MiniWizardFlow: Sendable {
     private func presentationSummary(_ settings: MiniWizardSettings) -> [String] {
         var parts = [settings.quality.label, settings.preset.label]
         if settings.captions { parts.append("captions") }
+        if let name = settings.overlayName { parts.append("overlay \(name)") }
         if settings.introVideo { parts.append("intro video") }
         if settings.outroVideo { parts.append("outro video") }
         if settings.nameTags && showsNameTags { parts.append("name tags") }
-        if settings.watermark { parts.append("watermark") }
+        if settings.watermark {
+            let name = settings.watermarkOverlay?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            parts.append(name.isEmpty ? "watermark" : "watermark \(name)")
+        }
         return parts
     }
 

@@ -21,7 +21,13 @@ nonisolated struct BumperPlanner {
                 $0.placements.contains(placement) && ($0.duration ?? 0).isFinite && ($0.duration ?? 0) > 0
             }
             let unused = eligible.filter { !used.contains($0.path) }
-            guard let bumper = (unused.isEmpty ? eligible : unused).randomElement(using: &generator) else { continue }
+            // A bumper the user named for this slot wins; a missing or
+            // ineligible choice falls back to any eligible bumper.
+            let chosenPath = placement == .intro ? options.introBumperPath
+                : placement == .outro ? options.outroBumperPath : nil
+            let chosen = chosenPath.flatMap { path in eligible.first { $0.path == path } }
+            guard let bumper = chosen
+                ?? (unused.isEmpty ? eligible : unused).randomElement(using: &generator) else { continue }
             let time: Double
             switch placement {
             case .intro: time = 0

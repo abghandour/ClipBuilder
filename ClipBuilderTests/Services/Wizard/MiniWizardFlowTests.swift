@@ -65,11 +65,11 @@ struct MiniWizardFlowTests {
         video.videoType = type.rawValue
         let podcast = type == .podcast || type == .interview
         let flow = MiniWizardFlow(video: video, hasTranscript: true, footageKind: .transcript)
-        #expect(flow.footageKinds == (podcast ? [.qa, .highlights, .transcript] : [.highlights, .transcript]))
+        #expect(flow.footageKinds == (podcast ? [.qa, .transcript, .highlights] : [.transcript, .highlights]))
         #expect(flow.showsFootageKind)
         #expect(flow.effectiveFootageKind == .transcript)
         #expect(!flow.showsLength)
-        #expect(flow.footageKinds.last == .transcript, "Transcript sits after Q&A and Highlights")
+        #expect(flow.footageKinds.last == .highlights, "Highlights sits after Q&A and Transcript")
         #expect(MiniWizardFlow(video: video, hasTranscript: false, footageKind: .transcript).effectiveFootageKind == .highlights)
         #expect(MiniWizardFlow.footageSummary(kind: .transcript, count: 3, keptCount: 3) == "3 picks")
     }

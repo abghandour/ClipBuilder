@@ -19,6 +19,7 @@ struct MiniWizardView: View {
     @State private var loadError: String?
     @State private var reloadID = 0
     @State private var miniSettings = MiniWizardSettings()
+    @State private var presetSheet: MiniPresetSheet?
     @State private var settingsProfile: String?
     @State private var transcriptLanguage: String?
     @State private var hasTranscript = false
@@ -128,7 +129,8 @@ struct MiniWizardView: View {
                                 outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) }))
                             : flow.summary(for: .settings),
                         isOpen: currentRun != nil && flow.visibleCard == .settings && settingsProfile == profileName,
-                        headerTap: headerTap(.settings)) {
+                        headerTap: headerTap(.settings),
+                        accessory: flow.canExpand(.settings) ? AnyView(presetButtons) : nil) {
                         if let run = currentRun, flow.visibleCard == .settings, settingsProfile == profileName {
                             MiniSettingsCard(settings: $miniSettings, flow: flow, run: run)
                         }
@@ -140,6 +142,16 @@ struct MiniWizardView: View {
             }
         }
         .screenTitle("AI Wizard Express")
+        .sheet(item: $presetSheet) { sheet in
+            switch sheet {
+            case .save:
+                MiniPresetSaveSheet(profileName: profileName, settings: miniSettings)
+            case .load:
+                MiniPresetLoadSheet(profileName: profileName) { preset in
+                    miniSettings = preset.settings
+                }
+            }
+        }
         .task(id: sourceKey) { await loadSources() }
         .onAppear(perform: restoreAnswers)
         .onChange(of: store.profileGeneration) { _, _ in restoreAnswers() }
@@ -230,7 +242,7 @@ struct MiniWizardView: View {
             let isQA = flow.effectiveFootageKind == .qa
             FormCaption(isQA
                 ? "Q&A lists the question-and-answer exchanges found when this video was analyzed. No AI model runs for this step."
-                : "Transcript shows every spoken line. Mark a passage, press Add, and the AI titles it. Picks are kept with this video.")
+                : "Transcript shows every spoken line. Mark a passage and press Add. Picks are kept with this video. No AI model runs for this step.")
             if let selectedVideo, !selectedVideo.isPresent {
                 FormCaption(VideoRecord.notPresentReason, tone: .warning)
             } else if currentRun == nil, store.isWizardRunning {
@@ -381,6 +393,26 @@ struct MiniWizardView: View {
         guard !Task.isCancelled, key == transcriptKey else { return }
         transcriptLanguage = language
         hasTranscript = language != nil
+    }
+
+    /// Save the current answers under a name, or bring back a saved set.
+    private var presetButtons: some View {
+        HStack(spacing: Theme.spaceS) {
+            Button {
+                presetSheet = .save
+            } label: {
+                Label("Save…", systemImage: "square.and.arrow.down").lineLimit(1).fixedSize()
+            }
+            .help("Save these settings under a name")
+            Button {
+                presetSheet = .load
+            } label: {
+                Label("Load…", systemImage: "tray.and.arrow.up").lineLimit(1).fixedSize()
+            }
+            .help("Load, rename or delete saved settings")
+        }
+        .controlSize(.small)
+        .disabled(store.isWizardRunning)
     }
 
     private func restoreAnswers() {
