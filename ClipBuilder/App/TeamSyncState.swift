@@ -3,9 +3,20 @@ import Foundation
 import Network
 import Observation
 
+/// Team sync is manual: a cycle runs only from the Sync Now button, the
+/// titlebar sync control, or attaching a profile. Nothing syncs at launch,
+/// on a timer, when the network returns, after sign-in or when resuming
+/// from pause. The network monitor stays only to label the offline state.
 nonisolated enum TeamSyncSchedule {
-    static func shouldRunAutomaticCycle(pendingChanges: Int, appActive: Bool) -> Bool {
-        appActive && pendingChanges > 0
+    static let manualOnly = true
+
+    /// What the Team tab and titlebar show while no cycle is running.
+    static func idleStatus(pendingChanges: Int) -> String {
+        switch pendingChanges {
+        case 0: "Ready to sync"
+        case 1: "1 change waiting"
+        default: "\(pendingChanges) changes waiting"
+        }
     }
 }
 
@@ -33,7 +44,6 @@ final class TeamSyncState {
     @ObservationIgnored weak var store: AppStore?
     @ObservationIgnored private var auth: TeamSyncSession?
     @ObservationIgnored private var monitor: NWPathMonitor?
-    @ObservationIgnored private var timer: Task<Void, Never>?
     @ObservationIgnored private var automaticCycle: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var cycleToken = UUID()
@@ -55,14 +65,13 @@ final class TeamSyncState {
         return auth!
     }
 
-    func configure(store: AppStore, startImmediately: Bool = true) {
+    func configure(store: AppStore) {
         self.store = store
         generation += 1
         let configuredGeneration = generation
         automaticCycle?.cancel()
         automaticCycle = nil
         cycleToken = UUID()
-        timer?.cancel()
         monitor?.cancel()
         monitor = nil
         attached = store.activeProfile.teamID != nil && store.activeProfile.profileID != nil
@@ -75,8 +84,9 @@ final class TeamSyncState {
         members = []
         message = nil
         syncing = false
-        status = paused ? "Sync paused" : attached ? "Sync pending" : "Team sync"
+        status = paused ? "Sync paused" : attached ? "Ready to sync" : "Team sync"
         guard attached else { return }
+        // Manual only: the monitor labels the offline state and never starts a cycle.
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             let available = path.status == .satisfied
@@ -84,26 +94,22 @@ final class TeamSyncState {
                 guard let self, self.generation == configuredGeneration else { return }
                 let returned = !self.online && available
                 self.online = available
-                if returned { self.syncNow() }
-                else if !available { await self.showOffline() }
+                if !available { await self.showOffline() }
+                else if returned, !self.syncing { await self.showIdle() }
             }
         }
         monitor.start(queue: DispatchQueue(label: "ClipBuilder.TeamSync.Network"))
         self.monitor = monitor
-        timer = Task { [weak self] in
-            while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(60)) } catch { return }
-                guard let self else { return }
-                guard self.generation == configuredGeneration, !Task.isCancelled else { return }
-                guard NSApp.isActive, let db = self.store?.database else { continue }
-                let pending = (try? await db.syncPendingCount()) ?? 0
-                guard self.generation == configuredGeneration, !Task.isCancelled else { return }
-                if TeamSyncSchedule.shouldRunAutomaticCycle(pendingChanges: pending, appActive: NSApp.isActive) {
-                    self.syncNow()
-                }
-            }
-        }
-        if startImmediately { syncNow() }
+        if !paused { Task { await showIdle() } }
+    }
+
+    /// The waiting-changes count, so the user knows whether Sync Now has work.
+    private func showIdle() async {
+        guard attached, !paused, !syncing, online, let db = store?.database else { return }
+        let captured = generation
+        let pending = (try? await db.syncPendingCount()) ?? 0
+        guard captured == generation, !paused, !syncing, online else { return }
+        status = TeamSyncSchedule.idleStatus(pendingChanges: pending)
     }
 
     private func showOffline() async {
@@ -137,7 +143,6 @@ final class TeamSyncState {
             self.signedIn = true
             self.message = "Signed in."
             try await self.loadTeams()
-            self.syncNow()
         }
     }
 
@@ -236,14 +241,14 @@ final class TeamSyncState {
                 if store.profileGeneration == capturedGeneration {
                     if error is CancellationError || Task.isCancelled { self.setPaused(true) }
                     let finalStatus = self.status
-                    self.configure(store: store, startImmediately: false)
+                    self.configure(store: store)
                     self.status = finalStatus
                 }
                 throw error
             }
             guard store.profileGeneration == capturedGeneration else { throw CancellationError() }
             let finalStatus = self.status
-            self.configure(store: store, startImmediately: false)
+            self.configure(store: store)
             self.status = finalStatus
             log("Team sync ready")
             return nil
@@ -265,7 +270,10 @@ final class TeamSyncState {
                 await coordinator.cancelAndWait()
             }
             status = "Sync paused"
-        } else { syncNow() }
+        } else {
+            // Resuming only re-enables Sync Now; it does not sync by itself.
+            Task { await showIdle() }
+        }
     }
 
     /// The import must pair this with finishProfileReplacement, including on error or Stop.

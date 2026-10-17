@@ -130,9 +130,11 @@ Never synced: `analysis_checkpoints`, `transcript_backups`, `voice_profiles`,
   tests stub the network), `SyncEngine` (actor: push outbox, pull by cursor,
   apply with id mapping), `SyncMapping` (pure, per-table wire format), and
   `TimelinePortability` (pure).
-- Sync runs at launch, on network return, every 60 seconds while the app is
-  frontmost, and from a Sync Now button. It runs off the main actor in
-  batches and never blocks a screen.
+- Sync is manual since October 17, 2026 (1.107): it runs only from the Sync
+  Now button, the titlebar sync control, or attaching a profile. Earlier
+  builds also synced at launch, on network return and every 60 seconds
+  while frontmost. It runs off the main actor in batches and never blocks a
+  screen.
 - Visible state: a status-bar item (synced / syncing / offline with N
   changes waiting / needs update) and a Settings › Team tab (sign in, create
   or join a team with an invite code, attach this profile, pause sync,
@@ -223,8 +225,8 @@ VPN reads like a dead network.
   the path unsatisfied: `online = false`, status "Offline · N changes
   waiting" as today.
 - Any other `URLError` after the retries are exhausted: `online` stays
-  true, status "Connection failed · retrying in 60 s", and the next timer
-  tick or Sync Now retries. The Team tab's detail row shows the
+  true, status "Sync needs attention", and the next Sync Now retries. The
+  Team tab's detail row shows the
   `localizedDescription` under the status so the TLS wording is still
   available, with one sentence: "Usually a VPN or proxy slowing the
   connection; sync keeps retrying."
@@ -301,8 +303,9 @@ Each phase ships on its own and is useful without the next.
 
 All resolved on October 6, 2026:
 
-1. Sync is automatic (launch, network return, every 60 s while frontmost)
-   plus Sync Now and Pause. Shipped in Phase 1.
+1. Sync was automatic (launch, network return, every 60 s while frontmost)
+   plus Sync Now and Pause in Phase 1; manual only (Sync Now, titlebar
+   button, attach) since 1.107.
 2. Any member can delete shared rows; deletes are tombstones (S11).
 3. Footage rows for files a member lacks appear right away, marked "not on
    this Mac" (S10, Phase 2).

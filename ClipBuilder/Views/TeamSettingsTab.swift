@@ -51,7 +51,7 @@ struct TeamSettingsTab: View {
                             .disabled(team.replacingProfile)
                         Button("Sync Now") { team.syncNow() }
                             .disabled(team.paused || team.syncing || team.replacingProfile)
-                        Text("Syncs when the app opens, when the network returns, and when you press Sync. Local changes upload within a minute; other members' changes arrive when you sync.")
+                        Text("Sync is manual: nothing uploads or downloads until you press Sync Now here or the sync button in the title bar. The status shows how many local changes are waiting.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if !team.teams.isEmpty {
                         Picker("Team", selection: $team.selectedTeamID) {

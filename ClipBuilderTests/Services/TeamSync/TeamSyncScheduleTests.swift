@@ -2,18 +2,15 @@ import Testing
 @testable import Clip_Builder
 
 struct TeamSyncScheduleTests {
-    @Test("An active app with no pending changes skips automatic sync")
-    func noPendingChanges() {
-        #expect(!TeamSyncSchedule.shouldRunAutomaticCycle(pendingChanges: 0, appActive: true))
+    @Test("Team sync never runs on its own")
+    func manualOnly() {
+        #expect(TeamSyncSchedule.manualOnly)
     }
 
-    @Test("An active app with pending changes runs automatic sync")
-    func pendingChangesWhileActive() {
-        #expect(TeamSyncSchedule.shouldRunAutomaticCycle(pendingChanges: 3, appActive: true))
-    }
-
-    @Test("An inactive app skips automatic sync even with pending changes")
-    func pendingChangesWhileInactive() {
-        #expect(!TeamSyncSchedule.shouldRunAutomaticCycle(pendingChanges: 3, appActive: false))
+    @Test("The idle status tells the user whether Sync Now has work")
+    func idleStatus() {
+        #expect(TeamSyncSchedule.idleStatus(pendingChanges: 0) == "Ready to sync")
+        #expect(TeamSyncSchedule.idleStatus(pendingChanges: 1) == "1 change waiting")
+        #expect(TeamSyncSchedule.idleStatus(pendingChanges: 12) == "12 changes waiting")
     }
 }
