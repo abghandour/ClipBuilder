@@ -60,17 +60,21 @@ struct ExpressDeferredFinishTests {
                                                batchID: "batch", deferFinish: true, emit: { renderLog.append($0) })
         let deferred = try #require(finish)
 
-        // The file and its record exist; the caption has not been asked for.
+        // The file and its record exist; the caption was requested during the
+        // render (it needs only the plan) but is written by the finish.
         let rendered = try #require(try await database.fetchGeneratedVideos(projectID: projectID).first)
         #expect(FileManager.default.fileExists(atPath: rendered.path))
         #expect(rendered.caption.isEmpty)
-        #expect(captionCalls.all.isEmpty)
+        #expect(captionCalls.all.count == 1)
+        #expect(captionCalls.all.first?.contains("Duration: 3s") == true)
+        #expect(renderLog.all.contains { $0.hasPrefix("Caption — asking the model") })
         let renderStages = renderLog.all.compactMap(WizardTiming.parse).map(\.stage)
         #expect(renderStages.contains("extract clips") && renderStages.contains("join clips"))
         #expect(renderStages.contains("quality gate") && renderStages.contains("save record"))
-        #expect(renderStages.contains("reel traits") && renderStages.contains("render"))
-        #expect(!renderStages.contains("social caption"))
+        #expect(renderStages.contains("render"))
+        #expect(!renderStages.contains("social caption") && !renderStages.contains("reel traits"))
         #expect(!renderLog.all.contains { $0.hasPrefix("VIDEO:") })
+        #expect(try await database.reelTraits(kind: "generated", videoID: String(rendered.id)) == nil)
 
         let finishLog = Lines()
         try await deferred { finishLog.append($0) }
@@ -78,7 +82,10 @@ struct ExpressDeferredFinishTests {
         let finished = try #require(try await database.fetchGeneratedVideos(projectID: projectID).first)
         #expect(finished.caption == "Deferred caption #fixture")
         let finishStages = finishLog.all.compactMap(WizardTiming.parse).map(\.stage)
-        #expect(finishStages == ["social caption", "run report"])
+        #expect(finishStages == ["social caption", "reel traits", "run report"])
+        // The traits were recorded in the finish and carry the caption.
+        let traits = try #require(try await database.reelTraits(kind: "generated", videoID: String(finished.id)))
+        #expect(traits.captionLength == "Deferred caption #fixture".count && traits.hashtagCount == 1)
         #expect(finishLog.all.contains { $0.hasPrefix("VIDEO:") })
         #expect(finishLog.all.last?.hasPrefix("Video complete!") == true)
         // The run report sits next to the video and carries the render log too.
@@ -127,6 +134,7 @@ struct ExpressDeferredFinishTests {
         #expect(lines.contains { $0.hasPrefix("VIDEO:") })
         let stages = lines.compactMap(WizardTiming.parse).map(\.stage)
         #expect(stages.contains("render") && stages.contains("social caption") && stages.contains("run report"))
+        #expect(stages.contains("reel traits"))
         #expect(try await database.fetchGeneratedVideos(projectID: projectID).count == 1)
     }
 }

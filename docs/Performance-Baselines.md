@@ -84,8 +84,10 @@ fast and both phases measure the same work.
 
 The engine emits `TIMING:<stage>=<seconds>` lines on its log stream for camera
 focus, tag text, caption translation, podcast layouts, clip extraction, the
-compositor or hard-cut join, music, the quality gate, the record insert, reel
-traits, the whole render, the social caption and the run report. In the app,
+compositor or hard-cut join, music, the quality gate, the record insert, the
+whole render, then the social caption (its full round trip; it starts with the
+render), the caption wait (the part the render did not hide), reel traits and the
+run report. In the app,
 Express folds them into `Timings · Reel N of M: …` lines at the end of its log;
 the full AI Wizard shows them as `⏱` lines; the baseline writes them to
 `app.log` as `reel N: TIMING:…`. `PHASE STAGE … reel=N` marks the start of each

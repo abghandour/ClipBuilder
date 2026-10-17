@@ -2794,6 +2794,13 @@ actor WizardEngine {
             if options.formatPreset != "podcast" {
                 plan = await snapCutsToBeats(plan, music: music, sceneMap: sceneMap, emit: emit)
             }
+            // The caption needs the plan, not the file: ask the model now so the
+            // round trip overlaps this reel's own render. The finish awaits it.
+            let captionRequest = startCaptionRequest(plan: plan, options: options, profile: profile,
+                                                     sceneMap: sceneMap, people: people,
+                                                     fightResearch: fightResearch, emit: emit)
+            var captionHandedOff = false
+            defer { if !captionHandedOff { captionRequest.task.cancel() } }
             emit("Phase 3: Assembling the approved cuts...")
             var brollCache = WizardPodcastBRoll.Cache()
             let result = try await assemble(plan: plan, music: music, options: options,
@@ -2821,10 +2828,12 @@ actor WizardEngine {
                     try await self.finishReel(result: result, plan: plan, selection: selection, takeID: takeID,
                                               options: options, profile: profile, database: database,
                                               scenes: scenes, sceneMap: sceneMap, music: music, people: people,
-                                              fightResearch: fightResearch, recorder: recorder, emit: emit)
+                                              fightResearch: fightResearch, captionRequest: captionRequest,
+                                              recorder: recorder, emit: emit)
                 }
                 }
             }
+            captionHandedOff = true
             if deferFinish { return finish }
             try await finish(rawEmit)
             return nil
@@ -2834,31 +2843,69 @@ actor WizardEngine {
 
     /// The work after the rendered file and its record exist: social caption,
     /// run report, optional presentation critique and the completion lines.
+    /// A caption round trip started before the render; `elapsed` is the model's own time.
+    private struct CaptionRequest: Sendable {
+        let task: Task<(response: AIResponse, elapsed: Duration), Error>
+        let started: ContinuousClock.Instant
+    }
+
+    private func startCaptionRequest(plan: WizardPlan, options: WizardOptions, profile: BrandProfile,
+                                     sceneMap: [Int64: SceneRecord], people: [PersonRecord],
+                                     fightResearch: [FightResearchRecord],
+                                     emit: @escaping @Sendable (String) -> Void) -> CaptionRequest {
+        let tags = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
+        // The planned length stands in for the file's: the prompt rounds it to whole seconds.
+        let duration = plan.clips.reduce(0.0) { $0 + ($1.end - $1.start) / max(0.1, $1.speed) }
+        let prompt = captionPrompt(profile: profile, plan: plan, duration: duration,
+            tags: tags, fightResearch: fightResearch,
+            captionStyleReference: options.templateJSON.flatMap { AIResponseParser.jsonObject(from: $0) }?["caption_style"] as? String,
+            benchmarks: options.accountBenchmarks, localHashtags: options.localHashtags, people: people)
+        emit(options.localHashtags ? "Caption hashtags prepared locally — asking the model" : "Caption — asking the model")
+        let ai = self.ai
+        let started = ContinuousClock.now
+        // An unstructured task inherits the task-locals (AI run capture) and
+        // outlives the render; whoever stops awaiting it cancels it.
+        let task = Task {
+            let response = try await ai.call(prompt: prompt, task: .captions, timeout: 60, log: emit)
+            return (response: response, elapsed: started.duration(to: .now))
+        }
+        return CaptionRequest(task: task, started: started)
+    }
+
     private func finishReel(result: AssemblyResult, plan: WizardPlan, selection: WizardPlan, takeID: Int64?,
                             options: WizardOptions, profile: BrandProfile, database: Database,
                             scenes: [SceneRecord], sceneMap: [Int64: SceneRecord],
                             music: [(name: String, url: URL)], people: [PersonRecord],
-                            fightResearch: [FightResearchRecord], recorder: LogRecorder,
+                            fightResearch: [FightResearchRecord], captionRequest: CaptionRequest,
+                            recorder: LogRecorder,
                             emit: @escaping @Sendable (String) -> Void) async throws {
-        let tags = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
         var captionText: String?
-        try await WizardTiming.measure("social caption", emit: emit) {
-            do {
-            emit(options.localHashtags ? "Caption hashtags prepared locally — asking the model" : "Caption — asking the model")
-            let caption = try await ai.call(
-                prompt: captionPrompt(profile: profile, plan: plan, duration: result.duration,
-                    tags: tags, fightResearch: fightResearch,
-                    captionStyleReference: options.templateJSON.flatMap { AIResponseParser.jsonObject(from: $0) }?["caption_style"] as? String,
-                    benchmarks: options.accountBenchmarks, localHashtags: options.localHashtags, people: people),
-                task: .captions, timeout: 60, log: emit)
+        do {
+            // "caption wait" is the part of the round trip the render did not hide.
+            let (caption, elapsed) = try await WizardTiming.measure("caption wait", emit: emit, minimumSeconds: 0.05) {
+                try await withTaskCancellationHandler {
+                    try await captionRequest.task.value
+                } onCancel: {
+                    captionRequest.task.cancel()
+                }
+            }
+            emit(WizardTiming.line("social caption", elapsed))
             captionText = caption.text
             var provenance = caption.provenance
             if options.localHashtags { provenance.technique = "hashtag-candidates" }
             try await database.updateGeneratedCaption(id: result.recordID, caption: caption.text,
                                                       provider: caption.provider, model: caption.model)
             try await database.recordOutputRole(id: result.recordID, role: "Captions", provenance: provenance)
-            } catch is CancellationError { throw CancellationError() }
-            catch { emit("Caption generation failed: \(error.userMessage)") }
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            emit(WizardTiming.line("social caption", captionRequest.started.duration(to: .now)))
+            emit("Caption generation failed: \(error.userMessage)")
+        }
+        // Recorded after the caption so the traits carry it; the critique
+        // and the critic brief read them next.
+        await WizardTiming.measure("reel traits", emit: emit) {
+            await ReelTraitRecording.record(url: result.url, id: result.recordID, database: database,
+                document: result.document, scenes: Array(sceneMap.values), caption: captionText, log: emit)
         }
 
         let inputs = PlanningInputs(research: [:], scenes: scenes, sceneMap: sceneMap, music: music,
@@ -3581,6 +3628,8 @@ actor WizardEngine {
         var url: URL
         var duration: Double
         var recordID: Int64
+        /// The rendered timeline, kept for the reel-trait pass that runs after the file exists.
+        var document: TimelineDocument
     }
 
     private func assemble(plan: WizardPlan,
@@ -3873,11 +3922,10 @@ actor WizardEngine {
                                                                scenes: Array(sceneMap.values),
                                                                plan: plan))
         emit(WizardTiming.line("save record", saveStarted.duration(to: .now)))
-        await WizardTiming.measure("reel traits", emit: emit) {
-            await ReelTraitRecording.record(url: outputURL, id: recordID, database: database,
-                document: document, scenes: Array(sceneMap.values), log: emit)
-        }
-        return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID)
+        // Reel traits (detectors over the finished file) belong to finishReel:
+        // they are not needed until the critique, and Express overlaps them
+        // with the next render.
+        return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID, document: document)
     }
 
     /// One planned clip → one normalized file in a single decode→encode pass:
