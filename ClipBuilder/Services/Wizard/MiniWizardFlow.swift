@@ -72,6 +72,8 @@ nonisolated struct MiniWizardFlow: Sendable {
         return base != "en" && base != "eng" && language != "english"
     }
 
+    /// Whether the card has what it needs; headers open regardless, the
+    /// card body explains the missing step when this is false.
     func canExpand(_ card: Card) -> Bool {
         switch card {
         case .source: true
@@ -81,20 +83,17 @@ nonisolated struct MiniWizardFlow: Sendable {
         }
     }
 
-    /// Clamp a stale navigation request when its source or kept footage disappears.
-    var openCard: Card {
-        if canExpand(requestedCard) { return requestedCard }
-        return requestedCard == .settings && canExpand(.footage) ? .footage : .source
-    }
+    /// The user may jump to any card at any time; a card without its inputs
+    /// explains what to do first instead of refusing to open.
+    var openCard: Card { requestedCard }
 
     /// What the page shows open: the open card unless the user collapsed it.
     var visibleCard: Card? { collapsedCard == openCard ? nil : openCard }
 
     func isCollapsed(_ card: Card) -> Bool { card != visibleCard }
 
-    /// A header click: an expandable collapsed card opens; the open card collapses.
+    /// A header click: a collapsed card opens; the open card collapses.
     func headerClick(_ card: Card) -> (requested: Card, collapsed: Card?)? {
-        guard canExpand(card) else { return nil }
         if visibleCard == card { return (requestedCard, card) }
         return (card, nil)
     }

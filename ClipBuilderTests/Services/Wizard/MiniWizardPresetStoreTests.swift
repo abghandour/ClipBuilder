@@ -16,19 +16,44 @@ struct MiniWizardPresetStoreTests {
         return settings
     }
 
-    @Test func presetsRoundTripPerProfileFile() throws {
+    @Test func presetsTravelWithTheProfileAndTheTeamDocument() throws {
+        var profile = Fixtures.brand(name: "First")
+        #expect(profile.expressPresets == nil)
+        profile.expressPresets = MiniWizardPresetStore.upsert(name: " Podcast ", settings: settings(captions: true),
+                                                              savedAt: Date(timeIntervalSince1970: 100), into: [])
+        let data = try JSONEncoder().encode(profile)
+        let decoded = try JSONDecoder().decode(BrandProfile.self, from: data)
+        #expect(decoded.expressPresets?.map(\.name) == ["Podcast"])
+        #expect(decoded.expressPresets?.first?.settings == settings(captions: true))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["express_presets"] != nil)
+        #expect(TeamProfileDocument.keys.contains("express_presets"))
+        let shared = try JSONDecoder().decode(SyncMapping.WireRow.self,
+                                              from: Data(try TeamProfileDocument.encode(profile).utf8))
+        #expect(shared["express_presets"] != nil)
+        let receiver = try TeamProfileDocument.applying(try TeamProfileDocument.encode(profile),
+                                                        to: Fixtures.brand(name: "First"))
+        #expect(receiver.expressPresets == profile.expressPresets)
+        // A profile saved before presets existed decodes with none.
+        let old = try JSONDecoder().decode(BrandProfile.self, from: Data(#"{"profile_name":"Old"}"#.utf8))
+        #expect(old.expressPresets == nil)
+    }
+
+    @Test func legacyFileFromOneHundredTwoStillReads() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("presets-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
-        #expect(MiniWizardPresetStore.load(profileName: "First", root: root).isEmpty)
-        let saved = MiniWizardPresetStore.upsert(name: " Podcast ", settings: settings(captions: true),
-                                                 savedAt: Date(timeIntervalSince1970: 100), into: [])
-        try MiniWizardPresetStore.save(saved, profileName: "First", root: root)
-        let loaded = MiniWizardPresetStore.load(profileName: "First", root: root)
-        #expect(loaded.count == 1 && loaded.first?.name == "Podcast")
+        #expect(MiniWizardPresetStore.legacyPresets(profileName: "First", root: root).isEmpty)
+        let url = MiniWizardPresetStore.legacyFileURL(profileName: "First", root: root)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let presets = [MiniWizardPreset(name: "Zed", savedAt: Date(timeIntervalSince1970: 5), settings: settings(captions: false)),
+                       MiniWizardPreset(name: "Alpha", savedAt: Date(timeIntervalSince1970: 9), settings: settings(captions: true))]
+        try encoder.encode(presets).write(to: url)
+        let loaded = MiniWizardPresetStore.legacyPresets(profileName: "First", root: root)
+        #expect(loaded.map(\.name) == ["Alpha", "Zed"])
         #expect(loaded.first?.settings == settings(captions: true))
-        #expect(loaded.first?.savedAt == Date(timeIntervalSince1970: 100))
-        #expect(MiniWizardPresetStore.load(profileName: "Second", root: root).isEmpty)
-        #expect(MiniWizardPresetStore.fileURL(profileName: "A/B", root: root).lastPathComponent.hasSuffix(".json"))
+        #expect(MiniWizardPresetStore.legacyPresets(profileName: "Second", root: root).isEmpty)
     }
 
     @Test func upsertReplacesByNameRenameRejectsClashesAndDeleteRemoves() {

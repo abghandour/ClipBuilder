@@ -109,13 +109,15 @@ struct MiniWizardFlowTests {
             #expect(flow.canExpand(.source))
             #expect(flow.canExpand(.footage) == (video != nil))
             #expect(!flow.canExpand(.settings))
+            // Headers still open: the body explains the missing step.
+            #expect(flow.headerClick(.settings)?.requested == .settings)
             #expect(flow.summary(for: .footage) == (video == nil ? "Pick a source first" : "Choose footage"))
             #expect(flow.summary(for: .settings) == "Choose footage first")
             #expect(flow.summary(for: .source) == (video?.filename ?? "Pick a source first"))
         }
     }
 
-    @Test("Cards require their inputs and only the open card expands")
+    @Test("Cards report readiness; the requested card is always the open one")
     func cardPrerequisites() {
         for hasSource in [false, true] {
             for hasFootage in [false, true] {
@@ -125,11 +127,7 @@ struct MiniWizardFlowTests {
                                                   hasFootage: hasFootage, hasKeptFootage: hasKeptFootage,
                                                   requestedCard: requested)
                         let canConfigure = hasSource && hasFootage && hasKeptFootage
-                        let expected: MiniWizardFlow.Card = switch requested {
-                        case .source: .source
-                        case .footage: hasSource ? .footage : .source
-                        case .settings: canConfigure ? .settings : hasSource ? .footage : .source
-                        }
+                        let expected = requested
                         #expect(flow.canExpand(.footage) == hasSource)
                         #expect(flow.canExpand(.settings) == canConfigure)
                         #expect(flow.openCard == expected)
@@ -168,12 +166,12 @@ struct MiniWizardFlowTests {
         // A stale collapse of a different card does not hide the open one.
         flow.collapsedCard = .footage
         #expect(flow.visibleCard == .source)
-        // Headers behind a prerequisite ignore the click.
+        // Headers behind a prerequisite still open; the card explains what is missing.
         flow.hasKeptFootage = false
-        #expect(flow.headerClick(.settings) == nil)
+        #expect(flow.headerClick(.settings)?.requested == .settings)
     }
 
-    @Test("Completed cards can reopen; removing inputs returns to the preceding card")
+    @Test("Any card can reopen; losing inputs changes readiness, not the open card")
     func revisitAndInvalidate() {
         var flow = MiniWizardFlow(video: Fixtures.video(), hasFootage: true, hasKeptFootage: true,
                                   requestedCard: .settings)
@@ -188,14 +186,14 @@ struct MiniWizardFlowTests {
         #expect(flow.openCard == .footage)
         flow.requestedCard = .settings
         flow.hasKeptFootage = false
-        #expect(flow.openCard == .footage)
+        #expect(flow.openCard == .settings && !flow.canExpand(.settings))
         flow.hasFootage = false
-        #expect(flow.openCard == .footage)
+        #expect(flow.openCard == .settings)
         #expect(flow.summary(for: .footage) == "Choose footage")
         flow.hasFootage = true
         flow.hasKeptFootage = true
         flow.video = nil
-        #expect(flow.openCard == .source)
+        #expect(flow.openCard == .settings && !flow.canExpand(.footage))
     }
 
     @Test("Output modes preserve separate videos and one reel")

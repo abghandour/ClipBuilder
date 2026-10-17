@@ -33,7 +33,7 @@ struct LearnedRedactionTests {
             "default_render_settings", "default_pacing", "use_learned_editing_defaults", "learned_hook_style",
             "learned_layout_preference", "taste_rubric", "taste_exemplar_frames", "taste_categories", "house_style",
             "buzz_sources", "buzz_extra_sources", "taste_rubric_provenance", "house_style_provenance", "learned_sharing",
-            "critic_brief_use", "mini_instructions"]
+            "critic_brief_use", "mini_instructions", "express_presets"]
         #expect(Set(source.keys).subtracting(classified).isEmpty)
         let data = try JSONEncoder().encode(result.document)
         let wire = String(decoding: data, as: UTF8.self)

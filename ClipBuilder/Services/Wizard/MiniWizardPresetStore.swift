@@ -1,7 +1,7 @@
 import Foundation
 
 /// One named set of Express settings.
-nonisolated struct MiniWizardPreset: Codable, Identifiable, Equatable, Sendable {
+nonisolated struct MiniWizardPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
     var name: String
     var savedAt: Date
     var settings: MiniWizardSettings
@@ -9,18 +9,24 @@ nonisolated struct MiniWizardPreset: Codable, Identifiable, Equatable, Sendable 
     var id: String { name.lowercased() }
 }
 
-/// Saved Express settings per profile, as one JSON file the user can see:
-/// `~/Documents/ClipBuilder/express_presets/<profile>.json`. Pure list
-/// operations are separate from the file I/O so they can be tested.
+/// Saved Express settings live on the brand profile (`express_presets`), so
+/// Team Sync shares them with every member through the profile document.
+/// Pure list operations live here; 1.102 kept a per-profile file instead,
+/// which is read once and adopted into the profile.
 nonisolated enum MiniWizardPresetStore {
     static let defaultName = "Default"
 
-    static func directory(root: URL = ProfileStore.profilesDirectory) -> URL {
+    /// 1.102's location: `~/Documents/ClipBuilder/express_presets/<profile>.json`.
+    static func legacyFileURL(profileName: String, root: URL = ProfileStore.profilesDirectory) -> URL {
         root.appendingPathComponent("express_presets", isDirectory: true)
+            .appendingPathComponent(ProfileStore.sanitize(profileName) + ".json")
     }
 
-    static func fileURL(profileName: String, root: URL = ProfileStore.profilesDirectory) -> URL {
-        directory(root: root).appendingPathComponent(ProfileStore.sanitize(profileName) + ".json")
+    static func legacyPresets(profileName: String, root: URL = ProfileStore.profilesDirectory) -> [MiniWizardPreset] {
+        guard let data = try? Data(contentsOf: legacyFileURL(profileName: profileName, root: root)) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return sorted((try? decoder.decode([MiniWizardPreset].self, from: data)) ?? [])
     }
 
     /// The remembered name of the last saved or loaded preset.
@@ -57,22 +63,6 @@ nonisolated enum MiniWizardPresetStore {
     static func cardTitle(base: String = "Settings", loaded: Loaded?, current: MiniWizardSettings) -> String {
         guard let loaded else { return base }
         return "\(base) - \(loaded.name)" + (loaded.settings == current ? "" : " (modified)")
-    }
-
-    static func load(profileName: String, root: URL = ProfileStore.profilesDirectory) -> [MiniWizardPreset] {
-        guard let data = try? Data(contentsOf: fileURL(profileName: profileName, root: root)) else { return [] }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return sorted((try? decoder.decode([MiniWizardPreset].self, from: data)) ?? [])
-    }
-
-    static func save(_ presets: [MiniWizardPreset], profileName: String,
-                     root: URL = ProfileStore.profilesDirectory) throws {
-        try FileManager.default.createDirectory(at: directory(root: root), withIntermediateDirectories: true)
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        try encoder.encode(sorted(presets)).write(to: fileURL(profileName: profileName, root: root), options: .atomic)
     }
 
     // MARK: - Pure list operations

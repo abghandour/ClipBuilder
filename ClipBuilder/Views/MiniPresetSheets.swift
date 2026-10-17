@@ -9,6 +9,7 @@ enum MiniPresetSheet: String, Identifiable {
 /// last preset used, so repeated saves update the same entry.
 struct MiniPresetSaveSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppStore.self) private var store
     let profileName: String
     let settings: MiniWizardSettings
     var onSaved: (String) -> Void = { _ in }
@@ -42,7 +43,7 @@ struct MiniPresetSaveSheet: View {
         .padding(Theme.spaceXL)
         .frame(width: 380)
         .onAppear {
-            presets = MiniWizardPresetStore.load(profileName: profileName)
+            presets = store.expressPresets(profileName: profileName)
             let lastUsed = UserDefaults.standard.string(forKey: MiniWizardPresetStore.lastUsedKey(profileName: profileName))
             name = MiniWizardPresetStore.suggestedName(lastUsed: lastUsed, presets: presets)
         }
@@ -56,20 +57,20 @@ struct MiniPresetSaveSheet: View {
         let cleaned = MiniWizardPresetStore.cleaned(name)
         guard !cleaned.isEmpty else { return }
         let updated = MiniWizardPresetStore.upsert(name: cleaned, settings: settings, into: presets)
-        do {
-            try MiniWizardPresetStore.save(updated, profileName: profileName)
-            MiniWizardPresetStore.rememberLoaded(.init(name: cleaned, settings: settings), profileName: profileName)
-            onSaved(cleaned)
-            dismiss()
-        } catch {
-            self.error = "Could not save: \(error.localizedDescription)"
+        guard store.saveExpressPresets(updated, profileName: profileName) else {
+            error = "The profile changed; reopen Save to try again."
+            return
         }
+        MiniWizardPresetStore.rememberLoaded(.init(name: cleaned, settings: settings), profileName: profileName)
+        onSaved(cleaned)
+        dismiss()
     }
 }
 
 /// Pick saved Express settings to load; rename or delete entries in place.
 struct MiniPresetLoadSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppStore.self) private var store
     let profileName: String
     let onLoad: (MiniWizardPreset) -> Void
     /// Called when a rename or delete touched the preset the card is tracking.
@@ -158,7 +159,7 @@ struct MiniPresetLoadSheet: View {
     }
 
     private func reload() {
-        presets = MiniWizardPresetStore.load(profileName: profileName)
+        presets = store.expressPresets(profileName: profileName)
         let lastUsed = UserDefaults.standard.string(forKey: MiniWizardPresetStore.lastUsedKey(profileName: profileName))
         selection = lastUsed.flatMap { MiniWizardPresetStore.preset(named: $0, in: presets)?.id } ?? presets.first?.id
     }
@@ -202,12 +203,11 @@ struct MiniPresetLoadSheet: View {
     }
 
     private func persist(_ updated: [MiniWizardPreset]) {
-        do {
-            try MiniWizardPresetStore.save(updated, profileName: profileName)
-            presets = updated
-            error = nil
-        } catch {
-            self.error = "Could not save: \(error.localizedDescription)"
+        guard store.saveExpressPresets(updated, profileName: profileName) else {
+            error = "The profile changed; reopen Load to try again."
+            return
         }
+        presets = MiniWizardPresetStore.sorted(updated)
+        error = nil
     }
 }

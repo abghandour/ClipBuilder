@@ -1,7 +1,7 @@
 import Foundation
 
 /// Mini's visible presentation choices; mapping never changes the selected footage.
-nonisolated struct MiniWizardSettings: Equatable, Sendable, Codable {
+nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var quality: EncodeQuality = .balanced
     var preset: RenderPreset = .portrait1080
     var cameraFocus = ""

@@ -92,17 +92,8 @@ struct MiniWizardView: View {
                 VStack(alignment: .leading, spacing: Theme.spaceL) {
                     MiniCard(number: 1, title: "Source", summary: flow.summary(for: .source),
                              isOpen: !flow.isCollapsed(.source), headerTap: headerTap(.source)) {
-                        if flow.isCollapsed(.source) {
-                            Button { open(.source) } label: {
-                                Text("Change source").lineLimit(1).fixedSize()
-                            }
-                        } else {
+                        if !flow.isCollapsed(.source) {
                             sourceGrid.disabled(store.isWizardRunning)
-                            Button { open(.footage) } label: {
-                                Text("Continue").lineLimit(1).fixedSize()
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(selectedVideo == nil || store.isWizardRunning)
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -111,14 +102,14 @@ struct MiniWizardView: View {
                              isOpen: !flow.isCollapsed(.footage),
                              headerTap: headerTap(.footage)) {
                         if !flow.isCollapsed(.footage) {
-                            footageControls.disabled(store.isWizardRunning)
-                            if let run = currentRun {
-                                Divider()
-                                MiniFootageCard(run: run, pageHeight: page.size.height)
-                            }
-                        } else if flow.canExpand(.footage) {
-                            Button { open(.footage) } label: {
-                                Text(currentRun == nil ? "Choose footage" : "Review footage").lineLimit(1).fixedSize()
+                            if selectedVideo == nil {
+                                FormCaption("Pick a source in 1 Source first.")
+                            } else {
+                                footageControls.disabled(store.isWizardRunning)
+                                if let run = currentRun {
+                                    Divider()
+                                    MiniFootageCard(run: run, pageHeight: page.size.height)
+                                }
                             }
                         }
                     }
@@ -130,11 +121,16 @@ struct MiniWizardView: View {
                                 introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
                                 outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) }))
                             : flow.summary(for: .settings),
-                        isOpen: currentRun != nil && flow.visibleCard == .settings && settingsProfile == profileName,
+                        isOpen: flow.visibleCard == .settings && settingsProfile == profileName,
                         headerTap: headerTap(.settings),
-                        accessory: flow.canExpand(.settings) ? AnyView(presetButtons) : nil) {
-                        if let run = currentRun, flow.visibleCard == .settings, settingsProfile == profileName {
-                            MiniSettingsCard(settings: $miniSettings, flow: flow, run: run)
+                        accessory: AnyView(presetButtons)) {
+                        if flow.visibleCard == .settings, settingsProfile == profileName {
+                            if let run = currentRun, flow.canExpand(.settings) {
+                                MiniSettingsCard(settings: $miniSettings, flow: flow, run: run)
+                            } else {
+                                FormCaption(selectedVideo == nil ? "Pick a source in 1 Source first."
+                                    : "Choose and keep footage in 2 Footage first.")
+                            }
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -183,16 +179,27 @@ struct MiniWizardView: View {
         store.miniRun?.requestedCard = card
     }
 
-    /// Clicking a card's header toggles it, like the full Wizard's step cards.
+    /// Clicking a card's header toggles it; any card opens at any time.
     private func headerTap(_ card: MiniWizardFlow.Card) -> (() -> Void)? {
-        guard flow.canExpand(card) else { return nil }
-        return {
+        {
             guard let click = flow.headerClick(card) else { return }
             collapsedCard = click.collapsed
             if click.collapsed == nil {
                 pendingCard = click.requested
                 store.miniRun?.requestedCard = click.requested
+                if click.requested == .settings { keepFootageForSettings() }
             }
+        }
+    }
+
+    /// Q&A and Transcript picks become kept footage when Settings opens (the
+    /// step the old "Video Generation Settings" button performed).
+    private func keepFootageForSettings() {
+        guard let run = currentRun, run.keptCount > 0, !store.isWizardRunning else { return }
+        switch run.footageKind {
+        case .qa: store.recordMiniQASelections()
+        case .transcript: store.recordMiniTranscriptSelections()
+        case .highlights: break
         }
     }
 

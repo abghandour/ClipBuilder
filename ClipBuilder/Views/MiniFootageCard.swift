@@ -26,17 +26,6 @@ struct MiniFootageCard: View {
                 .padding(.horizontal, -Theme.spaceS)
                 .disabled(store.isWizardRunning)
         }
-        Button {
-            switch run.footageKind {
-            case .qa: store.recordMiniQASelections()
-            case .transcript: store.recordMiniTranscriptSelections()
-            case .highlights: store.miniRun?.requestedCard = .settings
-            }
-        } label: {
-            Text("Video Generation Settings").lineLimit(1).fixedSize()
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(run.keptCount == 0 || store.isWizardRunning)
     }
 
     @ViewBuilder
