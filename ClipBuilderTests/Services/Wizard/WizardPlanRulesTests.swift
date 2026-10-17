@@ -312,6 +312,34 @@ extension WizardPlanRulesTests {
         #expect(result == ["cut", "cut", "fade", "cut", "cut", "wipeleft", "cut"])
     }
 
+    private struct SeededGenerator: RandomNumberGenerator {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            return state
+        }
+    }
+
+    @Test func transitionChoiceRepeatsAnEffectOrDrawsADifferentOneAtEveryCut() {
+        var rng = SeededGenerator(state: 3)
+        #expect(WizardPlanRules.transitions(choice: "fade", allowed: nil, count: 3, using: &rng) == ["fade", "fade", "fade"])
+        #expect(WizardPlanRules.transitions(choice: "fade", allowed: nil, count: 0, using: &rng).isEmpty)
+        // nil, blank, unknown, "cut", or a name outside the allowed list: planner cadence.
+        for choice in [nil, "", "bogus", "cut"] {
+            #expect(WizardPlanRules.transitions(choice: choice, allowed: nil, count: 2, using: &rng) == ["cut", "cut"])
+        }
+        #expect(WizardPlanRules.transitions(choice: "fade", allowed: ["wipeleft"], count: 3, using: &rng) == ["cut", "cut", "wipeleft"])
+        // Random: every boundary gets an effect, never the same one twice in a row.
+        let random = WizardPlanRules.transitions(choice: "random", allowed: ["fade", "wipeleft", "zoomin"], count: 40, using: &rng)
+        #expect(random.count == 40 && !random.contains("cut"))
+        #expect(random.allSatisfy { ["fade", "wipeleft", "zoomin"].contains($0) })
+        #expect(zip(random, random.dropFirst()).allSatisfy { $0 != $1 })
+        #expect(Set(random).count == 3)
+        #expect(WizardPlanRules.transitions(choice: "random", allowed: ["fade"], count: 3, using: &rng) == ["fade", "fade", "fade"])
+        #expect(WizardPlanRules.transitions(choice: "random", allowed: ["cut"], count: 2, using: &rng) == ["cut", "cut"])
+        #expect(!WizardPlanRules.transitions(choice: "random", allowed: nil, count: 5, using: &rng).contains("cut"))
+    }
+
     @Test func musicUsesStableOrderFolderBoundariesAndSufficientLength() {
         let tracks: [(name: String, duration: Double)] = [
             ("Calmer/A", 60), ("Calm/Z", 60), ("Calm/A", 9),

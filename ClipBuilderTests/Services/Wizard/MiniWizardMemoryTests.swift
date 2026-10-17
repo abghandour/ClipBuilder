@@ -7,7 +7,7 @@ struct MiniWizardMemoryTests {
     @Test func everyAnswerHasAStableDistinctProfileKey() {
         let names: Set<String> = ["videoPath", "footageKind", "length", "quality", "preset", "cameraFocus",
             "captions", "englishCaptions", "captionPosition", "captionStyleID", "introVideo", "outroVideo", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "watermark", "outputMode",
-            "overlay", "overlayTemplate", "overlayStart", "overlayDuration", "overlayTexts", "introBumperPath", "outroBumperPath", "watermarkOverlay", "watermarkOpacity"]
+            "overlay", "overlayTemplate", "overlayStart", "overlayDuration", "overlayTexts", "introBumperPath", "outroBumperPath", "watermarkOverlay", "watermarkOpacity", "transition"]
         #expect(Set(MiniWizardMemory.Field.allCases.map(\.rawValue)) == names)
         for profile in ["First", "First.Second", "Profile with spaces", "عربي"] {
             let keys = MiniWizardMemory.Field.allCases.map { MiniWizardMemory.key(for: $0, profileName: profile) }
@@ -63,6 +63,7 @@ struct MiniWizardMemoryTests {
         first.overlayDuration = 4
         first.overlayTexts = ["Watch the full fight", ""]
         first.outputMode = .oneReel
+        first.transition = "fade"
         let second = MiniWizardSettings()
         first.remember(profileName: "First", defaults: defaults)
         second.remember(profileName: "Second", defaults: defaults)

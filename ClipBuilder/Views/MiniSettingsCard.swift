@@ -127,6 +127,12 @@ struct MiniSettingsCard: View {
                          bumper: $settings.introBumperPath)
             bumperToggle("Outro video", placement: .outro, value: $settings.outroVideo,
                          bumper: $settings.outroBumperPath)
+            MiniRow("Transition") {
+                transitionPicker
+            }
+            FormCaption(settings.transition == WizardPlanRules.randomTransitionChoice
+                ? "Used at every cut between clips. Random picks a different effect at each cut."
+                : "Used at every cut between clips.")
             MiniRow("Output") {
                 Picker("Output", selection: $settings.outputMode) {
                     ForEach(MiniWizardFlow.OutputMode.allCases, id: \.self) { mode in
@@ -249,6 +255,25 @@ struct MiniSettingsCard: View {
             FormCaption("These are the texts the overlay lets the AI Wizard replace. Edit them here; the other items stay as designed.")
                 .lineLimit(nil)
         }
+    }
+
+    /// Random, then every effect grouped by family (no plain cut: the row
+    /// exists to put an effect at each cut).
+    private var transitionPicker: some View {
+        let groups: [(title: String, effects: [TransitionEffect])] = TransitionEffect.Category.allCases
+            .filter { $0 != .cut }
+            .map { category in (category.title, TransitionCatalog.all.filter { $0.category == category }) }
+        return Picker("Transition", selection: $settings.transition) {
+            Text("Random").lineLimit(1).fixedSize().tag(WizardPlanRules.randomTransitionChoice)
+            ForEach(groups, id: \.title) { group in
+                Section(group.title) {
+                    ForEach(group.effects) { effect in
+                        Text(effect.title).lineLimit(1).fixedSize().tag(effect.name)
+                    }
+                }
+            }
+        }
+        .pickerStyle(.menu)
     }
 
     private var overlayTemplates: [OverlayTemplate] {

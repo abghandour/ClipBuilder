@@ -25,7 +25,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case captionPosition, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
-        case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity
+        case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity, transitionChoice
     }
 
     var localHashtags = false
@@ -167,6 +167,10 @@ nonisolated struct WizardOptions: Codable, Sendable {
     /// Watermark strength 0...1; nil = the design's default (logo 0.85,
     /// overlay template 0.4).
     var watermarkOpacity: Double?
+    /// Express: the effect at every cut between clips. "random" draws a
+    /// different allowed effect at each cut; an effect name repeats it; nil
+    /// keeps the planner's cadence (an accent every third boundary).
+    var transitionChoice: String?
     /// A chosen bumper (by file path) for the intro / outro slot; nil lets
     /// the planner pick any bumper that allows the placement.
     var introBumperPath: String?
@@ -2737,7 +2741,8 @@ actor WizardEngine {
             let music = options.useMusic ? Self.availableMusic(inFolder: options.musicFolder) : []
             var plan = options.formatPreset == "podcast" ? selection
                 : WizardPlanRules.applyPacing(plan: selection, pacing: options.pacing)
-            plan.transitions = WizardPlanRules.transitions(allowed: options.allowedTransitions,
+            plan.transitions = WizardPlanRules.transitions(choice: options.transitionChoice,
+                                                           allowed: options.allowedTransitions,
                                                            count: plan.clips.count - 1)
             plan.musicName = nil
             plan.musicVolume = min(5, max(1, profile.defaultMusicVolume ?? 3))

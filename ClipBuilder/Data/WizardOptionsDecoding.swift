@@ -97,5 +97,6 @@ nonisolated extension WizardOptions {
         outroBumperPath = try values.decodeIfPresent(String.self, forKey: .outroBumperPath)
         watermarkOverlayTemplate = try values.decodeIfPresent(String.self, forKey: .watermarkOverlayTemplate)
         watermarkOpacity = try values.decodeIfPresent(Double.self, forKey: .watermarkOpacity)
+        transitionChoice = try values.decodeIfPresent(String.self, forKey: .transitionChoice)
     }
 }

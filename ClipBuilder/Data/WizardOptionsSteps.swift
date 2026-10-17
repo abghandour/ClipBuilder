@@ -78,6 +78,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var outroBumperPath: String?
     var watermarkOverlayTemplate: String?
     var watermarkOpacity: Double?
+    var transitionChoice: String?
 }
 
 nonisolated extension WizardOptions {
@@ -160,6 +161,7 @@ nonisolated extension WizardOptions {
         result.outroBumperPath = outroBumperPath
         result.watermarkOverlayTemplate = watermarkOverlayTemplate
         result.watermarkOpacity = watermarkOpacity
+        result.transitionChoice = transitionChoice
         return result
     }
 
@@ -240,6 +242,7 @@ nonisolated extension WizardOptions {
         result.outroBumperPath = step2.outroBumperPath
         result.watermarkOverlayTemplate = step2.watermarkOverlayTemplate
         result.watermarkOpacity = step2.watermarkOpacity
+        result.transitionChoice = step2.transitionChoice
         return result
     }
 }

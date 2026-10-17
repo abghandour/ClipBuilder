@@ -32,6 +32,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var overlayDuration: Double?
     /// Overrides for the template's AI-replaceable texts, in template order.
     var overlayTexts: [String] = []
+    /// Effect at every cut: "random" or an effect name (TransitionEffect).
+    var transition: String = WizardPlanRules.randomTransitionChoice
     var outputMode: MiniWizardFlow.OutputMode = .separateVideos
 
     init() {}
@@ -41,7 +43,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         case introVideo, outroVideo, introBumperPath, outroBumperPath
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case watermark, watermarkOverlay, watermarkOpacity
-        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, outputMode
+        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, outputMode, transition
     }
 
     /// Saved presets: every key optional so a preset written by an older
@@ -74,6 +76,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         overlayDuration = try c.decodeIfPresent(Double.self, forKey: .overlayDuration)
         overlayTexts = try c.decodeIfPresent([String].self, forKey: .overlayTexts) ?? base.overlayTexts
         outputMode = try c.decodeIfPresent(MiniWizardFlow.OutputMode.self, forKey: .outputMode) ?? base.outputMode
+        transition = try c.decodeIfPresent(String.self, forKey: .transition) ?? base.transition
         if quality == .custom { quality = .balanced }
         if preset == .custom { preset = .portrait1080 }
     }
@@ -108,6 +111,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.nameTagStyle = nameTagStyle
         result.nameTagStyleID = nameTagStyleID
         result.nameTagPosition = nameTagPosition
+        result.transitionChoice = transition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? WizardPlanRules.randomTransitionChoice : transition
         let overlayName = overlayTemplate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         result.fixedOverlayTemplate = overlay && !overlayName.isEmpty ? overlayName : nil
         result.fixedOverlayStart = result.fixedOverlayTemplate == nil ? nil : max(0, overlayStart)
@@ -172,6 +177,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         }
         result.outputMode = MiniWizardFlow.OutputMode(rawValue: defaults.string(forKey: key(.outputMode)) ?? "")
             ?? .separateVideos
+        if let transition = defaults.string(forKey: key(.transition)), !transition.isEmpty {
+            result.transition = transition
+        }
         result.watermark = WizardDefaults.brandingMode(defaults: defaults).includeWatermark
         for (field, path) in booleanFields {
             if defaults.object(forKey: key(field)) != nil { result[keyPath: path] = defaults.bool(forKey: key(field)) }
@@ -199,6 +207,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         defaults.set(overlayStart, forKey: key(.overlayStart))
         defaults.set(overlayDuration, forKey: key(.overlayDuration))
         defaults.set(outputMode.rawValue, forKey: key(.outputMode))
+        defaults.set(transition, forKey: key(.transition))
         for (field, path) in Self.booleanFields { defaults.set(self[keyPath: path], forKey: key(field)) }
     }
 

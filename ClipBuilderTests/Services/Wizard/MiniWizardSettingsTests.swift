@@ -99,6 +99,20 @@ struct MiniWizardSettingsTests {
         #expect(settings.step2Options(base: WizardStep2Options()).watermarkOpacity == nil)
     }
 
+    @Test func transitionDefaultsToRandomAndMapsToTheChoice() {
+        var settings = MiniWizardSettings()
+        #expect(settings.transition == "random")
+        #expect(settings.step2Options(base: WizardStep2Options()).transitionChoice == "random")
+        settings.transition = "fadeblack"
+        #expect(settings.step2Options(base: WizardStep2Options()).transitionChoice == "fadeblack")
+        settings.transition = " "
+        #expect(settings.step2Options(base: WizardStep2Options()).transitionChoice == "random")
+        let merged = WizardOptions.merge(step1: WizardStep1Options(), step2: MiniWizardSettings().step2Options(base: WizardStep2Options()))
+        #expect(merged.transitionChoice == "random")
+        #expect((try? JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(merged)))?.transitionChoice == "random")
+        #expect(WizardOptions().transitionChoice == nil)
+    }
+
     @Test func everyCameraFocusMapsLikeTheFullWizard() {
         var settings = MiniWizardSettings()
         for kind in CropRecipe.Kind.allCases {

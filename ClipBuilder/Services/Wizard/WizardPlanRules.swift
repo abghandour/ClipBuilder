@@ -103,6 +103,42 @@ nonisolated enum WizardPlanRules {
         return result
     }
 
+    static let randomTransitionChoice = "random"
+
+    /// Express transition choice: "random" draws a different allowed effect
+    /// at every boundary (never the same twice in a row when it can help),
+    /// an effect name repeats that effect, and nil or an unknown name falls
+    /// back to the planner cadence below.
+    static func transitions(choice: String?, allowed: [String]?, count: Int) -> [String] {
+        var generator = SystemRandomNumberGenerator()
+        return transitions(choice: choice, allowed: allowed, count: count, using: &generator)
+    }
+
+    static func transitions<R: RandomNumberGenerator>(choice: String?, allowed: [String]?, count: Int,
+                                                      using generator: inout R) -> [String] {
+        guard count > 0, let choice = choice?.trimmingCharacters(in: .whitespacesAndNewlines), !choice.isEmpty else {
+            return transitions(allowed: allowed, count: count)
+        }
+        let valid = Set(RenderEngine.allTransitions)
+        if choice == randomTransitionChoice {
+            var seen = Set<String>()
+            let pool = (allowed ?? RenderEngine.allTransitions).filter { $0 != "cut" && valid.contains($0) && seen.insert($0).inserted }
+            guard !pool.isEmpty else { return Array(repeating: "cut", count: count) }
+            var previous: String?
+            return (0..<count).map { _ in
+                let candidates = pool.count > 1 ? pool.filter { $0 != previous } : pool
+                let pick = candidates.randomElement(using: &generator) ?? pool[0]
+                previous = pick
+                return pick
+            }
+        }
+        guard valid.contains(choice), choice != "cut",
+              allowed.map({ $0.contains(choice) }) ?? true else {
+            return transitions(allowed: allowed, count: count)
+        }
+        return Array(repeating: choice, count: count)
+    }
+
     /// Hard cuts form the backbone; every third boundary cycles an allowed accent.
     /// A nil list permits the catalog. Unknown names and duplicates are discarded.
     static func transitions(allowed: [String]?, count: Int) -> [String] {

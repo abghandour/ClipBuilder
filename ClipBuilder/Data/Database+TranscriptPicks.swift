@@ -55,6 +55,12 @@ extension Database {
                                          options: WizardStep1Options) throws -> [MiniWizardCandidate] {
         try connection.transaction {
             let runID = try activeAnalysisRun(videoID: videoID).run?.id
+            // Camera focus (grid, talker and rotation, ...) only frames scenes
+            // tagged "podcast"; a pick from conversational footage must carry it
+            // or the chosen focus is silently skipped.
+            let video = try video(id: videoID)
+            let hasTurns = try !fetchSpeakerTurns(videoID: videoID).isEmpty
+            let conversational = video?.type == .podcast || video?.type == .interview || hasTurns
             try connection.execute("DELETE FROM wizard_selections WHERE project_id = ? AND mini_batch = ?",
                                    [.integer(projectID), .text(miniBatch)])
             var step1 = options
@@ -72,6 +78,10 @@ extension Database {
                 ).first?["id"]?.intValue else { continue }
                 try connection.execute("INSERT OR IGNORE INTO scene_tags (scene_id, tag) VALUES (?, ?)",
                                        [.integer(sceneID), .text(Self.transcriptPickTag)])
+                if conversational {
+                    try connection.execute("INSERT OR IGNORE INTO scene_tags (scene_id, tag) VALUES (?, ?)",
+                                           [.integer(sceneID), .text("podcast")])
+                }
                 try connection.execute("UPDATE transcript_picks SET scene_id = ? WHERE id = ?",
                                        [.integer(sceneID), .integer(pick.id)])
                 let name = MiniWizardTranscriptRules.title(for: pick, rows: rows, number: index + 1)

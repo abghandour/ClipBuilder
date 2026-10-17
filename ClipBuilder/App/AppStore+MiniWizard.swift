@@ -319,7 +319,10 @@ extension AppStore {
                         wizardStatus = WizardRunStatus(stage: stage, fraction: Double(index) / Double(takes.count))
                         appendLog(\.wizardLog, [stage])
                         var renderOptions = options
-                        if chosen.outputMode == .oneReel { renderOptions.allowedTransitions = ["cut"] }
+                        // One reel joins takes with hard cuts unless the user chose a transition.
+                        if chosen.outputMode == .oneReel, options.transitionChoice == nil {
+                            renderOptions.allowedTransitions = ["cut"]
+                        }
                         let emit: @Sendable (String) -> Void = { message in
                             Task { @MainActor in
                                 guard generation == self.profileGeneration, self.isWizardRunning,
