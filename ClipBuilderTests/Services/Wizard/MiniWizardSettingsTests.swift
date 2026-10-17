@@ -119,6 +119,29 @@ struct MiniWizardSettingsTests {
         #expect(WizardOptions().transitionChoice == nil)
     }
 
+    @Test func lookMapsToThePresetOnlyWhenChosen() throws {
+        var settings = MiniWizardSettings()
+        #expect(settings.look == "" && settings.lookName == nil)
+        #expect(settings.step2Options(base: WizardStep2Options()).lookPreset == nil)
+        settings.look = "vintage"
+        #expect(settings.lookName == "vintage")
+        let merged = WizardOptions.merge(step1: WizardStep1Options(), step2: settings.step2Options(base: WizardStep2Options()))
+        #expect(merged.lookPreset == "vintage")
+        #expect(WizardEngine.lookEffect(for: merged) == EffectSpec(preset: "vintage"))
+        #expect((try? JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(merged)))?.lookPreset == "vintage")
+        settings.look = "none"
+        #expect(settings.lookName == nil && settings.step2Options(base: WizardStep2Options()).lookPreset == nil)
+        var unknown = merged
+        unknown.lookPreset = "no-such-look"
+        #expect(WizardEngine.lookEffect(for: unknown) == nil)
+        // Older presets and options without the key still decode.
+        let legacy = try JSONDecoder().decode(MiniWizardSettings.self, from: Data(#"{"transition":"fade"}"#.utf8))
+        #expect(legacy.look == "" && legacy.transition == "fade")
+        let roundTrip = try JSONDecoder().decode(MiniWizardSettings.self, from: JSONEncoder().encode(settings))
+        #expect(roundTrip.look == "none")
+        #expect(WizardOptions().lookPreset == nil)
+    }
+
     @Test func everyCameraFocusMapsLikeTheFullWizard() {
         var settings = MiniWizardSettings()
         for kind in CropRecipe.Kind.allCases {

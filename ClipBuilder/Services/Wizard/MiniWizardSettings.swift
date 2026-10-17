@@ -35,6 +35,10 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var overlayTexts: [String] = []
     /// Effect at every cut: "random" or an effect name (TransitionEffect).
     var transition: String = WizardPlanRules.randomTransitionChoice
+    /// A look from the Looks library (an EffectCatalog preset id such as
+    /// "vintage" or "lut:kodak_portra_160_vc") graded into every clip's
+    /// footage; "" = none.
+    var look: String = ""
     var outputMode: MiniWizardFlow.OutputMode = .separateVideos
 
     init() {}
@@ -44,7 +48,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         case introVideo, outroVideo, introBumper, outroBumper
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case watermark, watermarkOverlay, watermarkOpacity
-        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, outputMode, transition
+        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, outputMode, transition, look
     }
 
     /// Saved presets: every key optional so a preset written by an older
@@ -78,6 +82,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         overlayTexts = try c.decodeIfPresent([String].self, forKey: .overlayTexts) ?? base.overlayTexts
         outputMode = try c.decodeIfPresent(MiniWizardFlow.OutputMode.self, forKey: .outputMode) ?? base.outputMode
         transition = try c.decodeIfPresent(String.self, forKey: .transition) ?? base.transition
+        look = try c.decodeIfPresent(String.self, forKey: .look) ?? base.look
         if quality == .custom { quality = .balanced }
         if preset == .custom { preset = .portrait1080 }
     }
@@ -115,6 +120,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.nameTagPosition = nameTagPosition
         result.transitionChoice = transition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? WizardPlanRules.randomTransitionChoice : transition
+        result.lookPreset = lookName
         let overlayName = overlayTemplate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         result.fixedOverlayTemplate = overlay && !overlayName.isEmpty ? overlayName : nil
         result.fixedOverlayStart = result.fixedOverlayTemplate == nil ? nil : max(0, overlayStart)
@@ -128,6 +134,12 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var effectiveWatermarkOpacity: Double {
         let usesOverlay = watermarkOverlay?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         return min(1, max(0, watermarkOpacity ?? (usesOverlay ? WizardFixedOverlay.watermarkOpacity : BrandRenderer.logoWatermarkOpacity)))
+    }
+
+    /// The look preset the render will grade with; nil for none.
+    var lookName: String? {
+        let name = look.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty || name == "none" ? nil : name
     }
 
     /// The overlay as the render will apply it; nil when off or unnamed.
@@ -182,6 +194,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         if let transition = defaults.string(forKey: key(.transition)), !transition.isEmpty {
             result.transition = transition
         }
+        result.look = defaults.string(forKey: key(.look)) ?? ""
         result.watermark = WizardDefaults.brandingMode(defaults: defaults).includeWatermark
         for (field, path) in booleanFields {
             if defaults.object(forKey: key(field)) != nil { result[keyPath: path] = defaults.bool(forKey: key(field)) }
@@ -210,6 +223,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         defaults.set(overlayDuration, forKey: key(.overlayDuration))
         defaults.set(outputMode.rawValue, forKey: key(.outputMode))
         defaults.set(transition, forKey: key(.transition))
+        defaults.set(look, forKey: key(.look))
         for (field, path) in Self.booleanFields { defaults.set(self[keyPath: path], forKey: key(field)) }
     }
 

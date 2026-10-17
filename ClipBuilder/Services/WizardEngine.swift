@@ -25,7 +25,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case captionPosition, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
-        case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity, transitionChoice
+        case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity, transitionChoice, lookPreset
     }
 
     var localHashtags = false
@@ -171,6 +171,9 @@ nonisolated struct WizardOptions: Codable, Sendable {
     /// different allowed effect at each cut; an effect name repeats it; nil
     /// keeps the planner's cadence (an accent every third boundary).
     var transitionChoice: String?
+    /// Express: a Looks-library preset id graded into every clip's footage
+    /// (captions, tags and overlays stay clean); nil or "none" = no look.
+    var lookPreset: String?
     /// A chosen bumper (by file path) for the intro / outro slot; nil lets
     /// the planner pick any bumper that allows the placement.
     var introBumperPath: String?
@@ -3764,6 +3767,14 @@ actor WizardEngine {
             renderSettings: options.renderSettings, pacing: options.pacing, podcastFraming: options.podcastFraming,
             podcastCuts: podcastCuts)
             .keepingOverlaysClearOfPlatformChrome()
+        if let look = Self.lookEffect(for: options) {
+            // The clips are graded at extraction; the editable document keeps
+            // the look on its tracks so Builder shows it and re-renders it.
+            for index in document.trackSettings.indices { document.trackSettings[index].effect = look }
+            emit("Look: \(EffectCatalog.preset(for: look.preset)?.name ?? look.preset)")
+        } else if let name = options.lookPreset, !name.isEmpty, name != "none" {
+            emit("Look '\(name)' skipped: not available in the local ffmpeg")
+        }
         let tagImageAspects = await TextOverlayRenderer.tagImageAspects(profile.tagStyle(id: options.nameTagStyleID))
         var tagCursor = 0.0
         for (index, clip) in editPlan.clips.enumerated() {
@@ -3981,6 +3992,13 @@ actor WizardEngine {
         return (focus, avoid)
     }
 
+    /// The look the options ask for, when the local ffmpeg can render it.
+    nonisolated static func lookEffect(for options: WizardOptions) -> EffectSpec? {
+        guard let name = options.lookPreset?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty, name != "none", EffectCatalog.isAvailable(name) else { return nil }
+        return EffectSpec(preset: name)
+    }
+
     private func extractPlannedClip(_ clip: WizardPlanClip, index: Int, of total: Int,
                                     scene: SceneRecord, sceneMap: [Int64: SceneRecord] = [:],
                                     options: WizardOptions,
@@ -3989,6 +4007,7 @@ actor WizardEngine {
                                     podcastDocument: TimelineDocument? = nil, nameTagPeople: [PersonRecord] = [], tagText: [String: String], profile: BrandProfile,
                                     database: Database, scratch: URL,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> URL {
+        let lookEffect = Self.lookEffect(for: options)
         // Source seconds consumed vs seconds on screen — slow motion
         // stretches the latter. Everything time-positioned in the OUTPUT
         // (overlays, captions, -t) uses `duration`; everything reading the
@@ -4142,7 +4161,7 @@ actor WizardEngine {
                 scenes: Array(sceneMap.values), profile: profile, database: database, preview: true, emit: emit)
             defer { try? FileManager.default.removeItem(at: framed.url) }
             try await render.extractClip(source: framed.url, start: 0, duration: duration,
-                overlays: overlays, mute: options.muteSource, output: output)
+                overlays: overlays, effect: lookEffect, mute: options.muteSource, output: output)
             return output
         }
         if options.podcastFraming == .splitZoom,
@@ -4153,7 +4172,7 @@ actor WizardEngine {
             defer { try? FileManager.default.removeItem(at: split) }
             emit("Clip \(index + 1): split Zoom feeds")
             try await render.extractClip(source: split, start: 0, duration: duration,
-                                         overlays: overlays, mute: options.muteSource,
+                                         overlays: overlays, effect: lookEffect, mute: options.muteSource,
                                          speed: clip.speed, output: output)
             return output
         }
@@ -4174,7 +4193,7 @@ actor WizardEngine {
                !clip.areaClips.isEmpty, let mask {
                 let main = scratch.appendingPathComponent("clip_\(index)_main.mp4")
                 try await render.extractClip(source: framed, start: 0, duration: duration,
-                                             overlays: overlays, mute: options.muteSource,
+                                             overlays: overlays, effect: lookEffect, mute: options.muteSource,
                                              speed: clip.speed, output: main)
                 var entries: [(clip: URL, mask: URL)] = [(main, mask)]
                 for (areaIndex, areaClip) in clip.areaClips.enumerated() {
@@ -4201,7 +4220,7 @@ actor WizardEngine {
                 return output
             }
             try await render.extractClip(source: framed, start: 0, duration: duration,
-                                         overlays: overlays, mute: options.muteSource,
+                                         overlays: overlays, effect: lookEffect, mute: options.muteSource,
                                          speed: clip.speed, mask: mask, output: output)
             return output
         }
@@ -4223,7 +4242,7 @@ actor WizardEngine {
                     emit("Clip \(index + 1) reframed with its saved scene framing")
                     try await render.extractClip(source: reframed, start: 0,
                                                  duration: duration,
-                                                 overlays: overlays, mute: options.muteSource,
+                                                 overlays: overlays, effect: lookEffect, mute: options.muteSource,
                                                  speed: clip.speed,
                                                  mask: mask,
                                                  output: output)
@@ -4241,7 +4260,7 @@ actor WizardEngine {
                 try await render.extractClip(source: scene.videoURL, start: clip.start,
                                              duration: duration, wide: .autoCrop(xFraction),
                                              contentBox: contentBox,
-                                             overlays: overlays, mute: options.muteSource,
+                                             overlays: overlays, effect: lookEffect, mute: options.muteSource,
                                              speed: clip.speed,
                                              mask: mask,
                                              output: output)
@@ -4249,7 +4268,7 @@ actor WizardEngine {
                 try await render.extractClip(source: scene.videoURL, start: clip.start,
                                              duration: duration,
                                              contentBox: contentBox,
-                                             overlays: overlays, mute: options.muteSource,
+                                             overlays: overlays, effect: lookEffect, mute: options.muteSource,
                                              speed: clip.speed,
                                              mask: mask,
                                              output: output)
@@ -4258,7 +4277,7 @@ actor WizardEngine {
             try await render.extractClip(source: scene.videoURL, start: clip.start,
                                          duration: duration,
                                          contentBox: contentBox,
-                                         overlays: overlays, mute: options.muteSource,
+                                         overlays: overlays, effect: lookEffect, mute: options.muteSource,
                                          speed: clip.speed,
                                          mask: mask,
                                          output: output)

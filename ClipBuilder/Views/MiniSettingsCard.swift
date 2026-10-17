@@ -5,6 +5,9 @@ struct MiniSettingsCard: View {
     @Binding var settings: MiniWizardSettings
     let flow: MiniWizardFlow
     let run: MiniWizardRun
+    /// Presets the local ffmpeg can render. Probing ffmpeg spawns a process,
+    /// so it runs once off the main thread; until then every look is listed.
+    @State private var availableLookIDs: Set<String>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
@@ -139,6 +142,12 @@ struct MiniSettingsCard: View {
             FormCaption(settings.transition == WizardPlanRules.randomTransitionChoice
                 ? "Used at every cut between clips. Random picks a different effect at each cut."
                 : "Used at every cut between clips.")
+            MiniRow("Look") {
+                lookPicker
+            }
+            FormCaption(settings.lookName == nil
+                ? "Grades the footage of every clip with a look from the Looks library."
+                : "Graded into every clip's footage; captions, name tags and overlays stay clean.")
             MiniRow("Output") {
                 Picker("Output", selection: $settings.outputMode) {
                     ForEach(MiniWizardFlow.OutputMode.allCases, id: \.self) { mode in
@@ -280,6 +289,29 @@ struct MiniSettingsCard: View {
             }
         }
         .pickerStyle(.menu)
+    }
+
+    /// None, then the Looks and film-stock LUT presets the local ffmpeg can render.
+    private var lookPicker: some View {
+        let available = EffectCatalog.presets.filter { preset in
+            preset.id != "none" && (availableLookIDs?.contains(preset.id) ?? true)
+        }
+        let groups: [(title: String, presets: [EffectCatalog.Preset])] = [
+            ("Looks", available.filter { $0.group == "looks" }),
+            ("Film stocks", available.filter { $0.group == "film" }),
+        ].filter { !$0.presets.isEmpty }
+        return Picker("Look", selection: $settings.look) {
+            Text("None").lineLimit(1).fixedSize().tag("")
+            ForEach(groups, id: \.title) { group in
+                Section(group.title) {
+                    ForEach(group.presets, id: \.id) { preset in
+                        Text(preset.name).lineLimit(1).fixedSize().tag(preset.id)
+                    }
+                }
+            }
+        }
+        .pickerStyle(.menu)
+        .task { availableLookIDs = await EffectControls.availablePresetIDs() }
     }
 
     private var overlayTemplates: [OverlayTemplate] {

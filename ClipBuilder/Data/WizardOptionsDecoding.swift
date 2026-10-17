@@ -98,5 +98,6 @@ nonisolated extension WizardOptions {
         watermarkOverlayTemplate = try values.decodeIfPresent(String.self, forKey: .watermarkOverlayTemplate)
         watermarkOpacity = try values.decodeIfPresent(Double.self, forKey: .watermarkOpacity)
         transitionChoice = try values.decodeIfPresent(String.self, forKey: .transitionChoice)
+        lookPreset = try values.decodeIfPresent(String.self, forKey: .lookPreset)
     }
 }

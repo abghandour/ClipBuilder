@@ -114,6 +114,7 @@ actor RenderEngine {
                      wide: WideTreatment = .none,
                      contentBox: ContentBox? = nil,
                      overlays: [ClipOverlay] = [],
+                     effect: EffectSpec? = nil,
                      mute: Bool = false,
                      speed: Double = 1,
                      mask: URL? = nil,
@@ -144,7 +145,13 @@ actor RenderEngine {
         // With a mask, the overlay chain's result is an intermediate the
         // masking stage turns into [vout].
         let finalLabel = mask == nil ? "[vout]" : "[premask]"
-        let baseLabel = overlays.isEmpty ? finalLabel : "[base]"
+        let framedLabel = overlays.isEmpty ? finalLabel : "[base]"
+        // A look grades the normalized footage before captions, tags and
+        // overlays land on it, so the text stays clean.
+        let lookFragment = effect.map {
+            EffectCatalog.filter(for: $0, width: Self.outputWidth, height: Self.outputHeight, namespace: "look_")
+        } ?? ""
+        let baseLabel = lookFragment.isEmpty ? framedLabel : "[framed]"
         // Baked-in bars come off first, so the wide treatments below see the
         // real footage; every later iw/ih refers to the cropped stream.
         var sourceStream = "[0:v]"
@@ -181,9 +188,12 @@ actor RenderEngine {
             [top][bottom]vstack,setsar=1,fps=30\(baseLabel)
             """)
         }
+        if !lookFragment.isEmpty {
+            filters.append("[framed]\(lookFragment)\(framedLabel)")
+        }
 
         // Overlay chain (single-frame PNG inputs persist via repeatlast).
-        var previous = baseLabel
+        var previous = framedLabel
         for (index, overlay) in overlays.enumerated() {
             let outLabel = index == overlays.count - 1 ? finalLabel : "[ovl\(index)]"
             var inputLabel = "[\(overlayBase + index):v]"

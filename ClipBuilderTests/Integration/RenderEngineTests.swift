@@ -23,6 +23,32 @@ struct RenderEngineTests {
         #expect(await FFmpeg.hasAudioStream(output))
     }
 
+    @Test("a look grades the extracted clip, at full and partial intensity")
+    func extractClipWithLook() async throws {
+        let temp = try TempDirectory(prefix: "ClipBuilderRenderTest")
+        let source = try await FixtureVideo.make(in: temp.url, wide: false)
+        let render = RenderEngine()
+        for (name, spec) in [("full", EffectSpec(preset: "bw")), ("half", EffectSpec(preset: "bw", intensity: 0.5))] {
+            let output = temp.url.appendingPathComponent("look-\(name).mp4")
+            try await render.extractClip(source: source, start: 0, duration: 2, effect: spec, output: output)
+            #expect(abs((await FFmpeg.duration(of: output)) - 2) < 0.15)
+            let dimensions = await FFmpeg.dimensions(of: output)
+            #expect(dimensions.width == RenderEngine.outputWidth && dimensions.height == RenderEngine.outputHeight)
+            #expect(await FFmpeg.hasAudioStream(output))
+        }
+        // Black & white at full strength leaves no colour: every channel of a
+        // middle frame agrees. testsrc is strongly coloured, so this is a real check.
+        let frame = temp.url.appendingPathComponent("look-frame.ppm")
+        _ = try await FFmpeg.run(["-y", "-ss", "1", "-i", temp.url.appendingPathComponent("look-full.mp4").path,
+                                  "-frames:v", "1", "-vf", "scale=8:8", "-pix_fmt", "rgb24", frame.path], timeout: 60)
+        let data = try Data(contentsOf: frame)
+        let pixels = Array(data.suffix(8 * 8 * 3))
+        let spread = stride(from: 0, to: pixels.count, by: 3).map { i in
+            Int(max(pixels[i], pixels[i + 1], pixels[i + 2])) - Int(min(pixels[i], pixels[i + 1], pixels[i + 2]))
+        }.max() ?? 255
+        #expect(spread <= 8)
+    }
+
     @Test("subclip and normalize produce standard-format output of the requested length")
     func subclipAndNormalize() async throws {
         let temp = try TempDirectory(prefix: "ClipBuilderRenderTest")
