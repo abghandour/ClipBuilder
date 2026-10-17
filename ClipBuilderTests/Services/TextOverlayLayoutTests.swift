@@ -160,7 +160,8 @@ struct TextOverlayLayoutTests {
         #expect(CGImageDestinationFinalize(destination))
         var logo = ImageOverlayItem()
         logo.path = square.path
-        logo.xFrac = 0.5; logo.yFrac = 0.92; logo.wFrac = 0.3
+        // 10% wide so the square (108 px) fits above the frame's bottom edge at 92%.
+        logo.xFrac = 0.5; logo.yFrac = 0.92; logo.wFrac = 0.1
         logo.keepsPlacement = true
         let imageRenderer = ImageOverlayRenderer(videoWidth: 1080, videoHeight: 1920, safeArea: area)
         let pinnedImage = try opaqueBounds(try imageRenderer.render(logo, to: directory))
