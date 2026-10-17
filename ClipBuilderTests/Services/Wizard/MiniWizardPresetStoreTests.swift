@@ -72,4 +72,23 @@ struct MiniWizardPresetStoreTests {
         let full = settings(captions: true)
         #expect(try JSONDecoder().decode(MiniWizardSettings.self, from: JSONEncoder().encode(full)) == full)
     }
+
+    @Test func cardTitleNamesTheLoadedPresetAndFlagsEdits() throws {
+        let suite = "MiniWizardPresetStoreTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var current = settings(captions: true)
+        #expect(MiniWizardPresetStore.cardTitle(loaded: nil, current: current) == "Settings")
+        #expect(MiniWizardPresetStore.loaded(profileName: "P", defaults: defaults) == nil)
+        MiniWizardPresetStore.rememberLoaded(.init(name: "Podcast", settings: current), profileName: "P", defaults: defaults)
+        let loaded = try #require(MiniWizardPresetStore.loaded(profileName: "P", defaults: defaults))
+        #expect(loaded.name == "Podcast" && loaded.settings == current)
+        #expect(MiniWizardPresetStore.cardTitle(loaded: loaded, current: current) == "Settings - Podcast")
+        current.captions = false
+        #expect(MiniWizardPresetStore.cardTitle(loaded: loaded, current: current) == "Settings - Podcast (modified)")
+        #expect(MiniWizardPresetStore.loaded(profileName: "Other", defaults: defaults) == nil)
+        MiniWizardPresetStore.rememberLoaded(nil, profileName: "P", defaults: defaults)
+        #expect(MiniWizardPresetStore.loaded(profileName: "P", defaults: defaults) == nil)
+        #expect(defaults.string(forKey: MiniWizardPresetStore.lastUsedKey(profileName: "P")) == nil)
+    }
 }

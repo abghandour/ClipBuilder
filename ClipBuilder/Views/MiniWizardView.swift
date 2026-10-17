@@ -20,6 +20,7 @@ struct MiniWizardView: View {
     @State private var reloadID = 0
     @State private var miniSettings = MiniWizardSettings()
     @State private var presetSheet: MiniPresetSheet?
+    @State private var loadedPreset: MiniWizardPresetStore.Loaded?
     @State private var settingsProfile: String?
     @State private var transcriptLanguage: String?
     @State private var hasTranscript = false
@@ -122,7 +123,8 @@ struct MiniWizardView: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    MiniCard(number: 3, title: "Settings",
+                    MiniCard(number: 3,
+                        title: MiniWizardPresetStore.cardTitle(loaded: loadedPreset, current: miniSettings),
                         summary: flow.canExpand(.settings)
                             ? flow.settingsSummary(miniSettings.effective(for: flow,
                                 introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
@@ -145,11 +147,16 @@ struct MiniWizardView: View {
         .sheet(item: $presetSheet) { sheet in
             switch sheet {
             case .save:
-                MiniPresetSaveSheet(profileName: profileName, settings: miniSettings)
-            case .load:
-                MiniPresetLoadSheet(profileName: profileName) { preset in
-                    miniSettings = preset.settings
+                MiniPresetSaveSheet(profileName: profileName, settings: miniSettings) { _ in
+                    loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
                 }
+            case .load:
+                MiniPresetLoadSheet(profileName: profileName, onLoad: { preset in
+                    miniSettings = preset.settings
+                    loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
+                }, onChanged: {
+                    loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
+                })
             }
         }
         .task(id: sourceKey) { await loadSources() }
@@ -419,6 +426,7 @@ struct MiniWizardView: View {
         guard store.activeProfile.profileName == profileName else { return }
         // Source answers use profile-keyed AppStorage; Settings restores from the same key catalog.
         miniSettings = MiniWizardSettings.remembered(profile: store.activeProfile)
+        loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
         settingsProfile = profileName
         store.refreshMiniQASections()
     }

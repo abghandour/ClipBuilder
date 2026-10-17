@@ -11,6 +11,7 @@ struct MiniPresetSaveSheet: View {
     @Environment(\.dismiss) private var dismiss
     let profileName: String
     let settings: MiniWizardSettings
+    var onSaved: (String) -> Void = { _ in }
 
     @State private var name = ""
     @State private var presets: [MiniWizardPreset] = []
@@ -57,7 +58,8 @@ struct MiniPresetSaveSheet: View {
         let updated = MiniWizardPresetStore.upsert(name: cleaned, settings: settings, into: presets)
         do {
             try MiniWizardPresetStore.save(updated, profileName: profileName)
-            UserDefaults.standard.set(cleaned, forKey: MiniWizardPresetStore.lastUsedKey(profileName: profileName))
+            MiniWizardPresetStore.rememberLoaded(.init(name: cleaned, settings: settings), profileName: profileName)
+            onSaved(cleaned)
             dismiss()
         } catch {
             self.error = "Could not save: \(error.localizedDescription)"
@@ -70,6 +72,8 @@ struct MiniPresetLoadSheet: View {
     @Environment(\.dismiss) private var dismiss
     let profileName: String
     let onLoad: (MiniWizardPreset) -> Void
+    /// Called when a rename or delete touched the preset the card is tracking.
+    var onChanged: () -> Void = {}
 
     @State private var presets: [MiniWizardPreset] = []
     @State private var selection: String?
@@ -160,7 +164,7 @@ struct MiniPresetLoadSheet: View {
     }
 
     private func load(_ preset: MiniWizardPreset) {
-        UserDefaults.standard.set(preset.name, forKey: MiniWizardPresetStore.lastUsedKey(profileName: profileName))
+        MiniWizardPresetStore.rememberLoaded(.init(name: preset.name, settings: preset.settings), profileName: profileName)
         onLoad(preset)
         dismiss()
     }
@@ -181,8 +185,9 @@ struct MiniPresetLoadSheet: View {
         persist(updated)
         if let newName = updated.first(where: { $0.settings == preset.settings && $0.savedAt == preset.savedAt })?.name {
             selection = newName.lowercased()
-            if UserDefaults.standard.string(forKey: MiniWizardPresetStore.lastUsedKey(profileName: profileName)) == preset.name {
-                UserDefaults.standard.set(newName, forKey: MiniWizardPresetStore.lastUsedKey(profileName: profileName))
+            if let tracked = MiniWizardPresetStore.loaded(profileName: profileName), tracked.name == preset.name {
+                MiniWizardPresetStore.rememberLoaded(.init(name: newName, settings: tracked.settings), profileName: profileName)
+                onChanged()
             }
         }
     }
@@ -190,6 +195,10 @@ struct MiniPresetLoadSheet: View {
     private func delete(_ preset: MiniWizardPreset) {
         persist(MiniWizardPresetStore.delete(preset.name, in: presets))
         if selection == preset.id { selection = presets.first?.id }
+        if MiniWizardPresetStore.loaded(profileName: profileName)?.name == preset.name {
+            MiniWizardPresetStore.rememberLoaded(nil, profileName: profileName)
+            onChanged()
+        }
     }
 
     private func persist(_ updated: [MiniWizardPreset]) {

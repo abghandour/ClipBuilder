@@ -25,6 +25,39 @@ nonisolated enum MiniWizardPresetStore {
 
     /// The remembered name of the last saved or loaded preset.
     static func lastUsedKey(profileName: String) -> String { "mini.\(profileName).presetName" }
+    /// The settings as they were when that preset was last saved or loaded,
+    /// so the card can say "(modified)" once they drift.
+    static func baselineKey(profileName: String) -> String { "mini.\(profileName).presetBaseline" }
+
+    /// A loaded or saved preset the Settings card is tracking.
+    struct Loaded: Equatable, Sendable {
+        var name: String
+        var settings: MiniWizardSettings
+    }
+
+    static func rememberLoaded(_ loaded: Loaded?, profileName: String, defaults: UserDefaults = .standard) {
+        guard let loaded else {
+            defaults.removeObject(forKey: lastUsedKey(profileName: profileName))
+            defaults.removeObject(forKey: baselineKey(profileName: profileName))
+            return
+        }
+        defaults.set(loaded.name, forKey: lastUsedKey(profileName: profileName))
+        defaults.set(try? JSONEncoder().encode(loaded.settings), forKey: baselineKey(profileName: profileName))
+    }
+
+    /// Nil until a preset has been saved or loaded for this profile.
+    static func loaded(profileName: String, defaults: UserDefaults = .standard) -> Loaded? {
+        guard let name = defaults.string(forKey: lastUsedKey(profileName: profileName)), !name.isEmpty,
+              let data = defaults.data(forKey: baselineKey(profileName: profileName)),
+              let settings = try? JSONDecoder().decode(MiniWizardSettings.self, from: data) else { return nil }
+        return Loaded(name: name, settings: settings)
+    }
+
+    /// "Settings", "Settings - Podcast", or "Settings - Podcast (modified)".
+    static func cardTitle(base: String = "Settings", loaded: Loaded?, current: MiniWizardSettings) -> String {
+        guard let loaded else { return base }
+        return "\(base) - \(loaded.name)" + (loaded.settings == current ? "" : " (modified)")
+    }
 
     static func load(profileName: String, root: URL = ProfileStore.profilesDirectory) -> [MiniWizardPreset] {
         guard let data = try? Data(contentsOf: fileURL(profileName: profileName, root: root)) else { return [] }
