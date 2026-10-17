@@ -196,8 +196,11 @@ struct EffectControlsTests {
         #expect(SidebarSection.looks.projectDestination == .looks)
         #expect(SidebarSection.effects.title == "Transitions")
         #expect(SidebarSection.tags.title == "Tags" && SidebarSection.tags.systemImage == "tag")
+        // Resources read picture, text and graphics, sound, organizing, lessons.
         let captions = SidebarSection.resourceSections.firstIndex(of: .captions)!
-        #expect(SidebarSection.resourceSections[captions + 1] == .tags)
+        #expect(SidebarSection.resourceSections[captions + 1] == .overlays)
+        #expect(SidebarSection.resourceSections.first == .screenCrops)
+        #expect(SidebarSection.resourceSections.suffix(3) == [.music, .tags, .learned])
         #expect(SidebarSection.looks.title == "Looks")
         #expect(SidebarSection.looks.shortcut == nil)
         #expect(SidebarSection.wizardMini.title == "AI Wizard Express")
@@ -208,6 +211,7 @@ struct EffectControlsTests {
         #expect(wizard.map { SidebarSection.projectSections[$0 + 1] } == .wizardMini)
         let resources = SidebarSection.resourceSections
         let transitions = resources.firstIndex(of: .effects)
-        #expect(transitions.map { resources[$0 + 1] } == .looks)
+        #expect(transitions.map { resources[$0 + 1] } == .bumpers)
+        #expect(transitions.map { resources[$0 - 1] } == .looks)
     }
 }

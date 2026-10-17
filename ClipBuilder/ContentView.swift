@@ -178,8 +178,12 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     /// app always had it — a tab strip inside one screen hid them.
     /// AI Lessons sits with the resources: like them it is profile-wide and
     /// syncs with the Drive home (up when a nickname is set, down always).
+    /// Order: picture (framing, grade, joins, bumpers), then text and
+    /// graphics, then sound, then organizing, then the lessons.
     static let resourceSections: [SidebarSection] = [
-        .music, .fonts, .images, .overlays, .captions, .tags, .effects, .looks, .screenCrops, .bumpers, .learned,
+        .screenCrops, .looks, .effects, .bumpers,
+        .captions, .overlays, .fonts, .images,
+        .music, .tags, .learned,
     ]
     static let visibleSections = projectSections + studioSections + resourceSections
 
