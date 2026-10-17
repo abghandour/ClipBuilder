@@ -344,6 +344,13 @@ extension AppStore {
                     renderBatches = Set(batches)
                     let count = takes.count
                     let preparedTagFields = tagFields
+                    // Every caption request starts now, so the last reel's model
+                    // round trip has the whole batch of renders to hide behind.
+                    let captions = await wizard.startCaptionRequests(takes: takes, options: renderOptions,
+                        profile: profile, database: database) { index, line in
+                        sink(group: "Reel \(index + 1) of \(count)")(line)
+                    }
+                    defer { captions.values.forEach { $0.cancel() } }
                     // Reels render one after another; each reel's social caption
                     // and report run while the next reel renders.
                     try await WizardReelBatch.run(count: count, render: { index in
@@ -356,6 +363,7 @@ extension AppStore {
                         return try await wizard.makeReel(take: takes[index], options: renderOptions, profile: profile,
                             database: database, batchID: batches[index], tagTextPrepared: true,
                             preparedTagFields: preparedTagFields, deferFinish: true,
+                            captionRequest: captions[takes[index].id],
                             emit: sink(group: "Reel \(index + 1) of \(count)", stage: stage))
                     }, finishEmit: { index, line in
                         sink(group: "Reel \(index + 1) of \(count)", prefix: "Reel \(index + 1): ")(line)

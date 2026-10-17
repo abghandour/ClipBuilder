@@ -318,10 +318,14 @@ enum PerformanceBaseline {
         let profile = store.activeProfile
         for (name, overlapped) in [("express-overlapped", true), ("express-inline", false)] {
             try await measure(name) {
+                let captions = await engine.startCaptionRequests(takes: takes, options: options, profile: profile,
+                    database: database) { index, line in log("reel \(index + 1) caption: \(line)") }
+                defer { captions.values.forEach { $0.cancel() } }
                 try await WizardReelBatch.run(count: takes.count, render: { index in
                     log("PHASE STAGE \(name) reel=\(index + 1) epoch=\(Date().timeIntervalSince1970)")
                     return try await engine.makeReel(take: takes[index], options: options, profile: profile,
                         database: database, batchID: UUID().uuidString, deferFinish: overlapped,
+                        captionRequest: captions[takes[index].id],
                         emit: { log("reel \(index + 1): \($0)") })
                 }, finishEmit: { index, line in log("reel \(index + 1) finish: \(line)") })
             }

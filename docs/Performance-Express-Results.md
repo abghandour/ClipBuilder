@@ -101,6 +101,24 @@ Across the three runs, caption round trips ranged from 8.4 to 29.6 s on the same
 prompt shape. Rendering a reel takes 5 to 8 s. Everything left on the Express
 clock is the caption model.
 
+## Fourth run: every caption requested at Generate time
+
+Express knows all its plans before the first render, so `generateMiniVideos` now
+calls `WizardEngine.startCaptionRequests` for the whole batch and hands each reel
+its request. Evidence in `build/performance-baseline-runs/express-04`.
+
+| Phase | Wall clock |
+| --- | --- |
+| express-overlapped | 19.9 s |
+| express-inline | 33.9 s |
+
+The three renders ended 16.2 s into the overlapped phase and the batch 3.7 s
+later. The three caption round trips, now concurrent, took 14.0–18.5 s each
+against 10–11 s when the provider served one at a time, so the configured
+provider shares its capacity between requests; the batch still finished
+16 s sooner than run three. Rendering is now the longer half of an Express batch
+on this fixture for the first time.
+
 ## What it says about the ranked options
 
 - The social caption is the single longest stage, roughly twice the render of a
