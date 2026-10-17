@@ -56,8 +56,13 @@ struct ExpressDeferredFinishTests {
         }
         let engine = WizardEngine(ai: ai, render: RenderEngine())
         let renderLog = Lines()
+        // Express asks for every caption before the first render; the reel reuses its request.
+        let captions = await engine.startCaptionRequests(takes: [take], options: options, profile: profile,
+                                                         database: database) { _, line in renderLog.append(line) }
+        #expect(captions.keys.contains(take.id))
         let finish = try await engine.makeReel(take: take, options: options, profile: profile, database: database,
-                                               batchID: "batch", deferFinish: true, emit: { renderLog.append($0) })
+                                               batchID: "batch", deferFinish: true, captionRequest: captions[take.id],
+                                               emit: { renderLog.append($0) })
         let deferred = try #require(finish)
 
         // The file and its record exist; the caption was requested during the
@@ -65,7 +70,7 @@ struct ExpressDeferredFinishTests {
         let rendered = try #require(try await database.fetchGeneratedVideos(projectID: projectID).first)
         #expect(FileManager.default.fileExists(atPath: rendered.path))
         #expect(rendered.caption.isEmpty)
-        #expect(captionCalls.all.count == 1)
+        #expect(captionCalls.all.count == 1)  // the prestarted request, not a second one
         #expect(captionCalls.all.first?.contains("Duration: 3s") == true)
         #expect(renderLog.all.contains { $0.hasPrefix("Caption — asking the model") })
         let renderStages = renderLog.all.compactMap(WizardTiming.parse).map(\.stage)

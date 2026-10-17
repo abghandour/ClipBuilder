@@ -316,18 +316,44 @@ enum PerformanceBaseline {
         log("FIXTURE reels=\(reelCount) clipsPerReel=\(clipsPerReel) ffmpegJobs=\(FFmpeg.jobLimit)")
         let engine = store.wizard
         let profile = store.activeProfile
-        for (name, overlapped) in [("express-overlapped", true), ("express-inline", false)] {
+        // The Express "Overlay" forces the compositor pass; a saved template stands in for the user's.
+        var overlayText = TextOverlayItem()
+        overlayText.text = "Baseline overlay"
+        overlayText.unbounded = true
+        try OverlayTemplateStore.save(OverlayTemplate(name: "Baseline Overlay",
+                                                      composition: OverlayComposition(texts: [overlayText])))
+        OverlayTemplateStore.invalidateCache()
+        var overlayOptions = options
+        overlayOptions.fixedOverlayTemplate = "Baseline Overlay"
+        let phases: [(name: String, overlapped: Bool, streams: Int, options: WizardOptions)] = [
+            ("express-overlapped", true, 1, options),
+            ("express-overlay", true, 1, overlayOptions),
+            ("express-inline", false, 1, options),
+        ]
+        for phase in phases {
+            let name = phase.name, options = phase.options
             try await measure(name) {
                 let captions = await engine.startCaptionRequests(takes: takes, options: options, profile: profile,
                     database: database) { index, line in log("reel \(index + 1) caption: \(line)") }
                 defer { captions.values.forEach { $0.cancel() } }
-                try await WizardReelBatch.run(count: takes.count, render: { index in
-                    log("PHASE STAGE \(name) reel=\(index + 1) epoch=\(Date().timeIntervalSince1970)")
-                    return try await engine.makeReel(take: takes[index], options: options, profile: profile,
-                        database: database, batchID: UUID().uuidString, deferFinish: overlapped,
-                        captionRequest: captions[takes[index].id],
-                        emit: { log("reel \(index + 1): \($0)") })
-                }, finishEmit: { index, line in log("reel \(index + 1) finish: \(line)") })
+                // `streams` serial batches share the reels round-robin: 2 would render two reels at once
+                // (measured October 17, 2026: no gain, the encoder budget is already full).
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    for stream in 0..<phase.streams {
+                        let indices = Array(stride(from: stream, to: takes.count, by: phase.streams))
+                        group.addTask {
+                            try await WizardReelBatch.run(count: indices.count, render: { position in
+                                let index = indices[position]
+                                log("PHASE STAGE \(name) reel=\(index + 1) epoch=\(Date().timeIntervalSince1970)")
+                                return try await engine.makeReel(take: takes[index], options: options, profile: profile,
+                                    database: database, batchID: UUID().uuidString, deferFinish: phase.overlapped,
+                                    captionRequest: captions[takes[index].id],
+                                    emit: { log("reel \(index + 1): \($0)") })
+                            }, finishEmit: { position, line in log("reel \(indices[position] + 1) finish: \(line)") })
+                        }
+                    }
+                    try await group.waitForAll()
+                }
             }
         }
     }

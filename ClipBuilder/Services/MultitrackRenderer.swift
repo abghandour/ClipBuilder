@@ -216,6 +216,7 @@ actor MultitrackRenderer {
                 roles: [AIRole] = [],
                 renderFingerprint: String? = nil,
                 preview: Bool = false,
+                prerenderedSources: Set<String> = [],
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         try FootageAvailability.requireSources(document: document, scenes: scenes)
         let editing = profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())
@@ -224,7 +225,8 @@ actor MultitrackRenderer {
                 try await renderConfigured(document: document, scenes: scenes, profile: profile,
                                            database: database, centerStageCamera: centerStageCamera,
                                            projectID: projectID, outputName: outputName, batchID: batchID, wizardOptions: wizardOptions, roles: roles,
-                                           renderFingerprint: renderFingerprint, preview: preview, emit: emit)
+                                           renderFingerprint: renderFingerprint, preview: preview,
+                                           prerenderedSources: prerenderedSources, emit: emit)
             }
         }
     }
@@ -272,6 +274,7 @@ actor MultitrackRenderer {
                                   centerStageCamera: String, projectID: Int64?,
                                   outputName: String? = nil, batchID: String? = nil, wizardOptions: WizardOptions? = nil,
                                   roles: [AIRole] = [], renderFingerprint: String? = nil, preview: Bool,
+                                  prerenderedSources: Set<String> = [],
                                   emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         // Overlay blocks render as their flattened text/image items.
         let document = Self.removingMissingEdgeBumpers(document.expandingOverlayBlocks(), emit: emit)
@@ -500,9 +503,11 @@ actor MultitrackRenderer {
         // Spanning overlays ride the segments they touch, on each segment's
         // own clock, when every join keeps pixels in place and no overlay
         // touches a gap or bumper; that removes the final pass over the
-        // whole video. Otherwise the final pass runs as before.
+        // whole video. Otherwise the final pass runs as before. Prerendered
+        // clips are copied as segments, so one final pass beats re-encoding
+        // each of them with the overlay burned in.
         var spanningFused = false
-        if overlayFusionEnabled, !overlayPlan.remaining.isEmpty,
+        if overlayFusionEnabled, prerenderedSources.isEmpty, !overlayPlan.remaining.isEmpty,
            transitions.allSatisfy(Self.transitionKeepsOverlayPixels),
            let fused = Self.fuseSpanningOverlays(overlayPlan, segments: fullSegments) {
             emit("Spanning overlays fused into segments: \(overlayPlan.remaining.count)")
@@ -526,7 +531,8 @@ actor MultitrackRenderer {
                                          captionRenderer: captionRenderer,
                                          captionCache: captionCache, captionStyle: profile.captions,
                                          fontFingerprints: fontFingerprints,
-                                         overlays: overlayPlan.bySegment[index] ?? [], emit: emit)
+                                         overlays: overlayPlan.bySegment[index] ?? [],
+                                         prerendered: prerenderedSources, emit: emit)
         }
         clipPaths = artifacts.map(\.url)
 
@@ -1373,6 +1379,7 @@ actor MultitrackRenderer {
                                captionCache: CaptionPNGCache,
                                captionStyle: CaptionStyle, fontFingerprints: [String]?,
                                overlays: [TimedOverlayPNG],
+                               prerendered: Set<String> = [],
                                emit: @escaping @Sendable (String) -> Void) async throws -> SegmentArtifact {
         let timing = PerfSignpost.begin("SegmentEncode", metadata: "segment=\(index)/\(total)")
         defer { PerfSignpost.end(timing) }
@@ -1466,6 +1473,15 @@ actor MultitrackRenderer {
             emit("Segment \(index + 1): cache hit; encodes=0")
             return SegmentArtifact(url: segmentPath, key: nil, wasCached: true)
         }
+        // A clip this app already rendered to the output format, shown whole
+        // and untouched, is the segment: copy it instead of encoding it again.
+        if captions.isEmpty, overlays.isEmpty, masks.isEmpty, placements.count == 1, segment.clips.count == 1,
+           await Self.isPrerenderedPassthrough(placements[0], clip: segment.clips[0], prerendered: prerendered) {
+            emit("Segment \(index + 1): prerendered clip; copied, encodes=0")
+            try FileManager.default.copyItemReplacing(at: URL(fileURLWithPath: placements[0].sourcePath), to: segmentPath)
+            try Task.checkCancellation()
+            return SegmentArtifact(url: segmentPath, key: nil)
+        }
         do {
             emit("Segment \(index + 1): encode pass")
             try await compositeLayeredSegment(placements: placements, duration: segment.duration,
@@ -1486,6 +1502,25 @@ actor MultitrackRenderer {
         var key: String?
         var wasCached = false
         var reusable: Bool { key != nil || wasCached }
+    }
+
+    /// True when the segment would re-encode `placement` unchanged: the
+    /// source is one the caller rendered with this app's encode settings,
+    /// fills the frame at the output size with its own audio, plays whole
+    /// at normal speed, and carries no crop, fade, effect, mask or layout.
+    nonisolated static func isPrerenderedPassthrough(_ placement: Placement, clip: ResolvedClip,
+                                                     prerendered: Set<String>) async -> Bool {
+        guard prerendered.contains(placement.sourcePath),
+              !placement.isWide, !placement.bumper, !placement.fillCanvas, !placement.muted,
+              placement.role == .main, placement.speed == 1,
+              placement.staticAreaFilter == nil, placement.effectiveEffect == nil,
+              placement.freeCrops?.isEmpty != false, placement.cropXFrac == nil, placement.screenCrop == nil,
+              placement.fadeIn == nil, placement.fadeOut == nil,
+              clip.cameraPath == nil, clip.areaWindow == nil, clip.areaRegion == nil, !clip.centerStage,
+              placement.sourceStart <= 0.001 else { return false }
+        let probe = await FFmpeg.info(of: URL(fileURLWithPath: placement.sourcePath))
+        return probe.hasAudio && probe.width == width && probe.height == height
+            && abs(probe.duration - placement.sourceDur) <= 0.1
     }
 
     private func publishSegments(_ artifacts: [SegmentArtifact], clips: [ResolvedClip],

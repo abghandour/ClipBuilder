@@ -3879,8 +3879,11 @@ actor WizardEngine {
             if !finalOverlayBlocks.isEmpty { prepared.overlayBlocks = finalOverlayBlocks }
             let brollScenes = cutaways.isEmpty ? [] : try await database.fetchScenes(projectID: options.projectID, scope: options.selectedRunIDs.isEmpty && !options.sourceSceneSelection ? .active : .history, includeExcluded: false)
             try await WizardTiming.measure("compositor", emit: emit) {
+                // The normalized clips are already output-format files: the
+                // compositor copies them as segments instead of encoding again.
                 let result = try await MultitrackRenderer(render: render).render(document: prepared, scenes: brollScenes,
-                    profile: profile, database: database, preview: true, emit: emit)
+                    profile: profile, database: database, preview: true,
+                    prerenderedSources: Set(clipURLs.map(\.path)), emit: emit)
                 defer { try? FileManager.default.removeItem(at: result.url) }
                 try FileManager.default.copyItemReplacing(at: result.url, to: assembled)
             }

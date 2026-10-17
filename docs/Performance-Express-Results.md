@@ -119,6 +119,40 @@ provider shares its capacity between requests; the batch still finished
 16 s sooner than run three. Rendering is now the longer half of an Express batch
 on this fixture for the first time.
 
+## Fifth and sixth runs: parallel reels rejected, compositor measured and trimmed
+
+Run five (`express-05`) added two phases: `express-parallel2` renders two reels at
+once, and `express-overlay` turns the Express overlay on so the compositor pass runs.
+
+| Phase | Run 5 | Run 6 |
+| --- | --- | --- |
+| express-overlapped | 25.9 s | 23.4 s |
+| express-parallel2 | 24.3 s | 24.4 s |
+| express-overlay | 28.4 s | 24.4 s |
+| express-inline | 33.4 s | 30.3 s |
+
+Parallel reels: the two concurrent renders took 9.4 s and 11.6 s against about
+6 s each alone, so the three renders finished at 18.4 s instead of 17.9 s. No
+gain; the encoder budget is already spent by the per-clip extraction. Rejected
+again, and the phase was removed from the scenario.
+
+Overlay on: the compositor re-encoded each already-normalized clip as its own
+segment (six encodes), then crossfaded and ran the overlay pass. Run five put
+the compositor at 5.3–6.7 s per reel against 1.7–3.5 s for the plain join. In
+run six `MultitrackRenderer` copies a segment whose single clip is one of the
+wizard's own normalized files, shown whole and unaltered (`prerenderedSources`),
+and skips overlay fusion for those clips so the overlay runs as one final pass:
+
+| Stage, overlay on | Run 5 | Run 6 |
+| --- | --- | --- |
+| compositor | 5.3–6.7 s | 3.5–5.7 s |
+| whole render | 8.3–9.7 s | 6.6–8.9 s |
+| encodes in the phase | 52 | 39 |
+
+What remains in the compositor is the crossfade encode plus the overlay encode.
+Folding the overlay into the crossfade pass would remove one more encode per
+reel; that is the last piece of Codex's option 1 still open.
+
 ## What it says about the ranked options
 
 - The social caption is the single longest stage, roughly twice the render of a
