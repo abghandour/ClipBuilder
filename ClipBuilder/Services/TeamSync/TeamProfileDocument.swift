@@ -61,11 +61,44 @@ nonisolated enum TeamProfileDocument {
             var result: [String: SyncJSON] = [:]
             if case .object(let fields) = remote { result = fields }
             for key in Set(current.keys).union(baseline.keys) where current[key] != baseline[key] {
-                result[key] = merge(remote: result[key], current: current[key], baseline: baseline[key])
+                result[key] = key == "express_presets"
+                    ? mergeNamedList(remote: result[key], current: current[key], baseline: baseline[key])
+                    : merge(remote: result[key], current: current[key], baseline: baseline[key])
             }
             return .object(result)
         }
         return current
+    }
+
+    /// Lists of named entries (Express presets) merge per entry, keyed by
+    /// name: a local add or edit wins for that name, a local delete removes
+    /// the entry unless the other side changed it, and everything the other
+    /// side added or edited survives. The whole list never replaces itself.
+    static func mergeNamedList(remote: SyncJSON?, current: SyncJSON?, baseline: SyncJSON?) -> SyncJSON? {
+        guard let remote else { return current }
+        func entries(_ value: SyncJSON?) -> [(key: String, value: SyncJSON)] {
+            guard case .array(let items) = value else { return [] }
+            return items.compactMap { item in
+                guard case .object(let fields) = item, case .string(let name)? = fields["name"] else { return nil }
+                return (name.lowercased(), item)
+            }
+        }
+        var merged: [(key: String, value: SyncJSON)] = entries(remote)
+        let local = Dictionary(entries(current), uniquingKeysWith: { first, _ in first })
+        let base = Dictionary(entries(baseline), uniquingKeysWith: { first, _ in first })
+        for key in Set(local.keys).union(base.keys) where local[key] != base[key] {
+            if let edited = local[key] {
+                if let index = merged.firstIndex(where: { $0.key == key }) { merged[index].value = edited }
+                else { merged.append((key, edited)) }
+            } else if let index = merged.firstIndex(where: { $0.key == key }), merged[index].value == base[key] {
+                merged.remove(at: index)
+            }
+        }
+        func name(_ entry: SyncJSON) -> String {
+            if case .object(let fields) = entry, case .string(let name)? = fields["name"] { return name }
+            return ""
+        }
+        return .array(merged.map(\.value).sorted { name($0).localizedCaseInsensitiveCompare(name($1)) == .orderedAscending })
     }
 }
 
@@ -124,6 +157,13 @@ extension Database {
             // could not apply it to BrandProfile. Adopt it before uploading;
             // otherwise this upgraded Mac would delete the team's policy.
             if profile.editing == nil, saved["editing"] != nil, saved["editing"] != .null {
+                try connection.execute("INSERT OR IGNORE INTO sync_profile_adoption(id, baseline_json) VALUES (1, ?)",
+                                       [.text(current)])
+                return
+            }
+            // Same for Express presets: a 1.103-or-older client carried the
+            // team's presets through as an unknown key; adopt before uploading.
+            if profile.expressPresets == nil, saved["express_presets"] != nil, saved["express_presets"] != .null {
                 try connection.execute("INSERT OR IGNORE INTO sync_profile_adoption(id, baseline_json) VALUES (1, ?)",
                                        [.text(current)])
                 return

@@ -446,10 +446,12 @@ actor MultitrackRenderer {
         func clampWindow(start: Double, end: Double) -> (Double, Double) {
             (start, min(end, totalDuration))
         }
-        let textRenderer = TextOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
-        let imageRenderer = ImageOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height)
+        // The document's own safe-area choice, handed to the renderers
+        // explicitly rather than read back from the task-local context.
+        let safeArea = PlatformSafeArea.resolve(document.renderSettings)
+        let textRenderer = TextOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height, safeArea: safeArea)
+        let imageRenderer = ImageOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height, safeArea: safeArea)
         var overlays: [TimedOverlayPNG] = []
-        let safeArea = PlatformSafeArea.resolve(RenderContext.settings)
         if let safeArea {
             emit("Overlays kept clear of \(safeArea.platforms.map(\.label).joined(separator: ", ")) buttons")
         }

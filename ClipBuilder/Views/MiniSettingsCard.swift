@@ -104,6 +104,12 @@ struct MiniSettingsCard: View {
                             }
                             .pickerStyle(.menu)
                         }
+                        .onAppear {
+                            // A design that was renamed or removed: really fall back to the logo.
+                            if let chosen = settings.watermarkOverlay, !templates.contains(where: { $0.name == chosen }) {
+                                settings.watermarkOverlay = nil
+                            }
+                        }
                     }
                     MiniRow("Watermark opacity") {
                         HStack(spacing: Theme.spaceS) {
@@ -124,9 +130,9 @@ struct MiniSettingsCard: View {
                 }
             }
             bumperToggle("Intro video", placement: .intro, value: $settings.introVideo,
-                         bumper: $settings.introBumperPath)
+                         bumper: $settings.introBumper)
             bumperToggle("Outro video", placement: .outro, value: $settings.outroVideo,
-                         bumper: $settings.outroBumperPath)
+                         bumper: $settings.outroBumper)
             MiniRow("Transition") {
                 transitionPicker
             }
@@ -321,11 +327,11 @@ struct MiniSettingsCard: View {
             MiniDependents {
                 MiniRow("\(placement == .intro ? "Intro" : "Outro") bumper") {
                     Picker(title, selection: Binding(
-                        get: { eligible.contains { $0.path == bumper.wrappedValue } ? bumper.wrappedValue ?? "" : "" },
+                        get: { eligible.contains { $0.libraryPath == bumper.wrappedValue } ? bumper.wrappedValue ?? "" : "" },
                         set: { bumper.wrappedValue = $0.isEmpty ? nil : $0 })) {
                         Text("Any").lineLimit(1).fixedSize().tag("")
                         ForEach(eligible) { asset in
-                            Text(asset.displayName).lineLimit(1).fixedSize().tag(asset.path)
+                            Text(asset.displayName).lineLimit(1).fixedSize().tag(asset.libraryPath)
                         }
                     }
                     .pickerStyle(.menu)

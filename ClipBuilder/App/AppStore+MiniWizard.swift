@@ -259,7 +259,14 @@ extension AppStore {
         base.critiqueLoop = false
         base.accountBenchmarks = igBenchmarks
         base.localHashtags = OnDevicePolicy.isEnabled(item: "hashtags", config: settings.ai)
-        let step2 = chosen.step2Options(base: base.step2)
+        var step2 = chosen.step2Options(base: base.step2)
+        // Chosen bumpers are stored by library path; resolve to this Mac's files.
+        func bumperPath(_ libraryPath: String?, _ placement: BumperPlacement) -> String? {
+            guard let libraryPath else { return nil }
+            return bumpers.first { $0.libraryPath == libraryPath && $0.placements.contains(placement) }?.path
+        }
+        step2.introBumperPath = chosen.introVideo ? bumperPath(chosen.introBumper, .intro) : nil
+        step2.outroBumperPath = chosen.outroVideo ? bumperPath(chosen.outroBumper, .outro) : nil
         let options = WizardOptions.merge(step1: base.step1, step2: step2, base: base)
         let count = flow.outputCount(keptCount: candidates.count)
         beginWizardSelectionWork(projectID: run.projectID, stage: "Making reel 1 of \(count)", options: options)

@@ -56,7 +56,10 @@ struct MiniPresetSaveSheet: View {
     private func save() {
         let cleaned = MiniWizardPresetStore.cleaned(name)
         guard !cleaned.isEmpty else { return }
-        let updated = MiniWizardPresetStore.upsert(name: cleaned, settings: settings, into: presets)
+        // Against the live collection, not the snapshot taken when the sheet
+        // opened: a teammate's preset that synced in meanwhile must survive.
+        let current = store.expressPresets(profileName: profileName)
+        let updated = MiniWizardPresetStore.upsert(name: cleaned, settings: settings, into: current)
         guard store.saveExpressPresets(updated, profileName: profileName) else {
             error = "The profile changed; reopen Save to try again."
             return
@@ -179,7 +182,8 @@ struct MiniPresetLoadSheet: View {
     private func commitRename(_ preset: MiniWizardPreset) {
         defer { renaming = nil }
         guard MiniWizardPresetStore.cleaned(renameText) != preset.name else { return }
-        guard let updated = MiniWizardPresetStore.rename(preset.name, to: renameText, in: presets) else {
+        let current = store.expressPresets(profileName: profileName)
+        guard let updated = MiniWizardPresetStore.rename(preset.name, to: renameText, in: current) else {
             error = "That name is empty or already used."
             return
         }
@@ -194,7 +198,7 @@ struct MiniPresetLoadSheet: View {
     }
 
     private func delete(_ preset: MiniWizardPreset) {
-        persist(MiniWizardPresetStore.delete(preset.name, in: presets))
+        persist(MiniWizardPresetStore.delete(preset.name, in: store.expressPresets(profileName: profileName)))
         if selection == preset.id { selection = presets.first?.id }
         if MiniWizardPresetStore.loaded(profileName: profileName)?.name == preset.name {
             MiniWizardPresetStore.rememberLoaded(nil, profileName: profileName)

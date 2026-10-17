@@ -250,4 +250,31 @@ extension SyncMappingTests {
         scene.videoPath = ""
         #expect(FootageAvailability.missingSource(document: document, scenes: [scene]) == scene.videoFilename)
     }
+
+    @Test("Express presets merge per entry: both sides' additions survive, local deletes and edits win")
+    func mergeExpressPresets() throws {
+        func preset(_ name: String, captions: Bool = false, at seconds: Double = 1) -> MiniWizardPreset {
+            var settings = MiniWizardSettings()
+            settings.captions = captions
+            return MiniWizardPreset(name: name, savedAt: Date(timeIntervalSince1970: seconds), settings: settings)
+        }
+        var original = BrandProfile(name: "Shared")
+        original.expressPresets = [preset("Default"), preset("Old"), preset("Shared")]
+        let baseline = try TeamProfileDocument.encode(original)
+        var remote = original
+        remote.expressPresets = [preset("Default"), preset("Old"), preset("Podcast"), preset("Shared", captions: true, at: 9)]
+        var local = original
+        local.expressPresets = [preset("Default", captions: true, at: 5), preset("Interview"), preset("Shared")]  // Old deleted locally
+        let merged = try TeamProfileDocument.merging(TeamProfileDocument.encode(remote), into: local, baseline: baseline)
+        let names = merged.expressPresets?.map(\.name)
+        #expect(names == ["Default", "Interview", "Podcast", "Shared"])
+        #expect(merged.expressPresets?.first { $0.name == "Default" }?.settings.captions == true, "local edit wins")
+        #expect(merged.expressPresets?.first { $0.name == "Shared" }?.settings.captions == true, "remote edit survives")
+        // A local delete of an entry the other side edited keeps the edit.
+        var remoteEdited = original
+        remoteEdited.expressPresets = [preset("Default"), preset("Old", captions: true, at: 7), preset("Shared")]
+        let kept = try TeamProfileDocument.merging(TeamProfileDocument.encode(remoteEdited), into: local, baseline: baseline)
+        #expect(kept.expressPresets?.contains { $0.name == "Old" && $0.settings.captions } == true)
+        #expect(TeamProfileDocument.mergeNamedList(remote: nil, current: .array([]), baseline: nil) == .array([]))
+    }
 }

@@ -18,6 +18,7 @@ struct WizardFixedOverlayTests {
         options.fixedOverlayTemplate = "lower third"
         let whole = try #require(WizardFixedOverlay.block(options: options, templates: templates, totalDuration: 30))
         #expect(whole.name == "Lower Third" && whole.startTime == 0 && whole.duration == 30)
+        #expect(whole.exactPlacement, "lands where the Overlays editor shows it")
         #expect(whole.composition.texts.first?.text == "Subscribe")
         options.fixedOverlayStart = 4
         let later = try #require(WizardFixedOverlay.block(options: options, templates: templates, totalDuration: 30))
@@ -88,7 +89,7 @@ struct WizardFixedOverlayTests {
         options.includeWatermark = true
         let block = try #require(WizardFixedOverlay.watermarkBlock(options: options,
             templates: [OverlayTemplate(name: "mark", composition: composition)], totalDuration: 20))
-        #expect(block.startTime == 0 && block.duration == 20 && block.name == "mark")
+        #expect(block.startTime == 0 && block.duration == 20 && block.name == "mark" && block.exactPlacement)
         let styledText = try #require(block.composition.texts.first)
         #expect(styledText.opacity == WizardFixedOverlay.watermarkOpacity && styledText.boxOpacity == 0)
         #expect(styledText.shadowOpacity == 0 && styledText.strokeWidthEm == 0)

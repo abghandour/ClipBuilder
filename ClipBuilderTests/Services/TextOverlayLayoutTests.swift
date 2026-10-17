@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import UniformTypeIdentifiers
 import Testing
 @testable import Clip_Builder
 
@@ -99,6 +100,74 @@ struct TextOverlayLayoutTests {
         // Near the bottom edge the extra rows grow upward instead.
         let low = try render(item(paragraph, alignment: "left", y: 0.97, fontsize: 40))
         #expect(low.maxY <= 1920 - 21 + 5 && low.minY < 1920 * 0.97 - 48 - 40)
+    }
+
+    @Test("An unbreakable token wider than the frame shrinks instead of spilling past the edge")
+    func unbreakableTokenShrinks() throws {
+        let token = "https://example.com/" + String(repeating: "verylongpathsegment", count: 6)
+        let bounds = try render(item(token, alignment: "left", fontsize: 40))
+        #expect(bounds.minX >= 21 - 5 && bounds.maxX <= 1080 - 21 + 5, "stays inside the 2% margin")
+        #expect(bounds.width > 600, "still uses most of the width")
+    }
+
+    @Test("Exact-placement blocks expand into items the safe area leaves alone")
+    func exactPlacementSurvivesExpansionAndClamp() throws {
+        var text = TextOverlayItem(text: "Low")
+        text.xFrac = 0.5; text.yFrac = 0.97; text.wFrac = 0.4; text.hFrac = 0.05; text.unbounded = true
+        var image = ImageOverlayItem()
+        image.path = "/logo.png"; image.xFrac = 0.95; image.yFrac = 0.5; image.unbounded = true
+        var block = OverlayBlockItem()
+        block.composition = OverlayComposition(texts: [text], images: [image])
+        block.exactPlacement = true
+        var document = TimelineDocument()
+        document.overlayBlocks = [block]
+        let expanded = document.expandingOverlayBlocks()
+        #expect(expanded.textOverlays.first?.keepsPlacement == true && expanded.imageOverlays.first?.keepsPlacement == true)
+        let area = try #require(PlatformSafeArea.resolve(platforms: SocialPlatform.allCases, aspectRatio: 9.0 / 16.0))
+        let keptText = try #require(expanded.textOverlays.first).keptClear(of: area)
+        let keptImage = try #require(expanded.imageOverlays.first).keptClear(of: area)
+        #expect(keptText.yFrac == 0.97 && keptImage.xFrac == 0.95)
+        // The block itself is skipped by the document-level pass too.
+        document.renderSettings.platformSafeArea = PlatformSafeAreaSettings()
+        #expect(document.keepingOverlaysClearOfPlatformChrome().overlayBlocks.first?.composition.texts.first?.yFrac == 0.97)
+        // Round trip keeps the flags.
+        let decoded = try JSONDecoder().decode(TimelineDocument.self, from: JSONEncoder().encode(expanded))
+        #expect(decoded.textOverlays.first?.keepsPlacement == true && decoded.imageOverlays.first?.keepsPlacement == true)
+        let decodedBlock = try JSONDecoder().decode(OverlayBlockItem.self, from: JSONEncoder().encode(block))
+        #expect(decodedBlock.exactPlacement)
+        #expect(try JSONDecoder().decode(OverlayBlockItem.self, from: Data(#"{"name":"x"}"#.utf8)).exactPlacement == false)
+        // A pinned item renders at its designed spot even with a safe area on the renderer.
+        var pinned = item("Low", alignment: "center", y: 0.97, fontsize: 30)
+        pinned.boxOpacity = 0
+        pinned.keepsPlacement = true
+        let safeRenderer = TextOverlayRenderer(videoWidth: 1080, videoHeight: 1920, safeArea: area)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("pinned-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let glyphs = try opaqueBounds(try safeRenderer.render(pinned, to: directory))
+        #expect(glyphs.midY > 1920 * 0.9, "not lifted above the footer")
+
+        // Images too: a 100x100 red square placed at 92% down stays there.
+        let square = directory.appendingPathComponent("square.png")
+        let squareContext = try #require(CGContext(data: nil, width: 100, height: 100, bitsPerComponent: 8, bytesPerRow: 0,
+                                                   space: CGColorSpaceCreateDeviceRGB(),
+                                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        squareContext.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        squareContext.fill(CGRect(x: 0, y: 0, width: 100, height: 100))
+        let squareImage = try #require(squareContext.makeImage())
+        let destination = try #require(CGImageDestinationCreateWithURL(square as CFURL, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, squareImage, nil)
+        #expect(CGImageDestinationFinalize(destination))
+        var logo = ImageOverlayItem()
+        logo.path = square.path
+        logo.xFrac = 0.5; logo.yFrac = 0.92; logo.wFrac = 0.3
+        logo.keepsPlacement = true
+        let imageRenderer = ImageOverlayRenderer(videoWidth: 1080, videoHeight: 1920, safeArea: area)
+        let pinnedImage = try opaqueBounds(try imageRenderer.render(logo, to: directory))
+        #expect(abs(pinnedImage.midY - 1920 * 0.92) < 2 && abs(pinnedImage.midX - 540) < 2)
+        logo.keepsPlacement = false
+        let nudged = try opaqueBounds(try imageRenderer.render(logo, to: directory))
+        #expect(nudged.midY < 1920 * 0.8, "an ordinary image is still kept clear of the footer")
     }
 
     @Test("Alignment round-trips in JSON and defaults to centre")

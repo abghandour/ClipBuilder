@@ -662,6 +662,70 @@ extension MultitrackRenderTests {
                                  minimumSSIM: values.prefix(common).min() ?? 0)
     }
 
+    @Test("exact-placement overlay blocks render where designed; ordinary ones are kept clear of platform chrome")
+    func exactPlacementBlocksRenderAtTheirDesignedPosition() async throws {
+        let temp = try TempDatabase()
+        // A black source, so the only red in the frame is the overlay square.
+        let source = temp.directory.url.appendingPathComponent("black.mp4")
+        _ = try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "color=c=black:size=1920x1080:rate=30", "-t", "3",
+                                  "-c:v", "libx264", "-pix_fmt", "yuv420p", source.path], timeout: 60)
+        let videoID = try await temp.database.registerVideo(hash: "exact-placement", filename: source.lastPathComponent,
+            path: source.path, duration: 3, width: 1920, height: 1080, wide: true)
+        _ = try await temp.database.saveAnalysis(videoID: videoID, runName: "Fixture", instructions: "", sampleInterval: 1,
+            notesJSON: nil, tagRanges: ["fixture": [(start: 0, end: 3)]], moments: [], analyzedTags: ["fixture"],
+            provider: nil, model: nil, mode: "visual")
+        let scene = try #require(try await temp.database.fetchScenes(videoID: videoID).first)
+        // A solid red 100x100 PNG as the overlay image.
+        let square = temp.directory.url.appendingPathComponent("square.png")
+        _ = try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "color=c=red:size=100x100", "-frames:v", "1", square.path], timeout: 60)
+        var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 2)
+        clip.videoFile = source.path
+        func centre(exact: Bool, safeArea: Bool) async throws -> CGFloat {
+            var document = Fixtures.timelineDocument(clips: [clip])
+            var settings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+            settings.platformSafeArea.enabled = safeArea
+            document.renderSettings = settings
+            var image = ImageOverlayItem()
+            image.path = square.path
+            image.xFrac = 0.5; image.yFrac = 0.92; image.wFrac = 0.2
+            image.unbounded = true
+            image.transIn = "cut"; image.transOut = "cut"
+            var block = OverlayBlockItem()
+            block.duration = 2
+            block.composition = OverlayComposition(images: [image])
+            block.exactPlacement = exact
+            document.overlayBlocks = [block]
+            let result = try await MultitrackRenderer(render: RenderEngine()).render(document: document, scenes: [scene],
+                profile: Fixtures.brand(), database: temp.database, preview: true, emit: { _ in })
+            defer { try? FileManager.default.removeItem(at: result.url) }
+            // Mean row of strongly red pixels in a mid-video frame, as a fraction of the height.
+            let frame = temp.directory.url.appendingPathComponent("frame-\(exact)-\(safeArea).rgb")
+            _ = try await FFmpeg.run(["-y", "-ss", "1", "-i", result.url.path, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", frame.path], timeout: 60)
+            let bytes = [UInt8](try Data(contentsOf: frame))
+            var rows: [Int] = []
+            var columns: [Int] = []
+            for y in 0..<640 {
+                var reds = 0
+                for x in 0..<360 {
+                    let i = (y * 360 + x) * 3
+                    if bytes[i] > 170 && bytes[i + 1] < 100 && bytes[i + 2] < 100 { reds += 1; columns.append(x) }
+                }
+                if reds >= 20 { rows.append(y) }
+            }
+            try #require(!rows.isEmpty, "red square not found")
+            let span = (rows.min() ?? 0, rows.max() ?? 0)
+            let midX = CGFloat(columns.reduce(0, +)) / CGFloat(max(1, columns.count)) / 360
+            #expect(span.1 - span.0 < 90 && abs(midX - 0.5) < 0.03, "one square, centred: rows \(span) midX \(midX)")
+            return CGFloat(rows.reduce(0, +)) / CGFloat(rows.count) / 640
+        }
+        let exact = try await centre(exact: true, safeArea: true)
+        #expect(abs(exact - 0.92) < 0.03, "exact placement ignores the safe area: \(exact)")
+        let plain = try await centre(exact: false, safeArea: false)
+        #expect(abs(plain - 0.92) < 0.03, "no safe area, no move: \(plain)")
+        let nudged = try await centre(exact: false, safeArea: true)
+        #expect(nudged < 0.85, "an ordinary block is lifted above the footer: \(nudged)")
+    }
+
     @Test("an unaffordable crossfade reports its hard-cut fallback")
     func assemblyReportsFallback() async throws {
         let temp = try TempDirectory()

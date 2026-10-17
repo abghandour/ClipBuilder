@@ -150,6 +150,12 @@ nonisolated struct TextOverlayRenderer {
     /// they hold in the full layout — so successive renders animate a
     /// word-by-word reveal without any reflow.
     func render(_ item: TextOverlayItem, to directory: URL, visibleWords: Int? = nil) throws -> URL {
+        if item.keepsPlacement, safeArea != nil {
+            // Placed by hand (Express overlay, watermark): never nudged clear of platform chrome.
+            var exact = self
+            exact.safeArea = nil
+            return try exact.render(item, to: directory, visibleWords: visibleWords)
+        }
         let width = videoWidth
         let height = videoHeight
         let colorSpace = CGColorSpaceCreateDeviceRGB()
@@ -400,8 +406,9 @@ nonisolated struct TextOverlayRenderer {
             // when the frame's bottom is near.
             var m = measure(designSize, CGFloat(boxWidth))
             var neededHeight = Int(m.totalHeight.rounded(.up))
-            if neededHeight > videoHeight - margin * 2 {
-                // Even the frame cannot hold it at the design size: shrink.
+            // Too tall for the frame, or a single unbreakable token (a URL, a
+            // handle) still wider than the grown box: shrink.
+            if neededHeight > videoHeight - margin * 2 || m.maxWidth > CGFloat(boxWidth) {
                 var low = 6, high = Int(designSize), best = 6
                 while low <= high {
                     let mid = (low + high) / 2

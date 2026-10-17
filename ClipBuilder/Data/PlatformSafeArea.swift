@@ -190,7 +190,7 @@ extension TextOverlayItem {
     func keptClear(of safeArea: PlatformSafeArea?) -> TextOverlayItem {
         // NameTagPlanner already resolves Auto safety and caption clearance.
         // Re-clamping here would undo explicit corners and caption stacking.
-        guard design != "nameTag", let safeArea else { return self }
+        guard design != "nameTag", !keepsPlacement, let safeArea else { return self }
         let box = normalizedBox
         let center = safeArea.clampedCenter(x: box.midX, y: box.midY, width: box.width, height: box.height)
         var item = self
@@ -211,7 +211,7 @@ extension ImageOverlayItem {
     }
 
     func keptClear(of safeArea: PlatformSafeArea?, aspectRatio: Double = 1, frameAspectRatio: Double = 9.0 / 16.0) -> ImageOverlayItem {
-        guard let safeArea else { return self }
+        guard !keepsPlacement, let safeArea else { return self }
         let box = normalizedBox(aspectRatio: aspectRatio, frameAspectRatio: frameAspectRatio)
         let center = safeArea.clampedCenter(x: box.midX, y: box.midY, width: box.width, height: box.height)
         var item = self
@@ -230,7 +230,7 @@ extension TimelineDocument {
         let frameAspect = renderSettings.aspectRatio
         document.textOverlays = textOverlays.map { $0.keptClear(of: safeArea) }
         document.imageOverlays = imageOverlays.map { $0.keptClear(of: safeArea, frameAspectRatio: frameAspect) }
-        for index in document.overlayBlocks.indices {
+        for index in document.overlayBlocks.indices where !document.overlayBlocks[index].exactPlacement {
             let composition = document.overlayBlocks[index].composition
             document.overlayBlocks[index].composition.texts = composition.texts.map { $0.keptClear(of: safeArea) }
             document.overlayBlocks[index].composition.images = composition.images.map {

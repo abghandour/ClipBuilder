@@ -23,6 +23,7 @@ nonisolated enum WizardFixedOverlay {
         var block = OverlayBlockItem()
         block.name = template.name
         block.composition = replacingDynamicTexts(in: template.composition, with: options.fixedOverlayTexts ?? [])
+        block.exactPlacement = true
         block.startTime = (start * 100).rounded() / 100
         block.duration = (duration * 100).rounded() / 100
         return block
@@ -50,6 +51,7 @@ nonisolated enum WizardFixedOverlay {
         var block = OverlayBlockItem()
         block.name = template.name
         block.composition = watermarkStyled(template.composition, opacity: effectiveWatermarkOpacity(options: options))
+        block.exactPlacement = true
         block.startTime = 0
         block.duration = (totalDuration * 100).rounded() / 100
         return block

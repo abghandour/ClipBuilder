@@ -57,9 +57,13 @@ struct MiniWizardView: View {
 
     private var currentRun: MiniWizardRun? {
         guard let run = store.miniRun, run.projectID == store.activeProjectID,
-              run.video.path == selectedVideo?.path, (run.footageKind != .highlights || run.length == length),
-              run.footageKind == (podcastVideoIDs.contains(run.video.id) || run.video.type == .podcast || run.video.type == .interview
-                  ? footageKind : .highlights) else { return nil }
+              run.video.path == selectedVideo?.path, (run.footageKind != .highlights || run.length == length) else { return nil }
+        // The same rule the Footage picker uses, so a Transcript run on an
+        // ordinary video with a transcript is recognised as the current run.
+        let expected = MiniWizardFlow(video: run.video,
+                                      hasPodcastExchangeScenes: podcastVideoIDs.contains(run.video.id),
+                                      hasTranscript: hasTranscript, footageKind: footageKind).effectiveFootageKind
+        guard run.footageKind == expected else { return nil }
         return run
     }
 

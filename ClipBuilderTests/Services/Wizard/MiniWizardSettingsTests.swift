@@ -67,6 +67,12 @@ struct MiniWizardSettingsTests {
         var full = merged
         full.introBumperPath = "/a.mp4"
         full.outroBumperPath = "/b.mp4"
+        var picked = MiniWizardSettings()
+        picked.introVideo = true
+        picked.introBumper = "Intros/open.mp4"
+        #expect(picked.step2Options(base: WizardStep2Options()).introBumperPath == nil, "library paths resolve at generate time")
+        #expect(BumperAsset.libraryPath(of: "/lib/bumpers/Intros/open.mp4", root: URL(fileURLWithPath: "/lib/bumpers")) == "Intros/open.mp4")
+        #expect(BumperAsset.libraryPath(of: "/elsewhere/open.mp4", root: URL(fileURLWithPath: "/lib/bumpers")) == "open.mp4")
         full.watermarkOverlayTemplate = "Main"
         full.watermarkOpacity = 0.3
         let again = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(full))

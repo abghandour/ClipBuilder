@@ -11,9 +11,10 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var captionStyleID: String?
     var introVideo = false
     var outroVideo = false
-    /// Bumper file paths for each slot; nil = any bumper that allows it.
-    var introBumperPath: String?
-    var outroBumperPath: String?
+    /// Bumpers for each slot by library path (travels with presets and Team
+    /// Sync, unlike an absolute path); nil = any bumper that allows it.
+    var introBumper: String?
+    var outroBumper: String?
     var nameTags = false
     var nameTagContent: String?
     var nameTagStyle: String?
@@ -40,7 +41,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
 
     enum CodingKeys: String, CodingKey {
         case quality, preset, cameraFocus, captions, englishCaptions, captionPosition, captionStyleID
-        case introVideo, outroVideo, introBumperPath, outroBumperPath
+        case introVideo, outroVideo, introBumper, outroBumper
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case watermark, watermarkOverlay, watermarkOpacity
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, outputMode, transition
@@ -60,8 +61,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         captionStyleID = try c.decodeIfPresent(String.self, forKey: .captionStyleID)
         introVideo = try c.decodeIfPresent(Bool.self, forKey: .introVideo) ?? base.introVideo
         outroVideo = try c.decodeIfPresent(Bool.self, forKey: .outroVideo) ?? base.outroVideo
-        introBumperPath = try c.decodeIfPresent(String.self, forKey: .introBumperPath)
-        outroBumperPath = try c.decodeIfPresent(String.self, forKey: .outroBumperPath)
+        introBumper = try c.decodeIfPresent(String.self, forKey: .introBumper)
+        outroBumper = try c.decodeIfPresent(String.self, forKey: .outroBumper)
         nameTags = try c.decodeIfPresent(Bool.self, forKey: .nameTags) ?? base.nameTags
         nameTagContent = try c.decodeIfPresent(String.self, forKey: .nameTagContent)
         nameTagStyle = try c.decodeIfPresent(String.self, forKey: .nameTagStyle)
@@ -95,8 +96,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.captionLanguage = englishCaptions ? "en" : nil
         result.includeIntroBumper = introVideo
         result.includeOutroBumper = outroVideo
-        result.introBumperPath = introVideo ? introBumperPath : nil
-        result.outroBumperPath = outroVideo ? outroBumperPath : nil
+        // Library paths resolve to this Mac's files in AppStore.generateMiniVideos.
+        result.introBumperPath = nil
+        result.outroBumperPath = nil
         result.includeWatermark = watermark
         let watermarkName = watermarkOverlay?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         result.watermarkOverlayTemplate = watermark && !watermarkName.isEmpty ? watermarkName : nil
@@ -167,8 +169,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         if defaults.object(forKey: key(.watermarkOpacity)) != nil {
             result.watermarkOpacity = min(1, max(0, defaults.double(forKey: key(.watermarkOpacity))))
         }
-        result.introBumperPath = defaults.string(forKey: key(.introBumperPath))
-        result.outroBumperPath = defaults.string(forKey: key(.outroBumperPath))
+        result.introBumper = defaults.string(forKey: key(.introBumper))
+        result.outroBumper = defaults.string(forKey: key(.outroBumper))
         if defaults.object(forKey: key(.overlayStart)) != nil {
             result.overlayStart = max(0, defaults.double(forKey: key(.overlayStart)))
         }
@@ -202,8 +204,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         defaults.set(overlayTexts, forKey: key(.overlayTexts))
         defaults.set(watermarkOverlay, forKey: key(.watermarkOverlay))
         defaults.set(watermarkOpacity, forKey: key(.watermarkOpacity))
-        defaults.set(introBumperPath, forKey: key(.introBumperPath))
-        defaults.set(outroBumperPath, forKey: key(.outroBumperPath))
+        defaults.set(introBumper, forKey: key(.introBumper))
+        defaults.set(outroBumper, forKey: key(.outroBumper))
         defaults.set(overlayStart, forKey: key(.overlayStart))
         defaults.set(overlayDuration, forKey: key(.overlayDuration))
         defaults.set(outputMode.rawValue, forKey: key(.outputMode))

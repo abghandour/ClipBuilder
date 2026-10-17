@@ -118,6 +118,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
                 item.startTime = block.startTime + relStart
                 item.endTime = block.startTime + relEnd
                 item.unbounded = false
+                item.keepsPlacement = item.keepsPlacement || block.exactPlacement
                 document.textOverlays.append(item)
             }
             for template in block.composition.images {
@@ -129,6 +130,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
                 item.startTime = block.startTime + relStart
                 item.endTime = block.startTime + relEnd
                 item.unbounded = false
+                item.keepsPlacement = item.keepsPlacement || block.exactPlacement
                 document.imageOverlays.append(item)
             }
         }
@@ -587,6 +589,9 @@ nonisolated struct OverlayBlockItem: Codable, Sendable, Equatable, Identifiable 
     var startTime: Double = 0
     var duration: Double = 3
     var composition = OverlayComposition()
+    /// Placed by hand: its items render exactly where designed and are never
+    /// nudged clear of platform chrome (Express overlay and watermark).
+    var exactPlacement: Bool = false
 
     var endTime: Double { startTime + duration }
     var id: UUID { uid }
@@ -594,6 +599,7 @@ nonisolated struct OverlayBlockItem: Codable, Sendable, Equatable, Identifiable 
     enum CodingKeys: String, CodingKey {
         case name, duration, composition
         case startTime = "start_time"
+        case exactPlacement = "exact_placement"
     }
 
     init() {}
@@ -605,6 +611,7 @@ nonisolated struct OverlayBlockItem: Codable, Sendable, Equatable, Identifiable 
         duration = max(0.5, try container.decodeIfPresent(Double.self, forKey: .duration) ?? 3)
         composition = try container.decodeIfPresent(OverlayComposition.self, forKey: .composition)
             ?? OverlayComposition()
+        exactPlacement = try container.decodeIfPresent(Bool.self, forKey: .exactPlacement) ?? false
     }
 }
 
@@ -1129,6 +1136,8 @@ nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable 
     var opacity: Double = 1
     var transIn: String = "fade"
     var transOut: String = "fade"
+    /// Never moved clear of platform chrome (set when an exact-placement block expands).
+    var keepsPlacement: Bool = false
     /// Template-only: ignore endTime and last as long as the whole overlay
     /// is visible. Resolved to a concrete endTime when the template is
     /// applied (clip end in the Wizard, composition end in the Builder).
@@ -1141,6 +1150,7 @@ nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable 
 
     enum CodingKeys: String, CodingKey {
         case path, opacity, unbounded
+        case keepsPlacement = "keeps_placement"
         case startTime = "start_time"
         case endTime = "end_time"
         case xFrac = "x_frac"
@@ -1168,6 +1178,7 @@ nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable 
         transIn = try container.decodeIfPresent(String.self, forKey: .transIn) ?? "fade"
         transOut = try container.decodeIfPresent(String.self, forKey: .transOut) ?? "fade"
         unbounded = try container.decodeIfPresent(Bool.self, forKey: .unbounded) ?? false
+        keepsPlacement = try container.decodeIfPresent(Bool.self, forKey: .keepsPlacement) ?? false
     }
 
     static func == (lhs: ImageOverlayItem, rhs: ImageOverlayItem) -> Bool {
@@ -1175,7 +1186,7 @@ nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable 
             && lhs.endTime == rhs.endTime && lhs.xFrac == rhs.xFrac && lhs.yFrac == rhs.yFrac
             && lhs.wFrac == rhs.wFrac && lhs.opacity == rhs.opacity
             && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
-            && lhs.unbounded == rhs.unbounded
+            && lhs.unbounded == rhs.unbounded && lhs.keepsPlacement == rhs.keepsPlacement
     }
 }
 
@@ -1226,6 +1237,8 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     /// Horizontal alignment inside the box: "left", "center" or "right".
     /// Text that overflows the box grows it toward the opposite side.
     var alignment: String = "center"
+    /// Never moved clear of platform chrome (set when an exact-placement block expands).
+    var keepsPlacement: Bool = false
 
     var duration: Double { max(0, endTime - startTime) }
 
@@ -1253,6 +1266,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         case accentColor = "accent_color"
         case isDynamic = "dynamic"
         case opacity, unbounded, alignment
+        case keepsPlacement = "keeps_placement"
         case boxRadius = "box_radius"
     }
 
@@ -1295,6 +1309,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         boxRadius = try container.decodeIfPresent(Double.self, forKey: .boxRadius)
         unbounded = try container.decodeIfPresent(Bool.self, forKey: .unbounded) ?? false
         alignment = try container.decodeIfPresent(String.self, forKey: .alignment) ?? "center"
+        keepsPlacement = try container.decodeIfPresent(Bool.self, forKey: .keepsPlacement) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1336,6 +1351,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         if let boxRadius { try container.encode(boxRadius, forKey: .boxRadius) }
         if unbounded { try container.encode(true, forKey: .unbounded) }
         if alignment != "center" { try container.encode(alignment, forKey: .alignment) }
+        if keepsPlacement { try container.encode(true, forKey: .keepsPlacement) }
     }
 
     static func == (lhs: TextOverlayItem, rhs: TextOverlayItem) -> Bool {
@@ -1353,6 +1369,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
             && lhs.accentColor == rhs.accentColor && lhs.isDynamic == rhs.isDynamic
             && lhs.opacity == rhs.opacity && lhs.boxRadius == rhs.boxRadius
             && lhs.unbounded == rhs.unbounded && lhs.alignment == rhs.alignment
+            && lhs.keepsPlacement == rhs.keepsPlacement
     }
 
     var id: UUID { uid }

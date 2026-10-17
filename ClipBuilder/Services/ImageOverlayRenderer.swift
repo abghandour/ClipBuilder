@@ -44,7 +44,8 @@ nonisolated struct ImageOverlayRenderer {
         // xFrac/yFrac are the item's center measured from the top-left;
         // Core Graphics' origin is bottom-left, so flip y.
         var center = (x: item.xFrac, y: item.yFrac)
-        if let safeArea {
+        // Hand-placed items (Express overlay, watermark) are never nudged clear of platform chrome.
+        if let safeArea, !item.keepsPlacement {
             center = safeArea.clampedCenter(x: item.xFrac, y: item.yFrac,
                                             width: width / Double(videoWidth), height: height / Double(videoHeight))
         }

@@ -8,7 +8,7 @@ nonisolated enum MiniWizardMemory {
         case nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case introVideo, outroVideo, nameTags, watermark, outputMode
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts
-        case introBumperPath, outroBumperPath, watermarkOverlay, watermarkOpacity, transition
+        case introBumper, outroBumper, watermarkOverlay, watermarkOpacity, transition
     }
 
     static func key(for field: Field, profileName: String) -> String {

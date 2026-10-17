@@ -3561,7 +3561,11 @@ actor WizardEngine {
         // the full-video result headline. Rendered once, reused per clip.
         let accent = profile.accentColor.isEmpty ? BrandRenderer.defaultAccent : profile.accentColor
         var brandOverlays: [URL] = []
-        if options.includeWatermark, options.watermarkOverlayTemplate?.isEmpty != false,
+        // A chosen overlay watermark that no longer exists falls back to the logo
+        // (the Express picker shows "Brand logo" in that case).
+        let watermarkOverlayAvailable = options.watermarkOverlayTemplate
+            .flatMap { OverlayTemplateStore.composition(named: $0) }.map { !$0.isEmpty } ?? false
+        if options.includeWatermark, !watermarkOverlayAvailable,
            let logoURL = profile.logoURL,
            let png = BrandRenderer.watermark(logoURL: logoURL, to: scratch,
                                              opacity: options.watermarkOpacity ?? BrandRenderer.logoWatermarkOpacity) {
@@ -3732,12 +3736,9 @@ actor WizardEngine {
             // Bumpers, cutaways and the whole-video overlays are added here, using the
             // same exclusive compositor as Builder. The editable document retains originals.
             var prepared = Self.preparedDocument(from: document, clipURLs: clipURLs, transitions: clipTransitions)
-            if !finalOverlayBlocks.isEmpty {
-                // The user placed these designs by hand; they land exactly where
-                // the Overlays editor shows them, not nudged clear of platform chrome.
-                prepared.overlayBlocks = finalOverlayBlocks
-                prepared.renderSettings.platformSafeArea.enabled = false
-            }
+            // These blocks carry exactPlacement, so the compositor keeps them
+            // where the Overlays editor shows them, in this pass and in Builder.
+            if !finalOverlayBlocks.isEmpty { prepared.overlayBlocks = finalOverlayBlocks }
             let brollScenes = cutaways.isEmpty ? [] : try await database.fetchScenes(projectID: options.projectID, scope: options.selectedRunIDs.isEmpty && !options.sourceSceneSelection ? .active : .history, includeExcluded: false)
             let result = try await MultitrackRenderer(render: render).render(document: prepared, scenes: brollScenes,
                 profile: profile, database: database, preview: true, emit: emit)
