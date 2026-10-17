@@ -258,7 +258,8 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("build")
     capture = commands.add_parser("record")
-    capture.add_argument("--scenario", choices=["analysis", "render", "export", "metadata", "playback", "contention"], required=True)
+    capture.add_argument("--scenario", choices=["analysis", "render", "export", "metadata", "playback", "contention", "express"], required=True,
+                         help="express: three Express reels through WizardEngine.makeReel, captions overlapped then inline; pass --settings for a configured AI provider")
     capture.add_argument("--source", required=True)
     capture.add_argument("--output", required=True)
     capture.add_argument("--settings", help="Optional settings JSON; only AI and transition settings are copied")

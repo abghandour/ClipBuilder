@@ -23,6 +23,9 @@ nonisolated final class LogRelay: Sendable {
     static func displayText(_ text: String) -> String? {
         let lines = text.components(separatedBy: .newlines).filter {
             !$0.trimmingCharacters(in: .whitespaces).hasPrefix("PROGRESS:")
+        }.map { line in
+            // Engine stage timings read as "⏱ extract clips 12.3s" outside Express.
+            WizardTiming.display(line) ?? line
         }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }

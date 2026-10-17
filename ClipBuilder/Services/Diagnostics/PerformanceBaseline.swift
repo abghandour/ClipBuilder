@@ -46,7 +46,7 @@ enum PerformanceBaseline {
             let data = root.appendingPathComponent("data", isDirectory: true)
             guard FileManager.default.fileExists(atPath: root.appendingPathComponent(".baseline-owned").path),
                   SettingsStore.dataDirectory.resolvingSymlinksInPath() == data,
-                  ["analysis", "render", "export", "metadata", "playback", "contention"].contains(config.scenario),
+                  ["analysis", "render", "export", "metadata", "playback", "contention", "express"].contains(config.scenario),
                   !FileManager.default.fileExists(atPath: data.appendingPathComponent("baseline.db").path) else {
                 throw failure("A baseline requires a fresh, marked scratch directory and matching data-folder argument.")
             }
@@ -89,6 +89,8 @@ enum PerformanceBaseline {
             log("SOURCE duration=\(info.duration) dimensions=\(info.width)x\(info.height) localOnly=\(configuration.localOnly)")
             if configuration.scenario == "analysis" {
                 try await analyze(video: video, database: database, store: store)
+            } else if configuration.scenario == "express" {
+                try await express(video: video, database: database, store: store)
             } else {
                 let document = try await seedTimeline(video: video, database: database, store: store)
                 if configuration.scenario == "metadata" {
@@ -272,6 +274,58 @@ enum PerformanceBaseline {
         store.timelines = [row]
         store.openTimelineRecord(row)
         return document
+    }
+
+    /// The Express generate path end to end: three saved takes rendered through
+    /// the production engine the way AppStore.generateMiniVideos does, with each
+    /// reel's social caption overlapping the next render ("express-overlapped",
+    /// the app since 1.106) and then inline ("express-inline", the earlier shape).
+    /// Stage timings arrive on stdout as TIMING lines. Without AI settings the
+    /// caption request fails fast, so the overlap saving shows only with
+    /// `--settings` pointing at a configured provider.
+    private static func express(video: VideoRecord, database: Database, store: AppStore) async throws {
+        let scenes = try await seedScenes(video: video, database: database)
+        let ranges = fixtureRanges(duration: video.duration)
+        try await database.replaceTranscripts(videoID: video.id, transcriptionKey: UUID().uuidString.lowercased(),
+            language: "en", isTranslation: false,
+            segments: ranges.enumerated().map { index, range in
+                TranscriptSegment(start: range.start, end: range.end, text: "Baseline caption \(index + 1)")
+            }, provider: nil, model: nil)
+        let projectID = try await database.createProject(profileName: store.activeProfile.profileName,
+            name: "Express baseline", videoIDs: [video.id])
+        store.activeProjectID = projectID
+        var base = WizardOptions()
+        base.projectID = projectID
+        base.renderSettings = store.activeProfile.defaultRenderSettings
+        base.pacing = store.activeProfile.defaultPacing
+        base.critiqueLoop = false
+        let options = WizardOptions.merge(step1: base.step1,
+                                          step2: MiniWizardSettings().step2Options(base: base.step2), base: base)
+        let reelCount = 3, clipsPerReel = 6
+        var takes: [WizardSelectionTake] = []
+        for reel in 0..<reelCount {
+            let clips = (0..<clipsPerReel).map { offset -> WizardPlanClip in
+                let scene = scenes[(reel * clipsPerReel + offset) % scenes.count]
+                return WizardPlanClip(sceneID: scene.id, start: scene.startTime, end: scene.endTime)
+            }
+            let plan = WizardPlan(targetDuration: Double(clipsPerReel * 2), rationale: "Express baseline reel \(reel + 1)",
+                                  musicName: nil, musicVolume: 3, clips: clips, transitions: [])
+            takes.append(try await database.recordWizardTake(projectID: projectID, options: options.step1, plan: plan,
+                                                             fallbackName: "Express baseline \(reel + 1)"))
+        }
+        log("FIXTURE reels=\(reelCount) clipsPerReel=\(clipsPerReel) ffmpegJobs=\(FFmpeg.jobLimit)")
+        let engine = store.wizard
+        let profile = store.activeProfile
+        for (name, overlapped) in [("express-overlapped", true), ("express-inline", false)] {
+            try await measure(name) {
+                try await WizardReelBatch.run(count: takes.count, render: { index in
+                    log("PHASE STAGE \(name) reel=\(index + 1) epoch=\(Date().timeIntervalSince1970)")
+                    return try await engine.makeReel(take: takes[index], options: options, profile: profile,
+                        database: database, batchID: UUID().uuidString, deferFinish: overlapped,
+                        emit: { log("reel \(index + 1): \($0)") })
+                }, finishEmit: { index, line in log("reel \(index + 1) finish: \(line)") })
+            }
+        }
     }
 
     /// Isolates the production post-render trait path using an already exported video.

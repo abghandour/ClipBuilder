@@ -70,6 +70,34 @@ Use `scripts/benchmark_export_metadata.py --source /path/to/export.mp4 --output
 build/metadata-pairs --pairs 5` for alternating metadata-only pairs. See
 [export metadata results](Performance-Export-Metadata-Results.md) for scope and validation.
 
+## AI Wizard Express generate path
+
+`--scenario express` renders three saved takes of six two-second clips each
+through the production `WizardEngine.makeReel`, the way
+`AppStore.generateMiniVideos` does, with Express's default settings (captions on,
+watermark on, no music, no critique). It runs twice: `express-overlapped` hands
+each reel's social caption and run report back as deferred work that runs while
+the next reel renders (the app since 1.106), then `express-inline` waits for them
+between reels (the earlier shape). The difference is the saving of that overlap.
+Without `--settings` pointing at a configured provider the caption request fails
+fast and both phases measure the same work.
+
+The engine emits `TIMING:<stage>=<seconds>` lines on its log stream for camera
+focus, tag text, caption translation, podcast layouts, clip extraction, the
+compositor or hard-cut join, music, the quality gate, the record insert, reel
+traits, the whole render, the social caption and the run report. In the app,
+Express folds them into `Timings · Reel N of M: …` lines at the end of its log;
+the full AI Wizard shows them as `⏱` lines; the baseline writes them to
+`app.log` as `reel N: TIMING:…`. `PHASE STAGE … reel=N` marks the start of each
+render inside a phase.
+
+```sh
+python3 scripts/performance_baseline.py record \
+  --scenario express --source '/absolute/path/to/fight.mp4' \
+  --settings '/absolute/path/to/app_settings.json' \
+  --scope none --output build/performance-baseline-runs/new-express-01
+```
+
 ## Framing before cache lookup
 
 Profiling builds log `FRAMING_PASS` (unique jobs, clip uses and elapsed time for

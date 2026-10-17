@@ -2604,12 +2604,17 @@ actor WizardEngine {
 
     /// Step 2 always renders the saved plan, independent of the current source filters.
     /// The take is re-read so hand edits made after opening a review are respected.
+    /// With `deferFinish`, the social caption and run report are returned as
+    /// work for the caller to run later (Express overlaps it with the next
+    /// reel); otherwise they complete before this returns and nil comes back.
+    @discardableResult
     func makeReel(take: WizardSelectionTake, options: WizardOptions,
                   profile: BrandProfile, database: Database,
                   batchID: String? = nil, tagTextPrepared: Bool = false, preparedTagFields: [PersonTagField] = [],
+                  deferFinish: Bool = false,
                   emit: @escaping @Sendable (String) -> Void,
                   renderPlan: (@Sendable (WizardPlan, WizardOptions) async throws -> Void)? = nil,
-                  renderTake: (@Sendable (WizardSelectionTake, WizardOptions) async throws -> Void)? = nil) async throws {
+                  renderTake: (@Sendable (WizardSelectionTake, WizardOptions) async throws -> Void)? = nil) async throws -> WizardReelBatch.Finish? {
         guard let saved = try await database.wizardSelectionTake(id: take.id),
               let selection = try await database.wizardSelection(id: saved.selectionID) else {
             throw WizardSelectionError.missingTake
@@ -2622,17 +2627,20 @@ actor WizardEngine {
         }
         var resolved = saved
         resolved.plan = resolvedPlan
-        let focused = try await chooseCameraFocus(takes: [resolved], options: options,
-            profile: profile, database: database, emit: emit)
+        let focused = try await WizardTiming.measure("camera focus", emit: emit, minimumSeconds: 0.05) {
+            try await chooseCameraFocus(takes: [resolved], options: options,
+                                        profile: profile, database: database, emit: emit)
+        }
         let plan = focused[0].plan
         if let renderTake {
             resolved.plan = plan
             try await renderTake(resolved, options)
-            return
+            return nil
         }
-        try await renderSelection(plan, takeID: saved.id, options: options,
-                                  profile: profile, database: database, batchID: batchID, tagTextPrepared: tagTextPrepared, preparedTagFields: preparedTagFields,
-                                  emit: emit, renderPlan: renderPlan)
+        return try await renderSelection(plan, takeID: saved.id, options: options,
+                                         profile: profile, database: database, batchID: batchID,
+                                         tagTextPrepared: tagTextPrepared, preparedTagFields: preparedTagFields,
+                                         deferFinish: deferFinish, emit: emit, renderPlan: renderPlan)
     }
 
     /// Prepare each source once, before any clips are assembled or extracted in parallel.
@@ -2706,8 +2714,9 @@ actor WizardEngine {
     private func renderSelection(_ selection: WizardPlan, takeID: Int64? = nil, options: WizardOptions,
                                  profile: BrandProfile, database: Database,
                                  batchID: String? = nil, tagTextPrepared: Bool = false, preparedTagFields: [PersonTagField] = [],
+                                 deferFinish: Bool = false,
                                  emit rawEmit: @escaping @Sendable (String) -> Void,
-                                 renderPlan: (@Sendable (WizardPlan, WizardOptions) async throws -> Void)? = nil) async throws {
+                                 renderPlan: (@Sendable (WizardPlan, WizardOptions) async throws -> Void)? = nil) async throws -> WizardReelBatch.Finish? {
         var options = options
         // Highlights is a finder recipe. Saved highlight cuts use the podcast renderer,
         // including camera focus, captions, bumpers and branding chosen in step 2.
@@ -2722,7 +2731,7 @@ actor WizardEngine {
             rawEmit(line)
         }
         let editing = profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())
-        try await RenderContext.$transitions.withValue(editing.transitions) {
+        return try await RenderContext.$transitions.withValue(editing.transitions) {
         try await RenderContext.$settings.withValue(options.renderSettings) {
             // Rendering a saved selection must not shortlist or re-filter its sources.
             let scenes = try await database.fetchScenes(ids: SceneReferences.ids(in: selection))
@@ -2769,14 +2778,18 @@ actor WizardEngine {
             }
             if options.nameTagsOnly == true { plan = WizardPlanRules.nameTagsOnly(plan: plan) }
             plan = WizardNameTags.renderPlan(plan, options: options)
-            let tagFields = try await prepareTagText(plan: plan, options: options, profile: profile,
-                sceneMap: sceneMap, database: database, writeMissing: !tagTextPrepared, emit: emit)
-            try await prepareCaptionTranslations(plan: plan, options: options, sceneMap: sceneMap,
-                                                 database: database, emit: emit)
+            let tagFields = try await WizardTiming.measure("tag text", emit: emit, minimumSeconds: 0.05) {
+                try await prepareTagText(plan: plan, options: options, profile: profile,
+                                         sceneMap: sceneMap, database: database, writeMissing: !tagTextPrepared, emit: emit)
+            }
+            try await WizardTiming.measure("caption translation", emit: emit, minimumSeconds: 0.05) {
+                try await prepareCaptionTranslations(plan: plan, options: options, sceneMap: sceneMap,
+                                                     database: database, emit: emit)
+            }
             // Exercise the prepared render plan in tests without encoding or calling caption AI.
             if let renderPlan {
                 try await renderPlan(plan, options)
-                return
+                return nil
             }
             if options.formatPreset != "podcast" {
                 plan = await snapCutsToBeats(plan, music: music, sceneMap: sceneMap, emit: emit)
@@ -2796,52 +2809,85 @@ actor WizardEngine {
                         role: "Name tag text · \(field.personKey) · \(field.field)", provenance: provenance)
                 }
             }
-            let tags = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
-            var captionText: String?
+            // Everything after the file exists needs only its own log sink:
+            // Express runs it while the next reel renders.
+            let finish: WizardReelBatch.Finish = { [self] rawEmit in
+                let emit: @Sendable (String) -> Void = { line in
+                    recorder.append(line)
+                    rawEmit(line)
+                }
+                try await RenderContext.$transitions.withValue(editing.transitions) {
+                try await RenderContext.$settings.withValue(options.renderSettings) {
+                    try await self.finishReel(result: result, plan: plan, selection: selection, takeID: takeID,
+                                              options: options, profile: profile, database: database,
+                                              scenes: scenes, sceneMap: sceneMap, music: music, people: people,
+                                              fightResearch: fightResearch, recorder: recorder, emit: emit)
+                }
+                }
+            }
+            if deferFinish { return finish }
+            try await finish(rawEmit)
+            return nil
+        }
+        }
+    }
+
+    /// The work after the rendered file and its record exist: social caption,
+    /// run report, optional presentation critique and the completion lines.
+    private func finishReel(result: AssemblyResult, plan: WizardPlan, selection: WizardPlan, takeID: Int64?,
+                            options: WizardOptions, profile: BrandProfile, database: Database,
+                            scenes: [SceneRecord], sceneMap: [Int64: SceneRecord],
+                            music: [(name: String, url: URL)], people: [PersonRecord],
+                            fightResearch: [FightResearchRecord], recorder: LogRecorder,
+                            emit: @escaping @Sendable (String) -> Void) async throws {
+        let tags = Array(Set(plan.clips.flatMap { sceneMap[$0.sceneID]?.tags ?? [] })).sorted()
+        var captionText: String?
+        try await WizardTiming.measure("social caption", emit: emit) {
             do {
-                emit(options.localHashtags ? "Caption hashtags prepared locally — asking the model" : "Caption — asking the model")
-                let caption = try await ai.call(
-                    prompt: captionPrompt(profile: profile, plan: plan, duration: result.duration,
-                        tags: tags, fightResearch: fightResearch,
-                        captionStyleReference: options.templateJSON.flatMap { AIResponseParser.jsonObject(from: $0) }?["caption_style"] as? String,
-                        benchmarks: options.accountBenchmarks, localHashtags: options.localHashtags, people: people),
-                    task: .captions, timeout: 60, log: emit)
-                captionText = caption.text
-                var provenance = caption.provenance
-                if options.localHashtags { provenance.technique = "hashtag-candidates" }
-                try await database.updateGeneratedCaption(id: result.recordID, caption: caption.text,
-                                                          provider: caption.provider, model: caption.model)
-                try await database.recordOutputRole(id: result.recordID, role: "Captions", provenance: provenance)
+            emit(options.localHashtags ? "Caption hashtags prepared locally — asking the model" : "Caption — asking the model")
+            let caption = try await ai.call(
+                prompt: captionPrompt(profile: profile, plan: plan, duration: result.duration,
+                    tags: tags, fightResearch: fightResearch,
+                    captionStyleReference: options.templateJSON.flatMap { AIResponseParser.jsonObject(from: $0) }?["caption_style"] as? String,
+                    benchmarks: options.accountBenchmarks, localHashtags: options.localHashtags, people: people),
+                task: .captions, timeout: 60, log: emit)
+            captionText = caption.text
+            var provenance = caption.provenance
+            if options.localHashtags { provenance.technique = "hashtag-candidates" }
+            try await database.updateGeneratedCaption(id: result.recordID, caption: caption.text,
+                                                      provider: caption.provider, model: caption.model)
+            try await database.recordOutputRole(id: result.recordID, role: "Captions", provenance: provenance)
             } catch is CancellationError { throw CancellationError() }
             catch { emit("Caption generation failed: \(error.userMessage)") }
+        }
 
-            let inputs = PlanningInputs(research: [:], scenes: scenes, sceneMap: sceneMap, music: music,
-                                        signals: .init(), people: people, fightResearch: fightResearch)
+        let inputs = PlanningInputs(research: [:], scenes: scenes, sceneMap: sceneMap, music: music,
+                                    signals: .init(), people: people, fightResearch: fightResearch)
+        try await WizardTiming.measure("run report", emit: emit) {
             writeRunReport(for: result, profile: profile, options: options, inputs: inputs, plan: plan,
                 planPrompt: "Saved selection\(takeID.map { " · take:\($0)" } ?? "")",
                 planResponse: String(decoding: try JSONEncoder().encode(selection), as: UTF8.self),
                 planAttribution: (plan.provenance?.provider ?? "unknown", plan.provenance?.model),
                 caption: captionText, logLines: recorder.lines(), sceneMap: sceneMap, emit: emit)
-            // Presentation review annotates the output; content scores belong to the take.
-            if options.critiqueLoop {
-                emit("\nPhase 4: Presentation critique...")
-                do {
-                    let brief = try await CriticBriefContext.loadForRun(database: database, profile: profile,
-                        generatedID: result.recordID, ai: ai, emit: emit)
-                    let critique = try await ReelCritic.critique(video: result.url, duration: result.duration,
-                        plan: plan, sceneMap: sceneMap, options: options, profile: profile, attempt: 1,
-                        previous: [], ai: ai, emit: emit, database: database, generatedID: result.recordID,
-                        brief: brief?.brief, referenceFrames: brief?.frames ?? [], scope: .presentation)
-                    let json = String(decoding: try JSONEncoder().encode(critique), as: UTF8.self)
-                    try await database.updateGeneratedCritique(id: result.recordID, critiqueJSON: json)
-                    emit("Critique: \(critique.score)/100 — \(critique.summary)")
-                } catch is CancellationError { throw CancellationError() }
-                catch { emit("Critique failed (\(error.userMessage)) — keeping the rendered reel.") }
-            }
-            emit("VIDEO:\(result.url.lastPathComponent):\(result.duration.formatted(.number.precision(.fractionLength(1))))")
-            emit("Video complete! \(result.url.lastPathComponent)")
         }
+        // Presentation review annotates the output; content scores belong to the take.
+        if options.critiqueLoop {
+            emit("\nPhase 4: Presentation critique...")
+            do {
+                let brief = try await CriticBriefContext.loadForRun(database: database, profile: profile,
+                    generatedID: result.recordID, ai: ai, emit: emit)
+                let critique = try await ReelCritic.critique(video: result.url, duration: result.duration,
+                    plan: plan, sceneMap: sceneMap, options: options, profile: profile, attempt: 1,
+                    previous: [], ai: ai, emit: emit, database: database, generatedID: result.recordID,
+                    brief: brief?.brief, referenceFrames: brief?.frames ?? [], scope: .presentation)
+                let json = String(decoding: try JSONEncoder().encode(critique), as: UTF8.self)
+                try await database.updateGeneratedCritique(id: result.recordID, critiqueJSON: json)
+                emit("Critique: \(critique.score)/100 — \(critique.summary)")
+            } catch is CancellationError { throw CancellationError() }
+            catch { emit("Critique failed (\(error.userMessage)) — keeping the rendered reel.") }
         }
+        emit("VIDEO:\(result.url.lastPathComponent):\(result.duration.formatted(.number.precision(.fractionLength(1))))")
+        emit("Video complete! \(result.url.lastPathComponent)")
     }
 
     nonisolated static func versionLimit(options: WizardOptions) -> Int {
@@ -3549,7 +3595,10 @@ actor WizardEngine {
         let plan = WizardNameTags.renderPlan(plan, options: options)
         let renderStarted = ContinuousClock.now
         emit("Wizard render start")
-        defer { emit("Wizard render end; duration=\(renderStarted.duration(to: .now))") }
+        defer {
+            emit("Wizard render end; duration=\(renderStarted.duration(to: .now))")
+            emit(WizardTiming.line("render", renderStarted.duration(to: .now)))
+        }
 
         let scratch = try await render.makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -3585,8 +3634,10 @@ actor WizardEngine {
         let people = options.usesNameTags ? try await database.fetchPeople() : []
         let tagText = options.usesNameTags
             ? try await database.tagText(field: profile.tagStyle(id: options.nameTagStyleID).description.field) : [:]
-        let podcastCuts = try await WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: sceneMap,
-            options: options, database: database, profile: profile, captionStyle: captionStyle, log: emit)
+        let podcastCuts = try await WizardTiming.measure("podcast layouts", emit: emit, minimumSeconds: 0.05) {
+            try await WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: sceneMap,
+                options: options, database: database, profile: profile, captionStyle: captionStyle, log: emit)
+        }
         let jobs: [(index: Int, clip: WizardPlanClip, scene: SceneRecord)] =
             plan.clips.enumerated().compactMap { index, clip in
                 sceneMap[clip.sceneID].map { (index, clip, $0) }
@@ -3594,14 +3645,16 @@ actor WizardEngine {
         let clipCount = plan.clips.count
         let captionFallbacks = WizardCaptionFallbackLog()
         let brandOverlayFiles = brandOverlays
-        let extracted = try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
-            try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
-                                              scene: job.scene, sceneMap: sceneMap, options: options,
-                                              captionStyle: captionStyle, captionFallbacks: captionFallbacks,
-                                              brandOverlays: brandOverlayFiles,
-                                              podcastDocument: podcastCuts[job.index], nameTagPeople: people, tagText: tagText, profile: profile,
-                                              database: database, scratch: scratch,
-                                              emit: emit)
+        let extracted = try await WizardTiming.measure("extract clips", emit: emit) {
+            try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
+                try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
+                                                  scene: job.scene, sceneMap: sceneMap, options: options,
+                                                  captionStyle: captionStyle, captionFallbacks: captionFallbacks,
+                                                  brandOverlays: brandOverlayFiles,
+                                                  podcastDocument: podcastCuts[job.index], nameTagPeople: people, tagText: tagText, profile: profile,
+                                                  database: database, scratch: scratch,
+                                                  emit: emit)
+            }
         }
 
         for url in extracted {
@@ -3700,8 +3753,10 @@ actor WizardEngine {
         let bumperLog = BumperPlanner.apply(to: &document, bumpers: bumpers, options: options)
         bumperLog.forEach(emit)
         if options.useBRoll && !options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            document = try await WizardPodcastBRoll.adding(to: document, options: options, database: database,
-                                                         ai: ai, cache: &brollCache, log: emit)
+            document = try await WizardTiming.measure("b-roll", emit: emit) {
+                try await WizardPodcastBRoll.adding(to: document, options: options, database: database,
+                                                    ai: ai, cache: &brollCache, log: emit)
+            }
         } else if !options.useBRoll, (ReelRecipe.recipe(id: options.formatPreset) ?? .custom).capabilities.bRoll {
             emit("B-roll off")
         }
@@ -3740,27 +3795,35 @@ actor WizardEngine {
             // where the Overlays editor shows them, in this pass and in Builder.
             if !finalOverlayBlocks.isEmpty { prepared.overlayBlocks = finalOverlayBlocks }
             let brollScenes = cutaways.isEmpty ? [] : try await database.fetchScenes(projectID: options.projectID, scope: options.selectedRunIDs.isEmpty && !options.sourceSceneSelection ? .active : .history, includeExcluded: false)
-            let result = try await MultitrackRenderer(render: render).render(document: prepared, scenes: brollScenes,
-                profile: profile, database: database, preview: true, emit: emit)
-            defer { try? FileManager.default.removeItem(at: result.url) }
-            try FileManager.default.copyItemReplacing(at: result.url, to: assembled)
+            try await WizardTiming.measure("compositor", emit: emit) {
+                let result = try await MultitrackRenderer(render: render).render(document: prepared, scenes: brollScenes,
+                    profile: profile, database: database, preview: true, emit: emit)
+                defer { try? FileManager.default.removeItem(at: result.url) }
+                try FileManager.default.copyItemReplacing(at: result.url, to: assembled)
+            }
         } else {
-            try await render.concatenate(clips: clipURLs, transitions: clipTransitions.map { Optional($0) },
-                                         output: assembled)
+            try await WizardTiming.measure("join clips", emit: emit) {
+                try await render.concatenate(clips: clipURLs, transitions: clipTransitions.map { Optional($0) },
+                                             output: assembled)
+            }
         }
 
         let outputURL = try outputFile(profile: profile, plan: plan)
         if let musicName = plan.musicName,
            let track = music.first(where: { $0.name == musicName }) {
             emit("Adding music (\(musicName))...")
-            try await render.overlayMusic(video: assembled, music: track.url, output: outputURL)
+            try await WizardTiming.measure("music", emit: emit) {
+                try await render.overlayMusic(video: assembled, music: track.url, output: outputURL)
+            }
         } else {
             try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)
         }
 
-        let finalDuration = await FFmpeg.duration(of: outputURL)
-        let quality = ReelQualityGate.evaluate(plan: plan, scenes: sceneMap, output: outputURL,
-                                               duration: finalDuration, options: options)
+        let (finalDuration, quality) = await WizardTiming.measure("quality gate", emit: emit) {
+            let finalDuration = await FFmpeg.duration(of: outputURL)
+            return (finalDuration, ReelQualityGate.evaluate(plan: plan, scenes: sceneMap, output: outputURL,
+                                                            duration: finalDuration, options: options))
+        }
         emit("Quality gate: \(quality.summary)")
         for warning in quality.warnings { emit("Quality warning: \(warning)") }
         for failure in quality.failures { emit("Quality failure: \(failure)") }
@@ -3790,6 +3853,7 @@ actor WizardEngine {
         }
         let planClipsJSON = (try? JSONSerialization.data(withJSONObject: planClips))
             .flatMap { String(data: $0, encoding: .utf8) }
+        let saveStarted = ContinuousClock.now
         let recordID = try await database.insertGeneratedVideo(path: outputURL.path,
                                                                duration: finalDuration.rounded(toPlaces: 1),
                                                                timelineJSON: timelineJSON,
@@ -3808,8 +3872,11 @@ actor WizardEngine {
                                                traits: .derive(document: document,
                                                                scenes: Array(sceneMap.values),
                                                                plan: plan))
-        await ReelTraitRecording.record(url: outputURL, id: recordID, database: database,
-            document: document, scenes: Array(sceneMap.values), log: emit)
+        emit(WizardTiming.line("save record", saveStarted.duration(to: .now)))
+        await WizardTiming.measure("reel traits", emit: emit) {
+            await ReelTraitRecording.record(url: outputURL, id: recordID, database: database,
+                document: document, scenes: Array(sceneMap.values), log: emit)
+        }
         return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID)
     }
 

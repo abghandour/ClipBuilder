@@ -270,10 +270,25 @@ extension AppStore {
         let options = WizardOptions.merge(step1: base.step1, step2: step2, base: base)
         let count = flow.outputCount(keptCount: candidates.count)
         beginWizardSelectionWork(projectID: run.projectID, stage: "Making reel 1 of \(count)", options: options)
+        let timings = WizardTiming.Collector()
+        let batchStarted = ContinuousClock.now
         wizardTask = Task {
             await AIRunCapture.context.withValue(AIRunCapture()) {
                 defer { finishWizardSelectionWork(generation: generation) }
                 var renderBatches: Set<String> = []
+                // Timing lines fold into one summary per reel; everything else is logged.
+                // Stage detail only follows lines from the stage on screen.
+                func sink(group: String, stage: String? = nil, prefix: String = "") -> @Sendable (String) -> Void {
+                    { message in
+                        if timings.record(message, group: group) { return }
+                        let line = message.hasPrefix("VIDEO:") ? message : prefix + message
+                        Task { @MainActor in
+                            guard generation == self.profileGeneration, self.isWizardRunning else { return }
+                            self.appendLog(\.wizardLog, [line])
+                            if let stage, self.wizardStatus?.stage == stage { self.wizardStatus?.detail = message }
+                        }
+                    }
+                }
                 do {
                     try await wizardSelectionSaveTask?.value
                     try await sceneEditSaveTask?.value
@@ -296,14 +311,11 @@ extension AppStore {
                         let stage = "Choosing camera focus"
                         wizardStatus = WizardRunStatus(stage: stage, fraction: 0)
                         appendLog(\.wizardLog, [stage])
-                        takes = try await wizard.chooseCameraFocus(takes: takes, options: options,
-                            profile: profile, database: database, emit: { message in
-                                Task { @MainActor in
-                                    guard generation == self.profileGeneration, self.isWizardRunning else { return }
-                                    self.appendLog(\.wizardLog, [message])
-                                    if self.wizardStatus?.stage == stage { self.wizardStatus?.detail = message }
-                                }
-                            })
+                        let emit = sink(group: "Preparation", stage: stage)
+                        takes = try await WizardTiming.measure("camera focus", emit: emit) {
+                            try await wizard.chooseCameraFocus(takes: takes, options: options,
+                                                               profile: profile, database: database, emit: emit)
+                        }
                     }
                     if chosen.outputMode == .oneReel {
                         try Task.checkCancellation()
@@ -315,41 +327,54 @@ extension AppStore {
                     if options.usesNameTags, var tagPlan = takes.first?.plan {
                         tagPlan.clips = takes.flatMap { $0.plan.clips }
                         let scenes = try await database.fetchScenes(ids: SceneReferences.ids(in: tagPlan))
-                        tagFields = try await wizard.prepareTagText(plan: tagPlan, options: options, profile: profile,
-                            sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
-                            database: database, emit: wizardSelectionLogSink())
-                    }
-                    for (index, take) in takes.enumerated() {
-                        try Task.checkCancellation()
-                        guard generation == profileGeneration else { throw CancellationError() }
-                        let stage = "Making reel \(index + 1) of \(takes.count)"
-                        wizardStatus = WizardRunStatus(stage: stage, fraction: Double(index) / Double(takes.count))
-                        appendLog(\.wizardLog, [stage])
-                        var renderOptions = options
-                        // One reel joins takes with hard cuts unless the user chose a transition.
-                        if chosen.outputMode == .oneReel, options.transitionChoice == nil {
-                            renderOptions.allowedTransitions = ["cut"]
+                        let emit = sink(group: "Preparation")
+                        tagFields = try await WizardTiming.measure("tag text", emit: emit) {
+                            try await wizard.prepareTagText(plan: tagPlan, options: options, profile: profile,
+                                sceneMap: Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) }),
+                                database: database, emit: emit)
                         }
-                        let emit: @Sendable (String) -> Void = { message in
-                            Task { @MainActor in
-                                guard generation == self.profileGeneration, self.isWizardRunning,
-                                      self.wizardStatus?.stage == stage else { return }
-                                self.appendLog(\.wizardLog, [message])
-                                self.wizardStatus?.detail = message
-                            }
-                        }
-                        // Each separate video owns a timeline, rather than becoming another version of the first.
-                        let renderBatch = UUID().uuidString
-                        renderBatches.insert(renderBatch)
-                        try await wizard.makeReel(take: take, options: renderOptions, profile: profile,
-                            database: database, batchID: renderBatch, tagTextPrepared: true, preparedTagFields: tagFields, emit: emit)
                     }
+                    var renderOptions = options
+                    // One reel joins takes with hard cuts unless the user chose a transition.
+                    if chosen.outputMode == .oneReel, options.transitionChoice == nil {
+                        renderOptions.allowedTransitions = ["cut"]
+                    }
+                    // Each separate video owns a timeline, rather than becoming another version of the first.
+                    let batches = takes.map { _ in UUID().uuidString }
+                    renderBatches = Set(batches)
+                    let count = takes.count
+                    let preparedTagFields = tagFields
+                    // Reels render one after another; each reel's social caption
+                    // and report run while the next reel renders.
+                    try await WizardReelBatch.run(count: count, render: { index in
+                        guard await generation == self.profileGeneration else { throw CancellationError() }
+                        let stage = "Making reel \(index + 1) of \(count)"
+                        await MainActor.run {
+                            self.wizardStatus = WizardRunStatus(stage: stage, fraction: Double(index) / Double(count))
+                            self.appendLog(\.wizardLog, [stage])
+                        }
+                        return try await wizard.makeReel(take: takes[index], options: renderOptions, profile: profile,
+                            database: database, batchID: batches[index], tagTextPrepared: true,
+                            preparedTagFields: preparedTagFields, deferFinish: true,
+                            emit: sink(group: "Reel \(index + 1) of \(count)", stage: stage))
+                    }, finishEmit: { index, line in
+                        sink(group: "Reel \(index + 1) of \(count)", prefix: "Reel \(index + 1): ")(line)
+                    }, waiting: { pending in
+                        Task { @MainActor in
+                            guard generation == self.profileGeneration, self.isWizardRunning else { return }
+                            self.wizardStatus = WizardRunStatus(
+                                stage: pending == 1 ? "Writing the last caption" : "Writing \(pending) captions", fraction: 1)
+                        }
+                    })
                 } catch is CancellationError {
                     if generation == profileGeneration { appendLog(\.wizardLog, ["Express rendering stopped."]) }
                 } catch {
                     if generation == profileGeneration { presentError("Could not generate Express videos", error) }
                 }
                 guard generation == profileGeneration else { return }
+                if !timings.groupNames.isEmpty {
+                    appendLog(\.wizardLog, timings.summaryLines(total: WizardTiming.seconds(batchStarted.duration(to: .now))))
+                }
                 await refreshAllNow()
                 guard generation == profileGeneration else { return }
                 await refreshWizardSelections()
