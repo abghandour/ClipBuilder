@@ -31,6 +31,18 @@ struct MiniWizardFlowTests {
         #expect(flow.showsNameTags)
     }
 
+    @Test("Settings tabs: Audio only for fight and training footage", arguments: VideoType.allCases)
+    func settingsTabs(type: VideoType) {
+        var video = Fixtures.video()
+        video.videoType = type.rawValue
+        let flow = MiniWizardFlow(video: video)
+        let fight = type == .fight || type == .training
+        #expect(flow.settingsTabs == (fight ? [.picture, .audio, .overlays, .package] : [.picture, .overlays, .package]))
+        #expect(flow.effectiveSettingsTab(.audio) == (fight ? .audio : .picture))
+        #expect(flow.effectiveSettingsTab(.package) == .package)
+        #expect(MiniWizardFlow().settingsTabs == [.picture, .overlays, .package])
+    }
+
     @Test("Unknown types use highlights unless exchanges exist")
     func unknownType() {
         let video = Fixtures.video()
@@ -278,6 +290,33 @@ extension MiniWizardFlowTests {
         #expect(flow.runSummary(candidates: candidates, exchangeCount: 0, settings: settings).hasPrefix("One reel from Guard pass that ended it, Take 2 + 2 more"))
         #expect(flow.runSummary(candidates: [candidates[0]], exchangeCount: 0, settings: settings) == "No kept footage")
         #expect(MiniWizardFlow(video: Fixtures.video()).runSummary(candidates: single, exchangeCount: 0, settings: settings).contains("Auto length"))
+
+        // The card form groups the same facts by tab.
+        settings.music = true
+        settings.muteSourceAudio = true
+        let card = flow.runSummaryCard(candidates: candidates, exchangeCount: 0, settings: settings)
+        #expect(card.headline == "One reel from Guard pass that ended it, Take 2 + 2 more" && card.length == "15 s" && card.hasFootage)
+        #expect(card.sections.map(\.title) == ["Picture", "Overlays", "Package"], "no Audio row for an untyped video")
+        #expect(card.sections[0].items == ["Balanced", "9:16 · 1080p", "Random transitions"])
+        #expect(card.sections[1].items == ["Captions", "Watermark"])
+        #expect(card.sections[2].items == ["One reel"])
+        var fight = Fixtures.video()
+        fight.videoType = VideoType.fight.rawValue
+        let fightCard = MiniWizardFlow(video: fight, length: .fifteen).runSummaryCard(candidates: candidates, exchangeCount: 0, settings: settings)
+        #expect(fightCard.sections.map(\.title) == ["Picture", "Audio", "Overlays", "Package"])
+        #expect(fightCard.sections[1].items == ["Source muted", "Random music"])
+        settings.captions = false
+        settings.watermark = false
+        #expect(flow.runSummaryCard(candidates: candidates, exchangeCount: 0, settings: settings).sections[1].items == ["None"])
+        let none = flow.runSummaryCard(candidates: [candidates[0]], exchangeCount: 0, settings: settings)
+        #expect(none.headline == "No kept footage" && !none.hasFootage && none.sections.isEmpty)
+        // Picks not yet written as selections (fresh launch) still count.
+        var fightVideo = Fixtures.video()
+        fightVideo.videoType = VideoType.fight.rawValue
+        let picks = MiniWizardFlow(video: fightVideo, footageKind: .fightMetrics)
+        #expect(picks.runSummaryCard(candidates: [], exchangeCount: 2, settings: settings).headline == "One reel from 2 picks")
+        #expect(picks.runSummary(candidates: [], exchangeCount: 1, settings: settings).hasPrefix("One reel from 1 pick"))
+        #expect(MiniWizardFlow(video: fightVideo, footageKind: .fightMetrics).runSummaryCard(candidates: [], exchangeCount: 0, settings: settings).hasFootage == false)
     }
 
     @Test func runSummaryUsesWholeExchangeCountsAndOmitsDisabledPresentation() {

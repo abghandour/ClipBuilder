@@ -26,6 +26,8 @@ nonisolated struct MiniWizardFlow: Sendable {
         var label: String { seconds.map { "\($0) s" } ?? "Auto" }
     }
 
+    typealias SettingsTab = WizardSettingsTab
+
     enum OutputMode: String, CaseIterable, Codable, Sendable {
         case separateVideos, oneReel
 
@@ -72,6 +74,11 @@ nonisolated struct MiniWizardFlow: Sendable {
     var lengthOptions: [Length] { Length.allCases }
     var showsCameraFocus: Bool { isPodcastOrInterview }
     var showsAudioOptions: Bool { isFightOrTraining }
+
+    /// Audio only exists for fight and training footage; the other tabs always show.
+    var settingsTabs: [SettingsTab] { SettingsTab.available(audio: showsAudioOptions) }
+    /// A remembered tab that this footage does not offer opens Picture.
+    func effectiveSettingsTab(_ tab: SettingsTab) -> SettingsTab { tab.effective(in: settingsTabs) }
     var showsNameTags: Bool { isPodcastOrInterview }
 
     var showsCaptionLanguage: Bool {
@@ -132,12 +139,15 @@ nonisolated struct MiniWizardFlow: Sendable {
     func runSummary(candidates: [MiniWizardCandidate], exchangeCount: Int, settings: MiniWizardSettings) -> String {
         let kept = candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
         let qa = effectiveFootageKind == .qa
-        let count = qa ? exchangeCount : kept.count
+        let picks = (effectiveFootageKind == .transcript || effectiveFootageKind == .fightMetrics) && kept.isEmpty
+        let count = qa || picks ? exchangeCount : kept.count
         guard count > 0 else { return "No kept footage" }
         let output = settings.outputMode == .oneReel ? "One reel" : count == 1 ? "1 reel" : "\(count) reels"
         let source: String
         if qa {
             source = "\(count) \(count == 1 ? "exchange" : "exchanges")"
+        } else if picks {
+            source = "\(count) \(count == 1 ? "pick" : "picks")"
         } else if let first = kept.first {
             source = "\(first.selection.name), Take \(first.take.ordinal)"
                 + (count > 1 ? " + \(count - 1) more" : "")
@@ -148,6 +158,55 @@ nonisolated struct MiniWizardFlow: Sendable {
         if !qa { parts.append(length.seconds.map { "\($0) s" } ?? "Auto length") }
         parts += presentationSummary(settings)
         return parts.joined(separator: " · ")
+    }
+
+    typealias RunSummary = WizardRunSummary
+
+    func runSummaryCard(candidates: [MiniWizardCandidate], exchangeCount: Int, settings: MiniWizardSettings) -> RunSummary {
+        let kept = candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
+        let qa = effectiveFootageKind == .qa
+        // Picks become selections when Settings opens; until then the kept
+        // count is the picks themselves.
+        let picks = (effectiveFootageKind == .transcript || effectiveFootageKind == .fightMetrics) && kept.isEmpty
+        let count = qa || picks ? exchangeCount : kept.count
+        guard count > 0 else {
+            return RunSummary(headline: "No kept footage", length: nil, sections: [], hasFootage: false)
+        }
+        let output = settings.outputMode == .oneReel ? "One reel" : count == 1 ? "1 reel" : "\(count) reels"
+        let source = qa ? "\(count) \(count == 1 ? "exchange" : "exchanges")"
+            : picks ? "\(count) \(count == 1 ? "pick" : "picks")"
+            : "\(kept[0].selection.name), Take \(kept[0].take.ordinal)" + (count > 1 ? " + \(count - 1) more" : "")
+        var picture = [settings.quality.label, settings.preset.label]
+        if showsCameraFocus, !settings.cameraFocus.isEmpty { picture.append(WizardCameraFocus.summary(settings.cameraFocus)) }
+        if let look = settings.lookName {
+            picture.append(EffectCatalog.preset(for: look)?.name ?? look.replacingOccurrences(of: "lut:", with: ""))
+        }
+        picture.append(settings.transition == WizardPlanRules.randomTransitionChoice ? "Random transitions"
+            : (TransitionCatalog.all.first { $0.name == settings.transition }?.title ?? settings.transition) + " transitions")
+        var audio: [String] = []
+        if showsAudioOptions {
+            audio.append(settings.muteSourceAudio ? "Source muted" : "Source audio")
+            if settings.music { audio.append(settings.musicTrackName.map { "Music: \($0)" } ?? "Random music") }
+        }
+        var overlays: [String] = []
+        if let name = settings.overlayName { overlays.append("Overlay \(name)") }
+        if settings.captions { overlays.append(settings.englishCaptions && showsCaptionLanguage ? "English captions" : "Captions") }
+        if settings.nameTags && showsNameTags { overlays.append("Name tags") }
+        if settings.watermark {
+            let name = settings.watermarkOverlay?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            overlays.append(name.isEmpty ? "Watermark" : "Watermark \(name)")
+        }
+        var package: [String] = []
+        if settings.introVideo { package.append("Intro video") }
+        if settings.outroVideo { package.append("Outro video") }
+        package.append(settings.outputMode.label)
+        var sections = [RunSummary.Section(title: "Picture", items: picture)]
+        if !audio.isEmpty { sections.append(.init(title: "Audio", items: audio)) }
+        sections.append(.init(title: "Overlays", items: overlays.isEmpty ? ["None"] : overlays))
+        sections.append(.init(title: "Package", items: package))
+        return RunSummary(headline: "\(output) from \(source)",
+                          length: qa ? nil : length.seconds.map { "\($0) s" } ?? "Auto length",
+                          sections: sections, hasFootage: true)
     }
 
     private func presentationSummary(_ settings: MiniWizardSettings) -> [String] {

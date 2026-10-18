@@ -7,6 +7,7 @@ struct MiniWizardView: View {
 
     @AppStorage private var videoPath: String
     @AppStorage private var footageKind: MiniWizardFlow.FootageKind
+    @AppStorage private var settingsTab: MiniWizardFlow.SettingsTab
     @AppStorage private var length: MiniWizardFlow.Length
     @FocusState private var instructionsFocused: Bool
     @State private var instructionsDirty = false
@@ -32,6 +33,7 @@ struct MiniWizardView: View {
         self.profileName = profileName
         _videoPath = AppStorage(wrappedValue: "", MiniWizardMemory.key(for: .videoPath, profileName: profileName))
         _footageKind = AppStorage(wrappedValue: .highlights, MiniWizardMemory.key(for: .footageKind, profileName: profileName))
+        _settingsTab = AppStorage(wrappedValue: .picture, MiniWizardMemory.key(for: .settingsTab, profileName: profileName))
         _length = AppStorage(wrappedValue: .automatic, MiniWizardMemory.key(for: .length, profileName: profileName))
     }
 
@@ -130,7 +132,7 @@ struct MiniWizardView: View {
                         accessory: AnyView(presetButtons)) {
                         if flow.visibleCard == .settings, settingsProfile == profileName {
                             if let run = currentRun, flow.canExpand(.settings) {
-                                MiniSettingsCard(settings: $miniSettings, flow: flow, run: run)
+                                MiniSettingsCard(settings: $miniSettings, tab: $settingsTab, flow: flow, run: run)
                             } else {
                                 FormCaption(selectedVideo == nil ? "Pick a source in 1 Source first."
                                     : "Choose and keep footage in 2 Footage first.")
@@ -138,6 +140,14 @@ struct MiniWizardView: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
+                    // The summary and Generate live outside the collapsible cards,
+                    // so a collapsed Settings card never hides the button.
+                    if let run = currentRun, flow.canExpand(.settings), settingsProfile == profileName {
+                        MiniCard(number: 4, title: "Generate", summary: "", isOpen: true) {
+                            MiniGeneratePanel(settings: $miniSettings, flow: flow, run: run)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
                 }
                 .padding(Theme.spaceXL)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -189,6 +199,10 @@ struct MiniWizardView: View {
         // Navigation from a finished step (generate, keep) reopens the page.
         .onChange(of: currentRun?.requestedCard) { _, _ in collapsedCard = nil }
         .onChange(of: autoLoadKey, initial: true) { _, key in autoLoad(key) }
+        // A load skipped while another run was busy, or while sources were
+        // still loading, happens once that finishes.
+        .onChange(of: store.isWizardRunning) { _, running in if !running { autoLoad(autoLoadKey) } }
+        .onChange(of: isLoading) { _, loading in if !loading { autoLoad(autoLoadKey) } }
         .onChange(of: instructionsFocused) { _, focused in
             if !focused { saveInstructions() }
         }
@@ -279,7 +293,7 @@ struct MiniWizardView: View {
             let kind = flow.effectiveFootageKind
             let caption: String = switch kind {
                 case .qa: "Q&A lists the question-and-answer exchanges found when this video was analyzed. No AI model runs for this step."
-                case .fightMetrics: "Fight metrics lists every scored action in time order. Select actions and press Add; actions that run into each other become one pick. Picks are kept with this video. No AI model runs for this step."
+                case .fightMetrics: "Fight metrics lists every scored action in time order. Select actions and add them as separate picks or as one stretch. Picks are kept with this video. No AI model runs for this step."
                 default: "Transcript shows every spoken line. Mark a passage and press Add. Picks are kept with this video. No AI model runs for this step."
             }
             let loading: String = switch kind {
@@ -302,11 +316,13 @@ struct MiniWizardView: View {
         var hasRun: Bool
     }
 
-    /// Choosing Q&A or Transcript with the Footage card open loads it without a button press.
+    /// Q&A, Transcript and Fight metrics need no model: they load as soon as a
+    /// source is chosen, whichever card is open, so saved picks count as kept
+    /// footage after a relaunch without a visit to the Footage card.
     private var autoLoadKey: AutoLoadKey {
         let kind = flow.effectiveFootageKind
         return AutoLoadKey(videoID: selectedVideo?.id,
-                           kind: flow.visibleCard == .footage && kind != .highlights ? kind : nil,
+                           kind: kind != .highlights ? kind : nil,
                            hasRun: currentRun != nil)
     }
 
