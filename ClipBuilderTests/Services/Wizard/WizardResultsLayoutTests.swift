@@ -26,4 +26,35 @@ struct WizardResultsLayoutTests {
             #expect(size.height == 630)
         }
     }
+
+    @Test func oneCardFillsTheSheetAndKeepsThePortraitShape() {
+        let grid = WizardResultsLayout.grid(count: 1, available: CGSize(width: 900, height: 900))
+        #expect(grid.columns == 1 && grid.columnWidth == 868)
+        #expect(grid.playerMaxHeight == 608) // 900 minus the card chrome and padding.
+        // Height-bound: a 9:16 player is as tall as the sheet allows.
+        let portrait = WizardResultsLayout.playerSize(in: grid, aspect: 9 / 16)
+        #expect(portrait.height == 608 && portrait.width == 342)
+        // The card wraps the picture rather than spanning the column.
+        #expect(WizardResultsLayout.cardWidth(in: grid, playerWidth: portrait.width) == 366)
+        // Width-bound: a landscape player spans the column.
+        let landscape = WizardResultsLayout.playerSize(in: grid, aspect: 16 / 9)
+        #expect(landscape.width == 842 && landscape.height == 474)
+        #expect(WizardResultsLayout.cardWidth(in: grid, playerWidth: landscape.width) == 866)
+    }
+
+    @Test func severalCardsShareColumnsAndShrinkTogether() {
+        let grid = WizardResultsLayout.grid(count: 3, available: CGSize(width: 1100, height: 700))
+        #expect(grid.columns == 3 && grid.columnWidth == 345)
+        let player = WizardResultsLayout.playerSize(in: grid, aspect: 9 / 16)
+        // Short sheet: the player shrinks to its height cap and the card to the minimum.
+        #expect(player.height == 408 && player.width == 229)
+        #expect(WizardResultsLayout.cardWidth(in: grid, playerWidth: player.width) == 320)
+        // Too narrow for three: two columns, the third card wraps.
+        #expect(WizardResultsLayout.grid(count: 3, available: CGSize(width: 700, height: 700)).columns == 2)
+        // Narrower than one card still yields one full-width card and a sane player.
+        let tiny = WizardResultsLayout.grid(count: 1, available: CGSize(width: 200, height: 200))
+        #expect(tiny.columns == 1 && tiny.columnWidth == 320 && tiny.playerMaxHeight == 180)
+        let bad = WizardResultsLayout.playerSize(in: tiny, aspect: .nan)
+        #expect(bad.height == 180 && bad.width == 101)
+    }
 }

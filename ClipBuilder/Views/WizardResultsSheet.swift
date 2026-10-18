@@ -10,6 +10,8 @@ struct WizardResultsSheet: View {
     let results: WizardRunResults
 
     @State private var players: [Int64: AVPlayer] = [:]
+    /// Width / height of each rendered video, for players that keep its shape.
+    @State private var aspects: [Int64: CGFloat] = [:]
     @State private var verdicts: [Int64: Int] = [:]
     @State private var reviewTarget: GeneratedVideoRecord?
     @State private var builderTarget: GeneratedVideoRecord?
@@ -31,10 +33,9 @@ struct WizardResultsSheet: View {
         })
     }
 
-    private let cardWidth: CGFloat = 320
     private var idealSize: CGSize {
         WizardResultsLayout.idealSize(count: visibleVideos.count,
-            cardSize: CGSize(width: cardWidth, height: 640),
+            cardSize: CGSize(width: WizardResultsLayout.minCardWidth, height: 680),
             screen: NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900))
     }
 
@@ -59,15 +60,26 @@ struct WizardResultsSheet: View {
             }
             .padding()
 
-            ScrollView(.vertical) {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: cardWidth, maximum: cardWidth + 60),
-                                             spacing: WizardResultsLayout.spacing, alignment: .top)],
-                          alignment: .center, spacing: WizardResultsLayout.spacing) {
-                    ForEach(visibleVideos) { video in
-                        videoCard(video)
+            // The cards follow the sheet: resize it and the players grow or
+            // shrink with it, in each video's own shape.
+            GeometryReader { geometry in
+                let grid = WizardResultsLayout.grid(count: visibleVideos.count, available: geometry.size)
+                let players = Dictionary(uniqueKeysWithValues: visibleVideos.map {
+                    ($0.id, WizardResultsLayout.playerSize(in: grid, aspect: aspects[$0.id] ?? 9 / 16))
+                })
+                let cardWidth = WizardResultsLayout.cardWidth(
+                    in: grid, playerWidth: players.values.map(\.width).max() ?? 0)
+                ScrollView(.vertical) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: WizardResultsLayout.spacing, alignment: .top),
+                                             count: grid.columns),
+                              alignment: .center, spacing: WizardResultsLayout.spacing) {
+                        ForEach(visibleVideos) { video in
+                            videoCard(video, width: cardWidth, playerSize: players[video.id] ?? CGSize(width: 210, height: 373))
+                        }
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal)
                 }
-                .padding(.horizontal)
             }
 
             HStack {
@@ -97,6 +109,7 @@ struct WizardResultsSheet: View {
                 guard await DrivePlayback.prepare(video.url) else { continue }
                 guard let asset = try? await DriveLocalAsset.make(video.url) else { continue }
                 players[video.id] = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+                if let aspect = try? await Self.aspect(of: asset) { aspects[video.id] = aspect }
             }
         }
         .onDisappear {
@@ -154,18 +167,17 @@ struct WizardResultsSheet: View {
 
     /// One result: the player, what it is, how to rate it, what to do next.
     /// Grouped top to bottom so each row has one job.
-    private func videoCard(_ video: GeneratedVideoRecord) -> some View {
+    private func videoCard(_ video: GeneratedVideoRecord, width cardWidth: CGFloat, playerSize: CGSize) -> some View {
         let take = takeInfo(for: video)
         let isBest = bestCritiquedIDs.contains(video.id)
         return VStack(alignment: .leading, spacing: Theme.spaceS) {
-            PlayerView(player: players[video.id])
-                .frame(width: 210, height: 373)
-                .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
-                .overlay {
-                    PlatformChromeLayer(size: CGSize(width: 210, height: 373),
-                                        safeAreaSettings: store.activeProfile.defaultRenderSettings.platformSafeArea)
-                }
-                .frame(maxWidth: .infinity)
+            ScrubbingPlayerView(player: players[video.id], aspect: playerSize.width / max(1, playerSize.height),
+                                pictureOverlay: {
+                PlatformChromeLayer(size: playerSize,
+                                    safeAreaSettings: store.activeProfile.defaultRenderSettings.platformSafeArea)
+            })
+            .frame(width: playerSize.width)
+            .frame(maxWidth: .infinity)
 
             // What it is.
             VStack(alignment: .leading, spacing: 2) {
@@ -267,9 +279,18 @@ struct WizardResultsSheet: View {
             .controlSize(.small)
             .lineLimit(1)
         }
-        .padding(Theme.spaceM)
+        .padding(WizardResultsLayout.cardPadding)
         .frame(width: cardWidth, alignment: .top)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+    }
+
+    /// Width over height of the first video track, after its transform.
+    nonisolated private static func aspect(of asset: AVAsset) async throws -> CGFloat? {
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else { return nil }
+        let (natural, transform) = try await track.load(.naturalSize, .preferredTransform)
+        let size = CGRect(origin: .zero, size: natural).applying(transform).size
+        guard size.width > 0, size.height > 0 else { return nil }
+        return abs(size.width) / abs(size.height)
     }
 
     /// The reel's headline when the planner wrote one, else its file name.
