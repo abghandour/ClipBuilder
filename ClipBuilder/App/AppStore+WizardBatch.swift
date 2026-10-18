@@ -133,9 +133,12 @@ extension AppStore {
     /// The AI Wizard's Generate: every selection in this project that has a
     /// best take renders with the Settings card's look, as separate videos or
     /// one reel, like Express's kept candidates.
-    func generateWizardSelections(options: WizardOptions, oneReel: Bool) {
+    func generateWizardSelections(options: WizardOptions, oneReel: Bool, selectionIDs: Set<Int64>? = nil) {
         guard let projectID = activeProjectID else { return }
-        let kept = wizardSelections.filter { $0.selection.projectID == projectID && $0.selection.bestTakeID != nil }
+        let kept = wizardSelections.filter {
+            $0.selection.projectID == projectID && $0.selection.bestTakeID != nil
+                && (selectionIDs?.contains($0.id) ?? true)
+        }
         guard !kept.isEmpty else { return }
         let refs = kept.map { ($0.id, $0.selection.bestTakeID!) }
         let combinedName = kept.count == 1 ? kept[0].selection.name : "\(kept[0].selection.name) + \(kept.count - 1) more"

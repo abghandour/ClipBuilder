@@ -67,6 +67,33 @@ nonisolated enum WizardFootageReview {
         return item
     }
 
+    /// The videos a selection's takes draw from: the recorded footage, else
+    /// the takes' scenes resolved against the analysis on this Mac.
+    static func videoIDs(of summary: WizardSelectionSummary, scenes: [SceneRecord]) -> Set<Int64> {
+        let sceneMap = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var ids = Set<Int64>()
+        for take in summary.takes {
+            if let footage = take.plan.footage, !footage.isEmpty {
+                ids.formUnion(footage.compactMap(\.videoID))
+            } else {
+                ids.formUnion(take.sceneIDs.compactMap { sceneMap[$0]?.videoID })
+                ids.formUnion(take.plan.clips.compactMap { sceneMap[$0.sceneID]?.videoID })
+            }
+        }
+        return ids
+    }
+
+    /// Selections that use footage from the chosen sources, so changing the
+    /// source changes the footage on review, as Express does. A selection
+    /// whose footage cannot be traced stays visible.
+    static func selections(_ selections: [WizardSelectionSummary], usingVideos videoIDs: Set<Int64>,
+                           scenes: [SceneRecord]) -> [WizardSelectionSummary] {
+        selections.filter { summary in
+            let used = Self.videoIDs(of: summary, scenes: scenes)
+            return used.isEmpty || !used.isDisjoint(with: videoIDs)
+        }
+    }
+
     /// Take ids that are their selection's best take: the ones a batch renders.
     /// The engine sets the best take when it finds moments, so nil means the
     /// user left the selection out.

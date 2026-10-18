@@ -67,6 +67,26 @@ struct WizardFootageReviewTests {
         #expect(both.count == 1 && both[0].selectionID == 2 && both[0].takeID == 201)
     }
 
+    @Test func footageFollowsTheChosenSources() {
+        // Recorded footage names the video; otherwise the take's scenes resolve to one.
+        var recorded = summary(id: 1, name: "From video 7")
+        recorded.takes[0].plan.footage = [WizardFootageReference(sceneID: nil, videoID: 7)]
+        let byScene = summary(id: 2, name: "From the fixture scene")
+        var orphan = summary(id: 3, name: "Untraceable")
+        orphan.takes[0].sceneIDs = []
+        orphan.takes[0].plan.clips = []
+        let scenes = [Fixtures.scene()]
+        let fixtureVideo = Fixtures.scene().videoID
+        #expect(WizardFootageReview.videoIDs(of: recorded, scenes: scenes) == [7])
+        #expect(WizardFootageReview.videoIDs(of: byScene, scenes: scenes) == [fixtureVideo])
+        #expect(WizardFootageReview.videoIDs(of: orphan, scenes: scenes).isEmpty)
+        let all = [recorded, byScene, orphan]
+        #expect(WizardFootageReview.selections(all, usingVideos: [7], scenes: scenes).map(\.id) == [1, 3])
+        #expect(WizardFootageReview.selections(all, usingVideos: [fixtureVideo], scenes: scenes).map(\.id) == [2, 3])
+        #expect(WizardFootageReview.selections(all, usingVideos: [], scenes: scenes).map(\.id) == [3])
+        #expect(WizardFootageReview.selections(all, usingVideos: [7, fixtureVideo], scenes: scenes).map(\.id) == [1, 2, 3])
+    }
+
     @Test func trimmingChangesOnlyTheTargetedCut() throws {
         let summary = summary(takes: [[Fixtures.planClip(start: 2, end: 5), Fixtures.planClip(sceneID: 2, start: 7, end: 9)]])
         var secondScene = Fixtures.scene(id: 2, start: 6, end: 10)

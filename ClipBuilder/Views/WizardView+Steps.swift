@@ -3,8 +3,29 @@ import SwiftUI
 // The four cards (Source, Plan, Footage, Settings) and their navigation.
 // WizardCardFlow owns the pure rules; the answers and actions stay on WizardView.
 extension WizardView {
+    /// The videos the current source choice covers.
+    var sourceVideoIDs: Set<Int64> {
+        if capabilities.sources == .podcastRecording {
+            return Set(store.videos.filter { $0.path == highlightVideoPath }.map(\.id))
+        }
+        return Set(sourcePool.map(\.videoID))
+    }
+
+    /// Saved selections whose footage comes from the chosen sources (all of
+    /// them when the user asked to see everything).
+    var visibleSelections: [WizardSelectionSummary] {
+        guard !showAllSelections else { return projectSelections }
+        return WizardFootageReview.selections(projectSelections, usingVideos: sourceVideoIDs,
+            scenes: SceneReferences.combining(store.referencedScenes, referenced: store.historyScenes))
+    }
+
+    /// The selection the Settings card renders: the active one when it is visible.
+    var visibleSelection: WizardSelectionSummary? {
+        visibleSelections.first { $0.id == store.activeWizardSelectionID } ?? visibleSelections.first
+    }
+
     var cardFlow: WizardCardFlow {
-        let selection = store.currentWizardSelection
+        let selection = visibleSelection
         let take = selection?.bestTake
         let recording = capabilities.sources == .podcastRecording
             ? store.videos.first { $0.path == highlightVideoPath } : nil
@@ -35,8 +56,8 @@ extension WizardView {
         answers.selectionName = selection?.selection.name
         answers.takeLabel = take.map(WizardSelectionRules.takeLabel)
         answers.takeCount = selection?.takes.count ?? 0
-        answers.savedSelectionCount = projectSelections.count
-        answers.keptSelectionCount = projectSelections.count { $0.selection.bestTakeID != nil }
+        answers.savedSelectionCount = visibleSelections.count
+        answers.keptSelectionCount = visibleSelections.count { $0.selection.bestTakeID != nil }
         answers.look = editingSummary + (lookCapabilities.offersCameraFocus
             ? " · " + WizardCameraFocus.name(cameraFocusBinding.wrappedValue) : "")
         let requested = store.pendingWizardPrompt?.statusMessage != nil ? WizardCardFlow.Card.source : requestedCard
@@ -152,7 +173,7 @@ extension WizardView {
             FormCaption(outputMode == .oneReel
                 ? "The kept takes join into one reel, hard cuts between them unless a transition is chosen."
                 : "Every kept selection becomes its own video.")
-            if let selection = store.currentWizardSelection, let take = selection.bestTake {
+            if let selection = visibleSelection, let take = selection.bestTake {
                 takeAnchor(selection, take: take)
                 if !cardFlow.canRenderTake && !store.isWizardRunning {
                     FormCaption("Footage changed. Open the selection and ask for another take.", tone: .warning)
@@ -229,12 +250,24 @@ extension WizardView {
                 Button("Open 1 Source") { open(.source) }
                     .lineLimit(1).fixedSize()
             }
-            if projectSelections.isEmpty {
-                FormCaption("No saved selection yet. Find the moments to review and keep takes here.")
+            let hidden = projectSelections.count - visibleSelections.count
+            if hidden > 0 || showAllSelections {
+                HStack(spacing: Theme.spaceS) {
+                    FormCaption(showAllSelections
+                        ? "Showing every saved selection, including footage outside the current sources."
+                        : "\(hidden) saved \(hidden == 1 ? "selection uses" : "selections use") footage outside the current sources.")
+                    Button(showAllSelections ? "Match the sources" : "Show all") { showAllSelections.toggle() }
+                        .controlSize(.small).lineLimit(1).fixedSize()
+                }
+            }
+            if visibleSelections.isEmpty {
+                FormCaption(projectSelections.isEmpty
+                    ? "No saved selection yet. Find the moments to review and keep takes here."
+                    : "No saved selection uses the chosen sources. Find the moments for them, or Show all.")
             } else {
                 Divider()
-                WizardFootageReviewView(selections: projectSelections, options: presentationOptions())
-                    .id("\(store.activeProjectID ?? 0):\(store.scenesVersion)")
+                WizardFootageReviewView(selections: visibleSelections, options: presentationOptions())
+                    .id("\(store.activeProjectID ?? 0):\(store.scenesVersion):\(visibleSelections.map(\.id))")
                     .frame(maxWidth: .infinity)
                     .frame(height: max(560, pageHeight - 220))
                     .padding(.horizontal, -Theme.spaceS)

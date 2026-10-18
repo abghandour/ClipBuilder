@@ -92,6 +92,8 @@ struct WizardView: View {
     @AppStorage(WizardExpressExtras.introBumperKey) var introBumperLibraryPath = ""
     @AppStorage(WizardExpressExtras.outroBumperKey) var outroBumperLibraryPath = ""
     @State var availableLookIDs: Set<String>?
+    /// Footage follows the source: selections from other sources hide unless asked for.
+    @State var showAllSelections = false
     var outputMode: MiniWizardFlow.OutputMode { MiniWizardFlow.OutputMode(rawValue: outputModeRaw) ?? .separateVideos }
     /// Comma-joined Analyze batch IDs — AppStorage cannot persist a Set.
     @AppStorage("wizard.selectedRunIDs") var selectedRunIDsRaw = ""
@@ -919,7 +921,8 @@ struct WizardView: View {
             // Every kept selection renders, as Express renders its kept candidates.
             let flow = cardFlow
             Button {
-                store.generateWizardSelections(options: presentationOptions(), oneReel: outputMode == .oneReel)
+                store.generateWizardSelections(options: presentationOptions(), oneReel: outputMode == .oneReel,
+                                               selectionIDs: Set(visibleSelections.map(\.id)))
             } label: {
                 Label(flow.generateTitle(oneReel: outputMode == .oneReel), systemImage: "film")
             }
