@@ -92,6 +92,7 @@ struct WizardReelBatchTests {
             try await WizardReelBatch.run(count: 3, render: { index in
                 journal.add("render \(index)")
                 return { _ in
+                    journal.add("finish \(index) started")
                     do {
                         try await Task.sleep(for: .seconds(10))
                         journal.add("finish \(index) completed")
@@ -102,7 +103,13 @@ struct WizardReelBatchTests {
                 }
             }, finishEmit: { _, line in journal.add(line) })
         }
-        try await Task.sleep(for: .milliseconds(50))
+        // Cancel once a finish is actually waiting, not after a fixed delay: under
+        // load the batch may not have started yet, and cancelling then proves nothing.
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !journal.all.contains(where: { $0.hasSuffix("started") }), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(journal.all.contains { $0.hasSuffix("started") })
         task.cancel()
         await #expect(throws: CancellationError.self) { try await task.value }
         let events = journal.all
