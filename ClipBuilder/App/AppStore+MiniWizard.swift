@@ -210,7 +210,7 @@ extension AppStore {
     }
 
     /// Moving to Settings creates saved takes without planning or rendering anything.
-    func recordMiniQASelections() {
+    func recordMiniQASelections(then: @escaping @MainActor () -> Void = {}) {
         guard let run = miniRun, run.projectID == activeProjectID, run.footageKind == .qa,
               let qa = run.qa, run.keptCount > 0, let database, !isWizardRunning else { return }
         let generation = profileGeneration
@@ -231,6 +231,7 @@ extension AppStore {
                 miniRun?.selectedSelectionID = candidates.first?.id
                 refreshMiniQASections()
                 miniRun?.requestedCard = candidates.isEmpty ? .footage : .settings
+                if !candidates.isEmpty { then() }
                 appendLog(\.wizardLog, ["Express: saved \(candidates.count) Q&A selections."])
                 await refreshWizardSelections()
             } catch is CancellationError {
@@ -244,6 +245,28 @@ extension AppStore {
 
 extension AppStore {
     /// Render accepted takes sequentially; Stop prevents the remaining items from starting.
+    /// Generate from the Generate panel. Q&A, Transcript and Fight metrics
+    /// keep their footage as picks; their selections are written when
+    /// Settings opens, so a panel used straight after launch writes them now.
+    func generateMiniVideosRecordingPicks(settings: MiniWizardSettings, flow: MiniWizardFlow, batchID: String) {
+        guard let run = miniRun, run.batchID == batchID, !isWizardRunning else { return }
+        let kept = run.candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
+        let generate: @MainActor () -> Void = { [weak self] in
+            guard let self, self.miniRun?.batchID == batchID else { return }
+            self.generateMiniVideos(settings: settings, flow: flow, batchID: batchID)
+        }
+        if run.footageKind != .highlights, kept.isEmpty, run.keptCount > 0 {
+            switch run.footageKind {
+            case .qa: recordMiniQASelections(then: generate)
+            case .transcript: recordMiniTranscriptSelections(then: generate)
+            case .fightMetrics: recordMiniFightSelections(then: generate)
+            case .highlights: break
+            }
+            return
+        }
+        generate()
+    }
+
     func generateMiniVideos(settings miniSettings: MiniWizardSettings, flow: MiniWizardFlow, batchID: String) {
         guard let run = miniRun, run.batchID == batchID, run.projectID == activeProjectID,
               let database, !isWizardRunning else { return }
@@ -300,7 +323,7 @@ extension AppStore {
         }, combine: { database, takes in
             try await database.recordMiniCombinedTake(projectID: run.projectID, miniBatch: batchID,
                                                       name: combinedName, takes: takes, options: run.options.step1)
-        }, onResults: { [weak self] in
+        }, source: .express, onResults: { [weak self] in
             // Results is the root sheet; its dismissal leaves Mini ready for another render.
             guard let self, self.miniRun?.batchID == batchID, footageKind == self.miniRun?.footageKind else { return }
             self.miniRun?.requestedCard = .settings

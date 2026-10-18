@@ -105,10 +105,27 @@ struct InstagramPublishSheet: View {
                             .foregroundStyle(.orange)
                     }
 
-                    Text("Caption")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
+                    HStack(spacing: Theme.spaceS) {
+                        Text("Caption")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
+                        Spacer(minLength: 0)
+                        let writing = store.isWritingPostText(for: video)
+                        if writing {
+                            ProgressView().controlSize(.small)
+                        }
+                        Button(caption.isEmpty ? "Write Post Text" : "Rewrite") {
+                            var seed = video
+                            seed.caption = caption
+                            store.writePostText(for: seed)
+                        }
+                        .controlSize(.small)
+                        .disabled(writing)
+                        .help(caption.isEmpty ? "Ask the model for the caption and hashtags"
+                              : "Ask the model for a fresh caption; the edited text above is what it replaces")
+                        MiniModelButton(tasks: ["captions"])
+                    }
                     TextEditor(text: $caption)
                         .font(.body)
                         .frame(minHeight: 100, maxHeight: 160)
@@ -152,6 +169,10 @@ struct InstagramPublishSheet: View {
         .onAppear {
             caption = video.caption
             selectedAccountID = store.defaultInstagramPublishAccount?.id
+        }
+        // A finished write lands in the field.
+        .onChange(of: store.currentGeneratedVideo(video).caption) { _, fresh in
+            if !fresh.isEmpty { caption = fresh }
         }
         .onChange(of: accounts.map(\.id)) {
             selectedAccountID = selectedAccount?.id

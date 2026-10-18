@@ -333,9 +333,8 @@ enum PerformanceBaseline {
         for phase in phases {
             let name = phase.name, options = phase.options
             try await measure(name) {
-                let captions = await engine.startCaptionRequests(takes: takes, options: options, profile: profile,
-                    database: database) { index, line in log("reel \(index + 1) caption: \(line)") }
-                defer { captions.values.forEach { $0.cancel() } }
+                // Post text is written on demand after the render (October 18, 2026), so the
+                // batch no longer starts caption requests; the deferred finish is traits + report.
                 // `streams` serial batches share the reels round-robin: 2 would render two reels at once
                 // (measured October 17, 2026: no gain, the encoder budget is already full).
                 try await withThrowingTaskGroup(of: Void.self) { group in
@@ -347,7 +346,6 @@ enum PerformanceBaseline {
                                 log("PHASE STAGE \(name) reel=\(index + 1) epoch=\(Date().timeIntervalSince1970)")
                                 return try await engine.makeReel(take: takes[index], options: options, profile: profile,
                                     database: database, batchID: UUID().uuidString, deferFinish: phase.overlapped,
-                                    captionRequest: captions[takes[index].id],
                                     emit: { log("reel \(index + 1): \($0)") })
                             }, finishEmit: { position, line in log("reel \(indices[position] + 1) finish: \(line)") })
                         }

@@ -3,9 +3,9 @@ import Synchronization
 import Testing
 @testable import Clip_Builder
 
-/// Express hands each reel's social caption back as deferred work so it can
-/// overlap the next render. This renders one short real reel and checks that
-/// the caption request waits for that work, and that stage timings arrive.
+/// Express hands each reel's traits and report back as deferred work so it
+/// can overlap the next render. This renders one short real reel, checks the
+/// finish, and writes the post text on demand afterwards.
 @Suite("Express deferred finish", .tags(.integration),
        .enabled(if: FixtureVideo.integrationsAvailable, "Install ffmpeg and ffprobe to run."))
 struct ExpressDeferredFinishTests {
@@ -56,48 +56,47 @@ struct ExpressDeferredFinishTests {
         }
         let engine = WizardEngine(ai: ai, render: RenderEngine())
         let renderLog = Lines()
-        // Express asks for every caption before the first render; the reel reuses its request.
-        let captions = await engine.startCaptionRequests(takes: [take], options: options, profile: profile,
-                                                         database: database) { _, line in renderLog.append(line) }
-        #expect(captions.keys.contains(take.id))
         let finish = try await engine.makeReel(take: take, options: options, profile: profile, database: database,
-                                               batchID: "batch", deferFinish: true, captionRequest: captions[take.id],
+                                               batchID: "batch", deferFinish: true,
                                                emit: { renderLog.append($0) })
         let deferred = try #require(finish)
-
-        // The file and its record exist; the caption was requested during the
-        // render (it needs only the plan) but is written by the finish.
+        // The file and its record exist; no post text was asked for.
         let rendered = try #require(try await database.fetchGeneratedVideos(projectID: projectID).first)
-        #expect(FileManager.default.fileExists(atPath: rendered.path))
         #expect(rendered.caption.isEmpty)
-        #expect(captionCalls.all.count == 1)  // the prestarted request, not a second one
-        #expect(captionCalls.all.first?.contains("Duration: 3s") == true)
-        #expect(renderLog.all.contains { $0.hasPrefix("Caption — asking the model") })
-        let renderStages = renderLog.all.compactMap(WizardTiming.parse).map(\.stage)
-        #expect(renderStages.contains("extract clips") && renderStages.contains("join clips"))
-        #expect(renderStages.contains("quality gate") && renderStages.contains("save record"))
-        #expect(renderStages.contains("render"))
-        #expect(!renderStages.contains("social caption") && !renderStages.contains("reel traits"))
+        #expect(captionCalls.all.isEmpty)
         #expect(!renderLog.all.contains { $0.hasPrefix("VIDEO:") })
-        #expect(try await database.reelTraits(kind: "generated", videoID: String(rendered.id)) == nil)
+        let renderStages = renderLog.all.compactMap(WizardTiming.parse).map(\.stage)
+        #expect(renderStages.contains("render"))
+        #expect(!renderStages.contains("reel traits") && !renderStages.contains("run report"))
 
         let finishLog = Lines()
         try await deferred { finishLog.append($0) }
-        #expect(captionCalls.all.count == 1)
-        let finished = try #require(try await database.fetchGeneratedVideos(projectID: projectID).first)
-        #expect(finished.caption == "Deferred caption #fixture")
-        let finishStages = finishLog.all.compactMap(WizardTiming.parse).map(\.stage)
-        #expect(finishStages == ["social caption", "reel traits", "run report"])
-        // The traits were recorded in the finish and carry the caption.
-        let traits = try #require(try await database.reelTraits(kind: "generated", videoID: String(finished.id)))
-        #expect(traits.captionLength == "Deferred caption #fixture".count && traits.hashtagCount == 1)
+        #expect(captionCalls.all.isEmpty, "the finish writes no post text either")
         #expect(finishLog.all.contains { $0.hasPrefix("VIDEO:") })
-        #expect(finishLog.all.last?.hasPrefix("Video complete!") == true)
-        // The run report sits next to the video and carries the render log too.
-        let report = URL(fileURLWithPath: rendered.path).deletingPathExtension().appendingPathExtension("md")
-        let reportText = try String(contentsOf: report, encoding: .utf8)
-        #expect(reportText.contains("Deferred caption #fixture"))
-        #expect(reportText.contains("Assembling"))
+        let finishStages = finishLog.all.compactMap(WizardTiming.parse).map(\.stage)
+        #expect(finishStages == ["reel traits", "run report"])
+        let traits = try #require(try await database.reelTraits(kind: "generated", videoID: String(rendered.id)))
+        #expect(traits.captionLength == 0 && traits.hashtagCount == 0)
+
+        // On demand, after the video exists: the text lands on the record and in the traits.
+        let writeLog = Lines()
+        let response = try await engine.writePostText(video: rendered, note: nil, options: options, profile: profile,
+                                                      database: database, emit: { writeLog.append($0) })
+        #expect(response.text == "Deferred caption #fixture")
+        #expect(captionCalls.all.count == 1)
+        #expect(captionCalls.all.first?.contains("Duration: 3s") == true)
+        #expect(captionCalls.all.first?.contains("This is a rewrite") == false)
+        let written = try #require(try await database.fetchGeneratedVideos(projectID: projectID).first)
+        #expect(written.caption == "Deferred caption #fixture")
+        let updated = try #require(try await database.reelTraits(kind: "generated", videoID: String(rendered.id)))
+        #expect(updated.captionLength == "Deferred caption #fixture".count && updated.hashtagCount == 1)
+        #expect(writeLog.all.compactMap(WizardTiming.parse).map(\.stage) == ["post text"])
+        // A rewrite carries the previous text and the steer.
+        _ = try await engine.writePostText(video: written, note: "shorter", options: options, profile: profile,
+                                           database: database, emit: { _ in })
+        #expect(captionCalls.all.count == 2)
+        let rewrite = try #require(captionCalls.all.last)
+        #expect(rewrite.contains("This is a rewrite") && rewrite.contains("Deferred caption #fixture") && rewrite.contains("shorter"))
     }
 
     @Test func inlineFinishStillCompletesBeforeReturning() async throws {
@@ -124,7 +123,7 @@ struct ExpressDeferredFinishTests {
         options.podcastFraming = .original
         let take = try await database.recordWizardTake(projectID: projectID, options: options.step1,
             plan: Fixtures.plan(clips: [WizardPlanClip(sceneID: scene.id, start: 0, end: 2)]))
-        // The caption model is down: the failure is logged and the reel stays.
+        // No model is reachable: the render needs none and the reel stays.
         var config = AIConfig()
         config.tasks["captions"] = "claude"
         config.providers["claude"] = AIProviderSettings(bin: "/bin/echo", model: "fixture")
@@ -135,11 +134,11 @@ struct ExpressDeferredFinishTests {
                                                emit: { log.append($0) })
         #expect(finish == nil)
         let lines = log.all
-        #expect(lines.contains { $0.hasPrefix("Caption generation failed") })
+        #expect(!lines.contains { $0.contains("asking the model") })
         #expect(lines.contains { $0.hasPrefix("VIDEO:") })
         let stages = lines.compactMap(WizardTiming.parse).map(\.stage)
-        #expect(stages.contains("render") && stages.contains("social caption") && stages.contains("run report"))
-        #expect(stages.contains("reel traits"))
+        #expect(stages.contains("render") && stages.contains("run report") && stages.contains("reel traits"))
+        #expect(!stages.contains("social caption") && !stages.contains("caption wait"))
         #expect(try await database.fetchGeneratedVideos(projectID: projectID).count == 1)
     }
 }

@@ -10,6 +10,7 @@ extension AppStore {
                              formatName: String, stopMessage: String, failureTitle: String,
                              gatherTakes: @escaping @Sendable (Database) async throws -> [WizardSelectionTake],
                              combine: @escaping @Sendable (Database, [WizardSelectionTake]) async throws -> WizardSelectionTake,
+                             source: WizardRunResults.Source = .wizard,
                              onResults: @escaping @MainActor () -> Void = {}) {
         guard let database, !isWizardRunning else { return }
         let profile = activeProfile
@@ -76,15 +77,8 @@ extension AppStore {
                     renderBatches = Set(batches)
                     let count = takes.count
                     let preparedTagFields = tagFields
-                    // Every caption request starts now, so the last reel's model
-                    // round trip has the whole batch of renders to hide behind.
-                    let captions = await wizard.startCaptionRequests(takes: takes, options: renderOptions,
-                        profile: profile, database: database) { index, line in
-                        sink(group: "Reel \(index + 1) of \(count)")(line)
-                    }
-                    defer { captions.values.forEach { $0.cancel() } }
-                    // Reels render one after another; each reel's social caption
-                    // and report run while the next reel renders.
+                    // Reels render one after another; each reel's traits and
+                    // report run while the next reel renders.
                     try await WizardReelBatch.run(count: count, render: { index in
                         guard await generation == self.profileGeneration else { throw CancellationError() }
                         let stage = "Making reel \(index + 1) of \(count)"
@@ -95,7 +89,6 @@ extension AppStore {
                         return try await wizard.makeReel(take: takes[index], options: renderOptions, profile: profile,
                             database: database, batchID: batches[index], tagTextPrepared: true,
                             preparedTagFields: preparedTagFields, deferFinish: true,
-                            captionRequest: captions[takes[index].id],
                             emit: sink(group: "Reel \(index + 1) of \(count)", stage: stage))
                     }, finishEmit: { index, line in
                         sink(group: "Reel \(index + 1) of \(count)", prefix: "Reel \(index + 1): ")(line)
@@ -103,7 +96,7 @@ extension AppStore {
                         Task { @MainActor in
                             guard generation == self.profileGeneration, self.isWizardRunning else { return }
                             self.wizardStatus = WizardRunStatus(
-                                stage: pending == 1 ? "Writing the last caption" : "Writing \(pending) captions", fraction: 1)
+                                stage: pending == 1 ? "Finishing the last reel" : "Finishing \(pending) reels", fraction: 1)
                         }
                     })
                 } catch is CancellationError {
@@ -123,7 +116,7 @@ extension AppStore {
                 guard generation == profileGeneration else { return }
                 if !fresh.isEmpty {
                     onResults()
-                    wizardResults = WizardRunResults(videos: fresh)
+                    wizardResults = WizardRunResults(videos: fresh, source: source)
                     await recordWizardTimelines(fresh, projectID: projectID, formatName: formatName)
                 }
             }

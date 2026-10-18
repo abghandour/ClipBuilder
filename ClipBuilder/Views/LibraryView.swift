@@ -301,6 +301,10 @@ struct LibraryView: View {
                             NSPasteboard.general.setString(video.caption, forType: .string)
                         }
                     }
+                    Button(video.caption.isEmpty ? "Write Post Text" : "Rewrite Post Text", systemImage: "text.bubble") {
+                        store.writePostText(for: video)
+                    }
+                    .disabled(store.isWritingPostText(for: video))
                     Button("Show in Finder", systemImage: "folder") {
                         NSWorkspace.shared.activateFileViewerSelecting([video.url])
                     }

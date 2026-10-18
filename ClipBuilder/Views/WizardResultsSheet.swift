@@ -16,6 +16,7 @@ struct WizardResultsSheet: View {
     @State private var reviewTarget: GeneratedVideoRecord?
     @State private var builderTarget: GeneratedVideoRecord?
     @State private var feedbackDrafts: [Int64: String] = [:]
+    @State private var postTextNotes: [Int64: String] = [:]
 
     @State private var keepingTake: WizardSelectionSummary?
     @State private var keepingBest: GeneratedVideoRecord?
@@ -54,7 +55,9 @@ struct WizardResultsSheet: View {
                 }
                 Text(visibleVideos.count > 1 && !bestCritiquedIDs.isEmpty
                      ? "The critic’s highest-rated output in each batch is marked. Watch and rate; every rating trains the wizard."
-                     : "Watch and rate — every rating trains the wizard. Not what you wanted? Retry runs the same settings again.")
+                     : results.source == .express
+                        ? "Watch and rate — every rating trains the wizard. Not what you wanted? Go back to change the picks or settings."
+                        : "Watch and rate — every rating trains the wizard. Not what you wanted? Retry runs the same settings again.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -83,13 +86,25 @@ struct WizardResultsSheet: View {
             }
 
             HStack {
-                Button {
-                    store.retryWizard()
-                    dismiss()
-                } label: {
-                    Label("Generate Again", systemImage: "arrow.clockwise").lineLimit(1).fixedSize()
+                if results.source == .express {
+                    // Express rendered chosen picks: anything to change lives on its page.
+                    Button {
+                        dismiss()
+                        store.miniRun?.requestedCard = .settings
+                        store.requestedSection = .wizardMini
+                    } label: {
+                        Label("Back to Settings", systemImage: "slider.horizontal.3").lineLimit(1).fixedSize()
+                    }
+                    .help("Return to AI Wizard Express to change the picks or settings and generate again")
+                } else {
+                    Button {
+                        store.retryWizard()
+                        dismiss()
+                    } label: {
+                        Label("Generate Again", systemImage: "arrow.clockwise").lineLimit(1).fixedSize()
+                    }
+                    .help("Generate again with the same settings — a new plan, new videos")
                 }
-                .help("Generate again with the same settings — a new plan, new videos")
 
                 DriveMediaMenu(media: visibleVideos.map(\.driveMedia))
                 Spacer()
@@ -256,6 +271,10 @@ struct WizardResultsSheet: View {
 
             Divider()
 
+            postTextRows(video)
+
+            Divider()
+
             // What next.
             HStack(spacing: Theme.spaceS) {
                 Button("Edit in Builder") {
@@ -291,6 +310,64 @@ struct WizardResultsSheet: View {
         let size = CGRect(origin: .zero, size: natural).applying(transform).size
         guard size.width > 0, size.height > 0 else { return nil }
         return abs(size.width) / abs(size.height)
+    }
+
+    /// The Instagram post text, written after the video so a discarded reel
+    /// costs no model call: Write, then the text with Copy and Rewrite plus
+    /// an optional steer. The gear picks the model.
+    @ViewBuilder
+    private func postTextRows(_ video: GeneratedVideoRecord) -> some View {
+        let live = store.currentGeneratedVideo(video)
+        let writing = store.isWritingPostText(for: video)
+        VStack(alignment: .leading, spacing: Theme.spaceS) {
+            HStack(spacing: Theme.spaceS) {
+                Text("Post text").font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if writing {
+                    ProgressView().controlSize(.small)
+                    Text("Writing…").font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                } else if live.caption.isEmpty {
+                    Button("Write Post Text") { store.writePostText(for: live) }
+                        .controlSize(.small)
+                        .help("Ask the model for the Instagram caption and hashtags for this video")
+                } else {
+                    Button("Copy", systemImage: "doc.on.doc") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(live.caption, forType: .string)
+                    }
+                    .labelStyle(.iconOnly).controlSize(.small)
+                    .help("Copy the post text")
+                }
+                MiniModelButton(tasks: ["captions"])
+            }
+            if !live.caption.isEmpty {
+                Text(live.caption)
+                    .font(.caption)
+                    .lineLimit(4).truncationMode(.tail)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .help(live.caption)
+                HStack(spacing: 6) {
+                    TextField("Ask for a change (optional)…", text: Binding(
+                        get: { postTextNotes[video.id] ?? "" },
+                        set: { postTextNotes[video.id] = $0 }))
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                        .onSubmit { rewritePostText(live) }
+                    Button("Rewrite") { rewritePostText(live) }
+                        .controlSize(.small)
+                        .disabled(writing)
+                        .help("Write a fresh caption; the note above steers it")
+                }
+            }
+        }
+        .lineLimit(1)
+    }
+
+    private func rewritePostText(_ video: GeneratedVideoRecord) {
+        let note = (postTextNotes[video.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        store.writePostText(for: video, note: note.isEmpty ? nil : note)
+        postTextNotes[video.id] = ""
     }
 
     /// The reel's headline when the planner wrote one, else its file name.

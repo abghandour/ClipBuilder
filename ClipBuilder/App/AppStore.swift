@@ -41,8 +41,12 @@ struct WizardRunStatus: Equatable {
 
 /// The videos a finished wizard run produced — drives the results sheet.
 struct WizardRunResults: Identifiable {
+    /// Which wizard made the run: Express renders chosen picks, so "again"
+    /// means going back to its Settings; the AI Wizard plans anew.
+    enum Source { case wizard, express }
     let id = UUID()
     var videos: [GeneratedVideoRecord]
+    var source: Source = .wizard
 }
 
 /// Main-actor app state: active profile, its database, background jobs, and
