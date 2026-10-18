@@ -78,6 +78,14 @@ extension WizardView {
                         wizardCard(card, flow: flow, pageHeight: page.size.height)
                             .id(card)
                     }
+                    // As in Express: once takes are kept, the summary and Generate
+                    // live in their own panel that no collapse can hide.
+                    if flow.settingsRenders {
+                        MiniCard(number: 5, title: "Generate", summary: "", isOpen: true) {
+                            generatePanel
+                        }
+                        .id("generate")
+                    }
                 }
                 .padding(Theme.spaceXL)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -96,7 +104,9 @@ extension WizardView {
         .environment(\.wizardStepRows, true)
         .toggleStyle(.switch)
         .textFieldStyle(.roundedBorder)
-        .safeAreaInset(edge: .bottom, spacing: 0) { generationBar }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !flow.settingsRenders || store.isWizardRunning || isFindingFootage { generationBar }
+        }
         .task(id: "\(store.profileGeneration):\(store.activeProjectID ?? 0):\(store.isWizardRunning):\(store.scenesVersion)") {
             await store.refreshWizardSelections()
         }
@@ -160,19 +170,8 @@ extension WizardView {
             footageCard(pageHeight: pageHeight)
         case .settings:
             FormCaption(store.currentWizardSelection == nil
-                ? "How the reel looks and sounds. Generate below finds the moments and renders with these settings."
-                : "Keep the chosen moments and change how the reel looks and sounds, then Render below.")
-            WizardControlRow("Output") {
-                Picker("Output", selection: $outputModeRaw) {
-                    ForEach(MiniWizardFlow.OutputMode.allCases, id: \.self) { mode in
-                        Text(mode.label).lineLimit(1).fixedSize().tag(mode.rawValue)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-            FormCaption(outputMode == .oneReel
-                ? "The kept takes join into one reel, hard cuts between them unless a transition is chosen."
-                : "Every kept selection becomes its own video.")
+                ? "How the reel looks and sounds. Generate finds the moments and renders with these settings."
+                : "Keep the chosen moments and change how the reel looks and sounds, then Generate.")
             if let selection = visibleSelection, let take = selection.bestTake {
                 takeAnchor(selection, take: take)
                 if !cardFlow.canRenderTake && !store.isWizardRunning {
@@ -183,8 +182,30 @@ extension WizardView {
                     .lineLimit(1).fixedSize()
                 }
             }
-            lookFields
+            settingsTabs
         }
+    }
+
+    /// The same four tabs as Express: Picture, Audio (where the recipe has
+    /// sound choices), Overlays, Package. The open tab is remembered.
+    @ViewBuilder var settingsTabs: some View {
+        let tabs = WizardSettingsTab.available(audio: lookCapabilities.audioMusic)
+        let current = (WizardSettingsTab(rawValue: settingsTabRaw) ?? .picture).effective(in: tabs)
+        Picker("Settings", selection: Binding(get: { current }, set: { settingsTabRaw = $0.rawValue })) {
+            ForEach(tabs, id: \.self) { tab in
+                Text(tab.label).lineLimit(1).fixedSize().tag(tab)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .accessibilityLabel("Settings")
+        switch current {
+        case .picture: pictureFields
+        case .audio: audioFields
+        case .overlays: overlaysFields
+        case .package: packageFields
+        }
+        aiModelFields
     }
 
     var sourceCard: some View {

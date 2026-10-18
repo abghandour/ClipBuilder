@@ -237,3 +237,21 @@ captions on and the Look set.
   not renamed: pure churn with no behaviour change.
 - **Not yet verified live:** the four-card page, the inline review and the batch
   Generate in the running app; a Team Sync round trip of `wizard_presets`.
+
+### 2026-10-18 cohesion pass
+
+- Settings card split into the same four tabs as Express (`WizardSettingsTab`,
+  shared): Picture (look, pacing and transitions, camera focus, framing
+  camera, B-roll), Audio (where the recipe offers sound), Overlays (captions
+  and names, overlays, strike stats, branding and watermark), Package
+  (output count, bumpers). The step 2 model pickers stay under every tab.
+  The open tab is remembered in `wizard.settingsTab`.
+- A fifth, non-collapsible "Generate" panel appears once takes are kept,
+  with the run as a card (`RunSummaryCard`, shared with Express) and the
+  Generate button. The bottom generation bar shows only before footage is
+  kept and while a run is in progress (Stop).
+- Results sheet: an Express run offers "Back to Settings" instead of
+  "Generate Again", since Express renders chosen picks rather than planning.
+- Post text is written on demand from the results for both wizards
+  (docs/Post-Text-Plan.md).
+

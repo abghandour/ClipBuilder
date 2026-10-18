@@ -2,7 +2,8 @@ import SwiftUI
 
 // Presentation-only choices for the current take (or the next Automatic run).
 extension WizardView {
-    @ViewBuilder var lookFields: some View {
+    /// Sound & music.
+    @ViewBuilder var audioFields: some View {
         if lookCapabilities.audioMusic {
             FormGroupHeader("Sound & music")
             WizardControlRow("Audio") {
@@ -58,6 +59,10 @@ extension WizardView {
             }
         }
 
+    }
+
+    /// Captions, name tags, overlays and branding: everything drawn over the picture.
+    @ViewBuilder var overlaysFields: some View {
         if lookCapabilities.onScreenText {
             FormGroupHeader("Captions & names")
             WizardControlRow("On-screen text") {
@@ -119,6 +124,29 @@ extension WizardView {
                                         grapplingCard: $strikeGrapplingCard, roundCard: $strikeRoundCard)
             }
         }
+        if lookCapabilities.branding {
+            FormGroupHeader("Branding")
+            WizardControlRow("Brand elements") {
+                Picker("Brand elements", selection: brandingOverrideBinding) {
+                    ForEach(WizardBrandingOverride.allCases, id: \.self) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+            }
+            .fieldHelp(WizardFieldHelp.branding)
+            FieldCaption(WizardFieldHelp.branding)
+            if store.activeProfile.logoPath.isEmpty,
+               resolvedBranding.includeWatermark || resolvedBranding.includeOutro {
+                FormCaption("No brand logo is set. Add one in Settings → Profile to use the watermark or outro.", tone: .warning)
+                    .formDependent()
+            }
+            if resolvedBranding.includeWatermark { watermarkRows }
+        }
+
+    }
+
+    /// Look, pacing and transitions, camera focus and B-roll.
+    @ViewBuilder var pictureFields: some View {
         FormGroupHeader("Picture")
         WizardControlRow("Look") { lookPicker }
         if !lookPresetRaw.isEmpty, lookPresetRaw != "none" {
@@ -172,6 +200,21 @@ extension WizardView {
             FormGroupHeader("B-roll")
             WizardPodcastControls(plan: lookFormPlan, useBRoll: $useBRoll, instructions: $brollInstructions)
         }
+    }
+
+    /// Output count and bumpers: the wrapper around the reel.
+    @ViewBuilder var packageFields: some View {
+        WizardControlRow("Output") {
+            Picker("Output", selection: $outputModeRaw) {
+                ForEach(MiniWizardFlow.OutputMode.allCases, id: \.self) { mode in
+                    Text(mode.label).lineLimit(1).fixedSize().tag(mode.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+        FormCaption(outputMode == .oneReel
+            ? "The kept takes join into one reel, hard cuts between them unless a transition is chosen."
+            : "Every kept selection becomes its own video.")
         if lookCapabilities.bumpers {
             FormGroupHeader("Bumpers")
             bumperToggle("Include an intro", placement: .intro, value: $includeIntroBumper, bumper: $introBumperLibraryPath)
@@ -179,25 +222,10 @@ extension WizardView {
             bumperToggle("Include one at random in the middle", placement: .anywhere, value: $includeMiddleBumper)
         }
 
-        if lookCapabilities.branding {
-            FormGroupHeader("Branding")
-            WizardControlRow("Brand elements") {
-                Picker("Brand elements", selection: brandingOverrideBinding) {
-                    ForEach(WizardBrandingOverride.allCases, id: \.self) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-            }
-            .fieldHelp(WizardFieldHelp.branding)
-            FieldCaption(WizardFieldHelp.branding)
-            if store.activeProfile.logoPath.isEmpty,
-               resolvedBranding.includeWatermark || resolvedBranding.includeOutro {
-                FormCaption("No brand logo is set. Add one in Settings → Profile to use the watermark or outro.", tone: .warning)
-                    .formDependent()
-            }
-            if resolvedBranding.includeWatermark { watermarkRows }
-        }
+    }
 
+    /// Which models the step 2 jobs use; shown under every tab.
+    @ViewBuilder var aiModelFields: some View {
         if !lookFormPlan.step2Models(useBRoll: useBRoll, instructions: brollInstructions).isEmpty {
             DisclosureGroup(lookFormPlan.capabilities.podcastFraming
                 ? "Caption, B-roll and camera focus AI settings" : "Caption and B-roll AI settings") {
@@ -207,6 +235,78 @@ extension WizardView {
                 .padding(.top, Theme.spaceS)
             }
         }
+    }
+
+    /// The Generate panel: the run as a card, then the action.
+    var generatePanel: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
+            RunSummaryCard(summary: wizardRunSummary, accessibilityText: generationSummary)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.spaceM) {
+                    generationAction
+                    manualBuildAction
+                }
+                VStack(alignment: .leading, spacing: Theme.spaceS) {
+                    generationAction
+                    manualBuildAction
+                }
+            }
+        }
+    }
+
+    /// The kept takes and the active choices, grouped like the Settings tabs.
+    var wizardRunSummary: WizardRunSummary {
+        let flow = cardFlow
+        let count = flow.outputCount(oneReel: outputMode == .oneReel)
+        let takes = flow.answers.keptSelectionCount
+        guard takes > 0 else {
+            return WizardRunSummary(headline: "No kept footage", length: nil, sections: [], hasFootage: false)
+        }
+        let source = [flow.answers.selectionName, flow.answers.takeLabel].compactMap { $0 }.joined(separator: ", ")
+        let headline = (outputMode == .oneReel ? "One reel" : count == 1 ? "1 video" : "\(count) videos")
+            + " from " + (source.isEmpty ? "the kept takes" : source + (takes > 1 ? " + \(takes - 1) more" : ""))
+        let render = effectiveRenderSettings
+        var picture = [render.quality.label, render.preset.label]
+        if !lookPresetRaw.isEmpty, lookPresetRaw != "none" {
+            picture.append(EffectCatalog.preset(for: lookPresetRaw)?.name ?? lookPresetRaw.replacingOccurrences(of: "lut:", with: ""))
+        }
+        picture.append(transitionChoiceRaw.isEmpty ? "Planner's cadence"
+            : transitionChoiceRaw == WizardPlanRules.randomTransitionChoice ? "Random transitions"
+            : (TransitionCatalog.all.first { $0.name == transitionChoiceRaw }?.title ?? transitionChoiceRaw) + " transitions")
+        if lookFormPlan.step2Controls.contains(.cameraFocus) {
+            picture.append(WizardCameraFocus.name(cameraFocusBinding.wrappedValue))
+        }
+        var audio: [String] = []
+        if lookCapabilities.audioMusic {
+            audio.append(audioMode.title)
+            if audioMode.useMusic {
+                audio.append(musicTrackRaw.isEmpty
+                    ? (musicFolderRaw.isEmpty ? "Any track" : "Track from \(musicFolderRaw)") : "Track: \(musicTrackRaw)")
+            }
+        }
+        var overlays: [String] = []
+        if lookCapabilities.onScreenText, textMode != .none { overlays.append("Text: \(textMode.title)") }
+        if lookFormPlan.step2Controls.contains(.nameTags), nameTags { overlays.append("Name tags") }
+        if !fixedOverlayTemplate.isEmpty { overlays.append("Overlay \(fixedOverlayTemplate)") }
+        if lookCapabilities.branding {
+            if resolvedBranding.includeWatermark {
+                overlays.append(watermarkOverlay.isEmpty ? "Watermark" : "Watermark \(watermarkOverlay)")
+            }
+            if resolvedBranding.includeHeadline { overlays.append("Headline") }
+            if resolvedBranding.includeOutro { overlays.append("Outro card") }
+        }
+        var package: [String] = []
+        if lookCapabilities.bumpers {
+            if includeIntroBumper { package.append("Intro video") }
+            if includeOutroBumper { package.append("Outro video") }
+            if includeMiddleBumper { package.append("Middle bumper") }
+        }
+        package.append(outputMode.label)
+        var sections = [WizardRunSummary.Section(title: "Picture", items: picture)]
+        if !audio.isEmpty { sections.append(.init(title: "Audio", items: audio)) }
+        sections.append(.init(title: "Overlays", items: overlays.isEmpty ? ["None"] : overlays))
+        sections.append(.init(title: "Package", items: package))
+        return WizardRunSummary(headline: headline, length: nil, sections: sections, hasFootage: true)
     }
 
     /// None, then the Looks and film-stock LUT presets the local ffmpeg can render.

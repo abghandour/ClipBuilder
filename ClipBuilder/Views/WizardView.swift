@@ -79,6 +79,7 @@ struct WizardView: View {
     @AppStorage("wizard.favoritesOnly") var favoritesOnly = false
     /// Express parity: kept selections render as separate videos or one reel.
     @AppStorage("wizard.outputMode") var outputModeRaw = MiniWizardFlow.OutputMode.separateVideos.rawValue
+    @AppStorage("wizard.settingsTab") var settingsTabRaw = ""
     @AppStorage(WizardExpressExtras.transitionChoiceKey) var transitionChoiceRaw = ""
     @AppStorage(WizardExpressExtras.lookPresetKey) var lookPresetRaw = ""
     @AppStorage(WizardExpressExtras.lookIntensityKey) var lookIntensity = 1.0
@@ -901,7 +902,7 @@ struct WizardView: View {
         if needsFootageProposal {
             return "Find matching footage in this project, then review the selection before generating."
         }
-        if cardFlow.openCard == .settings, cardFlow.settingsRenders {
+        if cardFlow.settingsRenders {
             let count = cardFlow.outputCount(oneReel: outputMode == .oneReel)
             return (count == 1 ? "1 video" : "\(count) videos") + " from the kept takes · " + cardFlow.summary(for: .settings)
         }
@@ -917,7 +918,7 @@ struct WizardView: View {
                 Label("Stop", systemImage: "stop.fill")
             }
             .controlSize(.large).lineLimit(1).fixedSize()
-        } else if cardFlow.openCard == .settings, cardFlow.settingsRenders {
+        } else if cardFlow.settingsRenders {
             // Every kept selection renders, as Express renders its kept candidates.
             let flow = cardFlow
             Button {
