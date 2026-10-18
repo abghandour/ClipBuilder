@@ -16,6 +16,25 @@ struct MiniHighlightReviewTests {
         return MiniWizardCandidate(selection: selection, take: take, kept: kept, note: "Keep the answer")
     }
 
+    @Test func playAllWalksTheSelectedReelsCutsOrEveryReel() {
+        let twoCuts = candidate(id: 1, clips: [Fixtures.planClip(start: 2, end: 4), Fixtures.planClip(start: 4, end: 6)])
+        let oneCut = candidate(id: 2)
+        let items = MiniHighlightReview.items(candidates: [twoCuts, oneCut], video: Fixtures.video(), scenes: [Fixtures.scene()])
+        // A reel with cuts selected (or one of its cuts): its cuts, in order.
+        let cuts = RangeReviewPlayAll.sequence(items: items, selectedOwnerID: 1)
+        #expect(cuts.map(\.id.cutIndex) == [0, 1] && cuts.map(\.range) == [2...4, 4...6])
+        #expect(RangeReviewPlayAll.playsCuts(items: items, selectedOwnerID: 1))
+        // A single-cut reel or nothing selected: every reel, top level only.
+        for owner in [Int64(2), nil, 99] {
+            #expect(RangeReviewPlayAll.sequence(items: items, selectedOwnerID: owner).map(\.id.ownerID) == [1, 2])
+            #expect(!RangeReviewPlayAll.playsCuts(items: items, selectedOwnerID: owner))
+        }
+        // Missing footage drops out of the walk.
+        let missing = MiniHighlightReview.items(candidates: [twoCuts], video: Fixtures.video(), scenes: [])
+        #expect(RangeReviewPlayAll.sequence(items: missing, selectedOwnerID: 1).isEmpty)
+        #expect(RangeReviewPlayAll.sequence(items: missing, selectedOwnerID: nil).isEmpty)
+    }
+
     @Test func singleCutUsesCandidateNameAndCaptionsWithoutSubrows() throws {
         let candidate = candidate()
         let item = try #require(MiniHighlightReview.items(candidates: [candidate], video: Fixtures.video(),

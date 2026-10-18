@@ -40,7 +40,7 @@ struct MiniHighlightReviewView: View {
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         selection: selection, emptyTitle: "Select a candidate",
                         emptyMessage: "Choose a candidate to watch it and adjust its cuts.",
-                        resetTitle: "Reset to Suggested", onSave: save) { item in
+                        resetTitle: "Reset to Suggested", playAll: true, onSave: save) { item in
             if let candidate = run.candidates.first(where: { $0.id == item.id.ownerID }) {
                 regenerateRow(candidate, available: item.isAvailable)
             }

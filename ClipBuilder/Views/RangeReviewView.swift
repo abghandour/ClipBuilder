@@ -27,6 +27,12 @@ struct RangeReviewView<Footer: View>: View {
     var spanSelection = false
     /// A Play All button under the list plays every item in order.
     var playAll = false
+    /// Replaces the transcript words column (Fight metrics shows its action grid there).
+    var leadingPanel: AnyView? = nil
+    /// Shown in the trim column while a draft has no range yet.
+    var emptyDraftHint = "Press a word in the transcript and drag to select a passage."
+    /// Replaces the trim hint under the filmstrip (no transcript words to click in Fight metrics).
+    var trimHint: String? = nil
     let onSave: (RangeReviewItem, Double, Double) -> Void
     @ViewBuilder var footer: (RangeReviewItem) -> Footer
 
@@ -89,7 +95,10 @@ struct RangeReviewView<Footer: View>: View {
             HStack(spacing: 0) {
                 if transcriptLeading {
                     if let selected, let video {
-                        wordPanel(selected: selected, video: video).frame(width: widths.transcript).clipped()
+                        Group {
+                            if let leadingPanel { leadingPanel } else { wordPanel(selected: selected, video: video) }
+                        }
+                        .frame(width: widths.transcript).clipped()
                         columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
                                       available: geometry.size.width)
                         trimSurface(item: selected).padding(Theme.spaceS).frame(width: playerWidth).clipped()
@@ -146,11 +155,14 @@ struct RangeReviewView<Footer: View>: View {
             if playingAll {
                 if advancingPlayAll, playback.player != nil, let range, range.upperBound > range.lowerBound {
                     playback.play()
+                    advancingPlayAll = false
+                } else if advancingPlayAll, loadedURL != nil, selected?.isAvailable == true {
+                    // The next cut is in another file: play once it loads.
                 } else {
                     // The user chose another item: Play All is over.
                     playingAll = false
+                    advancingPlayAll = false
                 }
-                advancingPlayAll = false
             }
         }
         .onChange(of: playback.isPlaying) { _, playing in
@@ -171,7 +183,12 @@ struct RangeReviewView<Footer: View>: View {
             if ready, let range, selected?.isAvailable == true {
                 playback.setRange(playable(range))
                 playback.seek(to: range.lowerBound)
-                if isEnabled, autoplay { playback.play() }
+                if playingAll, advancingPlayAll {
+                    advancingPlayAll = false
+                    playback.play()
+                } else if isEnabled, autoplay {
+                    playback.play()
+                }
             }
         }
         .onChange(of: video?.url) { _, _ in selectItem() }
@@ -285,13 +302,21 @@ struct RangeReviewView<Footer: View>: View {
             if playAll {
                 Divider()
                 HStack(spacing: Theme.spaceS) {
+                    let playsCuts = RangeReviewPlayAll.playsCuts(items: items, selectedOwnerID: selectedID?.ownerID)
                     Button(playingAll ? "Stop" : "Play All",
                            systemImage: playingAll ? "stop.fill" : "play.fill") {
                         if playingAll { stopPlayAll() } else { startPlayAll() }
                     }
                     .lineLimit(1).fixedSize()
-                    .disabled(!isEnabled || !visibleItems.contains { !$0.isDraft && $0.isAvailable })
-                    .help(playingAll ? "Stop playing" : "Play every item in order")
+                    .disabled(!isEnabled || playableItems.isEmpty)
+                    .help(playingAll ? "Stop playing"
+                          : playsCuts ? "Play this reel's cuts back to back, as the video will be stitched"
+                          : "Play every item in order")
+                    if playsCuts, !playingAll {
+                        Text("Plays the selected reel's cuts in order")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
                     Spacer(minLength: 0)
                 }
                 .padding(Theme.spaceS)
@@ -300,7 +325,7 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     private var playableItems: [RangeReviewItem] {
-        visibleItems.filter { !$0.isDraft && $0.id.cutIndex == nil && $0.isAvailable && $0.range.upperBound > $0.range.lowerBound }
+        RangeReviewPlayAll.sequence(items: items, selectedOwnerID: selectedID?.ownerID)
     }
 
     private func startPlayAll() {
@@ -439,7 +464,7 @@ struct RangeReviewView<Footer: View>: View {
                     }
                 }
             if isEmptyRange {
-                FormCaption("Press a word in the transcript and drag to select a passage.")
+                FormCaption(emptyDraftHint)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             } else {
                 filmstrip(video: item.video)
@@ -458,9 +483,10 @@ struct RangeReviewView<Footer: View>: View {
                         resetButton(item)
                     }
                 }
-                FormCaption(spanSelection && item.isDraft ? Self.spanHint : Self.trimHint)
+                let hint = spanSelection && item.isDraft ? Self.spanHint : (trimHint ?? Self.trimHint)
+                FormCaption(hint)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                    .help(spanSelection && item.isDraft ? Self.spanHint : Self.trimHint)
+                    .help(hint)
             }
             footer(selectedParent ?? item)
         }

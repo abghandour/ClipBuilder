@@ -48,7 +48,7 @@ struct WizardFootageReviewView: View {
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         selection: selection, emptyTitle: "Select a take",
                         emptyMessage: "Choose a take to watch it and adjust its cuts.",
-                        resetTitle: "Reset to Suggested", onSave: save) { item in
+                        resetTitle: "Reset to Suggested", playAll: true, onSave: save) { item in
             if let (summary, take) = WizardFootageReview.take(item.id, in: selections) {
                 footer(summary, take: take, available: item.isAvailable)
             }

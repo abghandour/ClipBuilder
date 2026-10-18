@@ -85,3 +85,24 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
         allKept(kept, items: items) ? [] : Set(items.map { $0.id.ownerID })
     }
 }
+
+/// What Play All walks. A reel is a list of cuts, so when the selected item
+/// is a reel with cuts (or one of its cuts) Play All plays those cuts back to
+/// back; otherwise it plays every top-level item in order.
+nonisolated enum RangeReviewPlayAll {
+    static func sequence(items: [RangeReviewItem], selectedOwnerID: Int64?) -> [RangeReviewItem] {
+        if let reel = items.first(where: { $0.id.ownerID == selectedOwnerID }), !reel.children.isEmpty {
+            return reel.children.filter(playable)
+        }
+        return items.filter { !$0.isDraft && $0.id.cutIndex == nil && playable($0) }
+    }
+
+    /// True when `sequence` walks one reel's cuts rather than the list.
+    static func playsCuts(items: [RangeReviewItem], selectedOwnerID: Int64?) -> Bool {
+        items.first { $0.id.ownerID == selectedOwnerID }?.children.isEmpty == false
+    }
+
+    private static func playable(_ item: RangeReviewItem) -> Bool {
+        item.isAvailable && item.range.upperBound > item.range.lowerBound
+    }
+}
