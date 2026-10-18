@@ -40,6 +40,38 @@ struct MiniWizardSettingsTests {
         }
     }
 
+    @Test func audioChoicesMapToMusicAndMuteOnlyForFightFootage() throws {
+        var settings = MiniWizardSettings()
+        var base = WizardStep2Options()
+        base.useMusic = true
+        base.musicFolder = "Fights"
+        base.musicTrack = "old.mp3"
+        // Off by default, and Express never inherits the full Wizard's folder or track.
+        var result = settings.step2Options(base: base)
+        #expect(result.useMusic == false && result.muteSource == false && result.musicTrack == nil && result.musicFolder == nil)
+        settings.music = true
+        settings.muteSourceAudio = true
+        result = settings.step2Options(base: base)
+        #expect(result.useMusic == true && result.muteSource == true && result.musicTrack == nil, "random leaves the track to the render")
+        settings.musicTrack = " Intros/hype.mp3 "
+        #expect(settings.step2Options(base: base).musicTrack == "Intros/hype.mp3")
+        settings.music = false
+        #expect(settings.step2Options(base: base).musicTrack == nil && settings.step2Options(base: base).muteSource == true)
+        // Hidden for talk footage: a remembered answer cannot mute a podcast.
+        var fight = Fixtures.video()
+        fight.videoType = VideoType.fight.rawValue
+        var podcast = Fixtures.video()
+        podcast.videoType = VideoType.podcast.rawValue
+        settings.music = true
+        let onFight = settings.effective(for: MiniWizardFlow(video: fight), introAvailable: false, outroAvailable: false)
+        #expect(onFight.music && onFight.muteSourceAudio)
+        let onPodcast = settings.effective(for: MiniWizardFlow(video: podcast), introAvailable: false, outroAvailable: false)
+        #expect(!onPodcast.music && !onPodcast.muteSourceAudio)
+        // Old JSON without the keys decodes to the defaults.
+        let decoded = try JSONDecoder().decode(MiniWizardSettings.self, from: Data("{}".utf8))
+        #expect(!decoded.music && !decoded.muteSourceAudio && decoded.musicTrack == nil)
+    }
+
     @Test func overlayMapsToAFixedOverlayOnlyWhenOnAndNamed() throws {
         var settings = MiniWizardSettings()
         settings.overlayTemplate = "Lower third"

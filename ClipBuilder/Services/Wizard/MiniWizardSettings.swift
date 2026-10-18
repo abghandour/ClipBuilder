@@ -39,6 +39,12 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     /// "vintage" or "lut:kodak_portra_160_vc") graded into every clip's
     /// footage; "" = none.
     var look: String = ""
+    /// Fight and training footage only: drop the source's sound.
+    var muteSourceAudio = false
+    /// Fight and training footage only: lay a track from the music library
+    /// under the reel; `musicTrack` names it, nil = random by duration.
+    var music = false
+    var musicTrack: String?
     var outputMode: MiniWizardFlow.OutputMode = .separateVideos
 
     init() {}
@@ -49,6 +55,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case watermark, watermarkOverlay, watermarkOpacity
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, outputMode, transition, look
+        case muteSourceAudio, music, musicTrack
     }
 
     /// Saved presets: every key optional so a preset written by an older
@@ -83,6 +90,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         outputMode = try c.decodeIfPresent(MiniWizardFlow.OutputMode.self, forKey: .outputMode) ?? base.outputMode
         transition = try c.decodeIfPresent(String.self, forKey: .transition) ?? base.transition
         look = try c.decodeIfPresent(String.self, forKey: .look) ?? base.look
+        muteSourceAudio = try c.decodeIfPresent(Bool.self, forKey: .muteSourceAudio) ?? base.muteSourceAudio
+        music = try c.decodeIfPresent(Bool.self, forKey: .music) ?? base.music
+        musicTrack = try c.decodeIfPresent(String.self, forKey: .musicTrack)
         if quality == .custom { quality = .balanced }
         if preset == .custom { preset = .portrait1080 }
     }
@@ -110,7 +120,10 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.watermarkOpacity = watermark ? watermarkOpacity.map { min(1, max(0, $0)) } : nil
         result.includeHeadline = false
         result.includeOutro = false
-        result.useMusic = false
+        result.useMusic = music
+        result.muteSource = muteSourceAudio
+        result.musicTrack = music ? musicTrackName : nil
+        result.musicFolder = nil
         result.enableTextOverlays = nameTags
         result.nameTagsOnly = true
         result.nameTags = nameTags
@@ -142,6 +155,12 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         return name.isEmpty || name == "none" ? nil : name
     }
 
+    /// The track the render will use; nil for a random pick from the library.
+    var musicTrackName: String? {
+        let name = musicTrack?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? nil : name
+    }
+
     /// The overlay as the render will apply it; nil when off or unnamed.
     var overlayName: String? {
         let name = overlayTemplate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -154,6 +173,10 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         if !flow.showsCameraFocus { result.cameraFocus = "" }
         if !flow.showsNameTags { result.nameTags = false }
         if !flow.showsCaptionLanguage { result.englishCaptions = false }
+        if !flow.showsAudioOptions {
+            result.muteSourceAudio = false
+            result.music = false
+        }
         result.introVideo = introVideo && introAvailable
         result.outroVideo = outroVideo && outroAvailable
         return result
@@ -195,6 +218,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
             result.transition = transition
         }
         result.look = defaults.string(forKey: key(.look)) ?? ""
+        result.musicTrack = defaults.string(forKey: key(.musicTrack))
         result.watermark = WizardDefaults.brandingMode(defaults: defaults).includeWatermark
         for (field, path) in booleanFields {
             if defaults.object(forKey: key(field)) != nil { result[keyPath: path] = defaults.bool(forKey: key(field)) }
@@ -224,11 +248,13 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         defaults.set(outputMode.rawValue, forKey: key(.outputMode))
         defaults.set(transition, forKey: key(.transition))
         defaults.set(look, forKey: key(.look))
+        defaults.set(musicTrack, forKey: key(.musicTrack))
         for (field, path) in Self.booleanFields { defaults.set(self[keyPath: path], forKey: key(field)) }
     }
 
     private static var booleanFields: [(MiniWizardMemory.Field, WritableKeyPath<Self, Bool>)] {
         [(.captions, \.captions), (.englishCaptions, \.englishCaptions), (.introVideo, \.introVideo),
-         (.outroVideo, \.outroVideo), (.nameTags, \.nameTags), (.watermark, \.watermark), (.overlay, \.overlay)]
+         (.outroVideo, \.outroVideo), (.nameTags, \.nameTags), (.watermark, \.watermark), (.overlay, \.overlay),
+         (.muteSourceAudio, \.muteSourceAudio), (.music, \.music)]
     }
 }

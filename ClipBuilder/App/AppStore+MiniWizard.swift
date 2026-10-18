@@ -10,6 +10,10 @@ extension AppStore {
             loadMiniTranscript(flow: flow)
             return
         }
+        if flow.effectiveFootageKind == .fightMetrics {
+            loadMiniFight(flow: flow)
+            return
+        }
         guard let video = flow.video, flow.effectiveFootageKind == .highlights,
               let database, let projectID = activeProjectID, !isWizardRunning else { return }
         guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }

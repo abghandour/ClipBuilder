@@ -7,13 +7,14 @@ nonisolated struct MiniWizardFlow: Sendable {
     }
 
     enum FootageKind: String, CaseIterable, Sendable {
-        case qa, highlights, transcript
+        case qa, highlights, transcript, fightMetrics
 
         var label: String {
             switch self {
             case .qa: "Q&A"
             case .highlights: "Highlights"
             case .transcript: "Transcript"
+            case .fightMetrics: "Fight metrics"
             }
         }
     }
@@ -52,9 +53,17 @@ nonisolated struct MiniWizardFlow: Sendable {
         return video.type == .podcast || video.type == .interview || hasPodcastExchangeScenes
     }
 
-    /// Order: Q&A, Transcript, Highlights. The two that need no AI come first.
+    /// Fight and training footage: scored actions to pick from, and audio
+    /// choices (mute the source, music) that make no sense for talk.
+    var isFightOrTraining: Bool {
+        guard let video else { return false }
+        return video.type == .fight || video.type == .training
+    }
+
+    /// Order: Q&A, Transcript, Fight metrics, Highlights. The kinds that need no AI come first.
     var footageKinds: [FootageKind] {
-        (isPodcastOrInterview ? [.qa] : []) + (hasTranscript ? [.transcript] : []) + [.highlights]
+        (isPodcastOrInterview ? [.qa] : []) + (hasTranscript ? [.transcript] : [])
+            + (isFightOrTraining ? [.fightMetrics] : []) + [.highlights]
     }
     var showsFootageKind: Bool { footageKinds.count > 1 }
     /// A remembered Q&A or Transcript choice must never apply to footage that cannot offer it.
@@ -62,6 +71,7 @@ nonisolated struct MiniWizardFlow: Sendable {
     var showsLength: Bool { effectiveFootageKind == .highlights }
     var lengthOptions: [Length] { Length.allCases }
     var showsCameraFocus: Bool { isPodcastOrInterview }
+    var showsAudioOptions: Bool { isFightOrTraining }
     var showsNameTags: Bool { isPodcastOrInterview }
 
     var showsCaptionLanguage: Bool {
@@ -102,7 +112,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         switch kind {
         case .qa: "\(count) exchanges · \(keptCount) kept"
         case .highlights: "\(count) candidates · \(keptCount) kept"
-        case .transcript: count == 1 ? "1 pick" : "\(count) picks"
+        case .transcript, .fightMetrics: count == 1 ? "1 pick" : "\(count) picks"
         }
     }
 
@@ -150,6 +160,10 @@ nonisolated struct MiniWizardFlow: Sendable {
         if settings.watermark {
             let name = settings.watermarkOverlay?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             parts.append(name.isEmpty ? "watermark" : "watermark \(name)")
+        }
+        if showsAudioOptions {
+            if settings.muteSourceAudio { parts.append("source muted") }
+            if settings.music { parts.append(settings.musicTrackName.map { "music \($0)" } ?? "random music") }
         }
         return parts
     }

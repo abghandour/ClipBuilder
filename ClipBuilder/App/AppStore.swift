@@ -334,6 +334,8 @@ final class AppStore {
     var sceneEditSaveTask: Task<Void, Error>?
     /// Serial transcript-pick writes; Mini waits for the latest before recording takes.
     var transcriptPickSaveTask: Task<Void, Error>?
+    /// Serial fight-pick writes; Mini waits for the latest before recording takes.
+    var fightPickSaveTask: Task<Void, Error>?
     var activeWizardSelectionID: Int64?
     var wizardLookRevision = 0
     var wizardSelectionSaveTask: Task<Void, Error>?
@@ -998,6 +1000,7 @@ final class AppStore {
         miniRun = nil
         sceneEditSaveTask = nil
         transcriptPickSaveTask = nil
+        fightPickSaveTask = nil
         activeWizardSelectionID = nil
         pendingPodcastHighlights = nil
         podcastResultsAfterDismissal = nil

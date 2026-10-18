@@ -4,15 +4,18 @@ import Testing
 
 @Suite("Mini Wizard flow")
 struct MiniWizardFlowTests {
-    @Test("Only podcasts and interviews offer a footage choice", arguments: VideoType.allCases)
+    @Test("Podcasts offer Q&A, fights and training offer Fight metrics", arguments: VideoType.allCases)
     func footageChoices(type: VideoType) {
         var video = Fixtures.video()
         video.videoType = type.rawValue
         let podcast = type == .podcast || type == .interview
+        let fight = type == .fight || type == .training
         let flow = MiniWizardFlow(video: video)
         #expect(flow.isPodcastOrInterview == podcast)
-        #expect(flow.showsFootageKind == podcast)
-        #expect(flow.footageKinds == (podcast ? [.qa, .highlights] : [.highlights]))
+        #expect(flow.isFightOrTraining == fight)
+        #expect(flow.showsAudioOptions == fight)
+        #expect(flow.showsFootageKind == (podcast || fight))
+        #expect(flow.footageKinds == (podcast ? [.qa, .highlights] : fight ? [.fightMetrics, .highlights] : [.highlights]))
     }
 
     @Test("Podcast exchanges enable podcast questions regardless of declared type", arguments: VideoType.allCases)
@@ -20,7 +23,8 @@ struct MiniWizardFlowTests {
         var video = Fixtures.video()
         video.videoType = type.rawValue
         let flow = MiniWizardFlow(video: video, hasPodcastExchangeScenes: true, footageKind: .qa)
-        #expect(flow.footageKinds == [.qa, .highlights])
+        let fight = type == .fight || type == .training
+        #expect(flow.footageKinds == (fight ? [.qa, .fightMetrics, .highlights] : [.qa, .highlights]))
         #expect(flow.showsFootageKind)
         #expect(!flow.showsLength)
         #expect(flow.showsCameraFocus)
@@ -48,10 +52,15 @@ struct MiniWizardFlowTests {
         var video = Fixtures.video()
         video.videoType = type.rawValue
         let podcast = type == .podcast || type == .interview
+        let fight = type == .fight || type == .training
         for kind in MiniWizardFlow.FootageKind.allCases {
             let flow = MiniWizardFlow(video: video, footageKind: kind)
             // Without a transcript, Transcript falls back like Q&A does without exchanges.
-            let expected: MiniWizardFlow.FootageKind = podcast && kind != .transcript ? kind : .highlights
+            let expected: MiniWizardFlow.FootageKind = switch kind {
+            case .qa: podcast ? .qa : .highlights
+            case .fightMetrics: fight ? .fightMetrics : .highlights
+            default: .highlights
+            }
             #expect(flow.effectiveFootageKind == expected)
             #expect(flow.showsLength == (expected == .highlights))
             #expect(flow.showsCameraFocus == podcast)
@@ -64,8 +73,10 @@ struct MiniWizardFlowTests {
         var video = Fixtures.video()
         video.videoType = type.rawValue
         let podcast = type == .podcast || type == .interview
+        let fight = type == .fight || type == .training
         let flow = MiniWizardFlow(video: video, hasTranscript: true, footageKind: .transcript)
-        #expect(flow.footageKinds == (podcast ? [.qa, .transcript, .highlights] : [.transcript, .highlights]))
+        #expect(flow.footageKinds == (podcast ? [.qa, .transcript, .highlights]
+                                      : fight ? [.transcript, .fightMetrics, .highlights] : [.transcript, .highlights]))
         #expect(flow.showsFootageKind)
         #expect(flow.effectiveFootageKind == .transcript)
         #expect(!flow.showsLength)

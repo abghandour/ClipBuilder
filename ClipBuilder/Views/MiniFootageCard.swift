@@ -18,6 +18,13 @@ struct MiniFootageCard: View {
                 .frame(height: max(560, pageHeight - 220))
                 .padding(.horizontal, -Theme.spaceS)
                 .disabled(store.isWizardRunning)
+        } else if run.footageKind == .fightMetrics {
+            MiniFightPickView(run: run)
+                .id(run.batchID)
+                .frame(maxWidth: .infinity)
+                .frame(height: max(560, pageHeight - 220))
+                .padding(.horizontal, -Theme.spaceS)
+                .disabled(store.isWizardRunning)
         } else {
             MiniHighlightReviewView(run: run)
                 .id(run.batchID)

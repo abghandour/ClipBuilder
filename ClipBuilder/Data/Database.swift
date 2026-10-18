@@ -111,6 +111,19 @@ actor Database {
         created_at TEXT DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS fight_picks (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        start_time REAL NOT NULL,
+        end_time REAL NOT NULL,
+        original_start REAL NOT NULL,
+        original_end REAL NOT NULL,
+        event_ids TEXT NOT NULL DEFAULT '[]',
+        scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+
     CREATE TABLE IF NOT EXISTS moments (
         id INTEGER PRIMARY KEY,
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,

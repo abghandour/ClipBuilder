@@ -8,6 +8,8 @@ struct MiniSettingsCard: View {
     /// Presets the local ffmpeg can render. Probing ffmpeg spawns a process,
     /// so it runs once off the main thread; until then every look is listed.
     @State private var availableLookIDs: Set<String>?
+    /// Root-relative names of the music library's tracks, read once off the main thread.
+    @State private var musicTracks: [String]?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
@@ -45,6 +47,7 @@ struct MiniSettingsCard: View {
                         : "Chosen by the highlights model when the candidates were found.")
                     : WizardCameraFocus.summary(settings.cameraFocus))
             }
+            if flow.showsAudioOptions { audioRows }
             overlayRows
             MiniRow("Captions") {
                 Toggle("Captions", isOn: $settings.captions)
@@ -289,6 +292,51 @@ struct MiniSettingsCard: View {
             }
         }
         .pickerStyle(.menu)
+    }
+
+    /// Fight and training footage: drop the source's sound, lay a track under the reel.
+    @ViewBuilder
+    private var audioRows: some View {
+        MiniRow("Mute source audio") {
+            Toggle("Mute source audio", isOn: $settings.muteSourceAudio)
+        }
+        FormCaption(settings.muteSourceAudio
+            ? "Muted: the reel plays without the recording's sound."
+            : "Off: the crowd, the commentary and the impacts stay in.")
+        MiniRow("Music") {
+            Toggle("Music", isOn: $settings.music)
+        }
+        if settings.music {
+            MiniDependents {
+                MiniRow("Track") {
+                    Picker("Track", selection: Binding(
+                        get: { settings.musicTrackName ?? "" },
+                        set: { settings.musicTrack = $0.isEmpty ? nil : $0 })) {
+                        Text("Random").tag("")
+                        if let musicTracks, !musicTracks.isEmpty {
+                            Divider()
+                            ForEach(musicTracks, id: \.self) { track in
+                                Text(track).lineLimit(1).truncationMode(.middle).tag(track)
+                            }
+                        } else if let name = settings.musicTrackName {
+                            Text(name).tag(name)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .accessibilityLabel("Track")
+                }
+                FormCaption(musicTracks?.isEmpty == true
+                    ? "The music library is empty; add tracks under Resources › Music."
+                    : settings.musicTrackName == nil
+                        ? "Random picks a track that fits the reel's length."
+                        : settings.muteSourceAudio ? "Music only." : "Mixed under the source audio.")
+            }
+            .task {
+                let tracks = await Task.detached { WizardEngine.availableMusic().map(\.name) }.value
+                musicTracks = tracks
+                if let chosen = settings.musicTrackName, !tracks.contains(chosen) { settings.musicTrack = nil }
+            }
+        }
     }
 
     /// None, then the Looks and film-stock LUT presets the local ffmpeg can render.

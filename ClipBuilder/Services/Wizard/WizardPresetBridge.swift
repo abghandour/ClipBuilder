@@ -46,7 +46,9 @@ nonisolated enum WizardPresetBridge {
         fields["transitionChoice"] = .string(settings.transition)
         fields["lookPreset"] = settings.lookName.map(JSONSetting.string) ?? .null
         fields["outputMode"] = .string(settings.outputMode.rawValue)
-        fields["useMusic"] = .bool(false)
+        fields["useMusic"] = .bool(settings.music)
+        fields["muteSource"] = .bool(settings.muteSourceAudio)
+        fields["musicTrack"] = settings.musicTrackName.map(JSONSetting.string) ?? .null
         return fields
     }
 
@@ -87,6 +89,9 @@ nonisolated enum WizardPresetBridge {
         if let transition = fields["transitionChoice"]?.string, !transition.isEmpty { settings.transition = transition }
         if let value = fields["lookPreset"] { settings.look = value.string ?? "" }
         if let mode = fields["outputMode"]?.string.flatMap(MiniWizardFlow.OutputMode.init(rawValue:)) { settings.outputMode = mode }
+        if let music = fields["useMusic"]?.bool { settings.music = music }
+        if let mute = fields["muteSource"]?.bool { settings.muteSourceAudio = mute }
+        if let value = fields["musicTrack"] { settings.musicTrack = value.string }
         return settings
     }
 
