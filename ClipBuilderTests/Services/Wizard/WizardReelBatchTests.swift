@@ -105,7 +105,7 @@ struct WizardReelBatchTests {
         }
         // Cancel once a finish is actually waiting, not after a fixed delay: under
         // load the batch may not have started yet, and cancelling then proves nothing.
-        let deadline = ContinuousClock.now + .seconds(5)
+        let deadline = ContinuousClock.now + .seconds(30)
         while !journal.all.contains(where: { $0.hasSuffix("started") }), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }

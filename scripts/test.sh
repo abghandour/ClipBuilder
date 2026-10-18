@@ -34,7 +34,7 @@ run_tests() {
 # that stampede. They run in a second phase on an idle host. A targeted
 # run (any argument) is a single phase.
 TIMING_SUITES=(ScriptEngineTests ScriptReplayTests ScriptValidationTests ScriptExamplesTests
-               BuilderScriptSessionTests MainThreadWatchdogTests SourceScanTests)
+               BuilderScriptSessionTests MainThreadWatchdogTests SourceScanTests WizardReelBatchTests)
 if (( $# > 0 )); then
     run_tests "$@"
     exit 0
