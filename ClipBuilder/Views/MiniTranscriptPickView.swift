@@ -61,6 +61,7 @@ struct MiniTranscriptPickView: View {
                         listTitle: picks.isEmpty ? "Picks" : (picks.count == 1 ? "1 pick" : "\(picks.count) picks"),
                         onMove: { store.reorderMiniTranscriptPicks($0) },
                         onDelete: { item in store.deleteMiniTranscriptPick(item.id.ownerID) },
+                        onDeleteAll: { store.deleteAllMiniTranscriptPicks() },
                         spanSelection: true, playAll: true,
                         onSave: save) { item in
             if item.isDraft {

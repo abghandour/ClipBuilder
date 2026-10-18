@@ -66,6 +66,26 @@ nonisolated enum MiniWizardFightRules {
         return lower...upper
     }
 
+    /// A click in the action grid, with the usual Mac rules: plain selects
+    /// one and anchors there; ⌘ toggles the row; ⇧ selects from the anchor
+    /// to the row. Returns the new selection and anchor.
+    static func select(_ clicked: Int64, in order: [Int64], current: Set<Int64>, anchor: Int64?,
+                       command: Bool, shift: Bool) -> (selected: Set<Int64>, anchor: Int64?) {
+        if command {
+            var next = current
+            if next.contains(clicked) {
+                next.remove(clicked)
+                return (next, anchor)
+            }
+            next.insert(clicked)
+            return (next, clicked)
+        }
+        if shift, let anchor, let from = order.firstIndex(of: anchor), let to = order.firstIndex(of: clicked) {
+            return (Set(order[min(from, to)...max(from, to)]), anchor)
+        }
+        return ([clicked], clicked)
+    }
+
     /// The stretch from the earliest picked action to the latest; nil for none.
     static func span(of picked: [Action]) -> ClosedRange<Double>? {
         guard let lower = picked.map(\.range.lowerBound).min(),

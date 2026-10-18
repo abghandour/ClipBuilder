@@ -51,6 +51,27 @@ struct MiniWizardFightTests {
         MiniWizardFightRules.actions(events: [event(99, time)], duration: 60)[0]
     }
 
+    @Test func gridClicksFollowMacSelectionRules() {
+        let order: [Int64] = [1, 2, 3, 4, 5]
+        var state = MiniWizardFightRules.select(2, in: order, current: [], anchor: nil, command: false, shift: false)
+        #expect(state.selected == [2] && state.anchor == 2)
+        // ⇧ selects from the anchor; the anchor stays.
+        state = MiniWizardFightRules.select(4, in: order, current: state.selected, anchor: state.anchor, command: false, shift: true)
+        #expect(state.selected == [2, 3, 4] && state.anchor == 2)
+        state = MiniWizardFightRules.select(1, in: order, current: state.selected, anchor: state.anchor, command: false, shift: true)
+        #expect(state.selected == [1, 2] && state.anchor == 2)
+        // ⌘ toggles one row; adding moves the anchor, removing keeps it.
+        state = MiniWizardFightRules.select(5, in: order, current: state.selected, anchor: state.anchor, command: true, shift: false)
+        #expect(state.selected == [1, 2, 5] && state.anchor == 5)
+        state = MiniWizardFightRules.select(1, in: order, current: state.selected, anchor: state.anchor, command: true, shift: false)
+        #expect(state.selected == [2, 5] && state.anchor == 5)
+        // ⇧ without an anchor, or with a vanished one, selects the row alone.
+        #expect(MiniWizardFightRules.select(3, in: order, current: [2], anchor: nil, command: false, shift: true).selected == [3])
+        #expect(MiniWizardFightRules.select(3, in: order, current: [2], anchor: 99, command: false, shift: true).selected == [3])
+        // A plain click replaces everything.
+        #expect(MiniWizardFightRules.select(3, in: order, current: [1, 2, 5], anchor: 5, command: false, shift: false).selected == [3])
+    }
+
     @Test func titlesNameTheFightersAndCountTheirActions() {
         let names = ["a": "Felipe", "b": "João"]
         let actions = MiniWizardFightRules.actions(events: [
@@ -105,6 +126,12 @@ struct MiniWizardFightTests {
         #expect(try await database.fetchWizardSelections(projectID: projectID, miniBatch: "batch").count == 2)
         try await database.deleteFightPick(id: late.id)
         #expect(try await database.fetchFightPicks(videoID: videoID).map(\.id) == [early.id])
+        // Remove All clears this video's picks only.
+        let other = try await temp.seedVideo(sceneCount: 0)
+        _ = try await database.addFightPick(videoID: other, start: 1, end: 2, eventIDs: [])
+        try await database.deleteFightPicks(videoID: videoID)
+        #expect(try await database.fetchFightPicks(videoID: videoID).isEmpty)
+        #expect(try await database.fetchFightPicks(videoID: other).count == 1)
     }
 }
 

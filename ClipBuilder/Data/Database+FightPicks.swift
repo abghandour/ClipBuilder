@@ -45,6 +45,10 @@ extension Database {
         }
     }
 
+    func deleteFightPicks(videoID: Int64) throws {
+        try connection.execute("DELETE FROM fight_picks WHERE video_id = ?", [.integer(videoID)])
+    }
+
     func deleteFightPick(id: Int64) throws {
         try connection.execute("DELETE FROM fight_picks WHERE id = ?", [.integer(id)])
     }

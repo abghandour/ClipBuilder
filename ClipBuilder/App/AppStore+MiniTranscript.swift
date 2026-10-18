@@ -126,8 +126,17 @@ extension AppStore {
         }
     }
 
+    func deleteAllMiniTranscriptPicks() {
+        guard let run = currentTranscriptRun(), run.transcript?.picks.isEmpty == false else { return }
+        miniRun?.transcript?.picks = []
+        let videoID = run.video.id
+        enqueueTranscriptPickWrite("Could not remove the picks", batchID: run.batchID) { database in
+            try await database.deleteTranscriptPicks(videoID: videoID)
+        }
+    }
+
     /// Moving to Settings creates one selection per pick, in list order, without rendering.
-    func recordMiniTranscriptSelections() {
+    func recordMiniTranscriptSelections(then: @escaping @MainActor () -> Void = {}) {
         guard let run = currentTranscriptRun(), let transcript = run.transcript,
               !transcript.picks.isEmpty, let database else { return }
         let generation = profileGeneration
@@ -148,6 +157,7 @@ extension AppStore {
                 miniRun?.candidates = candidates
                 miniRun?.selectedSelectionID = candidates.first?.id
                 miniRun?.requestedCard = candidates.isEmpty ? .footage : .settings
+                if !candidates.isEmpty { then() }
                 appendLog(\.wizardLog, ["Express: saved \(candidates.count) transcript picks as selections."])
                 // The picks' scenes are new library rows.
                 await refreshAllNow()

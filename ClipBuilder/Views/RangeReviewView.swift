@@ -23,6 +23,9 @@ struct RangeReviewView<Footer: View>: View {
     var onMove: (([Int64]) -> Void)? = nil
     /// Delete from the row's context menu or the Delete key.
     var onDelete: ((RangeReviewItem) -> Void)? = nil
+    /// A Remove All button beside the list title, shown while the list has items.
+    var onDeleteAll: (() -> Void)? = nil
+    @State private var confirmingDeleteAll = false
     /// Draft items select by pressing a word and dragging; an empty range means nothing selected.
     var spanSelection = false
     /// A Play All button under the list plays every item in order.
@@ -269,9 +272,25 @@ struct RangeReviewView<Footer: View>: View {
                 .padding(Theme.spaceS)
                 Divider()
             } else if let listTitle {
-                Text(listTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    .lineLimit(1).fixedSize()
-                    .padding(Theme.spaceS)
+                HStack(spacing: Theme.spaceS) {
+                    Text(listTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .lineLimit(1).fixedSize()
+                    Spacer(minLength: 0)
+                    if let onDeleteAll, items.contains(where: { !$0.isDraft }) {
+                        Button("Remove All", role: .destructive) { confirmingDeleteAll = true }
+                            .controlSize(.small).lineLimit(1).fixedSize()
+                            .disabled(!isEnabled)
+                            .help("Remove every item from the list")
+                            .confirmationDialog("Remove all \(items.filter { !$0.isDraft }.count) items?",
+                                                isPresented: $confirmingDeleteAll) {
+                                Button("Remove All", role: .destructive, action: onDeleteAll)
+                                Button("Cancel", role: .cancel) {}
+                            } message: {
+                                Text("The list empties; the footage itself is untouched and can be added again.")
+                            }
+                    }
+                }
+                .padding(Theme.spaceS)
                 Divider()
             }
             // Selection is explicit so the sibling checkbox never selects a row.

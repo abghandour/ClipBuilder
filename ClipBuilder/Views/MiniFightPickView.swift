@@ -72,6 +72,7 @@ struct MiniFightPickView: View {
                             listTitle: picks.isEmpty ? "Picks" : (picks.count == 1 ? "1 pick" : "\(picks.count) picks"),
                             onMove: { store.reorderMiniFightPicks($0) },
                             onDelete: { item in store.deleteMiniFightPick(item.id.ownerID) },
+                            onDeleteAll: { store.deleteAllMiniFightPicks() },
                             playAll: true,
                             leadingPanel: AnyView(grid),
                             emptyDraftHint: "Select one or more actions in the grid to preview them here.",
@@ -102,36 +103,49 @@ struct MiniFightPickView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// The chronological action grid: time, fighter, action. Multi-select
-    /// with click, shift and command, as any macOS table.
+    /// The chronological action grid: time, fighter, action. Plain rows in a
+    /// scroll view with click, ⇧ and ⌘ selection; a SwiftUI Table here
+    /// crashed in AppKit's coordinator when the card collapsed under it.
     private var grid: some View {
         let pickedIDs = Set(picks.flatMap(\.eventIDs))
         return VStack(alignment: .leading, spacing: 0) {
-            Table(actions, selection: $chosen) {
-                TableColumn("Time") { action in
-                    Text(action.time.timecode).monospacedDigit()
-                        .foregroundStyle(pickedIDs.contains(action.id) ? .secondary : .primary)
-                }
-                .width(min: 44, ideal: 52, max: 64)
-                TableColumn("Fighter") { action in
-                    Text(names[action.fighterKey] ?? (action.fighterKey.isEmpty ? "—" : action.fighterKey))
-                        .lineLimit(1).truncationMode(.tail)
-                        .foregroundStyle(pickedIDs.contains(action.id) ? .secondary : .primary)
-                }
-                .width(min: 60, ideal: 96)
-                TableColumn("Action") { action in
-                    HStack(spacing: Theme.spaceXS) {
-                        Text(action.label).lineLimit(1).truncationMode(.tail)
-                        if pickedIDs.contains(action.id) {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.secondary)
-                                .help("Already in a pick")
+            gridRow(time: "Time", fighter: "Fighter", action: "Action", header: true)
+                .padding(.horizontal, Theme.spaceS)
+                .padding(.vertical, Theme.spaceXS)
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(actions) { action in
+                            let selected = chosen.contains(action.id)
+                            let picked = pickedIDs.contains(action.id)
+                            HStack(spacing: Theme.spaceXS) {
+                                gridRow(time: action.time.timecode,
+                                        fighter: names[action.fighterKey] ?? (action.fighterKey.isEmpty ? "—" : action.fighterKey),
+                                        action: action.label, header: false)
+                                if picked {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(selected ? .white : .secondary)
+                                        .help("Already in a pick")
+                                }
+                            }
+                            .foregroundStyle(selected ? Color.white : picked ? Color.secondary : Color.primary)
+                            .padding(.horizontal, Theme.spaceS)
+                            .padding(.vertical, 5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(selected ? Color.accentColor : Color.clear)
+                            .contentShape(Rectangle())
+                            .id(action.id)
+                            .onTapGesture { click(action.id) }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityAddTraits(selected ? .isSelected : [])
                         }
                     }
-                    .foregroundStyle(pickedIDs.contains(action.id) ? .secondary : .primary)
                 }
-                .width(min: 100, ideal: 150)
+                .onChange(of: chosenScrollTarget) { _, target in
+                    if let target { proxy.scrollTo(target) }
+                }
             }
-            .tableStyle(.inset(alternatesRowBackgrounds: true))
             Divider()
             FormCaption(chosen.isEmpty
                 ? "\(actions.count) scored actions. Click to select; ⇧ and ⌘ extend the selection."
@@ -139,6 +153,29 @@ struct MiniFightPickView: View {
                 .lineLimit(1).truncationMode(.tail)
                 .padding(Theme.spaceS)
         }
+    }
+
+    /// Three aligned columns: a fixed time, a fighter column, the action taking the rest.
+    private func gridRow(time: String, fighter: String, action: String, header: Bool) -> some View {
+        HStack(spacing: Theme.spaceS) {
+            Text(time).monospacedDigit().frame(width: 44, alignment: .leading)
+            Text(fighter).lineLimit(1).truncationMode(.tail).frame(width: 96, alignment: .leading)
+            Text(action).lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(header ? .caption.weight(.semibold) : .body)
+        .foregroundStyle(header ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+    }
+
+    /// The last clicked row, for ⇧ ranges and keeping the row in view.
+    @State private var anchor: Int64?
+    private var chosenScrollTarget: Int64? { anchor.flatMap { chosen.contains($0) ? $0 : nil } }
+
+    private func click(_ id: Int64) {
+        let modifiers = NSEvent.modifierFlags
+        let result = MiniWizardFightRules.select(id, in: actions.map(\.id), current: chosen, anchor: anchor,
+                                                 command: modifiers.contains(.command), shift: modifiers.contains(.shift))
+        chosen = result.selected
+        anchor = result.anchor
     }
 
     private func save(_ item: RangeReviewItem, start: Double, end: Double) {

@@ -122,8 +122,17 @@ extension AppStore {
         }
     }
 
+    func deleteAllMiniFightPicks() {
+        guard let run = currentFightRun(), run.fight?.picks.isEmpty == false else { return }
+        miniRun?.fight?.picks = []
+        let videoID = run.video.id
+        enqueueFightPickWrite("Could not remove the picks", batchID: run.batchID) { database in
+            try await database.deleteFightPicks(videoID: videoID)
+        }
+    }
+
     /// Moving to Settings creates one selection per pick, in list order, without rendering.
-    func recordMiniFightSelections() {
+    func recordMiniFightSelections(then: @escaping @MainActor () -> Void = {}) {
         guard let run = currentFightRun(), let fight = run.fight, !fight.picks.isEmpty, let database else { return }
         let generation = profileGeneration
         beginWizardSelectionWork(projectID: run.projectID, stage: "Saving fight picks", options: run.options)
@@ -142,6 +151,7 @@ extension AppStore {
                 miniRun?.candidates = candidates
                 miniRun?.selectedSelectionID = candidates.first?.id
                 miniRun?.requestedCard = candidates.isEmpty ? .footage : .settings
+                if !candidates.isEmpty { then() }
                 appendLog(\.wizardLog, ["Express: saved \(candidates.count) fight picks as selections."])
                 // The picks' scenes are new library rows.
                 await refreshAllNow()
