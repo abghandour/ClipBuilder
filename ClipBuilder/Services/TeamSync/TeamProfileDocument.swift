@@ -8,7 +8,8 @@ nonisolated enum TeamProfileDocument {
         "caption_styles", "tag_style", "tag_styles", "accent_color", "tagline", "caption_languages",
         "default_pacing", "default_music_volume", "use_learned_editing_defaults", "learned_hook_style",
         "learned_layout_preference", "taste_rubric", "taste_categories", "house_style", "critic_brief_use",
-        "editing", "ai_routing", "default_render_settings", "buzz_sources", "buzz_extra_sources", "mini_instructions", "express_presets"
+        "editing", "ai_routing", "default_render_settings", "buzz_sources", "buzz_extra_sources", "mini_instructions", "express_presets",
+        "wizard_presets",
     ]
 
     static func encode(_ profile: BrandProfile) throws -> String {
@@ -61,7 +62,7 @@ nonisolated enum TeamProfileDocument {
             var result: [String: SyncJSON] = [:]
             if case .object(let fields) = remote { result = fields }
             for key in Set(current.keys).union(baseline.keys) where current[key] != baseline[key] {
-                result[key] = key == "express_presets"
+                result[key] = key == "express_presets" || key == "wizard_presets"
                     ? mergeNamedList(remote: result[key], current: current[key], baseline: baseline[key])
                     : merge(remote: result[key], current: current[key], baseline: baseline[key])
             }
@@ -164,6 +165,12 @@ extension Database {
             // Same for Express presets: a 1.103-or-older client carried the
             // team's presets through as an unknown key; adopt before uploading.
             if profile.expressPresets == nil, saved["express_presets"] != nil, saved["express_presets"] != .null {
+                try connection.execute("INSERT OR IGNORE INTO sync_profile_adoption(id, baseline_json) VALUES (1, ?)",
+                                       [.text(current)])
+                return
+            }
+            // And the Wizard presets added in 1.108.
+            if profile.wizardPresets == nil, saved["wizard_presets"] != nil, saved["wizard_presets"] != .null {
                 try connection.execute("INSERT OR IGNORE INTO sync_profile_adoption(id, baseline_json) VALUES (1, ?)",
                                        [.text(current)])
                 return

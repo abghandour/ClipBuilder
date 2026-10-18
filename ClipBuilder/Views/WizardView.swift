@@ -1,8 +1,10 @@
+import Combine
 import SwiftUI
 
 // MAP: persisted answers, lifecycle, source policy, handoffs and submission.
-// WizardView+Steps: seven cards and navigation; WizardView+Fields: source/outcome/planning rows;
-// WizardView+Look: presentation controls. WizardStepFlow owns pure progression rules.
+// WizardView+Steps: four cards (Source, Plan, Footage, Settings) and navigation;
+// WizardView+Fields: source/outcome/planning rows; WizardView+Look: presentation
+// controls. WizardCardFlow owns the pure navigation and summary rules.
 
 /// Footage and idea entry converge on one reviewable run configuration.
 struct WizardView: View {
@@ -56,9 +58,9 @@ struct WizardView: View {
     @AppStorage("wizard.framingCamera") var framingCameraRaw = WizardDefaults.fallbackFramingCamera
     @AppStorage(WizardDefaults.limitTransitionsKey) var limitTransitions = false
     @AppStorage(WizardDefaults.allowedTransitionsKey) var transitionsRaw = ""
-    @State var confirmedSteps: Set<WizardStepFlow.Step> = []
-    @State var requestedStep: WizardStepFlow.Step?
-    @State var collapsedStep: WizardStepFlow.Step?
+    /// Express navigation: the requested card is the open card; any header opens.
+    @State var requestedCard: WizardCardFlow.Card = .source
+    @State var collapsedCard: WizardCardFlow.Card?
     @Environment(\.accessibilityReduceMotion) var reduceMotion
     @State var deletingSelection: WizardSelectionSummary?
     @State var musicTracks: [String] = []
@@ -75,6 +77,22 @@ struct WizardView: View {
     @AppStorage(WizardDefaults.brandingOverrideKey) private var brandingOverrideRaw = WizardBrandingOverride.savedDefault.rawValue
     @AppStorage("wizard.limitToSelection") var limitToSelection = false
     @AppStorage("wizard.favoritesOnly") var favoritesOnly = false
+    /// Express parity: kept selections render as separate videos or one reel.
+    @AppStorage("wizard.outputMode") var outputModeRaw = MiniWizardFlow.OutputMode.separateVideos.rawValue
+    @AppStorage(WizardExpressExtras.transitionChoiceKey) var transitionChoiceRaw = ""
+    @AppStorage(WizardExpressExtras.lookPresetKey) var lookPresetRaw = ""
+    @AppStorage(WizardExpressExtras.lookIntensityKey) var lookIntensity = 1.0
+    @AppStorage(WizardExpressExtras.overlayEnabledKey) var fixedOverlayOn = false
+    @AppStorage(WizardExpressExtras.overlayTemplateKey) var fixedOverlayTemplate = ""
+    @AppStorage(WizardExpressExtras.overlayStartKey) var fixedOverlayStart = 0.0
+    @AppStorage(WizardExpressExtras.overlayDurationKey) var fixedOverlayDuration = 0.0
+    @AppStorage(WizardExpressExtras.overlayTextsKey) var fixedOverlayTexts = ""
+    @AppStorage(WizardExpressExtras.watermarkOverlayKey) var watermarkOverlay = ""
+    @AppStorage(WizardExpressExtras.watermarkOpacityKey) var watermarkOpacity = 0.0
+    @AppStorage(WizardExpressExtras.introBumperKey) var introBumperLibraryPath = ""
+    @AppStorage(WizardExpressExtras.outroBumperKey) var outroBumperLibraryPath = ""
+    @State var availableLookIDs: Set<String>?
+    var outputMode: MiniWizardFlow.OutputMode { MiniWizardFlow.OutputMode(rawValue: outputModeRaw) ?? .separateVideos }
     /// Comma-joined Analyze batch IDs — AppStorage cannot persist a Set.
     @AppStorage("wizard.selectedRunIDs") var selectedRunIDsRaw = ""
     /// Comma-joined person keys (empty means anyone in the selected scenes).
@@ -96,6 +114,12 @@ struct WizardView: View {
     @State private var showManualBuild = false
     @State private var transcriptVideoIDs: Set<Int64> = []
     @State private var pendingDispatch: PendingDispatch?
+    /// Presets and per-profile memory for the answers (Express parity).
+    @State var presetSheet: PresetSheet?
+    @State var presetTitle = "Settings"
+    @State private var answersProfile: String?
+    private let defaultsChanged = NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+        .debounce(for: .milliseconds(250), scheduler: RunLoop.main)
 
     private struct SourcePoolKey: Equatable {
         var scenesVersion: Int
@@ -393,13 +417,14 @@ struct WizardView: View {
         configurationForm
         .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
+            adoptAnswers(for: store.activeProfile)
             loadCaptionChoices()
             enteredWithHandoff = store.pendingWizardPrompt?.proposesFootage == false || store.pendingWizardTemplate != nil
             if store.pendingWizardTemplate != nil {
                 formatPreset = WizardFormPlan.recipeForSceneHandoff(current: recipe, lastSceneRecipeID: lastSceneRecipeID).id
             }
             if capabilities.sources == .scenes { lastSceneRecipeID = recipe.id }
-            if enteredWithHandoff { confirmedSteps.insert(.start); requestedStep = .sources }
+            if enteredWithHandoff { open(.source) }
             sourcesFocused = !fromIdea
             highlightMaxSeconds = store.editingDefaults.podcast.highlightMaxSeconds
             if highlightVideoPath.isEmpty { highlightVideoPath = podcastHighlightVideos.first?.path ?? "" }
@@ -416,19 +441,20 @@ struct WizardView: View {
                 || old?.sourceVideoPaths != new?.sourceVideoPaths
                 || old?.selectedRunIDs != new?.selectedRunIDs
                 || old?.sourcePeople != new?.sourcePeople {
-                invalidateSourceConfirmation()
+                open(.source)
             }
         }
         .onChange(of: store.activeProfile.id) { _, _ in
-            loadCaptionChoices()
             runPacing = nil
             runRenderSettings = nil
+            adoptAnswers(for: store.activeProfile)
+            loadCaptionChoices()
             proposedSceneIDs = nil
             reviewingIdea = false
-            resetStepProgress()
+            resetCardProgress()
         }
         .onChange(of: store.activeProjectID) { _, _ in
-            resetStepProgress()
+            resetCardProgress()
             proposedSceneIDs = nil
             reviewingIdea = false
             enteredWithHandoff = store.pendingWizardPrompt?.proposesFootage == false || store.pendingWizardTemplate != nil
@@ -437,8 +463,7 @@ struct WizardView: View {
         .onChange(of: store.pendingWizardTemplate) { _, handoff in
             if handoff != nil {
                 enteredWithHandoff = true
-                confirmedSteps.insert(.start)
-                requestedStep = .sources
+                open(.source)
                 formatPreset = WizardFormPlan.recipeForSceneHandoff(current: recipe, lastSceneRecipeID: lastSceneRecipeID).id
                 sourcesFocused = true
             }
@@ -449,8 +474,7 @@ struct WizardView: View {
             }
         }
         .onChange(of: entryMode) { _, _ in
-            invalidateSourceConfirmation()
-            requestedStep = .start
+            open(.source)
             reviewingIdea = false
             if store.pendingWizardPrompt?.proposesFootage == true {
                 store.cancelGenerateRequest()
@@ -458,7 +482,6 @@ struct WizardView: View {
             }
         }
         .onChange(of: formatPreset) { oldValue, newValue in
-            invalidateSourceConfirmation()
             if let previous = ReelRecipe.recipe(id: oldValue), previous.capabilities.sources == .scenes {
                 lastSceneRecipeID = previous.id
             }
@@ -487,7 +510,6 @@ struct WizardView: View {
         .onChange(of: includeOutroBumper) { _, enabled in updateCopiedOption("includeOutroBumper", .bool(enabled)) }
         .onChange(of: includeMiddleBumper) { _, enabled in updateCopiedOption("includeMiddleBumper", .bool(enabled)) }
         .onChange(of: musicFolderRaw) { refreshMusicCount() }
-        .onChange(of: sourceConfirmationKey) { _, _ in invalidateSourceConfirmation() }
         .onChange(of: podcastHighlightVideos.compactMap(\.path)) {
             if !podcastHighlightVideos.contains(where: { $0.path == highlightVideoPath }) {
                 highlightVideoPath = podcastHighlightVideos.first?.path ?? ""
@@ -549,12 +571,94 @@ struct WizardView: View {
         .onChange(of: store.pendingWizardPrompt) { _, handoff in
             if let handoff {
                 applyPromptHandoff(handoff)
-                if handoff.statusMessage != nil || handoff.parseFailed { requestedStep = .start }
+                if handoff.statusMessage != nil || handoff.parseFailed { open(.source) }
+            }
+        }
+        .onReceive(defaultsChanged) { _ in
+            guard answersProfile == store.activeProfile.profileName else { return }
+            WizardMemory.remember(profile: store.activeProfile, renderSettings: runRenderSettings, pacing: runPacing)
+            refreshPresetTitle()
+        }
+        .sheet(item: $presetSheet) { sheet in
+            let profileName = store.activeProfile.profileName
+            let lastUsed = UserDefaults.standard.string(forKey: WizardPresetStore.lastUsedKey(profileName: profileName))
+            switch sheet {
+            case .save:
+                PresetSaveSheet(title: "Save Wizard Settings", lastUsed: lastUsed,
+                                presets: { store.wizardPresets(profileName: profileName) },
+                                make: { name in
+                                    WizardPreset(name: name, savedAt: Date(), settings: WizardPresetStore.presetFields(
+                                        WizardMemory.capture(profile: store.activeProfile, renderSettings: runRenderSettings, pacing: runPacing)))
+                                },
+                                persist: { store.saveWizardPresets($0, profileName: profileName) }) { preset in
+                    WizardPresetStore.rememberLoaded(.init(name: preset.name, settings: preset.settings), profileName: profileName)
+                    refreshPresetTitle()
+                }
+            case .load:
+                PresetLoadSheet(title: "Load Wizard Settings", lastUsed: lastUsed,
+                                presets: { store.wizardPresets(profileName: profileName) },
+                                persist: { store.saveWizardPresets($0, profileName: profileName) },
+                                summary: WizardPresetStore.summary,
+                                onLoad: { preset in loadPreset(preset) },
+                                onRenamed: { oldName, newName in
+                                    guard let tracked = WizardPresetStore.loaded(profileName: profileName), tracked.name == oldName else { return }
+                                    WizardPresetStore.rememberLoaded(newName.map { .init(name: $0, settings: tracked.settings) }, profileName: profileName)
+                                    refreshPresetTitle()
+                                },
+                                imports: ("From AI Wizard Express",
+                                          WizardPresetBridge.wizardPresets(from: store.expressPresets(profileName: profileName))))
             }
         }
         .onDisappear {
+            if answersProfile == store.activeProfile.profileName {
+                WizardMemory.remember(profile: store.activeProfile, renderSettings: runRenderSettings, pacing: runPacing)
+            }
             store.saveActiveProfile()
         }
+    }
+
+    /// Bring this profile's remembered answers into the live keys. A profile
+    /// never remembered keeps whatever is live, so an install migrates in place.
+    private func adoptAnswers(for profile: BrandProfile) {
+        guard answersProfile != profile.profileName else { return }
+        if let restored = WizardMemory.restore(profileName: profile.profileName) {
+            runRenderSettings = restored.renderSettings
+            runPacing = restored.pacing
+        }
+        answersProfile = profile.profileName
+        refreshPresetTitle()
+    }
+
+    func refreshPresetTitle() {
+        let loaded = WizardPresetStore.loaded(profileName: store.activeProfile.profileName)
+        presetTitle = WizardPresetStore.cardTitle(loaded: loaded,
+            current: WizardMemory.capture(profile: store.activeProfile, renderSettings: runRenderSettings, pacing: runPacing))
+    }
+
+    func loadPreset(_ preset: WizardPreset) {
+        let profileName = store.activeProfile.profileName
+        let restored = WizardMemory.apply(preset.settings, profileName: profileName)
+        runRenderSettings = restored.renderSettings
+        runPacing = restored.pacing
+        loadCaptionChoices()
+        WizardPresetStore.rememberLoaded(.init(name: preset.name, settings: preset.settings), profileName: profileName)
+        refreshPresetTitle()
+    }
+
+    /// Save the current answers under a name, or bring back a saved set.
+    var presetButtons: some View {
+        HStack(spacing: Theme.spaceS) {
+            Button { presetSheet = .save } label: {
+                Label("Save…", systemImage: "square.and.arrow.down").lineLimit(1).fixedSize()
+            }
+            .help("Save these settings under a name")
+            Button { presetSheet = .load } label: {
+                Label("Load…", systemImage: "tray.and.arrow.up").lineLimit(1).fixedSize()
+            }
+            .help("Load, rename or delete saved settings")
+        }
+        .controlSize(.small)
+        .disabled(store.isWizardRunning)
     }
 
     var reviewWorkflow: WizardWorkflow {
@@ -701,8 +805,10 @@ struct WizardView: View {
             + (capabilities.offersCameraFocus ? " · " + WizardCameraFocus.name(cameraFocusBinding.wrappedValue) : "")
     }
 
-    func bumperToggle(_ title: String, placement: BumperPlacement, value: Binding<Bool>) -> some View {
-        let count = store.bumpers.count { $0.placements.contains(placement) }
+    func bumperToggle(_ title: String, placement: BumperPlacement, value: Binding<Bool>,
+                      bumper: Binding<String>? = nil) -> some View {
+        let eligible = store.bumpers.filter { $0.placements.contains(placement) }
+        let count = eligible.count
         let help: FieldHelp = switch placement {
         case .intro: WizardFieldHelp.bumperIntro
         case .outro: WizardFieldHelp.bumperOutro
@@ -716,6 +822,22 @@ struct WizardView: View {
             FormCaption(count == 0 ? "No bumpers allow this placement. Add one in Resources → Bumpers."
                         : "\(count) bumper\(count == 1 ? "" : "s") allow\(count == 1 ? "s" : "") this placement.")
                 .formDependent()
+            // Express parity: a chosen bumper for this slot; Any keeps the planner's pick.
+            if let bumper, value.wrappedValue, !eligible.isEmpty {
+                WizardControlRow("\(placement == .intro ? "Intro" : "Outro") bumper") {
+                    Picker(title, selection: Binding(
+                        get: { eligible.contains { $0.libraryPath == bumper.wrappedValue } ? bumper.wrappedValue : "" },
+                        set: { bumper.wrappedValue = $0 })) {
+                        Text("Any").lineLimit(1).fixedSize().tag("")
+                        ForEach(eligible) { asset in
+                            Text(asset.displayName).lineLimit(1).fixedSize().tag(asset.libraryPath)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .accessibilityLabel("\(title) bumper")
+                }
+                .formDependent()
+            }
         }
     }
 
@@ -777,8 +899,9 @@ struct WizardView: View {
         if needsFootageProposal {
             return "Find matching footage in this project, then review the selection before generating."
         }
-        if stepFlow.openStep == .render, store.currentWizardSelection?.bestTake != nil {
-            return stepFlow.summary(for: .render) + " · " + editingSummary
+        if cardFlow.openCard == .settings, cardFlow.settingsRenders {
+            let count = cardFlow.outputCount(oneReel: outputMode == .oneReel)
+            return (count == 1 ? "1 video" : "\(count) videos") + " from the kept takes · " + cardFlow.summary(for: .settings)
         }
         return runSummary
     }
@@ -792,15 +915,20 @@ struct WizardView: View {
                 Label("Stop", systemImage: "stop.fill")
             }
             .controlSize(.large).lineLimit(1).fixedSize()
-        } else if stepFlow.openStep == .render,
-                  let selection = store.currentWizardSelection, let take = selection.bestTake {
-            Button("Render", systemImage: "film") {
-                store.renderWizardSelection(selection.id, takeID: take.id, options: presentationOptions())
+        } else if cardFlow.openCard == .settings, cardFlow.settingsRenders {
+            // Every kept selection renders, as Express renders its kept candidates.
+            let flow = cardFlow
+            Button {
+                store.generateWizardSelections(options: presentationOptions(), oneReel: outputMode == .oneReel)
+            } label: {
+                Label(flow.generateTitle(oneReel: outputMode == .oneReel), systemImage: "film")
             }
             .controlSize(.large).lineLimit(1).fixedSize()
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(!stepFlow.canRenderTake)
+            .disabled(flow.isBusy)
+            .help(flow.outputCount(oneReel: outputMode == .oneReel) == 1 ? "Render one video from the kept take"
+                  : "Render \(flow.outputCount(oneReel: false)) videos, one per kept selection")
         } else if reviewWorkflow == .automatic || needsFootageProposal || capabilities.sources == .podcastRecording {
             Button {
                 startGeneration()
@@ -1051,9 +1179,7 @@ struct WizardView: View {
         if handoff.proposesFootage {
             guard handoff.statusMessage == nil else { return }
             reviewingIdea = true
-            confirmedSteps.insert(.start)
-            invalidateSourceConfirmation()
-            requestedStep = .sources
+            open(.source)
             sourcesFocused = true
             proposedSceneIDs = handoff.proposedSceneIDs ?? []
             limitToSelection = false
@@ -1067,9 +1193,7 @@ struct WizardView: View {
             return
         }
         enteredWithHandoff = true
-        confirmedSteps.insert(.start)
-        invalidateSourceConfirmation()
-        requestedStep = .sources
+        open(.source)
         proposedSceneIDs = nil
         if !handoff.runIDs.isEmpty || !handoff.videoIDs.isEmpty {
             formatPreset = WizardFormPlan.recipeForSceneHandoff(
@@ -1163,7 +1287,7 @@ struct WizardView: View {
         guard canGenerate, !isFindingFootage else { return }
         let options = formOptions()
         if capabilities.sources == .podcastRecording { store.runWizard(options: options) }
-        else { store.findWizardMoments(options: options) }
+        else { store.findWizardMoments(options: options, presentReview: false) }
     }
 
     private func runWizard() {
@@ -1246,6 +1370,9 @@ struct WizardView: View {
         }
         if store.pendingWizardPrompt?.proposesFootage != true, let parsed = store.pendingWizardPrompt?.parsed {
             options.pinnedOverlayText = parsed.overlayText
+        }
+        WizardExpressExtras.apply(to: &options) { libraryPath, placement in
+            store.bumpers.first { $0.libraryPath == libraryPath && $0.placements.contains(placement) }?.path
         }
         options = formPlan.applyingIdeaSources(to: options, proposedSceneIDs: proposedSceneIDs)
         if capabilities.sources == .podcastRecording {

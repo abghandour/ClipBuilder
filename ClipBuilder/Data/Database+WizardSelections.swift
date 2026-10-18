@@ -232,6 +232,32 @@ extension Database {
         }
     }
 
+    /// One reel from several saved takes of ordinary Wizard selections: the
+    /// combined plan becomes a new selection (no Express batch) with one take.
+    func recordCombinedWizardTake(projectID: Int64, name: String,
+                                  takes: [WizardSelectionTake], options: WizardStep1Options) throws -> WizardSelectionTake {
+        try connection.transaction {
+            guard !takes.isEmpty else { throw WizardSelectionError.missingTake }
+            let scenes = try fetchScenes(projectID: projectID, scope: .history, includeExcluded: true)
+            let resolved = try takes.map { take in
+                guard let selection = try wizardSelection(id: take.selectionID), selection.projectID == projectID else {
+                    throw WizardSelectionError.wrongSelection
+                }
+                guard let plan = WizardSelectionRules.resolvedPlan(take.plan, scenes: scenes) else {
+                    throw WizardSelectionError.footageChanged
+                }
+                var take = take
+                take.plan = plan
+                return take
+            }
+            var step1 = options
+            step1.targetDurationSeconds = nil
+            let id = try insertWizardSelection(projectID: projectID, name: name,
+                recipe: options.formatPreset ?? "custom", step1Options: step1, miniBatch: nil)
+            return try insertWizardSelectionTake(selectionID: id, plan: WizardPlanRules.combinedPlan(resolved))
+        }
+    }
+
     func renameWizardSelection(id: Int64, name: String) throws {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }

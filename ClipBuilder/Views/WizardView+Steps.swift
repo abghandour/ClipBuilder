@@ -1,12 +1,14 @@
 import SwiftUI
 
+// The four cards (Source, Plan, Footage, Settings) and their navigation.
+// WizardCardFlow owns the pure rules; the answers and actions stay on WizardView.
 extension WizardView {
-    var stepFlow: WizardStepFlow {
+    var cardFlow: WizardCardFlow {
         let selection = store.currentWizardSelection
         let take = selection?.bestTake
         let recording = capabilities.sources == .podcastRecording
             ? store.videos.first { $0.path == highlightVideoPath } : nil
-        var answers = WizardStepFlow.Answers()
+        var answers = WizardCardFlow.Answers()
         answers.fromIdea = fromIdea
         answers.workflow = reviewWorkflow.title
         answers.pastedFrom = pastedSnapshot.isEmpty ? nil : pastedSourceName
@@ -34,45 +36,39 @@ extension WizardView {
         answers.takeLabel = take.map(WizardSelectionRules.takeLabel)
         answers.takeCount = selection?.takes.count ?? 0
         answers.savedSelectionCount = projectSelections.count
+        answers.keptSelectionCount = projectSelections.count { $0.selection.bestTakeID != nil }
         answers.look = editingSummary + (lookCapabilities.offersCameraFocus
             ? " · " + WizardCameraFocus.name(cameraFocusBinding.wrappedValue) : "")
-        let requested = store.pendingWizardPrompt?.statusMessage != nil ? WizardStepFlow.Step.start : requestedStep
-        return WizardStepFlow(answers: answers, confirmed: confirmedSteps, requestedStep: requested, collapsedStep: collapsedStep,
+        let requested = store.pendingWizardPrompt?.statusMessage != nil ? WizardCardFlow.Card.source : requestedCard
+        return WizardCardFlow(answers: answers, requestedCard: requested, collapsedCard: collapsedCard,
             sourcesReady: !readiness.contains(where: \.isBlocking), needsFootageProposal: needsFootageProposal,
             automatic: reviewWorkflow == .automatic, hasTake: take != nil,
             takeIsValid: take.map { WizardSelectionRules.resolvedPlan($0.plan, scenes: SceneReferences.combining(store.referencedScenes, referenced: store.historyScenes)) != nil } ?? false,
             isBusy: store.isWizardRunning || isFindingFootage)
     }
 
-    /// Filters stay live. This key only invalidates the user's acknowledgement;
-    /// it never turns ordinary sources into pinned scene IDs.
-    var sourceConfirmationKey: String {
-        [formatPreset, highlightVideoPath, selectedRunIDsRaw, sourcePeopleRaw,
-         String(limitToSelection), String(favoritesOnly), stackLevelRaw,
-         proposedSceneIDs.map { $0.sorted().map(String.init).joined(separator: ",") } ?? "live"]
-            .joined(separator: "|")
-    }
-
     var configurationForm: some View {
-        let flow = stepFlow
+        let flow = cardFlow
         return ScrollViewReader { proxy in
+            GeometryReader { page in
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.spaceL) {
-                    ForEach(WizardStepFlow.Step.allCases, id: \.self) { step in
-                        stepCard(step, flow: flow)
-                            .id(step)
+                    ForEach(WizardCardFlow.Card.allCases, id: \.self) { card in
+                        wizardCard(card, flow: flow, pageHeight: page.size.height)
+                            .id(card)
                     }
                 }
                 .padding(Theme.spaceXL)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onChange(of: stepFlow.openStep) { _, step in
-                collapsedStep = nil
-                if step == .sources { sourceGridExpanded = true }
+            }
+            .onChange(of: requestedCard) { _, card in
+                collapsedCard = nil
+                if card == .source { sourceGridExpanded = true }
                 if reduceMotion {
-                    proxy.scrollTo(step, anchor: .top)
+                    proxy.scrollTo(card, anchor: .top)
                 } else {
-                    withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(step, anchor: .top) }
+                    withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(card, anchor: .top) }
                 }
             }
         }
@@ -83,17 +79,7 @@ extension WizardView {
         .task(id: "\(store.profileGeneration):\(store.activeProjectID ?? 0):\(store.isWizardRunning):\(store.scenesVersion)") {
             await store.refreshWizardSelections()
         }
-        .onChange(of: store.wizardLookRevision) { _, _ in
-            confirmedSteps.remove(.look)
-            requestedStep = .look
-        }
-        .onChange(of: store.currentWizardSelection?.bestTake?.id) { _, takeID in
-            if takeID != nil {
-                confirmedSteps.remove(.look)
-                // A background refresh must not steal a card the user is editing.
-                if requestedStep == .moments { requestedStep = nil }
-            }
-        }
+        .onChange(of: store.wizardLookRevision) { _, _ in open(.settings) }
         .confirmationDialog("Delete this selection and its takes? Rendered outputs are kept.",
             isPresented: Binding(get: { deletingSelection != nil }, set: { if !$0 { deletingSelection = nil } })) {
             Button("Delete selection", role: .destructive) {
@@ -103,62 +89,85 @@ extension WizardView {
         }
     }
 
-    func stepCard(_ step: WizardStepFlow.Step, flow: WizardStepFlow) -> some View {
-        let open = flow.visibleStep == step
-        let prerequisite = flow.prerequisite(for: step)
-        return MiniCard(number: step.rawValue, title: step.title,
-            summary: prerequisite ?? flow.summary(for: step), isOpen: open, compactSummary: true,
-            change: flow.canExpand(step) ? { collapsedStep = nil; requestedStep = step } : nil,
-            headerTap: flow.canExpand(step) ? {
-                guard let click = stepFlow.headerClick(step) else { return }
-                requestedStep = click.requested
-                collapsedStep = click.collapsed
-            } : nil) {
+    /// Navigate to a card; clears a collapse so the card is visible.
+    func open(_ card: WizardCardFlow.Card) {
+        collapsedCard = nil
+        requestedCard = card
+    }
+
+    func resetCardProgress() {
+        requestedCard = .source
+        collapsedCard = nil
+    }
+
+    func wizardCard(_ card: WizardCardFlow.Card, flow: WizardCardFlow, pageHeight: CGFloat = 800) -> some View {
+        let open = flow.visibleCard == card
+        return MiniCard(number: card.rawValue, title: card == .settings ? presetTitle : card.title,
+            summary: flow.summary(for: card), isOpen: open, compactSummary: true,
+            headerTap: {
+                let click = cardFlow.headerClick(card)
+                requestedCard = click.requested
+                collapsedCard = click.collapsed
+            }, accessory: card == .settings ? AnyView(presetButtons) : nil) {
                 if open {
-                    if step == .start, store.pendingWizardPrompt != nil {
+                    if card == .source, store.pendingWizardPrompt != nil {
                         generateRequestBanner
                     }
                     VStack(alignment: .leading, spacing: Theme.spaceM) {
-                        stepContents(step)
+                        if let prerequisite = flow.prerequisite(for: card) {
+                            FormCaption(prerequisite)
+                            Button("Open 1 Source") { self.open(.source) }
+                                .lineLimit(1).fixedSize()
+                        } else {
+                            cardContents(card, pageHeight: pageHeight)
+                        }
                     }
                     .disabled(isFindingFootage)
                 }
             }
     }
 
-    @ViewBuilder func stepContents(_ step: WizardStepFlow.Step) -> some View {
-        switch step {
-        case .start:
-            startStep
-        case .sources:
-            sourcesStep
-        case .outcome:
-            FormCaption("Choose what to make and the format to deliver it in.")
+    @ViewBuilder func cardContents(_ card: WizardCardFlow.Card, pageHeight: CGFloat = 800) -> some View {
+        switch card {
+        case .source:
+            sourceCard
+        case .plan:
+            FormCaption("What to make and what the planner is told: outcome, recipe, length, format, brief and planning preferences.")
             outcomeFields
-            continueStep(.outcome)
-        case .planning:
-            FormCaption("Tell the planner what matters. The brief is optional when starting from footage.")
             planningFields
-            continueStep(.planning)
-        case .moments:
-            momentsStep
-        case .look:
+        case .footage:
+            footageCard(pageHeight: pageHeight)
+        case .settings:
             FormCaption(store.currentWizardSelection == nil
-                ? "Set the look for your next run. These choices are applied after the moments are found."
-                : "Keep the chosen moments and change how the reel looks and sounds.")
+                ? "How the reel looks and sounds. Generate below finds the moments and renders with these settings."
+                : "Keep the chosen moments and change how the reel looks and sounds, then Render below.")
+            WizardControlRow("Output") {
+                Picker("Output", selection: $outputModeRaw) {
+                    ForEach(MiniWizardFlow.OutputMode.allCases, id: \.self) { mode in
+                        Text(mode.label).lineLimit(1).fixedSize().tag(mode.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            FormCaption(outputMode == .oneReel
+                ? "The kept takes join into one reel, hard cuts between them unless a transition is chosen."
+                : "Every kept selection becomes its own video.")
             if let selection = store.currentWizardSelection, let take = selection.bestTake {
                 takeAnchor(selection, take: take)
+                if !cardFlow.canRenderTake && !store.isWizardRunning {
+                    FormCaption("Footage changed. Open the selection and ask for another take.", tone: .warning)
+                    Button("Open selection") {
+                        store.openWizardSelection(selection.id, options: presentationOptions())
+                    }
+                    .lineLimit(1).fixedSize()
+                }
             }
             lookFields
-            continueStep(.look)
-        case .render:
-            renderStep
         }
     }
 
-    var startStep: some View {
+    var sourceCard: some View {
         Group {
-            FormCaption("Choose your starting point and where to pause for review.")
             if !enteredWithHandoff {
                 WizardControlRow("Start with") {
                     Picker("Start with", selection: $entryMode) {
@@ -184,12 +193,7 @@ extension WizardView {
                         .lineLimit(1).fixedSize()
                 }
             }
-            continueStep(.start)
-        }
-    }
-
-    var sourcesStep: some View {
-        Group {
+            Divider()
             if needsFootageProposal {
                 FormCaption("Describe your idea to find matching footage in this project.")
                 briefFields
@@ -203,64 +207,39 @@ extension WizardView {
                 }
             } else {
                 sourceFields
-                continueStep(.sources)
             }
-            Button("Choose a different outcome or recipe") { requestedStep = .outcome }
-                .lineLimit(1).fixedSize()
-                .help("Recipes may use analyzed scenes or one recording. Changing the recipe rechecks Sources.")
         }
     }
 
-    var momentsStep: some View {
+    func footageCard(pageHeight: CGFloat) -> some View {
         Group {
-            FormCaption("Find a set of moments, then keep and review its takes. Saved selections can be rendered again with another look.")
+            FormCaption("Find a set of moments, then watch each take, drag its cuts and keep the one to render. Ask for another take with a note; every selection stays saved for later looks.")
             if store.isWizardRunning {
                 Label("Wizard is working. Progress and Stop are available below.", systemImage: "hourglass")
                     .font(.callout)
             }
-            Button(needsFootageProposal ? "Find footage" : "Find the moments", systemImage: "wand.and.stars", action: findMoments)
-                .lineLimit(1).fixedSize()
-                .disabled(!canStart)
+            HStack(spacing: Theme.spaceS) {
+                Button(needsFootageProposal ? "Find footage" : "Find the moments", systemImage: "wand.and.stars", action: findMoments)
+                    .lineLimit(1).fixedSize()
+                    .disabled(!canStart)
+                MiniModelButton(tasks: [capabilities.sources == .podcastRecording ? "highlights" : "wizard"])
+            }
             if !canStart && !store.isWizardRunning {
-                FormCaption("Review Sources to resolve the missing footage or AI setup.", tone: .warning)
-                Button("Review Sources") { confirmedSteps.insert(.start); requestedStep = .sources }
+                FormCaption("Review 1 Source to resolve the missing footage or AI setup.", tone: .warning)
+                Button("Open 1 Source") { open(.source) }
                     .lineLimit(1).fixedSize()
             }
-            selectionsRow
-            if stepFlow.canContinue(.moments) {
-                if store.currentWizardSelection == nil {
-                    FormCaption("Automatic can find the moments and render in one run. Set the look before using Generate reel below.")
-                }
-                continueStep(.moments)
-            }
-        }
-    }
-
-    var renderStep: some View {
-        Group {
-            if let selection = store.currentWizardSelection, let take = selection.bestTake {
-                takeAnchor(selection, take: take)
-                FormCaption(stepFlow.summary(for: .look))
-                FormCaption(effectiveRenderSettings.preset.label + " · " + effectiveRenderSettings.quality.label)
-                if !stepFlow.canRenderTake && !store.isWizardRunning {
-                    FormCaption("Footage changed. Open the selection and ask for another take.", tone: .warning)
-                    Button("Open selection") {
-                        store.openWizardSelection(selection.id, options: presentationOptions())
-                    }
-                    .lineLimit(1).fixedSize()
-                }
-                Button("Render", systemImage: "film") {
-                    store.renderWizardSelection(selection.id, takeID: take.id, options: presentationOptions())
-                }
-                .lineLimit(1).fixedSize()
-                .disabled(!stepFlow.canRenderTake)
+            if projectSelections.isEmpty {
+                FormCaption("No saved selection yet. Find the moments to review and keep takes here.")
             } else {
-                FormCaption("Use the generation button below to find the moments and render with these settings.")
-                FormCaption(stepFlow.summary(for: .outcome))
-                FormCaption(stepFlow.summary(for: .look))
+                Divider()
+                WizardFootageReviewView(selections: projectSelections, options: presentationOptions())
+                    .id("\(store.activeProjectID ?? 0):\(store.scenesVersion)")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: max(560, pageHeight - 220))
+                    .padding(.horizontal, -Theme.spaceS)
+                    .disabled(store.isWizardRunning)
             }
-            Button("Change output format") { confirmedSteps.insert(.start); requestedStep = .outcome }
-                .lineLimit(1).fixedSize()
         }
     }
 
@@ -270,26 +249,5 @@ extension WizardView {
             .lineLimit(1).truncationMode(.middle)
             .fixedSize(horizontal: false, vertical: true)
             .help("\(selection.selection.name) · \(WizardSelectionRules.takeLabel(take))")
-    }
-
-    func continueStep(_ step: WizardStepFlow.Step) -> some View {
-        let next = stepFlow.nextStep(after: step)
-        return Button("Continue to \(next.title.lowercased())") {
-            confirmedSteps.insert(step)
-            requestedStep = next
-        }
-        .lineLimit(1).fixedSize()
-        .disabled(!stepFlow.canContinue(step))
-        .padding(.top, Theme.spaceS)
-    }
-
-    func invalidateSourceConfirmation() {
-        confirmedSteps.subtract([.sources, .planning, .moments])
-    }
-
-    func resetStepProgress() {
-        confirmedSteps = []
-        requestedStep = nil
-        collapsedStep = nil
     }
 }

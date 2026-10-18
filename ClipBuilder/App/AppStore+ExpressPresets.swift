@@ -22,4 +22,18 @@ extension AppStore {
         _ = saveActiveProfile()
         return true
     }
+
+    /// AI Wizard presets, stored beside the Express ones on the profile.
+    func wizardPresets(profileName: String) -> [WizardPreset] {
+        guard activeProfile.profileName == profileName else { return [] }
+        return activeProfile.wizardPresets ?? []
+    }
+
+    @discardableResult
+    func saveWizardPresets(_ presets: [WizardPreset], profileName: String) -> Bool {
+        guard activeProfile.profileName == profileName else { return false }
+        activeProfile.wizardPresets = WizardPresetStore.sorted(presets)
+        _ = saveActiveProfile()
+        return true
+    }
 }

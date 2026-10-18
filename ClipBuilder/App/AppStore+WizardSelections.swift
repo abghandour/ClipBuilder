@@ -167,6 +167,19 @@ extension AppStore {
         }
     }
 
+    /// The take a selection renders; nil leaves the selection out of a batch.
+    func setBestWizardTake(selectionID: Int64, takeID: Int64?) {
+        guard let database else { return }
+        enqueueWizardSelectionSave { try await database.setBestWizardSelectionTake(selectionID: selectionID, takeID: takeID) }
+        let generation = profileGeneration
+        Task {
+            _ = try? await wizardSelectionSaveTask?.value
+            guard generation == profileGeneration else { return }
+            activeWizardSelectionID = selectionID
+            await refreshWizardSelections()
+        }
+    }
+
     func deleteWizardSelection(_ id: Int64) {
         guard let database, !isWizardRunning else { return }
         Task {
@@ -202,7 +215,10 @@ extension AppStore {
         return options
     }
 
-    func findWizardMoments(options: WizardOptions, selectionID: Int64? = nil, note: String? = nil) {
+    /// `presentReview: false` leaves the result on the Wizard page's Footage
+    /// card (the inline review) instead of opening the review sheet.
+    func findWizardMoments(options: WizardOptions, selectionID: Int64? = nil, note: String? = nil,
+                           presentReview: Bool = true) {
         guard let database, let projectID = options.projectID ?? activeProjectID, !isWizardRunning else { return }
         let profile = activeProfile
         let generation = profileGeneration
@@ -253,7 +269,8 @@ extension AppStore {
                     // Release the running gate before opening the review. Dismissal has
                     // already completed, even when a fake/fast planner returns immediately.
                     finishWizardSelectionWork(generation: generation)
-                    openWizardSelection(best.selectionID, takeID: best.id, options: options)
+                    activeWizardSelectionID = best.selectionID
+                    if presentReview { openWizardSelection(best.selectionID, takeID: best.id, options: options) }
                 } catch is CancellationError { appendLog(\.wizardLog, ["Finding moments stopped."]) }
                 catch { if generation == profileGeneration { presentError("Could not find the moments", error) } }
             }

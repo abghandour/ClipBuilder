@@ -1,7 +1,7 @@
 import Foundation
 
 /// One named set of Express settings.
-nonisolated struct MiniWizardPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
+nonisolated struct MiniWizardPreset: NamedPreset, Hashable {
     var name: String
     var savedAt: Date
     var settings: MiniWizardSettings
@@ -67,54 +67,24 @@ nonisolated enum MiniWizardPresetStore {
 
     // MARK: - Pure list operations
 
-    static func sorted(_ presets: [MiniWizardPreset]) -> [MiniWizardPreset] {
-        presets.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
-    static func cleaned(_ name: String) -> String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
+    // The list rules are shared with the AI Wizard's presets (NamedPresets).
+    static func sorted(_ presets: [MiniWizardPreset]) -> [MiniWizardPreset] { NamedPresets.sorted(presets) }
+    static func cleaned(_ name: String) -> String { NamedPresets.cleaned(name) }
     static func preset(named name: String, in presets: [MiniWizardPreset]) -> MiniWizardPreset? {
-        let wanted = cleaned(name)
-        return presets.first { $0.name.caseInsensitiveCompare(wanted) == .orderedSame }
+        NamedPresets.preset(named: name, in: presets)
     }
-
-    /// Save under `name`, replacing a preset with the same name (case-insensitively).
     static func upsert(name: String, settings: MiniWizardSettings, savedAt: Date = Date(),
                        into presets: [MiniWizardPreset]) -> [MiniWizardPreset] {
-        let wanted = cleaned(name)
-        guard !wanted.isEmpty else { return presets }
-        var result = presets.filter { $0.name.caseInsensitiveCompare(wanted) != .orderedSame }
-        result.append(MiniWizardPreset(name: wanted, savedAt: savedAt, settings: settings))
-        return sorted(result)
+        NamedPresets.upsert(MiniWizardPreset(name: name, savedAt: savedAt, settings: settings), into: presets)
     }
-
-    /// Nil when the new name is empty or already taken by another preset.
     static func rename(_ oldName: String, to newName: String,
                        in presets: [MiniWizardPreset]) -> [MiniWizardPreset]? {
-        let target = cleaned(newName)
-        guard !target.isEmpty, let index = presets.firstIndex(where: { $0.name == oldName }) else { return nil }
-        let taken = presets.enumerated().contains { offset, preset in
-            offset != index && preset.name.caseInsensitiveCompare(target) == .orderedSame
-        }
-        guard !taken else { return nil }
-        var result = presets
-        result[index].name = target
-        return sorted(result)
+        NamedPresets.rename(oldName, to: newName, in: presets)
     }
-
     static func delete(_ name: String, in presets: [MiniWizardPreset]) -> [MiniWizardPreset] {
-        presets.filter { $0.name != name }
+        NamedPresets.delete(name, in: presets)
     }
-
-    /// The name the Save sheet proposes: the last one used when it still
-    /// exists, else the most recently saved, else "Default".
     static func suggestedName(lastUsed: String?, presets: [MiniWizardPreset]) -> String {
-        if let lastUsed = lastUsed.map(cleaned), !lastUsed.isEmpty,
-           let match = preset(named: lastUsed, in: presets) {
-            return match.name
-        }
-        return presets.max { $0.savedAt < $1.savedAt }?.name ?? defaultName
+        NamedPresets.suggestedName(lastUsed: lastUsed, presets: presets)
     }
 }

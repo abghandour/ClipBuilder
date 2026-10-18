@@ -80,6 +80,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var watermarkOpacity: Double?
     var transitionChoice: String?
     var lookPreset: String?
+    var lookIntensity: Double?
 }
 
 nonisolated extension WizardOptions {
@@ -164,6 +165,7 @@ nonisolated extension WizardOptions {
         result.watermarkOpacity = watermarkOpacity
         result.transitionChoice = transitionChoice
         result.lookPreset = lookPreset
+        result.lookIntensity = lookIntensity
         return result
     }
 
@@ -246,6 +248,7 @@ nonisolated extension WizardOptions {
         result.watermarkOpacity = step2.watermarkOpacity
         result.transitionChoice = step2.transitionChoice
         result.lookPreset = step2.lookPreset
+        result.lookIntensity = step2.lookIntensity
         return result
     }
 }

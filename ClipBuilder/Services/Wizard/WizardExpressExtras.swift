@@ -1,0 +1,64 @@
+import Foundation
+
+/// The settings Express added ahead of the Wizard (transition at every cut,
+/// look, fixed overlay, watermark design and strength, per-slot bumpers),
+/// read from the Wizard's `wizard.*` defaults into the options the engine
+/// takes. One reader serves the Wizard page, the pipeline and Outputs.
+nonisolated enum WizardExpressExtras {
+    static let transitionChoiceKey = "wizard.transitionChoice"
+    static let lookPresetKey = "wizard.lookPreset"
+    static let lookIntensityKey = "wizard.lookIntensity"
+    static let overlayEnabledKey = "wizard.fixedOverlayOn"
+    static let overlayTemplateKey = "wizard.fixedOverlayTemplate"
+    static let overlayStartKey = "wizard.fixedOverlayStart"
+    static let overlayDurationKey = "wizard.fixedOverlayDuration"
+    /// The template's replaceable texts, newline-joined (a preset-friendly scalar).
+    static let overlayTextsKey = "wizard.fixedOverlayTexts"
+    static let watermarkOverlayKey = "wizard.watermarkOverlay"
+    static let watermarkOpacityKey = "wizard.watermarkOpacity"
+    static let introBumperKey = "wizard.introBumper"
+    static let outroBumperKey = "wizard.outroBumper"
+
+    static func joinedTexts(_ texts: [String]) -> String { texts.joined(separator: "\n") }
+    static func splitTexts(_ joined: String?) -> [String] {
+        guard let joined, !joined.isEmpty else { return [] }
+        return joined.components(separatedBy: "\n")
+    }
+
+    /// Apply the stored extras to `options`. `bumperPath` resolves a bumper's
+    /// library path for a placement to this Mac's file, as Express does.
+    static func apply(to options: inout WizardOptions, defaults: UserDefaults = .standard,
+                      bumperPath: (String, BumperPlacement) -> String? = { _, _ in nil }) {
+        let transition = (defaults.string(forKey: transitionChoiceKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        options.transitionChoice = transition.isEmpty ? nil : transition
+        let look = (defaults.string(forKey: lookPresetKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        options.lookPreset = look.isEmpty || look == "none" ? nil : look
+        if options.lookPreset != nil, defaults.object(forKey: lookIntensityKey) != nil {
+            options.lookIntensity = min(1, max(0.05, defaults.double(forKey: lookIntensityKey)))
+        } else {
+            options.lookIntensity = nil
+        }
+        let overlayName = (defaults.string(forKey: overlayTemplateKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if defaults.bool(forKey: overlayEnabledKey), !overlayName.isEmpty {
+            options.fixedOverlayTemplate = overlayName
+            options.fixedOverlayStart = max(0, defaults.double(forKey: overlayStartKey))
+            let duration = defaults.double(forKey: overlayDurationKey)
+            options.fixedOverlayDuration = duration > 0 ? duration : nil
+            let texts = splitTexts(defaults.string(forKey: overlayTextsKey))
+            options.fixedOverlayTexts = texts.isEmpty ? nil : texts
+        } else {
+            options.fixedOverlayTemplate = nil
+            options.fixedOverlayStart = nil
+            options.fixedOverlayDuration = nil
+            options.fixedOverlayTexts = nil
+        }
+        let watermark = (defaults.string(forKey: watermarkOverlayKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        options.watermarkOverlayTemplate = options.includeWatermark && !watermark.isEmpty ? watermark : nil
+        let opacity = defaults.double(forKey: watermarkOpacityKey)
+        options.watermarkOpacity = options.includeWatermark && opacity > 0 ? min(1, opacity) : nil
+        options.introBumperPath = options.includeIntroBumper
+            ? defaults.string(forKey: introBumperKey).flatMap { bumperPath($0, .intro) } : nil
+        options.outroBumperPath = options.includeOutroBumper
+            ? defaults.string(forKey: outroBumperKey).flatMap { bumperPath($0, .outro) } : nil
+    }
+}

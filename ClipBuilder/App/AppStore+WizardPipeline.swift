@@ -462,6 +462,7 @@ extension AppStore {
         step2.brollInstructions = defaults.string(forKey: "wizard.brollInstructions") ?? ""
         var options = WizardOptions.merge(step1: step1, step2: step2, base: base)
         options.readBumperDefaults(defaults)
+        WizardExpressExtras.apply(to: &options, defaults: defaults)
         return options
     }
 

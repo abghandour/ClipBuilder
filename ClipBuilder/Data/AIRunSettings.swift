@@ -141,6 +141,10 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
                 "allowedTransitions", "formatPreset", "critiqueLoop", "critiqueTargetScore", "critiqueMaxVersions", "includeWatermark",
                 "includeHeadline",
                 "includeOutro",
+                "includeIntroBumper", "includeOutroBumper", "includeMiddleBumper", "lookPreset", "transitionChoice",
+                "lookIntensity", "fixedOverlayEnabled", "fixedOverlayTemplate", "fixedOverlayStart", "fixedOverlayDuration",
+                "fixedOverlayTextsJoined", "watermarkOverlayTemplate", "watermarkOpacity",
+                "introBumperLibraryPath", "outroBumperLibraryPath", "outputMode",
             ]
         }
     }
@@ -210,7 +214,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
     }
 }
 
-nonisolated enum JSONSetting: Codable, Sendable, Equatable {
+nonisolated enum JSONSetting: Codable, Sendable, Equatable, Hashable {
     case null
     case string(String)
     case number(Double)
@@ -248,10 +252,22 @@ nonisolated enum JSONSetting: Codable, Sendable, Equatable {
         if case .string(let v) = self { return v }
         return nil
     }
+    var bool: Bool? {
+        if case .bool(let v) = self { return v }
+        return nil
+    }
     var number: Double? {
         if case .number(let v) = self { return v }
         return nil
     }
+    /// A Codable value as a nested setting, for fields like renderSettings or pacing.
+    static func dictionaryValue<T: Encodable>(_ value: T) -> JSONSetting { .object(dictionary(value)) }
+
+    /// The setting decoded back into a Codable value; nil when the shapes differ.
+    func decodeValue<T: Decodable>() -> T? {
+        AISettingsJSON.decode(T.self, AISettingsJSON.encode(self))
+    }
+
     static func dictionary<T: Encodable>(_ value: T) -> [String: JSONSetting] {
         AISettingsJSON.decode([String: JSONSetting].self, AISettingsJSON.encode(value)) ?? [:]
     }

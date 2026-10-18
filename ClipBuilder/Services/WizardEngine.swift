@@ -25,7 +25,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case captionPosition, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
-        case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity, transitionChoice, lookPreset
+        case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity, transitionChoice, lookPreset, lookIntensity
     }
 
     var localHashtags = false
@@ -174,6 +174,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     /// Express: a Looks-library preset id graded into every clip's footage
     /// (captions, tags and overlays stay clean); nil or "none" = no look.
     var lookPreset: String?
+    /// How strongly the look applies, 0.05...1; nil = full strength.
+    var lookIntensity: Double?
     /// A chosen bumper (by file path) for the intro / outro slot; nil lets
     /// the planner pick any bumper that allows the placement.
     var introBumperPath: String?
@@ -3996,7 +3998,7 @@ actor WizardEngine {
     nonisolated static func lookEffect(for options: WizardOptions) -> EffectSpec? {
         guard let name = options.lookPreset?.trimmingCharacters(in: .whitespacesAndNewlines),
               !name.isEmpty, name != "none", EffectCatalog.isAvailable(name) else { return nil }
-        return EffectSpec(preset: name)
+        return EffectSpec(preset: name, intensity: min(1, max(0.05, options.lookIntensity ?? 1)))
     }
 
     private func extractPlannedClip(_ clip: WizardPlanClip, index: Int, of total: Int,

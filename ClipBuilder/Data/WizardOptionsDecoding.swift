@@ -99,5 +99,6 @@ nonisolated extension WizardOptions {
         watermarkOpacity = try values.decodeIfPresent(Double.self, forKey: .watermarkOpacity)
         transitionChoice = try values.decodeIfPresent(String.self, forKey: .transitionChoice)
         lookPreset = try values.decodeIfPresent(String.self, forKey: .lookPreset)
+        lookIntensity = try values.decodeIfPresent(Double.self, forKey: .lookIntensity)
     }
 }

@@ -19,7 +19,7 @@ struct MiniWizardView: View {
     @State private var loadError: String?
     @State private var reloadID = 0
     @State private var miniSettings = MiniWizardSettings()
-    @State private var presetSheet: MiniPresetSheet?
+    @State private var presetSheet: PresetSheet?
     @State private var loadedPreset: MiniWizardPresetStore.Loaded?
     @State private var settingsProfile: String?
     @State private var transcriptLanguage: String?
@@ -145,18 +145,36 @@ struct MiniWizardView: View {
         }
         .screenTitle("AI Wizard Express")
         .sheet(item: $presetSheet) { sheet in
+            let lastUsed = UserDefaults.standard.string(forKey: MiniWizardPresetStore.lastUsedKey(profileName: profileName))
             switch sheet {
             case .save:
-                MiniPresetSaveSheet(profileName: profileName, settings: miniSettings) { _ in
+                PresetSaveSheet(title: "Save Settings", lastUsed: lastUsed,
+                                presets: { store.expressPresets(profileName: profileName) },
+                                make: { MiniWizardPreset(name: $0, savedAt: Date(), settings: miniSettings) },
+                                persist: { store.saveExpressPresets($0, profileName: profileName) }) { preset in
+                    MiniWizardPresetStore.rememberLoaded(.init(name: preset.name, settings: preset.settings), profileName: profileName)
                     loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
                 }
             case .load:
-                MiniPresetLoadSheet(profileName: profileName, onLoad: { preset in
-                    miniSettings = preset.settings
-                    loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
-                }, onChanged: {
-                    loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
-                })
+                PresetLoadSheet(title: "Load Settings", lastUsed: lastUsed,
+                                presets: { store.expressPresets(profileName: profileName) },
+                                persist: { store.saveExpressPresets($0, profileName: profileName) },
+                                summary: { preset in
+                                    preset.savedAt.formatted(date: .abbreviated, time: .shortened) + " · "
+                                        + MiniWizardFlow(outputMode: preset.settings.outputMode).settingsSummary(preset.settings)
+                                },
+                                onLoad: { preset in
+                                    MiniWizardPresetStore.rememberLoaded(.init(name: preset.name, settings: preset.settings), profileName: profileName)
+                                    miniSettings = preset.settings
+                                    loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
+                                },
+                                onRenamed: { oldName, newName in
+                                    guard let tracked = MiniWizardPresetStore.loaded(profileName: profileName), tracked.name == oldName else { return }
+                                    MiniWizardPresetStore.rememberLoaded(newName.map { .init(name: $0, settings: tracked.settings) }, profileName: profileName)
+                                    loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
+                                },
+                                imports: ("From the AI Wizard",
+                                          WizardPresetBridge.miniPresets(from: store.wizardPresets(profileName: profileName))))
             }
         }
         .task(id: sourceKey) { await loadSources() }

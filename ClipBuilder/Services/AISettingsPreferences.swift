@@ -35,6 +35,21 @@ import Foundation
         "critiqueTargetScore": "wizard.critiqueTargetScore", "critiqueMaxVersions": "wizard.critiqueMaxVersions",
         "favoritesOnly": "wizard.favoritesOnly",
         "modelOverride": "wizard.modelOverride", "stackLevel": SceneStacks.levelKey,
+        "useFightResearch": "wizard.useFightResearch",
+        "includeIntroBumper": "wizard.bumperIntro", "includeOutroBumper": "wizard.bumperOutro",
+        "includeMiddleBumper": "wizard.bumperMiddle",
+        "lookPreset": WizardExpressExtras.lookPresetKey, "transitionChoice": WizardExpressExtras.transitionChoiceKey,
+        "lookIntensity": WizardExpressExtras.lookIntensityKey,
+        "fixedOverlayEnabled": WizardExpressExtras.overlayEnabledKey,
+        "fixedOverlayTemplate": WizardExpressExtras.overlayTemplateKey,
+        "fixedOverlayStart": WizardExpressExtras.overlayStartKey,
+        "fixedOverlayDuration": WizardExpressExtras.overlayDurationKey,
+        "fixedOverlayTextsJoined": WizardExpressExtras.overlayTextsKey,
+        "watermarkOverlayTemplate": WizardExpressExtras.watermarkOverlayKey,
+        "watermarkOpacity": WizardExpressExtras.watermarkOpacityKey,
+        "introBumperLibraryPath": WizardExpressExtras.introBumperKey,
+        "outroBumperLibraryPath": WizardExpressExtras.outroBumperKey,
+        "outputMode": "wizard.outputMode",
     ]
     static let analysisKeys: [String: String] = [
         "instructions": "analysis.instructions", "sampleInterval": "analysis.sampleInterval",
@@ -129,7 +144,8 @@ import Foundation
     static func write(
         _ result: [String: JSONSetting], kind: AISettingsEnvelope.Kind,
         scopes: Set<AISettingsScope> = Set(AISettingsScope.allCases),
-        sourceName: String = "another run", profileName: String? = nil, defaults: UserDefaults
+        sourceName: String = "another run", profileName: String? = nil, defaults: UserDefaults,
+        recordSnapshot: Bool = true
     ) {
         let result = kind == .wizard ? WizardOptions.normalizeSettings(result) : result
         let mapping = kind == .wizard ? wizardKeys : analysisKeys
@@ -162,8 +178,17 @@ import Foundation
             defaults.set(list("breakdownTags"), forKey: "analysis.breakdownTags")
             defaults.set(!list("breakdownTags").isEmpty, forKey: "analysis.autoBreakdown")
         } else {
-            defaults.set(AISettingsJSON.encode(result), forKey: snapshotKey)
-            defaults.set(sourceName, forKey: sourceNameKey)
+            if recordSnapshot {
+                defaults.set(AISettingsJSON.encode(result), forKey: snapshotKey)
+                defaults.set(sourceName, forKey: sourceNameKey)
+            } else if scopes.contains(.options), let watermark = result["includeWatermark"]?.bool {
+                // Without a snapshot the brand elements come from the override
+                // key, so derive it from the three flags the dictionary carries.
+                let headline = result["includeHeadline"]?.bool ?? watermark
+                let outro = result["includeOutro"]?.bool ?? watermark
+                let override: WizardBrandingOverride = !watermark ? .none : (headline && outro ? .standard : .minimal)
+                defaults.set(override.rawValue, forKey: WizardDefaults.brandingOverrideKey)
+            }
             if scopes.contains(.options) {
                 if result["workflow"]?.string == nil {
                     defaults.set(WizardWorkflow.automatic.rawValue, forKey: WizardDefaults.workflowKey)

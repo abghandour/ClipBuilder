@@ -108,6 +108,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var miniInstructions: String?
     /// Named Express settings; part of the shared team profile document.
     var expressPresets: [MiniWizardPreset]?
+    /// Named AI Wizard answers; part of the shared team profile document.
+    var wizardPresets: [WizardPreset]?
 
     static let knownBuzzSources: [(key: String, label: String)] = [
         ("reddit", "Reddit (r/MMA and other MMA subreddits)"),
@@ -158,6 +160,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case instagramPublishAccount = "instagram_publish_account"
         case miniInstructions = "mini_instructions"
         case expressPresets = "express_presets"
+        case wizardPresets = "wizard_presets"
     }
 
     init(from decoder: Decoder) throws {
@@ -170,6 +173,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         instagramPublishAccount = try container.decodeIfPresent(String.self, forKey: .instagramPublishAccount)
         miniInstructions = try container.decodeIfPresent(String.self, forKey: .miniInstructions)
         expressPresets = try container.decodeIfPresent([MiniWizardPreset].self, forKey: .expressPresets)
+        wizardPresets = try container.decodeIfPresent([WizardPreset].self, forKey: .wizardPresets)
         profileName = try container.decodeIfPresent(String.self, forKey: .profileName) ?? "Default"
         brandName = try container.decodeIfPresent(String.self, forKey: .brandName) ?? profileName
         contentDomain = try container.decodeIfPresent(String.self, forKey: .contentDomain) ?? ""

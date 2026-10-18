@@ -297,8 +297,7 @@ extension WizardView {
         HStack(spacing: Theme.spaceS) {
             Button("Use selection") {
                 store.activeWizardSelectionID = summary.id
-                confirmedSteps.remove(.look)
-                requestedStep = .look
+                open(.settings)
             }
             .lineLimit(1).fixedSize()
             .disabled(summary.bestTake == nil)
