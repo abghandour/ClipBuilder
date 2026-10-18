@@ -221,6 +221,7 @@ struct MiniWizardView: View {
         switch run.footageKind {
         case .qa: store.recordMiniQASelections()
         case .transcript: store.recordMiniTranscriptSelections()
+        case .fightMetrics: store.recordMiniFightSelections()
         case .highlights: break
         }
     }
@@ -267,22 +268,30 @@ struct MiniWizardView: View {
                     saveInstructions()
                     store.generateMiniFootage(flow: flow)
                 } label: {
-                    Text("Generate footage").lineLimit(1).fixedSize()
+                    Text("Generate highlights").lineLimit(1).fixedSize()
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(selectedVideo == nil || store.isWizardRunning)
                 MiniModelButton(tasks: [flow.isPodcastOrInterview ? "highlights" : "wizard"])
             }
         } else {
-            // Q&A and Transcript load on their own (see autoLoadKey); no button to press.
-            let isQA = flow.effectiveFootageKind == .qa
-            FormCaption(isQA
-                ? "Q&A lists the question-and-answer exchanges found when this video was analyzed. No AI model runs for this step."
-                : "Transcript shows every spoken line. Mark a passage and press Add. Picks are kept with this video. No AI model runs for this step.")
+            // Q&A, Transcript and Fight metrics load on their own (see autoLoadKey); no button to press.
+            let kind = flow.effectiveFootageKind
+            let caption: String = switch kind {
+                case .qa: "Q&A lists the question-and-answer exchanges found when this video was analyzed. No AI model runs for this step."
+                case .fightMetrics: "Fight metrics lists every scored action in time order. Select actions and press Add; actions that run into each other become one pick. Picks are kept with this video. No AI model runs for this step."
+                default: "Transcript shows every spoken line. Mark a passage and press Add. Picks are kept with this video. No AI model runs for this step."
+            }
+            let loading: String = switch kind {
+                case .qa: "Loading Q&A exchanges…"
+                case .fightMetrics: "Loading fight actions…"
+                default: "Loading transcript…"
+            }
+            FormCaption(caption)
             if let selectedVideo, !selectedVideo.isPresent {
                 FormCaption(VideoRecord.notPresentReason, tone: .warning)
             } else if currentRun == nil, store.isWizardRunning {
-                ProgressView(isQA ? "Loading Q&A exchanges…" : "Loading transcript…")
+                ProgressView(loading)
             }
         }
     }
