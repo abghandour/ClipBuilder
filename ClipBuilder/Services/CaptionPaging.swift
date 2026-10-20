@@ -4,20 +4,22 @@ nonisolated struct CaptionPage: Sendable, Equatable {
     var text: String
     var start: Double
     var end: Double
+    var words: [TranscriptWord]? = nil
 }
 
 /// Word-preserving pagination. Measurement belongs to the renderer, not this planner.
 nonisolated enum CaptionPaging {
     static func pages(text: String, start: Double, end: Double, words: [TranscriptWord]? = nil,
-                      fits: (String) -> Bool) -> [CaptionPage] {
+                      maxWords: Int? = nil, fits: (String) -> Bool) -> [CaptionPage] {
         let tokens = text.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !tokens.isEmpty, start.isFinite, end.isFinite, end > start else { return [] }
         func joined(_ range: Range<Int>) -> String { tokens[range].joined(separator: " ") }
+        let wordLimit = maxWords.map { min(8, max(1, $0)) } ?? Int.max
         var ranges: [Range<Int>] = []
         var cursor = 0
         while cursor < tokens.count {
             var limit = cursor + 1 // An indivisible word always gets a page.
-            while limit < tokens.count, fits(joined(cursor..<(limit + 1))) { limit += 1 }
+            while limit < tokens.count, limit - cursor < wordLimit, fits(joined(cursor..<(limit + 1))) { limit += 1 }
             if limit < tokens.count {
                 let lower = cursor + max(1, Int(ceil(Double(limit - cursor) * 2 / 3)))
                 let candidates = Array(lower...limit).reversed()
@@ -48,7 +50,7 @@ nonisolated enum CaptionPaging {
                 let nextStart = index + 1 < ranges.count ? timed[ranges[index + 1].lowerBound].start : timed[range.upperBound - 1].end
                 let pageEnd = min(end, max(timed[range.upperBound - 1].end, nextStart))
                 guard pageEnd > pageStart else { return nil }
-                return CaptionPage(text: joined(range), start: pageStart, end: pageEnd)
+                return CaptionPage(text: joined(range), start: pageStart, end: pageEnd, words: Array(timed[range]))
             }
             // A zero-gap inserted word may occupy a whole page. Fall back to
             // proportional timing instead of silently dropping that page's text.
@@ -60,7 +62,7 @@ nonisolated enum CaptionPaging {
             let counts = weights()
             if duration * counts.last! / counts.reduce(0, +) < 0.8 {
                 let merged = ranges[ranges.count - 2].lowerBound..<ranges.last!.upperBound
-                if fits(joined(merged)) { ranges.removeLast(2); ranges.append(merged) }
+                if merged.count <= wordLimit, fits(joined(merged)) { ranges.removeLast(2); ranges.append(merged) }
             }
         }
         let counts = weights()

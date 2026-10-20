@@ -73,3 +73,68 @@ extension CaptionRendererTests {
         }
     }
 }
+
+extension CaptionRendererTests {
+    @Test func highlightNeverMovesThePage() async throws {
+        try await Task.detached {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            for mode in ["color", "box", "scale"] {
+                var style = CaptionStyle()
+                style.highlight = mode
+                let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+                let plain = try renderer.render(text: "Every moment has a story", to: folder)
+                for index in 0..<5 {
+                    let lit = try renderer.render(text: "Every moment has a story", activeIndex: index, to: folder)
+                    #expect(abs(lit.width - plain.width) <= 1 && lit.height == plain.height)
+                }
+            }
+        }.value
+    }
+
+    @Test func wideHighlightFontIsReservedInEveryState() async throws {
+        try await Task.detached {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            var style = CaptionStyle()
+            style.highlight = "color"
+            let narrow = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+                .render(text: "Every moment has a story", to: folder)
+            style.highlightFont = "mono"
+            let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+            let plain = try renderer.render(text: "Every moment has a story", to: folder)
+            // Menlo is wider than Helvetica Neue, so the page grows to hold it
+            // even before any word is lit, and never changes once one is.
+            #expect(plain.width > narrow.width)
+            for index in 0..<5 {
+                let lit = try renderer.render(text: "Every moment has a story", activeIndex: index, to: folder)
+                #expect(abs(lit.width - plain.width) <= 1 && lit.height == plain.height)
+            }
+        }.value
+    }
+}
+
+extension CaptionRendererTests {
+    @Test func entranceFramesKeepTheirEnvelopeAndSafeWidth() async throws {
+        try await Task.detached {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let safe = try #require(PlatformSafeArea.resolve(platforms: SocialPlatform.allCases, aspectRatio: 9.0 / 16))
+            for motion in ["pop", "slide-up", "fade"] {
+                var style = CaptionStyle()
+                style.animation = motion
+                style.highlight = "scale"
+                let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style, safeArea: safe)
+                let steady = try renderer.render(text: "Every strong moment earns victory", to: folder)
+                #expect(Double(steady.width) <= safe.rect.width * 1080 + 1)
+                for frame in CaptionAnimation.frames(for: motion, duration: 0.16) {
+                    let animated = try renderer.render(text: "Every strong moment earns victory", frame: frame, to: folder)
+                    #expect(animated.width == steady.width && animated.height == steady.height)
+                }
+            }
+        }.value
+    }
+}

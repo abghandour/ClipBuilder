@@ -55,6 +55,8 @@ struct CaptionStylesView: View {
                 .frame(minWidth: 160, idealWidth: 220, maxWidth: 300)
                 CaptionStyleEditor(name: name, style: style, isDefault: selectedIndex == nil)
                     .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+                previewPane
+                    .frame(minWidth: 260, idealWidth: 300, maxWidth: 420, maxHeight: .infinity)
             }
         }
         .confirmationDialog("Delete this caption style?", isPresented: $deleting) {
@@ -65,13 +67,40 @@ struct CaptionStylesView: View {
         }
     }
 
+    /// Third column: the animated sample line for the selected style, pinned
+    /// at the top so it stays in view while the editor form scrolls.
+    private var previewPane: some View {
+        VStack(spacing: Theme.spaceS) {
+            Text("Preview").font(.headline).lineLimit(1).fixedSize()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            CaptionStylePreview(style: style.wrappedValue)
+                .frame(maxWidth: .infinity)
+            Spacer(minLength: 0)
+        }
+        .padding(Theme.spaceM)
+    }
+
     @ViewBuilder private var actions: some View {
+        Menu("Add Preset", systemImage: "text.badge.plus") {
+            ForEach(CaptionPresets.styles, id: \.name) { preset in
+                Button(preset.name) { addPreset(preset) }
+            }
+        }
+        .lineLimit(1).fixedSize()
+        .help("Add an editable copy of a built-in caption template.")
         Button("New Style", systemImage: "plus") { addStyle(duplicate: false) }
             .lineLimit(1).fixedSize()
         Button("Duplicate", systemImage: "plus.square.on.square") { addStyle(duplicate: true) }
             .lineLimit(1).fixedSize()
         Button("Delete", systemImage: "trash", role: .destructive) { deleting = true }
             .lineLimit(1).fixedSize().disabled(selectedIndex == nil)
+    }
+
+    private func addPreset(_ preset: NamedCaptionStyle) {
+        let copy = NamedCaptionStyle(name: preset.name, style: preset.style)
+        store.activeProfile.captionStyles = (store.activeProfile.captionStyles ?? []) + [copy]
+        selection = copy.id.uuidString
+        store.saveActiveProfile()
     }
 
     private func addStyle(duplicate: Bool) {

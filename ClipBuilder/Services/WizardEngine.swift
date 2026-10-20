@@ -4036,16 +4036,26 @@ actor WizardEngine {
                 sourceSegments = []
             }
             let captionSpeed = podcastDocument == nil ? clip.speed : 1
-            for segment in sourceSegments.flatMap({ renderer.pages(for: $0) }) {
-                let start = max(0, (segment.start - clip.start) / captionSpeed)
-                let end = min(duration, (segment.end - clip.start) / captionSpeed)
-                guard end > start else { continue }
-                let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
-                guard let rendered = try? renderer.render(text: text, to: scratch) else { continue }
-                let (x, y) = renderer.position(for: rendered, positionOverride: options.captionPositionOverride)
+            // Speaker colours are decoration: a failed read leaves the captions uncoloured.
+            let turns = captionStyle.resolvedSpeakerColors ? ((try? await database.fetchSpeakerTurns(videoID: scene.videoID)) ?? []) : []
+            let speakerRows = captionStyle.resolvedSpeakerColors ? ((try? await database.fetchTranscripts(videoID: scene.videoID)) ?? []) : []
+            try Task.checkCancellation()
+            let pages = CaptionOverlayPlan.pages(segments: sourceSegments, renderer: renderer,
+                sourceStart: clip.start, speed: captionSpeed, duration: duration,
+                position: options.captionPositionOverride ?? "auto", language: options.captionLanguage ?? "",
+                speakerTurns: turns, speakerRows: speakerRows)
+            let captionPlan = try CaptionOverlayPlan.plan(pages: pages, style: captionStyle)
+            if captionPlan.usedPageFallback { emit("Captions: over 400 inputs; using static page overlays for this clip") }
+            let cache = CaptionPNGCache(renderer: renderer, directory: scratch)
+            for overlay in captionPlan.overlays {
+                // One caption that fails to rasterize is skipped, as before.
+                guard let rendered = try? await cache.rendered(overlay.raster) else {
+                    try Task.checkCancellation()
+                    continue
+                }
+                let (x, y) = renderer.position(for: rendered, positionOverride: overlay.position)
                 overlays.append(RenderEngine.ClipOverlay(png: rendered.pngURL, x: x, y: y,
-                                                         start: start, end: end))
+                                                         start: overlay.start, end: overlay.end))
             }
         }
         if let overlayText = clip.textOverlay, options.enableTextOverlays {

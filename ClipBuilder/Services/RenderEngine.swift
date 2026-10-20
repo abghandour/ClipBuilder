@@ -130,10 +130,12 @@ actor RenderEngine {
         for overlay in overlays {
             if overlay.animation != nil {
                 // Fade needs a real stream to act on, not a single still frame.
-                arguments += ["-loop", "1", "-t", String(format: "%.2f", duration),
+                arguments += ["-threads", "1", "-loop", "1", "-t", String(format: "%.2f", duration),
                               "-i", overlay.png.path]
             } else {
-                arguments += ["-i", overlay.png.path]
+                // One decoder thread per still: word states can mean hundreds
+                // of inputs, and a thread pool each would hit the process limit.
+                arguments += ["-threads", "1", "-i", overlay.png.path]
             }
         }
         let maskIndex = overlayBase + overlays.count

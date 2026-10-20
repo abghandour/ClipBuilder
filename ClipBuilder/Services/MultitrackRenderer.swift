@@ -1406,6 +1406,7 @@ actor MultitrackRenderer {
         // Captions ride the composite's filter graph — no second encode pass.
         var captions: [CaptionOverlay] = []
         var segmentComplete = true
+        var captionPages: [CaptionOverlayPlan.Page] = []
         for clip in segment.clips {
             guard let captionPosition = clip.captionsPosition, let videoID = clip.videoID else { continue }
             let sourceStart = clip.transcriptStart(at: segment.start)
@@ -1419,22 +1420,26 @@ actor MultitrackRenderer {
                 segmentComplete = false
                 continue
             }
-            for row in rows.flatMap({ captionRenderer.pages(for: $0) }) {
-                // Shift to segment-local SCREEN time (slow motion stretches
-                // it) and clamp to the window, like get_transcript_for_clip.
-                let start = max(0, (row.start - sourceStart) / clip.speed)
-                let end = min(segment.duration, (row.end - sourceStart) / clip.speed)
-                guard end > start else { continue }
-                let text = row.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { continue }
-                guard let rendered = try? await captionCache.rendered(text) else {
-                    try Task.checkCancellation()
-                    segmentComplete = false
-                    continue
-                }
-                let (x, y) = captionRenderer.position(for: rendered, clipPosition: captionPosition)
-                captions.append(CaptionOverlay(png: rendered.pngURL, x: x, y: y, start: start, end: end, text: text))
+            // Speaker colours are decoration: a failed read leaves the captions uncoloured.
+            let turns = captionStyle.resolvedSpeakerColors ? ((try? await database.fetchSpeakerTurns(videoID: videoID)) ?? []) : []
+            let speakerRows = captionStyle.resolvedSpeakerColors ? ((try? await database.fetchTranscripts(videoID: videoID)) ?? []) : []
+            try Task.checkCancellation()
+            captionPages += CaptionOverlayPlan.pages(segments: rows, renderer: captionRenderer,
+                sourceStart: sourceStart, speed: clip.speed, duration: segment.duration,
+                position: captionPosition, language: captionLanguage ?? "",
+                speakerTurns: turns, speakerRows: speakerRows, streamID: clip.originKey)
+        }
+        let captionPlan = try CaptionOverlayPlan.plan(pages: captionPages, style: captionStyle)
+        if captionPlan.usedPageFallback { emit("Captions: over 400 inputs; using static page overlays for this segment") }
+        for overlay in captionPlan.overlays {
+            guard let rendered = try? await captionCache.rendered(overlay.raster) else {
+                try Task.checkCancellation()
+                segmentComplete = false
+                continue
             }
+            let (x, y) = captionRenderer.position(for: rendered, clipPosition: overlay.position)
+            captions.append(CaptionOverlay(png: rendered.pngURL, x: x, y: y,
+                start: overlay.start, end: overlay.end, text: overlay.raster.text))
         }
 
         let segmentPath = scratch.appendingPathComponent(String(format: "seg%03d_layered.mp4", index))
@@ -1597,7 +1602,10 @@ actor MultitrackRenderer {
                           "-t", String(format: "%.3f", placement.sourceDur),
                           "-i", placement.sourcePath]
         }
-        for caption in captions { arguments += ["-i", caption.png.path] }
+        // A still PNG needs one decoder thread; ffmpeg otherwise spawns a
+        // frame-thread pool per input and hundreds of inputs hit the
+        // process thread ceiling.
+        for caption in captions { arguments += ["-threads", "1", "-i", caption.png.path] }
         // Screen-crop masks: one PNG input per masked placement (after the
         // captions), looped for the segment so alphamerge has a frame for
         // every video frame.
@@ -2283,25 +2291,5 @@ actor MultitrackRenderer {
             if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
             counter += 1
         }
-    }
-}
-
-/// Serializes and memoizes caption PNG rasterization — identical caption text
-/// renders once per run, even across concurrent segment jobs.
-actor CaptionPNGCache {
-    private let renderer: CaptionRenderer
-    private let directory: URL
-    private var cache: [String: CaptionRenderer.RenderedCaption] = [:]
-
-    init(renderer: CaptionRenderer, directory: URL) {
-        self.renderer = renderer
-        self.directory = directory
-    }
-
-    func rendered(_ text: String) throws -> CaptionRenderer.RenderedCaption {
-        if let hit = cache[text] { return hit }
-        let rendered = try renderer.render(text: text, to: directory)
-        cache[text] = rendered
-        return rendered
     }
 }

@@ -98,3 +98,15 @@ extension CaptionPagingTests {
         #expect(translated.first?.words == nil && translated.first?.text == "Translation")
     }
 }
+
+extension CaptionPagingTests {
+    @Test func wordCapsPreserveTokensAndPreventShortTailMerging() {
+        for cap in 1...8 {
+            let text = (1...19).map { "word\($0)" }.joined(separator: " ")
+            let pages = CaptionPaging.pages(text: text, start: 0, end: 0.5, maxWords: cap, fits: { _ in true })
+            #expect(pages.allSatisfy { $0.text.split(separator: " ").count <= cap })
+            #expect(pages.map(\.text).joined(separator: " ") == text)
+            #expect(pages.last?.end == 0.5)
+        }
+    }
+}

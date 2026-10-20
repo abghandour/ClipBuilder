@@ -333,8 +333,50 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
     var bgColor: String = "#000000"
     var position: String = "bottom"    // bottom | middle | top
 
+    // Optional additions preserve profiles and Team Sync documents made before templates.
+    var wordsPerPage: Int?
+    var highlight: String?
+    var highlightColor: String?
+    var emphasis: String?
+    var emphasisColor: String?
+    var uppercase: Bool?
+    var weight: String?
+    var strokeWidth: Double?
+    var shadow: Bool?
+    var letterSpacing: Double?
+    var animation: String?
+    var emoji: Bool?
+    var speakerColors: Bool?
+    var highlightFont: String?      // nil: same family as `font`
+    var emphasisFont: String?       // nil: same family as `font`
+
+    var resolvedWordsPerPage: Int? { wordsPerPage.map { min(8, max(1, $0)) } }
+    var resolvedHighlight: String { ["color", "box", "scale"].contains(highlight ?? "") ? highlight! : "none" }
+    var resolvedHighlightColor: String { highlightColor ?? "#ffd60a" }
+    var resolvedEmphasis: String { ["color", "scale", "both"].contains(emphasis ?? "") ? emphasis! : "none" }
+    var resolvedEmphasisColor: String { emphasisColor ?? resolvedHighlightColor }
+    var resolvedUppercase: Bool { uppercase ?? false }
+    var resolvedWeight: String { ["bold", "black"].contains(weight ?? "") ? weight! : "regular" }
+    var resolvedStrokeWidth: Double { min(6, max(0, strokeWidth ?? 1)) }
+    var resolvedShadow: Bool { shadow ?? false }
+    var resolvedLetterSpacing: Double { min(6, max(-2, letterSpacing ?? 0)) }
+    var resolvedAnimation: String { ["pop", "slide-up", "fade"].contains(animation ?? "") ? animation! : "none" }
+    var resolvedEmoji: Bool { emoji ?? false }
+    var resolvedSpeakerColors: Bool { speakerColors ?? false }
+    var resolvedHighlightFont: String { highlightFont?.isEmpty == false ? highlightFont! : font }
+    var resolvedEmphasisFont: String { emphasisFont?.isEmpty == false ? emphasisFont! : font }
+
     enum CodingKeys: String, CodingKey {
         case font, color, alignment
+        case wordsPerPage = "words_per_page"
+        case highlight, emphasis, uppercase, weight, shadow, animation, emoji
+        case highlightColor = "highlight_color"
+        case emphasisColor = "emphasis_color"
+        case strokeWidth = "stroke_width"
+        case letterSpacing = "letter_spacing"
+        case speakerColors = "speaker_colors"
+        case highlightFont = "highlight_font"
+        case emphasisFont = "emphasis_font"
         case bgOn = "bg_on"
         case bgColor = "bg_color"
         case position
@@ -345,6 +387,21 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         alignment = try container.decodeIfPresent(String.self, forKey: .alignment)
+        wordsPerPage = try container.decodeIfPresent(Int.self, forKey: .wordsPerPage)
+        highlight = try container.decodeIfPresent(String.self, forKey: .highlight)
+        highlightColor = try container.decodeIfPresent(String.self, forKey: .highlightColor)
+        emphasis = try container.decodeIfPresent(String.self, forKey: .emphasis)
+        emphasisColor = try container.decodeIfPresent(String.self, forKey: .emphasisColor)
+        uppercase = try container.decodeIfPresent(Bool.self, forKey: .uppercase)
+        weight = try container.decodeIfPresent(String.self, forKey: .weight)
+        strokeWidth = try container.decodeIfPresent(Double.self, forKey: .strokeWidth)
+        shadow = try container.decodeIfPresent(Bool.self, forKey: .shadow)
+        letterSpacing = try container.decodeIfPresent(Double.self, forKey: .letterSpacing)
+        animation = try container.decodeIfPresent(String.self, forKey: .animation)
+        emoji = try container.decodeIfPresent(Bool.self, forKey: .emoji)
+        speakerColors = try container.decodeIfPresent(Bool.self, forKey: .speakerColors)
+        highlightFont = try container.decodeIfPresent(String.self, forKey: .highlightFont)
+        emphasisFont = try container.decodeIfPresent(String.self, forKey: .emphasisFont)
         font = try container.decodeIfPresent(String.self, forKey: .font) ?? "sans"
         color = try container.decodeIfPresent(String.self, forKey: .color) ?? "#ffffff"
         bgOn = try container.decodeIfPresent(Bool.self, forKey: .bgOn) ?? false

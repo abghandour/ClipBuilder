@@ -117,6 +117,9 @@ private func overlayHexString(_ color: Color) -> String {
 /// typeface (menus can't do that, so this is a popover, not a Picker).
 struct FontFamilyPicker: View {
     @Binding var family: String?
+    var label = "Font"
+    /// Name shown for nil, e.g. "Same as text" when the pick inherits another font.
+    var defaultLabel = "Default"
 
     @State private var showingList = false
     @State private var search = ""
@@ -124,12 +127,12 @@ struct FontFamilyPicker: View {
     @State private var systemFamilies: [String] = []
 
     var body: some View {
-        LabeledContent("Font") {
+        LabeledContent(label) {
             Button {
                 showingList = true
             } label: {
                 HStack(spacing: 4) {
-                    Text(family?.isEmpty == false ? family! : "Default")
+                    Text(family?.isEmpty == false ? family! : defaultLabel)
                         .font(sampleFont(family, size: 12))
                         .lineLimit(1)
                     Image(systemName: "chevron.up.chevron.down")
@@ -152,7 +155,7 @@ struct FontFamilyPicker: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if search.isEmpty {
-                        row(name: nil, label: "Default")
+                        row(name: nil, label: defaultLabel)
                     }
                     let library = matching(libraryFamilies)
                     if !library.isEmpty {
