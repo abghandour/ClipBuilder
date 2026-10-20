@@ -97,6 +97,13 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         if preset == .custom { preset = .portrait1080 }
     }
 
+    /// Preview and generation share Express's own choices and profile canvas defaults.
+    func previewOptions(profile: BrandProfile, base: WizardOptions = WizardOptions()) -> WizardOptions {
+        var base = base
+        base.renderSettings = profile.defaultRenderSettings
+        return WizardOptions.merge(step1: base.step1, step2: step2Options(base: base.step2), base: base)
+    }
+
     func step2Options(base: WizardStep2Options) -> WizardStep2Options {
         var result = base
         var render = base.renderSettings ?? RenderSettings()
@@ -219,7 +226,6 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         }
         result.look = defaults.string(forKey: key(.look)) ?? ""
         result.musicTrack = defaults.string(forKey: key(.musicTrack))
-        result.watermark = WizardDefaults.brandingMode(defaults: defaults).includeWatermark
         for (field, path) in booleanFields {
             if defaults.object(forKey: key(field)) != nil { result[keyPath: path] = defaults.bool(forKey: key(field)) }
         }

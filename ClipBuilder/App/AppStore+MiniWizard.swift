@@ -281,12 +281,11 @@ extension AppStore {
         let generation = profileGeneration
         let wizard = wizard
         var base = run.options
-        base.renderSettings = profile.defaultRenderSettings
         base.pacing = profile.defaultPacing
         base.critiqueLoop = false
         base.accountBenchmarks = igBenchmarks
         base.localHashtags = OnDevicePolicy.isEnabled(item: "hashtags", config: settings.ai)
-        var step2 = chosen.step2Options(base: base.step2)
+        var step2 = chosen.previewOptions(profile: profile, base: base).step2
         // Chosen bumpers are stored by library path; resolve to this Mac's files.
         func bumperPath(_ libraryPath: String?, _ placement: BumperPlacement) -> String? {
             guard let libraryPath else { return nil }

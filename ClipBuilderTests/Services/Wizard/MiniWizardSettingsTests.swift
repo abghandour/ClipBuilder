@@ -206,7 +206,7 @@ struct MiniWizardSettingsTests {
         #expect(settings.effective(for: podcast, introAvailable: true, outroAvailable: true) == settings)
     }
 
-    @Test func remembersEachProfileAndUsesProfileRenderAndBrandDefaults() throws {
+    @Test func remembersEachProfileAndUsesProfileRenderDefaults() throws {
         let suite = "MiniWizardSettingsTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -215,7 +215,7 @@ struct MiniWizardSettingsTests {
         profile.defaultRenderSettings = RenderSettings(preset: .landscape4K, quality: .archival)
         defaults.set(WizardBrandingMode.none.rawValue, forKey: WizardDefaults.brandingModeKey)
         var settings = MiniWizardSettings.remembered(profile: profile, defaults: defaults)
-        #expect(settings.quality == .archival && settings.preset == .landscape4K && !settings.watermark)
+        #expect(settings.quality == .archival && settings.preset == .landscape4K && settings.watermark)
         settings.quality = .compact
         settings.preset = .square1080
         settings.cameraFocus = WizardCameraFocus.original

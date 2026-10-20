@@ -69,6 +69,23 @@ extension WizardView {
     }
 
     var configurationForm: some View {
+        HSplitView {
+            configurationCards.frame(minWidth: 480, maxWidth: .infinity)
+            WizardPreviewColumn(scenes: previewScenes, options: presentationOptions(),
+                profile: store.activeProfile, thumbnails: store.thumbnails)
+                .id("\(store.profileGeneration):\(store.activeProjectID ?? 0)")
+                .rememberedPaneWidth("pane.wizard.preview", min: 240, initial: 320, max: 480)
+        }
+    }
+
+    private var previewScenes: [SceneRecord] {
+        if capabilities.sources == .podcastRecording {
+            return sourcePool.filter { $0.videoPath == highlightVideoPath }
+        }
+        return sourcePool
+    }
+
+    private var configurationCards: some View {
         let flow = cardFlow
         return ScrollViewReader { proxy in
             GeometryReader { page in

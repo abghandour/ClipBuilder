@@ -93,64 +93,18 @@ struct MiniWizardView: View {
     }
 
     var body: some View {
-        GeometryReader { page in
-            ScrollView {
-                VStack(alignment: .leading, spacing: Theme.spaceL) {
-                    MiniCard(number: 1, title: "Source", summary: flow.summary(for: .source),
-                             isOpen: !flow.isCollapsed(.source), headerTap: headerTap(.source)) {
-                        if !flow.isCollapsed(.source) {
-                            sourceGrid.disabled(store.isWizardRunning)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    MiniCard(number: 2, title: "Footage",
-                             summary: currentRun?.summary ?? flow.summary(for: .footage),
-                             isOpen: !flow.isCollapsed(.footage),
-                             headerTap: headerTap(.footage)) {
-                        if !flow.isCollapsed(.footage) {
-                            if selectedVideo == nil {
-                                FormCaption("Pick a source in 1 Source first.")
-                            } else {
-                                footageControls.disabled(store.isWizardRunning)
-                                if let run = currentRun {
-                                    Divider()
-                                    MiniFootageCard(run: run, pageHeight: page.size.height)
-                                }
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    MiniCard(number: 3,
-                        title: MiniWizardPresetStore.cardTitle(loaded: loadedPreset, current: miniSettings),
-                        summary: flow.canExpand(.settings)
-                            ? flow.settingsSummary(miniSettings.effective(for: flow,
-                                introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
-                                outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) }))
-                            : flow.summary(for: .settings),
-                        isOpen: flow.visibleCard == .settings && settingsProfile == profileName,
-                        headerTap: headerTap(.settings),
-                        accessory: AnyView(presetButtons)) {
-                        if flow.visibleCard == .settings, settingsProfile == profileName {
-                            if let run = currentRun, flow.canExpand(.settings) {
-                                MiniSettingsCard(settings: $miniSettings, tab: $settingsTab, flow: flow, run: run)
-                            } else {
-                                FormCaption(selectedVideo == nil ? "Pick a source in 1 Source first."
-                                    : "Choose and keep footage in 2 Footage first.")
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    // The summary and Generate live outside the collapsible cards,
-                    // so a collapsed Settings card never hides the button.
-                    if let run = currentRun, flow.canExpand(.settings), settingsProfile == profileName {
-                        MiniCard(number: 4, title: "Generate", summary: "", isOpen: true) {
-                            MiniGeneratePanel(settings: $miniSettings, flow: flow, run: run)
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                }
-                .padding(Theme.spaceXL)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        HSplitView {
+            settingsColumn.frame(minWidth: 480, maxWidth: .infinity)
+            if let video = selectedVideo {
+                WizardPreviewColumn(scenes: store.scenes.filter { $0.videoID == video.id },
+                    options: miniSettings.effective(for: flow,
+                        introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
+                        outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) })
+                        .previewOptions(profile: store.activeProfile),
+                    profile: store.activeProfile, thumbnails: store.thumbnails,
+                    footer: generateFooter)
+                    .id("\(store.profileGeneration):\(store.activeProjectID ?? 0):\(video.id)")
+                    .rememberedPaneWidth("pane.express.preview", min: 240, initial: 320, max: 480)
             }
         }
         .screenTitle("AI Wizard Express")
@@ -207,6 +161,68 @@ struct MiniWizardView: View {
             if !focused { saveInstructions() }
         }
         .onDisappear { saveInstructions() }
+    }
+
+    /// The run summary and Generate sit under the preview, outside the
+    /// collapsible cards, so a collapsed Settings card never hides the button.
+    private var generateFooter: AnyView? {
+        guard let run = currentRun, flow.canExpand(.settings), settingsProfile == profileName else { return nil }
+        return AnyView(MiniGeneratePanel(settings: $miniSettings, flow: flow, run: run))
+    }
+
+    private var settingsColumn: some View {
+        GeometryReader { page in
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.spaceL) {
+                    MiniCard(number: 1, title: "Source", summary: flow.summary(for: .source),
+                             isOpen: !flow.isCollapsed(.source), headerTap: headerTap(.source)) {
+                        if !flow.isCollapsed(.source) {
+                            sourceGrid.disabled(store.isWizardRunning)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    MiniCard(number: 2, title: "Footage",
+                             summary: currentRun?.summary ?? flow.summary(for: .footage),
+                             isOpen: !flow.isCollapsed(.footage),
+                             headerTap: headerTap(.footage)) {
+                        if !flow.isCollapsed(.footage) {
+                            if selectedVideo == nil {
+                                FormCaption("Pick a source in 1 Source first.")
+                            } else {
+                                footageControls.disabled(store.isWizardRunning)
+                                if let run = currentRun {
+                                    Divider()
+                                    MiniFootageCard(run: run, pageHeight: page.size.height)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    MiniCard(number: 3,
+                        title: MiniWizardPresetStore.cardTitle(loaded: loadedPreset, current: miniSettings),
+                        summary: flow.canExpand(.settings)
+                            ? flow.settingsSummary(miniSettings.effective(for: flow,
+                                introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
+                                outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) }))
+                            : flow.summary(for: .settings),
+                        isOpen: flow.visibleCard == .settings && settingsProfile == profileName,
+                        headerTap: headerTap(.settings),
+                        accessory: AnyView(presetButtons)) {
+                        if flow.visibleCard == .settings, settingsProfile == profileName {
+                            if let run = currentRun, flow.canExpand(.settings) {
+                                MiniSettingsCard(settings: $miniSettings, tab: $settingsTab, flow: flow, run: run)
+                            } else {
+                                FormCaption(selectedVideo == nil ? "Pick a source in 1 Source first."
+                                    : "Choose and keep footage in 2 Footage first.")
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .padding(Theme.spaceXL)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
     }
 
     private func open(_ card: MiniWizardFlow.Card) {

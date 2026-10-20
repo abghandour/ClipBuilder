@@ -2,6 +2,8 @@ import Foundation
 import CoreGraphics
 
 nonisolated struct CaptionPreviewImage: Sendable {
+    static let sampleText = "Every strong moment earns victory"
+
     let data: Data
     let size: CGSize
     let origin: CGPoint
@@ -17,7 +19,7 @@ nonisolated struct CaptionPreviewImage: Sendable {
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
         let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style, safeArea: nil)
-        let segment = TranscriptSegment(start: 0, end: 3, text: "Every strong moment earns victory")
+        let segment = TranscriptSegment(start: 0, end: 3, text: sampleText)
         let pages = CaptionOverlayPlan.pages(segments: [segment], renderer: renderer,
             sourceStart: 0, speed: 1, duration: 3, position: style.position,
             speakerTurns: [.init(videoID: 0, start: 0, end: 3, cluster: 0, confidence: 1)])
