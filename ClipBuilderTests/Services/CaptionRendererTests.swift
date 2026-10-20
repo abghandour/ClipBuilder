@@ -1,5 +1,7 @@
 import Foundation
 import Testing
+import CoreGraphics
+import ImageIO
 @testable import Clip_Builder
 
 struct CaptionRendererTests {
@@ -101,15 +103,18 @@ extension CaptionRendererTests {
             var style = CaptionStyle()
             style.highlight = "color"
             let narrow = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
-                .render(text: "Every moment has a story", to: folder)
+                .render(text: "Thin wide end", to: folder)
             style.highlightFont = "mono"
+            style.highlightDecor = CaptionWordDecor(italic: true, bgOn: true)
+            style.emphasis = "both"
+            style.emphasisDecor = CaptionWordDecor(size: 80)
             let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
-            let plain = try renderer.render(text: "Every moment has a story", to: folder)
-            // Menlo is wider than Helvetica Neue, so the page grows to hold it
-            // even before any word is lit, and never changes once one is.
+            let plain = try renderer.render(text: "Thin wide end", to: folder)
+            // The wider italic highlight and larger emphasis grow the reserved
+            // slots before either state is drawn, and never shift the page.
             #expect(plain.width > narrow.width)
-            for index in 0..<5 {
-                let lit = try renderer.render(text: "Every moment has a story", activeIndex: index, to: folder)
+            for index in 0..<3 {
+                let lit = try renderer.render(text: "Thin wide end", activeIndex: index, to: folder)
                 #expect(abs(lit.width - plain.width) <= 1 && lit.height == plain.height)
             }
         }.value
@@ -134,6 +139,105 @@ extension CaptionRendererTests {
                     let animated = try renderer.render(text: "Every strong moment earns victory", frame: frame, to: folder)
                     #expect(animated.width == steady.width && animated.height == steady.height)
                 }
+            }
+        }.value
+    }
+}
+
+extension CaptionRendererTests {
+    nonisolated private static func pixels(_ rendered: CaptionRenderer.RenderedCaption) throws -> [UInt8] {
+        let source = try #require(CGImageSourceCreateWithURL(rendered.pngURL as CFURL, nil))
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        try bytes.withUnsafeMutableBytes { buffer in
+            let context = try #require(CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        }
+        return bytes
+    }
+
+    @Test func decorationsAddPixelsBelowAndThroughTheWord() async throws {
+        try await Task.detached {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            var style = CaptionStyle()
+            style.strokeWidth = 0
+            style.text = CaptionWordDecor()
+            let plain = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+                .render(text: "OOOO", to: folder)
+            let base = try Self.pixels(plain)
+            let occupied = stride(from: 3, to: base.count, by: 4).filter { base[$0] > 128 }
+            let minRow = try #require(occupied.map { ($0 / 4) / plain.width }.min())
+            let maxRow = try #require(occupied.map { ($0 / 4) / plain.width }.max())
+            for strike in [false, true] {
+                style.text = CaptionWordDecor(underline: !strike, strikethrough: strike)
+                let result = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+                    .render(text: "OOOO", to: folder)
+                #expect(result.width == plain.width && result.height == plain.height)
+                let decorated = try Self.pixels(result)
+                let added = stride(from: 3, to: base.count, by: 4).filter { decorated[$0] > 128 && base[$0] == 0 }
+                #expect(!added.isEmpty)
+                let rows = added.map { ($0 / 4) / plain.width }
+                if strike { #expect(rows.contains { $0 > minRow && $0 < maxRow }) }
+                else { #expect(rows.contains { $0 < minRow || $0 > maxRow }) }
+            }
+        }.value
+    }
+
+    @Test func squareAndRoundedWordBackgroundCorners() async throws {
+        try await Task.detached {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            var style = CaptionStyle()
+            style.strokeWidth = 0
+            style.text = CaptionWordDecor(bgOn: true, bgColor: "#ff0000", bgRadius: 0)
+            let square = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+                .render(text: "WORD", to: folder)
+            let bytes = try Self.pixels(square)
+            let filled = stride(from: 3, to: bytes.count, by: 4).filter { bytes[$0] > 250 }
+            let x = try #require(filled.map { ($0 / 4) % square.width }.min()) + 1
+            let y = try #require(filled.map { ($0 / 4) / square.width }.min()) + 1
+            style.text?.bgRadius = 20
+            let rounded = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+                .render(text: "WORD", to: folder)
+            #expect(square.width == rounded.width && square.height == rounded.height)
+            let roundedBytes = try Self.pixels(rounded)
+            let corner = (y * square.width + x) * 4 + 3
+            #expect(bytes[corner] == 255 && roundedBytes[corner] == 0)
+        }.value
+    }
+
+    @Test func neighboursKeepTheirPixelPositionsAcrossStates() async throws {
+        try await Task.detached {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            var style = CaptionStyle()
+            style.highlight = "color"
+            style.highlightFont = "mono"
+            style.highlightDecor = CaptionWordDecor(italic: true, size: 70, bgOn: true)
+            style.emphasis = "both"
+            style.emphasisDecor = CaptionWordDecor(size: 90)
+            let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+            let plain = try renderer.render(text: "IIII IIII IIII", to: folder)
+            let base = try Self.pixels(plain)
+            for active in [false, true] {
+                let changed = try renderer.render(text: "IIII IIII IIII", activeIndex: active ? 1 : nil,
+                                                  emphasis: active ? [] : [1], to: folder)
+                #expect(changed.width == plain.width && changed.height == plain.height)
+                let bytes = try Self.pixels(changed)
+                let neighboursMatch = (0..<plain.height).allSatisfy { y in
+                    (0..<plain.width).allSatisfy { x in
+                        guard x < plain.width / 3 || x >= plain.width * 2 / 3 else { return true }
+                        let offset = (y * plain.width + x) * 4
+                        return bytes[offset..<offset + 4] == base[offset..<offset + 4]
+                    }
+                }
+                #expect(neighboursMatch)
             }
         }.value
     }

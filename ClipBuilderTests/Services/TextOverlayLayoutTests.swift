@@ -182,4 +182,43 @@ struct TextOverlayLayoutTests {
         #expect(try JSONDecoder().decode(TextOverlayItem.self, from: data).alignment == "right")
         #expect(try JSONDecoder().decode(TextOverlayItem.self, from: Data("{\"text\":\"x\"}".utf8)).alignment == "center")
     }
+    @Test("Decorations follow each word's colour and word-reveal visibility")
+    func decorationsRespectWordColourAndVisibility() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var text = item("OOOO *OOOO*", alignment: "left", fontsize: 60)
+        text.boxOpacity = 0
+        text.fontcolor = "#ff0000"
+        text.highlightColor = "#00ff00"
+        func pixels(_ item: TextOverlayItem, visible: Int? = nil) throws -> [UInt8] {
+            let url = try renderer.render(item, to: directory, visibleWords: visible)
+            let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+            let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+            try bytes.withUnsafeMutableBytes { buffer in
+                let context = try #require(CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+                    bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+                context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            }
+            return bytes
+        }
+        let plain = try pixels(text)
+        text.underline = true
+        text.strikethrough = true
+        let decorated = try pixels(text)
+        let revealed = try pixels(text, visible: 1)
+        var redAdded = 0, greenAdded = 0, hiddenGreen = 0
+        for offset in stride(from: 0, to: plain.count, by: 4) {
+            if plain[offset + 3] == 0 && decorated[offset + 3] > 128 {
+                if decorated[offset] > 128 { redAdded += 1 }
+                if decorated[offset + 1] > 128 { greenAdded += 1 }
+            }
+            if revealed[offset + 1] > 128 { hiddenGreen += 1 }
+        }
+        #expect(redAdded > 0 && greenAdded > 0)
+        #expect(hiddenGreen == 0)
+    }
+
 }

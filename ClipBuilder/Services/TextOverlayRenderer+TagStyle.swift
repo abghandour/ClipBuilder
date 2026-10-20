@@ -47,7 +47,10 @@ nonisolated extension TextOverlayRenderer {
                 TagLayout.Line(size: CGSize(width: lineWidth(lines[$0], font: fonts[$0]),
                     height: CTFontGetAscent(fonts[$0]) + CTFontGetDescent(fonts[$0])),
                     underlineThickness: styles[$0].underline
-                        ? CTFontGetSize(fonts[$0]) * max(0, styles[$0].underlineThickness) : 0)
+                        ? CTFontGetSize(fonts[$0]) * max(0, styles[$0].underlineThickness) : 0,
+                    strikethrough: styles[$0].resolvedStrikethrough ? max(1, CTFontGetUnderlineThickness(fonts[$0])) : 0,
+                    chipPadding: styles[$0].resolvedBackground ? CTFontGetSize(fonts[$0]) * 0.18 : 0,
+                    strikethroughY: CTFontGetAscent(fonts[$0]) - CTFontGetXHeight(fonts[$0]) / 2)
             }, padding: padding, gap: gap, alignment: style.alignment, images: style.images, aspects: aspects)
             return NameTagLayout(fontSize: size, lines: lines, fonts: fonts,
                 size: geometry.bounds.size, padding: padding, lineGap: gap, geometry: geometry)
@@ -110,6 +113,18 @@ nonisolated extension TextOverlayRenderer {
         drawImages(behind: true)
         let styles = [style.name, style.description]
         for index in layout.lines.indices {
+            if let chip = geometry.chips[index] {
+                context.saveGState()
+                context.setFillColor(Self.cgColor(styles[index].resolvedBackgroundColor))
+                context.setAlpha(styles[index].resolvedBackgroundOpacity)
+                let radius = styles[index].resolvedCornerRadius * Double(videoHeight) / 1920 * fit
+                context.addPath(CGPath(roundedRect: cgRect(chip), cornerWidth: radius,
+                                      cornerHeight: radius, transform: nil))
+                context.fillPath()
+                context.restoreGState()
+            }
+        }
+        for index in layout.lines.indices {
             let font = CTFontCreateCopyWithAttributes(layout.fonts[index], CTFontGetSize(layout.fonts[index]) * fit, nil, nil)
             context.setFillColor(Self.cgColor(styles[index].color))
             context.textMatrix = .identity
@@ -119,6 +134,10 @@ nonisolated extension TextOverlayRenderer {
             if let underline = geometry.underlines[index] {
                 context.setFillColor(Self.cgColor(styles[index].underlineColor ?? styles[index].color))
                 context.fill(cgRect(underline))
+            }
+            if let strike = geometry.strikethroughs[index] {
+                context.setFillColor(Self.cgColor(styles[index].color))
+                context.fill(cgRect(strike))
             }
         }
         drawImages(behind: false)

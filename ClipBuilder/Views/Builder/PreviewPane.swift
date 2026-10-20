@@ -549,6 +549,8 @@ private struct TextOverlayLayer: View {
             .font(.system(size: CGFloat(overlay.fontsize) * frame.height / 1920,
                           weight: overlay.bold ? .bold : .regular))
             .italic(overlay.italic)
+            .underline(overlay.resolvedUnderline)
+            .strikethrough(overlay.resolvedStrikethrough)
             .foregroundStyle(Color(red: r, green: g, blue: b))
             .padding(4)
             .background(overlay.boxOpacity > 0

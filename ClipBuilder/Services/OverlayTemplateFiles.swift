@@ -87,6 +87,8 @@ nonisolated enum OverlayTemplateFiles {
                 item.fontcolor = raw["fontcolor"] as? String ?? "white"
                 item.bold = raw["bold"] as? Bool ?? false
                 item.italic = raw["italic"] as? Bool ?? false
+                item.underline = raw["underline"] as? Bool
+                item.strikethrough = raw["strikethrough"] as? Bool
                 if let bg = raw["bgcolor"] as? String {
                     item.bgcolor = bg
                     item.boxOpacity = (raw["box_opacity"] as? NSNumber)?.doubleValue ?? 0.6

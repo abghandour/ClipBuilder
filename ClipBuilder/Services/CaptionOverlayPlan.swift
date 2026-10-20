@@ -36,6 +36,7 @@ nonisolated enum CaptionOverlayPlan {
     struct Plan: Sendable {
         var overlays: [Overlay]
         var usedPageFallback: Bool
+        var usedRevealFallback: Bool = false
     }
 
     static func pages(segments: [TranscriptSegment], renderer: CaptionRenderer,
@@ -73,36 +74,68 @@ nonisolated enum CaptionOverlayPlan {
             overlay.end = min(item.windowEnd ?? overlay.end, overlay.end)
             return overlay.end > overlay.start ? overlay : nil
         }
-        let overlays = pages.flatMap { item -> [Overlay] in
-            let baseRaster = raster(for: item)
-            let states = style.resolvedHighlight == "none"
-                ? [CaptionWordStates.State(page: item.caption, start: item.caption.start, end: item.caption.end)]
-                : CaptionWordStates.states(for: item.caption, words: item.caption.words)
-            let scheduled = states.enumerated().flatMap { index, state -> [Overlay] in
-                var raster = baseRaster
-                raster.activeIndex = state.activeIndex
-                guard index == 0, style.resolvedAnimation != "none" else {
-                    return [Overlay(raster: raster, position: item.position, start: state.start, end: state.end)]
+        func scheduledOverlays(reveal: Bool, revealMotion: Bool) -> [Overlay] {
+            pages.flatMap { item -> [Overlay] in
+                let baseRaster = raster(for: item)
+                let tokens = item.caption.text.split(whereSeparator: \.isWhitespace)
+                let states = !reveal && style.resolvedHighlight == "none"
+                    ? [CaptionWordStates.State(page: item.caption, start: item.caption.start, end: item.caption.end)]
+                    : CaptionWordStates.states(for: item.caption, words: item.caption.words)
+                var visible = 0
+                var isFirstOverlay = true
+                let scheduled = states.flatMap { state -> [Overlay] in
+                    var raster = baseRaster
+                    let previousVisible = visible
+                    if reveal {
+                        if let activeIndex = state.activeIndex { visible = activeIndex + 1 }
+                        guard visible > 0 else { return [] }
+                        let prefix = tokens.prefix(visible).joined(separator: " ")
+                        // The full raster already carries the optional emoji; only
+                        // append that suffix once all transcript tokens are visible.
+                        let suffix = visible == tokens.count ? String(baseRaster.text.dropFirst(item.caption.text.count)) : ""
+                        raster.text = prefix + suffix
+                        raster.emphasis = baseRaster.emphasis.filter { $0 < visible }
+                    }
+                    raster.activeIndex = style.resolvedHighlight == "none" ? nil : state.activeIndex
+                    let animate = isFirstOverlay || (reveal && revealMotion && visible > previousVisible)
+                    isFirstOverlay = false
+                    guard animate, style.resolvedAnimation != "none" else {
+                        return [Overlay(raster: raster, position: item.position, start: state.start, end: state.end)]
+                    }
+                    let duration = min(CaptionAnimation.duration(for: style.resolvedAnimation), state.end - state.start)
+                    let frames = CaptionAnimation.frames(for: style.resolvedAnimation, duration: duration)
+                    return frames.enumerated().compactMap { index, frame in
+                        let end = index + 1 < frames.count ? state.start + frames[index + 1].at : state.end
+                        let start = state.start + frame.at
+                        guard end > start else { return nil }
+                        var animated = raster
+                        animated.frame = frame
+                        animated.frame.at = 0 // Time does not affect pixels or the cache identity.
+                        return Overlay(raster: animated, position: item.position, start: start, end: end)
+                    }
                 }
-                let duration = min(CaptionAnimation.duration(for: style.resolvedAnimation), state.end - state.start)
-                let frames = CaptionAnimation.frames(for: style.resolvedAnimation, duration: duration)
-                return frames.enumerated().compactMap { index, frame in
-                    let end = index + 1 < frames.count ? state.start + frames[index + 1].at : state.end
-                    let start = state.start + frame.at
-                    guard end > start else { return nil }
-                    var animated = raster
-                    animated.frame = frame
-                    animated.frame.at = 0 // Time does not affect pixels or the cache identity.
-                    return Overlay(raster: animated, position: item.position, start: start, end: end)
-                }
+                return scheduled.compactMap { clipped($0, to: item) }
             }
-            return scheduled.compactMap { clipped($0, to: item) }
         }
-        guard overlays.count > limit else { return Plan(overlays: overlays, usedPageFallback: false) }
+        let reveal = style.resolvedReveal == "word"
+        let revealMotion = reveal && style.resolvedRevealMotion && style.resolvedAnimation != "none"
+        var overlays = scheduledOverlays(reveal: reveal, revealMotion: revealMotion)
+        var usedRevealFallback = false
+        if overlays.count > limit, revealMotion {
+            overlays = scheduledOverlays(reveal: true, revealMotion: false)
+            usedRevealFallback = true
+        }
+        if overlays.count > limit, reveal {
+            overlays = scheduledOverlays(reveal: false, revealMotion: false)
+            usedRevealFallback = true
+        }
+        guard overlays.count > limit else {
+            return Plan(overlays: overlays, usedPageFallback: false, usedRevealFallback: usedRevealFallback)
+        }
         return Plan(overlays: try staticPages(pages, limit: limit).compactMap {
             clipped(Overlay(raster: raster(for: $0), position: $0.position,
                             start: $0.caption.start, end: $0.caption.end), to: $0)
-        }, usedPageFallback: true)
+        }, usedPageFallback: true, usedRevealFallback: usedRevealFallback)
     }
 
     private enum PlanningError: LocalizedError {

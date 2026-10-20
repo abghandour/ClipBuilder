@@ -1204,6 +1204,11 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     var boxOpacity: Double = 0.5
     var bold: Bool = false
     var italic: Bool = false
+    var underline: Bool?
+    var strikethrough: Bool?
+
+    var resolvedUnderline: Bool { underline ?? false }
+    var resolvedStrikethrough: Bool { strikethrough ?? false }
     var bgcolor: String?
     var xFrac: Double?
     var yFrac: Double?
@@ -1247,7 +1252,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case stat
-        case text, fontsize, fontcolor, fontfamily, bold, italic, bgcolor, position
+        case text, fontsize, fontcolor, fontfamily, bold, italic, underline, strikethrough, bgcolor, position
         case startTime = "start_time"
         case endTime = "end_time"
         case boxOpacity = "box_opacity"
@@ -1288,6 +1293,8 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         boxOpacity = try container.decodeIfPresent(Double.self, forKey: .boxOpacity) ?? 0.5
         bold = try container.decodeIfPresent(Bool.self, forKey: .bold) ?? false
         italic = try container.decodeIfPresent(Bool.self, forKey: .italic) ?? false
+        underline = try container.decodeIfPresent(Bool.self, forKey: .underline)
+        strikethrough = try container.decodeIfPresent(Bool.self, forKey: .strikethrough)
         bgcolor = try container.decodeIfPresent(String.self, forKey: .bgcolor)
         xFrac = try container.decodeIfPresent(Double.self, forKey: .xFrac)
         yFrac = try container.decodeIfPresent(Double.self, forKey: .yFrac)
@@ -1335,6 +1342,8 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         }
         if bold { try container.encode(true, forKey: .bold) }
         if italic { try container.encode(true, forKey: .italic) }
+        if resolvedUnderline { try container.encode(true, forKey: .underline) }
+        if resolvedStrikethrough { try container.encode(true, forKey: .strikethrough) }
         if let bgcolor { try container.encode(bgcolor, forKey: .bgcolor) }
         if let strokeColor, strokeWidthEm > 0 {
             try container.encode(strokeColor, forKey: .strokeColor)
@@ -1359,6 +1368,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
             && lhs.endTime == rhs.endTime && lhs.fontsize == rhs.fontsize
             && lhs.fontcolor == rhs.fontcolor && lhs.fontfamily == rhs.fontfamily
             && lhs.boxOpacity == rhs.boxOpacity && lhs.bold == rhs.bold && lhs.italic == rhs.italic
+            && lhs.resolvedUnderline == rhs.resolvedUnderline && lhs.resolvedStrikethrough == rhs.resolvedStrikethrough
             && lhs.bgcolor == rhs.bgcolor && lhs.xFrac == rhs.xFrac && lhs.yFrac == rhs.yFrac
             && lhs.wFrac == rhs.wFrac && lhs.hFrac == rhs.hFrac && lhs.position == rhs.position
             && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut

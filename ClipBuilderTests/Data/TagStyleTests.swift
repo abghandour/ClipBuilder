@@ -17,6 +17,26 @@ struct TagStyleTests {
         #expect(try JSONDecoder().decode(TagImage.self, from: Data("{}".utf8)).width == 0.25)
     }
 
+    @Test func lineDecorationDefaultsAndRoundTrip() throws {
+        var line = try JSONDecoder().decode(TagLineStyle.self, from: Data("{}".utf8))
+        #expect(line.strikethrough == nil && line.bgOn == nil && line.bgColor == nil)
+        #expect(line.bgOpacity == nil && line.cornerRadius == nil)
+        #expect(!line.resolvedStrikethrough && !line.resolvedBackground)
+        #expect(line.resolvedBackgroundColor == "#000000")
+        #expect(line.resolvedBackgroundOpacity == 0.82 && line.resolvedCornerRadius == 4)
+        line.strikethrough = true
+        line.bgOn = true
+        line.bgColor = "#abcdef"
+        line.bgOpacity = 0.5
+        line.cornerRadius = 20
+        let data = try JSONEncoder().encode(line)
+        #expect(try JSONDecoder().decode(TagLineStyle.self, from: data) == line)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["strikethrough"] as? Bool == true && object["bg_on"] as? Bool == true)
+        #expect(object["bg_color"] as? String == "#abcdef")
+        #expect(object["bg_opacity"] as? Double == 0.5 && object["corner_radius"] as? Double == 20)
+    }
+
     @Test func profileAndOverlayRoundTripAndUnknownIDsUseDefault() throws {
         var style = TagStyle()
         style.description.field = "MMA record"

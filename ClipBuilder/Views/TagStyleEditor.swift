@@ -106,16 +106,24 @@ struct TagStyleEditor: View {
 private struct TagLineControls: View {
     @Binding var style: TagLineStyle
 
+    private func setting<Value>(_ key: WritableKeyPath<TagLineStyle, Value?>, default fallback: Value) -> Binding<Value> {
+        Binding(get: { style[keyPath: key] ?? fallback }, set: { style[keyPath: key] = $0 })
+    }
+
     var body: some View {
         FontFamilyPicker(family: $style.font)
         Slider(value: $style.scale, in: 0.3...2) {
             Text("Size").lineLimit(1).fixedSize()
         }
         ColorPicker("Text colour", selection: overlayColorBinding($style.color), supportsOpacity: false)
-        Toggle("Bold", isOn: $style.bold)
-        Toggle("Italic", isOn: $style.italic)
+        LabeledContent {
+            TextStyleBar(bold: $style.bold, italic: $style.italic, underline: $style.underline,
+                         strikethrough: setting(\.strikethrough, default: false))
+        } label: {
+            Text("Style").lineLimit(1).fixedSize()
+        }
+        .help("Bold, italic, underline and strikethrough for this line.")
         Toggle("Caps", isOn: $style.uppercase)
-        Toggle("Underline", isOn: $style.underline)
         if style.underline {
             Toggle("Use text colour", isOn: Binding(get: { style.underlineColor == nil }, set: {
                 style.underlineColor = $0 ? nil : style.color
@@ -128,6 +136,25 @@ private struct TagLineControls: View {
             Slider(value: $style.underlineThickness, in: 0.02...0.2) {
                 Text("Thickness").lineLimit(1).fixedSize()
             }.formDependent()
+        }
+        Toggle(isOn: setting(\.bgOn, default: false)) { Text("Line background").lineLimit(1).fixedSize() }
+            .help("Fill a padded background behind this line, independently of the block background.")
+        if style.resolvedBackground {
+            ColorPicker(selection: overlayColorBinding(setting(\.bgColor, default: "#000000")), supportsOpacity: false) {
+                Text("Line background colour").lineLimit(1).fixedSize()
+            }
+            .help("Colour of this line’s background.")
+            .formDependent()
+            Slider(value: setting(\.bgOpacity, default: 0.82), in: 0...1) {
+                Text("Opacity").lineLimit(1).fixedSize()
+            }
+            .help("Opacity of this line’s background.")
+            .formDependent()
+            Slider(value: setting(\.cornerRadius, default: 4), in: 0...80) {
+                Text("Corner radius").lineLimit(1).fixedSize()
+            }
+            .help("Round this line’s background corners. Zero makes square corners.")
+            .formDependent()
         }
     }
 }

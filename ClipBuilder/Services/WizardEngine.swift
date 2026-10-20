@@ -4045,6 +4045,7 @@ actor WizardEngine {
                 position: options.captionPositionOverride ?? "auto", language: options.captionLanguage ?? "",
                 speakerTurns: turns, speakerRows: speakerRows)
             let captionPlan = try CaptionOverlayPlan.plan(pages: pages, style: captionStyle)
+            if captionPlan.usedRevealFallback { emit("Captions: input limit reached; simplified word reveal or motion for this clip") }
             if captionPlan.usedPageFallback { emit("Captions: over 400 inputs; using static page overlays for this clip") }
             let cache = CaptionPNGCache(renderer: renderer, directory: scratch)
             for overlay in captionPlan.overlays {

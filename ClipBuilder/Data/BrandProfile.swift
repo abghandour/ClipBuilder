@@ -345,10 +345,46 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
     var shadow: Bool?
     var letterSpacing: Double?
     var animation: String?
+    var reveal: String?
+    var revealMotion: Bool?
     var emoji: Bool?
     var speakerColors: Bool?
     var highlightFont: String?      // nil: same family as `font`
     var emphasisFont: String?       // nil: same family as `font`
+
+    var text: CaptionWordDecor?
+    var highlightDecor: CaptionWordDecor?
+    var emphasisDecor: CaptionWordDecor?
+    var bgRadius: Double?
+
+    enum WordState: CaseIterable { case text, highlight, emphasis }
+
+    func resolvedDecor(for state: WordState) -> CaptionWordDecor {
+        var decor: CaptionWordDecor
+        switch state {
+        case .text: decor = text ?? CaptionWordDecor()
+        case .highlight: decor = highlightDecor ?? CaptionWordDecor()
+        case .emphasis: decor = emphasisDecor ?? CaptionWordDecor()
+        }
+        decor.italic = decor.italic ?? text?.italic ?? false
+        decor.underline = decor.underline ?? text?.underline ?? false
+        decor.strikethrough = decor.strikethrough ?? text?.strikethrough ?? false
+        decor.bgOn = (state == .highlight && resolvedHighlight == "box") || (decor.bgOn ?? false)
+        return decor
+    }
+
+    func resolvedSize(for state: WordState) -> Double {
+        let regular = min(120, max(24, text?.size ?? 49))
+        switch state {
+        case .text: return regular
+        case .highlight:
+            return min(120, max(24, highlightDecor?.size ?? regular)) * (resolvedHighlight == "scale" ? 1.12 : 1)
+        case .emphasis:
+            return min(120, max(24, emphasisDecor?.size ?? regular)) * (["scale", "both"].contains(resolvedEmphasis) ? 1.12 : 1)
+        }
+    }
+
+    var resolvedPageRadius: Double { min(60, max(0, bgRadius ?? max(6, resolvedSize(for: .text) / 6))) }
 
     var resolvedWordsPerPage: Int? { wordsPerPage.map { min(8, max(1, $0)) } }
     var resolvedHighlight: String { ["color", "box", "scale"].contains(highlight ?? "") ? highlight! : "none" }
@@ -361,6 +397,8 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
     var resolvedShadow: Bool { shadow ?? false }
     var resolvedLetterSpacing: Double { min(6, max(-2, letterSpacing ?? 0)) }
     var resolvedAnimation: String { ["pop", "slide-up", "fade"].contains(animation ?? "") ? animation! : "none" }
+    var resolvedReveal: String { reveal == "word" ? "word" : "none" }
+    var resolvedRevealMotion: Bool { revealMotion ?? false }
     var resolvedEmoji: Bool { emoji ?? false }
     var resolvedSpeakerColors: Bool { speakerColors ?? false }
     var resolvedHighlightFont: String { highlightFont?.isEmpty == false ? highlightFont! : font }
@@ -370,11 +408,17 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
         case font, color, alignment
         case wordsPerPage = "words_per_page"
         case highlight, emphasis, uppercase, weight, shadow, animation, emoji
+        case reveal
+        case revealMotion = "reveal_motion"
         case highlightColor = "highlight_color"
         case emphasisColor = "emphasis_color"
         case strokeWidth = "stroke_width"
         case letterSpacing = "letter_spacing"
         case speakerColors = "speaker_colors"
+        case text = "text_decor"
+        case highlightDecor = "highlight_decor"
+        case emphasisDecor = "emphasis_decor"
+        case bgRadius = "bg_radius"
         case highlightFont = "highlight_font"
         case emphasisFont = "emphasis_font"
         case bgOn = "bg_on"
@@ -386,6 +430,10 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decodeIfPresent(CaptionWordDecor.self, forKey: .text)
+        highlightDecor = try container.decodeIfPresent(CaptionWordDecor.self, forKey: .highlightDecor)
+        emphasisDecor = try container.decodeIfPresent(CaptionWordDecor.self, forKey: .emphasisDecor)
+        bgRadius = try container.decodeIfPresent(Double.self, forKey: .bgRadius)
         alignment = try container.decodeIfPresent(String.self, forKey: .alignment)
         wordsPerPage = try container.decodeIfPresent(Int.self, forKey: .wordsPerPage)
         highlight = try container.decodeIfPresent(String.self, forKey: .highlight)
@@ -398,6 +446,8 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
         shadow = try container.decodeIfPresent(Bool.self, forKey: .shadow)
         letterSpacing = try container.decodeIfPresent(Double.self, forKey: .letterSpacing)
         animation = try container.decodeIfPresent(String.self, forKey: .animation)
+        reveal = try container.decodeIfPresent(String.self, forKey: .reveal)
+        revealMotion = try container.decodeIfPresent(Bool.self, forKey: .revealMotion)
         emoji = try container.decodeIfPresent(Bool.self, forKey: .emoji)
         speakerColors = try container.decodeIfPresent(Bool.self, forKey: .speakerColors)
         highlightFont = try container.decodeIfPresent(String.self, forKey: .highlightFont)

@@ -1430,6 +1430,7 @@ actor MultitrackRenderer {
                 speakerTurns: turns, speakerRows: speakerRows, streamID: clip.originKey)
         }
         let captionPlan = try CaptionOverlayPlan.plan(pages: captionPages, style: captionStyle)
+        if captionPlan.usedRevealFallback { emit("Captions: input limit reached; simplified word reveal or motion for this segment") }
         if captionPlan.usedPageFallback { emit("Captions: over 400 inputs; using static page overlays for this segment") }
         for overlay in captionPlan.overlays {
             guard let rendered = try? await captionCache.rendered(overlay.raster) else {

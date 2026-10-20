@@ -705,6 +705,8 @@ private struct PreviewTextLayer: View {
             .font(font)
             .bold(item.bold)
             .italic(item.italic)
+            .underline(item.resolvedUnderline)
+            .strikethrough(item.resolvedStrikethrough)
             .foregroundStyle(Color(red: r, green: g, blue: b))
             .multilineTextAlignment(textAlignment)
             .fixedSize(horizontal: false, vertical: true)

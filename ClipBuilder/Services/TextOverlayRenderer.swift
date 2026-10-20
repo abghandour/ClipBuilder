@@ -561,7 +561,7 @@ nonisolated struct TextOverlayRenderer {
         var characterIndex = 0
         for word in words {
             offsets.append(CGFloat(CTLineGetOffsetForStringIndex(full, characterIndex, nil)))
-            characterIndex += word.text.count + 1
+            characterIndex += word.text.utf16.count + 1
         }
         return offsets
     }
@@ -645,6 +645,10 @@ nonisolated struct TextOverlayRenderer {
                                   colors: [white, CGColor(red: gr, green: gg, blue: gb, alpha: 1)] as CFArray,
                                   locations: [0, 1])
 
+        var decorationItem = item
+        decorationItem.fontcolor = "#ffffff"
+        decorationItem.strokeColor = item.strokeColor ?? "black"
+        decorationItem.strokeWidthEm = max(item.strokeWidthEm, 0.05)
         var cursorTop = blockTop
         let ascent = CTFontGetAscent(m.font), descent = CTFontGetDescent(m.font)
         for lineWords in m.lines {
@@ -671,6 +675,8 @@ nonisolated struct TextOverlayRenderer {
                 context.setLineWidth(headlineSize * strokePercent / 100)
                 context.textPosition = CGPoint(x: wordX, y: baselineY)
                 CTLineDraw(wordLine, context)
+                drawDecorations([word], font: m.font, item: decorationItem, visibleWords: nil,
+                                in: context, position: CGPoint(x: wordX, y: baselineY), stroke: true)
                 context.restoreGState()
 
                 // 2. Solid fill + contact shadow. Starred words take the
@@ -684,6 +690,8 @@ nonisolated struct TextOverlayRenderer {
                 context.setFillColor(accented ?? white)
                 context.textPosition = CGPoint(x: wordX, y: baselineY)
                 CTLineDraw(wordLine, context)
+                drawDecorations([word], font: m.font, item: decorationItem, visibleWords: nil,
+                                in: context, position: CGPoint(x: wordX, y: baselineY))
                 context.restoreGState()
 
                 // 3. Gradient clipped to the glyphs.
@@ -770,6 +778,11 @@ nonisolated struct TextOverlayRenderer {
             context.textPosition = CGPoint(x: textX, y: baselineY)
             CTLineDraw(tagLine, context)
         }
+        var decorationItem = item
+        decorationItem.fontcolor = "#ffffff"
+        decorationItem.highlightColor = nil
+        drawDecorations(words, font: font, item: decorationItem, visibleWords: visibleWords,
+                        in: context, position: CGPoint(x: textX, y: baselineY), trackingEm: 0.03)
     }
 
     // MARK: - Styled line drawing
@@ -809,6 +822,43 @@ nonisolated struct TextOverlayRenderer {
         return result
     }
 
+    /// Use the same per-word colour and visibility as the glyph passes.
+    private func drawDecorations(_ words: [Word], font: CTFont, item: TextOverlayItem,
+                                 visibleWords: Int?, in context: CGContext, position: CGPoint,
+                                 stroke: Bool = false, trackingEm: CGFloat = 0) {
+        guard item.resolvedUnderline || item.resolvedStrikethrough else { return }
+        let tracked = CTLineCreateWithAttributedString(NSAttributedString(
+            string: Self.plainText(words), attributes: kernedAttributes(font: font, color: Self.cgColor(item.fontcolor), trackingEm: trackingEm)))
+        var characterIndex = 0
+        let offsets = words.map { word in
+            defer { characterIndex += word.text.utf16.count + 1 }
+            return CGFloat(CTLineGetOffsetForStringIndex(tracked, characterIndex, nil))
+        }
+        let thickness = max(1, CTFontGetUnderlineThickness(font))
+        let base = Self.cgColor(item.fontcolor)
+        let highlight = item.highlightColor.map { Self.cgColor($0, fallback: (1, 0.84, 0)) }
+        for (index, word) in words.enumerated() {
+            if let visibleWords, word.index >= visibleWords { continue }
+            let trackedWord = CTLineCreateWithAttributedString(NSAttributedString(string: word.text,
+                attributes: kernedAttributes(font: font, color: base, trackingEm: trackingEm)))
+            let width = max(0, CGFloat(CTLineGetTypographicBounds(trackedWord, nil, nil, nil)) - CTFontGetSize(font) * trackingEm)
+            context.setFillColor(word.highlighted ? (highlight ?? base) : base)
+            var ys: [CGFloat] = []
+            if item.resolvedUnderline { ys.append(position.y + CTFontGetUnderlinePosition(font)) }
+            if item.resolvedStrikethrough { ys.append(position.y + CTFontGetXHeight(font) / 2) }
+            for y in ys {
+                let rect = CGRect(x: position.x + offsets[index], y: y, width: width, height: thickness)
+                if stroke {
+                    context.setStrokeColor(Self.cgColor(item.strokeColor, fallback: (0, 0, 0)))
+                    context.setLineWidth(CTFontGetSize(font) * item.strokeWidthEm * 2)
+                    context.stroke(rect)
+                } else {
+                    context.fill(rect)
+                }
+            }
+        }
+    }
+
     /// Draw one line: optional drop shadow, optional outline stroke pass
     /// behind the color fill pass.
     private func drawStyledLine(_ words: [Word], font: CTFont, item: TextOverlayItem,
@@ -839,6 +889,8 @@ nonisolated struct TextOverlayRenderer {
                                visibleWords: visibleWords, strokeWidthPercent: strokePercent))
             context.textPosition = position
             CTLineDraw(stroke, context)
+            drawDecorations(words, font: font, item: item, visibleWords: visibleWords,
+                            in: context, position: position, stroke: true)
             // The fill draws on top without a shadow of its own — otherwise
             // it would shade the stroke it sits on.
             context.restoreGState()
@@ -849,6 +901,8 @@ nonisolated struct TextOverlayRenderer {
                            visibleWords: visibleWords, strokeWidthPercent: 0))
         context.textPosition = position
         CTLineDraw(fill, context)
+        drawDecorations(words, font: font, item: item, visibleWords: visibleWords,
+                        in: context, position: position)
         context.restoreGState()
     }
 }

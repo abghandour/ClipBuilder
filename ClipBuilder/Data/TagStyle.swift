@@ -12,6 +12,18 @@ nonisolated struct TagLineStyle: Codable, Sendable, Hashable {
     var underlineColor: String? = nil
     var underlineThickness: Double = 0.06
 
+    var strikethrough: Bool?
+    var bgOn: Bool?
+    var bgColor: String?
+    var bgOpacity: Double?
+    var cornerRadius: Double?
+
+    var resolvedStrikethrough: Bool { strikethrough ?? false }
+    var resolvedBackground: Bool { bgOn ?? false }
+    var resolvedBackgroundColor: String { bgColor ?? "#000000" }
+    var resolvedBackgroundOpacity: Double { min(1, max(0, bgOpacity ?? 0.82)) }
+    var resolvedCornerRadius: Double { min(80, max(0, cornerRadius ?? 4)) }
+
     enum CodingKeys: String, CodingKey {
         case field
         case font
@@ -23,6 +35,11 @@ nonisolated struct TagLineStyle: Codable, Sendable, Hashable {
         case underline
         case underlineColor = "underline_color"
         case underlineThickness = "underline_thickness"
+        case strikethrough
+        case bgOn = "bg_on"
+        case bgColor = "bg_color"
+        case bgOpacity = "bg_opacity"
+        case cornerRadius = "corner_radius"
     }
 
     init(field: String = "Name", font: String? = nil, scale: Double = 1, color: String = "#ffffff",
@@ -42,6 +59,11 @@ nonisolated struct TagLineStyle: Codable, Sendable, Hashable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        strikethrough = try values.decodeIfPresent(Bool.self, forKey: .strikethrough)
+        bgOn = try values.decodeIfPresent(Bool.self, forKey: .bgOn)
+        bgColor = try values.decodeIfPresent(String.self, forKey: .bgColor)
+        bgOpacity = try values.decodeIfPresent(Double.self, forKey: .bgOpacity)
+        cornerRadius = try values.decodeIfPresent(Double.self, forKey: .cornerRadius)
         field = try values.decodeIfPresent(String.self, forKey: .field) ?? "Name"
         font = try values.decodeIfPresent(String.self, forKey: .font)
         scale = try values.decodeIfPresent(Double.self, forKey: .scale) ?? 1

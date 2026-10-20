@@ -41,6 +41,8 @@ struct CaptionStyleEditor: View {
             Section {
                 FormGroupHeader("Text")
                 FontFamilyPicker(family: fontFamily)
+                    .help("Font for regular caption text and any states that inherit it.")
+                CaptionWordDecorControls(style: $style, state: .text)
                 Picker("Weight", selection: setting(\.weight, default: "regular")) {
                     Text("Regular").tag("regular")
                     Text("Bold").tag("bold")
@@ -64,15 +66,23 @@ struct CaptionStyleEditor: View {
                 }
                 .pickerStyle(.segmented)
                 ColorPicker("Text colour", selection: overlayColorBinding($style.color), supportsOpacity: false)
+                    .help("Colour for regular caption text.")
                 Toggle("Background", isOn: $style.bgOn)
+                    .help("Fill a background behind the whole caption page.")
                 if style.bgOn {
                     ColorPicker("Background colour", selection: overlayColorBinding($style.bgColor), supportsOpacity: false)
+                        .help("Colour of the caption page background.")
+                    Slider(value: setting(\.bgRadius, default: style.resolvedPageRadius), in: 0...60, step: 1) {
+                        Text("Corner radius: \(Int(style.resolvedPageRadius)) pt").lineLimit(1).fixedSize()
+                    }
+                    .help("Round the page background corners at 1080 pixels wide. Zero makes square corners.")
+                    .formDependent()
                 }
                 Slider(value: setting(\.strokeWidth, default: 1), in: 0...6, step: 0.5) {
-                    Text("Outline: \(style.resolvedStrokeWidth, specifier: "%.1f") pt")
+                    Text("Outline: \(style.resolvedStrokeWidth, specifier: "%.1f") pt").lineLimit(1).fixedSize()
                 }.help("Black outline width at 1080 pixels wide, when Background is off.")
                 Slider(value: setting(\.letterSpacing, default: 0), in: -2...6, step: 0.5) {
-                    Text("Letter spacing: \(style.resolvedLetterSpacing, specifier: "%.1f") pt")
+                    Text("Letter spacing: \(style.resolvedLetterSpacing, specifier: "%.1f") pt").lineLimit(1).fixedSize()
                 }.help("Space between letters at 1080 pixels wide.")
                 Toggle("Shadow", isOn: setting(\.shadow, default: false))
                     .help("Add a soft shadow behind the text.")
@@ -104,10 +114,32 @@ struct CaptionStyleEditor: View {
                     Text("Box").tag("box")
                     Text("Scale").tag("scale")
                 }.help("Highlight each word while it is spoken. Translations use evenly timed words.")
+                Picker(selection: setting(\.reveal, default: style.resolvedReveal)) {
+                    Text("All at once").lineLimit(1).fixedSize().tag("none")
+                    Text("As spoken").lineLimit(1).fixedSize().tag("word")
+                } label: {
+                    Text("Words appear").lineLimit(1).fixedSize()
+                }
+                .help("Show each word of a page as it is spoken. Makes no difference with one word per page.")
+                if style.resolvedReveal == "word" {
+                    Toggle(isOn: setting(\.revealMotion, default: false)) {
+                        Text("Animate each word").lineLimit(1).fixedSize()
+                    }
+                    .disabled(style.resolvedAnimation == "none")
+                    .help("Each new word uses the Motion entrance; off animates only the page.")
+                    .formDependent()
+                    if style.resolvedAnimation == "none" {
+                        FormCaption("Choose a Motion entrance first.")
+                    }
+                }
                 ColorPicker("Highlight colour", selection: overlayColorBinding(setting(\.highlightColor, default: "#ffd60a")), supportsOpacity: false)
                     .help("Colour for the spoken word or its box.")
                 FontFamilyPicker(family: stateFont(\.highlightFont), label: "Highlight font", defaultLabel: "Same as text")
                     .help("Font for the spoken word; Same as text follows the Text font.")
+                CaptionWordDecorControls(style: $style, state: .highlight)
+            }
+            Section {
+                FormGroupHeader("Emphasis")
                 Picker("Emphasis", selection: setting(\.emphasis, default: "none")) {
                     Text("None").tag("none")
                     Text("Colour").tag("color")
@@ -118,6 +150,7 @@ struct CaptionStyleEditor: View {
                     .help("Keyword colour; follows Highlight colour until changed.")
                 FontFamilyPicker(family: stateFont(\.emphasisFont), label: "Emphasis font", defaultLabel: "Same as text")
                     .help("Font for emphasised keywords; Same as text follows the Text font.")
+                CaptionWordDecorControls(style: $style, state: .emphasis)
                 Toggle("Emoji", isOn: setting(\.emoji, default: false))
                     .help("Append a matching emoji when the page contains a supported keyword.")
             }

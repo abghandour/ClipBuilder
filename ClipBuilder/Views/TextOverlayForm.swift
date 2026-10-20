@@ -6,16 +6,23 @@ import SwiftUI
 struct TextOverlayForm: View {
     @Binding var item: TextOverlayItem
 
+    private func decoration(_ key: WritableKeyPath<TextOverlayItem, Bool?>) -> Binding<Bool> {
+        Binding(get: { item[keyPath: key] ?? false }, set: { item[keyPath: key] = $0 })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             TextEditor(text: $item.text)
                 .frame(minHeight: 48, maxHeight: 80)
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
 
-            Stepper("Font size: \(item.fontsize)", value: $item.fontsize, in: 10...200, step: 2)
-            HStack {
-                Toggle("Bold", isOn: $item.bold)
-                Toggle("Italic", isOn: $item.italic)
+            HStack(spacing: 12) {
+                TextStyleBar(bold: $item.bold, italic: $item.italic,
+                             underline: decoration(\.underline), strikethrough: decoration(\.strikethrough))
+                    .help("Bold, italic, underline and strikethrough.")
+                PointSizeField(value: Binding(get: { Double(item.fontsize) }, set: { item.fontsize = Int($0) }),
+                               range: 10...200, step: 2)
+                    .help("Font size in points at 1080 by 1920.")
             }
             FontFamilyPicker(family: $item.fontfamily)
             Picker("Alignment", selection: $item.alignment) {
@@ -49,6 +56,7 @@ struct TextOverlayForm: View {
             }
         }
     }
+
 }
 
 /// The image-overlay style editor shared by the Builder inspector and the

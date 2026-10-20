@@ -225,3 +225,30 @@ struct TimelineModelsTests {
         #expect(decoded.videoTrack.allSatisfy { $0.originKey == head.originKey })
     }
 }
+
+
+extension TimelineModelsTests {
+    @Test func textDecorationsDecodeLegacyAndEncodeOnlyWhenTrue() throws {
+        var item = try JSONDecoder().decode(TextOverlayItem.self, from: Data("{}".utf8))
+        #expect(item.underline == nil && item.strikethrough == nil)
+        #expect(!item.resolvedUnderline && !item.resolvedStrikethrough)
+        let plain = item
+        item.underline = true
+        #expect(item != plain)
+        item.underline = false
+        item.strikethrough = true
+        #expect(item != plain)
+        item.underline = true
+        let data = try JSONEncoder().encode(item)
+        var restored = try JSONDecoder().decode(TextOverlayItem.self, from: data)
+        restored.uid = item.uid
+        #expect(restored == item)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["underline"] as? Bool == true && object["strikethrough"] as? Bool == true)
+        item.underline = false
+        item.strikethrough = false
+        let disabled = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(item)) as? [String: Any])
+        #expect(disabled["underline"] == nil && disabled["strikethrough"] == nil)
+        #expect(item == plain)
+    }
+}
