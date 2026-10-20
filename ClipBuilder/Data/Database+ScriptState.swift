@@ -378,7 +378,7 @@ extension Database {
                         "naming_provider", "naming_model",
                         "people_provider", "people_model"]),
             ("wizard_research", ["provider", "model"]),
-            ("transcripts", ["provider", "model", "original_text", "words", "technique"]),
+            ("transcripts", ["provider", "model", "original_text", "original_words", "words", "technique"]),
             // AI provenance: which provider/model produced each artifact.
             // NULL = human-made (or predates provenance tracking).
             ("scenes", ["models_json", "curated_provider", "curated_model", "favorite_provider", "favorite_model"]),

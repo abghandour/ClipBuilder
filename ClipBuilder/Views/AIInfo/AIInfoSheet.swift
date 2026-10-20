@@ -13,6 +13,9 @@ struct AIInfoSheet: View {
     @State private var showingQuality = false
     /// Run Again: which role's popover is open, its model tag, and what
     /// the machine can run.
+    @State private var confirmTranscriptLoss = false
+    @State private var transcriptEditCount = 0
+    @State private var pendingTranscriptVideo: VideoRecord?
     @State private var rerunRole: String?
     @State private var rerunTag = ""
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
@@ -54,8 +57,11 @@ struct AIInfoSheet: View {
                         rerunTag = ModelPicker.bestAvailableTag(for: task, available: availableProviders)
                         rerunRole = item.role
                     } else {
-                        store.rerun(stage, video: video)
-                        dismiss()
+                        Task {
+                            transcriptEditCount = await store.transcriptEditCount(videoID: video.id)
+                            pendingTranscriptVideo = video
+                            confirmTranscriptLoss = true
+                        }
                     }
                 }
                 .disabled(busy)
@@ -248,6 +254,11 @@ struct AIInfoSheet: View {
                 }
             }
         }.padding(20).frame(width: 560, height: 620)
+            .modifier(ConfirmTranscriptLoss(isRequested: $confirmTranscriptLoss, count: transcriptEditCount) {
+                guard let video = pendingTranscriptVideo else { return }
+                store.rerun(.transcript, video: video)
+                dismiss()
+            })
             .confirmationDialog(
                 "Replace the current Builder timeline?", isPresented: $replaceBuilder
             ) {

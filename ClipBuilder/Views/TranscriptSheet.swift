@@ -37,6 +37,13 @@ struct TranscriptSheet: View {
     @State private var confirmDiscard = false
     @State private var showTools = false
     @State private var confirmRetranscribe = false
+    @State private var editMode = false
+    @State private var compareMode = false
+    @State private var hoveredRowID: Int64?
+    @State private var confirmRevertAll = false
+    @State private var retranscribeEditCount = 0
+    @State private var confirmUndoRecut = false
+    @State private var undoRecutEditCount = 0
     @State private var showsQA = false
     @State private var videoScenes: [SceneRecord] = []
     /// Who is talking: the podcast pass's speaker turns and this video's
@@ -83,6 +90,9 @@ struct TranscriptSheet: View {
     @State private var recutNote: String?
     private var mappingJob: AppJob? { store.jobs.latest(.mapSpeakers, subjectID: String(video.id)) }
     private var isMappingSpeakers: Bool { mappingJob?.status == .running }
+    private var translationJob: AppJob? {
+        store.jobs.latest(.transcriptTranslation, subjectID: "\(video.id):\(selectedTranscriptionKey)")
+    }
     /// Lines attributed by hand that the speaker map does not agree with.
     @State private var unlearnedCorrections = 0
     /// The map's latest log line while it runs.
@@ -92,6 +102,10 @@ struct TranscriptSheet: View {
     @State private var changedByMap: [Int64: String] = [:]
     /// Consecutive lines by one speaker read as one block.
     @AppStorage("transcript.groupBySpeaker") private var groupBySpeaker = false
+
+    static let editedFilter = "edited:text"
+    private var editedCount: Int { rows.count { !$0.isTranslation && $0.originalText != nil } }
+    private var canCompare: Bool { editedCount > 0 || !changedIDs.isEmpty }
 
     static let changedByMapFilter = "changed:map"
 
@@ -143,6 +157,7 @@ struct TranscriptSheet: View {
     /// The lines on show: all of them, or those under the tag filter.
     private var visibleRows: [TranscriptRow] {
         if tagFilter.isEmpty { return rows }
+        if tagFilter == Self.editedFilter { return rows.filter { !$0.isTranslation && $0.originalText != nil } }
         if tagFilter == Self.changedByMapFilter { return rows.filter { changedByMap[$0.id] != nil } }
         return rows.filter { lineTags[$0.id]?.contains(tagFilter) == true }
     }
@@ -239,7 +254,7 @@ struct TranscriptSheet: View {
                 HStack {
                     Picker("Transcription", selection: $selectedTranscriptionKey) {
                         ForEach(transcriptionSets) { set in
-                            Text("\(set.createdAt) · \(set.model ?? "Transcription") · \(set.language ?? "—") · \(set.segmentCount) segments\(set.hasTranslations ? " · translated" : "")\(set.isActive ? " · active" : "")\(set.isPinned ? " · pinned" : "")")
+                            Text("\(set.createdAt) · \(set.model ?? "Transcription") · \(set.language ?? "—") · \(set.segmentCount) segments\(set.editedCount > 0 ? " · \(set.editedCount) edited" : "")\(set.hasTranslations ? " · translated" : "")\(set.isActive ? " · active" : "")\(set.isPinned ? " · pinned" : "")")
                                 .tag(set.id)
                         }
                     }
@@ -379,15 +394,20 @@ struct TranscriptSheet: View {
                 }
             }
 
-            if hasChanges {
+            if editMode || hasChanges {
                 Divider()
                 HStack {
-                    Text(changeSummary)
+                    Text(hasChanges ? changeSummary : "Edit a line, then Apply to save.")
+                        .lineLimit(1).fixedSize()
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Discard Changes") { drafts = [:]; speakerDrafts = [:] }
-                        .controlSize(.small)
+                        .controlSize(.small).lineLimit(1).fixedSize()
+                        .disabled(!hasChanges || isSaving)
+                    Button("Apply") { save(thenDismiss: false) }
+                        .controlSize(.small).lineLimit(1).fixedSize()
+                        .disabled(!hasChanges || isSaving)
                 }
                 .padding(.horizontal)
                 .padding(.vertical, 8)
@@ -399,6 +419,9 @@ struct TranscriptSheet: View {
         }
         .onChange(of: mappingJob?.status) { _, status in
             if status == .done { Task { await refreshSpeakerMapping() } }
+        }
+        .onChange(of: translationJob?.status) { _, status in
+            if status == .done { Task { await load() } }
         }
         .onChange(of: showsQA) { _, active in
             if active { stopPlayback(releasePlayer: true) }
@@ -419,7 +442,22 @@ struct TranscriptSheet: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This discards the current transcript and any unsaved changes, runs the transcriber again, and closes this sheet.")
+            Text(retranscribeEditCount > 0
+                 ? ConfirmTranscriptLoss.message(count: retranscribeEditCount)
+                    + (hasChanges ? " Unsaved changes will be discarded." : "")
+                 : "This makes a new transcript set, discards any unsaved changes, and closes this sheet. The previous set stays in the sets list.")
+        }
+        .confirmationDialog("Undo re-cut?", isPresented: $confirmUndoRecut) {
+            Button("Undo Re-cut", role: .destructive) { undoRecut() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Undoing the re-cut throws away \(undoRecutEditCount) edited lines. Undo anyway?")
+        }
+        .confirmationDialog("Revert all transcript edits?", isPresented: $confirmRevertAll) {
+            Button("Revert All Edits", role: .destructive) { revertAll() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Put the transcriber's text back on \(editedCount) lines? Their word timings and any translations and topics derived from the edits are refreshed too.")
         }
         .confirmationDialog("Discard unsaved transcript changes?", isPresented: $confirmDiscard) {
             Button("Discard", role: .destructive) { dismiss() }
@@ -461,10 +499,10 @@ struct TranscriptSheet: View {
                     if !qaSections.isEmpty { Text("Q&A (\(qaSections.count))").tag(true) }
                 }
                 .pickerStyle(.segmented).labelsHidden().fixedSize()
-                if !showsQA { transcriptFilters }
                 if !rows.isEmpty {
-                    Text(showsQA || tagFilter.isEmpty ? "\(rows.count) segments"
+                    Text((showsQA || tagFilter.isEmpty ? "\(rows.count) segments"
                          : "\(visibleRows.count) of \(rows.count) segments")
+                         + (editedCount > 0 ? " · \(editedCount) edited" : ""))
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -473,10 +511,24 @@ struct TranscriptSheet: View {
                 Menu("More") {
                     Button("Topics, Cuts & Translation…") { showTools = true }
                         .disabled(rows.isEmpty)
-                    Button("Re-transcribe…") { confirmRetranscribe = true }
-                        .help("Discard this transcript and run the transcriber again")
+                    Button("Revert All Edits… (\(editedCount))") { confirmRevertAll = true }
+                        .disabled(editedCount == 0 || hasChanges || isSaving)
+                    Button("Re-transcribe…") {
+                        Task {
+                            retranscribeEditCount = await store.transcriptEditCount(videoID: video.id)
+                            confirmRetranscribe = true
+                        }
+                    }
+                    .disabled(isSaving)
+                    .help("Make a new transcription; keep this set in the sets list")
                 }
                 .fixedSize()
+            }
+            if !showsQA {
+                HStack(spacing: 8) {
+                    transcriptFilters
+                    Spacer(minLength: 0)
+                }
             }
             coverageControls
             statusStrip
@@ -519,36 +571,24 @@ struct TranscriptSheet: View {
 
     @ViewBuilder
     private var transcriptFilters: some View {
-        if !allLineTags.isEmpty {
-            // Narrow the transcript to the lines inside
-            // scenes carrying one tag (the reel picks, the
-            // questions…).
-            Menu(tagFilter.isEmpty ? "All tags"
-                 : tagFilter == Self.changedByMapFilter ? "Changed by the map" : tagFilter) {
-                Button("All tags") { tagFilter = "" }
-                Divider()
-                ForEach(allLineTags, id: \.self) { tag in
-                    let count = rows.count { lineTags[$0.id]?.contains(tag) == true }
-                    Button("\(tag == "reel-highlight" ? "Reel" : tag) (\(count))") { tagFilter = tag }
-                }
-                if !changedByMap.isEmpty {
-                    Divider()
-                    Button("Changed by the map (\(changedByMap.count))") { tagFilter = Self.changedByMapFilter }
-                }
+        Menu(tagFilter.isEmpty ? "All tags"
+             : tagFilter == Self.changedByMapFilter ? "Changed by the map"
+             : tagFilter == Self.editedFilter ? "Edited (\(editedCount))" : tagFilter) {
+            Button("All tags") { tagFilter = "" }
+            Button("Edited (\(editedCount))") { tagFilter = Self.editedFilter }
+                .disabled(editedCount == 0)
+            Divider()
+            ForEach(allLineTags, id: \.self) { tag in
+                let count = rows.count { lineTags[$0.id]?.contains(tag) == true }
+                Button("\(tag == "reel-highlight" ? "Reel" : tag) (\(count))") { tagFilter = tag }
             }
-            .controlSize(.small)
-            .lineLimit(1)
-            .fixedSize()
-            .help("Show only the lines inside scenes carrying a tag, or the lines the last speaker map changed")
-        } else if !changedByMap.isEmpty {
-            Menu(tagFilter == Self.changedByMapFilter ? "Changed by the map" : "All lines") {
-                Button("All lines") { tagFilter = "" }
+            if !changedByMap.isEmpty {
+                Divider()
                 Button("Changed by the map (\(changedByMap.count))") { tagFilter = Self.changedByMapFilter }
             }
-            .controlSize(.small)
-            .lineLimit(1)
-            .fixedSize()
         }
+        .controlSize(.small).lineLimit(1).fixedSize()
+        .help("Show edited lines, lines carrying a tag, or lines the last speaker map changed")
         if rows.contains(where: { speakerLabels[$0.id] != nil }) {
             Toggle("Group by Speaker", isOn: $groupBySpeaker)
                 .toggleStyle(.checkbox)
@@ -557,6 +597,14 @@ struct TranscriptSheet: View {
                 .lineLimit(1)
                 .help("Read each speaker's uninterrupted run as one block with one play button; turn it off to play, time or re-attribute single lines")
         }
+        Toggle("Edit", systemImage: "pencil", isOn: $editMode)
+            .toggleStyle(.button).buttonStyle(.bordered)
+            .controlSize(.small).lineLimit(1).fixedSize()
+            .disabled(isSaving)
+        Toggle("Compare", systemImage: "text.redaction", isOn: $compareMode)
+            .toggleStyle(.button).buttonStyle(.bordered)
+            .controlSize(.small).lineLimit(1).fixedSize()
+            .disabled(!canCompare)
     }
 
     @ViewBuilder
@@ -566,17 +614,17 @@ struct TranscriptSheet: View {
             // words' timings; Undo puts the transcriber's rows back.
             Menu("Speakers") {
                 Button("Re-cut by Speaker") { recut() }
-                    .disabled(hasChanges)
+                    .disabled(hasChanges || isSaving)
                 if hasRecut {
-                    Button("Undo Re-cut") { undoRecut() }
-                        .disabled(hasChanges)
+                    Button("Undo Re-cut") { requestUndoRecut() }
+                        .disabled(hasChanges || isSaving)
                 }
                 Divider()
                 Button(isMappingSpeakers ? "Mapping Speakers…" : "Map Speakers Again") { mapSpeakersAgain() }
-                    .disabled(hasChanges || isMappingSpeakers)
+                    .disabled(hasChanges || isSaving || isMappingSpeakers)
                 if store.previousSpeakerMaps[video.id] != nil {
                     Button("Undo Map Speakers Again") { undoMap() }
-                        .disabled(hasChanges || isMappingSpeakers)
+                        .disabled(hasChanges || isSaving || isMappingSpeakers)
                 }
             }
             .fixedSize()
@@ -610,7 +658,7 @@ struct TranscriptSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .help(message + ". The speaker map still disagrees with these lines. Mapping again uses your attributions as ground truth, remaps every other line, and remembers the voices for other files.")
                 Button("Map Speakers Again") { mapSpeakersAgain() }
-                    .disabled(hasChanges || isMappingSpeakers)
+                    .disabled(hasChanges || isSaving || isMappingSpeakers)
                     .controlSize(.small).fixedSize()
                     .help("Rerun who-is-talking with your attributions as ground truth")
             }
@@ -675,12 +723,37 @@ struct TranscriptSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                TextField("Segment text", text: Binding(
-                    get: { drafts[row.id] ?? row.text },
-                    set: { drafts[row.id] = $0 }
-                ), axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...8)
+                if editMode && !row.isTranslation {
+                    HStack(alignment: .top, spacing: 4) {
+                        TextField("Segment text", text: Binding(
+                            get: { drafts[row.id] ?? row.text },
+                            set: { drafts[row.id] = $0 }
+                        ), axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .lineLimit(1...8)
+                        .disabled(isSaving)
+                        Image(systemName: "pencil")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .opacity(hoveredRowID == row.id ? 1 : 0)
+                            .accessibilityHidden(true)
+                    }
+                    .padding(6)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+                    .onHover { hoveredRowID = $0 ? row.id : nil }
+                } else if !compareMode || !isCompared(row) {
+                    Text(drafts[row.id] ?? row.text)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if compareMode && isCompared(row) {
+                    if !editMode || row.isTranslation {
+                        Text(comparedText(row, original: false)).textSelection(.enabled)
+                    }
+                    Text(comparedText(row, original: true))
+                        .font(.callout).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .accessibilityLabel("Transcriber's original: \(row.originalText ?? row.text)")
+                }
                 if showTags, let tags = lineTags[row.id], !tags.isEmpty {
                     tagLine(row, tags: tags)
                 }
@@ -688,7 +761,8 @@ struct TranscriptSheet: View {
 
             if row.originalText != nil {
                 Button("Revert") { revert(row) }
-                    .controlSize(.mini)
+                    .controlSize(.mini).lineLimit(1).fixedSize()
+                    .disabled(isSaving)
                     .help("Restore the transcriber's original text for this segment")
             }
         }
@@ -698,6 +772,27 @@ struct TranscriptSheet: View {
         .padding(.bottom, grouped ? 2 : 6)
         .background(current || (drafts[row.id] ?? row.text) != row.text
                     ? Color.accentColor.opacity(current ? 0.16 : 0.08) : Color.clear)
+    }
+
+    private func isCompared(_ row: TranscriptRow) -> Bool {
+        !row.isTranslation && (row.originalText != nil || (drafts[row.id] ?? row.text) != row.text)
+    }
+
+    private func comparedText(_ row: TranscriptRow, original: Bool) -> AttributedString {
+        let tokens = TranscriptTextDiff.diff(original: row.originalText ?? row.text, edited: drafts[row.id] ?? row.text)
+        var result = AttributedString()
+        for token in tokens where original ? token.kind != .inserted : token.kind != .deleted {
+            if !result.characters.isEmpty { result += AttributedString(" ") }
+            var part = AttributedString(token.text)
+            if token.kind == .deleted {
+                part.foregroundColor = .red.opacity(0.75)
+                part.strikethroughStyle = .single
+            } else if token.kind == .inserted {
+                part.foregroundColor = .accentColor
+            }
+            result += part
+        }
+        return result
     }
 
     /// The scenes a line sits in, for tag-line boundaries.
@@ -939,6 +1034,22 @@ struct TranscriptSheet: View {
             recutNote = split == 0 ? "Every row already has one speaker."
                 : "\(split) row\(split == 1 ? "" : "s") split where the speaker changed."
             await load()
+        }
+    }
+
+    private func requestUndoRecut() {
+        guard let database = store.database else { return }
+        Task {
+            do {
+                let current = try await database.fetchTranscripts(videoID: video.id)
+                guard let backup = try await database.transcriptBackup(videoID: video.id) else { return }
+                if TranscriptSpeakerRecut.hasEdits(current, beyond: backup) {
+                    undoRecutEditCount = TranscriptSpeakerRecut.editedCount(current, beyond: backup)
+                    confirmUndoRecut = true
+                } else {
+                    undoRecut()
+                }
+            } catch { store.presentError("Could not check the re-cut backup", error) }
         }
     }
 
@@ -1184,6 +1295,7 @@ struct TranscriptSheet: View {
         changedByMap = TranscriptSpeakers.changedLabels(rows: rows, before: store.previousSpeakerMaps[video.id] ?? [],
                                                         after: turns, roster: roster, people: people)
         if tagFilter == Self.changedByMapFilter, changedByMap.isEmpty { tagFilter = "" }
+        if tagFilter == Self.editedFilter, editedCount == 0 { tagFilter = "" }
         hasRecut = await store.hasTranscriptRecut(videoID: video.id)
         refreshSceneMapping(currentVideoScenes)
         isLoading = false
@@ -1207,7 +1319,7 @@ struct TranscriptSheet: View {
     private func save(thenDismiss: Bool) {
         guard let database = store.database else { return }
         let changes = rows.compactMap { row -> (id: Int64, text: String)? in
-            guard let draft = drafts[row.id] else { return nil }
+            guard !row.isTranslation, let draft = drafts[row.id] else { return nil }
             let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed != row.text ? (row.id, trimmed) : nil
         }
@@ -1220,7 +1332,11 @@ struct TranscriptSheet: View {
         isSaving = true
         Task {
             do {
-                if !changes.isEmpty { try await database.updateTranscriptTexts(changes) }
+                if !changes.isEmpty {
+                    try await database.updateTranscriptTexts(changes)
+                    await store.transcriptTextsChanged(videoID: video.id, transcriptionKey: editedSetKey,
+                                                       rowIDs: changes.map(\.id))
+                }
                 for (speaker, ids) in speakerChanges {
                     await store.setTranscriptSpeaker(rowIDs: ids, videoID: video.id, speaker: speaker)
                 }
@@ -1237,12 +1353,35 @@ struct TranscriptSheet: View {
 
     private func revert(_ row: TranscriptRow) {
         guard let database = store.database else { return }
+        isSaving = true
         Task {
-            try? await database.revertTranscriptText(id: row.id)
-            drafts[row.id] = nil
-            await load()
+            defer { isSaving = false }
+            do {
+                try await database.revertTranscriptText(id: row.id)
+                drafts[row.id] = nil
+                await store.transcriptTextsChanged(videoID: video.id, transcriptionKey: editedSetKey, rowIDs: [row.id])
+                await load()
+            } catch { store.presentError("Could not revert the transcript line", error) }
         }
     }
+
+    /// The set on show, as the database wants it: nil means the active set.
+    private var editedSetKey: String? { selectedTranscriptionKey.isEmpty ? nil : selectedTranscriptionKey }
+
+    private func revertAll() {
+        guard let database = store.database else { return }
+        let ids = rows.filter { !$0.isTranslation && $0.originalText != nil }.map(\.id)
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                try await database.revertTranscriptTexts(videoID: video.id, transcriptionKey: editedSetKey)
+                await store.transcriptTextsChanged(videoID: video.id, transcriptionKey: editedSetKey, rowIDs: ids)
+                await load()
+            } catch { store.presentError("Could not revert transcript edits", error) }
+        }
+    }
+
 }
 
 nonisolated enum ExchangeEdge: Equatable, Sendable {

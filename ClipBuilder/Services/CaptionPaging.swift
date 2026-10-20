@@ -43,13 +43,16 @@ nonisolated enum CaptionPaging {
             return values
         }
         if let timed {
-            return ranges.enumerated().compactMap { index, range in
+            let pages = ranges.enumerated().compactMap { index, range -> CaptionPage? in
                 let pageStart = max(start, timed[range.lowerBound].start)
                 let nextStart = index + 1 < ranges.count ? timed[ranges[index + 1].lowerBound].start : timed[range.upperBound - 1].end
                 let pageEnd = min(end, max(timed[range.upperBound - 1].end, nextStart))
                 guard pageEnd > pageStart else { return nil }
                 return CaptionPage(text: joined(range), start: pageStart, end: pageEnd)
             }
+            // A zero-gap inserted word may occupy a whole page. Fall back to
+            // proportional timing instead of silently dropping that page's text.
+            if pages.count == ranges.count { return pages }
         }
         let duration = end - start
         func weights() -> [Double] { ranges.map { Double(joined($0).count) } }

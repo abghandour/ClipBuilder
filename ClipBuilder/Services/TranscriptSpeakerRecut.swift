@@ -159,16 +159,21 @@ nonisolated enum TranscriptSpeakerRecut {
     /// has) or a speaker set or cleared on a row whose backup source says
     /// otherwise. Such rows must not be thrown away for the backup.
     static func hasEdits(_ current: [TranscriptRow], beyond backup: [TranscriptRow]) -> Bool {
+        editedCount(current, beyond: backup) > 0
+    }
+
+    static func editedCount(_ current: [TranscriptRow], beyond backup: [TranscriptRow]) -> Int {
         let originals = backup.filter { !$0.isTranslation }
         let knownEdits = Set(originals.compactMap { row in row.originalText.map { [row.text, $0] } })
-        for row in current where !row.isTranslation {
+        return current.count { row in
+            guard !row.isTranslation else { return false }
             if let original = row.originalText, !knownEdits.contains([row.text, original]) { return true }
             let mid = (row.startTime + row.endTime) / 2
             let source = originals.first { mid >= $0.startTime && mid < $0.endTime }
                 ?? originals.first { $0.endTime > row.startTime && $0.startTime < row.endTime }
             if source?.speakerKey != row.speakerKey { return true }
+            return false
         }
-        return false
     }
 
     /// Word runs back into a line: runs keep their own spacing, so a space

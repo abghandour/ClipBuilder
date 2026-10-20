@@ -615,6 +615,7 @@ nonisolated struct TranscriptionSet: Identifiable, Sendable, Hashable {
     var language: String? = nil
     var segmentCount = 0
     var hasTranslations = false
+    var editedCount = 0
     var isActive = false
     var isPinned = false
 }
@@ -629,6 +630,7 @@ nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable, Codable {
     var text: String
     var originalText: String?
     var wordsJSON: String?
+    var originalWordsJSON: String? = nil
     var provider: String?
     var model: String?
     var technique: String? = nil

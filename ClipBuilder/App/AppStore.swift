@@ -532,6 +532,8 @@ final class AppStore {
     /// Settings names; a main window's translation runner drains it. Ids
     /// belong to the open profile: the queue empties on a profile switch.
     var autoTranslateQueue: [Int64] = []
+    /// Pending edited row IDs, coalesced per video and source set while translation runs.
+    var transcriptTranslationEdits: [String: Set<Int64>] = [:]
 
     /// The video a runner has claimed (checking or translating it), so two
     /// windows' runners never work the same head.
@@ -986,6 +988,7 @@ final class AppStore {
         pendingComparison = nil
         comparisonQueue = []
         autoTranslateQueue = []
+        transcriptTranslationEdits = [:]
         autoTranslateInFlight = nil
         pendingPeopleReview = nil
         pendingRenameReview = nil
@@ -1104,7 +1107,7 @@ final class AppStore {
     @ObservationIgnored private var refreshQueued = false
 
     /// Transcript rows per video for scene blurbs; dropped on every refresh.
-    private var blurbTranscripts: [Int64: [TranscriptRow]] = [:]
+    var blurbTranscripts: [Int64: [TranscriptRow]] = [:]
     private var blurbSpeakerKeys: [Int64: String] = [:]
 
     /// What a scene is about: its narrative, else the first words of its
@@ -1236,7 +1239,10 @@ final class AppStore {
         guard let database else { return false }
         do {
             let restored = try await database.restoreTranscriptBackup(videoID: videoID)
-            if restored { blurbTranscripts[videoID] = nil }
+            // Features and topics follow the restored rows. Translations
+            // keep theirs: they are timed, and re-translating restored rows
+            // beside rows translated after the re-cut would double them.
+            if restored { await transcriptTextsChanged(videoID: videoID, rowIDs: []) }
             return restored
         } catch {
             presentError("Could not restore the transcript", error)

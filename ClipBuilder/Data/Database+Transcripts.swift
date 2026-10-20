@@ -61,7 +61,10 @@ extension Database {
                 MAX(CASE WHEN is_translation = 0 THEN provider END) AS provider,
                 MAX(CASE WHEN is_translation = 0 THEN language END) AS language,
                 SUM(CASE WHEN is_translation = 0 THEN 1 ELSE 0 END) AS segment_count,
-                MAX(is_translation) AS has_translations
+                MAX(is_translation) AS has_translations,
+                (SELECT COUNT(*) FROM transcripts edited WHERE edited.video_id = transcripts.video_id
+                    AND edited.transcription_key = transcripts.transcription_key
+                    AND edited.is_translation = 0 AND edited.original_text IS NOT NULL) AS edited_count
             FROM transcripts WHERE video_id = ? AND transcription_key IS NOT NULL
             GROUP BY transcription_key ORDER BY created_at DESC, transcription_key DESC
             """, [.integer(videoID)]).compactMap { row in
@@ -69,7 +72,8 @@ extension Database {
                 return TranscriptionSet(id: key, createdAt: row["created_at"]?.stringValue ?? "",
                     model: row["model"]?.stringValue, provider: row["provider"]?.stringValue,
                     language: row["language"]?.stringValue, segmentCount: Int(row["segment_count"]?.intValue ?? 0),
-                    hasTranslations: row["has_translations"]?.boolValue ?? false)
+                    hasTranslations: row["has_translations"]?.boolValue ?? false,
+                    editedCount: Int(row["edited_count"]?.intValue ?? 0))
             }
     }
 
@@ -170,6 +174,7 @@ extension Database {
                           text: $0["text"]?.stringValue ?? "",
                           originalText: $0["original_text"]?.stringValue,
                           wordsJSON: $0["words"]?.stringValue,
+                          originalWordsJSON: $0["original_words"]?.stringValue,
                           provider: $0["provider"]?.stringValue,
                           model: $0["model"]?.stringValue, technique: $0["technique"]?.stringValue,
                           seconds: $0["seconds"]?.doubleValue,
@@ -201,12 +206,13 @@ extension Database {
                 let originalText = piece.split ? nil : source?.originalText
                 try connection.execute("""
                     INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, original_text,
-                                             words, provider, model, technique, seconds, speaker_key, transcription_key, transcription_created_at)
-                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                             words, original_words, provider, model, technique, seconds, speaker_key, transcription_key, transcription_created_at)
+                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .text(source?.language ?? ""),
                           .real(piece.start), .real(piece.end), .text(piece.text),
                           originalText.map(SQLValue.text) ?? .null,
                           wordsJSON.map(SQLValue.text) ?? .null,
+                          (piece.split ? nil : source?.originalWordsJSON).map(SQLValue.text) ?? .null,
                           source?.provider.map(SQLValue.text) ?? .null,
                           source?.model.map(SQLValue.text) ?? .null,
                           source?.technique.map(SQLValue.text) ?? .null,
@@ -234,6 +240,13 @@ extension Database {
         for index in rows.indices {
             rows[index].transcriptionKey = key
             if rows[index].transcriptionCreatedAt == nil { rows[index].transcriptionCreatedAt = createdAt }
+            // Old JSON backups predate edited word clocks, just like pre-v35 rows.
+            if rows[index].originalText != nil, rows[index].originalWordsJSON == nil {
+                rows[index].originalWordsJSON = rows[index].wordsJSON
+                let words = TranscriptWordAlignment.realign(text: rows[index].text, original: rows[index].words,
+                    start: rows[index].startTime, end: rows[index].endTime)
+                rows[index].wordsJSON = try words.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+            }
         }
         return rows
     }
@@ -264,11 +277,12 @@ extension Database {
             for row in rows {
                 try connection.execute("""
                     INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, original_text,
-                                             words, provider, model, technique, seconds, speaker_key, transcription_key, transcription_created_at)
-                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                             words, original_words, provider, model, technique, seconds, speaker_key, transcription_key, transcription_created_at)
+                    VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .text(row.language), .real(row.startTime), .real(row.endTime),
                           .text(row.text), row.originalText.map(SQLValue.text) ?? .null,
                           row.wordsJSON.map(SQLValue.text) ?? .null,
+                          row.originalWordsJSON.map(SQLValue.text) ?? .null,
                           row.provider.map(SQLValue.text) ?? .null, row.model.map(SQLValue.text) ?? .null,
                           row.technique.map(SQLValue.text) ?? .null, row.seconds.map(SQLValue.real) ?? .null,
                           row.speakerKey.map(SQLValue.text) ?? .null,
@@ -323,12 +337,24 @@ extension Database {
     }
 
     /// Edit transcript text in place, preserving the pristine original once.
+    /// Typing the original back is a revert, so the line stops counting as edited.
     func updateTranscriptText(id: Int64, text: String) throws {
+        guard let row = try connection.query("SELECT * FROM transcripts WHERE id = ?", [.integer(id)]).first,
+              row["text"]?.stringValue != text else { return }
+        if row["original_text"]?.stringValue == text {
+            try revertTranscriptText(id: id)
+            return
+        }
+        let original = (row["original_words"]?.stringValue ?? row["words"]?.stringValue)
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONDecoder().decode([TranscriptWord].self, from: $0) }
+        let words = TranscriptWordAlignment.realign(text: text, original: original,
+            start: row["start_time"]?.doubleValue ?? 0, end: row["end_time"]?.doubleValue ?? 0)
+        let json = try words.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
         try connection.execute("""
-            UPDATE transcripts
-            SET original_text = COALESCE(original_text, text), text = ?
-            WHERE id = ?
-            """, [.text(text), .integer(id)])
+            UPDATE transcripts SET original_text = COALESCE(original_text, text),
+                original_words = COALESCE(original_words, words), text = ?, words = ? WHERE id = ?
+            """, [.text(text), json.map(SQLValue.text) ?? .null, .integer(id)])
     }
 
     /// Apply several edited segment texts in one transaction (the
@@ -342,10 +368,46 @@ extension Database {
     }
 
     func revertTranscriptText(id: Int64) throws {
+        for row in try connection.query("SELECT * FROM transcripts WHERE id = ? AND original_text IS NOT NULL", [.integer(id)]) {
+            try revertTranscriptRow(row)
+        }
+    }
+
+    /// The transcriber's text and words back on one row. A row without its
+    /// original words (pulled by Team Sync, which does not carry them) gets
+    /// the original text aligned onto the words it has.
+    private func revertTranscriptRow(_ row: SQLRow) throws {
+        guard let id = row["id"]?.intValue, let original = row["original_text"]?.stringValue else { return }
+        var words = row["original_words"]?.stringValue
+        if words == nil, let current = row["words"]?.stringValue.flatMap({ $0.data(using: .utf8) })
+            .flatMap({ try? JSONDecoder().decode([TranscriptWord].self, from: $0) }) {
+            let aligned = TranscriptWordAlignment.realign(text: original, original: current,
+                start: row["start_time"]?.doubleValue ?? 0, end: row["end_time"]?.doubleValue ?? 0)
+            words = try aligned.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+        }
         try connection.execute("""
-            UPDATE transcripts SET text = original_text, original_text = NULL
-            WHERE id = ? AND original_text IS NOT NULL
-            """, [.integer(id)])
+            UPDATE transcripts SET text = ?, words = COALESCE(?, words), original_text = NULL, original_words = NULL WHERE id = ?
+            """, [.text(original), words.map(SQLValue.text) ?? .null, .integer(id)])
+    }
+
+    func editedTranscriptCount(videoID: Int64, transcriptionKey: String? = nil) throws -> Int {
+        let key = try transcriptionKey ?? activeTranscription(videoID: videoID).key
+        return Int(try connection.query("""
+            SELECT COUNT(*) AS count FROM transcripts WHERE video_id = ? AND transcription_key IS ?
+                AND is_translation = 0 AND original_text IS NOT NULL
+            """, [.integer(videoID), key.map(SQLValue.text) ?? .null]).first?["count"]?.intValue ?? 0)
+    }
+
+    @discardableResult
+    func revertTranscriptTexts(videoID: Int64, transcriptionKey: String? = nil) throws -> Int {
+        let key = try transcriptionKey ?? activeTranscription(videoID: videoID).key
+        return try connection.transaction {
+            let rows = try connection.query("""
+                SELECT * FROM transcripts WHERE video_id = ? AND transcription_key IS ? AND is_translation = 0 AND original_text IS NOT NULL
+                """, [.integer(videoID), key.map(SQLValue.text) ?? .null])
+            for row in rows { try revertTranscriptRow(row) }
+            return rows.count
+        }
     }
 
     /// Rewrite a video's transcript features and cleanup proposals. A

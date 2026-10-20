@@ -39,7 +39,7 @@ nonisolated struct PodcastHighlightTrim: Sendable, Equatable {
         var previousSpeaker: String?
         for segment in segments.sorted(by: { $0.start < $1.start }) {
             var lineWords: [Word] = []
-            let timed = (segment.words ?? []).filter { $0.end > $0.start && !$0.word.trimmingCharacters(in: .whitespaces).isEmpty }
+            let timed = (segment.words ?? []).filter { $0.end >= $0.start && !$0.word.trimmingCharacters(in: .whitespaces).isEmpty }
             if timed.isEmpty {
                 guard segment.end > segment.start else { continue }
                 lineWords.append(Word(id: words.count, text: segment.text.trimmingCharacters(in: .whitespacesAndNewlines),

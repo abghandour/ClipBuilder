@@ -2,6 +2,35 @@ import SwiftUI
 import AVKit
 import Vision
 
+/// Shared by the analysis re-run controls. A zero count proceeds immediately.
+struct ConfirmTranscriptLoss: ViewModifier {
+    @Binding var isRequested: Bool
+    let count: Int
+    let action: () -> Void
+
+    static func message(count: Int) -> String {
+        "This transcript has \(count) edited lines. Re-transcribing makes a new transcript set; the edited set stays in the sets list but stops being active."
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: isRequested) { _, requested in
+                if requested && count == 0 {
+                    isRequested = false
+                    action()
+                }
+            }
+            .confirmationDialog("Re-transcribe this video?", isPresented: Binding(
+                get: { isRequested && count > 0 }, set: { isRequested = $0 }
+            )) {
+                Button("Discard Transcript and Re-transcribe", role: .destructive, action: action)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(Self.message(count: count))
+            }
+    }
+}
+
 /// Copy and clear the messages shown by App Log.
 struct LogActions: View {
     let lines: [String]

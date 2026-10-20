@@ -434,7 +434,7 @@ extension BuilderQuery {
             @MainActor func words(_ row: TranscriptRow) -> [TranscriptWord]? {
                 guard let data = row.wordsJSON?.data(using: .utf8),
                       let decoded = try? JSONDecoder().decode([TranscriptWord].self, from: data),
-                      decoded.allSatisfy({ $0.start.isFinite && $0.end.isFinite && $0.end > $0.start }) else { return nil }
+                      decoded.allSatisfy({ $0.start.isFinite && $0.end.isFinite && $0.end >= $0.start }) else { return nil }
                 return decoded.sorted { $0.start < $1.start }
             }
             if kind == .transcript {

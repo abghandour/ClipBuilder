@@ -64,6 +64,28 @@ actor TranscriptionService {
         return nil
     }
 
+    /// The active set's rows, when they exist and are in the language asked
+    /// for (any language when none was asked): the user's edits, re-cuts and
+    /// attributions live on them, so a non-forced pass never replaces them.
+    private func storedTranscript(video: VideoRecord, database: Database, languageCode: String = "",
+                                  log: @Sendable (String) -> Void) async throws
+        -> (segments: [TranscriptSegment], transcriptionKey: String)? {
+        let rows = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
+        guard let key = rows.first?.transcriptionKey else { return nil }
+        if !languageCode.isEmpty, let stored = rows.first?.language, !stored.isEmpty,
+           Locale(identifier: stored).language.languageCode != Locale(identifier: languageCode).language.languageCode {
+            return nil
+        }
+        log("Using stored transcript for \(video.filename)")
+        let segments = rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }
+        do { try await enrich(segments, transcriptionKey: key, video: video, database: database) }
+        catch {
+            if strictEnrichment { throw error }
+            log("Transcript feature analysis failed: \(error)")
+        }
+        return (segments, key)
+    }
+
     private func restore(_ cached: CachedTranscript, video: VideoRecord, database: Database,
                          log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], transcriptionKey: String) {
         log("Using cached transcript for \(video.filename)")
@@ -116,6 +138,7 @@ actor TranscriptionService {
             guard !rows.isEmpty else { throw ScriptError.invalid("The saved transcript set is not available on this Mac.") }
             return (rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }, key)
         }
+        if !force, let stored = try await storedTranscript(video: video, database: database, languageCode: languageCode, log: log) { return stored }
         if !languageCode.isEmpty {
             return try await transcribe(video: video, database: database,
                                         languageCode: languageCode, force: force, log: log)
@@ -196,6 +219,7 @@ actor TranscriptionService {
                     force: Bool = false,
                     log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], transcriptionKey: String) {
         try video.requirePresent()
+        if !force, let stored = try await storedTranscript(video: video, database: database, languageCode: languageCode, log: log) { return stored }
         let locale = languageCode.isEmpty ? Locale.current : Locale(identifier: languageCode)
         guard let supportedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
             throw TranscriptionError.unsupportedLocale(locale.identifier)
@@ -252,6 +276,15 @@ actor TranscriptionService {
         return try await database.replaceTranscripts(videoID: videoID, transcriptionKey: key,
             language: language, isTranslation: false, segments: segments,
             provider: providerName, model: modelName, seconds: seconds)
+    }
+
+    /// Rebuild inexpensive derived records on this service actor, never on the UI actor.
+    func refreshDerived(video: VideoRecord, database: Database, transcriptionKey: String? = nil) async throws {
+        let rows = try await database.fetchTranscripts(videoID: video.id, transcriptionKey: transcriptionKey)
+            .filter { !$0.isTranslation }
+        guard let key = rows.first?.transcriptionKey else { return }
+        let segments = rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }
+        try await enrich(segments, transcriptionKey: key, video: video, database: database)
     }
 
     private func enrich(_ segments: [TranscriptSegment], transcriptionKey: String, video: VideoRecord,

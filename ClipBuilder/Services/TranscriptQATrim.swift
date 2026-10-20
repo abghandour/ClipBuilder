@@ -87,7 +87,7 @@ nonisolated enum TranscriptQATrim {
 
     static func words(for row: TranscriptRow, startingAt firstID: Int = 0) -> [Word] {
         let timed = (row.words ?? []).filter {
-            $0.start.isFinite && $0.end.isFinite && $0.end > $0.start
+            $0.start.isFinite && $0.end.isFinite && $0.end >= $0.start
                 && !$0.word.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }.sorted { $0.start < $1.start }
         if !timed.isEmpty {
@@ -146,7 +146,7 @@ nonisolated enum TranscriptQATrim {
     }
 
     static func contains(_ word: Word, in range: ClosedRange<Double>) -> Bool {
-        word.mid >= range.lowerBound && word.mid < range.upperBound
+        word.mid >= range.lowerBound && (word.mid < range.upperBound || (word.start == word.end && word.mid == range.upperBound))
     }
 
     /// Frames and pointer must be in the same coordinate space. Empty space

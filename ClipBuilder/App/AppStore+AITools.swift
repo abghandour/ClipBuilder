@@ -659,6 +659,37 @@ extension AppStore {
             })
     }
 
+    func transcriptEditCount(videoID: Int64) async -> Int {
+        guard let database else { return 0 }
+        return (try? await database.editedTranscriptCount(videoID: videoID)) ?? 0
+    }
+
+    /// After text on rows of one set changed (an edit, a revert): drop the
+    /// cached rows, rebuild features and topics, and refresh the edited
+    /// rows' translations. `transcriptionKey` nil means the active set.
+    func transcriptTextsChanged(videoID: Int64, transcriptionKey: String? = nil, rowIDs: [Int64]) async {
+        blurbTranscripts[videoID] = nil
+        guard let database else { return }
+        let generation = profileGeneration
+        do {
+            let rows = try await database.fetchTranscripts(videoID: videoID, transcriptionKey: transcriptionKey)
+            guard let key = rows.first?.transcriptionKey else { return }
+            // Queue network work before awaiting the CPU refresh. The sheet never owns it.
+            guard generation == profileGeneration, self.database === database else { return }
+            if rows.contains(where: \.isTranslation) {
+                enqueueAutoTranslation(videoID: videoID, transcriptionKey: key, rowIDs: rowIDs)
+            }
+            if let video = try await database.video(id: videoID) {
+                try await transcription.refreshDerived(video: video, database: database, transcriptionKey: key)
+            }
+            guard generation == profileGeneration else { return }
+            blurbTranscripts[videoID] = nil
+        } catch {
+            guard generation == profileGeneration else { return }
+            presentError("Could not refresh transcript topics and features", error)
+        }
+    }
+
     func transcribe(video: VideoRecord, force: Bool = false) {
         guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         guard let database, !transcribingVideoIDs.contains(video.id) else { return }
@@ -675,6 +706,7 @@ extension AppStore {
                 _ = try await transcription.transcribeForVideo(video: video, database: database,
                                                        languageCode: language, force: force,
                                                        log: logSink(\.analysisLog))
+                if force { try await database.setActiveTranscriptionKey(videoID: video.id, key: nil) }
                 appendLog(\.analysisLog, ["\(video.filename): transcription saved"])
                 enqueueAutoTranslation(videoID: video.id)
             } catch is CancellationError {

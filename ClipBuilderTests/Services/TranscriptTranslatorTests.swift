@@ -13,6 +13,23 @@ struct TranscriptTranslatorTests {
         return (id, try await temp.database.fetchTranscripts(videoID: id))
     }
 
+    @Test func editedSubsetRefreshPreservesOtherTranslations() async throws {
+        let temp = try TempDatabase()
+        let (id, originals) = try await seed(temp, count: 3)
+        try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en",
+            isTranslation: true, segments: originals.map {
+                .init(start: $0.startTime, end: $0.endTime, text: "Old \($0.text)", words: nil)
+            }, provider: "fixture", model: nil)
+        try await temp.database.updateTranscriptText(id: originals[1].id, text: "Corrected")
+        let changed = try await temp.database.fetchTranscripts(videoID: id).filter { $0.id == originals[1].id }
+        let stub = CaptionTranslationStub()
+        _ = try await TranscriptTranslator.translateBatched(videoID: id, originals: changed, target: "en",
+            ai: stub.service(), database: temp.database, onDevice: { _, _ in [:] })
+        #expect(stub.calls().map(\.texts) == [["Corrected"]])
+        #expect(try await temp.database.fetchTranscripts(videoID: id).filter(\.isTranslation).map(\.text)
+            == ["Old Original 0", "English Corrected", "Old Original 2"])
+    }
+
     @Test func chunksBy25EvenWhenBatchPolicyIsOff() async throws {
         let temp = try TempDatabase()
         let (id, originals) = try await seed(temp, count: 56)

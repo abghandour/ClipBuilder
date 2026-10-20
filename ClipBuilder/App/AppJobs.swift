@@ -9,7 +9,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case teamSync
     case personResearch
     case criticBrief, evaluateCritic, fightScore
-    case postText
+    case postText, transcriptTranslation
 
     var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief }
     /// Routine cycles finish quietly; the outcome goes to the activity log only.
@@ -45,6 +45,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .criticBrief: "Critic Brief"
         case .evaluateCritic: "Evaluate Critic"
         case .postText: "Post Text"
+        case .transcriptTranslation: "Translate Transcript"
         }
     }
 

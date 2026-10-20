@@ -118,6 +118,7 @@ struct TranscriptSpeakerRecutTests {
         #expect(!TranscriptSpeakerRecut.hasEdits(recut, beyond: backup))
         var retyped = recut; retyped[1] = row(4, 10, 15, "alfa", edited: true, speakerKey: "ann")
         #expect(TranscriptSpeakerRecut.hasEdits(retyped, beyond: backup))
+        #expect(TranscriptSpeakerRecut.editedCount(retyped, beyond: backup) == 1)
         var reassigned = recut; reassigned[2].speakerKey = "bob"
         #expect(TranscriptSpeakerRecut.hasEdits(reassigned, beyond: backup))
         var cleared = recut; cleared[1].speakerKey = nil

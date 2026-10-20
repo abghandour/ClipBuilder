@@ -72,6 +72,20 @@ struct AutoTranslationRunner: ViewModifier {
                                                                    target: job.target, session: session,
                                                                    store: store, database: job.database)
             store.appendLog(\.analysisLog, ["\(name): \(outcome.summary)"])
+            // A first translation may have started before the user saved an edit.
+            // Now that the language exists, refresh any rows changed during that job.
+            if job.generation == store.profileGeneration, let key = job.originals.first?.transcriptionKey {
+                let currentRows = try await job.database.fetchTranscripts(videoID: job.videoID, transcriptionKey: key)
+                guard job.generation == store.profileGeneration else { return }
+                let sourceText = Dictionary(uniqueKeysWithValues: job.originals.map { ($0.id, $0.text) })
+                // Same row, other text: an edit saved meanwhile. A re-cut
+                // gives rows new ids and is not an edit.
+                let changed = currentRows.filter { row in
+                    guard !row.isTranslation, let before = sourceText[row.id] else { return false }
+                    return before != row.text
+                }.map(\.id)
+                store.enqueueAutoTranslation(videoID: job.videoID, transcriptionKey: key, rowIDs: changed)
+            }
         } catch {
             store.appendLog(\.analysisLog, ["\(name): automatic translation failed — \(error.userMessage)"])
         }

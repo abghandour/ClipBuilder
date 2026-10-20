@@ -443,6 +443,38 @@ extension AppStore {
         autoTranslateQueue.append(videoID)
     }
 
+    /// Edits refresh every existing language, even when automatic translation is off.
+    /// Coalesce further saves into the running job so they cannot be lost to job deduplication.
+    func enqueueAutoTranslation(videoID: Int64, transcriptionKey: String, rowIDs: [Int64]) {
+        guard let database, !rowIDs.isEmpty else { return }
+        let subject = "\(videoID):\(transcriptionKey)"
+        transcriptTranslationEdits[subject, default: []].formUnion(rowIDs)
+        let generation = profileGeneration
+        let ai = ai
+        jobs.start(.transcriptTranslation, title: "Refresh Transcript Translations", project: activeProject,
+                   profileGeneration: generation, subjectID: subject) { [self] log in
+            defer {
+                if generation == profileGeneration { transcriptTranslationEdits[subject] = nil }
+            }
+            while let ids = transcriptTranslationEdits.removeValue(forKey: subject), !ids.isEmpty {
+                try Task.checkCancellation()
+                guard generation == profileGeneration else { throw CancellationError() }
+                let rows = try await database.fetchTranscripts(videoID: videoID, transcriptionKey: transcriptionKey)
+                let originals = rows.filter { !$0.isTranslation && ids.contains($0.id) }
+                let languages = Set(rows.filter(\.isTranslation).map(\.language)).sorted()
+                for language in languages {
+                    log("Refreshing edited lines in \(language)…")
+                    _ = try await TranscriptTranslator.translateBatched(videoID: videoID, originals: originals,
+                        target: language, ai: ai, database: database, log: { log($0) })
+                }
+                guard generation == profileGeneration else { throw CancellationError() }
+                blurbTranscripts[videoID] = nil
+            }
+            log("Transcript translations refreshed.")
+            return nil
+        }
+    }
+
     /// The head of the queue, claimed for one runner; nil while another
     /// claim stands or the queue is empty. Synchronous on the main actor,
     /// so overlapping runners cannot both take it.

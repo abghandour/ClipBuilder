@@ -808,6 +808,7 @@ actor Database {
                 if stamped < 28 { try Self.migrateFootageSync(connection) }
                 try Self.migrateTranscriptionSets(connection)
                 try Self.migrateTranscriptPreservation(connection)
+                if stamped < 35 { try Self.migrateTranscriptEditedWords(connection) }
                 try Self.migrateBrandSync(connection)
                 if stamped < 28 { try Self.seedFootageSync(connection) }
                 // Legacy orphan data must not prevent opening the profile.
@@ -827,7 +828,22 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 34
+    static let schemaVersion: Int64 = 35
+
+    nonisolated static func migrateTranscriptEditedWords(_ db: SQLiteConnection) throws {
+        if try !db.columnNames(of: "transcripts").contains("original_words") {
+            try db.execute("ALTER TABLE transcripts ADD COLUMN original_words TEXT")
+        }
+        for row in try db.query("SELECT * FROM transcripts WHERE original_text IS NOT NULL AND original_words IS NULL") {
+            let original = row["words"]?.stringValue.flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONDecoder().decode([TranscriptWord].self, from: $0) }
+            let words = TranscriptWordAlignment.realign(text: row["text"]?.stringValue ?? "", original: original,
+                start: row["start_time"]?.doubleValue ?? 0, end: row["end_time"]?.doubleValue ?? 0)
+            let json = try words.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+            try db.execute("UPDATE transcripts SET original_words = words, words = ? WHERE id = ?",
+                           [json.map(SQLValue.text) ?? .null, row["id"] ?? .null])
+        }
+    }
 
     nonisolated static func migrateTranscriptPreservation(_ db: SQLiteConnection) throws {
         if try !db.columnNames(of: "transcript_backups").contains("transcription_key") {
