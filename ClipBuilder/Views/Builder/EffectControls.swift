@@ -7,7 +7,7 @@ struct EffectControls: View {
     var inheritedLookName: String?
     @State private var availableIDs: Set<String>?
 
-    static let groups = ["looks", "film", "adjust", "detail", "stylize"]
+    static let groups = EffectSamplePicker.lookGroups
 
     var body: some View {
         Picker("Look", selection: Self.selectionBinding(effect: $effect,

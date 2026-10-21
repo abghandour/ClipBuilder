@@ -3,37 +3,39 @@ import AVFoundation
 import AVKit
 import UniformTypeIdentifiers
 
-/// Resources > Transitions: every transition the Builder and AI Wizard can use,
-/// grouped by family, with a looping sample of each rendered through the
-/// real pipeline (two cards joined by the effect) so the names finally
-/// have a picture. Samples render once per sample set and cache under
-/// assets/effects. The bottom bar plays/pauses everything, sets playback
-/// speed, and swaps the test cards for stills from videos of your choice.
+/// Resource browser with one selected transition, rendered through the real pipeline.
 struct TransitionsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(WizardDefaults.limitTransitionsKey) private var aiTransitionsLimited = false
     @AppStorage(WizardDefaults.allowedTransitionsKey) private var aiTransitionsRaw = ""
+    @AppStorage(EffectSamplePicker.Page.transitions.defaultsKey) private var selectedTab = "cut"
     @State private var previews: [String: URL] = [:]
     @State private var rendering: Set<String> = []
     @State private var failures: [String: String] = [:]
     @State private var renderAllTask: Task<Void, Never>?
+    @State private var generation = UUID()
     private var xfadeDuration: Double { store.editingDefaults.transitions.xfadeDuration }
 
-    /// Everything plays unless paused here; a card click flips just that
-    /// card, Play All / Pause All reset every override.
-    @State private var playingAll = false
-    @State private var playOverrides: [String: Bool] = [:]
+    @State private var isPlaying = true
+    @AppStorage(EffectSamplePicker.Page.transitions.itemDefaultsKey) private var rememberedItem = ""
     @AppStorage("effects.playbackSpeed") private var playbackSpeed = 1.0
     @State private var samples = EffectSampleSet.saved
-    @State private var pickingSample: SampleSlot?
-
-    private enum SampleSlot: String, Identifiable {
-        case a, b
-        var id: String { rawValue }
-    }
+    @State private var pickingSample: EffectSamplePicker.Slot = .videoA
+    @State private var showingSampleImporter = false
+    @State private var sampleError: String?
 
     private var effects: [TransitionEffect] { TransitionCatalog.all }
+
+    private var tab: String { EffectSamplePicker.Page.transitions.selectedTab(selectedTab) }
+    private var selectedItem: String {
+        EffectSamplePicker.Page.transitions.selectedItem(rememberedItem, for: tab) ?? ""
+    }
+    private var selectedEffect: TransitionEffect? { effects.first { $0.name == selectedItem } }
+    private var subtitle: String {
+        guard let selectedEffect else { return "No transitions" }
+        return "\(selectedEffect.title) · \(selectedEffect.category.title)"
+    }
 
     private var aiTransitionAvailability: Set<String> {
         // Read through the AppStorage values so the view re-renders on change.
@@ -59,21 +61,21 @@ struct TransitionsView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: Theme.spaceXL) {
-                if !previews.isEmpty {
-                    DisclosureGroup("Preview controls") {
-                        playbackBar
-                            .padding(.top, Theme.spaceS)
-                    }
-                }
-                ForEach(TransitionEffect.Category.allCases, id: \.self) { category in
-                    categorySection(category)
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
+            sampleRow
+            EffectBrowserTabs(page: .transitions, selection: $selectedTab)
+            EffectBrowserItems(page: .transitions, tab: tab, selection: $rememberedItem)
+            playbackBar
+            if let effect = selectedEffect {
+                EffectBrowserPreview {
+                    preview(effect)
+                } details: {
+                    details(effect)
                 }
             }
-            .padding()
         }
-        .screenTitle("Transitions", subtitle: "\(effects.count) transitions")
+        .padding()
+        .screenTitle("Transitions", subtitle: subtitle)
         .toolbar {
             ToolbarItemGroup {
                 Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
@@ -81,6 +83,7 @@ struct TransitionsView: View {
                 }
                 .disabled(renderAllTask != nil)
                 .help("Render a sample of every transition through the real pipeline")
+                .lineLimit(1).fixedSize()
                 Menu("AI Palette", systemImage: "wand.and.stars") {
                         Button("Let AI Choose Any Effect") {
                             setAITransitionAvailability(Set(effects.map(\.name)))
@@ -99,124 +102,133 @@ struct TransitionsView: View {
                         }
                 }
                 .help("Choose which transitions the AI Wizard may use")
+                .lineLimit(1).fixedSize()
                 Button("Show in Finder", systemImage: "folder") {
                     try? FileManager.default.createDirectory(at: EffectPreviewRenderer.directory,
                                                              withIntermediateDirectories: true)
                     NSWorkspace.shared.open(EffectPreviewRenderer.directory)
                 }
                 .help("Reveal the rendered preview files in Finder")
+                .lineLimit(1).fixedSize()
             }
         }
-        .fileImporter(isPresented: Binding(get: { pickingSample != nil },
-                                           set: { if !$0 { pickingSample = nil } }),
+        .fileImporter(isPresented: $showingSampleImporter,
                       allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie]) { result in
-            guard let slot = pickingSample, case .success(let url) = result else { return }
-            switch slot {
-            case .a: samples.videoA = url
-            case .b: samples.videoB = url
+            switch result {
+            case .success(let url): changeSample(to: url, slot: pickingSample)
+            case .failure(let error): sampleError = error.localizedDescription
             }
-            samplesChanged()
         }
-        .onAppear { loadCached() }
-        .onChange(of: store.editingDefaults.transitions) { _, _ in
-            renderAllTask?.cancel()
-            renderAllTask = nil
+        .alert("Could not change sample", isPresented: Binding(
+            get: { sampleError != nil }, set: { if !$0 { sampleError = nil } })) {
+            Button("OK") { sampleError = nil }
+        } message: {
+            Text(sampleError ?? "")
+        }
+        .onAppear {
+            samples = .saved
+            rememberedItem = selectedItem
+            isPlaying = true
             loadCached()
+            renderSelected()
         }
-        .onDisappear { renderAllTask?.cancel() }
-    }
-
-    @ViewBuilder
-    private func categorySection(_ category: TransitionEffect.Category) -> some View {
-        let members = effects.filter { $0.category == category }
-        if !members.isEmpty {
-            VStack(alignment: .leading, spacing: Theme.spaceS) {
-                Text(category.title)
-                    .font(.title3.bold())
-                Text(category.blurb)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 180),
-                                             spacing: Theme.spaceM, alignment: .top)],
-                          spacing: Theme.spaceM) {
-                    ForEach(members) { effect in
-                        card(effect)
-                    }
-                }
-            }
+        .onChange(of: selectedTab) { _, _ in
+            rememberedItem = selectedItem
         }
+        .onChange(of: selectedItem) { _, _ in
+            isPlaying = true
+            renderSelected()
+        }
+        .onChange(of: store.database == nil) { _, _ in
+            cancelRendering()
+            loadCached()
+            renderSelected()
+        }
+        .onChange(of: store.editingDefaults.transitions) { _, _ in
+            cancelRendering()
+            loadCached()
+            renderSelected()
+        }
+        .onDisappear { cancelRendering() }
     }
 
-    // MARK: - Cards
-
-    private func isPlaying(_ effect: TransitionEffect) -> Bool {
-        playOverrides[effect.name] ?? playingAll
-    }
-
-    private func card(_ effect: TransitionEffect) -> some View {
-        let playing = isPlaying(effect)
-        let animating = playing && !reduceMotion
-        return VStack(alignment: .leading, spacing: 6) {
-            ZStack {
-                Rectangle().fill(.black)
-                if let url = previews[effect.name] {
-                    Button {
-                        playOverrides[effect.name] = !playing
-                    } label: {
-                        LoopingVideoView(url: url, isPlaying: animating, rate: Float(playbackSpeed))
-                            .overlay {
-                                if !animating {
-                                    Image(systemName: "play.fill")
-                                        .font(.title2)
-                                        .foregroundStyle(.white.opacity(0.85))
-                                        .shadow(radius: 3)
-                                }
+    private func preview(_ effect: TransitionEffect) -> some View {
+        let animating = isPlaying && !reduceMotion
+        return ZStack {
+            Rectangle().fill(.black)
+            if let url = previews[effect.name] {
+                Button {
+                    isPlaying.toggle()
+                } label: {
+                    LoopingVideoView(url: url, isPlaying: animating, rate: Float(playbackSpeed))
+                        .id(effect.name + generation.uuidString)
+                        .overlay {
+                            if !animating {
+                                Image(systemName: "play.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.white.opacity(0.85))
+                                    .shadow(radius: 3)
                             }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(reduceMotion)
-                    .accessibilityLabel(animating ? "Pause \(effect.title) preview" : "Play \(effect.title) preview")
-                    .help(reduceMotion
-                          ? "Preview animation is disabled because Reduce Motion is on"
-                          : (animating ? "Pause preview" : "Play preview"))
-                } else if rendering.contains(effect.name) {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if let failure = failures[effect.name] {
-                    VStack(spacing: 4) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                        Text(failure)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .lineLimit(3)
-                        Button("Retry") { render(effect) }
-                            .controlSize(.mini)
-                    }
-                    .padding(6)
-                } else {
-                    Button {
-                        render(effect)
-                    } label: {
-                        Label("Render Preview", systemImage: "play.circle")
-                    }
-                    .controlSize(.small)
-                    .help("Render a sample of this effect (two cards joined by it)")
+                        }
                 }
+                .buttonStyle(.plain)
+                .disabled(reduceMotion)
+                .accessibilityLabel(animating ? "Pause \(effect.title) preview" : "Play \(effect.title) preview")
+                .help(reduceMotion
+                      ? "Preview animation is disabled because Reduce Motion is on"
+                      : (animating ? "Pause preview" : "Play preview"))
+            } else if rendering.contains(effect.name) {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Preparing \(effect.title) preview")
+            } else if let failure = failures[effect.name] {
+                VStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Text(failure)
+                        .font(.caption2)
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                    Button("Retry") { render(effect) }
+                        .controlSize(.small)
+                        .lineLimit(1).fixedSize()
+                        .disabled(renderAllTask != nil || store.database == nil)
+                }
+                .padding(6)
+            } else {
+                Button {
+                    render(effect)
+                } label: {
+                    Label("Render Preview", systemImage: "play.circle")
+                }
+                .controlSize(.small)
+                .lineLimit(1).fixedSize()
+                .disabled(renderAllTask != nil || store.database == nil)
+                .help("Render a sample of this effect (two cards joined by it)")
             }
-            .aspectRatio(9 / 16, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
+        }
+    }
 
-            HStack(alignment: .firstTextBaseline) {
-                Text(effect.title)
-                    .font(.callout.weight(.semibold))
-                Spacer()
-                Text(effect.name)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .textSelection(.enabled)
+    private func details(_ effect: TransitionEffect) -> some View {
+        VStack(alignment: .leading, spacing: Theme.spaceS) {
+            Text(subtitle).font(.headline).lineLimit(1)
+            Button(isPlaying && !reduceMotion ? "Pause" : "Play",
+                   systemImage: isPlaying && !reduceMotion ? "pause.fill" : "play.fill") {
+                isPlaying.toggle()
+            }
+            .disabled(previews[effect.name] == nil || reduceMotion)
+            .accessibilityLabel("\(isPlaying && !reduceMotion ? "Pause" : "Play") \(effect.title) preview")
+            .lineLimit(1).fixedSize()
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.spaceM) {
+                    aiToggle(effect)
+                    aiSummary
+                }
+                VStack(alignment: .leading, spacing: Theme.spaceS) {
+                    aiToggle(effect)
+                    aiSummary
+                }
             }
             Text(effect.description)
                 .font(.caption)
@@ -229,83 +241,92 @@ struct TransitionsView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(Theme.cardPadding)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
     }
 
-    // MARK: - Bottom bar
+    private func aiToggle(_ effect: TransitionEffect) -> some View {
+        Toggle("Available to AI", isOn: aiTransitionBinding(for: effect.name))
+            .lineLimit(1).fixedSize()
+            .help("Limit AI to the transitions enabled here or in AI Palette")
+    }
 
-    private var playbackBar: some View {
-        HStack(spacing: Theme.spaceM) {
-            Button("Play All", systemImage: "play.fill") {
-                playingAll = true
-                playOverrides = [:]
+    private var aiSummary: some View {
+        Text(!aiTransitionsLimited ? "AI: all transitions"
+             : aiTransitionAvailability.isEmpty ? "AI: hard cuts only"
+             : "AI: \(aiTransitionAvailability.count) of \(effects.count) transitions")
+            .font(.caption).foregroundStyle(.secondary)
+            .lineLimit(1).fixedSize()
+    }
+
+    // MARK: - Samples and playback
+
+    private var sampleRow: some View {
+        let sources = EffectSamplePicker.sources(from: store.videos)
+        return VStack(alignment: .leading, spacing: Theme.spaceS) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.spaceM) {
+                    sampleMenu(slot: .videoA, title: "Video A", url: samples.videoA, sources: sources)
+                    sampleMenu(slot: .videoB, title: "Video B", url: samples.videoB, sources: sources)
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: Theme.spaceS) {
+                    sampleMenu(slot: .videoA, title: "Video A", url: samples.videoA, sources: sources)
+                    sampleMenu(slot: .videoB, title: "Video B", url: samples.videoB, sources: sources)
+                }
             }
-            .disabled(reduceMotion)
-            .help("Play every preview")
-            Button("Pause All", systemImage: "pause.fill") {
-                playingAll = false
-                playOverrides = [:]
-            }
-            .help("Pause every preview")
-
-            Divider().frame(height: 20)
-
-            HStack(spacing: 6) {
-                Text("Speed")
-                    .font(.callout)
-                Slider(value: $playbackSpeed, in: 0.25...2, step: 0.25)
-                    .frame(width: 140)
-                    .help("How fast the previews play — slow the transitions down to study them")
-                Text(playbackSpeed.formatted(.number.precision(.fractionLength(0...2))) + "×")
-                    .font(.callout.monospacedDigit())
-                    .frame(width: 44, alignment: .leading)
-            }
-
-            Divider().frame(height: 20)
-
-            sampleButton(slot: .a, url: samples.videoA, title: "Video A")
-            sampleButton(slot: .b, url: samples.videoB, title: "Video B")
-            Button("Reset", systemImage: "arrow.counterclockwise") {
-                samples = EffectSampleSet()
-                playbackSpeed = 1
-                playingAll = true
-                playOverrides = [:]
-                samplesChanged()
-            }
-            .help("Back to the built-in test cards at normal speed")
-
-            Spacer()
-            Text(samples.isDefault
-                 ? "Previews use two test cards — pick a Video A and B to see the effects on your own footage."
-                 : "Previews use a still from each chosen video.")
+            Text("Previews use a still from each video. Video A is shared with Looks.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .lineLimit(1).fixedSize(horizontal: false, vertical: true)
         }
-        .controlSize(.small)
-        .padding(.horizontal, Theme.spaceL)
-        .padding(.vertical, Theme.spaceS)
     }
 
-    private func sampleButton(slot: SampleSlot, url: URL?, title: String) -> some View {
-        Button {
-            pickingSample = slot
-        } label: {
-            HStack(spacing: 6) {
-                if let url {
-                    VideoThumbnail(url: url, time: 0, cornerRadius: 3)
-                        .frame(width: 22, height: 22)
-                } else {
-                    Image(systemName: "film")
-                }
-                Text(url?.lastPathComponent ?? title)
-                    .lineLimit(1)
-                    .frame(maxWidth: 140)
+    private func sampleMenu(slot: EffectSamplePicker.Slot, title: String, url: URL?,
+                            sources: [EffectSamplePicker.Source]) -> some View {
+        EffectSampleMenu(title: title, accessibilityTitle: title, sources: sources,
+                         projectHasSources: !store.videos.isEmpty, selectedURL: url,
+                         select: { changeSample(to: $0, slot: slot) }, otherFile: {
+                             pickingSample = slot
+                             showingSampleImporter = true
+                         })
+    }
+
+    private var playbackBar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Theme.spaceM) {
+                speedControl
+                resetButton
+            }
+            VStack(alignment: .leading, spacing: Theme.spaceS) {
+                speedControl
+                resetButton
             }
         }
-        .help(url.map { "\(title): \($0.lastPathComponent) — click to pick another video" }
-              ?? "Pick a video whose still frame plays the \(title == "Video A" ? "outgoing" : "incoming") side of every preview")
+        .controlSize(.small)
+    }
+
+    private var speedControl: some View {
+        HStack(spacing: Theme.spaceS) {
+            Text("Speed").font(.callout)
+            Slider(value: $playbackSpeed, in: 0.25...2, step: 0.25)
+                .frame(width: 140)
+                .accessibilityLabel("Preview playback speed")
+                .help("How fast the previews play — slow the transitions down to study them")
+            Text(playbackSpeed.formatted(.number.precision(.fractionLength(0...2))) + "×")
+                .font(.callout.monospacedDigit())
+                .frame(width: 44, alignment: .leading)
+        }
+        .lineLimit(1).fixedSize()
+    }
+
+    private var resetButton: some View {
+        Button("Reset", systemImage: "arrow.counterclockwise") {
+            samples = EffectSampleSet()
+            playbackSpeed = 1
+            isPlaying = true
+            samplesChanged()
+        }
+        .help("Back to the built-in test cards at normal speed")
+        .lineLimit(1).fixedSize()
     }
 
     // MARK: - Rendering
@@ -318,47 +339,70 @@ struct TransitionsView: View {
         }
     }
 
-    /// New sample stills: every visible card re-renders against them.
+    private func changeSample(to url: URL?, slot: EffectSamplePicker.Slot) {
+        samples = EffectSamplePicker.selecting(url, for: slot, in: .saved)
+        samplesChanged()
+    }
+
+    /// New sample stills invalidate old work; other items render lazily when selected.
     private func samplesChanged() {
         samples.save()
+        cancelRendering()
+        loadCached()
+        isPlaying = true
+        renderSelected()
+    }
+
+    private func cancelRendering() {
+        generation = UUID()
         renderAllTask?.cancel()
         renderAllTask = nil
-        loadCached()
+        rendering = []
+    }
+
+    private func renderSelected() {
+        guard store.database != nil, let effect = selectedEffect,
+              failures[effect.name] == nil else { return }
+        render(effect)
     }
 
     private func render(_ effect: TransitionEffect) {
-        guard !rendering.contains(effect.name), previews[effect.name] == nil else { return }
-        rendering.insert(effect.name)
-        failures[effect.name] = nil
-        let samples = samples
-        let transitions = store.editingDefaults.transitions
-        Task {
-            do {
-                let url = try await EffectPreviewRenderer.preview(for: effect, samples: samples, transitions: transitions)
-                // A sample change mid-render makes this result stale.
-                if samples == self.samples, transitions == store.editingDefaults.transitions { previews[effect.name] = url }
-            } catch {
-                failures[effect.name] = error.userMessage
-            }
-            rendering.remove(effect.name)
-        }
+        render([effect])
     }
 
     private func renderAll() {
+        render(effects)
+    }
+
+    private func render(_ requested: [TransitionEffect]) {
+        guard renderAllTask == nil else { return }
+        let pending = requested.filter { previews[$0.name] == nil }
+        guard !pending.isEmpty else { return }
         let samples = samples
         let transitions = store.editingDefaults.transitions
+        let current = generation
         renderAllTask = Task {
-            for effect in effects where previews[effect.name] == nil && !Task.isCancelled {
+            defer {
+                if current == generation {
+                    renderAllTask = nil
+                    // Service the latest selection if it changed during rendering.
+                    renderSelected()
+                }
+            }
+            for effect in pending {
+                guard !Task.isCancelled, current == generation else { return }
                 rendering.insert(effect.name)
+                failures[effect.name] = nil
                 do {
                     let url = try await EffectPreviewRenderer.preview(for: effect, samples: samples, transitions: transitions)
-                    if samples == self.samples, transitions == store.editingDefaults.transitions { previews[effect.name] = url }
+                    guard !Task.isCancelled, current == generation else { return }
+                    previews[effect.name] = url
                 } catch {
+                    guard !Task.isCancelled, current == generation else { return }
                     failures[effect.name] = error.userMessage
                 }
                 rendering.remove(effect.name)
             }
-            renderAllTask = nil
         }
     }
 }

@@ -6,6 +6,8 @@ struct LooksView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("looks.playbackSpeed") private var playbackSpeed = 1.0
+    @AppStorage(EffectSamplePicker.Page.looks.defaultsKey) private var selectedTab = "looks"
+    @AppStorage(EffectSamplePicker.Page.looks.itemDefaultsKey) private var rememberedItem = ""
     @State private var samples = EffectSampleSet.saved
     @State private var availableIDs: Set<String>?
     @State private var previews: [String: URL] = [:]
@@ -13,35 +15,53 @@ struct LooksView: View {
     @State private var rendering: String?
     @State private var renderTask: Task<Void, Never>?
     @State private var generation = UUID()
-    @State private var playingAll = false
-    @State private var playOverrides: [String: Bool] = [:]
+    @State private var isPlaying = true
     @State private var pickingSample = false
     @State private var sampleError: String?
 
+    private var tab: String { EffectSamplePicker.Page.looks.selectedTab(selectedTab) }
+    private var selectedItem: String {
+        EffectSamplePicker.Page.looks.selectedItem(rememberedItem, for: tab) ?? ""
+    }
+    private var preset: EffectCatalog.Preset? { EffectCatalog.presets.first { $0.id == selectedItem } }
+    private var subtitle: String { "\(preset?.name ?? "No looks") · \(tab.capitalized)" }
+
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: Theme.spaceXL) {
-                playbackBar
-                Text(samples.videoA.map { "Sample: \($0.lastPathComponent) · shared with Transitions Video A" }
-                     ?? "Samples use the built-in test card. Choose a video to compare looks on your footage.")
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
+            VStack(alignment: .leading, spacing: Theme.spaceS) {
+                EffectSampleMenu(title: "Sample", accessibilityTitle: "Sample video",
+                                 sources: EffectSamplePicker.sources(from: store.videos),
+                                 projectHasSources: !store.videos.isEmpty, selectedURL: samples.videoA,
+                                 select: changeSample, otherFile: { pickingSample = true })
+                Text("Shared with Transitions Video A")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                ForEach(EffectControls.groups, id: \.self) { group in
+                    .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+            }
+            EffectBrowserTabs(page: .looks, selection: $selectedTab)
+            EffectBrowserItems(page: .looks, tab: tab, selection: $rememberedItem)
+            playbackBar
+            if let preset {
+                EffectBrowserPreview {
+                    preview(preset)
+                } details: {
                     VStack(alignment: .leading, spacing: Theme.spaceS) {
-                        Text(group.capitalized).font(.title3.bold())
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 180),
-                                                     spacing: Theme.spaceM, alignment: .top)],
-                                  spacing: Theme.spaceM) {
-                            ForEach(EffectCatalog.presets.filter { $0.group == group }, id: \.id) { preset in
-                                card(preset)
-                            }
+                        Text(subtitle).font(.headline).lineLimit(1)
+                        Text(availabilityText(for: preset))
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button(isPlaying && !reduceMotion ? "Pause" : "Play",
+                               systemImage: isPlaying && !reduceMotion ? "pause.fill" : "play.fill") {
+                            isPlaying.toggle()
                         }
+                        .disabled(previews[preset.id] == nil || reduceMotion)
+                        .accessibilityLabel("\(isPlaying && !reduceMotion ? "Pause" : "Play") \(preset.name) preview")
+                        .lineLimit(1).fixedSize()
                     }
                 }
             }
-            .padding()
         }
-        .screenTitle("Looks", subtitle: "\(EffectCatalog.presets.count) presets")
+        .padding()
+        .screenTitle("Looks", subtitle: subtitle)
         .toolbar {
             ToolbarItemGroup {
                 Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
@@ -49,8 +69,10 @@ struct LooksView: View {
                 }
                 .disabled(renderTask != nil || availableIDs == nil || store.database == nil)
                 .help("Render a sample of every available look through the final render pipeline")
+                .lineLimit(1).fixedSize()
                 Button("Change sample…", systemImage: "film") { pickingSample = true }
                     .help("Choose the video used for every look and Transitions Video A")
+                    .lineLimit(1).fixedSize()
             }
         }
         .fileImporter(isPresented: $pickingSample,
@@ -69,11 +91,29 @@ struct LooksView: View {
         }
         .task {
             samples = .saved
+            rememberedItem = selectedItem
+            isPlaying = true
             availableIDs = await EffectControls.availablePresetIDs()
             guard !Task.isCancelled else { return }
-            // Like Transitions: show what is cached, render on demand. A cold
-            // cache would otherwise start 27 full-pipeline renders on first open.
             loadCached()
+            renderSelected()
+        }
+        .onChange(of: selectedTab) { _, _ in
+            rememberedItem = selectedItem
+        }
+        .onChange(of: selectedItem) { _, _ in
+            isPlaying = true
+            renderSelected()
+        }
+        .onChange(of: store.database == nil) { _, _ in
+            cancelRendering()
+            loadCached()
+            renderSelected()
+        }
+        .onChange(of: store.activeProfile.id) { _, _ in
+            cancelRendering()
+            loadCached()
+            renderSelected()
         }
         .onDisappear { cancelRendering() }
     }
@@ -81,35 +121,15 @@ struct LooksView: View {
     private var playbackBar: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: Theme.spaceM) {
-                playbackButtons
                 speedControl
                 resetButton
             }
             VStack(alignment: .leading, spacing: Theme.spaceS) {
-                HStack(spacing: Theme.spaceM) {
-                    playbackButtons
-                    resetButton
-                }
                 speedControl
+                resetButton
             }
         }
         .controlSize(.small)
-    }
-
-    private var playbackButtons: some View {
-        Group {
-            Button("Play All", systemImage: "play.fill") {
-                playingAll = true
-                playOverrides = [:]
-            }
-            .disabled(reduceMotion)
-            .help(reduceMotion ? "Preview animation is disabled because Reduce Motion is on" : "Play every look sample")
-            Button("Pause All", systemImage: "pause.fill") {
-                playingAll = false
-                playOverrides = [:]
-            }
-            .help("Pause every look sample")
-        }
     }
 
     private var speedControl: some View {
@@ -123,80 +143,82 @@ struct LooksView: View {
                 .font(.callout.monospacedDigit())
                 .frame(width: 44, alignment: .leading)
         }
+        .lineLimit(1).fixedSize()
     }
 
     private var resetButton: some View {
         Button("Reset", systemImage: "arrow.counterclockwise") {
             playbackSpeed = 1
-            playingAll = false
-            playOverrides = [:]
+            isPlaying = true
             changeSample(to: nil)
         }
         .help("Use the built-in test card at normal speed; also resets Transitions Video A")
+        .lineLimit(1).fixedSize()
     }
 
-    private func card(_ preset: EffectCatalog.Preset) -> some View {
+    private func preview(_ preset: EffectCatalog.Preset) -> some View {
         let available = availableIDs?.contains(preset.id) == true
-        let playing = (playOverrides[preset.id] ?? playingAll) && !reduceMotion
-        return VStack(alignment: .leading, spacing: Theme.spaceS) {
-            ZStack {
-                Rectangle().fill(.black)
-                if let url = previews[preset.id], available {
-                    Button {
-                        playOverrides[preset.id] = !playing
-                    } label: {
-                        LoopingVideoView(url: url, isPlaying: playing, rate: Float(playbackSpeed))
-                            .id(generation)
-                            .overlay {
-                                if !playing {
-                                    Image(systemName: "play.fill")
-                                        .font(.title2)
-                                        .foregroundStyle(.white)
-                                }
+        let playing = isPlaying && !reduceMotion
+        return ZStack {
+            Rectangle().fill(.black)
+            if let url = previews[preset.id], available {
+                Button {
+                    isPlaying.toggle()
+                } label: {
+                    LoopingVideoView(url: url, isPlaying: playing, rate: Float(playbackSpeed))
+                        .id(preset.id + generation.uuidString)
+                        .overlay {
+                            if !playing {
+                                Image(systemName: "play.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.white)
                             }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(reduceMotion)
-                    .accessibilityLabel("\(playing ? "Pause" : "Play") \(preset.name) preview")
-                    .help(reduceMotion ? "Preview animation is disabled because Reduce Motion is on"
-                          : playing ? "Pause this sample" : "Play this sample")
-                } else if rendering == preset.id || availableIDs == nil {
-                    ProgressView().controlSize(.small)
-                        .accessibilityLabel("Preparing \(preset.name) preview")
-                } else if !available {
-                    Label("Unavailable", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.white)
-                        .help("The local ffmpeg lacks a required filter or the LUT is missing")
-                } else {
-                    VStack(spacing: Theme.spaceS) {
-                        if let failure = failures[preset.id] {
-                            Text(failure)
-                                .font(.caption)
-                                .foregroundStyle(.white)
-                                .multilineTextAlignment(.center)
-                                .lineLimit(4)
-                                .help(failure)
                         }
-                        Button(failures[preset.id] == nil ? "Render Preview" : "Retry",
-                               systemImage: "play.circle") { render([preset.id]) }
-                            .controlSize(.small)
-                            .disabled(renderTask != nil || store.database == nil)
-                            .help(store.database == nil ? "Open a profile to render look samples"
-                                  : "Render this look through the final render pipeline")
-                    }
-                    .padding(Theme.spaceS)
                 }
+                .buttonStyle(.plain)
+                .disabled(reduceMotion)
+                .accessibilityLabel("\(playing ? "Pause" : "Play") \(preset.name) preview")
+                .help(reduceMotion ? "Preview animation is disabled because Reduce Motion is on"
+                      : playing ? "Pause this sample" : "Play this sample")
+            } else if rendering == preset.id || availableIDs == nil {
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel("Preparing \(preset.name) preview")
+            } else if !available {
+                Label("Unavailable", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .help("The local ffmpeg lacks a required filter or the LUT is missing")
+            } else {
+                VStack(spacing: Theme.spaceS) {
+                    if let failure = failures[preset.id] {
+                        Text(failure)
+                            .font(.caption)
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .lineLimit(4)
+                            .help(failure)
+                    }
+                    Button(failures[preset.id] == nil ? "Render Preview" : "Retry",
+                           systemImage: "play.circle") { render([preset.id]) }
+                        .controlSize(.small)
+                        .lineLimit(1).fixedSize()
+                        .disabled(renderTask != nil || store.database == nil)
+                        .help(store.database == nil ? "Open a profile to render look samples"
+                              : "Render this look through the final render pipeline")
+                }
+                .padding(Theme.spaceS)
             }
-            .aspectRatio(9.0 / 16, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
-            Text(preset.name).font(.callout.weight(.semibold))
-            Text("\(preset.group.capitalized) · \(availableIDs == nil ? "Checking availability" : available ? "Available" : "Unavailable")")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
-        .padding(Theme.cardPadding)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+    }
+
+    private func availabilityText(for preset: EffectCatalog.Preset) -> String {
+        guard let availableIDs else { return "Checking availability" }
+        return availableIDs.contains(preset.id) ? "Available" : "Unavailable — required filter or LUT is missing"
+    }
+
+    private func renderSelected() {
+        guard !selectedItem.isEmpty, failures[selectedItem] == nil else { return }
+        render([selectedItem])
     }
 
     private func cancelRendering() {
@@ -209,10 +231,11 @@ struct LooksView: View {
     private func changeSample(to url: URL?) {
         cancelRendering()
         // Preserve Video B if it was changed in another window.
-        samples = .saved
-        samples.videoA = url
+        samples = EffectSamplePicker.selecting(url, for: .look, in: .saved)
         samples.save()
         loadCached()
+        isPlaying = true
+        renderSelected()
     }
 
     private func loadCached() {
@@ -235,6 +258,8 @@ struct LooksView: View {
                 if current == generation {
                     rendering = nil
                     renderTask = nil
+                    // A selection made during a render is serviced once it finishes.
+                    renderSelected()
                 }
             }
             for id in pending {
