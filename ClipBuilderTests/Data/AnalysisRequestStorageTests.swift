@@ -45,6 +45,6 @@ struct AnalysisRequestStorageTests {
         #expect(try await reopened.fetchAnalysisRuns().allSatisfy { $0.requestJSON == nil && $0.requestHash == nil })
         let table = try #require(SyncTable.all.first { $0.name == "analysis_runs" })
         #expect(table.columns.contains("request_hash") && table.columns.contains("request_json"))
-        #expect(SyncEngine.understoodSchemaVersion == 6)
+        #expect(SyncEngine.understoodSchemaVersion == 7)
     }
 }

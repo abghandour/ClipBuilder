@@ -1135,24 +1135,32 @@ actor MultitrackRenderer {
                                          freeCrops: clip.freeCrops,
                                          screenCrop: clip.screenCrop,
                                          areaWindow: clip.areaWindow,
-                                         areaRegion: clip.areaWindow == nil ? clip.areaRegion : nil,
-                                         areaFocus: clip.areaWindow == nil ? clip.areaFocus : nil,
+                                         // A window or the clip's own path decides the cell; a scene
+                                         // path keeps the region and focus so it can still be rejected.
+                                         areaRegion: clip.areaWindow == nil && clip.cameraPath == nil ? clip.areaRegion : nil,
+                                         areaFocus: clip.areaWindow == nil && clip.cameraPath == nil && clip.areaRegion != nil ? clip.areaFocus : nil,
                                          captionsPosition: captionsResolved == "none" ? nil : captionsResolved,
                                          speed: clip.effectiveSpeed,
                                          cameraPath: cameraPath, staticAreaFilter: reactionFilter(for: clip), effectiveEffect: effectiveEffect))
         }
-        // Validate after crop-block splitting: each piece may target a different
-        // aspect. A scene-wide path cannot represent a cell's distinct focus.
+        // Validate scene-derived paths after crop-block splitting: each piece
+        // may target a different aspect, and a scene-wide path cannot represent
+        // a cell's distinct focus. A clip's own path always wins here; the
+        // framing prepass re-checks its aspect against the real source size.
         return Self.applyCropBlocks(resolved, document: document).map { clip in
             var clip = clip
-            guard let path = clip.cameraPath else { return clip }
+            let explicit = document.videoTrack.indices.contains(clip.documentIndex)
+                && document.videoTrack[clip.documentIndex].cameraPath != nil
+            guard let path = clip.cameraPath, !explicit else { return clip }
             let area = ScreenCropStore.area(reference: clip.screenCrop)
             let box = area.map { AreaFramer.pixelBounds(of: $0) }
             let aspect = box.map { $0.width / $0.height } ?? RenderContext.settings.aspectRatio
             let scene = scenes.first { $0.videoPath == clip.sourcePath }
             let size = scene.flatMap { $0.videoWidth > 0 && $0.videoHeight > 0
                 ? CGSize(width: $0.videoWidth, height: $0.videoHeight) : nil }
-            if clip.areaFocus != nil || !CenterStageService.pathMatchesCanvas(path, sourceSize: size, canvasAspect: aspect) {
+            // Without a known source size the aspect is settled at render time.
+            let mismatch = size.map { !CenterStageService.pathMatchesCanvas(path, sourceSize: $0, canvasAspect: aspect) } ?? false
+            if clip.areaFocus != nil || mismatch {
                 clip.cameraPath = nil
                 // Keep the tracking-only route even for Full Screen, whose
                 // layout reference is nil, when rejecting a saved path.

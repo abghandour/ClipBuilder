@@ -60,7 +60,7 @@ extension SyncMappingTests {
         var local: SQLRow = [:]
         for column in table.columns {
             if table.references[column] != nil { local[column] = .text(UUID().uuidString.lowercased()) }
-            else if table.integers.contains(column) { local[column] = .integer(column == "pinned" ? 1 : 42) }
+            else if table.integers.contains(column) { local[column] = .integer(["pinned", "vip"].contains(column) ? 1 : 42) }
             else if table.reals.contains(column) { local[column] = .real(12.75) }
             else { local[column] = .text(column.hasSuffix("_json") ? "{}" : "portable-\(column)") }
         }
