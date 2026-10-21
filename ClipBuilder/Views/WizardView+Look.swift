@@ -2,6 +2,13 @@ import SwiftUI
 
 // Presentation-only choices for the current take (or the next Automatic run).
 extension WizardView {
+    private var safeAreaPlatformSelection: Binding<[SocialPlatform]> {
+        Binding(get: {
+            let selected = safeAreaPlatforms.split(separator: ",").compactMap { SocialPlatform(rawValue: String($0)) }
+            return selected.isEmpty ? store.activeProfile.defaultRenderSettings.platformSafeArea.platforms : selected
+        }, set: { safeAreaPlatforms = $0.map(\.rawValue).joined(separator: ",") })
+    }
+
     /// Sound & music.
     @ViewBuilder var audioFields: some View {
         if lookCapabilities.audioMusic {
@@ -85,7 +92,7 @@ extension WizardView {
                     CaptionPositionPicker(selection: captionChoice(\.captionPosition))
                 }
                 .formDependent()
-                FormCaption("Auto keeps clear of the platform buttons; the other choices use the edge of the frame.")
+                FormCaption("Auto keeps clear of the platform buttons. Safe area only also keeps explicit positions clear.")
                     .formDependent()
                 WizardControlRow("Caption style") {
                     CaptionStylePicker(selection: captionChoice(\.captionStyleID), profile: store.activeProfile)
@@ -114,6 +121,7 @@ extension WizardView {
                     .formDependent()
             }
         }
+        SafeAreaControls(enabled: $safeAreaOnly, platforms: safeAreaPlatformSelection)
         if lookFormPlan.step2Controls.contains(.overlayStyle) {
             FormGroupHeader("Overlays")
             overlayControls
@@ -285,6 +293,9 @@ extension WizardView {
             }
         }
         var overlays: [String] = []
+        if safeAreaOnly {
+            overlays.append("Safe area: " + safeAreaPlatformSelection.wrappedValue.map(\.shortLabel).joined(separator: ", "))
+        }
         if lookCapabilities.onScreenText, textMode != .none { overlays.append("Text: \(textMode.title)") }
         if lookFormPlan.step2Controls.contains(.nameTags), nameTags { overlays.append("Name tags") }
         if !fixedOverlayTemplate.isEmpty { overlays.append("Overlay \(fixedOverlayTemplate)") }

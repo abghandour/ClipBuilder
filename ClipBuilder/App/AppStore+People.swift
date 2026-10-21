@@ -5,6 +5,22 @@ import UniformTypeIdentifiers
 extension AppStore {
     // MARK: - People
 
+    func setVideoPersonVIP(videoID: Int64, personID: Int64, vip: Bool) async -> Bool {
+        guard let database else { return false }
+        let generation = profileGeneration
+        do {
+            try await database.setVideoPersonVIP(videoID: videoID, personID: personID, vip: vip, source: "user")
+            guard generation == profileGeneration, self.database === database else { return false }
+            noteVideoPeopleChanged()
+            return true
+        } catch {
+            guard generation == profileGeneration else { return false }
+            presentError("Could not update VIP", error)
+            return false
+        }
+    }
+
+
     /// One background batch; values remain proposals until the job's review is applied.
     func researchPeople(_ targets: [PersonRecord], fields: [String]? = nil, reason: String) {
         guard database != nil else { return }

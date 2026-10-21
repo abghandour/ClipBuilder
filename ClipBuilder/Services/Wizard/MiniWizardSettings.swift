@@ -20,6 +20,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var nameTagStyle: String?
     var nameTagStyleID: String?
     var nameTagPosition: String?
+    var safeAreaOnly = false
+    var safeAreaPlatforms: [String]?
     var watermark = true
     /// A saved overlay used as the watermark; nil or empty = the brand logo.
     var watermarkOverlay: String?
@@ -52,6 +54,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     enum CodingKeys: String, CodingKey {
         case quality, preset, cameraFocus, captions, englishCaptions, captionPosition, captionStyleID
         case introVideo, outroVideo, introBumper, outroBumper
+        case safeAreaOnly, safeAreaPlatforms
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case watermark, watermarkOverlay, watermarkOpacity
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, outputMode, transition, look
@@ -78,6 +81,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         nameTagContent = try c.decodeIfPresent(String.self, forKey: .nameTagContent)
         nameTagStyle = try c.decodeIfPresent(String.self, forKey: .nameTagStyle)
         nameTagStyleID = try c.decodeIfPresent(String.self, forKey: .nameTagStyleID)
+        safeAreaOnly = try c.decodeIfPresent(Bool.self, forKey: .safeAreaOnly) ?? false
+        safeAreaPlatforms = try c.decodeIfPresent([String].self, forKey: .safeAreaPlatforms)
         nameTagPosition = try c.decodeIfPresent(String.self, forKey: .nameTagPosition)
         watermark = try c.decodeIfPresent(Bool.self, forKey: .watermark) ?? base.watermark
         watermarkOverlay = try c.decodeIfPresent(String.self, forKey: .watermarkOverlay)
@@ -138,6 +143,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.nameTagStyle = nameTagStyle
         result.nameTagStyleID = nameTagStyleID
         result.nameTagPosition = nameTagPosition
+        result.safeAreaOnly = safeAreaOnly
+        let platforms = safeAreaPlatforms?.compactMap(SocialPlatform.init(rawValue:))
+        result.safeAreaPlatforms = platforms?.isEmpty == false ? platforms : nil
         result.transitionChoice = transition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? WizardPlanRules.randomTransitionChoice : transition
         result.lookPreset = lookName
@@ -204,6 +212,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.nameTagStyle = defaults.string(forKey: key(.nameTagStyle))
         result.nameTagStyleID = defaults.string(forKey: key(.nameTagStyleID))
         result.nameTagPosition = defaults.string(forKey: key(.nameTagPosition))
+        result.safeAreaPlatforms = defaults.stringArray(forKey: key(.safeAreaPlatforms))
         result.cameraFocus = defaults.string(forKey: key(.cameraFocus)) ?? ""
         result.overlayTemplate = defaults.string(forKey: key(.overlayTemplate))
         result.overlayTexts = defaults.stringArray(forKey: key(.overlayTexts)) ?? []
@@ -242,6 +251,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         defaults.set(nameTagStyle, forKey: key(.nameTagStyle))
         defaults.set(nameTagStyleID, forKey: key(.nameTagStyleID))
         defaults.set(nameTagPosition, forKey: key(.nameTagPosition))
+        defaults.set(safeAreaPlatforms, forKey: key(.safeAreaPlatforms))
         defaults.set(cameraFocus, forKey: key(.cameraFocus))
         defaults.set(overlayTemplate, forKey: key(.overlayTemplate))
         defaults.set(overlayTexts, forKey: key(.overlayTexts))
@@ -261,6 +271,6 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     private static var booleanFields: [(MiniWizardMemory.Field, WritableKeyPath<Self, Bool>)] {
         [(.captions, \.captions), (.englishCaptions, \.englishCaptions), (.introVideo, \.introVideo),
          (.outroVideo, \.outroVideo), (.nameTags, \.nameTags), (.watermark, \.watermark), (.overlay, \.overlay),
-         (.muteSourceAudio, \.muteSourceAudio), (.music, \.music)]
+         (.safeAreaOnly, \.safeAreaOnly), (.muteSourceAudio, \.muteSourceAudio), (.music, \.music)]
     }
 }

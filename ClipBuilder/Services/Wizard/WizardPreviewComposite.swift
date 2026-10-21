@@ -129,7 +129,8 @@ nonisolated enum WizardPreviewComposite {
             }
             let style = input.profile.captionStyle(id: options.captionStyleID)
             if options.addCaptions {
-                let renderer = CaptionRenderer(videoWidth: settings.width, videoHeight: settings.height, style: style)
+                let renderer = CaptionRenderer(videoWidth: settings.width, videoHeight: settings.height, style: style,
+                    safeArea: options.resolvedSafeArea, safeAreaOnly: options.safeAreaOnly == true)
                 let text = input.scene.captionText?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let start = input.scene.words?.first?.start ?? 0
                 let end = max(start + 3, input.scene.words?.last?.end ?? 3)

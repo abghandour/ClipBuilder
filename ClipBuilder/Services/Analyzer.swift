@@ -911,7 +911,8 @@ actor Analyzer {
     private static func peopleOnlyPrompt(domain: String, duration: Double,
                                          knownPeople: [PersonRecord],
                                          markers: [(marker: PersonMarker, person: PersonRecord)],
-                                         ignoreCount: Int, filename: String) -> String {
+                                         ignoreCount: Int, filename: String, videoType: VideoType?,
+                                         speaking: String) -> String {
         let known = knownPeople.isEmpty ? "None yet — every person you find is new." :
             knownPeople.map { person in
                 let named = person.name.isEmpty ? "" : " (the user calls them \"\(person.name)\")"
@@ -929,7 +930,7 @@ actor Analyzer {
         If a KNOWN person's registered name above is MISSPELLED — the on-screen graphics or the person's standard, well-documented spelling shows the correct form — set "corrected_name" on their entry to the fixed spelling (accents and capitalization included). Fix ONLY the spelling of the SAME name: never substitute a different person's name or swap in a nickname; null when the registered name is already right or you are unsure.
         \(filenameBlock(filename))
         Return ONLY a JSON object, no markdown fences:
-        {"people": [{"key": "<known key, or a new kebab-case slug>", "description": "<concise visual description: build, hair, clothing, marks>", "suggested_name": "<name from on-screen graphics or the filename, or null>", "corrected_name": "<fixed spelling of a known person's misspelled registered name, or null>", "ranges": [{"start": 0.0, "end": 5.2}], "portrait": {"at": <timestamp of a frame where this person is clearly and fully visible>, "x": 0.1, "y": 0.2, "w": 0.25, "h": 0.6}}], "suggested_filename": "<per the FILENAME SUGGESTION section, or null>"}
+        {"people": [{"key": "<known key, or a new kebab-case slug>", "description": "<concise visual description: build, hair, clothing, marks>", "vip": true, "vip_reason": "<why this person is or is not a VIP>", "suggested_name": "<name from on-screen graphics or the filename, or null>", "corrected_name": "<fixed spelling of a known person's misspelled registered name, or null>", "ranges": [{"start": 0.0, "end": 5.2}], "portrait": {"at": <timestamp of a frame where this person is clearly and fully visible>, "x": 0.1, "y": 0.2, "w": 0.25, "h": 0.6}}], "suggested_filename": "<per the FILENAME SUGGESTION section, or null>"}
         "portrait" is a normalized top-left box tightly around that person at that frame — it becomes their avatar, so prefer a moment where they are unobstructed and facing the camera.
         """
     }
@@ -984,7 +985,7 @@ actor Analyzer {
 
     func detectPeopleOnly(video: VideoRecord, profile: BrandProfile, database: Database,
                           provider: String? = nil, model: String? = nil,
-                          sampleTimes: [Double]? = nil,
+                          sampleTimes: [Double]? = nil, speakerTurns: [SpeakerTurn]? = nil,
                           log: @escaping @Sendable (String) -> Void) async throws
         -> (roster: [VideoPersonRecord], suggestedFilename: String?) {
         try video.requirePresent()
@@ -1036,10 +1037,19 @@ actor Analyzer {
                 }
             }
         }
+        let savedTurns = video.type?.usesPodcastPass == true
+            ? try await database.fetchSpeakerTurns(videoID: video.id) : []
+        // Fresh separated turns are not saved until after this pass. Named saved turns
+        // provide identities on reruns; voice clusters still supply evidence on the first pass.
+        let turns = savedTurns.contains(where: { $0.personKey != nil }) ? savedTurns : speakerTurns ?? savedTurns
+        let talkShare = VIPRules.talkShare(turns: turns)
+        let transcripts = video.type?.usesPodcastPass == true
+            ? try await database.fetchTranscripts(videoID: video.id) : []
+        let speaking = VIPRules.speakingEvidence(turns: turns, transcripts: transcripts)
         let prompt = Self.peopleOnlyPrompt(domain: profile.effectiveDomain, duration: duration,
                                            knownPeople: knownPeople, markers: namedMarkers,
                                            ignoreCount: ignoreFrames.count,
-                                           filename: video.filename)
+                                           filename: video.filename, videoType: video.type, speaking: speaking)
         let response = try await callThinningFrames(prompt: prompt, task: .people,
                                                     auxiliary: profilePortraits + markerFrames + ignoreFrames,
                                                     sampled: frames,
@@ -1050,7 +1060,7 @@ actor Analyzer {
         }
 
         var entries: [(key: String, descriptor: String, portraitAt: Double,
-                       portraitJSON: String?, rangesJSON: String?)] = []
+                       portraitJSON: String?, rangesJSON: String?, vip: Bool?)] = []
         var seenKeys = Set<String>()
         // Spelling fixes for known, already-named people (unnamed people are
         // named through the review flows instead).
@@ -1112,7 +1122,14 @@ actor Analyzer {
                     portraitAt = found.time
                 }
             }
-            entries.append((key, descriptor, portraitAt, portraitJSON, rangesJSON))
+            if let reason = raw["vip_reason"] as? String, !reason.isEmpty {
+                var metadata = portraitJSON.flatMap {
+                    try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any]
+                } ?? [:]
+                metadata["vip_reason"] = reason
+                portraitJSON = String(decoding: try JSONSerialization.data(withJSONObject: metadata), as: UTF8.self)
+            }
+            entries.append((key, descriptor, portraitAt, portraitJSON, rangesJSON, raw["vip"] as? Bool))
         }
 
         for entry in entries {
@@ -1127,8 +1144,18 @@ actor Analyzer {
         let idsByKey = Dictionary(uniqueKeysWithValues:
             ((try? await database.fetchPeople()) ?? []).map { ($0.key, $0.id) })
         try Task.checkCancellation()
-        try await database.replaceVideoPeople(videoID: video.id, entries: entries.compactMap { entry in
-            idsByKey[entry.key].map { ($0, entry.portraitAt, entry.portraitJSON, entry.rangesJSON) }
+        let fallback = VIPRules.fallback(videoType: video.type, people: entries.map {
+            ($0.key, $0.descriptor, knownByKey[$0.key]?.category)
+        }, talkShare: talkShare)
+        if entries.contains(where: { $0.vip == nil }) {
+            let keys = entries.filter { $0.vip == nil && fallback.contains($0.key) }.map(\.key).sorted()
+            log("VIP (rules): \(keys.isEmpty ? "none" : keys.joined(separator: ", "))")
+        }
+        try await database.replaceVideoPeople(videoID: video.id, vipEntries: entries.compactMap { entry in
+            let judgement = VIPRules.judgement(modelValue: entry.vip, key: entry.key, fallback: fallback)
+            return idsByKey[entry.key].map {
+                ($0, entry.portraitAt, entry.portraitJSON, entry.rangesJSON, judgement.vip, judgement.source)
+            }
         }, provenance: response.provenance)
         log("People: \(entries.count) found in \(video.filename)")
         let suggestedFilename = (object["suggested_filename"] as? String)

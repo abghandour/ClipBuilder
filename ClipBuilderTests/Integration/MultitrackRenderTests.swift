@@ -7,6 +7,302 @@ import Synchronization
        .enabled(if: FixtureVideo.integrationsAvailable,
                 "Install ffmpeg and ffprobe to run."))
 struct MultitrackRenderTests {
+    @Test("podcast look and burn-ins match the legacy extract across segment boundaries", arguments: ["none", "fade", "slide_up", "retained-overlay"])
+    func podcastExtractFoldedMatchesTwoPass(animation: String) async throws {
+        let temp = try TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "express-folded")
+        var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 0.2)
+        first.videoFile = source.path
+        var second = first
+        second.uid = UUID(); second.sourceStart = 0.2; second.startTime = 0.2; second.duration = 2.8
+        // Slot footage leaves black canvas; the cutaway carries its own look.
+        first.wide = true; second.wide = true
+        var cutaway = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0.5, duration: 1, startTime: 1, track: 1)
+        cutaway.videoFile = source.path; cutaway.role = .cutaway
+        cutaway.effect = EffectSpec(preset: "bw")
+        var document = Fixtures.timelineDocument(clips: [first, second, cutaway])
+        document.textOverlays = [TextOverlayItem(text: "Document title",
+            startTime: animation == "retained-overlay" ? 0.1 : 0.4, endTime: 2.7)]
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        let png = temp.directory.url.appendingPathComponent("tag.png")
+        try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "color=c=black@0:s=360x640,format=rgba,drawbox=x=23:y=71:w=64:h=32:color=red:t=fill", "-frames:v", "1", png.path], timeout: 60)
+        let overlays = [RenderEngine.ClipOverlay(png: png, x: 0, y: 0,
+            start: animation == "none" ? 0.495 : nil, end: animation == "none" ? 2.495 : nil,
+            animation: animation == "none" ? nil : animation == "retained-overlay" ? "fade" : animation)]
+        let original = document
+        let old = temp.directory.url.appendingPathComponent("two-pass.mp4")
+        let folded = temp.directory.url.appendingPathComponent("folded.mp4")
+        let messages = Mutex<[String]>([])
+        for legacy in [true, false] {
+            try await ExpressRenderTesting.$twoPassExtract.withValue(legacy) {
+                try await ExpressPodcastRenderer.extract(document: document, scenes: [scene], profile: Fixtures.brand(),
+                    database: temp.database, render: RenderEngine(), camera: "balanced", overlays: overlays,
+                    look: EffectSpec(preset: "faded"), mute: false, clipNumber: 1, duration: 3,
+                    output: legacy ? old : folded,
+                    cache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent(legacy ? "old-cache" : "new-cache")),
+                    emit: { line in messages.withLock { $0.append(line) } })
+            }
+        }
+        #expect(document == original)
+        #expect(messages.withLock { $0.contains("Clip 1: extraction complete; look and 1 overlays applied") })
+        #expect(messages.withLock { $0.contains { $0.hasPrefix("Express finishing:") } }
+            == (animation == "retained-overlay"))
+        let comparison = try await Self.compareDecoded(folded, old, trailingFramesAllowed: 1)
+        #expect(comparison.videoTimingIdentical)
+        #expect(comparison.minimumSSIM >= 0.99)
+        #expect(try await Self.audioMatches(folded, old))
+        let foldedDuration = await FFmpeg.duration(of: folded)
+        let oldDuration = await FFmpeg.duration(of: old)
+        #expect(abs(foldedDuration - oldDuration) < 0.05)
+
+        // The final reel pairs one extracted file with its full cut, even
+        // when that cut contains multiple VIP pieces, and adds a bumper.
+        first.originKey = "one-cut"; second.originKey = "one-cut"
+        var bumper = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 0.5, startTime: 3)
+        bumper.videoFile = source.path; bumper.bumper = true
+        first.wide = false; second.wide = false
+        document.videoTrack = [first, second, bumper]
+        document.textOverlays = []
+        let prepared = WizardEngine.preparedDocument(from: document, clipURLs: [folded], transitions: [])
+        let resolved = MultitrackRenderer.resolveClips(document: prepared, scenes: [])
+        let segments = MultitrackRenderer.buildLayeredSegments(resolved)
+        let plain = try #require(segments.first)
+        let placement = try #require(MultitrackRenderer.placements(for: plain).first)
+        let clip = try #require(plain.clips.first)
+        let passthrough = await RenderContext.$settings.withValue(document.renderSettings) {
+            await MultitrackRenderer.isPrerenderedPassthrough(placement, clip: clip, prerendered: [folded.path])
+        }
+        #expect(passthrough)
+        messages.withLock { $0.removeAll() }
+        let reel = try await MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("reel-cache"))).render(
+                document: prepared, scenes: [], profile: Fixtures.brand(), database: temp.database,
+                preview: true, prerenderedSources: [folded.path],
+                emit: { line in messages.withLock { $0.append(line) } })
+        defer { try? FileManager.default.removeItem(at: reel.url) }
+        #expect(messages.withLock { $0.contains { $0.contains("prerendered clip; copied, encodes=0") } })
+        // Stream-copied AAC joins add about 0.02 s of priming per file to the
+        // container; the picture itself must be exactly 3.5 s (105 frames).
+        let videoDuration = try await FFmpeg.probe(["-v", "quiet", "-select_streams", "v:0",
+            "-show_entries", "stream=duration", "-of", "csv=p=0", reel.url.path])
+        #expect(abs((Double(videoDuration.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0) - 3.5) < 0.05)
+        #expect(abs(reel.duration - 3.5) < 0.1)
+    }
+
+    @Test("podcast mute retains silent stereo AAC and crossfades, invalidating the voiced cache")
+    func podcastFoldedMute() async throws {
+        let temp = try TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "express-mute")
+        var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 1)
+        clip.videoFile = source.path
+        var document = Fixtures.timelineDocument(clips: [clip])
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        let cache = RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("cache"))
+        let commands = Mutex<[[String]]>([])
+        for mute in [false, true] {
+            let output = temp.directory.url.appendingPathComponent("mute-\(mute).mp4")
+            try await FFmpeg.$commandCompleted.withValue({ args in commands.withLock { $0.append(args) } }) {
+                try await ExpressPodcastRenderer.extract(document: document, scenes: [scene], profile: Fixtures.brand(),
+                    database: temp.database, render: RenderEngine(), camera: "balanced", overlays: [], look: nil,
+                    mute: mute, clipNumber: 1, duration: 1, output: output, cache: cache, emit: { _ in })
+            }
+            #expect(await FFmpeg.hasAudioStream(output))
+            let pcm = temp.directory.url.appendingPathComponent("mute-\(mute).pcm")
+            try await FFmpeg.run(["-y", "-i", output.path, "-map", "0:a", "-f", "s16le", pcm.path],
+                                 timeout: 60, mediaResource: .decoding)
+            let bytes = try Data(contentsOf: pcm)
+            #expect(!bytes.isEmpty)
+            #expect(bytes.allSatisfy { $0 == 0 } == mute)
+            let probe = try await ProcessRunner.run(executable: FFmpeg.ffprobeURL(), arguments: [
+                "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name,sample_rate,channels",
+                "-of", "json", output.path])
+            let json = try #require(JSONSerialization.jsonObject(with: probe.stdout) as? [String: Any])
+            let stream = try #require((json["streams"] as? [[String: Any]])?.first)
+            #expect(stream["codec_name"] as? String == "aac")
+            #expect(stream["sample_rate"] as? String == "44100")
+            #expect(stream["channels"] as? Int == 2)
+        }
+        #expect(commands.withLock { $0.filter { $0.contains("-/filter_complex") }.count } == 2)
+        let muted = temp.directory.url.appendingPathComponent("mute-true.mp4")
+        let joined = temp.directory.url.appendingPathComponent("muted-reel.mp4")
+        let fellBack = Mutex(false)
+        try await RenderContext.$settings.withValue(document.renderSettings) {
+            try await RenderEngine().concatenate(clips: [muted, muted], transitions: ["fade"], output: joined,
+                transitionDuration: 0.25, onFallback: { fellBack.withLock { $0 = true } })
+        }
+        #expect(!fellBack.withLock { $0 })
+        #expect(abs((await FFmpeg.duration(of: joined)) - 1.75) < 0.05)
+        #expect(await FFmpeg.hasAudioStream(joined))
+    }
+
+    @Test("podcast extraction trims an overlong cut to the plan and remains passthrough eligible")
+    func podcastFoldedTrimsToPlan() async throws {
+        let temp = try TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "express-trim")
+        var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 2.3)
+        clip.videoFile = source.path
+        var document = Fixtures.timelineDocument(clips: [clip])
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        let output = temp.directory.url.appendingPathComponent("planned.mp4")
+        try await ExpressPodcastRenderer.extract(document: document, scenes: [scene], profile: Fixtures.brand(),
+            database: temp.database, render: RenderEngine(), camera: "balanced", overlays: [], look: nil,
+            mute: false, clipNumber: 1, duration: 2, output: output,
+            cache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("cache")), emit: { _ in })
+        #expect(abs((await FFmpeg.duration(of: output)) - 2) < 0.05)
+        #expect(document.videoTrack.first?.duration == 2.3)
+        clip.sceneID = nil; clip.videoFile = output.path; clip.duration = 2
+        document.videoTrack = [clip]
+        let passthrough = try await RenderContext.$settings.withValue(document.renderSettings) {
+            let clips = MultitrackRenderer.resolveClips(document: document, scenes: [])
+            let segment = try #require(MultitrackRenderer.buildLayeredSegments(clips).first)
+            let placement = try #require(MultitrackRenderer.placements(for: segment).first)
+            return await MultitrackRenderer.isPrerenderedPassthrough(placement,
+                clip: try #require(segment.clips.first), prerendered: [output.path])
+        }
+        #expect(passthrough)
+    }
+
+    @Test("a saved portrait path is tracked again for a 4:5 Full Screen", arguments: [false, true])
+    func savedPathRejectsDifferentCanvas(explicit: Bool) async throws {
+        let temp = try TempDatabase()
+        let source = try await FixtureVideo.makePodcast(in: temp.directory.url)
+        var scene = Fixtures.scene(start: 0, end: 1)
+        scene.videoPath = source.path; scene.videoWidth = 1280; scene.videoHeight = 720
+        let saved = SceneCameraPath(camera: "balanced", keyframes: [
+            .init(t: 0, x: 0.2, y: 0, w: 0.31640625, h: 1),
+            .init(t: 1, x: 0.2, y: 0, w: 0.31640625, h: 1)])
+        scene.centerStagePathJSON = String(decoding: try JSONEncoder().encode(saved), as: UTF8.self)
+        var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 1)
+        clip.wide = true; clip.centerStage = true
+        if explicit { clip.cameraPath = saved.keyframes } else { clip.areaRegion = FreeCropRect() }
+        var document = Fixtures.timelineDocument(clips: [clip])
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 450)
+        document.cropBlocks = [CropBlockItem(layout: CropLayoutRef(name: "Full Screen"), startTime: 0, duration: 1)]
+        let messages = Mutex<[String]>([])
+        // The feed-path cache is shared across renderers and test runs; a hit
+        // would hide the tracking line this test looks for.
+        let result = try await MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("cache")),
+            framingCacheEnabled: false).render(
+                document: document, scenes: [scene], profile: Fixtures.brand(), database: temp.database,
+                preview: true, emit: { line in messages.withLock { $0.append(line) } })
+        defer { try? FileManager.default.removeItem(at: result.url) }
+        #expect(!messages.withLock { $0.contains { $0.contains("saved framing used") } })
+        #expect(messages.withLock { $0.contains { $0.contains("tracked in place") } })
+    }
+
+    @Test("two full-frame podcast cells with distinct focus produce distinct paths")
+    func savedPathDoesNotOverrideCellFocus() async throws {
+        let temp = try TempDatabase()
+        let source = try await FixtureVideo.makePodcast(in: temp.directory.url)
+        var scene = Fixtures.scene(start: 0, end: 1)
+        scene.videoPath = source.path; scene.videoWidth = 1280; scene.videoHeight = 720
+        // This path DOES match a half-height cell: focus alone must reject it.
+        let saved = SceneCameraPath(camera: "balanced", keyframes: [
+            .init(t: 0, x: 0.18, y: 0, w: 0.6328125, h: 1),
+            .init(t: 1, x: 0.18, y: 0, w: 0.6328125, h: 1)])
+        scene.centerStagePathJSON = String(decoding: try JSONEncoder().encode(saved), as: UTF8.self)
+        let clips = [0.2, 0.8].enumerated().map { index, x in
+            var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 1, track: index)
+            clip.wide = true; clip.areaRegion = FreeCropRect(); clip.areaFocus = AreaFocus(x: x, y: 0.4)
+            return clip
+        }
+        var document = Fixtures.timelineDocument(clips: clips)
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        document.cropBlocks = [CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"), startTime: 0, duration: 1)]
+        let cache = RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("cache"))
+        let result = try await MultitrackRenderer(render: RenderEngine(), segmentCache: cache).render(
+            document: document, scenes: [scene], profile: Fixtures.brand(), database: temp.database,
+            preview: true, emit: { _ in })
+        defer { try? FileManager.default.removeItem(at: result.url) }
+        try await RenderContext.$settings.withValue(document.renderSettings) {
+            var paths: [[CameraPathKeyframe]] = []
+            for clip in MultitrackRenderer.resolveClips(document: document, scenes: [scene]) {
+                #expect(clip.cameraPath == nil)
+                let area = try #require(ScreenCropStore.area(reference: clip.screenCrop))
+                let key = try MultitrackRenderer.prepassKey(clip, area: area, tuning: "balanced")
+                let cached = await cache.readJSON(FeedCameraPath.self, key: key)
+                paths.append(try #require(cached).keyframes)
+            }
+            #expect(paths.count == 2)
+            #expect(paths[0] != paths[1])
+            let left = try #require(paths[0].first)
+            let right = try #require(paths[1].first)
+            #expect(left.x < right.x)
+        }
+    }
+
+    @Test("two podcast feeds use JSON paths and match the retained export reference")
+    func podcastFeedPathsMatchExport() async throws {
+        let temp = try TempDatabase()
+        let source = try await FixtureVideo.makePodcast(in: temp.directory.url)
+        var clips: [TimelineClip] = []
+        for index in 0..<2 {
+            var clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 3, track: index)
+            clip.videoFile = source.path; clip.wide = true; clip.muted = index > 0
+            clip.areaRegion = FreeCropRect(xFrac: Double(index) / 2, yFrac: 0, wFrac: 0.5, hFrac: 1)
+            clips.append(clip)
+        }
+        var document = Fixtures.timelineDocument(clips: clips)
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        document.cropBlocks = [CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"), startTime: 0, duration: 3)]
+        let root = temp.directory.url.appendingPathComponent("path-cache")
+        let cache = RenderSegmentCache(directory: root)
+        let messages = Mutex<[String]>([])
+        let renderer = MultitrackRenderer(render: RenderEngine(), segmentCache: cache)
+        let fused = try await renderer.render(document: document, scenes: [], profile: Fixtures.brand(),
+            database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
+        defer { try? FileManager.default.removeItem(at: fused.url) }
+        #expect(messages.withLock { $0.filter { $0.contains("Framing prepass: keyframes=") }.count } == 2)
+        try await RenderContext.$settings.withValue(document.renderSettings) {
+            for clip in MultitrackRenderer.resolveClips(document: document, scenes: []) {
+                let area = try #require(ScreenCropStore.area(reference: clip.screenCrop))
+                let key = try MultitrackRenderer.prepassKey(clip, area: area, tuning: "balanced")
+                #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(key + ".json").path))
+                #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(key + ".mp4").path))
+                let path = await cache.readJSON(FeedCameraPath.self, key: key)
+                #expect(path?.keyframes.isEmpty == false)
+            }
+        }
+        let reference = try await ExpressRenderTesting.$exportAreaPaths.withValue(true) {
+            try await MultitrackRenderer(render: RenderEngine(),
+                segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("export-cache"))).render(
+                    document: document, scenes: [], profile: Fixtures.brand(), database: temp.database,
+                    preview: true, emit: { _ in })
+        }
+        defer { try? FileManager.default.removeItem(at: reference.url) }
+        let comparison = try await Self.compareDecoded(fused.url, reference.url, trailingFramesAllowed: 1)
+        #expect(comparison.videoTimingIdentical)
+        #expect(comparison.minimumSSIM >= 0.99)
+        #expect(try await Self.audioMatches(fused.url, reference.url))
+        #expect(abs(fused.duration - reference.duration) < 0.05)
+    }
+
+    /// Removing an AAC generation changes PCM rounding. Compare aligned decoded
+    /// samples with a -40 dBFS RMS bound, and retain exact duration/timing checks.
+    @concurrent
+    static func audioMatches(_ a: URL, _ b: URL) async throws -> Bool {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AudioParity-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var samples: [[Int16]] = []
+        for (index, url) in [a, b].enumerated() {
+            let pcm = directory.appendingPathComponent("\(index).pcm")
+            try await FFmpeg.run(["-v", "error", "-i", url.path, "-vn", "-ac", "1", "-ar", "44100",
+                "-f", "s16le", pcm.path], timeout: 60, mediaResource: .decoding)
+            let bytes = [UInt8](try Data(contentsOf: pcm))
+            samples.append(stride(from: 0, to: bytes.count - 1, by: 2).map {
+                Int16(bitPattern: UInt16(bytes[$0]) | UInt16(bytes[$0 + 1]) << 8)
+            })
+        }
+        let count = min(samples[0].count, samples[1].count)
+        guard count > 0, abs(samples[0].count - samples[1].count) <= 2048 else { return false }
+        let meanSquare = zip(samples[0].prefix(count), samples[1].prefix(count)).reduce(0.0) {
+            $0 + pow((Double($1.0) - Double($1.1)) / 32768, 2)
+        } / Double(count)
+        return sqrt(meanSquare) < 0.01
+    }
+
     /// A registered, analyzed 3-second wide fixture: one scene spanning it.
     private func seedScene(in temp: TempDatabase, hash: String,
                            directory: URL? = nil) async throws -> (source: URL, scene: SceneRecord) {
@@ -409,7 +705,7 @@ extension MultitrackRenderTests {
             defer { try? FileManager.default.removeItem(at: result.url) }
             decoded.append(try await FFmpeg.run(["-v", "error", "-i", result.url.path,
                 "-map", "0:v:0", "-map", "0:a:0", "-f", "framemd5", "-"], timeout: 60, mediaResource: .decoding))
-            #expect(messages.withLock { $0.contains { $0.contains("using a static center window") } })
+            #expect(messages.withLock { $0.contains { $0.contains("resolving a static fallback window") } })
             #expect(!messages.withLock { $0.contains { $0.hasPrefix("Framing cache hit") } })
         }
         #expect((try? FileManager.default.contentsOfDirectory(atPath: root.path))?.isEmpty != false)
@@ -617,7 +913,7 @@ extension MultitrackRenderTests {
 
     /// Frame timing and decoded audio must match exactly; pixels are scored
     /// per frame because hardware encodes of identical frames differ slightly.
-    private static func compareDecoded(_ candidate: URL, _ reference: URL,
+    static func compareDecoded(_ candidate: URL, _ reference: URL,
                                        trailingFramesAllowed: Int = 0) async throws -> DecodedComparison {
         func streams(_ url: URL) async throws -> (video: [[String]], audio: [String]) {
             let text = try await FFmpeg.run(["-v", "error", "-i", url.path, "-map", "0:v:0", "-map", "0:a:0",

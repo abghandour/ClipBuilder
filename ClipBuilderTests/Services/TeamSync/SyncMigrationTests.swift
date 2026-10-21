@@ -3,6 +3,36 @@ import Testing
 @testable import Clip_Builder
 
 struct SyncMigrationTests {
+    @Test("VIP columns migrate from schema 35 and sync as nullable booleans")
+    func vipColumns() async throws {
+        let folder = try SyncTestFolder()
+        let path = folder.url.appendingPathComponent("profile.db").path
+        let raw = try SQLiteConnection(path: path)
+        try raw.execute("ALTER TABLE video_people DROP COLUMN vip")
+        try raw.execute("ALTER TABLE video_people DROP COLUMN vip_source")
+        try raw.execute("PRAGMA user_version = 35")
+        _ = try Database(path: URL(fileURLWithPath: path))
+        #expect(try raw.columnNames(of: "video_people").isSuperset(of: ["vip", "vip_source"]))
+        let table = try #require(SyncTable.footage.first { $0.name == "video_people" })
+        #expect(table.columns.contains("vip_source"))
+        #expect(SyncEngine.understoodSchemaVersion == 7)
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let wire: SyncMapping.WireRow = ["sync_id": .string(UUID().uuidString),
+                                       "team_id": .string(scope.teamID.uuidString),
+                                       "profile_id": .string(scope.profileID.uuidString),
+                                       "vip": .bool(false), "vip_source": .string("user")]
+        let row = try SyncMapping.local(wire: wire, localID: nil, scope: scope, table: table)
+        #expect(row["vip"]?.intValue == 0)
+        #expect(row["vip_source"]?.stringValue == "user")
+        let exported = try SyncMapping.wire(local: row, syncID: try #require(row["sync_id"]?.stringValue), scope: scope, table: table)
+        #expect(exported["vip"] == .bool(false))
+        var legacy = wire
+        legacy.removeValue(forKey: "vip")
+        legacy.removeValue(forKey: "vip_source")
+        let legacyRow = try SyncMapping.local(wire: legacy, localID: nil, scope: scope, table: table)
+        if case .null? = legacyRow["vip"] {} else { Issue.record("a wire row without vip must map to NULL") }
+    }
+
     @Test("Binding seeds lessons in local order regardless of UUIDs or identity backfill", arguments: [false, true])
     func bindingQueueOrder(hasLearnedIDs: Bool) async throws {
         let folder = try SyncTestFolder()

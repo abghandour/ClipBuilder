@@ -30,6 +30,7 @@ nonisolated enum AreaFramer {
                       focusPortraits: [Data] = [],
                       avoidPortraits: [Data] = [],
                       fallbackCenter: (x: Double, y: Double)? = nil,
+                      detectFallbackFace: Bool = false,
                       tuning: CenterStageService.Tuning = .fastAction,
                       centerStage: CenterStageService,
                       scratch: URL,
@@ -54,8 +55,7 @@ nonisolated enum AreaFramer {
         } catch {
             try Task.checkCancellation()
             onFallback?()
-            let fallback = fallbackCenter == nil ? "static center window" : "static window centered on the face"
-            log("Area \"\(area.name)\": \(error) — using a \(fallback)")
+            log("Area \"\(area.name)\": \(error) — resolving a static fallback window")
         }
         defer { if let fitted { try? FileManager.default.removeItem(at: fitted) } }
 
@@ -66,9 +66,28 @@ nonisolated enum AreaFramer {
             filter = "[0:v]scale=\(Int(box.width)):\(Int(box.height)),\(place)"
         } else {
             let size = await FFmpeg.dimensions(of: source)
-            let window = fallbackWindow(aspect: box.width / box.height,
+            var detectedFace: CGRect?
+            if detectFallbackFace {
+                for offset in [0.0, 1.0] where offset < duration {
+                    detectedFace = try? await CenterStageService.faceCenter(source: source, at: start + offset)
+                    try Task.checkCancellation()
+                    if detectedFace != nil { break }
+                }
+                log("Area \"\(area.name)\": static fallback uses \(detectedFace != nil ? "clip face detection" : fallbackCenter != nil ? "roster portrait" : "feed center")")
+            }
+            var window = fallbackWindow(aspect: box.width / box.height,
                                         sourceSize: CGSize(width: size.width, height: size.height),
-                                        center: fallbackCenter)
+                                        center: detectedFace.map { (x: $0.midX, y: $0.midY) } ?? fallbackCenter)
+            if let face = detectedFace {
+                let bounds = CGRect(x: 0, y: 0, width: size.width, height: size.height)
+                let crop = CGRect(x: window.xFrac * bounds.width, y: window.yFrac * bounds.height,
+                                  width: window.wFrac * bounds.width, height: window.hFrac * bounds.height)
+                let pixels = CGRect(x: face.minX * bounds.width, y: face.minY * bounds.height,
+                                    width: face.width * bounds.width, height: face.height * bounds.height)
+                let guarded = FaceGuard.contain(crop, faces: [pixels], bounds: bounds)
+                window = FreeCropRect(xFrac: guarded.minX / bounds.width, yFrac: guarded.minY / bounds.height,
+                                      wFrac: guarded.width / bounds.width, hFrac: guarded.height / bounds.height)
+            }
             arguments += ["-ss", String(format: "%.3f", max(0, start)),
                           "-t", String(format: "%.3f", duration), "-i", source.path]
             filter = "[0:v]" + staticFilter(area: area, window: window) + "[vout]"
@@ -77,43 +96,9 @@ nonisolated enum AreaFramer {
                       "-t", String(format: "%.3f", duration)]
         arguments += FFmpeg.encodeArgs
         arguments.append(output.path)
+        log("Decode/encode: place framed area on output canvas")
         try await FFmpeg.run(arguments, timeout: 600)
         return output
-    }
-
-    /// Like `frame`, but the tracking camera only sees `region` (fractions
-    /// of the source frame): the feed is cut out first, so one person's
-    /// cell of a video call is framed on that person alone.
-    static func frame(source: URL, start: Double, duration: Double,
-                      area: ScreenCropArea, region: FreeCropRect,
-                      focus: (x: Double, y: Double)? = nil,
-                      tuning: CenterStageService.Tuning = .fastAction,
-                      centerStage: CenterStageService,
-                      scratch: URL,
-                      onFallback: (@Sendable () -> Void)? = nil,
-                      log: @escaping @Sendable (String) -> Void) async throws -> URL {
-        let timing = PerfSignpost.begin("AreaFraming", metadata: "region")
-        defer { PerfSignpost.end(timing) }
-        func clamp(_ value: Double) -> Double { min(1, max(0, value)) }
-        let x = clamp(region.xFrac), y = clamp(region.yFrac)
-        let w = max(0.05, min(region.wFrac, 1 - x))
-        let h = max(0.05, min(region.hFrac, 1 - y))
-        let feed = scratch.appendingPathComponent("feed_\(UUID().uuidString).mp4")
-        let filter = String(format: "crop='2*floor(iw*%.5f/2)':'2*floor(ih*%.5f/2)':'iw*%.5f':'ih*%.5f',setsar=1", w, h, x, y)
-        var arguments: [String] = ["-y", "-ss", String(format: "%.3f", max(0, start)),
-                                   "-t", String(format: "%.3f", duration), "-i", source.path,
-                                   "-vf", filter, "-t", String(format: "%.3f", duration)]
-        arguments += FFmpeg.encodeArgs
-        arguments.append(feed.path)
-        try await FFmpeg.run(arguments, timeout: 600)
-        defer { try? FileManager.default.removeItem(at: feed) }
-        log(String(format: "Area \"%@\": feed %.0f%%×%.0f%% at (%.0f%%, %.0f%%) cut out for tracking",
-                   area.name, w * 100, h * 100, x * 100, y * 100))
-        // The planner's face is in source coordinates; the inner framer sees only this feed.
-        let fallbackCenter = focus.map { (x: ($0.x - x) / w, y: ($0.y - y) / h) }
-        return try await frame(source: feed, start: 0, duration: duration, area: area,
-                               fallbackCenter: fallbackCenter, tuning: tuning,
-                               centerStage: centerStage, scratch: scratch, onFallback: onFallback, log: log)
     }
 
     /// Largest window of `aspect` inside the source, centered on the face when known.
@@ -155,6 +140,7 @@ nonisolated enum AreaFramer {
                                    "-t", String(format: "%.3f", duration)]
         arguments += FFmpeg.encodeArgs
         arguments.append(output.path)
+        log("Decode/encode: place framed area on output canvas")
         try await FFmpeg.run(arguments, timeout: 600)
         return output
     }
@@ -195,6 +181,59 @@ nonisolated enum AreaFramer {
                             cw, ch, x, y)
             + "scale=\(Int(box.width)):\(Int(box.height)),"
             + "pad=\(w):\(h):\(Int(box.minX)):\(Int(box.minY)):color=black,setsar=1,fps=30,format=yuv420p"
+    }
+
+    /// A path stays in source seconds until the segment applies playback speed.
+    /// crop evaluates w/h only at configuration, so sendcmd evaluates the same
+    /// piecewise-linear expressions on EVERY frame (T is sendcmd's clock).
+    /// x/y are evaluated by crop itself on each frame. No intermediate video.
+    static func pathFilter(keyframes: [CameraPathKeyframe], source _: CGSize,
+                           area: ScreenCropArea, namespace: String = "area") -> String {
+        let path = keyframes.sorted { $0.t < $1.t }
+        guard let first = path.first else { return "null" }
+        let box = pixelBounds(of: area)
+        func expression(_ value: (CameraPathKeyframe) -> Double, clock: String) -> String {
+            func number(_ x: Double) -> String { String(format: "%.9f", locale: Locale(identifier: "en_US_POSIX"), x) }
+            // A sum of clamped ramps avoids nesting hundreds of if() calls
+            // (ffmpeg's expression parser has a finite recursion depth).
+            var terms = [number(value(first))]
+            for index in path.indices.dropLast() {
+                let a = path[index], b = path[index + 1]
+                guard value(b) != value(a) else { continue }
+                if b.t == a.t {
+                    terms.append("(\(number(value(b) - value(a))))*gte(\(clock),\(number(a.t)))")
+                    continue
+                }
+                terms.append("(\(number(value(b) - value(a))))*clip((\(clock)-\(number(a.t)))/\(number(b.t - a.t)),0,1)")
+            }
+            // The evaluator also recurses down addition nodes. Keep the sum
+            // balanced so a minute-long path cannot hit its recursion limit.
+            func sum(_ range: Range<Int>) -> String {
+                if range.count == 1 { return terms[range.lowerBound] }
+                let middle = range.lowerBound + range.count / 2
+                return "(" + sum(range.lowerBound..<middle) + "+" + sum(middle..<range.upperBound) + ")"
+            }
+            return sum(terms.indices)
+        }
+        let w = expression({ $0.w }, clock: "T"), h = expression({ $0.h }, clock: "T")
+        let x = expression({ $0.x }, clock: "t"), y = expression({ $0.y }, clock: "t")
+        let target = "crop@\(namespace)"
+        let zooms = path.contains { abs($0.w - first.w) > 1e-9 || abs($0.h - first.h) > 1e-9 }
+        var filter = ""
+        if zooms {
+            // Two escaping layers: the filter parser, then sendcmd's parser.
+            let width = "2*floor((\(w))*W/2)".replacingOccurrences(of: ",", with: "\\\\,")
+            let height = "2*floor((\(h))*H/2)".replacingOccurrences(of: ",", with: "\\\\,")
+            filter += "sendcmd=c='0 [expr] \(target) w \(width), [expr] \(target) h \(height);',"
+        }
+        filter += "\(target)='max(2,2*floor(iw*\(first.w)/2))':'max(2,2*floor(ih*\(first.h)/2))':x='iw*(\(x))':y='ih*(\(y))',"
+        // Scaling the source crop to the box is still necessary at Full Screen;
+        // only the redundant canvas pad disappears there.
+        filter += "scale=\(Int(box.width)):\(Int(box.height))"
+        if box != CGRect(x: 0, y: 0, width: RenderEngine.outputWidth, height: RenderEngine.outputHeight) {
+            filter += ",pad=\(RenderEngine.outputWidth):\(RenderEngine.outputHeight):\(Int(box.minX)):\(Int(box.minY)):color=black"
+        }
+        return filter + ",setsar=1,fps=30,format=yuv420p"
     }
 
     /// The largest window of the area's aspect that fits a source of

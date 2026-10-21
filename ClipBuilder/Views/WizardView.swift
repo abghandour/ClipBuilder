@@ -46,6 +46,8 @@ struct WizardView: View {
     @AppStorage("wizard.nameTagStyle") private var nameTagStyle: String?
     @AppStorage("wizard.nameTagStyleID") var nameTagStyleID: String?
     @AppStorage("wizard.nameTagPosition") var nameTagPosition: String?
+    @AppStorage("wizard.safeAreaOnly") var safeAreaOnly = false
+    @AppStorage("wizard.safeAreaPlatforms") var safeAreaPlatforms = ""
     @State var captionPosition: String?
     @State var captionStyleID: String?
     @AppStorage("wizard.captionLanguage") var captionLanguage = ""
@@ -706,6 +708,9 @@ struct WizardView: View {
         options.nameTagStyle = nameTagStyle
         options.nameTagStyleID = nameTagStyleID
         options.nameTagPosition = nameTagPosition
+        options.safeAreaOnly = safeAreaOnly
+        let platforms = safeAreaPlatforms.split(separator: ",").compactMap { SocialPlatform(rawValue: String($0)) }
+        options.safeAreaPlatforms = platforms.isEmpty ? nil : platforms
         options.strikeStats = strikeStats
         options.strikeUnits = strikeUnits
         options.strikeSpeedCallouts = strikeSpeedCallouts
@@ -1333,6 +1338,9 @@ struct WizardView: View {
         options.nameTagStyle = nameTagStyle
         options.nameTagStyleID = nameTagStyleID
         options.nameTagPosition = nameTagPosition
+        options.safeAreaOnly = safeAreaOnly
+        let platforms = safeAreaPlatforms.split(separator: ",").compactMap { SocialPlatform(rawValue: String($0)) }
+        options.safeAreaPlatforms = platforms.isEmpty ? nil : platforms
         options.strikeStats = strikeStats
         options.strikeUnits = strikeUnits
         options.strikeSpeedCallouts = strikeSpeedCallouts

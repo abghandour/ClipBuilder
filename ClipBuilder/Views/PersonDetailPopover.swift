@@ -28,6 +28,9 @@ struct PersonDetailPopover: View {
     @State private var ranges: [ScriptTimeRange] = []
     @State private var speakingSeconds: Double = 0
     @State private var loaded = false
+    @State private var currentRosterEntry: VideoPersonRecord?
+    @State private var isVIP = false
+    @State private var savingVIP = false
     @State private var confirmingNobody = false
     @State private var showingPicker = false
 
@@ -62,9 +65,11 @@ struct PersonDetailPopover: View {
         }
         .padding(16)
         .frame(width: 380)
-        .task(id: "\(person.id)|\(video?.id ?? -1)|\(store.scenesVersion)") {
+        .task(id: "\(person.id)|\(video?.id ?? -1)|\(store.scenesVersion)|\(store.videoPeopleVersion)") {
             videos = await store.personVideos(person)
             if let video {
+                currentRosterEntry = await store.videoPeople(for: video.id).first { $0.personID == person.id }
+                isVIP = currentRosterEntry?.isVIP == true
                 ranges = await store.personRanges(videoID: video.id, key: person.key)
                 speakingSeconds = await store.personSpeakingSeconds(videoID: video.id, key: person.key)
             }
@@ -77,7 +82,7 @@ struct PersonDetailPopover: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 14) {
             Group {
-                if let rosterEntry, let video, rosterEntry.portraitBox != nil {
+                if let rosterEntry = currentRosterEntry ?? rosterEntry, let video, rosterEntry.portraitBox != nil {
                     VideoPersonAvatar(record: rosterEntry, videoURL: video.url, size: 112)
                 } else {
                     PersonFaceAvatar(person: person, size: 112)
@@ -131,6 +136,28 @@ struct PersonDetailPopover: View {
     private func inThisVideo(_ video: VideoRecord) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             sectionTitle("In this video")
+            if let entry = currentRosterEntry {
+                Toggle(isOn: $isVIP) {
+                    Text("VIP in this video").lineLimit(1).fixedSize()
+                }
+                .disabled(savingVIP)
+                .help("The people this video is about. Highlights and VIP focus prefer them.")
+                .onChange(of: isVIP) { _, value in
+                    guard value != entry.isVIP, !savingVIP else { return }
+                    savingVIP = true
+                    Task {
+                        let saved = await store.setVideoPersonVIP(videoID: video.id, personID: person.id, vip: value)
+                        if saved {
+                            currentRosterEntry?.vip = value
+                            currentRosterEntry?.vipSource = "user"
+                        } else { isVIP = entry.isVIP }
+                        savingVIP = false
+                    }
+                }
+                if let reason = entry.vipReason, !reason.isEmpty {
+                    Text("AI: \(reason)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
             reassignMenu(video)
             if ranges.isEmpty {
                 Text(loaded ? "Seen in this video; the people pass did not note when." : "Loading…")

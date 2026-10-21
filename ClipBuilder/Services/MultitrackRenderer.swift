@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import Synchronization
 
 // MAP (2.2k lines), by MARK section:
@@ -80,6 +81,8 @@ actor MultitrackRenderer {
         /// path the manual build preview and workbench show, so WYSIWYG holds.
         var cameraPath: [CameraPathKeyframe]?
         var staticAreaFilter: String?
+        var areaPathSource: CGSize?
+        var areaPathArea: ScreenCropArea?
         var effectiveEffect: EffectSpec? = nil
         /// Original input and framing parameters, before temporary paths replace them.
         var framingIdentity: String?
@@ -217,6 +220,8 @@ actor MultitrackRenderer {
                 renderFingerprint: String? = nil,
                 preview: Bool = false,
                 prerenderedSources: Set<String> = [],
+                burnIns: [RenderEngine.ClipOverlay] = [],
+                muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         try FootageAvailability.requireSources(document: document, scenes: scenes)
         let editing = profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())
@@ -226,7 +231,7 @@ actor MultitrackRenderer {
                                            database: database, centerStageCamera: centerStageCamera,
                                            projectID: projectID, outputName: outputName, batchID: batchID, wizardOptions: wizardOptions, roles: roles,
                                            renderFingerprint: renderFingerprint, preview: preview,
-                                           prerenderedSources: prerenderedSources, emit: emit)
+                                           prerenderedSources: prerenderedSources, burnIns: burnIns, muteSource: muteSource, compositeEffect: compositeEffect, emit: emit)
             }
         }
     }
@@ -275,11 +280,12 @@ actor MultitrackRenderer {
                                   outputName: String? = nil, batchID: String? = nil, wizardOptions: WizardOptions? = nil,
                                   roles: [AIRole] = [], renderFingerprint: String? = nil, preview: Bool,
                                   prerenderedSources: Set<String> = [],
+                                  burnIns: [RenderEngine.ClipOverlay] = [], muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
                                   emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         // Overlay blocks render as their flattened text/image items.
         let document = Self.removingMissingEdgeBumpers(document.expandingOverlayBlocks(), emit: emit)
         var bumperSpans = document.videoTrack.filter(\.bumper).map { $0.startTime..<($0.startTime + $0.duration) }
-        var clips = Self.resolveClips(document: document, scenes: scenes)
+        var clips = Self.resolveClips(document: document, scenes: scenes, centerStageCamera: centerStageCamera)
         for index in clips.indices {
             if clips[index].bumper && !FileManager.default.fileExists(atPath: clips[index].sourcePath) {
                 clips[index].missingBumper = true
@@ -307,9 +313,15 @@ actor MultitrackRenderer {
             var areas: [String: ScreenCropArea] = [:]
             for index in clips.indices {
                 let clip = clips[index]
-                let area = ScreenCropStore.area(reference: clip.screenCrop)
+                // Full-screen paths and VIP reactions use the same in-graph
+                // framing route as a layout cell, without a redundant canvas pad.
+                let fullScreenPath = clip.cameraPath != nil
+                    && document.cropBlock(at: clip.startTime)?.layout.isFullScreen == true
+                let area = ScreenCropStore.area(reference: clip.screenCrop) ?? (clip.areaRegion != nil || fullScreenPath
+                    ? ScreenCropArea(name: CropLayoutRef.fullScreenName, points: [
+                        .init(x: 0, y: 0), .init(x: 1, y: 0), .init(x: 1, y: 1), .init(x: 0, y: 1)]) : nil)
                 guard (areaPass ? (clip.freeCrops?.isEmpty != false && area != nil)
-                       : (clip.centerStage && !(area != nil && clip.cameraPath != nil))) else { continue }
+                       : (clip.centerStage && !(area != nil && (clip.cameraPath != nil || clip.areaRegion != nil)))) else { continue }
                 if areaPass, let area, let window = clip.areaWindow, clip.cameraPath == nil {
                     clips[index].staticAreaFilter = AreaFramer.staticFilter(area: area, window: window)
                     clips[index].wide = false
@@ -328,6 +340,55 @@ actor MultitrackRenderer {
                 try Task.checkCancellation()
                 let clip = job.clip
                 let source = URL(fileURLWithPath: clip.sourcePath)
+                if let area = job.area, clip.areaRegion != nil || clip.cameraPath != nil {
+                    if self.framingCacheEnabled, clip.cacheable, !ExpressRenderTesting.exportAreaPaths,
+                       let cached = await self.segmentCache.readJSON(FeedCameraPath.self, key: job.key) {
+                        emit("Framing cache hit; keyframes=\(cached.keyframes.count); intermediates=0")
+                        return PrepassArtifact(path: cached, cacheable: true, wasCached: true)
+                    }
+                    let path: FeedCameraPath
+                    let dimensions = await FFmpeg.dimensions(of: source)
+                    let sourceSize = CGSize(width: dimensions.width, height: dimensions.height)
+                    let box = AreaFramer.pixelBounds(of: area)
+                    if let saved = clip.cameraPath, clip.areaFocus == nil,
+                       CenterStageService.pathMatchesCanvas(saved, sourceSize: sourceSize,
+                                                            canvasAspect: box.width / box.height) {
+                        path = FeedCameraPath(keyframes: saved, samples: [], trackedShare: 1,
+                            sourceSize: CGSize(width: dimensions.width, height: dimensions.height), usedFallback: false)
+                        emit("Framing: saved framing used; keyframes=\(saved.count)")
+                    } else {
+                        let region = CenterStageService.validRegion(clip.areaRegion ?? FreeCropRect())
+                        let box = AreaFramer.pixelBounds(of: area)
+                        let identity = try FeedPathCache.identity(source: source, region: region,
+                            start: clip.sourceStart, duration: clip.duration * clip.speed,
+                            aspect: box.width / box.height, focus: clip.areaFocus)
+                        if self.framingCacheEnabled, let cached = await FeedPathCache.shared.read(identity) {
+                            path = cached
+                            emit("Feed path cache hit; decode=0; intermediates=0")
+                        } else {
+                            path = try await self.centerStageService.cameraPath(source: source,
+                                start: clip.sourceStart, duration: clip.duration * clip.speed, region: region,
+                                aspect: box.width / box.height, fallbackCenter: clip.areaFocus, log: emit)
+                            try Task.checkCancellation()
+                            if self.framingCacheEnabled, path.reusable != false,
+                               try SourceIdentityCache.shared.fingerprint(of: source) == identity.fingerprint {
+                                await FeedPathCache.shared.store(path, identity: identity)
+                            }
+                        }
+                    }
+                    if ExpressRenderTesting.exportAreaPaths {
+                        let url = try await AreaFramer.frame(source: source, start: clip.sourceStart,
+                            duration: clip.duration * clip.speed, area: area, path: path.keyframes,
+                            centerStage: self.centerStageService, scratch: framingScratch, log: emit)
+                        return PrepassArtifact(url: url, cacheable: false)
+                    }
+                    if self.framingCacheEnabled, clip.cacheable, path.reusable != false,
+                       try SourceIdentityCache.shared.fingerprint(of: source) == clip.sourceFingerprint {
+                        await self.segmentCache.storeJSON(path, key: job.key)
+                    }
+                    emit("Framing prepass: keyframes=\(path.keyframes.count); intermediates=0; uses=\(job.indices.count)")
+                    return PrepassArtifact(path: path, cacheable: path.reusable != false)
+                }
                 let owned = framingScratch.appendingPathComponent(UUID().uuidString + ".mp4")
                 if self.framingCacheEnabled && clip.cacheable,
                    await self.segmentCache.restore(key: job.key, to: owned) {
@@ -341,17 +402,7 @@ actor MultitrackRenderer {
                 let fellBack = Mutex(false)
                 do {
                     let framed: URL
-                    if let area = job.area, let path = clip.cameraPath, path.count >= 2 {
-                        framed = try await AreaFramer.frame(source: source, start: clip.sourceStart,
-                            duration: clip.duration * clip.speed, area: area, path: path,
-                            centerStage: self.centerStageService, scratch: framingScratch, log: emit)
-                    } else if let area = job.area, let region = clip.areaRegion {
-                        framed = try await AreaFramer.frame(source: source, start: clip.sourceStart,
-                            duration: clip.duration * clip.speed, area: area, region: region,
-                            focus: clip.areaFocus.map { (x: $0.x, y: $0.y) },
-                            tuning: .named(centerStageCamera), centerStage: self.centerStageService,
-                            scratch: framingScratch, onFallback: { fellBack.withLock { $0 = true } }, log: emit)
-                    } else if let area = job.area {
+                    if let area = job.area {
                         framed = try await AreaFramer.frame(source: source, start: clip.sourceStart,
                             duration: clip.duration * clip.speed, area: area,
                             tuning: .named(centerStageCamera), centerStage: self.centerStageService,
@@ -386,12 +437,25 @@ actor MultitrackRenderer {
                     for index in job.indices { clips[index].cacheable = false }
                     continue
                 }
-                if framingCacheEnabled && job.clip.cacheable && result.cacheable && !result.wasCached {
-                    framingArtifacts.append(.init(key: job.key, source: result.url))
-                }
-                for index in job.indices {
-                    clips[index].useFramedSource(result.url, identity: job.key,
-                        areaPass: areaPass, reusable: result.cacheable)
+                if let path = result.path, let area = job.area {
+                    for index in job.indices {
+                        clips[index].cacheable = clips[index].cacheable && result.cacheable
+                        clips[index].cameraPath = path.keyframes
+                        clips[index].areaPathSource = path.sourceSize
+                        clips[index].areaPathArea = area
+                        clips[index].framingIdentity = job.key
+                        clips[index].centerStage = false
+                        clips[index].wide = false
+                        clips[index].effectiveCropXFrac = nil
+                    }
+                } else if let url = result.url {
+                    if framingCacheEnabled && job.clip.cacheable && result.cacheable && !result.wasCached {
+                        framingArtifacts.append(.init(key: job.key, source: url))
+                    }
+                    for index in job.indices {
+                        clips[index].useFramedSource(url, identity: job.key,
+                            areaPass: areaPass, reusable: result.cacheable)
+                    }
                 }
             }
             #if PERFORMANCE_BASELINE
@@ -515,6 +579,13 @@ actor MultitrackRenderer {
             spanningFused = true
         }
 
+        // A transition changes the timeline clock and may not commute with a
+        // nonlinear look. Retained overlays must also land BELOW the Express
+        // look and burn-ins. Keep the old final extraction order in those cases.
+        let deferExtract = ((compositeEffect != nil || !burnIns.isEmpty)
+            && (!overlayPlan.remaining.isEmpty || transitions.contains { $0 != nil && $0 != "cut" }))
+            || (muteSource && !document.soundTrack.isEmpty)
+
         // Render every segment concurrently (bounded) — each is one
         // independent ffmpeg job with captions burned in the same pass.
         // A fused spanning overlay adds its RGBA raster stream to every
@@ -532,7 +603,11 @@ actor MultitrackRenderer {
                                          captionCache: captionCache, captionStyle: profile.captions,
                                          fontFingerprints: fontFingerprints,
                                          overlays: overlayPlan.bySegment[index] ?? [],
-                                         prerendered: prerenderedSources, emit: emit)
+                                         prerendered: prerenderedSources,
+                                         burnIns: RenderBurnIns.intersecting(deferExtract ? [] : burnIns, start: segment.start,
+                                             duration: segment.duration, totalDuration: totalDuration),
+                                         burnInDuration: totalDuration, muteSource: muteSource,
+                                         compositeEffect: deferExtract ? nil : compositeEffect, emit: emit)
         }
         clipPaths = artifacts.map(\.url)
 
@@ -700,7 +775,13 @@ actor MultitrackRenderer {
             }
         }
 
-        try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)
+        if deferExtract {
+            emit("Express finishing: decode/encode whole-frame look after document overlays, then burn-ins")
+            try await render.extractClip(source: assembled, start: 0, duration: totalDuration,
+                overlays: burnIns, effect: compositeEffect, mute: muteSource, output: outputURL)
+        } else {
+            try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)
+        }
         let finalDuration = await FFmpeg.duration(of: outputURL)
 
         try Task.checkCancellation()
@@ -958,9 +1039,15 @@ actor MultitrackRenderer {
         return AreaFramer.staticFilter(area: canvas, window: window)
     }
 
+    nonisolated static func isFullFrame(_ region: FreeCropRect?) -> Bool {
+        guard let region else { return true }
+        return abs(region.xFrac) < 1e-6 && abs(region.yFrac) < 1e-6
+            && abs(region.wFrac - 1) < 1e-6 && abs(region.hFrac - 1) < 1e-6
+    }
+
     /// Port of the resolve/effective-settings pass in _generate_multitrack.
     nonisolated static func resolveClips(document: TimelineDocument,
-                                         scenes: [SceneRecord]) -> [ResolvedClip] {
+                                         scenes: [SceneRecord], centerStageCamera: String = "balanced") -> [ResolvedClip] {
         let scenesByID = Dictionary(uniqueKeysWithValues: scenes.map { ($0.id, $0) })
         let settings = document.trackSettings
         var resolved: [ResolvedClip] = []
@@ -981,12 +1068,13 @@ actor MultitrackRenderer {
                 // Stored camera path (scene-relative source time) → this
                 // clip's range, so the render replays exactly what the
                 // preview showed instead of re-tracking.
-                if let explicit = clip.cameraPath, clip.wide, !clip.isCutaway {
+                if let explicit = clip.cameraPath, !clip.isCutaway {
                     // The clip's own path (from the clip's source start) wins.
                     let sliced = CenterStageService.slice(explicit, from: 0, duration: duration * clip.effectiveSpeed)
                     if sliced.count >= 2 { cameraPath = sliced }
-                } else if clip.centerStage, clip.wide, let path = scene.centerStagePath,
-                   path.keyframes.count >= 2 {
+                } else if (clip.centerStage && clip.wide) || clip.areaRegion != nil,
+                   let path = scene.centerStagePath, path.keyframes.count >= 2,
+                   clip.areaRegion == nil || (Self.isFullFrame(clip.areaRegion) && path.camera == centerStageCamera) {
                     let sliced = CenterStageService.slice(
                         path.keyframes, from: sourceStart - scene.startTime,
                         duration: duration * clip.effectiveSpeed)
@@ -1001,10 +1089,10 @@ actor MultitrackRenderer {
                 // analyzed scenes know its video (captions) and its framing.
                 let own = scenes.filter { $0.videoPath == file }
                 videoID = own.first?.videoID
-                if let explicit = clip.cameraPath, clip.wide, !clip.isCutaway {
+                if let explicit = clip.cameraPath, !clip.isCutaway {
                     let sliced = CenterStageService.slice(explicit, from: 0, duration: duration * clip.effectiveSpeed)
                     if sliced.count >= 2 { cameraPath = sliced }
-                } else if clip.centerStage, clip.wide, !clip.isCutaway {
+                } else if clip.centerStage, clip.wide, !clip.isCutaway, clip.areaRegion == nil {
                     let sliced = Self.stitchedCameraPath(scenes: own, from: start,
                                                          duration: duration * clip.effectiveSpeed)
                     if sliced.count >= 2 { cameraPath = sliced }
@@ -1047,13 +1135,31 @@ actor MultitrackRenderer {
                                          freeCrops: clip.freeCrops,
                                          screenCrop: clip.screenCrop,
                                          areaWindow: clip.areaWindow,
-                                         areaRegion: clip.areaWindow == nil && clip.cameraPath == nil ? clip.areaRegion : nil,
-                                         areaFocus: clip.areaWindow == nil && clip.cameraPath == nil && clip.areaRegion != nil ? clip.areaFocus : nil,
+                                         areaRegion: clip.areaWindow == nil ? clip.areaRegion : nil,
+                                         areaFocus: clip.areaWindow == nil ? clip.areaFocus : nil,
                                          captionsPosition: captionsResolved == "none" ? nil : captionsResolved,
                                          speed: clip.effectiveSpeed,
                                          cameraPath: cameraPath, staticAreaFilter: reactionFilter(for: clip), effectiveEffect: effectiveEffect))
         }
-        return Self.applyCropBlocks(resolved, document: document).sorted {
+        // Validate after crop-block splitting: each piece may target a different
+        // aspect. A scene-wide path cannot represent a cell's distinct focus.
+        return Self.applyCropBlocks(resolved, document: document).map { clip in
+            var clip = clip
+            guard let path = clip.cameraPath else { return clip }
+            let area = ScreenCropStore.area(reference: clip.screenCrop)
+            let box = area.map { AreaFramer.pixelBounds(of: $0) }
+            let aspect = box.map { $0.width / $0.height } ?? RenderContext.settings.aspectRatio
+            let scene = scenes.first { $0.videoPath == clip.sourcePath }
+            let size = scene.flatMap { $0.videoWidth > 0 && $0.videoHeight > 0
+                ? CGSize(width: $0.videoWidth, height: $0.videoHeight) : nil }
+            if clip.areaFocus != nil || !CenterStageService.pathMatchesCanvas(path, sourceSize: size, canvasAspect: aspect) {
+                clip.cameraPath = nil
+                // Keep the tracking-only route even for Full Screen, whose
+                // layout reference is nil, when rejecting a saved path.
+                if clip.areaWindow == nil { clip.areaRegion = clip.areaRegion ?? FreeCropRect() }
+            }
+            return clip
+        }.sorted {
             ($0.track, $0.startTime) < ($1.track, $1.startTime)
         }
     }
@@ -1132,6 +1238,12 @@ actor MultitrackRenderer {
             // Timeline offsets map into the source through the clip's speed
             // — a 0.5× clip consumes half a source second per screen second.
             let clipOffset = (segment.start - clip.startTime) * clip.speed
+            let areaFilter: String?
+            if let path = clip.cameraPath, let source = clip.areaPathSource, let area = clip.areaPathArea {
+                areaFilter = AreaFramer.pathFilter(keyframes: CenterStageService.slice(path,
+                    from: clipOffset, duration: segment.duration * clip.speed), source: source,
+                    area: area, namespace: "area\(clipIndex)")
+            } else { areaFilter = clip.staticAreaFilter }
             placements.append(Placement(sourcePath: clip.sourcePath,
                                         sourceStart: clip.sourceStart + clipOffset,
                                         sourceDur: segment.duration * clip.speed,
@@ -1155,7 +1267,7 @@ actor MultitrackRenderer {
                                         cropXFrac: clip.effectiveCropXFrac,
                                         freeCrops: clip.freeCrops,
                                         screenCrop: clip.screenCrop,
-                                        speed: clip.speed, staticAreaFilter: clip.staticAreaFilter,
+                                        speed: clip.speed, staticAreaFilter: areaFilter,
                                         effectiveEffect: clip.effectiveEffect))
         }
 
@@ -1324,13 +1436,14 @@ actor MultitrackRenderer {
     }
 
     private nonisolated struct PrepassArtifact: Sendable {
-        var url: URL
+        var url: URL?
+        var path: FeedCameraPath?
         var cacheable: Bool
         var wasCached = false
     }
 
     /// Bump when CenterStageService/AreaFramer output or tracking semantics change.
-    nonisolated static let framingVersion = "multitrack-framing-v3"
+    nonisolated static let framingVersion = "multitrack-framing-v6"
 
     nonisolated static func prepassKey(_ clip: ResolvedClip, area: ScreenCropArea?,
                                       tuning: String, settings: RenderSettings = RenderContext.settings,
@@ -1380,10 +1493,12 @@ actor MultitrackRenderer {
                                captionStyle: CaptionStyle, fontFingerprints: [String]?,
                                overlays: [TimedOverlayPNG],
                                prerendered: Set<String> = [],
+                               burnIns: [RenderEngine.ClipOverlay] = [], burnInDuration: Double = 0,
+                               muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
                                emit: @escaping @Sendable (String) -> Void) async throws -> SegmentArtifact {
         let timing = PerfSignpost.begin("SegmentEncode", metadata: "segment=\(index)/\(total)")
         defer { PerfSignpost.end(timing) }
-        if segment.clips.isEmpty || segment.clips.allSatisfy(\.missingBumper) {
+        if burnIns.isEmpty, !muteSource, compositeEffect == nil, segment.clips.isEmpty || segment.clips.allSatisfy(\.missingBumper) {
             emit("Segment \(index + 1)/\(total): gap (\(String(format: "%.1fs", segment.duration)))")
             let gapPath = scratch.appendingPathComponent(String(format: "gap%03d.mp4", index))
             let input = RenderSegmentKey(start: segment.start, duration: segment.duration, clips: [],
@@ -1401,7 +1516,7 @@ actor MultitrackRenderer {
         }
 
         emit("Segment \(index + 1)/\(total): compositing \(segment.clips.count) clip(s)…")
-        let placements = Self.placements(for: segment)
+        let placements = Self.placements(for: segment).filter { !segment.clips[$0.clipIndex].missingBumper }
 
         // Captions ride the composite's filter graph — no second encode pass.
         var captions: [CaptionOverlay] = []
@@ -1469,10 +1584,23 @@ actor MultitrackRenderer {
         let maskKeys = try masks.reduce(into: [String: String]()) { result, entry in
             result[String(entry.key)] = try RenderSegmentCache.key(Data(contentsOf: entry.value))
         }
+        var keyBurnIns = burnIns
+        for index in keyBurnIns.indices {
+            keyBurnIns[index].png = URL(fileURLWithPath: "/" + (try RenderSegmentCache.key(Data(contentsOf: burnIns[index].png))))
+        }
+        var lookAssets: [String: String] = [:]
+        for effect in keyClips.compactMap(\.effectiveEffect) + [compositeEffect].compactMap({ $0 }) where effect.preset.hasPrefix("lut:") {
+            if let lut = EffectCatalog.lutURL(named: String(effect.preset.dropFirst(4))) {
+                lookAssets[effect.preset] = try RenderSegmentCache.key(Data(contentsOf: lut))
+            }
+        }
         let input = RenderSegmentKey(start: segment.start, duration: segment.duration, clips: keyClips,
             captions: keyCaptions, overlays: keyOverlays, masks: maskKeys,
             fontFingerprints: fontFingerprints ?? [], captionStyle: captionStyle,
-            settings: RenderContext.settings, encoder: FFmpeg.encodeArgs)
+            settings: RenderContext.settings, encoder: FFmpeg.encodeArgs,
+            burnIns: keyBurnIns.isEmpty ? nil : keyBurnIns,
+            burnInDuration: keyBurnIns.contains { $0.animation != nil } ? burnInDuration : nil,
+            muteSource: muteSource ? true : nil, compositeEffect: compositeEffect, lookAssets: lookAssets.isEmpty ? nil : lookAssets)
         var key: String? = segmentComplete && fontFingerprints != nil && segment.clips.allSatisfy(\.cacheable)
             ? try RenderSegmentCache.key(input) : nil
         if let key, await segmentCache.restore(key: key, to: segmentPath) {
@@ -1481,7 +1609,7 @@ actor MultitrackRenderer {
         }
         // A clip this app already rendered to the output format, shown whole
         // and untouched, is the segment: copy it instead of encoding it again.
-        if captions.isEmpty, overlays.isEmpty, masks.isEmpty, placements.count == 1, segment.clips.count == 1,
+        if burnIns.isEmpty, !muteSource, compositeEffect == nil, captions.isEmpty, overlays.isEmpty, masks.isEmpty, placements.count == 1, segment.clips.count == 1,
            await Self.isPrerenderedPassthrough(placements[0], clip: segment.clips[0], prerendered: prerendered) {
             emit("Segment \(index + 1): prerendered clip; copied, encodes=0")
             try FileManager.default.copyItemReplacing(at: URL(fileURLWithPath: placements[0].sourcePath), to: segmentPath)
@@ -1491,13 +1619,15 @@ actor MultitrackRenderer {
         do {
             emit("Segment \(index + 1): encode pass")
             try await compositeLayeredSegment(placements: placements, duration: segment.duration,
-                captions: captions, overlays: overlays, maskFiles: masks, output: segmentPath)
+                captions: captions, overlays: overlays, maskFiles: masks, burnIns: burnIns,
+                burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect, output: segmentPath)
         } catch where !captions.isEmpty {
             try Task.checkCancellation()
             key = nil // A degraded result must never satisfy the full key.
             emit("Segment \(index + 1): caption burn failed, retrying without captions; encode pass")
             try await compositeLayeredSegment(placements: placements, duration: segment.duration,
-                captions: [], overlays: overlays, maskFiles: masks, output: segmentPath)
+                captions: [], overlays: overlays, maskFiles: masks, burnIns: burnIns,
+                burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect, output: segmentPath)
         }
         try Task.checkCancellation()
         return SegmentArtifact(url: segmentPath, key: key)
@@ -1582,12 +1712,9 @@ actor MultitrackRenderer {
                                          captions: [CaptionOverlay] = [],
                                          overlays: [TimedOverlayPNG] = [],
                                          maskFiles: [Int: URL] = [:],
+                                         burnIns: [RenderEngine.ClipOverlay] = [], burnInDuration: Double = 0,
+                                         timelineOffset: Double = 0, muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
                                          output: URL) async throws {
-        guard !placements.isEmpty else {
-            try await generatePlaceholder(duration: duration, output: output)
-            return
-        }
-
         // Already in the one order `renderSegment` computed; the masks are
         // keyed by index into exactly this list, so it must not be re-sorted.
         let ordered = placements
@@ -1648,9 +1775,7 @@ actor MultitrackRenderer {
             }
 
             if let areaFilter = placement.staticAreaFilter {
-                filters.append("[\(sourceIndex):v]\(areaFilter),\(pts)," +
-                               "scale=\(Self.width):\(Self.height):force_original_aspect_ratio=decrease," +
-                               "pad=\(Self.width):\(Self.height):(ow-iw)/2:(oh-ih)/2:color=black," +
+                filters.append("[\(sourceIndex):v]setpts=PTS-STARTPTS,\(areaFilter),\(pts)," +
                                "setsar=1,fps=30[v\(index)]")
                 continue
             }
@@ -1765,11 +1890,37 @@ actor MultitrackRenderer {
             filters.append("\(previous)null[vout]")
         }
 
-        // Audio: mix unmuted clips that actually carry audio.
+        if overlaySteps.isEmpty && captions.isEmpty && overlays.isEmpty {
+            filters.append("[0:v]null[vout]")
+        }
+        // extractClip graded the already composited document (including its
+        // text/images and black canvas), then drew the extraction burn-ins.
+        if let effect = compositeEffect {
+            try EffectCatalog.validate(effect)
+            guard EffectCatalog.isAvailable(effect.preset) else {
+                throw BuilderCommandFailure.invalid("Effect unavailable in ffmpeg: \(effect.preset).")
+            }
+            Self.insertEffect(effect, label: "vout", width: Self.width, height: Self.height, filters: &filters)
+        }
+        if !burnIns.isEmpty {
+            filters = filters.map { $0.replacingOccurrences(of: "[vout]", with: "[beforeburn]") }
+            let firstInput = 2 + ordered.count + captions.count + maskInputs.count + overlays.count
+            for overlay in burnIns {
+                arguments += ["-threads", "1"]
+                if overlay.animation != nil { arguments += ["-loop", "1", "-t", String(format: "%.6f", duration)] }
+                arguments += ["-i", overlay.png.path]
+            }
+            RenderBurnIns.append(burnIns, duration: burnInDuration, offset: timelineOffset,
+                firstInput: firstInput, previous: "[beforeburn]", output: "[vout]", filters: &filters)
+        }
+
+        // Audio: mix unmuted clips that actually carry audio. With muteSource,
+        // the empty mix maps input 1's duration-bounded 44.1 kHz stereo silence,
+        // matching FFmpeg.audioEncodeArgs and keeping concat/xfade compatible.
         var audioLabels: [String] = []
         var contributing: [Placement] = []
         for (index, placement) in ordered.enumerated() {
-            guard !placement.muted else { continue }
+            guard !muteSource, !placement.muted else { continue }
             guard await FFmpeg.hasAudioStream(URL(fileURLWithPath: placement.sourcePath)) else { continue }
             contributing.append(placement)
             let tempo = placement.speed == 1 ? ""
@@ -1785,11 +1936,14 @@ actor MultitrackRenderer {
         filters.append(contentsOf: mix.filters)
         let audioSource = mix.source
 
+        let graph = output.deletingPathExtension().appendingPathExtension("filters")
+        try filters.joined(separator: ";").write(to: graph, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: graph) }
         try await FFmpeg.run(arguments + [
-            "-filter_complex", filters.joined(separator: ";"),
-            "-map", "[vout]", "-map", audioSource,
+            "-/filter_complex", graph.path,
+            "-map", "[vout]",
             "-t", String(format: "%.3f", duration),
-        ] + FFmpeg.encodeArgs + [output.path], timeout: 600, capture: .boundedStderrTail())
+        ] + ["-map", audioSource] + FFmpeg.encodeArgs + [output.path], timeout: 600, capture: .boundedStderrTail())
     }
 
     private nonisolated struct NormalizedCrop {

@@ -37,6 +37,7 @@ nonisolated enum NameTagPlanner {
         var safeRect: CGRect? = nil
         var captionBand: CGRect? = nil
         var canvas: CGSize = CGSize(width: 1080, height: 1920)
+        var safeOnly = false
     }
 
     static func plan(areas: [Area], people: [Person], settings: Settings,
@@ -49,7 +50,7 @@ nonisolated enum NameTagPlanner {
         return areas.flatMap { area -> [NameTag] in
             let inset = min(area.rect.width, area.rect.height) * 0.04
             var allowed = area.rect.insetBy(dx: inset, dy: inset)
-            if explicitCorner == nil, let safe = settings.safeRect {
+            if (explicitCorner == nil || settings.safeOnly), let safe = settings.safeRect {
                 allowed = allowed.intersection(safe)
                 if allowed.isNull || allowed.isEmpty { allowed = safe.intersection(frame) }
             }
@@ -72,7 +73,7 @@ nonisolated enum NameTagPlanner {
                 func rect(_ corner: Corner) -> CGRect {
                     let y = corner == .bottomLeading || corner == .bottomTrailing ? allowed.maxY - height : allowed.minY
                     let verticalBounds = height <= allowed.height ? allowed
-                        : (explicitCorner == nil ? settings.safeRect?.intersection(frame) ?? frame : frame)
+                        : ((explicitCorner == nil || settings.safeOnly) ? settings.safeRect?.intersection(frame) ?? frame : frame)
                     return CGRect(x: corner == .topTrailing || corner == .bottomTrailing ? allowed.maxX - width : allowed.minX,
                                   y: max(verticalBounds.minY, min(y, verticalBounds.maxY - height)),
                                   width: width, height: height)
@@ -89,8 +90,8 @@ nonisolated enum NameTagPlanner {
                     return a == b ? $0.offset < $1.offset : a < b
                 }!.element
                 guard let placed = clearingCaption(rect(corner), corner: corner, area: area.rect,
-                    allowed: allowed, frame: frame, safe: explicitCorner == nil ? settings.safeRect : nil,
-                    band: settings.captionBand, gap: settings.canvas.height * 0.01) else { continue }
+                    allowed: allowed, frame: frame, safe: (explicitCorner == nil || settings.safeOnly) ? settings.safeRect : nil,
+                    band: settings.captionBand, safeOnly: settings.safeOnly, gap: settings.canvas.height * 0.01) else { continue }
                 let tag = NameTag(personKey: key, lines: layout.lines, areaRect: area.rect, rect: placed,
                                   corner: corner, fontSize: layout.fontSize, start: span.start, end: span.end)
                 if let last = tags.last, last.personKey == key, last.lines == tag.lines,
@@ -106,7 +107,7 @@ nonisolated enum NameTagPlanner {
     /// whole cell, use the nearest adjacent free strip of the frame instead.
     private static func clearingCaption(_ rect: CGRect, corner: Corner, area: CGRect,
                                         allowed: CGRect, frame: CGRect, safe: CGRect?,
-                                        band: CGRect?, gap: CGFloat) -> CGRect? {
+                                        band: CGRect?, safeOnly: Bool, gap: CGFloat) -> CGRect? {
         guard let band, rect.intersects(band.insetBy(dx: 0, dy: -gap)) else { return rect }
         let above = band.minY - gap - rect.height
         let below = band.maxY + gap
@@ -118,7 +119,7 @@ nonisolated enum NameTagPlanner {
             : (bottom ? [above, below] : [below, above])
         let areaBounds = safe.map { area.intersection($0) } ?? area
         let frameBounds = safe.map { frame.intersection($0) } ?? frame
-        for bounds in [allowed, areaBounds, frameBounds, frame] where !bounds.isNull && !bounds.isEmpty {
+        for bounds in [allowed, areaBounds, frameBounds] + (safeOnly ? [] : [frame]) where !bounds.isNull && !bounds.isEmpty {
             guard rect.height <= bounds.height else { continue }
             for y in preferred {
                 let candidate = CGRect(x: rect.minX,

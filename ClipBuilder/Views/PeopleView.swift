@@ -7,6 +7,7 @@ import SwiftUI
 struct PeopleView: View {
     @Environment(AppStore.self) private var store
 
+    @State private var vipVideoCount = 0
     @State private var selectedPersonIDs: Set<Int64> = []
     /// Which bucket the list shows — every category, one role, the people
     /// still waiting on a confirmed name, or the Hidden bucket.
@@ -507,6 +508,15 @@ struct PeopleView: View {
                             .fixedSize()
                             .help("File this person under a role — the list groups and filters by it")
                         }
+                        Text("VIP in \(vipVideoCount) videos")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .lineLimit(1).fixedSize()
+                            .task(id: "\(person.id)|\(store.videoPeopleVersion)") {
+                                vipVideoCount = 0
+                                let count = (try? await store.database?.vipVideoCount(personID: person.id)) ?? 0
+                                guard !Task.isCancelled else { return }
+                                vipVideoCount = count
+                            }
                         if person.isUnnamed, person.keyName != nil {
                             Text("Name read by the analyzer — confirm it in the list on the left")
                                 .font(.caption2)

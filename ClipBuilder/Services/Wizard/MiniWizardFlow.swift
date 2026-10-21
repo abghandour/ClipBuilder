@@ -162,7 +162,8 @@ nonisolated struct MiniWizardFlow: Sendable {
 
     typealias RunSummary = WizardRunSummary
 
-    func runSummaryCard(candidates: [MiniWizardCandidate], exchangeCount: Int, settings: MiniWizardSettings) -> RunSummary {
+    func runSummaryCard(candidates: [MiniWizardCandidate], exchangeCount: Int, settings: MiniWizardSettings,
+                        profilePlatforms: [SocialPlatform] = SocialPlatform.allCases) -> RunSummary {
         let kept = candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
         let qa = effectiveFootageKind == .qa
         // Picks become selections when Settings opens; until then the kept
@@ -189,6 +190,11 @@ nonisolated struct MiniWizardFlow: Sendable {
             if settings.music { audio.append(settings.musicTrackName.map { "Music: \($0)" } ?? "Random music") }
         }
         var overlays: [String] = []
+        if settings.safeAreaOnly {
+            let selected = settings.safeAreaPlatforms?.compactMap(SocialPlatform.init(rawValue:)) ?? []
+            let platforms = selected.isEmpty ? profilePlatforms : selected
+            overlays.append("Safe area: " + platforms.map(\.shortLabel).joined(separator: ", "))
+        }
         if let name = settings.overlayName { overlays.append("Overlay \(name)") }
         if settings.captions { overlays.append(settings.englishCaptions && showsCaptionLanguage ? "English captions" : "Captions") }
         if settings.nameTags && showsNameTags { overlays.append("Name tags") }

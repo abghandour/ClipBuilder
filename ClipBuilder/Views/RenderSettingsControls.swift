@@ -69,7 +69,7 @@ struct PlatformTargetsPicker: View {
     @Binding var platforms: [SocialPlatform]
 
     var body: some View {
-        LabeledContent("Platforms") {
+        LabeledContent {
             FlowLayout(spacing: Theme.spaceM) {
                 ForEach(SocialPlatform.allCases) { platform in
                     Toggle(platform.label, isOn: Binding(
@@ -82,6 +82,8 @@ struct PlatformTargetsPicker: View {
                     .lineLimit(1).fixedSize()
                 }
             }
+        } label: {
+            Text("Platforms").lineLimit(1).fixedSize()
         }
         .help("The safe area is the part of the frame none of the chosen platforms cover")
     }

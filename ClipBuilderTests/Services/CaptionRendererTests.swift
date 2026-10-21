@@ -242,3 +242,21 @@ extension CaptionRendererTests {
         }.value
     }
 }
+
+extension CaptionRendererTests {
+    @Test func safeAreaOnlyKeepsExplicitBottomAboveInstagramFooter() throws {
+        let safe = try #require(PlatformSafeArea.resolve(platforms: [.instagram], aspectRatio: 9.0 / 16))
+        let caption = CaptionRenderer.RenderedCaption(pngURL: URL(fileURLWithPath: "/unused"), width: 500, height: 100)
+        let plain = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: CaptionStyle(), safeArea: safe)
+        var guarded = plain
+        guarded.safeAreaOnly = true
+        #expect(plain.position(for: caption, positionOverride: "bottom").y == 1752)
+        let position = guarded.position(for: caption, positionOverride: "bottom")
+        #expect(Double(position.y + caption.height) <= safe.rect.maxY * 1920 + 1)
+        for position in ["bottom", "top", "middle", "auto"] {
+            let band = guarded.twoRowBand(positionOverride: position)
+            #expect(band.minY >= safe.rect.minY * 1920 - 1)
+            #expect(band.maxY <= safe.rect.maxY * 1920 + 1)
+        }
+    }
+}

@@ -422,6 +422,11 @@ nonisolated struct VideoPersonRecord: Identifiable, Sendable, Hashable {
     var portraitAt: Double
     var portraitBox: PortraitBox?
 
+    var vip: Bool?
+    var vipSource: String?
+    var vipReason: String?
+
+    var isVIP: Bool { vip == true }
     var id: Int64 { personID }
     var displayName: String { name.isEmpty ? key : name }
 

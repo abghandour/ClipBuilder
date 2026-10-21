@@ -16,9 +16,11 @@ struct RenderSegmentCacheTests {
             x: 0, y: 100, start: 0.5, end: 2)
         let overlay = MultitrackRenderer.TimedOverlayPNG(png: URL(fileURLWithPath: "/asset-digest"),
             startTime: 0, endTime: 2, transIn: "fade", transOut: "pop", identity: "text-and-font")
-        let input = RenderSegmentKey(start: 0, duration: 3, clips: [clip], captions: [caption],
+        var input = RenderSegmentKey(start: 0, duration: 3, clips: [clip], captions: [caption],
             overlays: [overlay], masks: ["0": "mask-a", "1": "mask-b"], fontFingerprints: ["font-v1"],
             captionStyle: CaptionStyle(), settings: RenderSettings(), encoder: ["-c:v", "h264_videotoolbox"])
+        input.burnIns = [.init(png: URL(fileURLWithPath: "/burn-digest"), x: 10, y: 20, start: 0.2, end: 2)]
+        input.burnInDuration = 3
         let key = try RenderSegmentCache.key(input)
         #expect(try RenderSegmentCache.key(input) == key)
         var reordered = input
@@ -50,6 +52,14 @@ struct RenderSegmentCacheTests {
             { $0.settings.customCRF = 24 },
             { $0.encoder = ["-c:v", "libx264"] },
             { $0.clips[0].muted = true },
+            { $0.clips[0].effectiveEffect = EffectSpec(preset: "bw") },
+            { $0.burnIns?[0].png = URL(fileURLWithPath: "/changed-burn") },
+            { $0.burnIns?[0].x += 1 }, { $0.burnIns?[0].y += 1 },
+            { $0.burnIns?[0].start = 0.3 }, { $0.burnIns?[0].end = 2.5 },
+            { $0.burnIns?[0].animation = "fade" },
+            { $0.burnInDuration = 4 }, { $0.muteSource = true },
+            { $0.compositeEffect = EffectSpec(preset: "faded") },
+            { $0.lookAssets = ["lut:fixture": "changed-lut"] },
         ]
         for (index, change) in changes.enumerated() {
             var changed = input

@@ -403,9 +403,9 @@ extension Database {
 
     /// Shared by a whole-person merge and a single-video correction.
     private func mergePeopleRoster(videoID: Int64, from: PersonRecord, to: PersonRecord) throws {
-        let source = try connection.query("SELECT ranges_json FROM video_people WHERE video_id = ? AND person_id = ?",
+        let source = try connection.query("SELECT * FROM video_people WHERE video_id = ? AND person_id = ?",
                                           [.integer(videoID), .integer(from.id)]).first
-        let target = try connection.query("SELECT ranges_json FROM video_people WHERE video_id = ? AND person_id = ?",
+        let target = try connection.query("SELECT * FROM video_people WHERE video_id = ? AND person_id = ?",
                                           [.integer(videoID), .integer(to.id)]).first
         if let source, let target {
             // Union overlapping/touching intervals, retaining the target's portrait.
@@ -422,8 +422,13 @@ extension Database {
                 }
             }
             let json = String(decoding: try JSONEncoder().encode(merged), as: UTF8.self)
-            try connection.execute("UPDATE video_people SET ranges_json = ? WHERE video_id = ? AND person_id = ?",
-                                   [.text(json), .integer(videoID), .integer(to.id)])
+            // A user decision wins over inference; conflicting user values retain the target.
+            let vipRow = target["vip_source"]?.stringValue == "user" ? target
+                : source["vip_source"]?.stringValue == "user" ? source
+                : target["vip"]?.intValue != nil ? target : source
+            try connection.execute("UPDATE video_people SET ranges_json = ?, vip = ?, vip_source = ? WHERE video_id = ? AND person_id = ?",
+                                   [.text(json), vipRow["vip"] ?? .null, vipRow["vip_source"] ?? .null,
+                                    .integer(videoID), .integer(to.id)])
         } else if source != nil {
             try connection.execute("UPDATE video_people SET person_id = ? WHERE video_id = ? AND person_id = ?",
                                    [.integer(to.id), .integer(videoID), .integer(from.id)])

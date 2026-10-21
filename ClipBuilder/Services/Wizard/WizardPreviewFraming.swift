@@ -72,6 +72,35 @@ nonisolated enum WizardPreviewFraming {
         }
     }
 
+    /// Called from the preview's background task. Cache misses keep the cheap
+    /// still framing; preview never launches another tracking decode.
+    static func resolveCached(options: WizardOptions, record: SceneRecord, video: VideoRecord?,
+                              face: CGRect?, turns: [SpeakerTurn], roster: [VideoPersonRecord],
+                              people: [PersonRecord], layouts: [ScreenCropLayout],
+                              cache: FeedPathCache = .shared) async
+        -> (framing: WizardPreviewComposite.Framing, warning: String?) {
+        let fallback = resolve(options: options, record: record, video: video, face: face,
+            turns: turns, roster: roster, people: people, layouts: layouts)
+        guard case .cells(var cells) = fallback.framing, let video,
+              let plan = try? CropRecipePlanner.plan(CropRecipe(kind: options.highlightFraming ?? .talker),
+                video: video, range: record.startTime...record.endTime, turns: turns, roster: roster,
+                layouts: layouts, canvasAspect: options.renderSettings.aspectRatio) else { return fallback }
+        let time = (record.startTime + record.endTime) / 2
+        for index in cells.indices where plan.slots.indices.contains(index) {
+            let slot = plan.slots[index]
+            let span = slot.trackingSpans?.first { $0.start <= time - record.startTime && time - record.startTime < $0.end }
+            guard let region = span?.region ?? slot.region else { continue }
+            let focus = span?.focus ?? slot.focus.map { AreaFocus(x: $0.x, y: $0.y) }
+            let aspect = options.renderSettings.aspectRatio * cells[index].area.width / cells[index].area.height
+            if let cached = await cache.covering(source: record.videoURL,
+                region: CenterStageService.validRegion(region), start: time, duration: 0, aspect: aspect, focus: focus),
+               let frame = CenterStageService.interpolated(cached.path.keyframes, at: time - cached.identity.start) {
+                cells[index].source = CGRect(x: frame.x, y: frame.y, width: frame.w, height: frame.h)
+            }
+        }
+        return (.cells(cells), fallback.warning)
+    }
+
     /// Only pixels affect the base-frame cache; tag text and talking metadata do not.
     static func pixelFraming(_ framing: WizardPreviewComposite.Framing) -> WizardPreviewComposite.Framing {
         if case .cells(let cells) = framing {
@@ -98,17 +127,19 @@ nonisolated enum WizardPreviewFraming {
             let region = keyframe.map { CGRect(x: $0.x, y: $0.y, width: $0.w, height: $0.h) }
                 ?? (slot.window ?? slot.region).map { CGRect(x: $0.xFrac, y: $0.yFrac, width: $0.wFrac, height: $0.hFrac) }
                 ?? full
-            let crop = CropRecipePlanner.crop(
-                tile: PodcastTile(index: -1, x: region.minX, y: region.minY, w: region.width, h: region.height),
-                aspect: canvasAspect * area.width / max(0.001, area.height),
-                sourceAspect: Double(video.width) / Double(video.height), center: keyframe == nil ? slot.focus : nil)
-            let source = CGRect(x: crop.xFrac, y: crop.yFrac, width: crop.wFrac, height: crop.hFrac)
-            let tile = tiles.first { $0.contains(x: source.midX, y: source.midY) }
+            let tile = tiles.first { $0.contains(x: region.midX, y: region.midY) }
             let entry = roster.first { $0.key == tile?.personKey }
                 ?? roster.first { person in
                     guard let box = person.portraitBox else { return false }
                     return tile?.contains(x: box.x + box.w / 2, y: box.y + box.h / 2) == true
                 }
+            let portrait = entry?.portraitBox.map { CGRect(x: $0.x, y: $0.y, width: $0.w, height: $0.h) }
+            let crop = CropRecipePlanner.crop(
+                tile: PodcastTile(index: -1, x: region.minX, y: region.minY, w: region.width, h: region.height),
+                aspect: canvasAspect * area.width / max(0.001, area.height),
+                sourceAspect: Double(video.width) / Double(video.height), center: keyframe == nil ? slot.focus : nil,
+                face: keyframe == nil ? portrait : nil)
+            let source = CGRect(x: crop.xFrac, y: crop.yFrac, width: crop.wFrac, height: crop.hFrac)
             let person = people.first { !$0.hidden && !$0.name.isEmpty && $0.key == (entry?.key ?? tile?.personKey) }
             let face = entry?.portraitBox.map { CGRect(x: $0.x, y: $0.y, width: $0.w, height: $0.h) }
             return WizardPreviewComposite.Cell(source: source, area: area, person: person, face: face,

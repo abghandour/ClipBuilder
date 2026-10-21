@@ -334,6 +334,10 @@ extension Database {
     }
 
     static func migrate(_ connection: SQLiteConnection) throws {
+        let rosterColumns = try connection.columnNames(of: "video_people")
+        for (name, type) in [("vip", "INTEGER"), ("vip_source", "TEXT")] where !rosterColumns.contains(name) {
+            try connection.execute("ALTER TABLE video_people ADD COLUMN \(name) \(type)")
+        }
         try connection.executeScript(BuilderScriptPersistence.schema)
         if try !connection.columnNames(of: "timelines").contains("document_revision") {
             try connection.execute("ALTER TABLE timelines ADD COLUMN document_revision INTEGER NOT NULL DEFAULT 0")

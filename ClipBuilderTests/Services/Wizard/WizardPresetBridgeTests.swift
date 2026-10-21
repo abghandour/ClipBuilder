@@ -17,6 +17,8 @@ struct WizardPresetBridgeTests {
         settings.introBumper = "bumpers/intro.mp4"
         settings.nameTags = true
         settings.nameTagStyleID = "pill"
+        settings.safeAreaOnly = true
+        settings.safeAreaPlatforms = ["instagram", "tiktok"]
         settings.watermark = true
         settings.watermarkOverlay = "Mark"
         settings.watermarkOpacity = 0.3

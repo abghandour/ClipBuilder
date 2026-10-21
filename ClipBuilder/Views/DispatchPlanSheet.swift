@@ -1124,6 +1124,7 @@ private struct VideoNotesPanel: View {
         } label: {
             VStack(spacing: 3) {
                 VideoPersonAvatar(record: entry, videoURL: video.url, size: 44)
+                    .contextMenu { VIPContextMenu(entry: entry) }
                     .overlay {
                         Circle()
                             .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2.5)
@@ -1141,6 +1142,7 @@ private struct VideoNotesPanel: View {
                     .font(.caption2)
                     .foregroundStyle(isSelected ? .primary : .secondary)
                     .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(width: 58)
         }
@@ -1609,6 +1611,18 @@ struct VideoPersonAvatar: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
+        .overlay(alignment: .topTrailing) {
+            if record.isVIP {
+                // Hangs partly outside the circle, like a badge.
+                Image(systemName: "star.fill")
+                    .font(.system(size: max(9, size * 0.24)))
+                    .foregroundStyle(.yellow)
+                    .padding(2)
+                    .background(.background, in: Circle())
+                    .offset(x: size * 0.1, y: -size * 0.1)
+                    .accessibilityLabel("VIP")
+            }
+        }
         .task(id: record.personID) {
             guard loadedID != record.personID else { return }
             loadedID = record.personID
@@ -2113,5 +2127,17 @@ struct VideoTrimSlider: View {
                     .foregroundStyle(.black)
             }
             .contentShape(Rectangle().inset(by: -8))
+    }
+}
+
+/// Right-click on a roster avatar: flag or unflag the person as a VIP in this video.
+struct VIPContextMenu: View {
+    @Environment(AppStore.self) private var store
+    let entry: VideoPersonRecord
+
+    var body: some View {
+        Button(entry.isVIP ? "Remove VIP" : "Add VIP", systemImage: entry.isVIP ? "star.slash" : "star") {
+            Task { _ = await store.setVideoPersonVIP(videoID: entry.videoID, personID: entry.personID, vip: !entry.isVIP) }
+        }
     }
 }

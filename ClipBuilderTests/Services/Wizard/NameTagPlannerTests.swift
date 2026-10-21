@@ -462,3 +462,17 @@ extension NameTagPlannerTests {
         #expect(FileManager.default.fileExists(atPath: url.path))
     }
 }
+
+extension NameTagPlannerTests {
+    @Test func safeOnlyKeepsExplicitBottomTrailingCornerInsideSafeRect() throws {
+        let safe = CGRect(x: 0, y: 192, width: 864, height: 1152)
+        let area = NameTagPlanner.Area(rect: frame, spans: [.init(start: 0, end: 10, personKey: "ann")])
+        let settings = NameTagPlanner.Settings(position: "bottomTrailing", safeRect: safe, safeOnly: true)
+        let tag = try #require(NameTagPlanner.plan(areas: [area], people: people, settings: settings).first)
+        #expect(tag.corner == .bottomTrailing)
+        #expect(safe.contains(tag.rect))
+        var crowded = settings
+        crowded.captionBand = CGRect(x: 0, y: safe.minY, width: 1080, height: safe.height)
+        #expect(NameTagPlanner.plan(areas: [area], people: people, settings: crowded).isEmpty)
+    }
+}

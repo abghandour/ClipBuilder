@@ -9,7 +9,9 @@ actor RenderSegmentCache {
     /// (draw order, cover-all framing, alpha dissolves, the audio mix).
     // v5 preserves original transcript timing through framing intermediates.
     // v6 uses half-open caption windows at page boundaries.
-    nonisolated static let rendererVersion = "multitrack-segment-v6"
+    // v7 folds Express burn-ins/mute and feed paths into the segment graph.
+    // v8 preserves muted AAC, validates saved paths, and grades the whole composite.
+    nonisolated static let rendererVersion = "multitrack-segment-v8"
     private let root: URL?
     private let byteLimit: Int64
 
@@ -44,6 +46,33 @@ actor RenderSegmentCache {
         } catch { return false }
     }
 
+    func readJSON<Value: Decodable & Sendable>(_ type: Value.Type, key: String) -> Value? {
+        guard !Task.isCancelled else { return nil }
+        let url = directory.appendingPathComponent(key + ".json")
+        guard let data = try? Data(contentsOf: url), let value = try? JSONDecoder().decode(type, from: data) else { return nil }
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+        return value
+    }
+
+    func storeJSON<Value: Encodable & Sendable>(_ value: Value, key: String) {
+        guard !Task.isCancelled, let data = try? JSONEncoder().encode(value) else { return }
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Task.checkCancellation()
+            try data.write(to: directory.appendingPathComponent(key + ".json"), options: .atomic)
+            evict(in: directory)
+        } catch { /* Evidence cache is optional. */ }
+    }
+
+    func readJSONRecords<Value: Decodable & Sendable>(_ type: Value.Type, prefix: String) -> [Value] {
+        let urls = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        return urls.filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "json" }
+            .compactMap { url in
+                guard let data = try? Data(contentsOf: url) else { return nil }
+                return try? JSONDecoder().decode(type, from: data)
+            }
+    }
+
     nonisolated struct Entry: Sendable {
         var key: String
         var source: URL
@@ -73,8 +102,8 @@ actor RenderSegmentCache {
             do {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 if !FileManager.default.fileExists(atPath: destination.path) {
-                    let values = try entry.source.resourceValues(forKeys: [.fileSizeKey])
-                    guard (values.fileSize ?? 0) > 0 else { continue }
+                    let values = try FileManager.default.attributesOfItem(atPath: entry.source.path)
+                    guard ((values[.size] as? NSNumber)?.int64Value ?? 0) > 0 else { continue }
                     try FileManager.default.copyItem(at: entry.source, to: pending)
                     try Task.checkCancellation()
                     try FileManager.default.moveItem(at: pending, to: destination)
@@ -88,11 +117,11 @@ actor RenderSegmentCache {
 
     private func evict(in directory: URL) {
         let files = (try? FileManager.default.contentsOfDirectory(at: directory,
-            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey])) ?? []
-        let entries = files.filter { $0.pathExtension == "mp4" }.compactMap { url -> (URL, Int64, Date)? in
-            guard let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
-                  let size = values.fileSize else { return nil }
-            return (url, Int64(size), values.contentModificationDate ?? .distantPast)
+            includingPropertiesForKeys: nil)) ?? []
+        let entries = files.filter { ["mp4", "json"].contains($0.pathExtension) }.compactMap { url -> (URL, Int64, Date)? in
+            guard let values = try? FileManager.default.attributesOfItem(atPath: url.path),
+                  let size = values[.size] as? NSNumber else { return nil }
+            return (url, size.int64Value, values[.modificationDate] as? Date ?? .distantPast)
         }.sorted { $0.2 == $1.2 ? $0.0.path < $1.0.path : $0.2 < $1.2 }
         var bytes = entries.reduce(Int64(0)) { $0 + $1.1 }
         for entry in entries where bytes > byteLimit {
@@ -117,4 +146,9 @@ nonisolated struct RenderSegmentKey: Encodable, Sendable {
     var captionStyle: CaptionStyle
     var settings: RenderSettings
     var encoder: [String]
+    var burnIns: [RenderEngine.ClipOverlay]?
+    var burnInDuration: Double?
+    var muteSource: Bool?
+    var compositeEffect: EffectSpec?
+    var lookAssets: [String: String]?
 }

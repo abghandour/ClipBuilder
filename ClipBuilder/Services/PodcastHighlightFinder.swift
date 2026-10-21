@@ -307,25 +307,40 @@ nonisolated enum PodcastHighlightFinder {
     }
 
     static func find(exchanges: [PodcastExchange], segments: [TranscriptSegment], turns: [SpeakerTurn],
-                     roster: [VideoPersonRecord], maxSeconds: Double, threshold: Double, maxCount: Int? = nil, highlightFraming: CropRecipe.Kind? = nil,
+                     roster: [VideoPersonRecord], vipKeys: Set<String> = [], maxSeconds: Double, threshold: Double, maxCount: Int? = nil, highlightFraming: CropRecipe.Kind? = nil,
                      excludedRanges: [(start: Double, end: Double)] = [],
                      instructions: String = "", ai: AIService? = nil, model: String? = nil,
                      log: @escaping @Sendable (String) -> Void = { _ in },
                      progress: @Sendable (String, Double) async -> Void = { _, _ in }) async throws -> [HighlightCandidate] {
         let limit = min(120, max(5, maxSeconds))
         let sentences = PodcastExchangeSegmenter.sentenceSegments(segments, turns: turns).sorted { $0.start < $1.start }
-        let names = Dictionary(roster.map { ($0.key, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+        let names = Dictionary(roster.map { ($0.key, $0.displayName + (vipKeys.contains($0.key) ? " (VIP)" : "")) }, uniquingKeysWith: { first, _ in first })
         let total = max(1, exchanges.count)
         var found: [HighlightCandidate] = []
         func availableCandidates() -> [HighlightCandidate] {
             found.filter { candidate in
                 !excludedRanges.contains { $0.start < candidate.sourceEnd && $0.end > candidate.sourceStart }
+            }.map { candidate in
+                var candidate = candidate
+                candidate.score = HighlightVIPBoost.adjusted(score: candidate.score, speakerKeys: candidate.speakerKeys,
+                    vipKeys: vipKeys, talkShare: VIPRules.talkShare(turns: turns, range: candidate.sourceStart...candidate.sourceEnd))
+                return candidate
             }
         }
         var done = Set<Int>()
         var pending: [Entry] = []
         let cap = maxCount.flatMap { $0 > 0 ? $0 : nil }
-        let ranked = exchanges.sorted { $0.score == $1.score ? $0.start < $1.start : $0.score > $1.score }
+        let valid = exchanges.filter { $0.start.isFinite && $0.end.isFinite && $0.end > $0.start }
+        let scored: [(exchange: PodcastExchange, score: Double)] = valid.map { exchange in
+            let share = VIPRules.talkShare(turns: turns, range: exchange.start...exchange.end)
+            let score = HighlightVIPBoost.adjusted(score: exchange.score, speakerKeys: exchange.speakerKeys,
+                                                   vipKeys: vipKeys, talkShare: share)
+            return (exchange: exchange, score: score)
+        }
+        let ranked: [PodcastExchange] = scored.sorted { lhs, rhs in
+            if lhs.score == rhs.score { return lhs.exchange.start < rhs.exchange.start }
+            return lhs.score > rhs.score
+        }.map(\.exchange)
         var jobs: [[Entry]] = []
         func flushPending() {
             jobs += batches(pending, turns: turns, names: names)
@@ -399,7 +414,7 @@ nonisolated enum PodcastHighlightFinder {
             Every range must include at least one full sentence of the answer; never end on the question.
             Give each a short title, one-line reason, decimal score 0–10, standalone boolean, and rapid_exchange=true only for rapid back-and-forth.
             Choose a framing id for every candidate from:
-            \(CropRecipe.Kind.allCases.map { "\($0.rawValue): \($0.summary)" }.joined(separator: "\n"))
+            \(CropRecipe.Kind.allCases.filter { ($0 != .vip && $0 != .vipBRoll) || !vipKeys.isEmpty }.map { "\($0.rawValue): \($0.summary)" }.joined(separator: "\n"))
             \(highlightFraming.map { "Use the requested framing \($0.rawValue) for every candidate." } ?? "Choose the best framing for the exchange.")
             Score rubric: 10 = must post, 8–9 = strong, 7 = worth posting, below 7 = skip.
             Scores must not all be identical: distinguish candidates using the rubric and decimal precision.

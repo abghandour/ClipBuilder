@@ -32,7 +32,7 @@ struct NameTagControls: View {
             }
             .pickerStyle(.menu)
         }
-        FormCaption("Auto keeps clear of the platform buttons; the other choices use the corner of the person's area.")
+        FormCaption("Auto keeps clear of the platform buttons. Safe area only also keeps chosen corners clear.")
             .onAppear {
                 if position == "auto" { position = nil }
             }

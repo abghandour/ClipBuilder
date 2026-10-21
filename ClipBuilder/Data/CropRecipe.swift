@@ -1,9 +1,11 @@
+import CoreGraphics
 import Foundation
 
 /// What one cell of a crop recipe shows.
 nonisolated enum CropRecipeSubject: Sendable, Hashable, Codable {
     /// Whoever is talking.
     case talker
+    case vip
     /// The n-th most recent other speaker (1 = the previous one).
     case recent(Int)
     /// The n-th person who is not talking, in tile order (1 = the first).
@@ -20,6 +22,7 @@ nonisolated enum CropRecipeSubject: Sendable, Hashable, Codable {
     init?(token raw: String) {
         let token = raw.trimmingCharacters(in: .whitespaces).lowercased()
         if token == "talker" || token == "speaker" { self = .talker; return }
+        if token == "vip" { self = .vip; return }
         if token == "previous" { self = .recent(1); return }
         let parts = token.split(separator: ":", maxSplits: 1).map(String.init)
         guard parts.count == 2 else { return nil }
@@ -40,6 +43,7 @@ nonisolated enum CropRecipeSubject: Sendable, Hashable, Codable {
 
     var token: String {
         switch self {
+        case .vip: "vip"
         case .talker: "talker"
         case .recent(let n): "recent:\(n)"
         case .others(let n): "others:\(n)"
@@ -51,6 +55,7 @@ nonisolated enum CropRecipeSubject: Sendable, Hashable, Codable {
 
     var label: String {
         switch self {
+        case .vip: "VIP"
         case .talker: "Talker"
         case .recent(1): "Previous speaker"
         case .recent(let n): "Speaker \(n) back"
@@ -69,6 +74,8 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
     enum Kind: String, CaseIterable, Sendable, Codable {
         /// Full screen, following whoever is talking.
         case talker
+        case vip
+        case vipBRoll = "vip_broll"
         /// Everyone at once: 50/50, thirds, 2×2 or 2×3 by head count.
         case grid
         /// The talker in the top half, everyone else across the bottom.
@@ -80,6 +87,8 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
 
         var name: String {
             switch self {
+            case .vip: "VIP focus"
+            case .vipBRoll: "VIP B-Roll Focus"
             case .talker: "Talker full screen"
             case .grid: "Everyone in a grid"
             case .talkerAndRest: "Talker and the rest"
@@ -90,6 +99,8 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
 
         var summary: String {
             switch self {
+            case .vip: "Keep the VIP on screen: the VIP full screen, and their reaction while others talk."
+            case .vipBRoll: "Follow the talker, with short breaks to the VIPs on their expressive moments."
             case .talker: "One person at a time, cutting to whoever is talking."
             case .grid: "Every feed in its own cell; 50/50 for two, thirds for three, 2×2 for four, 2×3 for five or six."
             case .talkerAndRest: "The talker in the top half; the others share the bottom."
@@ -125,6 +136,13 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
 /// Turns a recipe and a recording's analysis into a layout and one window
 /// or camera path per area. Pure: the store applies the plan.
 nonisolated enum CropRecipePlanner {
+    struct TrackingSpan: Sendable, Equatable {
+        var start: Double
+        var end: Double
+        var region: FreeCropRect
+        var focus: AreaFocus?
+    }
+
     struct Slot: Sendable, Equatable {
         var subject: CropRecipeSubject
         /// A fixed part of the source, at the area's aspect.
@@ -137,11 +155,13 @@ nonisolated enum CropRecipePlanner {
         var focus: (x: Double, y: Double)?
         /// Source spans during which this cell shows the talker.
         var talking: [ClosedRange<Double>] = []
+        /// VIP feed changes; each stretch tracks inside its feed on the relative source clock.
+        var trackingSpans: [TrackingSpan]? = nil
 
         static func == (lhs: Slot, rhs: Slot) -> Bool {
             lhs.subject == rhs.subject && lhs.window == rhs.window && lhs.path == rhs.path
                 && lhs.region == rhs.region && lhs.focus?.x == rhs.focus?.x && lhs.focus?.y == rhs.focus?.y
-                && lhs.talking == rhs.talking
+                && lhs.talking == rhs.talking && lhs.trackingSpans == rhs.trackingSpans
         }
     }
 
@@ -167,7 +187,7 @@ nonisolated enum CropRecipePlanner {
     /// The built-in layout for a head count, or nil above six.
     static func layoutName(kind: CropRecipe.Kind, people: Int) -> String? {
         switch kind {
-        case .talker: return CropLayoutRef.fullScreenName
+        case .talker, .vip, .vipBRoll: return CropLayoutRef.fullScreenName
         case .talkerAndPrevious, .talkerAndRotation: return "50-50 Horizontal"
         case .grid:
             switch people {
@@ -192,7 +212,8 @@ nonisolated enum CropRecipePlanner {
     /// The recipe's own assignment of subjects to areas.
     static func defaultSlots(_ recipe: CropRecipe, areas: Int, tiles: [PodcastTile]) -> [CropRecipeSubject] {
         switch recipe.kind {
-        case .talker: return [.talker]
+        case .vip: return [.vip]
+        case .talker, .vipBRoll: return [.talker]
         case .grid: return tiles.sorted { $0.index < $1.index }.prefix(areas).map { .tile($0.index) }
         case .talkerAndRest: return [.talker] + (1..<max(1, areas)).map { .others($0) }
         case .talkerAndPrevious: return [.talker, .recent(1)]
@@ -273,14 +294,24 @@ nonisolated enum CropRecipePlanner {
     /// The largest crop of `aspect` (output width ÷ height) inside a tile,
     /// centered on the face when known, else on the tile.
     static func crop(tile cell: PodcastTile, aspect: Double, sourceAspect: Double,
-                     center: (x: Double, y: Double)? = nil) -> FreeCropRect {
+                     center: (x: Double, y: Double)? = nil, face: CGRect? = nil) -> FreeCropRect {
         let tile = cell.picture
         var h = tile.h
         var w = h * aspect / sourceAspect
         if w > tile.w { w = tile.w; h = w * sourceAspect / aspect }
         let cx = center?.x ?? tile.centerX, cy = center?.y ?? tile.centerY
         let x = min(min(1 - w, tile.x + tile.w - w), max(max(0, tile.x), cx - w / 2))
-        let y = min(min(1 - h, tile.y + tile.h - h), max(max(0, tile.y), cy - h / 2))
+        let desiredY = face.map { $0.minY - h * FaceGuard.headroom } ?? (cy - h / 2)
+        let y = min(min(1 - h, tile.y + tile.h - h), max(max(0, tile.y), desiredY))
+        if let face {
+            let bounds = CGRect(x: tile.x * sourceAspect, y: tile.y, width: tile.w * sourceAspect, height: tile.h)
+            let pixels = CGRect(x: face.minX * sourceAspect, y: face.minY,
+                                width: face.width * sourceAspect, height: face.height)
+            let guarded = FaceGuard.contain(CGRect(x: x * sourceAspect, y: y, width: w * sourceAspect, height: h),
+                                            faces: [pixels], bounds: bounds)
+            return FreeCropRect(xFrac: round4(guarded.minX / sourceAspect), yFrac: round4(guarded.minY),
+                                wFrac: round4(guarded.width / sourceAspect), hFrac: round4(guarded.height))
+        }
         return FreeCropRect(xFrac: round4(x), yFrac: round4(y), wFrac: round4(w), hFrac: round4(h))
     }
 
@@ -317,9 +348,14 @@ nonisolated enum CropRecipePlanner {
             throw Failure(description: "The file's frame size is unknown; analyze it first.")
         }
         let sourceAspect = Double(video.width) / Double(video.height)
-        let tiles = tiles(video: video, roster: roster)
+        var tiles = tiles(video: video, roster: roster)
+        if recipe.kind == .vip, tiles.isEmpty {
+            tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 1, h: 1)]
+        }
+        if recipe.kind == .vip { tiles = VIPRecipePlanning.namedTiles(tiles, roster: roster) }
+        let vipTiles = VIPRecipePlanning.tiles(tiles, roster: roster)
         let people = max(1, tiles.count)
-        guard recipe.kind == .talker || tiles.count >= 2 else {
+        guard recipe.kind == .talker || recipe.kind == .vip || recipe.kind == .vipBRoll || tiles.count >= 2 else {
             throw Failure(description: "This recipe needs a recording with two or more feeds or people; only the full-screen talker works here.")
         }
         guard let layoutName = recipe.layout ?? layoutName(kind: recipe.kind, people: people) else {
@@ -341,23 +377,42 @@ nonisolated enum CropRecipePlanner {
         guard !subjects.isEmpty, subjects.count <= areas.count, subjects.count <= TimelineDocument.maxTracks else {
             throw Failure(description: "The layout has \(areas.count) areas for \(subjects.count) subjects (at most \(TimelineDocument.maxTracks)).")
         }
-        let segments = segments(turns: turns, tiles: tiles, range: span, hold: recipe.minimumHold)
+        let hold = recipe.kind == .vip || recipe.kind == .vipBRoll
+            ? max(recipe.minimumHold, VIPRotation.minimumHold) : recipe.minimumHold
+        var segments = segments(turns: turns, tiles: tiles, range: span, hold: hold)
+        if recipe.kind == .vip, tiles.count == 1, segments.isEmpty {
+            segments = [.init(start: span.lowerBound, end: span.upperBound, talker: tiles[0].index, recent: [])]
+        }
         let needsTurns = subjects.contains { if case .tile = $0 { false } else if case .person = $0 { false } else { true } }
-        guard !needsTurns || !segments.isEmpty else {
+        guard !needsTurns || !segments.isEmpty || (recipe.kind == .vip && !vipTiles.isEmpty) else {
             throw Failure(description: "No speaker turns for this file; run Analyze so the recording knows who talks when.")
         }
         var notes: [String] = []
+        if recipe.kind == .vip, vipTiles.isEmpty {
+            notes.append("No VIP on this recording; following the talker.")
+        }
+        let faceBoxes: [Int: CGRect] = Dictionary(uniqueKeysWithValues: tiles.compactMap { tile in
+            guard let box = roster.first(where: { person in
+                guard let box = person.portraitBox else { return false }
+                return (tile.personKey == nil || tile.personKey == person.key)
+                    && tile.contains(x: box.x + box.w / 2, y: box.y + box.h / 2)
+            })?.portraitBox else { return nil }
+            return (tile.index, CGRect(x: box.x, y: box.y, width: box.w, height: box.h))
+        })
         let faceCenters: [Int: (x: Double, y: Double)] = Dictionary(uniqueKeysWithValues: tiles.compactMap { tile in
             if let face = tile.faceCenter { return (tile.index, face) }
-            guard let key = tile.personKey, let box = roster.first(where: { $0.key == key })?.portraitBox,
-                  tile.contains(x: box.x + box.w / 2, y: box.y + box.h / 2) else { return nil }
+            guard let box = roster.first(where: { person in
+                guard let box = person.portraitBox else { return false }
+                return (tile.personKey == nil || tile.personKey == person.key)
+                    && tile.contains(x: box.x + box.w / 2, y: box.y + box.h / 2)
+            })?.portraitBox else { return nil }
             return (tile.index, (box.x + box.w / 2, box.y + box.h / 2))
         })
         func rect(_ index: Int, area: ScreenCropArea) -> FreeCropRect? {
             guard let tile = tiles.first(where: { $0.index == index }) else { return nil }
             let bounds = area.bounds
             let aspect = canvasAspect * bounds.w / max(0.001, bounds.h)
-            return crop(tile: tile, aspect: aspect, sourceAspect: sourceAspect, center: faceCenters[index])
+            return crop(tile: tile, aspect: aspect, sourceAspect: sourceAspect, center: faceCenters[index], face: faceBoxes[index])
         }
         func fullFrame(area: ScreenCropArea) -> FreeCropRect {
             let bounds = area.bounds
@@ -385,6 +440,24 @@ nonisolated enum CropRecipePlanner {
                 }
                 events = [(span.lowerBound, tile.index)]
                 talking = segments.filter { $0.talker == tile.index }.map { $0.start...$0.end }
+            case .vip:
+                events = VIPRecipePlanning.events(segments: segments, tiles: tiles, roster: roster,
+                                                  turns: turns, start: span.lowerBound, end: span.upperBound)
+                let vipKeys = Set(roster.filter(\.isVIP).map(\.key))
+                if vipTiles.isEmpty {
+                    talking = segments.map { $0.start...$0.end }
+                } else {
+                    for (index, event) in events.enumerated() {
+                        let end = events[safe: index + 1]?.time ?? span.upperBound
+                        for turn in turns {
+                            let isVIP = turn.personKey.map(vipKeys.contains)
+                                ?? (CropRecipePlanner.tile(for: turn, tiles: tiles).map { tile in vipTiles.contains { $0.index == tile } } ?? false)
+                            guard isVIP, CropRecipePlanner.tile(for: turn, tiles: tiles) == event.tile,
+                                  turn.end > event.time, turn.start < end else { continue }
+                            talking.append(max(turn.start, event.time)...min(turn.end, end))
+                        }
+                    }
+                }
             case .talker:
                 events = segments.map { ($0.start, $0.talker) }
                 talking = segments.map { $0.start...$0.end }
@@ -429,11 +502,26 @@ nonisolated enum CropRecipePlanner {
             for event in events { if let tile = event.tile { last = tile }; if let last { filled.append((event.time, last)) } }
             guard !filled.isEmpty else { throw Failure(description: "\(subject.label): nobody to show.") }
             func rectFor(_ index: Int) throws -> FreeCropRect {
-                if ref.isFullScreen && tiles.count < 2 { return fullFrame(area: area) }
+                if ref.isFullScreen && tiles.count < 2 && faceBoxes[index] == nil { return fullFrame(area: area) }
                 guard let rect = rect(index, area: area) else { throw Failure(description: "Feed \(index) is missing.") }
                 return rect
             }
             var slot = Slot(subject: subject, talking: merged(talking))
+            if subject == .vip, !vipTiles.isEmpty, recipe.tracking {
+                var stretches: [TrackingSpan] = []
+                for (index, event) in filled.enumerated() {
+                    guard let tile = tiles.first(where: { $0.index == event.tile })?.picture else { continue }
+                    let end = filled[safe: index + 1]?.time ?? span.upperBound
+                    let region = FreeCropRect(xFrac: tile.x, yFrac: tile.y, wFrac: tile.w, hFrac: tile.h)
+                    if stretches.last?.region == region {
+                        stretches[stretches.count - 1].end = end - span.lowerBound
+                    } else {
+                        stretches.append(TrackingSpan(start: event.time - span.lowerBound, end: end - span.lowerBound,
+                            region: region, focus: faceCenters[event.tile].map { AreaFocus(x: $0.x, y: $0.y) }))
+                    }
+                }
+                if stretches.count > 1 { slot.trackingSpans = stretches }
+            }
             // Hard cuts between the rectangles the cell shows, dropping
             // repeats; one rectangle means a still cell.
             var path: [CameraPathKeyframe] = []
@@ -450,7 +538,11 @@ nonisolated enum CropRecipePlanner {
                 path.append(CameraPathKeyframe(t: at, x: rect.xFrac, y: rect.yFrac, w: rect.wFrac, h: rect.hFrac))
             }
             if path.count == 1, let only = path.first {
-                if ref.isFullScreen {
+                if subject == .vip, !vipTiles.isEmpty, recipe.tracking,
+                   let tile = tiles.first(where: { $0.index == filled[0].tile })?.picture {
+                    slot.region = FreeCropRect(xFrac: tile.x, yFrac: tile.y, wFrac: tile.w, hFrac: tile.h)
+                    slot.focus = faceCenters[filled[0].tile]
+                } else if ref.isFullScreen {
                     var end = only; end.t = length
                     slot.path = [only, end]
                 } else if recipe.tracking, let tile = tiles.first(where: { $0.index == filled[0].tile })?.picture {

@@ -20,6 +20,7 @@ nonisolated struct CaptionRenderer {
     var style: CaptionStyle
     /// Auto placement clears platform UI; explicit positions use frame edges.
     var safeArea: PlatformSafeArea? = PlatformSafeArea.resolve(RenderContext.settings)
+    var safeAreaOnly: Bool = false
 
     // MARK: - Color / font resolution
 
@@ -225,7 +226,7 @@ nonisolated struct CaptionRenderer {
 
     /// Conservative two-row band, in top-left canvas pixels, shared with name tags.
     func twoRowBand(positionOverride: String? = nil) -> CGRect {
-        if let positionOverride, positionOverride != "auto", safeArea != nil {
+        if !safeAreaOnly, let positionOverride, positionOverride != "auto", safeArea != nil {
             var fullFrame = self
             fullFrame.safeArea = nil
             return fullFrame.twoRowBand(positionOverride: positionOverride)
@@ -421,6 +422,10 @@ nonisolated struct CaptionRenderer {
 
     /// Overlay pixel position for a rendered caption box — captions.py math.
     func position(for caption: RenderedCaption, positionOverride: String? = nil) -> (x: Int, y: Int) {
+        if safeAreaOnly {
+            let position = positionOverride.flatMap { $0 == "auto" ? nil : $0 } ?? style.position
+            return self.position(for: caption, clipPosition: position)
+        }
         // Auto retains the profile's historical placement and platform clearance.
         if positionOverride == nil || positionOverride == "auto" {
             return position(for: caption, clipPosition: style.position)

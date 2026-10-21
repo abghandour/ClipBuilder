@@ -105,6 +105,8 @@ nonisolated enum SyncMapping {
                     if column.hasSuffix("_json"), let json = try? JSONDecoder().decode(SyncJSON.self, from: Data(v.utf8)) {
                         result[column] = .string(try portableJSONString(json))
                     } else { result[column] = .string(v) }
+                case .integer(let v) where table.name == "video_people" && column == "vip":
+                    result[column] = .bool(v != 0)
                 case .integer(let v): result[column] = .number(Decimal(v))
                 case .real(let v) where v.isFinite:
                     guard let decimal = Decimal(string: String(v), locale: Locale(identifier: "en_US_POSIX")) else {
@@ -154,6 +156,8 @@ nonisolated enum SyncMapping {
         for column in table.columns {
             let value = wire[column] ?? .null
             switch value {
+            case .bool(let v) where table.name == "video_people" && column == "vip":
+                result[column] = .integer(v ? 1 : 0)
             case .string(let v): result[column] = .text(v)
             case .number(let v) where table.integers.contains(column):
                 guard let integer = Int64(NSDecimalNumber(decimal: v).stringValue) else { throw SyncError.invalidRow(column) }

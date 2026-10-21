@@ -65,7 +65,7 @@ actor PodcastAnalysisService {
             let peopleResult = try await analyzer.detectPeopleOnly(
                 video: video, profile: profile, database: database,
                 provider: provider, model: model,
-                sampleTimes: Self.identitySampleTimes(turns: turns, duration: video.duration), log: log)
+                sampleTimes: Self.identitySampleTimes(turns: turns, duration: video.duration), speakerTurns: turns, log: log)
             roster = peopleResult.roster
             newPeople = roster.filter { !peopleBefore.contains($0.key) }.map {
                 DetectedNewPerson(key: $0.key, descriptor: $0.descriptor,

@@ -5,6 +5,7 @@ nonisolated enum MiniWizardMemory {
     enum Field: String, CaseIterable, Sendable {
         case videoPath, footageKind, length
         case quality, preset, cameraFocus, captions, englishCaptions, captionPosition, captionStyleID
+        case safeAreaOnly, safeAreaPlatforms
         case nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case introVideo, outroVideo, nameTags, watermark, outputMode
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts

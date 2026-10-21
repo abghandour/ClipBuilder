@@ -37,6 +37,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         visual.nameTagStyle = options.nameTagStyle
         visual.nameTagStyleID = options.nameTagStyleID
         visual.nameTagPosition = options.nameTagPosition
+        visual.safeAreaOnly = options.safeAreaOnly == true
+        visual.safeAreaPlatforms = options.safeAreaPlatforms?.map(\.rawValue)
         visual.watermark = options.includeWatermark
         visual.watermarkOverlay = options.watermarkOverlayTemplate
         visual.watermarkOpacity = options.watermarkOpacity
@@ -183,7 +185,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             scene.cameraPath = record.centerStagePath
             scene.contentIsWide = record.wide
             if let video, video.width > 0, video.height > 0 { scene.sourceSize = CGSize(width: video.width, height: video.height) }
-            let framing = WizardPreviewFraming.resolve(options: options, record: record, video: video,
+            let framing = await WizardPreviewFraming.resolveCached(options: options, record: record, video: video,
                 face: face, turns: turns, roster: roster, people: taggedPeople, layouts: ScreenCropStore.all())
             scene.framing = framing.framing
             scene.framingWarning = framing.warning

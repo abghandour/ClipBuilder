@@ -17,14 +17,15 @@ enum PodcastRecipeTimeline {
         let tiles = CropRecipePlanner.tiles(video: video, roster: roster)
         var plan: CropRecipePlanner.Plan?
         do {
-            guard !tiles.isEmpty else { throw CropRecipePlanner.Failure(description: "no feed tiles") }
-            guard !turns.isEmpty else { throw CropRecipePlanner.Failure(description: "no speaker turns") }
+            guard kind == .vip || !tiles.isEmpty else { throw CropRecipePlanner.Failure(description: "no feed tiles") }
+            guard kind == .vip || !turns.isEmpty else { throw CropRecipePlanner.Failure(description: "no speaker turns") }
             plan = try CropRecipePlanner.plan(CropRecipe(kind: kind), video: video, range: range,
                 turns: turns, roster: roster, layouts: layouts, canvasAspect: settings.aspectRatio)
         } catch {
             log("Camera focus \(kind.name) could not be applied: \(error) — following speaker")
         }
         if let plan {
+            for note in plan.notes { log(note) }
             // compose uses the source's duration. The selected source window is
             // installed exactly afterwards, preserving speech timing precision.
             var slice = video
@@ -37,10 +38,17 @@ enum PodcastRecipeTimeline {
             builder.addVideo(video)
         }
         for index in builder.document.videoTrack.indices {
-            builder.document.videoTrack[index].sourceStart = range.lowerBound
-            builder.document.videoTrack[index].sourceEnd = range.upperBound
-            builder.document.videoTrack[index].startTime = 0
-            builder.document.videoTrack[index].duration = duration
+            // Framed file clips retain their scene identity for the later B-roll source lookup.
+            if let sourceScene { builder.document.videoTrack[index].sceneID = sourceScene.id }
+            if plan?.slots.first?.trackingSpans != nil {
+                builder.document.videoTrack[index].sourceStart = (builder.document.videoTrack[index].sourceStart ?? 0) + range.lowerBound
+                builder.document.videoTrack[index].sourceEnd = (builder.document.videoTrack[index].sourceEnd ?? duration) + range.lowerBound
+            } else {
+                builder.document.videoTrack[index].sourceStart = range.lowerBound
+                builder.document.videoTrack[index].sourceEnd = range.upperBound
+                builder.document.videoTrack[index].startTime = 0
+                builder.document.videoTrack[index].duration = duration
+            }
             builder.document.videoTrack[index].precision = .speech
             builder.document.videoTrack[index].captions = "none"
             if plan != nil { builder.document.videoTrack[index].wide = video.width > video.height }

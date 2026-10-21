@@ -197,6 +197,8 @@ actor Database {
         portrait_json TEXT,
         ranges_json TEXT,
         detected_at TEXT DEFAULT (datetime('now')),
+        vip INTEGER,
+        vip_source TEXT,
         PRIMARY KEY (video_id, person_id)
     );
 
@@ -828,7 +830,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 35
+    static let schemaVersion: Int64 = 36
 
     nonisolated static func migrateTranscriptEditedWords(_ db: SQLiteConnection) throws {
         if try !db.columnNames(of: "transcripts").contains("original_words") {

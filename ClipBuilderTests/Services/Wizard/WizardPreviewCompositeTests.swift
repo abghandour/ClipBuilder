@@ -7,6 +7,61 @@ import UniformTypeIdentifiers
 
 @Suite("Wizard preview composite")
 struct WizardPreviewCompositeTests {
+    @Test func vipPreviewShowsGuestWhileHostTalks() throws {
+        var video = Fixtures.video()
+        video.podcastLayout = PodcastLayout.splitHorizontal.rawValue
+        let guest = VideoPersonRecord(videoID: video.id, personID: 1, key: "guest", name: "Guest",
+            descriptor: "", portraitAt: 0, portraitBox: .init(x: 0.7, y: 0.2, w: 0.1, h: 0.3), vip: true)
+        let turn = SpeakerTurn(videoID: video.id, start: 0, end: 10, cluster: 0, confidence: 1,
+            personKey: "host", tile: 0)
+        var scene = Fixtures.scene()
+        scene.startTime = 0
+        scene.endTime = 10
+        var options = WizardOptions()
+        options.highlightFraming = .vip
+        let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
+            turns: [turn], roster: [guest], people: [], layouts: ScreenCropStore.builtIn)
+        #expect(result.warning == nil)
+        guard case .cells(let cells) = result.framing else { Issue.record("Expected VIP cell"); return }
+        #expect(cells.count == 1)
+        #expect(cells[0].source.midX > 0.5)
+        #expect(!cells[0].isTalking)
+        #expect(CameraFocusChooser.allowedLayouts(feeds: 2, hasVIP: true).contains(.vip))
+        #expect(!CameraFocusChooser.allowedLayouts(feeds: 2).contains(.vip))
+    }
+
+    @Test func safeAreaControlsInvalidatePreviewKey() {
+        var options = WizardOptions()
+        let scene = Fixtures.scene()
+        let profile = Fixtures.brand()
+        func key() -> PreviewKey {
+            PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
+        }
+        let initial = key()
+        options.safeAreaOnly = true
+        let enabled = key()
+        #expect(enabled != initial)
+        options.safeAreaPlatforms = [.instagram]
+        #expect(key() != enabled)
+    }
+
+    @Test func safeAreaOnlyLiftsPreviewCaptionAboveInstagramFooter() async throws {
+        var input = try input()
+        input.options.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        input.options.renderSettings.platformSafeArea.enabled = false
+        input.options.safeAreaPlatforms = [.instagram]
+        let plain = try await WizardPreviewComposite.render(input)
+        input.options.addCaptions = true
+        input.options.captionPosition = "bottom"
+        let edge = try await WizardPreviewComposite.render(input)
+        input.options.safeAreaOnly = true
+        let safe = try await WizardPreviewComposite.render(input)
+        let footer = CGRect(x: 0, y: 500, width: 360, height: 140)
+        #expect(try changedPixels(plain, edge, in: footer) > 10)
+        #expect(try changedPixels(plain, safe, in: footer) == 0)
+        #expect(try changedPixels(plain, safe, in: CGRect(x: 0, y: 300, width: 360, height: 200)) > 10)
+    }
+
     @Test func bottomCaptionsLeaveTheTopBandUntouched() async throws {
         var input = try input()
         let plain = try await WizardPreviewComposite.render(input)

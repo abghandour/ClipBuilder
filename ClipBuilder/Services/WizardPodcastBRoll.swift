@@ -19,6 +19,7 @@ enum WizardPodcastBRoll {
         }
         var spans: [SourceSpan]
         var instructions: String
+        var framing: CropRecipe.Kind?
         var projectID: Int64?
     }
 
@@ -37,6 +38,7 @@ enum WizardPodcastBRoll {
         var roster: [VideoPersonRecord]
         var tiles: [PodcastTile]
         var sources: PodcastHighlightBRollPlanner.Sources
+        var vipWindows: [ClosedRange<Double>]?
     }
 
     static func adding(to document: TimelineDocument, options: WizardOptions, database: Database,
@@ -50,7 +52,7 @@ enum WizardPodcastBRoll {
                        log: @escaping @Sendable (String) -> Void) async throws -> TimelineDocument {
         guard (ReelRecipe.recipe(id: options.formatPreset) ?? .custom).capabilities.bRoll else { return document }
         guard options.useBRoll else { log("B-roll off"); return document }
-        guard !options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return document }
+        guard options.highlightFraming == .vip || options.highlightFraming == .vipBRoll || !options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return document }
         // Generated brand cards have new paths in every version and cannot
         // supply B-roll sentences; they must not invalidate the source cache.
         let main = document.videoTrack.filter { $0.track == 0 && !$0.isCutaway && !$0.bumper && $0.sceneID != nil }
@@ -58,9 +60,9 @@ enum WizardPodcastBRoll {
         let key = Key(spans: main.map {
             Key.SourceSpan(sceneID: $0.sceneID, file: $0.videoFile, start: $0.sourceStart, end: $0.sourceEnd,
                            time: $0.startTime, duration: $0.duration, speed: $0.speed)
-        }, instructions: options.brollInstructions, projectID: options.projectID)
+        }, instructions: options.brollInstructions, framing: options.highlightFraming, projectID: options.projectID)
         let planned: Planned
-        if let cached = cache.plans[key] {
+        if options.highlightFraming != .vip, options.highlightFraming != .vipBRoll, let cached = cache.plans[key] {
             planned = cached
             log("B-roll: reusing placements for unchanged source spans and instructions.")
         } else {
@@ -77,6 +79,7 @@ enum WizardPodcastBRoll {
         return builder.document
     }
 
+    @concurrent
     private static func plan(main: [TimelineClip], options: WizardOptions, database: Database,
                              ai: AIService, log: @escaping @Sendable (String) -> Void) async throws -> Planned {
         let videos = try await database.fetchVideos(projectID: options.projectID)
@@ -116,13 +119,41 @@ enum WizardPodcastBRoll {
                 speakerKeys: Array(Set(turns.filter { $0.end > start && $0.start < end }.compactMap(\.personKey))))
             let sentences = context.sentences
                 .filter { $0.start >= start && $0.end <= end }.sorted { $0.start < $1.start }
+            let vipFocus = options.highlightFraming == .vip || options.highlightFraming == .vipBRoll
+            let vipKeys = vipFocus ? Set(context.roster.filter(\.isVIP).map(\.key)) : []
+            let tiles = vipFocus
+                ? VIPRecipePlanning.recordedFeeds(video: video, roster: context.roster)
+                : VIPRecipePlanning.namedTiles(context.tiles, roster: context.roster)
+            let vipWindows = options.highlightFraming == .vip
+                ? VIPBRollWindows.needingFootage(turns: turns, roster: context.roster, tiles: tiles, range: start...end) : nil
             let sources = PodcastHighlightBRollPlanner.sources(videoID: video.id, range: start...end,
                 speakerKeys: candidate.speakerKeys, turns: turns, roster: context.roster, scenes: scenes,
-                segments: context.sentences, people: people)
+                segments: context.sentences, people: people, preferredPeople: vipKeys)
             spans.append(Span(clip: clip, video: video, candidate: candidate, sentences: sentences,
-                turns: turns, roster: context.roster, tiles: context.tiles, sources: sources))
+                turns: turns, roster: context.roster, tiles: tiles, sources: sources, vipWindows: vipWindows))
         }
         guard !spans.isEmpty else { return Planned(spans: [], cuts: [], scenes: scenes) }
+        if options.highlightFraming == .vipBRoll {
+            var cuts: [[PodcastHighlightBRollPlanner.Cut]] = []
+            for span in spans {
+                try Task.checkCancellation()
+                cuts.append(try await PodcastHighlightBRollPlacement.vipBRollCuts(candidate: span.candidate,
+                    video: span.video, sources: span.sources, turns: span.turns, roster: span.roster,
+                    tiles: span.tiles, scenes: scenes))
+            }
+            cuts = spacedCuts(cuts, offsets: spans.map { $0.clip.startTime }, minimumGap: VIPBRollSchedule.gap)
+            PodcastHighlightBRollPlacement.logVIPBRoll(cuts.flatMap { $0 }, log: log)
+            return Planned(spans: spans, cuts: cuts, scenes: scenes)
+        }
+        if options.highlightFraming == .vip, options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            log("VIP B-roll (rules): prefer the VIP's own feed, then same-recording VIP footage, then other recordings.")
+            let cuts = spans.map { span in
+                PodcastHighlightBRollPlanner.plan(candidate: span.candidate, sources: span.sources, turns: span.turns,
+                    segments: span.sentences, tiles: span.tiles, scenes: scenes, threshold: 7,
+                    vipWindows: span.vipWindows)
+            }
+            return Planned(spans: spans, cuts: spacedCuts(cuts, offsets: spans.map { $0.clip.startTime }), scenes: scenes)
+        }
         // One pool for the whole reel: other moments of its recordings, and
         // footage of its people or of whoever it names. Nothing else is offered.
         let sources = PodcastHighlightBRollPlanner.Sources(merging: spans.map(\.sources))
@@ -151,7 +182,11 @@ enum WizardPodcastBRoll {
         do {
             let placements = try await PodcastHighlightBRollPlacement.request(sentences: sentences, turns: turns,
                 names: names, scenes: offered, sources: sources, reactionKeys: Set(spans.flatMap(\.tiles).compactMap(\.personKey)),
-                range: 0...duration, options: options, ai: ai, log: log)
+                range: 0...duration, options: options, ai: ai,
+                vipWindows: spans.flatMap { span in
+                    let shift = span.clip.startTime - span.candidate.sourceStart
+                    return (span.vipWindows ?? []).map { ($0.lowerBound + shift)...($0.upperBound + shift) }
+                }, log: log)
             for (index, span) in spans.enumerated() {
                 let offset = offsets[index]
                 let local = placements.compactMap { placement -> PodcastHighlightBRollPlanner.Placement? in
@@ -165,8 +200,8 @@ enum WizardPodcastBRoll {
                 // Conservatively apply the hook and budget limits to each
                 // constituent source span as well as the whole reel.
                 planned[index] = PodcastHighlightBRollPlanner.validated(placements: local, candidate: span.candidate,
-                    sentences: span.sentences, sources: sources, turns: span.turns, tiles: span.tiles,
-                    scenes: offered, instructions: options.brollInstructions)
+                    sentences: span.sentences, sources: span.sources, turns: span.turns, tiles: span.tiles,
+                    scenes: offered, instructions: options.brollInstructions, vipWindows: span.vipWindows)
             }
             log(planned.allSatisfy(\.isEmpty)
                 ? "B-roll: AI returned no usable placements; using deterministic planner."
@@ -180,24 +215,30 @@ enum WizardPodcastBRoll {
         for (index, span) in spans.enumerated() {
             try Task.checkCancellation()
             planned[index] = useModel ? planned[index] : PodcastHighlightBRollPlanner.plan(candidate: span.candidate,
-                sources: sources, turns: span.turns, segments: span.sentences, tiles: span.tiles,
-                scenes: scenes, threshold: 7, instructions: options.brollInstructions)
+                sources: span.sources, turns: span.turns, segments: span.sentences, tiles: span.tiles,
+                scenes: scenes, threshold: 7, instructions: options.brollInstructions, vipWindows: span.vipWindows)
         }
         planned = spacedCuts(planned, offsets: spans.map { $0.clip.startTime })
         return Planned(spans: spans, cuts: planned, scenes: scenes)
     }
 
     /// Enforce spacing on the reel clock, including joins between recordings.
-    nonisolated static func spacedCuts(_ cuts: [[PodcastHighlightBRollPlanner.Cut]], offsets: [Double])
+    nonisolated static func spacedCuts(_ cuts: [[PodcastHighlightBRollPlanner.Cut]], offsets: [Double], minimumGap: Double = 2)
         -> [[PodcastHighlightBRollPlanner.Cut]] {
         var result = cuts.map { _ in [PodcastHighlightBRollPlanner.Cut]() }
         let ordered = cuts.enumerated().flatMap { index, span in
             span.map { (index: index, cut: $0, time: offsets[index] + $0.start) }
         }.sorted { $0.time < $1.time }
         var lastEnd = -Double.infinity
-        for item in ordered where item.time >= lastEnd + 2 {
+        var previousIndex: Int?
+        var previousWindow: ClosedRange<Double>?
+        for item in ordered {
+            let consecutiveVIP = item.index == previousIndex && item.cut.vipWindow != nil && item.cut.vipWindow == previousWindow
+            guard item.time >= lastEnd + (consecutiveVIP ? 0 : minimumGap) - 1e-6 else { continue }
             result[item.index].append(item.cut)
             lastEnd = item.time + item.cut.duration
+            previousIndex = item.index
+            previousWindow = item.cut.vipWindow
         }
         return result
     }

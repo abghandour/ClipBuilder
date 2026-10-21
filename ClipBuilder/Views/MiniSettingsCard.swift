@@ -13,6 +13,13 @@ struct MiniSettingsCard: View {
     /// Root-relative names of the music library's tracks, read once off the main thread.
     @State private var musicTracks: [String]?
 
+    private var safeAreaPlatforms: Binding<[SocialPlatform]> {
+        Binding(get: {
+            let selected = settings.safeAreaPlatforms?.compactMap(SocialPlatform.init(rawValue:)) ?? []
+            return selected.isEmpty ? store.activeProfile.defaultRenderSettings.platformSafeArea.platforms : selected
+        }, set: { settings.safeAreaPlatforms = $0.isEmpty ? nil : $0.map(\.rawValue) })
+    }
+
     var body: some View {
         let tabs = flow.settingsTabs
         let current = flow.effectiveSettingsTab(tab)
@@ -99,7 +106,7 @@ struct MiniSettingsCard: View {
                     CaptionPositionPicker(selection: $settings.captionPosition)
                         .pickerStyle(.segmented)
                 }
-                FormCaption("Auto keeps clear of the platform buttons; the other choices use the edge of the frame.")
+                FormCaption("Auto keeps clear of the platform buttons. Safe area only also keeps explicit positions clear.")
                 MiniRow("Caption style") {
                     CaptionStylePicker(selection: $settings.captionStyleID, profile: store.activeProfile)
                 }
@@ -133,6 +140,7 @@ struct MiniSettingsCard: View {
                 }
             }
         }
+        SafeAreaControls(enabled: $settings.safeAreaOnly, platforms: safeAreaPlatforms)
         MiniRow("Watermark") {
             Toggle("Watermark", isOn: $settings.watermark)
         }

@@ -2,6 +2,17 @@ import Foundation
 import CoreGraphics
 
 nonisolated extension WizardOptions {
+    var resolvedSafeAreaPlatforms: [SocialPlatform] {
+        if let safeAreaPlatforms, !safeAreaPlatforms.isEmpty { return safeAreaPlatforms }
+        return renderSettings.platformSafeArea.platforms
+    }
+
+    var resolvedSafeArea: PlatformSafeArea? {
+        safeAreaOnly == true
+            ? PlatformSafeArea.resolve(platforms: resolvedSafeAreaPlatforms, aspectRatio: renderSettings.aspectRatio)
+            : PlatformSafeArea.resolve(renderSettings)
+    }
+
     /// Explicit false wins; old Mini runs retain their name-tags-only intent.
     var usesNameTags: Bool { nameTags ?? (nameTagsOnly == true && enableTextOverlays) }
 }
@@ -9,17 +20,17 @@ nonisolated extension WizardOptions {
 nonisolated enum WizardNameTags {
     static func settings(options: WizardOptions, captionStyle: CaptionStyle) -> NameTagPlanner.Settings {
         let render = options.renderSettings
-        let safe = PlatformSafeArea.resolve(render)
+        let safe = options.resolvedSafeArea
         let canvas = CGSize(width: render.width, height: render.height)
         let safeRect = safe.map {
             CGRect(x: $0.rect.minX * canvas.width, y: $0.rect.minY * canvas.height,
                    width: $0.rect.width * canvas.width, height: $0.rect.height * canvas.height)
         }
         let renderer = CaptionRenderer(videoWidth: render.width, videoHeight: render.height,
-                                       style: captionStyle, safeArea: safe)
+                                       style: captionStyle, safeArea: safe, safeAreaOnly: options.safeAreaOnly == true)
         return NameTagPlanner.Settings(position: options.nameTagPosition,
             safeRect: safeRect, captionBand: options.addCaptions
-                ? renderer.twoRowBand(positionOverride: options.captionPositionOverride) : nil, canvas: canvas)
+                ? renderer.twoRowBand(positionOverride: options.captionPositionOverride) : nil, canvas: canvas, safeOnly: options.safeAreaOnly == true)
     }
 
     static func overlays(areas: [NameTagPlanner.Area], people: [PersonRecord], tagText: [String: String],

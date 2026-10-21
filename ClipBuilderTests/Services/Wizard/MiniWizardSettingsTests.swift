@@ -356,3 +356,27 @@ extension MiniWizardSettingsTests {
         #expect(profile.tagStyle(id: step.nameTagStyleID) == TagStyle())
     }
 }
+
+extension MiniWizardSettingsTests {
+    @Test func safeAreaSettingsRoundTripAndRememberPerProfile() throws {
+        let old = try JSONDecoder().decode(MiniWizardSettings.self, from: Data("{}".utf8))
+        #expect(!old.safeAreaOnly && old.safeAreaPlatforms == nil)
+        var settings = old
+        settings.safeAreaOnly = true
+        settings.safeAreaPlatforms = ["instagram", "tiktok"]
+        #expect(try JSONDecoder().decode(MiniWizardSettings.self, from: JSONEncoder().encode(settings)) == settings)
+        let suite = "safe-area-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let profile = Fixtures.brand()
+        #expect(!MiniWizardSettings.remembered(profile: profile, defaults: defaults).safeAreaOnly)
+        settings.remember(profileName: profile.profileName, defaults: defaults)
+        let remembered = MiniWizardSettings.remembered(profile: profile, defaults: defaults)
+        #expect(remembered.safeAreaOnly)
+        #expect(remembered.safeAreaPlatforms == ["instagram", "tiktok"])
+        let step = settings.step2Options(base: WizardStep2Options())
+        #expect(step.safeAreaOnly == true && step.safeAreaPlatforms == [.instagram, .tiktok])
+        settings.safeAreaPlatforms = []
+        #expect(settings.step2Options(base: WizardStep2Options()).safeAreaPlatforms == nil)
+    }
+}

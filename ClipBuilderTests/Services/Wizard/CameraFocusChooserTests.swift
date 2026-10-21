@@ -23,8 +23,20 @@ struct CameraFocusChooserTests {
             #expect(!single.contains(kind.rawValue))
         }
         let multi = CameraFocusChooser.prompt(exchanges: exchanges, feeds: [11: 2, 22: 3], options: WizardOptions())
-        for kind in CropRecipe.Kind.allCases {
+        for kind in CropRecipe.Kind.allCases where kind != .vip && kind != .vipBRoll {
             #expect(multi.contains(kind.rawValue) && multi.contains(kind.name) && multi.contains(kind.summary))
+        }
+        // VIP focus is offered only to exchanges whose recording has a VIP.
+        #expect(!multi.contains(CropRecipe.Kind.vip.summary))
+        #expect(!multi.contains(CropRecipe.Kind.vipBRoll.summary))
+        var withVIP = exchanges
+        withVIP[0].vipNames = ["João"]
+        let gated = CameraFocusChooser.prompt(exchanges: withVIP, feeds: [11: 2, 22: 3], options: WizardOptions())
+        #expect(gated.contains(CropRecipe.Kind.vip.summary) && gated.contains("VIP people: João"))
+        #expect(gated.contains(CropRecipe.Kind.vipBRoll.summary))
+        for feeds in [1, 2, 3] {
+            #expect(!CameraFocusChooser.allowedLayouts(feeds: feeds).contains(.vipBRoll))
+            #expect(CameraFocusChooser.allowedLayouts(feeds: feeds, hasVIP: true).contains(.vipBRoll))
         }
     }
 

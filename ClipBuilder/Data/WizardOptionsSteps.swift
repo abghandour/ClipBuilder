@@ -50,6 +50,8 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var nameTagStyle: String?
     var nameTagStyleID: String?
     var nameTagPosition: String?
+    var safeAreaOnly: Bool?
+    var safeAreaPlatforms: [SocialPlatform]?
     var captionPosition: String?
     var captionStyleID: String?
     var captionLanguage: String?
@@ -81,6 +83,61 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var transitionChoice: String?
     var lookPreset: String?
     var lookIntensity: Double?
+    enum CodingKeys: String, CodingKey {
+        case renderSettings
+        case pacing
+        case useMusic
+        case muteSource
+        case musicFolder
+        case musicTrack
+        case addCaptions
+        case enableTextOverlays
+        case strikeStats
+        case strikeUnits
+        case strikeSpeedCallouts
+        case strikeGrapplingCard
+        case strikeRoundCard
+        case nameTagsOnly
+        case nameTags
+        case nameTagContent
+        case nameTagStyle
+        case nameTagStyleID
+        case nameTagPosition
+        case safeAreaOnly = "safe_area_only"
+        case safeAreaPlatforms = "safe_area_platforms"
+        case captionPosition
+        case captionStyleID
+        case captionLanguage
+        case pinnedOverlayTemplate
+        case overlayStyle
+        case overlayAnimation
+        case overlayPlacement
+        case allowedTransitions
+        case highlightFraming
+        case podcastFraming
+        case framingCamera
+        case useBRoll
+        case brollInstructions
+        case includeIntroBumper
+        case includeOutroBumper
+        case includeMiddleBumper
+        case includeWatermark
+        case includeHeadline
+        case includeOutro
+        case localHashtags
+        case fixedOverlayTemplate
+        case fixedOverlayStart
+        case fixedOverlayDuration
+        case fixedOverlayTexts
+        case introBumperPath
+        case outroBumperPath
+        case watermarkOverlayTemplate
+        case watermarkOpacity
+        case transitionChoice
+        case lookPreset
+        case lookIntensity
+    }
+
 }
 
 nonisolated extension WizardOptions {
@@ -135,6 +192,8 @@ nonisolated extension WizardOptions {
         result.nameTagStyle = nameTagStyle
         result.nameTagStyleID = nameTagStyleID
         result.nameTagPosition = nameTagPosition
+        result.safeAreaOnly = safeAreaOnly
+        result.safeAreaPlatforms = safeAreaPlatforms
         result.captionPosition = captionPosition
         result.captionStyleID = captionStyleID
         result.captionLanguage = captionLanguage
@@ -218,6 +277,8 @@ nonisolated extension WizardOptions {
         result.nameTagStyle = step2.nameTagStyle
         result.nameTagStyleID = step2.nameTagStyleID
         result.nameTagPosition = step2.nameTagPosition
+        result.safeAreaOnly = step2.safeAreaOnly
+        result.safeAreaPlatforms = step2.safeAreaPlatforms
         result.captionPosition = step2.captionPosition
         result.captionStyleID = step2.captionStyleID
         result.captionLanguage = step2.captionLanguage

@@ -412,13 +412,18 @@ extension PodcastHighlightFinderTests {
             let stub = try StubAI(response: """
             {"highlights":[{"first_sentence":2,"last_sentence":3,"title":"Choice","reason":"Hook","score":9,"rapid_exchange":true,"framing":"\(kind.rawValue)"}]}
             """)
+            // VIP focus is listed only when the recording has a VIP.
+            let vipKeys: Set<String> = kind == .vip || kind == .vipBRoll ? ["guest"] : []
             let found = try await PodcastHighlightFinder.find(exchanges: [exchange()], segments: rows,
-                turns: [], roster: [], maxSeconds: 12, threshold: 7, ai: stub.service)
+                turns: [], roster: [], vipKeys: vipKeys, maxSeconds: 12, threshold: 7, ai: stub.service)
             #expect(found.first?.framing == kind)
             // The stub records the prompt inside a JSON envelope, where "/" is escaped.
             let prompt = try String(contentsOf: stub.prompts, encoding: .utf8).replacingOccurrences(of: "\\/", with: "/")
-            let missing = CropRecipe.Kind.allCases.filter { !prompt.contains($0.rawValue + ": " + $0.summary) }
+            let offered = CropRecipe.Kind.allCases.filter { ($0 != .vip && $0 != .vipBRoll) || !vipKeys.isEmpty }
+            let missing = offered.filter { !prompt.contains($0.rawValue + ": " + $0.summary) }
             #expect(missing.isEmpty, "missing \(missing.map(\.rawValue))")
+            #expect(vipKeys.isEmpty == !prompt.contains(CropRecipe.Kind.vip.rawValue + ": "))
+            #expect(vipKeys.isEmpty == !prompt.contains(CropRecipe.Kind.vipBRoll.rawValue + ": "))
         }
         for rapid in [false, true] {
             let raw: [String: Any] = ["first_sentence": 2, "last_sentence": 3, "title": "Choice", "reason": "Hook",

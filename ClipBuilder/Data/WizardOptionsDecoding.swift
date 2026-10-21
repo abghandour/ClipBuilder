@@ -44,6 +44,8 @@ nonisolated extension WizardOptions {
         nameTagContent = try values.decodeIfPresent(String.self, forKey: .nameTagContent)
         nameTagStyle = try values.decodeIfPresent(String.self, forKey: .nameTagStyle)
         nameTagStyleID = try values.decodeIfPresent(String.self, forKey: .nameTagStyleID)
+        safeAreaOnly = try values.decodeIfPresent(Bool.self, forKey: .safeAreaOnly)
+        safeAreaPlatforms = try values.decodeIfPresent([SocialPlatform].self, forKey: .safeAreaPlatforms)
         nameTagPosition = try values.decodeIfPresent(String.self, forKey: .nameTagPosition)
         nameTagsOnly = try values.decodeIfPresent(Bool.self, forKey: .nameTagsOnly)
         enableTextOverlays = try values.decodeIfPresent(Bool.self, forKey: .enableTextOverlays) ?? enableTextOverlays

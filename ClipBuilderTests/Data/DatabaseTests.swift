@@ -4,6 +4,43 @@ import Testing
 
 @Suite("Database")
 struct DatabaseTests {
+    @Test("VIP is per video, nullable, and a user override survives detection and reassignment")
+    func vipRoster() async throws {
+        let temp = try TempDatabase()
+        let db = temp.database
+        let video = try await temp.seedVideo()
+        let a = try await db.createPerson(name: "Guest")
+        let b = try await db.createPerson(name: "Duplicate")
+        try await db.replaceVideoPeople(videoID: video, entries: [(a.id, 0, nil, nil)])
+        #expect(try await db.fetchVideoPeople(videoID: video).first?.vip == nil)
+        try await db.replaceVideoPeople(videoID: video, vipEntries: [(a.id, 0, nil, nil, true, "ai")])
+        #expect(try await db.fetchVideoPeople(videoID: video).first?.isVIP == true)
+        try await db.setVideoPersonVIP(videoID: video, personID: a.id, vip: false, source: "user")
+        try await db.replaceVideoPeople(videoID: video, vipEntries: [
+            (a.id, 1, nil, nil, true, "ai"), (b.id, 2, nil, nil, true, "rules"),
+        ])
+        let roster = try await db.fetchVideoPeople(videoID: video)
+        #expect(roster.first?.vip == false)
+        #expect(roster.first?.vipSource == "user")
+        let snapshot = try await db.mergePeople(sources: [a], into: b, renamingTo: nil)
+        #expect(try await db.fetchVideoPeople(videoID: video).first?.vip == false)
+        try await db.restorePeopleMerge(snapshot)
+        #expect(try await db.fetchVideoPeople(videoID: video).first?.vipSource == "user")
+        try await db.reassignPerson(videoID: video, from: a, to: b)
+        let merged = try await db.fetchVideoPeople(videoID: video)
+        #expect(merged.count == 1)
+        #expect(merged.first?.vip == false)
+        #expect(merged.first?.vipSource == "user")
+        #expect(try await db.vipVideoCount(personID: b.id) == 0)
+        try await db.replaceVideoPeople(videoID: video, vipEntries: [])
+        #expect(try await db.fetchVideoPeople(videoID: video).first?.vipSource == "user")
+        let second = try await temp.seedVideo()
+        try await db.replaceVideoPeople(videoID: second, vipEntries: [(b.id, 0, nil, nil, true, "ai")])
+        #expect(try await db.fetchVideoPeople(videoID: second).first?.vip == true)
+        #expect(try await db.fetchVideoPeople(videoID: video).first?.vip == false)
+        #expect(try await db.vipVideoCount(personID: b.id) == 1)
+    }
+
     @Test func originalTranscriptAvailabilityReturnsDistinctVideoIDs() async throws {
         let temp = try TempDatabase()
         let database = temp.database
@@ -1065,7 +1102,7 @@ struct SchemaVersionGateTests {
         try raw.execute("PRAGMA user_version = 12")
         let reopened = try Database(path: temp.path)
         _ = reopened
-        #expect(Database.schemaVersion == 35)
+        #expect(Database.schemaVersion == 36)
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.columnNames(of: "builder_runs").contains("baseline_revision"))
         #expect(try raw.columnNames(of: "timeline_wizard_before").contains("document_json"))

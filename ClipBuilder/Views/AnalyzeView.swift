@@ -1184,8 +1184,9 @@ private struct VideoPreviewPane: View {
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                         } else {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(alignment: .top, spacing: 8) {
+                            // Wraps to further rows when the pane is narrow; the top
+                            // padding leaves room for the VIP star outside the circle.
+                            FlowLayout(spacing: 8) {
                                     ForEach(roster) { entry in
                                         Button {
                                             detailPersonID = entry.personID
@@ -1193,6 +1194,7 @@ private struct VideoPreviewPane: View {
                                             VStack(spacing: 2) {
                                                 VideoPersonAvatar(record: entry, videoURL: video.url,
                                                                   size: 54)
+                                                    .padding(.top, 6)
                                                 Text(entry.displayName)
                                                     .font(.caption2)
                                                     .foregroundStyle(.secondary)
@@ -1202,6 +1204,7 @@ private struct VideoPreviewPane: View {
                                             .contentShape(Rectangle())
                                         }
                                         .buttonStyle(.plain)
+                                        .contextMenu { VIPContextMenu(entry: entry) }
                                         .accessibilityLabel("Details for \(entry.displayName)")
                                         .help(entry.descriptor.isEmpty
                                               ? "Who this is, when they are on screen, and their videos and scenes"
@@ -1223,7 +1226,6 @@ private struct VideoPreviewPane: View {
                                         }
                                     }
                                 }
-                            }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)

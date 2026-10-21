@@ -134,6 +134,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
             return [
                 "renderSettings", "pacing", "captionLanguage", "captionPosition", "captionStyleID", "muteSource",
                 "addCaptions", "enableTextOverlays", "nameTagsOnly", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition",
+                "safe_area_only", "safe_area_platforms",
                 "strikeStats", "strikeUnits", "strikeSpeedCallouts", "strikeGrapplingCard", "strikeRoundCard",
                 "useMusic", "musicFolder", "useFightResearch",
                 "workflow", "musicTrack", "overlayStyle", "overlayAnimation", "overlayPlacement",

@@ -20,6 +20,7 @@ nonisolated enum PodcastHighlightBRollPlanner {
         var start: Double
         var duration: Double
         var reason: String
+        var vipWindow: ClosedRange<Double>? = nil
     }
 
     /// Where a reel may cut away to: other moments of its own recordings, and
@@ -34,11 +35,13 @@ nonisolated enum PodcastHighlightBRollPlanner {
         var people: Set<String> = []
         /// People the reel names in its speech.
         var mentioned: Set<String> = []
+        var preferredPeople: Set<String> = []
 
-        init(videoID: Int64, range: ClosedRange<Double>? = nil, people: Set<String> = [], mentioned: Set<String> = []) {
+        init(videoID: Int64, range: ClosedRange<Double>? = nil, people: Set<String> = [], mentioned: Set<String> = [], preferredPeople: Set<String> = []) {
             shown = [videoID: range.map { [$0] } ?? []]
             self.people = people
             self.mentioned = mentioned
+            self.preferredPeople = preferredPeople
         }
 
         /// One pool for a reel cut from several recordings.
@@ -47,12 +50,13 @@ nonisolated enum PodcastHighlightBRollPlanner {
                 shown.merge(source.shown) { $0 + $1 }
                 people.formUnion(source.people)
                 mentioned.formUnion(source.mentioned)
+                preferredPeople.formUnion(source.preferredPeople)
             }
             mentioned.subtract(people)
         }
 
         var recordings: Set<Int64> { Set(shown.keys) }
-        var allPeople: Set<String> { people.union(mentioned) }
+        var allPeople: Set<String> { people.union(mentioned).union(preferredPeople) }
 
         /// The reel's people this scene is tagged with.
         func peopleShown(in scene: SceneRecord) -> [String] {
@@ -72,10 +76,14 @@ nonisolated enum PodcastHighlightBRollPlanner {
         /// reel's people or someone the reel names.
         func allows(_ scene: SceneRecord) -> Bool {
             if let ranges = shown[scene.videoID] {
-                return !scene.tags.contains("podcast")
+                return (!scene.tags.contains("podcast") || showsPreferredPerson(scene))
                     && !ranges.contains { scene.startTime < $0.upperBound && scene.endTime > $0.lowerBound }
             }
             return !peopleShown(in: scene).isEmpty
+        }
+
+        func showsPreferredPerson(_ scene: SceneRecord) -> Bool {
+            !preferredPeople.isDisjoint(with: peopleShown(in: scene))
         }
 
         /// The short reason the model sees next to each offered scene.
@@ -122,7 +130,7 @@ nonisolated enum PodcastHighlightBRollPlanner {
     /// it names in speech.
     static func sources(videoID: Int64, range: ClosedRange<Double>, speakerKeys: [String] = [],
                         turns: [SpeakerTurn], roster: [VideoPersonRecord], scenes: [SceneRecord],
-                        segments: [TranscriptSegment], people: [PersonRecord] = []) -> Sources {
+                        segments: [TranscriptSegment], people: [PersonRecord] = [], preferredPeople: Set<String> = []) -> Sources {
         var keys = Set(roster.map(\.key)).union(speakerKeys)
         keys.formUnion(turns.filter { $0.end > range.lowerBound && $0.start < range.upperBound }.compactMap(\.personKey))
         for scene in scenes where scene.videoID == videoID && scene.startTime < range.upperBound && scene.endTime > range.lowerBound {
@@ -130,7 +138,7 @@ nonisolated enum PodcastHighlightBRollPlanner {
         }
         let text = segments.filter { $0.end > range.lowerBound && $0.start < range.upperBound }.map(\.text).joined(separator: " ")
         let mentioned = mentionedPeople(in: text, names: personNames(people, roster: roster)).subtracting(keys)
-        return Sources(videoID: videoID, range: range, people: keys, mentioned: mentioned)
+        return Sources(videoID: videoID, range: range, people: keys, mentioned: mentioned, preferredPeople: preferredPeople)
     }
 
     /// A one-line account of the pool for the log.
@@ -149,6 +157,9 @@ nonisolated enum PodcastHighlightBRollPlanner {
             let a = $0.score.flatMap { $0.isFinite ? $0 : nil } ?? 0
             let b = $1.score.flatMap { $0.isFinite ? $0 : nil } ?? 0
             let ownA = sources.isOwnRecording($0), ownB = sources.isOwnRecording($1)
+            let vipA = sources.showsPreferredPerson($0), vipB = sources.showsPreferredPerson($1)
+            if vipA != vipB { return vipA }
+            if vipA, ownA != ownB { return ownA }
             if ownA != ownB { return ownB }
             return a == b ? $0.id < $1.id : a > b
         }
@@ -170,7 +181,8 @@ nonisolated enum PodcastHighlightBRollPlanner {
     /// joining into a cutaway longer than three seconds over someone's words.
     static func validated(placements: [Placement], candidate: HighlightCandidate,
                           sentences: [TranscriptSegment], sources: Sources, turns: [SpeakerTurn],
-                          tiles: [PodcastTile], scenes: [SceneRecord], instructions: String = "") -> [Cut] {
+                          tiles: [PodcastTile], scenes: [SceneRecord], instructions: String = "",
+                          vipWindows: [ClosedRange<Double>]? = nil) -> [Cut] {
         guard candidate.sourceStart.isFinite, candidate.sourceEnd.isFinite, candidate.duration > 0 else { return [] }
         let offered = offeredScenes(sources: sources, scenes: scenes, instructions: instructions)
         var remaining = candidate.duration * 0.4
@@ -201,9 +213,30 @@ nonisolated enum PodcastHighlightBRollPlanner {
                 source = .reaction(tile: tile.index)
                 sourceStart = first.start
             } else { continue }
-            guard duration > 0.2,
-                  !cuts.contains(where: { start < $0.start + $0.duration + 2 && $0.start < start + duration + 2 }) else { continue }
-            cuts.append(Cut(source: source, sourceStart: sourceStart, start: start, duration: duration, reason: placement.reason))
+            var vipWindow: ClosedRange<Double>?
+            if let vipWindows {
+                guard let window = vipWindows.first(where: { $0.lowerBound <= first.start && $0.upperBound > first.start }) else { continue }
+                switch source {
+                case .scene(let id):
+                    guard let scene = offered.first(where: { $0.id == id }), sources.showsPreferredPerson(scene) else { continue }
+                    // A usable live VIP reaction has priority over scene footage.
+                    if !instructions.lowercased().contains("no reaction"), tiles.contains(where: { tile in
+                        guard tile.personKey.map(sources.preferredPeople.contains) == true else { return false }
+                        return turns.filter { $0.start < first.start + duration && $0.end > first.start }
+                            .allSatisfy { CropRecipePlanner.tile(for: $0, tiles: tiles).map { $0 != tile.index } == true }
+                    }) { continue }
+                case .reaction(let index):
+                    guard tiles.first(where: { $0.index == index })?.personKey.map(sources.preferredPeople.contains) == true else { continue }
+                }
+                duration = min(duration, window.upperBound - first.start)
+                vipWindow = window
+            }
+            guard duration > 0.2, !cuts.contains(where: { cut in
+                let gap = vipWindow != nil && cut.vipWindow == vipWindow ? 0.0 : 2.0
+                return start < cut.start + cut.duration + gap && cut.start < start + duration + gap
+            }) else { continue }
+            cuts.append(Cut(source: source, sourceStart: sourceStart, start: start, duration: duration,
+                            reason: placement.reason, vipWindow: vipWindow))
             remaining -= duration
         }
         return cuts
@@ -219,7 +252,12 @@ nonisolated enum PodcastHighlightBRollPlanner {
     }
 
     static func plan(candidate: HighlightCandidate, sources: Sources, turns: [SpeakerTurn],
-                     segments: [TranscriptSegment], tiles: [PodcastTile], scenes: [SceneRecord], threshold: Double, instructions: String = "") -> [Cut] {
+                     segments: [TranscriptSegment], tiles: [PodcastTile], scenes: [SceneRecord], threshold: Double,
+                     instructions: String = "", vipWindows: [ClosedRange<Double>]? = nil) -> [Cut] {
+        if let vipWindows {
+            return vipPlan(candidate: candidate, sources: sources, turns: turns, tiles: tiles,
+                           scenes: scenes, threshold: threshold, instructions: instructions, windows: vipWindows)
+        }
         let lower = candidate.sourceStart + 2, upper = candidate.sourceEnd
         guard upper > lower else { return [] }
         let hints = instructions.lowercased()
@@ -279,4 +317,102 @@ nonisolated enum PodcastHighlightBRollPlanner {
         }
         return cuts.sorted { $0.start < $1.start }
     }
+
+    /// Short VIP breaks over an unchanged talker base. The schedule owns timing;
+    /// this only resolves live feeds or the next usable VIP scene.
+    static func vipBRollPlan(candidate: HighlightCandidate, sources: Sources, turns: [SpeakerTurn],
+                             tiles: [PodcastTile], scenes: [SceneRecord],
+                             breaks: [VIPBRollSchedule.Break]) -> [Cut] {
+        guard !sources.preferredPeople.isEmpty else { return [] }
+        let footage = offeredScenes(sources: sources, scenes: scenes, instructions: "")
+            .filter { sources.showsPreferredPerson($0) && $0.duration >= VIPBRollSchedule.minimum }
+        var sceneIndex = 0
+        var cuts: [Cut] = []
+        for item in breaks.sorted(by: { $0.start < $1.start }) {
+            guard item.start >= candidate.sourceStart + VIPBRollSchedule.lead,
+                  item.duration >= VIPBRollSchedule.minimum, item.duration <= VIPBRollSchedule.maximum,
+                  item.start + item.duration <= candidate.sourceEnd + 1e-6 else { continue }
+            let active = turns.filter { $0.start < item.start + item.duration && $0.end > item.start }
+            guard !active.contains(where: { turn in
+                let key = turn.personKey ?? CropRecipePlanner.tile(for: turn, tiles: tiles)
+                    .flatMap { index in tiles.first { $0.index == index }?.personKey }
+                return key.map(sources.preferredPeople.contains) == true
+            }) else { continue }
+            let source: Cut.Source
+            let sourceStart: Double
+            var duration = item.duration
+            if let index = item.tile {
+                guard tiles.count >= 2,
+                      let tile = tiles.first(where: { $0.index == index }),
+                      tile.personKey.map(sources.preferredPeople.contains) == true,
+                      !active.contains(where: { CropRecipePlanner.tile(for: $0, tiles: tiles) == index }) else { continue }
+                source = .reaction(tile: index)
+                sourceStart = item.start
+            } else {
+                guard sceneIndex < footage.count else { continue }
+                let scene = footage[sceneIndex]
+                sceneIndex += 1
+                source = .scene(scene.id)
+                sourceStart = scene.startTime
+                duration = min(duration, scene.duration)
+                // A shorter scene exposes a different final second.
+                let boundaries = turns.flatMap { [$0.start, $0.end] }.sorted()
+                while let change = boundaries.first(where: {
+                    $0 > item.start && $0 < item.start + duration && $0 >= item.start + duration - 1
+                }) { duration = change - item.start }
+                guard duration >= VIPBRollSchedule.minimum else { continue }
+            }
+            cuts.append(Cut(source: source, sourceStart: sourceStart, start: item.start - candidate.sourceStart,
+                duration: duration, reason: item.expressive ? "VIP B-roll · expressive moment" : "VIP B-roll · scheduled break"))
+        }
+        return cuts
+    }
+
+    private static func vipPlan(candidate: HighlightCandidate, sources: Sources, turns: [SpeakerTurn],
+                                tiles: [PodcastTile], scenes: [SceneRecord], threshold: Double,
+                                instructions: String, windows: [ClosedRange<Double>]) -> [Cut] {
+        let hints = instructions.lowercased()
+        let footage = hints.contains("no external") || hints.contains("only reactions") ? []
+            : matchingScenes(sources: sources, scenes: scenes, threshold: threshold).filter(sources.showsPreferredPerson)
+        var remaining = candidate.duration * 0.4
+        var cuts: [Cut] = []
+        var sceneIndex = 0
+        for window in windows.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            var time = max(candidate.sourceStart + 2, window.lowerBound)
+            if let last = cuts.last, last.vipWindow != window {
+                time = max(time, candidate.sourceStart + last.start + last.duration + 2)
+            }
+            let end = min(candidate.sourceEnd, window.upperBound)
+            while time < end, remaining > 0.2 {
+                var duration = min(3, remaining, end - time)
+                guard duration > 0.2 else { break }
+                let active = turns.filter { $0.start < time + duration && $0.end > time }
+                let reaction = hints.contains("no reaction") ? nil : tiles.first { tile in
+                    tile.personKey.map(sources.preferredPeople.contains) == true && !active.isEmpty
+                        && active.allSatisfy { CropRecipePlanner.tile(for: $0, tiles: tiles).map { $0 != tile.index } == true }
+                }
+                let source: Cut.Source
+                let sourceStart: Double
+                if let reaction {
+                    source = .reaction(tile: reaction.index)
+                    sourceStart = time
+                } else if !footage.isEmpty {
+                    // Exhaust same-recording VIP footage before other recordings.
+                    let own = footage.filter(sources.isOwnRecording)
+                    let pool = own.isEmpty ? footage : own
+                    let scene = pool[sceneIndex % pool.count]
+                    sceneIndex += 1
+                    source = .scene(scene.id)
+                    sourceStart = scene.startTime
+                    duration = min(duration, scene.duration)
+                } else { break }
+                cuts.append(Cut(source: source, sourceStart: sourceStart, start: time - candidate.sourceStart,
+                    duration: duration, reason: "VIP focus · VIP footage over non-VIP speech", vipWindow: window))
+                time += duration
+                remaining -= duration
+            }
+        }
+        return cuts
+    }
+
 }

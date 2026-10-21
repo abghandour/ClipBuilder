@@ -30,7 +30,8 @@ struct MiniGeneratePanel: View {
 
     private var summaryCard: some View {
         RunSummaryCard(
-            summary: flow.runSummaryCard(candidates: run.candidates, exchangeCount: run.keptCount, settings: effectiveSettings),
+            summary: flow.runSummaryCard(candidates: run.candidates, exchangeCount: run.keptCount, settings: effectiveSettings,
+                profilePlatforms: store.activeProfile.defaultRenderSettings.platformSafeArea.platforms),
             accessibilityText: flow.runSummary(candidates: run.candidates, exchangeCount: run.keptCount, settings: effectiveSettings))
     }
 }

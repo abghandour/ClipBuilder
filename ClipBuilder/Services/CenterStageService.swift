@@ -2,6 +2,7 @@ import AVFoundation
 import CoreImage
 import ImageIO
 import Vision
+import Synchronization
 
 /// Compact appearance fingerprint: a normalized 4×4×4 RGB histogram of a
 /// person's box. Cheap enough to compute for every tracked frame, and
@@ -99,7 +100,7 @@ nonisolated struct AppearanceSignature: Sendable {
 
     /// Inverse of the display-orientation mapping, for normalized
     /// top-left-origin rects.
-    private static func bufferRect(fromDisplay rect: CGRect,
+    fileprivate static func bufferRect(fromDisplay rect: CGRect,
                                    orientation: CGImagePropertyOrientation) -> CGRect {
         switch orientation {
         case .down:
@@ -147,11 +148,20 @@ actor CenterStageService {
         /// Horizontal breathing room around the people (1 = none).
         var padding: Double
 
+        /// Normalize smoothing to elapsed time and sample the keyframe clock
+        /// independently of detection cadence (used by conversation tracking).
+        var timeBasedSmoothing = false
+
         /// Slow, cinematic drift — interviews, posed footage.
         static let smooth = Tuning(analysisInterval: 0.15, keyframeInterval: 0.4,
                                    smoothing: 0.10, deadZoneWidth: 0.06,
                                    deadZoneZoom: 0.08, minCropHeightFraction: 0.6,
                                    padding: 1.4)
+        /// Calm, face-safe motion inside a podcast feed.
+        static let conversation = Tuning(analysisInterval: 0.25, keyframeInterval: 0.3,
+                                         smoothing: 0.12, deadZoneWidth: 0.05,
+                                         deadZoneZoom: 0.08, minCropHeightFraction: 0.6,
+                                         padding: 1.35, timeBasedSmoothing: true)
         /// The long-standing defaults.
         static let balanced = Tuning(analysisInterval: 0.1, keyframeInterval: 0.3,
                                      smoothing: 0.18, deadZoneWidth: 0.04,
@@ -166,6 +176,7 @@ actor CenterStageService {
 
         static func named(_ name: String) -> Tuning {
             switch name {
+            case "conversation": return .conversation
             case "smooth": return .smooth
             case "fast": return .fastAction
             default: return .balanced
@@ -173,10 +184,11 @@ actor CenterStageService {
         }
     }
 
-    private struct Target {
+    private nonisolated struct Target {
         var time: Double       // relative to the clip start
         var union: CGRect      // normalized, top-left origin
         var tracked: Bool      // false = no matching people found this frame
+        var faces: [CGRect] = [] // normalized, top-left; selected subjects only
         var inFocus = true     // false = outside the picked people's ranges
     }
 
@@ -263,6 +275,7 @@ actor CenterStageService {
                                    aspect: renderSize.width / renderSize.height)
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("centerstage_\(UUID().uuidString).mp4")
+        log?("Encode: Center Stage camera path export")
         try await export(asset: info.asset, track: info.track, size: info.size,
                          preferredTransform: info.preferredTransform,
                          displayOrigin: info.displayOrigin,
@@ -295,6 +308,7 @@ actor CenterStageService {
         }
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("centerstage_\(UUID().uuidString).mp4")
+        log?("Encode: Center Stage camera path export")
         try await export(asset: info.asset, track: info.track, size: info.size,
                          preferredTransform: info.preferredTransform,
                          displayOrigin: info.displayOrigin,
@@ -336,6 +350,122 @@ actor CenterStageService {
         return (normalized, trackedShare)
     }
 
+    /// Track a feed directly from decoded source buffers. Vision and FaceGuard
+    /// see only its picture; the returned path/face boxes use full-frame fractions.
+    func cameraPath(source: URL, start: Double, duration: Double, region: FreeCropRect,
+                    tuning: Tuning = .conversation, aspect: Double,
+                    fallbackCenter: AreaFocus? = nil,
+                    log: @escaping @Sendable (String) -> Void = { _ in }) async throws -> FeedCameraPath {
+        let info = try await loadSource(source, requireWide: false)
+        let region = Self.validRegion(region)
+        let samples = Mutex<[FeedPathSample]>([])
+        let targets: [Target]
+        var reusable = true
+        do {
+            targets = try await trackPeople(asset: info.asset, track: info.track,
+                start: start, duration: duration, focusRanges: [],
+                orientation: Self.displayOrientation(of: info.preferredTransform), tuning: tuning,
+                region: region, evidence: { sample in samples.withLock { $0.append(sample) } }, log: log)
+        } catch {
+            try Task.checkCancellation()
+            reusable = false
+            targets = []
+            log("Feed tracking failed (\(error)); resolving a face-safe constant crop")
+            for offset in [0.0, 1.0] where offset < duration {
+                log("Decode: feed fallback face at \(start + offset)s")
+                if let face = try? await Self.faceCenter(source: source, at: start + offset, region: region) {
+                    samples.withLock { $0.append(FeedPathSample(time: offset, faces: [face], expression: nil)) }
+                    break
+                }
+                try Task.checkCancellation()
+            }
+        }
+        let focus = fallbackCenter.map { AreaFocus(x: ($0.x - region.xFrac) / region.wFrac,
+                                                  y: ($0.y - region.yFrac) / region.hFrac) }
+        let focused = Self.focusedTargets(targets, focus: focus)
+        let share = Double(focused.filter(\.tracked).count) / Double(max(1, focused.count))
+        let size = CGSize(width: info.size.width * region.wFrac, height: info.size.height * region.hFrac)
+        let evidence = samples.withLock { $0 }
+        let local: [CameraPathKeyframe]
+        if share >= 0.1 {
+            local = cameraPath(from: focused, size: size, duration: duration, tuning: tuning, aspect: aspect).map {
+                CameraPathKeyframe(t: $0.time, x: $0.crop.minX / size.width, y: $0.crop.minY / size.height,
+                    w: $0.crop.width / size.width, h: $0.crop.height / size.height)
+            }
+        } else {
+            // The same decoded face evidence drives the VIP static fallback.
+            let faces = evidence.flatMap(\.faces)
+            let face = fallbackCenter.flatMap { focus in
+                faces.min { Self.focusDistance($0, focus) < Self.focusDistance($1, focus) }
+            } ?? faces.first
+            let center = face.map { (x: ($0.midX - region.xFrac) / region.wFrac,
+                                    y: ($0.midY - region.yFrac) / region.hFrac) }
+                ?? fallbackCenter.map { (x: ($0.x - region.xFrac) / region.wFrac,
+                                         y: ($0.y - region.yFrac) / region.hFrac) }
+            let window = AreaFramer.fallbackWindow(aspect: aspect, sourceSize: size, center: center)
+            var crop = CGRect(x: window.xFrac * size.width, y: window.yFrac * size.height,
+                width: window.wFrac * size.width, height: window.hFrac * size.height)
+            if let face {
+                let pixels = CGRect(x: (face.minX - region.xFrac) * info.size.width,
+                    y: (face.minY - region.yFrac) * info.size.height,
+                    width: face.width * info.size.width, height: face.height * info.size.height)
+                crop = FaceGuard.contain(crop, faces: [pixels], bounds: CGRect(origin: .zero, size: size))
+            }
+            local = [0, duration].map { CameraPathKeyframe(t: $0, x: crop.minX / size.width,
+                y: crop.minY / size.height, w: crop.width / size.width, h: crop.height / size.height) }
+            log("Feed tracking: static fallback uses \(face != nil ? "clip face detection" : fallbackCenter != nil ? "roster portrait" : "feed center")")
+        }
+        log(String(format: "feed %.0f%%×%.0f%% at (%.0f%%, %.0f%%) tracked in place",
+            region.wFrac * 100, region.hFrac * 100, region.xFrac * 100, region.yFrac * 100))
+        return FeedCameraPath(keyframes: local.map {
+            CameraPathKeyframe(t: $0.t, x: region.xFrac + $0.x * region.wFrac,
+                y: region.yFrac + $0.y * region.hFrac, w: $0.w * region.wFrac, h: $0.h * region.hFrac)
+        }, samples: evidence, trackedShare: share, sourceSize: info.size, usedFallback: share < 0.1, reusable: reusable)
+    }
+
+    private nonisolated static func focusDistance(_ face: CGRect, _ focus: AreaFocus) -> Double {
+        pow(face.midX - focus.x, 2) + pow(face.midY - focus.y, 2)
+    }
+
+    /// A full-frame feed may contain both speakers. Each cell follows only the
+    /// face nearest its roster focus; a missing face holds the last target.
+    private nonisolated static func focusedTargets(_ targets: [Target], focus: AreaFocus?) -> [Target] {
+        guard let focus else { return targets }
+        var previous = CGRect(x: focus.x - 0.1, y: focus.y - 0.1, width: 0.2, height: 0.3)
+        return targets.map { target in
+            guard let face = target.faces.min(by: { focusDistance($0, focus) < focusDistance($1, focus) }) else {
+                return Target(time: target.time, union: previous, tracked: false)
+            }
+            previous = bodyEstimate(fromFace: face)
+            return Target(time: target.time, union: previous, tracked: true, faces: [face])
+        }
+    }
+
+    nonisolated static func validRegion(_ region: FreeCropRect) -> FreeCropRect {
+        let x = min(0.99, max(0, region.xFrac)), y = min(0.99, max(0, region.yFrac))
+        return FreeCropRect(xFrac: x, yFrac: y, wFrac: min(1 - x, max(0.01, region.wFrac)),
+                            hFrac: min(1 - y, max(0.01, region.hFrac)))
+    }
+
+    #if DEBUG
+    /// Deterministic detection fixtures exercise the production smoothing/FaceGuard
+    /// path independently of Vision model availability or detector revisions.
+    func pathForDetectionFixture(_ samples: [FeedPathSample], size: CGSize, duration: Double,
+                                 tuning: Tuning, aspect: Double, focus: AreaFocus? = nil) -> [CameraPathKeyframe] {
+        let targets = samples.compactMap { sample -> Target? in
+            let bodies = sample.faces.map { Self.bodyEstimate(fromFace: $0) }
+            guard let first = bodies.first else { return nil }
+            return Target(time: sample.time, union: bodies.dropFirst().reduce(first) { $0.union($1) },
+                          tracked: true, faces: sample.faces)
+        }
+        guard !targets.isEmpty else { return [] }
+        return cameraPath(from: Self.focusedTargets(targets, focus: focus), size: size, duration: duration, tuning: tuning, aspect: aspect).map {
+            CameraPathKeyframe(t: $0.time, x: $0.crop.minX / size.width, y: $0.crop.minY / size.height,
+                              w: $0.crop.width / size.width, h: $0.crop.height / size.height)
+        }
+    }
+    #endif
+
     // MARK: - Stored-path helpers
 
     /// Whether a stored path's crop shape fits the current canvas. Keyframes
@@ -348,10 +478,13 @@ actor CenterStageService {
                                               sourceSize: CGSize? = nil,
                                               canvasAspect: Double = Double(RenderEngine.outputWidth)
                                                   / Double(RenderEngine.outputHeight)) -> Bool {
-        guard let first = path.first, first.h > 0 else { return false }
+        guard !path.isEmpty, canvasAspect > 0 else { return false }
         let source = sourceSize ?? CGSize(width: 16, height: 9)
-        let cropAspect = (first.w * source.width) / (first.h * source.height)
-        return abs(cropAspect - canvasAspect) / canvasAspect < 0.03
+        return path.allSatisfy { frame in
+            guard frame.w > 0, frame.h > 0 else { return false }
+            let cropAspect = (frame.w * source.width) / (frame.h * source.height)
+            return abs(cropAspect - canvasAspect) / canvasAspect < 0.03
+        }
     }
 
     /// The camera's crop at `t`, linearly interpolated between the
@@ -359,11 +492,13 @@ actor CenterStageService {
     nonisolated static func interpolated(_ keyframes: [CameraPathKeyframe],
                                          at t: Double) -> CameraPathKeyframe? {
         guard let first = keyframes.first, let last = keyframes.last else { return nil }
-        guard t > first.t else { return first }
+        guard t >= first.t else { return first }
         guard t < last.t else { return last }
         for index in 1..<keyframes.count {
             let from = keyframes[index - 1], to = keyframes[index]
-            guard t <= to.t else { continue }
+            // Right-continuous at a cut, including a clamped t=0 cut, so
+            // slicing at the boundary cannot turn the jump into a ramp.
+            guard t < to.t else { continue }
             let span = to.t - from.t
             let fraction = span > 0 ? (t - from.t) / span : 1
             return CameraPathKeyframe(t: t,
@@ -426,6 +561,8 @@ actor CenterStageService {
                              avoidPortraits: [Data] = [],
                              orientation: CGImagePropertyOrientation,
                              tuning: Tuning,
+                             region: FreeCropRect? = nil,
+                             evidence: (@Sendable (FeedPathSample) -> Void)? = nil,
                              log: @Sendable (String) -> Void = { print($0) }) async throws -> [Target] {
         let decodePermit = try await MediaWorkScheduler.current.acquire(.decoding)
         defer { withExtendedLifetime(decodePermit) {} }
@@ -439,7 +576,7 @@ actor CenterStageService {
         let naturalSize = try await track.load(.naturalSize)
         let transform = try await track.load(.preferredTransform)
         let displaySize = naturalSize.applying(transform)
-        let longestEdge = max(abs(displaySize.width), abs(displaySize.height))
+        let longestEdge = max(abs(displaySize.width) * (region?.wFrac ?? 1), abs(displaySize.height) * (region?.hFrac ?? 1))
         let scale = longestEdge > 0 ? min(1, 960 / longestEdge) : 1
         // AVAssetReaderOutput.h permits CV width/height scaling for 32BGRA;
         // its high-bit-depth scaling restriction does not apply to this output.
@@ -467,12 +604,14 @@ actor CenterStageService {
             }
             return (reader, output)
         }
+        log("Decode: source buffers for Center Stage tracking\(region == nil ? "" : " and feed expression evidence")")
         let reader: AVAssetReader
         let readerOutput: AVAssetReaderTrackOutput
         do {
             (reader, readerOutput) = try makeReader(scaled: scale < 1)
         } catch {
             try Task.checkCancellation()
+            log("Decode: retry full-resolution buffers for Center Stage tracking")
             (reader, readerOutput) = try makeReader(scaled: false)
         }
         defer { reader.cancelReading() }
@@ -490,12 +629,47 @@ actor CenterStageService {
         var analyzedSamples = 0
         var faceSamples = 0
 
+        let imageContext = CIContext(options: [.cacheIntermediates: false])
+        var lastFaces: [CGRect] = []
+        var previousPatch: [Float]?
+        var previousFace: CGRect?
+        var nextExpressionFace = 0.0
+        var nextEvidence = 0.0
+        func recordEvidence(_ buffer: CVPixelBuffer, time: Double) {
+            guard let region, let evidence, time + 1e-6 >= nextEvidence else { return }
+            nextEvidence = time + 1 / VisualSpeechActivity.targetFPS
+            let fullFaces = lastFaces.map {
+                CGRect(x: region.xFrac + $0.minX * region.wFrac, y: region.yFrac + $0.minY * region.hFrac,
+                    width: $0.width * region.wFrac, height: $0.height * region.hFrac)
+            }
+            // Match the scorer's face-refresh cadence. More frequent tracker
+            // observations must not reset its motion patch on every detection.
+            if time >= nextExpressionFace {
+                nextExpressionFace = time + VisualSpeechActivity.faceRefreshSeconds
+                if let face = fullFaces.max(by: { $0.width * $0.height < $1.width * $1.height }) {
+                    if face != previousFace { previousPatch = nil }
+                    previousFace = face
+                }
+            }
+            let patchRegion = previousFace.map { CGRect(x: $0.minX, y: $0.minY, width: $0.width, height: $0.height * 0.6) }
+                ?? CGRect(x: region.xFrac + region.wFrac / 3, y: region.yFrac + region.hFrac / 3,
+                          width: region.wFrac / 3, height: region.hFrac / 3)
+            let encoded = AppearanceSignature.bufferRect(fromDisplay: patchRegion, orientation: orientation)
+            let patch = VisualSpeechActivity.luminancePatch(buffer, region: encoded)
+            let score = patch.flatMap { current in previousPatch.map { VIPExpressionScore.change(current, from: $0) } }
+            evidence(FeedPathSample(time: time, faces: fullFaces, expression: score))
+            previousPatch = patch
+        }
+
         while reader.status == .reading, let sample = readerOutput.copyNextSampleBuffer() {
             try Task.checkCancellation()
             let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds - start
-            guard time >= nextAnalysis else { continue }
-            nextAnalysis = time + tuning.analysisInterval
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else { continue }
+            guard time + 1e-6 >= nextAnalysis else {
+                recordEvidence(pixelBuffer, time: time)
+                continue
+            }
+            nextAnalysis = region == nil ? time + tuning.analysisInterval : nextAnalysis + tuning.analysisInterval
 
             guard inFocus(time) else {
                 // Outside the picked people's ranges: ease toward full frame.
@@ -508,24 +682,39 @@ actor CenterStageService {
             analyzedSamples += 1
             var boxes: [CGRect]
             var usedFaces = false
+            var faceBoxes: [CGRect] = []
             do {
                 let visionPermit = try await MediaWorkScheduler.current.acquire(.vision)
                 defer { withExtendedLifetime(visionPermit) {} }
                 try Task.checkCancellation()
                 let timing = PerfSignpost.begin("Vision", metadata: "tracking")
                 defer { PerfSignpost.end(timing) }
-                let observations = (try? await request.perform(on: pixelBuffer, orientation: orientation)) ?? []
-                try Task.checkCancellation()
-                // Both requests report upright bottom-left boxes. Convert
-                // faces before expanding them in top-left display space.
-                if observations.isEmpty {
-                    let faces = (try? await faceRequest.perform(on: pixelBuffer, orientation: orientation)) ?? []
-                    boxes = faces.map { face in
-                        let box = face.boundingBox.cgRect
-                        return Self.bodyEstimate(fromFace: CGRect(x: box.minX, y: 1 - box.maxY,
-                                                                  width: box.width, height: box.height))
+                let observations: [HumanObservation]
+                let faces: [FaceObservation]
+                if let region {
+                    let upright = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
+                    let extent = upright.extent
+                    let rect = CGRect(x: extent.minX + region.xFrac * extent.width,
+                        y: extent.minY + (1 - region.yFrac - region.hFrac) * extent.height,
+                        width: region.wFrac * extent.width, height: region.hFrac * extent.height).integral.intersection(extent)
+                    guard let image = imageContext.createCGImage(upright.cropped(to: rect), from: rect) else {
+                        throw CenterStageError(message: "Could not crop the decoded feed buffer.")
                     }
-                    usedFaces = !faces.isEmpty
+                    observations = (try? await request.perform(on: image)) ?? []
+                    faces = (try? await faceRequest.perform(on: image)) ?? []
+                } else {
+                    observations = (try? await request.perform(on: pixelBuffer, orientation: orientation)) ?? []
+                    faces = (try? await faceRequest.perform(on: pixelBuffer, orientation: orientation)) ?? []
+                }
+                try Task.checkCancellation()
+                // Detections are local to the upright feed, with a top-left origin.
+                faceBoxes = faces.map {
+                    let box = $0.boundingBox.cgRect
+                    return CGRect(x: box.minX, y: 1 - box.maxY, width: box.width, height: box.height)
+                }
+                if observations.isEmpty {
+                    boxes = faceBoxes.map { Self.bodyEstimate(fromFace: $0) }
+                    usedFaces = !faceBoxes.isEmpty
                 } else {
                     boxes = observations.map { observation in
                         let box = observation.boundingBox.cgRect
@@ -534,6 +723,8 @@ actor CenterStageService {
                 }
                 try Task.checkCancellation()
             }
+            lastFaces = faceBoxes
+            recordEvidence(pixelBuffer, time: time)
             // Peripheral detections (crowd, staff at distance) are dropped so the
             // camera frames the main subjects instead of everyone visible.
             let detections = Analyzer.primaryPeopleBoxes(boxes)
@@ -566,7 +757,10 @@ actor CenterStageService {
             } else {
                 let union = focused.dropFirst().reduce(focused[0]) { $0.union($1) }
                 lastUnion = union
-                targets.append(Target(time: time, union: union, tracked: true))
+                let selectedFaces = faceBoxes.filter { face in
+                    focused.contains { $0.contains(CGPoint(x: face.midX, y: face.midY)) }
+                }
+                targets.append(Target(time: time, union: union, tracked: true, faces: selectedFaces))
                 if usedFaces { faceSamples += 1 }
             }
         }
@@ -659,6 +853,42 @@ actor CenterStageService {
                       width: crop.width / size.width, height: crop.height / size.height)
     }
 
+    /// One fresh face observation on the feed, in normalized top-left coordinates.
+    /// Kept off the main actor; callers may retry at a later clip timestamp.
+    @concurrent
+    static func faceCenter(source: URL, at time: Double, region: FreeCropRect? = nil) async throws -> CGRect? {
+        try Task.checkCancellation()
+        let asset = AVURLAsset(url: source)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: 960, height: 960)
+        let decodePermit = try await MediaWorkScheduler.current.acquire(.decoding)
+        let image: CGImage
+        do {
+            defer { withExtendedLifetime(decodePermit) {} }
+            image = try await generator.image(at: CMTime(seconds: max(0, time), preferredTimescale: 600)).image
+        }
+        let visionPermit = try await MediaWorkScheduler.current.acquire(.vision)
+        defer { withExtendedLifetime(visionPermit) {} }
+        try Task.checkCancellation()
+        let detectionImage: CGImage
+        if let region {
+            let rect = CGRect(x: region.xFrac * Double(image.width), y: region.yFrac * Double(image.height),
+                width: region.wFrac * Double(image.width), height: region.hFrac * Double(image.height)).integral
+            guard let crop = image.cropping(to: rect) else { return nil }
+            detectionImage = crop
+        } else { detectionImage = image }
+        let faces = try await DetectFaceRectanglesRequest(.revision3).perform(on: detectionImage)
+        try Task.checkCancellation()
+        let region = region ?? FreeCropRect(xFrac: 0, yFrac: 0, wFrac: 1, hFrac: 1)
+        return faces.map {
+            let box = $0.boundingBox.cgRect
+            return CGRect(x: region.xFrac + box.minX * region.wFrac,
+                y: region.yFrac + (1 - box.maxY) * region.hFrac,
+                width: box.width * region.wFrac, height: box.height * region.hFrac)
+        }.max { $0.width * $0.height < $1.width * $1.height }
+    }
+
     // MARK: - Camera path
 
     /// The 9:16 crop the camera wants for a people union (normalized,
@@ -736,9 +966,22 @@ actor CenterStageService {
         // `pinned` entries (hints) survive keyframe downsampling verbatim.
         var current = Self.desiredCrop(forUnion: targets[0].union, size: size, tuning: tuning,
                                        aspect: aspect)
+        let bounds = CGRect(origin: .zero, size: size)
+        func faces(_ target: Target) -> [CGRect] {
+            guard target.inFocus else { return [] }
+            return target.faces.map {
+                CGRect(x: $0.minX * size.width, y: $0.minY * size.height,
+                       width: $0.width * size.width, height: $0.height * size.height)
+            }
+        }
+        current = FaceGuard.contain(current, faces: faces(targets[0]), bounds: bounds)
         var smoothed: [(time: Double, crop: CGRect, pinned: Bool)] = [(0, current, false)]
-        let alpha = tuning.smoothing
+        var previousTime = 0.0
         for target in targets {
+            let elapsed = max(0, target.time - previousTime)
+            let alpha = tuning.timeBasedSmoothing
+                ? 1 - pow(1 - tuning.smoothing, elapsed / 0.1) : tuning.smoothing
+            previousTime = target.time
             // Hints passed since the last target: snap exactly onto them.
             while hintIndex < pixelHints.count, pixelHints[hintIndex].time <= target.time {
                 let hint = pixelHints[hintIndex]
@@ -756,6 +999,7 @@ actor CenterStageService {
                     desired = Self.blend(desired, hint.crop, fraction: 1 - lead)
                 }
             }
+            desired = FaceGuard.contain(desired, faces: faces(target), bounds: bounds)
             let deadZoneX = size.width * tuning.deadZoneWidth
             let deadZoneScale = current.height * tuning.deadZoneZoom
             let moveX = abs(desired.midX - current.midX) > deadZoneX
@@ -770,13 +1014,34 @@ actor CenterStageService {
                 current.origin.x = min(max(0, current.origin.x), size.width - current.width)
                 current.origin.y = min(max(0, current.origin.y), size.height - current.height)
             }
-            smoothed.append((target.time, current, false))
+            let guarded = FaceGuard.contain(current, faces: faces(target), bounds: bounds)
+            let corrected = guarded != current
+            current = guarded
+            // Safety corrections must survive keyframe downsampling.
+            smoothed.append((target.time, current, corrected))
         }
         // Hints at or beyond the last analyzed frame.
         while hintIndex < pixelHints.count {
             let hint = pixelHints[hintIndex]
             smoothed.append((min(hint.time, duration), hint.crop, true))
             hintIndex += 1
+        }
+
+        if tuning.timeBasedSmoothing {
+            // Preserve the 0.3 s camera cadence even when detections arrive at
+            // 0.25 s. Sampling at the next detection would silently become 0.5 s.
+            var times = Set(smoothed.filter(\.pinned).map(\.time))
+            times.formUnion(stride(from: 0, through: duration, by: tuning.keyframeInterval))
+            times.insert(duration)
+            var cursor = 0
+            return times.sorted().map { time in
+                while cursor + 1 < smoothed.count && smoothed[cursor + 1].time <= time { cursor += 1 }
+                let from = smoothed[cursor]
+                guard cursor + 1 < smoothed.count else { return Keyframe(time: time, crop: from.crop) }
+                let to = smoothed[cursor + 1]
+                let fraction = to.time > from.time ? min(1, max(0, (time - from.time) / (to.time - from.time))) : 1
+                return Keyframe(time: time, crop: Self.blend(from.crop, to.crop, fraction: fraction))
+            }
         }
 
         // Downsample to ramp keyframes; pinned hint entries always survive.

@@ -73,7 +73,7 @@ actor RenderEngine {
     /// fades it out. Animated overlays must be full-frame PNGs shown for the
     /// whole clip (start/end nil) — the timing expressions assume clip-local
     /// time starting at 0.
-    nonisolated struct ClipOverlay: Sendable {
+    nonisolated struct ClipOverlay: Codable, Sendable {
         var png: URL
         var x: Int
         var y: Int
@@ -194,44 +194,8 @@ actor RenderEngine {
             filters.append("[framed]\(lookFragment)\(framedLabel)")
         }
 
-        // Overlay chain (single-frame PNG inputs persist via repeatlast).
-        var previous = framedLabel
-        for (index, overlay) in overlays.enumerated() {
-            let outLabel = index == overlays.count - 1 ? finalLabel : "[ovl\(index)]"
-            var inputLabel = "[\(overlayBase + index):v]"
-            var xExpr = "\(overlay.x)"
-            var yExpr = "\(overlay.y)"
-            if let animation = overlay.animation {
-                // Clip-local time starts at 0; the overlay runs the whole clip.
-                let anim = min(0.4, max(0.15, duration / 3))
-                let fadeInDuration = animation == "fade" ? anim : min(0.18, anim)
-                let animLabel = "[anim\(index)]"
-                filters.append(inputLabel + "format=rgba," +
-                               String(format: "fade=t=in:st=0:d=%.3f:alpha=1,", fadeInDuration) +
-                               String(format: "fade=t=out:st=%.3f:d=%.3f:alpha=1", duration - anim, anim) +
-                               animLabel)
-                inputLabel = animLabel
-                switch animation {
-                case "pop":
-                    // Rise-settle: drop in from 5% below with a cubic ease-out.
-                    yExpr = String(format: "'if(lt(t,%.3f),round(H*0.05*pow(1-t/%.3f,3)),0)'", anim, anim)
-                case "slide_up":
-                    yExpr = String(format: "'if(lt(t,%.3f),H-H*t/%.3f,0)'", anim, anim)
-                case "slide_left":
-                    xExpr = String(format: "'if(lt(t,%.3f),-W+W*t/%.3f,0)'", anim, anim)
-                case "slide_right":
-                    xExpr = String(format: "'if(lt(t,%.3f),W-W*t/%.3f,0)'", anim, anim)
-                default:
-                    break
-                }
-            }
-            var step = "\(previous)\(inputLabel)overlay=x=\(xExpr):y=\(yExpr)"
-            if let windowStart = overlay.start, let windowEnd = overlay.end {
-                step += String(format: ":enable='gte(t,%.3f)*lt(t,%.3f)'", windowStart, windowEnd)
-            }
-            filters.append(step + outLabel)
-            previous = outLabel
-        }
+        RenderBurnIns.append(overlays, duration: duration, offset: 0,
+            firstInput: overlayBase, previous: framedLabel, output: finalLabel, filters: &filters)
         if mask != nil {
             filters.append("[\(maskIndex):v]format=gray,scale=\(Self.outputWidth):\(Self.outputHeight)[maskv]")
             filters.append("\(finalLabel)[maskv]alphamerge[masked]")

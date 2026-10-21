@@ -14,12 +14,13 @@ nonisolated enum CameraFocusChooser {
         var speakers: [Speaker]
         var asker: String?
         var answerer: String?
+        var vipNames: [String] = []
         var transcript: String
     }
 
-    static func allowedLayouts(feeds: Int) -> [CropRecipe.Kind] {
+    static func allowedLayouts(feeds: Int, hasVIP: Bool = false) -> [CropRecipe.Kind] {
         CropRecipe.Kind.allCases.filter {
-            $0 == .talker || (feeds >= 2 && CropRecipePlanner.layoutName(kind: $0, people: feeds) != nil)
+            ($0 == .vip || $0 == .vipBRoll) ? hasVIP : ($0 == .talker || (feeds >= 2 && CropRecipePlanner.layoutName(kind: $0, people: feeds) != nil))
         }
     }
 
@@ -67,6 +68,9 @@ nonisolated enum CameraFocusChooser {
         return Exchange(id: id, duration: duration, speakers: ordered,
             asker: isQA ? ordered.first?.name : nil,
             answerer: isQA ? ordered.dropFirst().first?.name : nil,
+            vipNames: Set(clips.compactMap { sceneMap[$0.sceneID]?.videoID }.flatMap {
+                (rosters[$0] ?? []).filter(\.isVIP).map(\.displayName)
+            }).sorted(),
             transcript: transcript.joined(separator: " "))
     }
 
@@ -79,7 +83,7 @@ nonisolated enum CameraFocusChooser {
     /// Feeds are keyed by take ID. Mixed-source takes use the most restrictive available feed count.
     static func prompt(exchanges: [Exchange], feeds: [Int64: Int], options: WizardOptions) -> String {
         let layouts = CropRecipe.Kind.allCases.filter { kind in
-            exchanges.contains { allowedLayouts(feeds: feeds[$0.id] ?? 1).contains(kind) }
+            exchanges.contains { allowedLayouts(feeds: feeds[$0.id] ?? 1, hasVIP: !$0.vipNames.isEmpty).contains(kind) }
         }
         let descriptions = layouts.map { "\($0.rawValue) — \($0.name): \($0.summary)" }.joined(separator: "\n")
         let lines = exchanges.map { exchange in
@@ -88,10 +92,10 @@ nonisolated enum CameraFocusChooser {
                 "\($0.name): \(Int(($0.seconds / max(total, 0.001) * 100).rounded()))% talk time, \($0.turns) turns"
             }.joined(separator: "; ")
             let count = feeds[exchange.id] ?? 1
-            let allowed = allowedLayouts(feeds: count).map(\.rawValue).joined(separator: ", ")
+            let allowed = allowedLayouts(feeds: count, hasVIP: !exchange.vipNames.isEmpty).map(\.rawValue).joined(separator: ", ")
             let roles = [exchange.asker.map { "asks: \($0)" }, exchange.answerer.map { "answers: \($0)" }]
                 .compactMap { $0 }.joined(separator: "; ")
-            return "id: \(exchange.id) | duration: \(String(format: "%.1f", exchange.duration))s | recording feeds/tiles: \(count) | allowed: \(allowed) | speakers: \(speakers) | \(roles) | original transcript: \(excerpt(exchange.transcript))"
+            return "id: \(exchange.id) | duration: \(String(format: "%.1f", exchange.duration))s | recording feeds/tiles: \(count) | allowed: \(allowed) | VIP people: \(exchange.vipNames.joined(separator: ", ")) | speakers: \(speakers) | \(roles) | original transcript: \(excerpt(exchange.transcript))"
         }.joined(separator: "\n")
         return """
         Choose the best camera focus for each podcast exchange below. Keep attention on the answer,

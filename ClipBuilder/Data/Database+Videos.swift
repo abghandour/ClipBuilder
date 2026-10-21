@@ -173,7 +173,12 @@ extension Database {
                                      name: row["person_name"]?.stringValue ?? "",
                                      descriptor: row["person_descriptor"]?.stringValue ?? "",
                                      portraitAt: row["portrait_at"]?.doubleValue ?? 0,
-                                     portraitBox: box)
+                                     portraitBox: box,
+                                     vip: row["vip"]?.intValue.map { $0 != 0 },
+                                     vipSource: row["vip_source"]?.stringValue,
+                                     vipReason: row["portrait_json"]?.stringValue.flatMap {
+                                         (try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any])?["vip_reason"] as? String
+                                     })
         }
     }
 
@@ -184,7 +189,32 @@ extension Database {
                             entries: [(personID: Int64, portraitAt: Double,
                                        portraitJSON: String?, rangesJSON: String?)],
                             provenance: AIProvenance? = nil) throws {
+        try replaceVideoPeople(videoID: videoID, vipEntries: entries.map {
+            ($0.personID, $0.portraitAt, $0.portraitJSON, $0.rangesJSON, nil, nil)
+        }, provenance: provenance)
+    }
+
+    func setVideoPersonVIP(videoID: Int64, personID: Int64, vip: Bool, source: String) throws {
+        try connection.execute("UPDATE video_people SET vip = ?, vip_source = ? WHERE video_id = ? AND person_id = ?",
+                               [.integer(vip ? 1 : 0), .text(source), .integer(videoID), .integer(personID)])
+    }
+
+    func vipVideoCount(personID: Int64) throws -> Int {
+        Int(try connection.query("SELECT COUNT(*) AS count FROM video_people WHERE person_id = ? AND vip = 1",
+                                 [.integer(personID)]).first?["count"]?.intValue ?? 0)
+    }
+
+    func replaceVideoPeople(videoID: Int64,
+                            vipEntries entries: [(personID: Int64, portraitAt: Double,
+                                                  portraitJSON: String?, rangesJSON: String?,
+                                                  vip: Bool?, vipSource: String?)],
+                            provenance: AIProvenance? = nil) throws {
         try connection.transaction {
+            let overrides = try connection.query("SELECT * FROM video_people WHERE video_id = ? AND vip_source = 'user'",
+                                                  [.integer(videoID)])
+            let byPerson = Dictionary(uniqueKeysWithValues: overrides.compactMap { row in
+                row["person_id"]?.intValue.map { ($0, row) }
+            })
             try connection.execute("""
                 UPDATE videos SET people_detected_at = datetime('now'),
                     people_provider = COALESCE(?, people_provider),
@@ -197,14 +227,25 @@ extension Database {
                       .integer(videoID)])
             try connection.execute("DELETE FROM video_people WHERE video_id = ?",
                                    [.integer(videoID)])
+            // A missed detection must not erase an explicit user decision.
+            let detectedIDs = Set(entries.map(\.personID))
+            for row in overrides where row["person_id"]?.intValue.map({ !detectedIDs.contains($0) }) == true {
+                try connection.execute("""
+                    INSERT INTO video_people (video_id, person_id, portrait_at, portrait_json, ranges_json, vip, vip_source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, [row["video_id"] ?? .null, row["person_id"] ?? .null, row["portrait_at"] ?? .null,
+                          row["portrait_json"] ?? .null, row["ranges_json"] ?? .null, row["vip"] ?? .null, .text("user")])
+            }
             for entry in entries {
                 try connection.execute("""
                     INSERT OR REPLACE INTO video_people
-                        (video_id, person_id, portrait_at, portrait_json, ranges_json)
-                    VALUES (?, ?, ?, ?, ?)
+                        (video_id, person_id, portrait_at, portrait_json, ranges_json, vip, vip_source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """, [.integer(videoID), .integer(entry.personID), .real(entry.portraitAt),
                           entry.portraitJSON.map(SQLValue.text) ?? .null,
-                          entry.rangesJSON.map(SQLValue.text) ?? .null])
+                          entry.rangesJSON.map(SQLValue.text) ?? .null,
+                          byPerson[entry.personID]?["vip"] ?? entry.vip.map { .integer($0 ? 1 : 0) } ?? .null,
+                          byPerson[entry.personID]?["vip_source"] ?? entry.vipSource.map(SQLValue.text) ?? .null])
             }
         }
     }

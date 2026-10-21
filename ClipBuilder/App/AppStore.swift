@@ -248,6 +248,8 @@ final class AppStore {
     var restoredAnalysisRequests: [Int64: AnalysisRequest] = [:]
     var pendingAnalysisDuplicate: AnalysisDuplicatePrompt?
     private(set) var videoPeopleVersion = 0
+    /// Roster rows changed outside the counts refresh (extensions cannot set the version).
+    func noteVideoPeopleChanged() { videoPeopleVersion &+= 1 }
     var people: [PersonRecord] = []
     /// Saved fight research by video id — the Analyze page's column and the
     /// wizards' story/caption injection read from here.

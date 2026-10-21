@@ -33,6 +33,8 @@ nonisolated enum WizardPresetBridge {
         fields["nameTagStyle"] = settings.nameTagStyle.map(JSONSetting.string) ?? .null
         fields["nameTagStyleID"] = settings.nameTagStyleID.map(JSONSetting.string) ?? .null
         fields["nameTagPosition"] = settings.nameTagPosition.map(JSONSetting.string) ?? .null
+        fields["safe_area_only"] = .bool(settings.safeAreaOnly)
+        fields["safe_area_platforms"] = settings.safeAreaPlatforms.map { .array($0.map(JSONSetting.string)) } ?? .null
         fields["includeWatermark"] = .bool(settings.watermark)
         fields["includeHeadline"] = .bool(false)
         fields["includeOutro"] = .bool(false)
@@ -78,6 +80,10 @@ nonisolated enum WizardPresetBridge {
         if let value = fields["nameTagStyle"] { settings.nameTagStyle = value.string }
         if let value = fields["nameTagStyleID"] { settings.nameTagStyleID = value.string }
         if let value = fields["nameTagPosition"] { settings.nameTagPosition = value.string }
+        if let value = fields["safe_area_only"]?.bool { settings.safeAreaOnly = value }
+        if let value = fields["safe_area_platforms"] {
+            settings.safeAreaPlatforms = value.decodeValue()
+        }
         if let watermark = fields["includeWatermark"]?.bool { settings.watermark = watermark }
         if let value = fields["watermarkOverlayTemplate"] { settings.watermarkOverlay = value.string }
         if let value = fields["watermarkOpacity"] { settings.watermarkOpacity = value.number }

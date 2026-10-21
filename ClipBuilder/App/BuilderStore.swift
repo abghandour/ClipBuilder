@@ -731,6 +731,47 @@ final class BuilderTimelineModel {
             ? (clips(inTrack: 0).map { $0.startTime + $0.duration }.max() ?? 0)
             : Self.snap(time ?? playhead)
         let length = (source.duration * 10).rounded() / 10
+        // VIP changes are speech-precise adjacent clips so each feed can track independently.
+        if plan.slots.count == 1, let spans = plan.slots[0].trackingSpans, !spans.isEmpty {
+            var ids: [UUID] = []
+            let baseSourceStart: Double
+            switch source {
+            case .video: baseSourceStart = 0
+            case .scene(let scene): baseSourceStart = scene.startTime
+            }
+            for span in spans {
+                var piece = plan
+                piece.slots[0].trackingSpans = nil
+                piece.slots[0].path = nil
+                piece.slots[0].window = nil
+                piece.slots[0].region = span.region
+                piece.slots[0].focus = span.focus.map { ($0.x, $0.y) }
+                let pieceSource: ComposeSource
+                switch source {
+                case .video(var video):
+                    video.duration = span.end - span.start
+                    pieceSource = .video(video)
+                case .scene(var scene):
+                    scene.startTime = baseSourceStart + span.start
+                    scene.endTime = baseSourceStart + span.end
+                    pieceSource = .scene(scene)
+                }
+                let result = compose(piece, source: pieceSource, at: start + span.start, highlightTalker: false)
+                for id in result.clips {
+                    updateClip(id) {
+                        $0.sourceStart = baseSourceStart + span.start
+                        $0.sourceEnd = baseSourceStart + span.end
+                        $0.startTime = start + span.start
+                        $0.duration = span.end - span.start
+                        $0.precision = .speech
+                        $0.transIn = nil
+                        $0.transOut = nil
+                    }
+                }
+                ids += result.clips
+            }
+            return ComposeResult(clips: ids, start: start)
+        }
         var block: UUID?
         if !plan.layout.isFullScreen {
             block = addCropBlock(plan.layout, at: start, duration: length)
@@ -749,6 +790,14 @@ final class BuilderTimelineModel {
             guard let uid = document.videoTrack.first(where: { !before.contains($0.uid) })?.uid else { continue }
             updateClip(uid) {
                 $0.muted = track > 0
+                if slot.subject == .vip {
+                    // Do not let a saved talker path override the VIP's feed tracker.
+                    $0.cameraPath = nil
+                    $0.cameraPathSource = nil
+                    $0.centerStage = false
+                    $0.freeCrops = nil
+                    $0.screenCrop = nil
+                }
                 $0.areaWindow = slot.window
                 $0.areaRegion = slot.region
                 $0.areaFocus = slot.focus.map { AreaFocus(x: $0.x, y: $0.y) }

@@ -25,6 +25,7 @@ import Foundation
         "nameTags": "wizard.nameTags", "nameTagContent": "wizard.nameTagContent",
         "nameTagStyle": "wizard.nameTagStyle", "nameTagPosition": "wizard.nameTagPosition",
         "nameTagStyleID": "wizard.nameTagStyleID",
+        "safe_area_only": "wizard.safeAreaOnly",
         "workflow": WizardDefaults.workflowKey,
         "musicTrack": "wizard.musicTrack", "overlayStyle": "wizard.overlayStyle",
         "overlayAnimation": "wizard.overlayAnimation", "overlayPlacement": "wizard.overlayPlacement",
@@ -72,6 +73,10 @@ import Foundation
         }
         for (field, key) in wizardKeys {
             if let value = defaults.object(forKey: key) { result[field] = setting(value) }
+        }
+        if let selected = defaults.string(forKey: "wizard.safeAreaPlatforms") {
+            let platforms = selected.split(separator: ",").map(String.init)
+            result["safe_area_platforms"] = platforms.isEmpty ? .null : .array(platforms.map(JSONSetting.string))
         }
         let captionChoices = WizardCaptionChoices.load(profileName: profile.profileName, defaults: defaults)
         result["captionPosition"] = captionChoices.captionPosition.map(JSONSetting.string) ?? .null
@@ -190,6 +195,9 @@ import Foundation
                 defaults.set(override.rawValue, forKey: WizardDefaults.brandingOverrideKey)
             }
             if scopes.contains(.options) {
+                if result["safe_area_platforms"] != nil {
+                    defaults.set(list("safe_area_platforms"), forKey: "wizard.safeAreaPlatforms")
+                }
                 if result["workflow"]?.string == nil {
                     defaults.set(WizardWorkflow.automatic.rawValue, forKey: WizardDefaults.workflowKey)
                 }
