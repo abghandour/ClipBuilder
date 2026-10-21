@@ -1,11 +1,77 @@
 import Foundation
 import Testing
+import Synchronization
 @testable import Clip_Builder
 
 @Suite("Render engine integration", .tags(.integration),
        .enabled(if: FixtureVideo.integrationsAvailable,
                 "Install ffmpeg and ffprobe to run."))
 struct RenderEngineTests {
+    @Test("hardware intermediate passes match software; final audio still encodes", arguments: ["extract", "areas"])
+    func intermediateExtractParity(pass: String) async throws {
+        guard FFmpeg.hasVideoToolboxDecode else { return }
+        let temp = try TempDirectory(prefix: "IntermediateExtract")
+        let fixture = try await FixtureVideo.make(in: temp.url)
+        let render = RenderEngine()
+        let source = temp.url.appendingPathComponent("normalized.mp4")
+        try await render.extractClip(source: fixture, start: 0, duration: 1, output: source)
+        let mask = temp.url.appendingPathComponent("mask.png")
+        try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "color=white:s=1080x1920",
+            "-frames:v", "1", mask.path], timeout: 60)
+        var outputs: [URL] = []
+        for hardware in [false, true] {
+            let output = temp.url.appendingPathComponent("hardware-\(hardware).mp4")
+            let commands = Mutex<[[String]]>([])
+            let messages = Mutex<[String]>([])
+            try await ExpressRenderTesting.$hardwareDecodeIntermediates.withValue(hardware) {
+                try await FFmpeg.$renderLog.withValue({ line in messages.withLock { $0.append(line) } }) {
+                    try await FFmpeg.$commandCompleted.withValue({ args in commands.withLock { $0.append(args) } }) {
+                        if pass == "areas" {
+                            try await render.compositeAreas([(clip: source, mask: mask)], duration: 1, output: output)
+                        } else {
+                            try await render.extractClip(source: source, start: 0, duration: 1,
+                                effect: EffectSpec(preset: "faded"), intermediateSource: true, output: output)
+                        }
+                    }
+                }
+            }
+            outputs.append(output)
+            let command = try #require(commands.withLock { $0.last })
+            #expect(command.contains("-hwaccel") == hardware)
+            let audio = try #require(command.firstIndex(of: "-c:a"))
+            #expect(command[audio + 1] == "aac")
+            #expect(messages.withLock { $0.contains("Decode: hardware (intermediate)") } == hardware)
+        }
+        let comparison = try await MultitrackRenderTests.compareDecoded(outputs[1], outputs[0])
+        #expect(comparison.videoTimingIdentical)
+        #expect(comparison.minimumSSIM >= 0.99)
+        #expect(try await MultitrackRenderTests.audioMatches(outputs[1], outputs[0]))
+    }
+
+    @Test("stream-copy finishing is logged only after an actual concat")
+    func concatStreamCopyLogging() async throws {
+        let temp = try TempDirectory(prefix: "ConcatLogging")
+        let source = try await FixtureVideo.make(in: temp.url)
+        let render = RenderEngine()
+        for count in [1, 2] {
+            let commands = Mutex<[[String]]>([])
+            let messages = Mutex<[String]>([])
+            try await FFmpeg.$renderLog.withValue({ line in messages.withLock { $0.append(line) } }) {
+                try await FFmpeg.$commandCompleted.withValue({ args in commands.withLock { $0.append(args) } }) {
+                    try await render.concatenate(clips: Array(repeating: source, count: count), transitions: [],
+                        output: temp.url.appendingPathComponent("join-\(count).mp4"))
+                }
+            }
+            #expect(messages.withLock { $0.filter { $0 == "Finishing: stream copy" }.count } == count - 1)
+            let concats = commands.withLock { $0.filter { $0.contains("concat") } }
+            #expect(concats.count == count - 1)
+            #expect(concats.allSatisfy { args in
+                guard let index = args.firstIndex(of: "-c:v") else { return false }
+                return args[safe: index + 1] == "copy"
+            })
+        }
+    }
+
     @Test("extracts a playable speed-adjusted portrait clip")
     func extractClip() async throws {
         let temp = try TempDirectory(prefix: "ClipBuilderRenderTest")

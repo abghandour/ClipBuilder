@@ -7,6 +7,174 @@ import Synchronization
        .enabled(if: FixtureVideo.integrationsAvailable,
                 "Install ffmpeg and ffprobe to run."))
 struct MultitrackRenderTests {
+    @Test("hardware intermediates preserve decoded output and use distinct cache entries")
+    func intermediateExperimentsMatch() async throws {
+        guard FFmpeg.hasVideoToolboxDecode else { return }
+        let temp = try TempDatabase()
+        let source = temp.directory.url.appendingPathComponent("intermediate.mp4")
+        try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "testsrc2=s=1080x1920:r=30",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1"]
+            + FFmpeg.encodeArgs + [source.path], timeout: 60)
+        let probe = await FFmpeg.info(of: source)
+        #expect(probe.isPortraitH264Intermediate)
+        var first = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 1)
+        first.videoFile = source.path; first.effect = EffectSpec(preset: "faded")
+        var second = first
+        second.uid = UUID(); second.startTime = 1; second.originKey = "second"
+        var document = Fixtures.timelineDocument(clips: [first, second])
+        // A retained overlay exercises the hardware-decode overlay-burn path
+        // as well as the segment compositor, with the same input in both runs.
+        document.textOverlays = [TextOverlayItem(text: "Parity", startTime: 0.2, endTime: 1.8)]
+        let cache = RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("cache"))
+        var outputs: [URL] = []
+        defer { for output in outputs { try? FileManager.default.removeItem(at: output) } }
+        for enabled in [false, true] {
+            let commands = Mutex<[[String]]>([])
+            let messages = Mutex<[String]>([])
+            let result = try await ExpressRenderTesting.$hardwareDecodeIntermediates.withValue(enabled) {
+                try await FFmpeg.$commandCompleted.withValue({ args in commands.withLock { $0.append(args) } }) {
+                    try await MultitrackRenderer(render: RenderEngine(), segmentCache: cache,
+                        finishingCacheEnabled: false, overlayFusionEnabled: false).render(document: document, scenes: [], profile: Fixtures.brand(),
+                            database: temp.database, preview: true, prerenderedSources: [source.path],
+                            emit: { line in messages.withLock { $0.append(line) } })
+                }
+            }
+            outputs.append(result.url)
+            let segmentCommands = commands.withLock { $0.filter { $0.last?.contains("_layered.mp4") == true } }
+            #expect(segmentCommands.count == 2) // Warm cache must not hide the enabled variant.
+            #expect(segmentCommands.allSatisfy { $0.contains("-hwaccel") == enabled })
+            let overlay = try #require(commands.withLock { $0.first { $0.last?.hasSuffix("with_overlays.mp4") == true } })
+            #expect(overlay.contains("-hwaccel") == enabled)
+            #expect(messages.withLock { $0.contains("Decode: hardware (intermediate)") } == enabled)
+        }
+        let comparison = try await Self.compareDecoded(outputs[1], outputs[0], trailingFramesAllowed: 1)
+        #expect(comparison.videoTimingIdentical)
+        #expect(comparison.minimumSSIM >= 0.99)
+        #expect(try await Self.audioMatches(outputs[1], outputs[0]))
+        let candidateDuration = await FFmpeg.duration(of: outputs[1])
+        let referenceDuration = await FFmpeg.duration(of: outputs[0])
+        #expect(abs(candidateDuration - referenceDuration) < 0.05)
+    }
+
+    @Test("separate reels watermark clips, reuse plain bumpers and finish by stream copy")
+    func batchWatermarkedBumper() async throws {
+        let temp = try TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "batch-watermark")
+        let settings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        var block = OverlayBlockItem()
+        block.name = "Batch watermark"; block.exactPlacement = true; block.duration = 1
+        let logo = temp.directory.url.appendingPathComponent("logo.png")
+        try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "color=red:s=160x160",
+            "-frames:v", "1", logo.path], timeout: 60, purpose: "test watermark raster")
+        var logoItem = ImageOverlayItem(path: logo.path)
+        logoItem.wFrac = 0.5
+        block.composition.images = [logoItem,
+            ImageOverlayItem(path: temp.directory.url.appendingPathComponent("missing-logo.png").path)]
+        block.composition.texts = [TextOverlayItem(text: "Watermark", startTime: 0, endTime: 1)]
+        block.composition = WizardFixedOverlay.watermarkStyled(block.composition, opacity: 1)
+        let cache = RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("reel-cache"))
+        let render = RenderEngine()
+        var bumperEncodes = 0
+        for (index, duration) in [1.0, 1.5].enumerated() {
+            // Change the watermark and bumper placement between reels: neither
+            // may invalidate the plain bumper's cached segment.
+            block.composition.images[0].xFrac = index == 0 ? 0.3 : 0.7
+            let messages = Mutex<[String]>([])
+            let watermarks = ExpressBatchWatermark.rasterize(block, settings: settings, scratch: temp.directory.url,
+                log: { line in messages.withLock { $0.append(line) } })
+            #expect(watermarks.count == 2)
+            var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: duration)
+            clip.videoFile = source.path
+            var cut = Fixtures.timelineDocument(clips: [clip]); cut.renderSettings = settings
+            let plain = temp.directory.url.appendingPathComponent("plain-\(index).mp4")
+            let folded = temp.directory.url.appendingPathComponent("folded-\(index).mp4")
+            for watermark in [false, true] {
+                try await ExpressPodcastRenderer.extract(document: cut, scenes: [scene], profile: Fixtures.brand(),
+                    database: temp.database, render: render, camera: "balanced", overlays: watermark ? watermarks : [],
+                    look: nil, mute: false, clipNumber: index + 1, duration: duration,
+                    output: watermark ? folded : plain,
+                    cache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("extract-cache")), emit: { _ in })
+            }
+            var bumper = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 0.5, startTime: duration)
+            bumper.videoFile = source.path; bumper.bumper = true
+            cut.videoTrack.append(bumper)
+            let original = cut
+            let prepared = WizardEngine.preparedDocument(from: cut, clipURLs: [folded], transitions: [])
+            let result = try await MultitrackRenderer(render: render, segmentCache: cache).render(
+                document: prepared, scenes: [], profile: Fixtures.brand(), database: temp.database,
+                preview: true, prerenderedSources: [folded.path],
+                emit: { line in messages.withLock { $0.append(line) } })
+            defer { try? FileManager.default.removeItem(at: result.url) }
+            #expect(cut == original)
+            let lines = messages.withLock { $0 }
+            bumperEncodes += lines.filter { $0 == "Segment 2: encode pass" }.count
+            #expect(lines.filter { $0 == "Finishing: stream copy" }.count == 1)
+            #expect(lines.filter { $0 == "Watermark: missing-logo skipped: unreadable image" }.count == 1)
+            #expect(!lines.contains { $0.hasPrefix("Burning ") })
+            if index == 1 { #expect(lines.contains("Segment 2: cache hit; encodes=0")) }
+
+            // Plain reference proves the watermark changes clip frames while
+            // bumper frames stay clear, independently of late-burn parity.
+            let referenceDocument = WizardEngine.preparedDocument(from: cut, clipURLs: [plain], transitions: [])
+            let base = try await MultitrackRenderer(render: render,
+                segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("reference-cache"))).render(
+                    document: referenceDocument, scenes: [], profile: Fixtures.brand(), database: temp.database,
+                    preview: true, prerenderedSources: [plain.path], emit: { _ in })
+            defer { try? FileManager.default.removeItem(at: base.url) }
+            let versusPlain = try await Self.compareDecoded(result.url, base.url, trailingFramesAllowed: 1)
+            let clipFrames = versusPlain.frameSSIM.prefix(Int((duration - 0.1) * 30))
+            let bumperFrames = versusPlain.frameSSIM.dropFirst(Int((duration + 0.1) * 30))
+            #expect(!clipFrames.isEmpty && (clipFrames.min() ?? 1) < 0.99)
+            #expect(!bumperFrames.isEmpty && bumperFrames.allSatisfy { $0 >= 0.99 })
+
+            // A single reel uses late document overlays; Builder re-renders
+            // the saved originals. Both must leave the same bumper spans clear.
+            var saved = cut
+            block.duration = duration + 0.5
+            saved.overlayBlocks = [block]
+            var single = referenceDocument
+            single.overlayBlocks = [block]
+            for (name, document, sources) in [("single", single, Set([plain.path])), ("builder", saved, Set<String>())] {
+                let reference = try await MultitrackRenderer(render: render,
+                    segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("\(name)-cache"))).render(
+                        document: document, scenes: [scene], profile: Fixtures.brand(), database: temp.database,
+                        preview: true, prerenderedSources: sources, emit: { _ in })
+                defer { try? FileManager.default.removeItem(at: reference.url) }
+                let comparison = try await Self.compareDecoded(result.url, reference.url, trailingFramesAllowed: 1)
+                #expect(comparison.videoTimingIdentical)
+                #expect(comparison.minimumSSIM >= 0.99)
+                #expect(try await Self.audioMatches(result.url, reference.url))
+            }
+        }
+        #expect(bumperEncodes == 1)
+    }
+
+    @Test("single segments and finishing cache hits do not claim a stream-copy concat")
+    func finishingStreamCopyLogging() async throws {
+        let temp = try TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "finishing-log")
+        var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 0.5)
+        clip.videoFile = source.path
+        var document = Fixtures.timelineDocument(clips: [clip])
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        let cache = RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("cache"))
+        let renderer = MultitrackRenderer(render: RenderEngine(), segmentCache: cache)
+        for stage in ["single", "cold", "warm"] {
+            if stage == "cold" {
+                var second = clip
+                second.uid = UUID(); second.startTime = 0.5
+                document.videoTrack.append(second)
+            }
+            let messages = Mutex<[String]>([])
+            let result = try await renderer.render(document: document, scenes: [scene], profile: Fixtures.brand(),
+                database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
+            defer { try? FileManager.default.removeItem(at: result.url) }
+            let lines = messages.withLock { $0 }
+            #expect(lines.filter { $0 == "Finishing: stream copy" }.count == (stage == "cold" ? 1 : 0))
+            if stage == "warm" { #expect(lines.contains("Finishing cache hit; assembly and overlay encodes=0")) }
+        }
+    }
+
     @Test("podcast look and burn-ins match the legacy extract across segment boundaries", arguments: ["none", "fade", "slide_up", "retained-overlay"])
     func podcastExtractFoldedMatchesTwoPass(animation: String) async throws {
         let temp = try TempDatabase()
@@ -902,6 +1070,7 @@ extension MultitrackRenderTests {
         #expect(try await decoded(alwaysCold.result.url).timing == full.timing)
         let alwaysWarm = try await render(always)
         #expect(alwaysWarm.lines.contains("Finishing cache hit; assembly and overlay encodes=0"))
+        #expect(!alwaysWarm.lines.contains("Finishing: stream copy"))
         #expect(!alwaysWarm.lines.contains { $0.hasPrefix("Finishing ranges") })
     }
 
@@ -909,6 +1078,7 @@ extension MultitrackRenderTests {
         var videoTimingIdentical: Bool
         var audioIdentical: Bool
         var minimumSSIM: Double
+        var frameSSIM: [Double]
     }
 
     /// Frame timing and decoded audio must match exactly; pixels are scored
@@ -955,7 +1125,8 @@ extension MultitrackRenderTests {
         return DecodedComparison(videoTimingIdentical: relative(a.video) == relative(b.video)
                                     && extra <= trailingFramesAllowed && values.count >= common,
                                  audioIdentical: a.audio == b.audio && !a.audio.isEmpty,
-                                 minimumSSIM: values.prefix(common).min() ?? 0)
+                                 minimumSSIM: values.prefix(common).min() ?? 0,
+                                 frameSSIM: Array(values.prefix(common)))
     }
 
     @Test("exact-placement overlay blocks render where designed; ordinary ones are kept clear of platform chrome")

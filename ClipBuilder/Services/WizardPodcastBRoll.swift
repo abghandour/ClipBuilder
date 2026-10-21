@@ -74,7 +74,7 @@ enum WizardPodcastBRoll {
         for (index, span) in planned.spans.enumerated() {
             try Task.checkCancellation()
             PodcastHighlightTimeline.add(cuts: planned.cuts[index], to: builder, video: span.video,
-                tiles: span.tiles, scenes: planned.scenes, offset: span.clip.startTime, log: log)
+                tiles: span.tiles, scenes: planned.scenes, offset: span.clip.startTime, roster: span.roster, log: log)
         }
         return builder.document
     }

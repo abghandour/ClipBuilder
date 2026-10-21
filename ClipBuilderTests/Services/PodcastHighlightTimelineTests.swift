@@ -46,6 +46,52 @@ struct PodcastHighlightTimelineTests {
         }
     }
 
+    @Test("a reaction cutaway window is centred on the tile's face, not the tile")
+    func reactionCutawayFollowsFace() throws {
+        var video = Fixtures.video()
+        video.podcastLayout = "grid"
+        // Bob's face sits at the left edge of his tile; a tile-centred 9:16
+        // window (centre x 0.75) would cut it in half.
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "ann"),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "bob", faceX: 0.56, faceY: 0.4)]
+        video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+        let turns = [SpeakerTurn(videoID: 1, start: 0, end: 4, cluster: 0, confidence: 1, personKey: "ann", tile: 0),
+                     SpeakerTurn(videoID: 1, start: 4, end: 10, cluster: 1, confidence: 1, personKey: "bob", tile: 1)]
+        let segments = [TranscriptSegment(start: 0, end: 10, text: "A full exchange.", words: nil)]
+        let candidate = HighlightCandidate(sourceStart: 0, sourceEnd: 10, title: "Test", reason: "Test", score: 8,
+                                           kind: .whole, framing: .talker, speakerKeys: ["ann", "bob"])
+        let cut = PodcastHighlightBRollPlanner.Cut(source: .reaction(tile: 1), sourceStart: 1, start: 2, duration: 3, reason: "test")
+        let document = PodcastHighlightTimeline.build(candidate: candidate, video: video, scenes: [], turns: turns,
+            roster: [], segments: segments, layouts: ScreenCropStore.builtIn, settings: RenderSettings(),
+            plannedCuts: [cut], tagText: [:], log: { _ in })
+        let window = try #require(document.videoTrack.first(where: \.isCutaway)?.cutawaySourceWindow)
+        #expect(window.xFrac >= 0.5 && window.xFrac + window.wFrac <= 1)
+        #expect(window.xFrac <= 0.56 && window.xFrac + window.wFrac >= 0.56)
+        // The window hugs the tile's left edge so the face stays whole.
+        #expect(abs(window.xFrac - 0.5) < 1e-6)
+
+        // A portrait source makes the reaction crop shorter than the tile.
+        // Keep the layout centre low to prove the roster box supplies headroom.
+        video.width = 1080; video.height = 1920
+        let portrait = VideoPersonRecord.PortraitBox(x: 0.53, y: 0.06, w: 0.06, h: 0.1)
+        let roster = [VideoPersonRecord(videoID: video.id, personID: 2, key: "bob", name: "Bob",
+            descriptor: "", portraitAt: 0, portraitBox: portrait)]
+        for hasLayoutFace in [true, false] {
+            var reactionTiles = tiles
+            if !hasLayoutFace { reactionTiles[1].faceX = nil; reactionTiles[1].faceY = nil }
+            video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(reactionTiles), as: UTF8.self)
+            let guarded = PodcastHighlightTimeline.build(candidate: candidate, video: video, scenes: [], turns: turns,
+                roster: roster, segments: segments, layouts: ScreenCropStore.builtIn, settings: RenderSettings(),
+                plannedCuts: [cut], tagText: [:], log: { _ in })
+            let window = try #require(guarded.videoTrack.first(where: \.isCutaway)?.cutawaySourceWindow)
+            let tile = reactionTiles[1].picture
+            #expect(window.yFrac >= tile.y && window.yFrac + window.hFrac <= tile.y + tile.h)
+            #expect(window.yFrac <= max(tile.y, portrait.y - window.hFrac * FaceGuard.headroom) + 0.0001)
+            #expect(window.xFrac <= portrait.x && window.xFrac + window.wFrac >= portrait.x + portrait.w)
+            #expect(window.yFrac + window.hFrac >= portrait.y + portrait.h)
+        }
+    }
+
     @Test func oneTimelinePerReelWithinSharedBatch() async throws {
         let temp = try TempDatabase()
         let profile = Fixtures.brand(name: "PodcastHighlightTimelineTests")

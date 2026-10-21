@@ -7,7 +7,7 @@ actor MediaWorkScheduler {
     nonisolated enum Budget {
         static let encoding = FFmpeg.jobLimit
         static let decoding = max(2, ProcessInfo.processInfo.activeProcessorCount / 2)
-        static let vision = 1
+        static let vision = min(3, max(2, ProcessInfo.processInfo.activeProcessorCount / 4))
         static let probing = 2
     }
 

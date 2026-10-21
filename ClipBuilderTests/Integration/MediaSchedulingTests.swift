@@ -6,6 +6,33 @@ import Testing
 @Suite("Media admission and cancellation", .tags(.integration),
        .enabled(if: FixtureVideo.integrationsAvailable), .timeLimit(.minutes(1)))
 struct MediaSchedulingTests {
+    @Test("Vision budget admits two independent tracking calls and releases per request")
+    func overlappingTrackingCalls() async throws {
+        let cores = ProcessInfo.processInfo.activeProcessorCount
+        let expected = min(3, max(2, cores / 4)) // Phase 5: one permit per four cores, clamped to 2...3.
+        #expect(MediaWorkScheduler.Budget.vision == expected)
+        #expect(MediaWorkScheduler.Budget.vision >= 2)
+        #expect(MediaWorkScheduler.Budget.vision <= 3)
+        let scheduler = MediaWorkScheduler()
+        // Hold the leaf permits as two concurrent Vision requests would;
+        // no camera/export or ffmpeg permit surrounds either tracking pass.
+        let first = MediaSchedulingChecks.hold(scheduler, .vision)
+        let second = MediaSchedulingChecks.hold(scheduler, .vision)
+        defer { first.release.finish(); second.release.finish(); first.task.cancel(); second.task.cancel() }
+        try await MediaSchedulingChecks.wait(scheduler, .vision, active: 2, waiting: 0)
+        first.release.finish()
+        try await first.task.value
+        try await MediaSchedulingChecks.wait(scheduler, .vision, active: 1, waiting: 0)
+        let nextFrame = MediaSchedulingChecks.hold(scheduler, .vision)
+        defer { nextFrame.release.finish(); nextFrame.task.cancel() }
+        try await MediaSchedulingChecks.wait(scheduler, .vision, active: 2, waiting: 0)
+        nextFrame.release.finish()
+        second.release.finish()
+        try await nextFrame.task.value
+        try await second.task.value
+        try await MediaSchedulingChecks.wait(scheduler, .vision, active: 0, waiting: 0)
+    }
+
     @Test func probesAndFrameDecodesProceedWhileCenterStageWaitsForFFmpeg() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

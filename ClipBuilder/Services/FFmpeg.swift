@@ -21,8 +21,9 @@ nonisolated enum FFmpegError: Error, CustomStringConvertible {
 /// as the Python app's pipeline, with hardware (VideoToolbox) encoding and
 /// cached probes for speed.
 nonisolated enum FFmpeg {
-    /// Optional per-render diagnostics hook. Task-local so concurrent renders
-    /// and tests observe only their own successful ffmpeg invocations.
+    /// Each render owns its purpose/experiment log, including concurrent segments.
+    @TaskLocal static var renderLog: (@Sendable (String) -> Void)?
+    /// Tests observe only their own successful ffmpeg invocations.
     @TaskLocal static var commandCompleted: (@Sendable ([String]) -> Void)?
 
     static func ffmpegURL() throws -> URL {
@@ -71,6 +72,27 @@ nonisolated enum FFmpeg {
         videoEncodeArgs + audioEncodeArgs + ["-pix_fmt", "yuv420p", "-movflags", "+faststart"]
     }
 
+    // Launch-time experiment only. Do not enable by default until measured.
+    private static let intermediateEnvironment = ProcessInfo.processInfo.environment
+    static var hardwareDecodeIntermediates: Bool {
+        ExpressRenderTesting.hardwareDecodeIntermediates
+            ?? (intermediateEnvironment["CLIPBUILDER_HW_DECODE_INTERMEDIATES"] == "1")
+    }
+
+    /// Distinguish experiment variants even when a warm segment cache exists.
+    static var intermediateCacheIdentity: [String] {
+        hardwareDecodeIntermediates ? ["hw-decode=true"] : []
+    }
+
+    static func intermediateDecodeArguments(for source: URL, eligible: Bool = true) async -> [String] {
+        guard eligible, hardwareDecodeIntermediates else { return [] }
+        let probe = await info(of: source)
+        guard probe.isPortraitH264Intermediate else { return [] }
+        let arguments = decodeArguments(hardware: true)
+        if !arguments.isEmpty { renderLog?("Decode: hardware (intermediate)") }
+        return arguments
+    }
+
     /// How many ffmpeg jobs to run concurrently during segment/clip renders;
     /// also the scheduler's encoding budget. `CLIPBUILDER_FFMPEG_JOBS` in the
     /// environment overrides it (1–16) for measurements.
@@ -93,16 +115,53 @@ nonisolated enum FFmpeg {
     @discardableResult
     static func run(_ arguments: [String], timeout: TimeInterval? = nil,
                     capture: ProcessRunner.Capture = .full,
-                    mediaResource: MediaWorkScheduler.Resource = .encoding) async throws -> String {
-        let result = try await ProcessRunner.run(executable: ffmpegURL(),
-                                                 arguments: arguments, timeout: timeout, capture: capture,
-                                                 mediaResource: mediaResource)
-        guard result.exitCode == 0 else {
-            throw FFmpegError.commandFailed(tool: "ffmpeg", exitCode: result.exitCode,
-                                            stderr: result.stderrText)
+                    mediaResource: MediaWorkScheduler.Resource = .encoding,
+                    purpose: String? = nil) async throws -> String {
+        try await withSoftwareDecodeFallback(arguments) { attempt in
+            let label = purpose ?? URL(fileURLWithPath: attempt.last ?? "media").lastPathComponent
+            renderLog?("\(mediaResource == .decoding ? "Decode" : "Encode/decode"): \(label)")
+            let result = try await ProcessRunner.run(executable: ffmpegURL(),
+                                                     arguments: attempt, timeout: timeout, capture: capture,
+                                                     mediaResource: mediaResource)
+            guard result.exitCode == 0 else {
+                throw FFmpegError.commandFailed(tool: "ffmpeg", exitCode: result.exitCode,
+                                                stderr: result.stderrText)
+            }
+            commandCompleted?(attempt)
+            return result.stdoutText
         }
-        commandCompleted?(arguments)
-        return result.stdoutText
+    }
+
+    /// Remove every input's VideoToolbox request, preserving input ordering,
+    /// filter graphs and encoder options for the software retry.
+    static func softwareDecodeArguments(_ arguments: [String]) -> [String] {
+        var result: [String] = []
+        var index = 0
+        while index < arguments.count {
+            if arguments[index] == "-hwaccel", arguments[safe: index + 1] == "videotoolbox" {
+                index += 2
+            } else {
+                result.append(arguments[index])
+                index += 1
+            }
+        }
+        return result
+    }
+
+    /// All render calls share this retry, including multi-input compositors.
+    /// Cancellation, launch failures and ordinary software failures propagate.
+    static func withSoftwareDecodeFallback(_ arguments: [String],
+        run: @Sendable ([String]) async throws -> String) async throws -> String {
+        do {
+            return try await run(arguments)
+        } catch {
+            try Task.checkCancellation()
+            guard case FFmpegError.commandFailed = error else { throw error }
+            let software = softwareDecodeArguments(arguments)
+            guard software != arguments else { throw error }
+            renderLog?("Decode: hardware failed; retrying in software")
+            return try await run(software)
+        }
     }
 
     static func probe(_ arguments: [String]) async throws -> String {
@@ -131,7 +190,7 @@ nonisolated enum FFmpeg {
     private static func probeInfo(_ url: URL) async -> MediaProbe {
         let output = (try? await probe(["-v", "quiet",
                                         "-show_entries",
-                                        "stream=codec_type,width,height:stream_side_data=rotation:format=duration",
+                                        "stream=codec_type,codec_name,width,height:stream_side_data=rotation:format=duration",
                                         "-of", "json", url.path])) ?? ""
         var info = MediaProbe()
         guard let data = output.data(using: .utf8),
@@ -159,6 +218,7 @@ nonisolated enum FFmpeg {
                 }
                 info.width = width
                 info.height = height
+                info.videoCodec = stream["codec_name"] as? String
             case "audio":
                 info.hasAudio = true
             default:
@@ -293,6 +353,12 @@ nonisolated struct MediaProbe: Sendable {
     var width: Int = 0
     var height: Int = 0
     var hasAudio: Bool = false
+
+    var videoCodec: String?
+
+    var isPortraitH264Intermediate: Bool {
+        width == 1080 && height == 1920 && videoCodec == "h264"
+    }
 
     var isEmpty: Bool { duration == 0 && width == 0 && !hasAudio }
 }

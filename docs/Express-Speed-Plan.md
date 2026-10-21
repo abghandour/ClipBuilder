@@ -1,9 +1,9 @@
 # Express podcast generation: fewer passes per clip
 
-Date: October 21, 2026. Status: phases 1–4 implemented, review corrections included,
-Debug build green and 174 tests across the render, framing, cache, VIP and podcast
-suites pass; live timing of the 69 s clip and 31-clip batch not yet measured. Phases
-5–8 pending. Measurements and the ranked findings are in
+Date: October 21, 2026. Status: phases 1–4 shipped in 1.114 (69 s clip 45 s →
+30.6 s); phases 5, 6 (flagged, default off, not yet measured) and 8
+implemented with review fixes, Debug build green, 242 tests pass, uncommitted;
+phase 7 dropped after measurement. Measurements and ranked findings are in
 docs/Performance-Express-Podcast-Review.md.
 
 ## Goal
@@ -43,7 +43,7 @@ path (`MultitrackRenderer` ~line 989 applies it only to full-frame
   explains the whole wall time ("Clip 3: extract folded into segment pass").
 - No change to what the user sees in the Builder document (the editable
   timeline keeps its pieces, paths and looks).
-- Measure before adopting the optional items (phases 6 and 7) with
+- Measure before adopting hardware decode (phase 6) with
   `CLIPBUILDER_FFMPEG_JOBS` pinned and the Timings lines.
 
 ## Phase 1: fold the extract pass into the segment pass
@@ -187,19 +187,69 @@ place").
   Adopt only if the single-clip render is faster; the September result on
   the 2868-wide source was neutral.
 
-## Phase 7: audio copy in intermediate passes
+## Phase 7: audio copy in intermediate passes — dropped
 
-- Segment pass and compositor use `-c:a copy` when the graph has no audio
-  filter and the input is AAC 44.1 kHz stereo; the final file keeps the
-  encode args. Parity test on audio (`compareDecoded` audio compare).
+- Dropped: stream-copied AAC lands 1024 samples early relative to the
+  re-encoded path (measured October 21, 2026); audio re-encode stays.
+  The final concat loses the copied stream's encoder-delay/priming
+  compensation, shifting lip sync by one AAC frame (23 ms at 44.1 kHz).
 
 ## Phase 8: batch of separate reels
 
-- Burn the watermark overlay into the cached bumper segment once per batch
-  (key includes the watermark fingerprint), and with phase 1 the clip's
-  overlays are already in its segment, so the final "Burning N overlays"
-  pass runs only when a document-wide overlay remains; otherwise the
-  compositor is a stream-copy concat. Log "Finishing: stream copy".
+- Product decision (October 21, 2026): bumper spans stay clear of both the
+  template watermark and the brand logo in batch reels, single reels and
+  Builder re-renders of saved documents, preserving `overlayWindows(excluding:)`.
+- Fold the static watermark into the clip segment. The bumper stays a plain
+  cached segment, independent of watermark rasters and reel placement time.
+  The final "Burning N overlays" pass runs only when document-wide overlays
+  remain. Log "Finishing: stream copy" only after a successful video-stream-copy
+  concat, including the direct Wizard join path; cache hits and single-file
+  copies do not emit it.
+
+### Implementation notes for phases 5–8 (October 21, 2026)
+
+- Vision admission is `min(3, max(2, cores / 4))`. Permits remain per request;
+  each multitrack render still owns its own Center Stage actor.
+- `CLIPBUILDER_HW_DECODE_INTERMEDIATES=1` is read from an immutable FFmpeg
+  environment snapshot and defaults off. A Debug TaskLocal override lets tests
+  compare variants without racing on process environment changes. Segment,
+  assembly, range and finishing keys append an identity component only when
+  enabled, preserving existing cache keys when the flag is off.
+- Hardware decode checks the probed H.264 codec and 1080×1920 display size and
+  is used only at known intermediate inputs (segment/compositor, extraction,
+  full and ranged overlay burns). Active calls log the requested decode line.
+  `FFmpeg.run` shares one retry helper: a failed VideoToolbox command logs
+  "Decode: hardware failed; retrying in software" and retries without any
+  input's `-hwaccel videotoolbox` pair. Cancellation and software failures
+  propagate; encoding/filter arguments and purpose logs remain intact.
+- Phase 7's audio-copy flag, eligibility probes, compositor branches and tests
+  were removed after the measured timing failure. Intermediate audio stays
+  re-encoded; the segment compositor always uses the filtered audio path.
+- Separate podcast reels fold a static template watermark above the clip's
+  existing overlays. Brand logos remain in the clip extraction pass. Neither
+  is burned into bumpers. Plain bumper keys normalize placement time so
+  different-length reels and different watermarks share them. Missing image
+  items are skipped with one "Watermark: <name> skipped: unreadable image"
+  line; failed text rasters are skipped too. The editable document stays intact.
+- Final document overlays, later B-roll/VIP layers, brand outro cards and
+  multi-clip selections retain the prior watermark path to preserve ordering.
+  Successful stream-copy concats log `Finishing: stream copy` from the shared
+  concat operation (video is copied; final concat audio still encodes). Each
+  FFmpeg attempt has a purpose line in its render's log.
+- Added tests: `MediaSchedulingTests.overlappingTrackingCalls`,
+  `MultitrackRenderTests.intermediateExperimentsMatch` (hardware toggle,
+  SSIM ≥ 0.99, audioMatches, timing, command/log and cache checks),
+  `MultitrackRenderTests.batchWatermarkedBumper` (two reels, one bumper encode,
+  changed watermark/placement, missing image skips, clear bumper frames,
+  marked clip frames, stream-copy finishing and single-reel/Builder parity),
+  `RenderEngineTests.intermediateExtractParity`,
+  `FFmpegIntermediateTests` (legacy keys and stubbed software retry), and
+  `ExpressBatchWatermarkTests`. Concat logging tests cover direct joins,
+  single-file copies and finishing-cache hits. `PodcastHighlightTimelineTests`
+  exercises shared face focus plus roster-box containment and headroom.
+- Review-fix validation is limited to Swift syntax parsing and whitespace
+  checks. Build and remaining parity checks are Claude's. Keep hardware decode
+  off by default until measured with ffmpeg jobs pinned.
 
 ## Verification
 

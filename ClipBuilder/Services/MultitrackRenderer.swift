@@ -225,13 +225,15 @@ actor MultitrackRenderer {
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         try FootageAvailability.requireSources(document: document, scenes: scenes)
         let editing = profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())
-        return try await RenderContext.$transitions.withValue(editing.transitions) {
-            try await RenderContext.$settings.withValue(document.renderSettings) {
-                try await renderConfigured(document: document, scenes: scenes, profile: profile,
-                                           database: database, centerStageCamera: centerStageCamera,
-                                           projectID: projectID, outputName: outputName, batchID: batchID, wizardOptions: wizardOptions, roles: roles,
-                                           renderFingerprint: renderFingerprint, preview: preview,
-                                           prerenderedSources: prerenderedSources, burnIns: burnIns, muteSource: muteSource, compositeEffect: compositeEffect, emit: emit)
+        return try await FFmpeg.$renderLog.withValue(emit) {
+            try await RenderContext.$transitions.withValue(editing.transitions) {
+                try await RenderContext.$settings.withValue(document.renderSettings) {
+                    try await renderConfigured(document: document, scenes: scenes, profile: profile,
+                                               database: database, centerStageCamera: centerStageCamera,
+                                               projectID: projectID, outputName: outputName, batchID: batchID, wizardOptions: wizardOptions, roles: roles,
+                                               renderFingerprint: renderFingerprint, preview: preview,
+                                               prerenderedSources: prerenderedSources, burnIns: burnIns, muteSource: muteSource, compositeEffect: compositeEffect, emit: emit)
+                }
             }
         }
     }
@@ -280,7 +282,8 @@ actor MultitrackRenderer {
                                   outputName: String? = nil, batchID: String? = nil, wizardOptions: WizardOptions? = nil,
                                   roles: [AIRole] = [], renderFingerprint: String? = nil, preview: Bool,
                                   prerenderedSources: Set<String> = [],
-                                  burnIns: [RenderEngine.ClipOverlay] = [], muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
+                                  burnIns: [RenderEngine.ClipOverlay] = [],
+                                  muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
                                   emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         // Overlay blocks render as their flattened text/image items.
         let document = Self.removingMissingEdgeBumpers(document.expandingOverlayBlocks(), emit: emit)
@@ -635,7 +638,8 @@ actor MultitrackRenderer {
         if let segmentDigests {
             finishingKey = try? await RenderFinishingKey.make(
                 segmentDigests: segmentDigests, transitions: transitions, transitionDuration: transitionDuration,
-                overlays: overlayPlan.remaining, settings: RenderContext.settings, encoder: FFmpeg.encodeArgs)
+                overlays: overlayPlan.remaining, settings: RenderContext.settings,
+                encoder: FFmpeg.encodeArgs + FFmpeg.intermediateCacheIdentity)
         }
         try Task.checkCancellation()
         // Ranges need the actual hard-cut groups and their encoded lengths;
@@ -778,7 +782,7 @@ actor MultitrackRenderer {
         if deferExtract {
             emit("Express finishing: decode/encode whole-frame look after document overlays, then burn-ins")
             try await render.extractClip(source: assembled, start: 0, duration: totalDuration,
-                overlays: burnIns, effect: compositeEffect, mute: muteSource, output: outputURL)
+                overlays: burnIns, effect: compositeEffect, mute: muteSource, intermediateSource: true, output: outputURL)
         } else {
             try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)
         }
@@ -1602,10 +1606,24 @@ actor MultitrackRenderer {
                 lookAssets[effect.preset] = try RenderSegmentCache.key(Data(contentsOf: lut))
             }
         }
-        let input = RenderSegmentKey(start: segment.start, duration: segment.duration, clips: keyClips,
+        let localBumper = segment.clips.count == 1 && segment.clips[0].bumper
+            && captions.isEmpty && overlays.isEmpty
+            && burnIns.isEmpty
+        if localBumper {
+            for index in keyClips.indices {
+                keyClips[index].startTime = (keyClips[index].startTime - segment.start).rounded(toPlaces: 6)
+                keyClips[index].originalStart = (keyClips[index].originalStart - segment.start).rounded(toPlaces: 6)
+                keyClips[index].originalEnd = (keyClips[index].originalEnd - segment.start).rounded(toPlaces: 6)
+                // Joins happen after this segment and cannot change its pixels.
+                keyClips[index].transIn = nil
+                keyClips[index].transOut = nil
+            }
+        }
+        let input = RenderSegmentKey(start: localBumper ? 0 : segment.start,
+            duration: localBumper ? segment.duration.rounded(toPlaces: 6) : segment.duration, clips: keyClips,
             captions: keyCaptions, overlays: keyOverlays, masks: maskKeys,
             fontFingerprints: fontFingerprints ?? [], captionStyle: captionStyle,
-            settings: RenderContext.settings, encoder: FFmpeg.encodeArgs,
+            settings: RenderContext.settings, encoder: FFmpeg.encodeArgs + FFmpeg.intermediateCacheIdentity,
             burnIns: keyBurnIns.isEmpty ? nil : keyBurnIns,
             burnInDuration: keyBurnIns.contains { $0.animation != nil } ? burnInDuration : nil,
             muteSource: muteSource ? true : nil, compositeEffect: compositeEffect, lookAssets: lookAssets.isEmpty ? nil : lookAssets)
@@ -1628,14 +1646,20 @@ actor MultitrackRenderer {
             emit("Segment \(index + 1): encode pass")
             try await compositeLayeredSegment(placements: placements, duration: segment.duration,
                 captions: captions, overlays: overlays, maskFiles: masks, burnIns: burnIns,
-                burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect, output: segmentPath)
+                burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect,
+                intermediateSources: prerendered.union(segment.clips.filter {
+                    $0.originalSourcePath != nil && $0.originalSourcePath != $0.sourcePath
+                }.map(\.sourcePath)), output: segmentPath)
         } catch where !captions.isEmpty {
             try Task.checkCancellation()
             key = nil // A degraded result must never satisfy the full key.
             emit("Segment \(index + 1): caption burn failed, retrying without captions; encode pass")
             try await compositeLayeredSegment(placements: placements, duration: segment.duration,
                 captions: [], overlays: overlays, maskFiles: masks, burnIns: burnIns,
-                burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect, output: segmentPath)
+                burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect,
+                intermediateSources: prerendered.union(segment.clips.filter {
+                    $0.originalSourcePath != nil && $0.originalSourcePath != $0.sourcePath
+                }.map(\.sourcePath)), output: segmentPath)
         }
         try Task.checkCancellation()
         return SegmentArtifact(url: segmentPath, key: key)
@@ -1692,7 +1716,7 @@ actor MultitrackRenderer {
                                      Self.width, Self.height, duration),
                               "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
                               "-t", String(format: "%.2f", duration)]
-                             + FFmpeg.encodeArgs + [output.path], timeout: 120, capture: .boundedStderrTail())
+                             + FFmpeg.encodeArgs + [output.path], timeout: 120, capture: .boundedStderrTail(), purpose: "silent gap placeholder")
     }
 
     /// Splice a placement look before masks and fades, with unique graph pads.
@@ -1722,7 +1746,7 @@ actor MultitrackRenderer {
                                          maskFiles: [Int: URL] = [:],
                                          burnIns: [RenderEngine.ClipOverlay] = [], burnInDuration: Double = 0,
                                          timelineOffset: Double = 0, muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
-                                         output: URL) async throws {
+                                         intermediateSources: Set<String> = [], output: URL) async throws {
         // Already in the one order `renderSegment` computed; the masks are
         // keyed by index into exactly this list, so it must not be re-sorted.
         let ordered = placements
@@ -1734,6 +1758,8 @@ actor MultitrackRenderer {
                          "-f", "lavfi", "-i",
                          String(format: "anullsrc=r=44100:cl=stereo:d=%.3f", duration)]
         for placement in ordered {
+            arguments += await FFmpeg.intermediateDecodeArguments(
+                for: URL(fileURLWithPath: placement.sourcePath), eligible: intermediateSources.contains(placement.sourcePath))
             arguments += ["-ss", String(format: "%.3f", max(0, placement.sourceStart)),
                           "-t", String(format: "%.3f", placement.sourceDur),
                           "-i", placement.sourcePath]
@@ -1939,10 +1965,8 @@ actor MultitrackRenderer {
             filters.append("[\(index + 2):a]\(tempo)\(gain)asetpts=PTS-STARTPTS[a\(index)]")
             audioLabels.append("[a\(index)]")
         }
-        let mix = Self.audioMixFilter(labels: audioLabels,
-                                      cutawayAudio: Self.mixNeedsUnityGain(contributing))
+        let mix = Self.audioMixFilter(labels: audioLabels, cutawayAudio: Self.mixNeedsUnityGain(contributing))
         filters.append(contentsOf: mix.filters)
-        let audioSource = mix.source
 
         let graph = output.deletingPathExtension().appendingPathExtension("filters")
         try filters.joined(separator: ";").write(to: graph, atomically: true, encoding: .utf8)
@@ -1951,7 +1975,8 @@ actor MultitrackRenderer {
             "-/filter_complex", graph.path,
             "-map", "[vout]",
             "-t", String(format: "%.3f", duration),
-        ] + ["-map", audioSource] + FFmpeg.encodeArgs + [output.path], timeout: 600, capture: .boundedStderrTail())
+        ] + ["-map", mix.source] + FFmpeg.encodeArgs + [output.path],
+            timeout: 600, capture: .boundedStderrTail(), purpose: "segment compositor")
     }
 
     private nonisolated struct NormalizedCrop {
@@ -2021,7 +2046,7 @@ actor MultitrackRenderer {
             "-filter_complex", filters.joined(separator: ";"),
             "-map", "[final]",
             "-c:a", "aac", "-b:a", "192k", output.path,
-        ], timeout: 600, capture: .boundedStderrTail())
+        ], timeout: 600, capture: .boundedStderrTail(), purpose: "music bed with silence and fades")
     }
 
     /// Port of video.py overlay_music_track(): duck the original audio per
@@ -2042,12 +2067,12 @@ actor MultitrackRenderer {
                                   "[orig][1:a]amix=inputs=2:duration=first:dropout_transition=2[aout]",
                                   "-map", "0:v", "-map", "[aout]",
                                   "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                                  "-shortest", "-movflags", "+faststart", output.path], timeout: 600, capture: .boundedStderrTail())
+                                  "-shortest", "-movflags", "+faststart", output.path], timeout: 600, capture: .boundedStderrTail(), purpose: "music mix; video stream copy")
         } else {
             try await FFmpeg.run(["-y", "-i", video.path, "-i", musicTrack.path,
                                   "-map", "0:v", "-map", "1:a",
                                   "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-                                  "-shortest", "-movflags", "+faststart", output.path], timeout: 600, capture: .boundedStderrTail())
+                                  "-shortest", "-movflags", "+faststart", output.path], timeout: 600, capture: .boundedStderrTail(), purpose: "music mix; video stream copy")
         }
     }
 
@@ -2208,7 +2233,7 @@ actor MultitrackRenderer {
         let timing = PerfSignpost.begin("OverlayBurn", metadata: "overlays=\(overlays.count)")
         defer { PerfSignpost.end(timing) }
         let videoDuration = await FFmpeg.duration(of: video)
-        var arguments = ["-y", "-i", video.path]
+        var arguments = ["-y"] + (await FFmpeg.intermediateDecodeArguments(for: video)) + ["-i", video.path]
         var filters: [String] = []
         let previous = Self.appendOverlayFilters(overlays, firstInput: 1, previous: "[0:v]",
                                                  arguments: &arguments, filters: &filters)
@@ -2229,7 +2254,7 @@ actor MultitrackRenderer {
             "-c:a", "copy", "-pix_fmt", "yuv420p",
         ] + lengthCap + [
             "-movflags", "+faststart", output.path,
-        ], timeout: 900, capture: .boundedStderrTail())
+        ], timeout: 900, capture: .boundedStderrTail(), purpose: "final overlay burn")
     }
 
     /// Durations and identities of the hard-cut assembly groups, or nil when
@@ -2271,7 +2296,7 @@ actor MultitrackRenderer {
         guard parts.count >= 2 else { return nil }
         RenderFinishingRanges.clock(&parts, startTime: clock.startTime, limit: limit)
         let overlayIdentities = try RenderFinishingKey.overlayIdentities(overlays)
-        let encoder = FFmpeg.encodeArgs
+        let encoder = FFmpeg.encodeArgs + FFmpeg.intermediateCacheIdentity
         let videoEncoder = FFmpeg.videoEncodeArgs
         let settings = RenderContext.settings
         let keys = try parts.map {
@@ -2294,7 +2319,8 @@ actor MultitrackRenderer {
                 return (file: file, entry: RenderSegmentCache.Entry?.none)
             }
             try Task.checkCancellation()
-            var arguments = RenderFinishingRanges.inputArguments(video: video, part: part)
+            var arguments = await FFmpeg.intermediateDecodeArguments(for: video)
+            arguments += RenderFinishingRanges.inputArguments(video: video, part: part)
             var filters: [String] = []
             let previous = Self.appendOverlayFilters(overlays, firstInput: 1, previous: "[0:v]",
                                                      arguments: &arguments, filters: &filters,
@@ -2302,7 +2328,7 @@ actor MultitrackRenderer {
             filters.append(RenderFinishingRanges.rangeFilter(previous: previous, part: part))
             try await FFmpeg.run(arguments + ["-filter_complex", filters.joined(separator: ";")]
                 + RenderFinishingRanges.outputArguments(part: part, encoder: videoEncoder, output: file),
-                timeout: 900, capture: .boundedStderrTail())
+                timeout: 900, capture: .boundedStderrTail(), purpose: "overlay finishing range \(index + 1)")
             return (file: file, entry: RenderSegmentCache.Entry(key: key, source: file))
         }
         try Task.checkCancellation()
@@ -2310,7 +2336,8 @@ actor MultitrackRenderer {
         try RenderFinishingRanges.concatListing(ranges.map(\.file))
             .write(to: listing, atomically: true, encoding: .utf8)
         try await FFmpeg.run(RenderFinishingRanges.joinArguments(listing: listing, audio: video,
-            firstClockStart: parts[0].clockStart, output: output), timeout: 600, capture: .boundedStderrTail())
+            firstClockStart: parts[0].clockStart, output: output), timeout: 600,
+            capture: .boundedStderrTail(), purpose: "overlay ranges: stream-copy join")
         let entries = ranges.compactMap(\.entry)
         emit("Finishing ranges: hits=\(ranges.count - entries.count) encodes=\(entries.count)")
         return entries

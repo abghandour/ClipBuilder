@@ -76,6 +76,32 @@ encodes to two (segment pass and compositor), roughly 45 s → 20–25 s; items
 4–5 are what make the 31-clip batch scale, since it is tracking- and
 encoder-bound rather than CPU-bound.
 
+## Measured again after phases 1–4 (release 1.114, October 21, 2026)
+
+Same 69 s Q&A clip (505.0 s + 69.0 s of the Modestino podcast), same profile
+preset (Compact, 9:16 1080p, follow the talker, Kodak Ektachrome look,
+header/subheader overlay, watermark; intro bumper off this time), rendered
+alone from AI Wizard Express in the 1.114 build, VIP B-roll on:
+
+| Stage | Wall | What runs |
+| --- | ---: | --- |
+| Extract clip | 9.3 s | Saved framing reused (8 keyframes, no intermediates), one segment encode pass with the look folded in |
+| B-roll | 2.3 s | VIP B-roll scoring |
+| Compositor | 19.0 s | Five segments (the VIP B-roll break splits the clip), five encode passes, then "Burning 3 overlay(s)" for 9 s |
+| Reel traits | 8.8 s | After the render |
+
+Render 30.6 s (was 45 s); 39.4 s from Generate to results. The extraction
+stage went from about 40 s to 9.3 s. What remains is the reel compositor:
+the B-roll break turns the prerendered clip into five re-encoded segments
+instead of the stream-copy passthrough, and the static header/subheader
+overlay plus watermark still run as a final full-length burn (phase 8
+folds the watermark; the document overlay burn stays).
+
+Phase 7 (AAC stream copy in intermediates) was dropped after measurement:
+with the copied stream the segment output's audio landed exactly 1024
+samples (one AAC frame, 23 ms) earlier than the re-encoded path, so it
+would have shifted lip sync for a small saving.
+
 ## Truncation bug found during the review (fixed in the tree)
 
 A podcast cut whose main track holds several pieces (the VIP feed changes

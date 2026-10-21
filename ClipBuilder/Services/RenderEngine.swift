@@ -118,13 +118,15 @@ actor RenderEngine {
                      mute: Bool = false,
                      speed: Double = 1,
                      mask: URL? = nil,
+                     intermediateSource: Bool = false,
                      output: URL) async throws {
         let source = try await DriveMediaResolver.shared.ensureLocal(source)
         guard FileManager.default.fileExists(atPath: source.path) else {
             throw CocoaError(.fileReadNoSuchFile, userInfo: [NSLocalizedDescriptionKey: "\(source.lastPathComponent): Not on this Mac. Download or import the source file first."])
         }
         let hasAudio = mute ? false : await FFmpeg.hasAudioStream(source)
-        var arguments = ["-y", "-ss", String(format: "%.2f", start), "-i", source.path]
+        var arguments = ["-y"] + (await FFmpeg.intermediateDecodeArguments(for: source, eligible: intermediateSource))
+            + ["-ss", String(format: "%.2f", start), "-i", source.path]
         if !hasAudio { arguments += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo"] }
         let overlayBase = hasAudio ? 1 : 2
         for overlay in overlays {
@@ -210,7 +212,8 @@ actor RenderEngine {
             arguments += ["-af", String(format: "atempo=%.4f", min(2, max(0.5, speed)))]
         }
         arguments += ["-t", String(format: "%.2f", duration)]
-        try await FFmpeg.run(arguments + FFmpeg.encodeArgs + [output.path], timeout: 900, capture: .boundedStderrTail())
+        try await FFmpeg.run(arguments + FFmpeg.encodeArgs + [output.path], timeout: 900,
+            capture: .boundedStderrTail(), purpose: "extract clip: framing, look and overlays")
     }
 
     /// A screen-crop layout block: every entry is a normalized 1080×1920
@@ -229,6 +232,7 @@ actor RenderEngine {
         for (index, entry) in entries.enumerated() {
             let clipIndex = 1 + index * 2
             let maskIndex = clipIndex + 1
+            arguments += await FFmpeg.intermediateDecodeArguments(for: entry.clip)
             arguments += ["-i", entry.clip.path,
                           "-loop", "1", "-t", String(format: "%.3f", duration), "-i", entry.mask.path]
             filters.append("[\(maskIndex):v]format=gray,scale=\(w):\(h)[mk\(index)]")
@@ -244,7 +248,7 @@ actor RenderEngine {
                       "-t", String(format: "%.3f", duration)]
         arguments += FFmpeg.encodeArgs
         arguments.append(output.path)
-        try await FFmpeg.run(arguments, timeout: 900, capture: .boundedStderrTail())
+        try await FFmpeg.run(arguments, timeout: 900, capture: .boundedStderrTail(), purpose: "area compositor")
     }
 
     /// Plain trim + normalize (no overlays).
@@ -590,7 +594,8 @@ actor RenderEngine {
         if cache != nil {
             key = try? await RenderFinishingKey.make(segments: clips, transitions: transitions.map { $0 },
                 transitionDuration: duration, overlays: [], settings: RenderContext.settings,
-                encoder: FFmpeg.encodeArgs, maximumOverlap: maximumOverlap, version: "multitrack-assembly-v1")
+                encoder: FFmpeg.encodeArgs + FFmpeg.intermediateCacheIdentity,
+                maximumOverlap: maximumOverlap, version: "multitrack-assembly-v1")
         } else {
             key = nil
         }
@@ -670,7 +675,7 @@ actor RenderEngine {
                     lastFrame = scratch.appendingPathComponent("last_\(gap).png")
                     try await FFmpeg.run(["-y", "-ss", String(format: "%.3f", max(0, durations[gap] - 0.05)),
                                           "-i", clips[gap].path, "-frames:v", "1",
-                                          "-update", "1", lastFrame!.path], timeout: 60, capture: .boundedStderrTail())
+                                          "-update", "1", lastFrame!.path], timeout: 60, capture: .boundedStderrTail(), purpose: "transition hold frame")
                 }
                 var sfx: URL?
                 if sfxEnabled, let kind = TransitionSFX.kind(for: name) {
@@ -726,7 +731,7 @@ actor RenderEngine {
         try await FFmpeg.run(["-y", "-ss", String(format: "%.3f", max(0, start)),
                               "-i", source.path,
                               "-t", String(format: "%.3f", duration)]
-                             + FFmpeg.encodeArgs + [output.path], timeout: 300, capture: .boundedStderrTail())
+                             + FFmpeg.encodeArgs + [output.path], timeout: 300, capture: .boundedStderrTail(), purpose: "transition trim")
     }
 
     /// xfade every gap in one pass with per-gap transition durations (flash
@@ -756,6 +761,7 @@ actor RenderEngine {
 
         var arguments = ["-y"]
         for clip in clips {
+            arguments += await FFmpeg.intermediateDecodeArguments(for: clip)
             arguments += ["-i", clip.path]
         }
 
@@ -781,7 +787,7 @@ actor RenderEngine {
         try await FFmpeg.run(arguments + [
             "-filter_complex", filterParts.joined(separator: ";"),
             "-map", "[vout]", "-map", "[aout]",
-        ] + FFmpeg.encodeArgs + [output.path], timeout: 1800, capture: .boundedStderrTail())
+        ] + FFmpeg.encodeArgs + [output.path], timeout: 1800, capture: .boundedStderrTail(), purpose: "transition compositor")
     }
 
     /// Every input is one of our own normalized intermediates (identical
@@ -799,7 +805,8 @@ actor RenderEngine {
         try await FFmpeg.run(["-y", "-f", "concat", "-safe", "0", "-i", listFile.path,
                               "-c:v", "copy"] + FFmpeg.audioEncodeArgs +
                              ["-movflags", "+faststart", output.path],
-                             timeout: 600, capture: .boundedStderrTail())
+                             timeout: 600, capture: .boundedStderrTail(), purpose: "concat: video stream copy, final audio encode")
+        FFmpeg.renderLog?("Finishing: stream copy")
     }
 
     // MARK: - Audio
@@ -817,14 +824,14 @@ actor RenderEngine {
                                   "-filter_complex", filter,
                                   "-map", "0:v", "-map", "[aout]",
                                   "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
-                                  "-shortest", output.path], timeout: 1200, capture: .boundedStderrTail())
+                                  "-shortest", output.path], timeout: 1200, capture: .boundedStderrTail(), purpose: "music mix; video stream copy")
         } else {
             let filter = String(format: "[1:a]volume=0.25,afade=t=out:st=%.2f:d=2.0[aout]", fadeStart)
             try await FFmpeg.run(["-y", "-i", video.path, "-stream_loop", "-1", "-i", music.path,
                                   "-filter_complex", filter,
                                   "-map", "0:v", "-map", "[aout]",
                                   "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
-                                  "-shortest", output.path], timeout: 1200, capture: .boundedStderrTail())
+                                  "-shortest", output.path], timeout: 1200, capture: .boundedStderrTail(), purpose: "music mix; video stream copy")
         }
     }
 

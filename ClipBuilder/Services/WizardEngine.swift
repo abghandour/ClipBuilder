@@ -2757,7 +2757,8 @@ actor WizardEngine {
             rawEmit(line)
         }
         let editing = profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())
-        return try await RenderContext.$transitions.withValue(editing.transitions) {
+        return try await FFmpeg.$renderLog.withValue(emit) {
+        try await RenderContext.$transitions.withValue(editing.transitions) {
         try await RenderContext.$settings.withValue(options.renderSettings) {
             // Rendering a saved selection must not shortlist or re-filter its sources.
             let scenes = try await database.fetchScenes(ids: SceneReferences.ids(in: selection))
@@ -2855,6 +2856,7 @@ actor WizardEngine {
             if deferFinish { return finish }
             try await finish(rawEmit)
             return nil
+        }
         }
         }
     }
@@ -3718,6 +3720,17 @@ actor WizardEngine {
             try await WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: sceneMap,
                 options: options, database: database, profile: profile, captionStyle: captionStyle, log: emit)
         }
+        let overlayTemplates = OverlayTemplateStore.list()
+        var batchWatermark: [RenderEngine.ClipOverlay] = []
+        if ExpressBatchWatermark.canFold(options: options, plan: plan,
+                                        hasPodcastDocument: podcastCuts[0] != nil, batchID: batchID) {
+            if let block = WizardFixedOverlay.watermarkBlock(options: options, templates: overlayTemplates, totalDuration: 1) {
+                batchWatermark = ExpressBatchWatermark.rasterize(block, settings: options.renderSettings, scratch: scratch, log: emit)
+            }
+        }
+        // The logo is already below the clip's captions. A template watermark
+        // was a final layer, so it must remain above them in the folded pass.
+        let clipWatermark = watermarkOverlayAvailable ? batchWatermark : []
         let jobs: [(index: Int, clip: WizardPlanClip, scene: SceneRecord)] =
             plan.clips.enumerated().compactMap { index, clip in
                 sceneMap[clip.sceneID].map { (index, clip, $0) }
@@ -3730,7 +3743,7 @@ actor WizardEngine {
                 try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
                                                   scene: job.scene, sceneMap: sceneMap, options: options,
                                                   captionStyle: captionStyle, captionFallbacks: captionFallbacks,
-                                                  brandOverlays: brandOverlayFiles,
+                                                  brandOverlays: brandOverlayFiles, topOverlays: clipWatermark,
                                                   podcastDocument: podcastCuts[job.index], nameTagPeople: people, tagText: tagText, profile: profile,
                                                   database: database, scratch: scratch,
                                                   emit: emit)
@@ -3857,9 +3870,9 @@ actor WizardEngine {
         // after bumpers so its start counts from the finished video's start.
         // Planned per-clip overlays are already burned into the clips; only
         // this block rides the final compositor pass.
-        let overlayTemplates = OverlayTemplateStore.list()
         let totalDuration = document.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0
         var finalOverlayBlocks: [OverlayBlockItem] = []
+        var foldedWatermarkID: UUID?
         if let fixedOverlay = WizardFixedOverlay.block(options: options, templates: overlayTemplates,
                                                        totalDuration: totalDuration) {
             finalOverlayBlocks.append(fixedOverlay)
@@ -3871,11 +3884,15 @@ actor WizardEngine {
         if let watermark = WizardFixedOverlay.watermarkBlock(options: options, templates: overlayTemplates,
                                                              totalDuration: totalDuration) {
             finalOverlayBlocks.append(watermark)
+            if !batchWatermark.isEmpty { foldedWatermarkID = watermark.uid }
             emit("Watermark overlay '\(watermark.name)'")
         } else if options.includeWatermark, let name = options.watermarkOverlayTemplate, !name.isEmpty {
             emit("Watermark overlay '\(name)' skipped: template missing or empty")
         }
+        // Retain the exact original layer order in the editable document.
         document.overlayBlocks += finalOverlayBlocks
+        finalOverlayBlocks.removeAll { $0.uid == foldedWatermarkID }
+        if !batchWatermark.isEmpty { emit("Watermark folded into clip segment") }
         emit("Assembling \(clipURLs.count) segments...")
         let assembled = scratch.appendingPathComponent("assembled.mp4")
         if !bumperLog.isEmpty || !cutaways.isEmpty || !finalOverlayBlocks.isEmpty {
@@ -4001,7 +4018,7 @@ actor WizardEngine {
                                     scene: SceneRecord, sceneMap: [Int64: SceneRecord] = [:],
                                     options: WizardOptions,
                                     captionStyle: CaptionStyle, captionFallbacks: WizardCaptionFallbackLog,
-                                    brandOverlays: [URL] = [],
+                                    brandOverlays: [URL] = [], topOverlays: [RenderEngine.ClipOverlay] = [],
                                     podcastDocument: TimelineDocument? = nil, nameTagPeople: [PersonRecord] = [], tagText: [String: String], profile: BrandProfile,
                                     database: Database, scratch: URL,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> URL {
@@ -4160,6 +4177,7 @@ actor WizardEngine {
             }
         }
 
+        overlays += topOverlays
         let output = scratch.appendingPathComponent("clip_\(index).mp4")
         if let podcastDocument {
             try await ExpressPodcastRenderer.extract(document: podcastDocument, scenes: Array(sceneMap.values),
@@ -4177,7 +4195,7 @@ actor WizardEngine {
             emit("Clip \(index + 1): split Zoom feeds")
             try await render.extractClip(source: split, start: 0, duration: duration,
                                          overlays: overlays, effect: lookEffect, mute: options.muteSource,
-                                         speed: clip.speed, output: output)
+                                         speed: clip.speed, intermediateSource: true, output: output)
             return output
         }
         // Screen crop: the footage is framed INTO the area (tracking camera
@@ -4198,7 +4216,7 @@ actor WizardEngine {
                 let main = scratch.appendingPathComponent("clip_\(index)_main.mp4")
                 try await render.extractClip(source: framed, start: 0, duration: duration,
                                              overlays: overlays, effect: lookEffect, mute: options.muteSource,
-                                             speed: clip.speed, output: main)
+                                             speed: clip.speed, intermediateSource: true, output: main)
                 var entries: [(clip: URL, mask: URL)] = [(main, mask)]
                 for (areaIndex, areaClip) in clip.areaClips.enumerated() {
                     guard let areaScene = sceneMap[areaClip.sceneID],
@@ -4216,7 +4234,7 @@ actor WizardEngine {
                     let areaOutput = scratch.appendingPathComponent("clip_\(index)_area\(areaIndex).mp4")
                     try await render.extractClip(source: areaFramed, start: 0,
                                                  duration: areaSourceDuration / clip.speed,
-                                                 mute: true, speed: clip.speed, output: areaOutput)
+                                                 mute: true, speed: clip.speed, intermediateSource: true, output: areaOutput)
                     entries.append((areaOutput, areaMask))
                 }
                 try await render.compositeAreas(entries, duration: duration, output: output)
@@ -4225,7 +4243,7 @@ actor WizardEngine {
             }
             try await render.extractClip(source: framed, start: 0, duration: duration,
                                          overlays: overlays, effect: lookEffect, mute: options.muteSource,
-                                         speed: clip.speed, mask: mask, output: output)
+                                         speed: clip.speed, mask: mask, intermediateSource: true, output: output)
             return output
         }
         // Framing belongs to the scene, not to this run. Replay the saved
@@ -4249,7 +4267,7 @@ actor WizardEngine {
                                                  overlays: overlays, effect: lookEffect, mute: options.muteSource,
                                                  speed: clip.speed,
                                                  mask: mask,
-                                                 output: output)
+                                                 intermediateSource: true, output: output)
                     return output
                 } catch {
                     emit("Saved framing failed for clip \(index + 1) (\(error)) — falling back to auto-crop")

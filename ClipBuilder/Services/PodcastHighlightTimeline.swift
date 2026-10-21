@@ -22,14 +22,14 @@ enum PodcastHighlightTimeline {
             speakerKeys: candidate.speakerKeys, turns: turns, roster: roster, scenes: scenes, segments: segments, people: people)
         let cuts = plannedCuts ?? PodcastHighlightBRollPlanner.plan(candidate: candidate, sources: sources, turns: turns,
             segments: segments, tiles: tiles, scenes: scenes, threshold: threshold, instructions: options.brollInstructions)
-        add(cuts: cuts, to: builder, video: video, tiles: tiles, scenes: scenes, log: log)
+        add(cuts: cuts, to: builder, video: video, tiles: tiles, scenes: scenes, roster: roster, log: log)
         if cuts.isEmpty { log("B-roll: no suitable sources.") }
         return builder.document
     }
 
     static func add(cuts: [PodcastHighlightBRollPlanner.Cut], to builder: BuilderTimelineModel,
                     video: VideoRecord, tiles: [PodcastTile], scenes: [SceneRecord], offset: Double = 0,
-                    log: @Sendable (String) -> Void) {
+                    roster: [VideoPersonRecord] = [], log: @Sendable (String) -> Void) {
         for cut in cuts {
             let source: CutawaySource
             var window: FreeCropRect?
@@ -37,8 +37,14 @@ enum PodcastHighlightTimeline {
             case .reaction(let index):
                 guard let tile = tiles.first(where: { $0.index == index }), video.width > 0, video.height > 0 else { continue }
                 source = .file(url: video.url, duration: video.duration)
+                // A reaction window is centred on the face like a feed cell
+                // (the layout pass's face, else the roster portrait), not on
+                // the tile: a tile-centred window slices a face that sits
+                // near the tile's edge.
+                let face = CropRecipePlanner.faceFocus(of: tile, roster: roster)
                 window = CropRecipePlanner.crop(tile: tile, aspect: builder.document.renderSettings.aspectRatio,
-                                               sourceAspect: Double(video.width) / Double(video.height))
+                                               sourceAspect: Double(video.width) / Double(video.height),
+                                               center: face.center, face: face.faceBox)
             case .scene(let id):
                 guard let scene = scenes.first(where: { $0.id == id }) else { continue }
                 source = .scene(scene)

@@ -391,23 +391,9 @@ nonisolated enum CropRecipePlanner {
         if recipe.kind == .vip, vipTiles.isEmpty {
             notes.append("No VIP on this recording; following the talker.")
         }
-        let faceBoxes: [Int: CGRect] = Dictionary(uniqueKeysWithValues: tiles.compactMap { tile in
-            guard let box = roster.first(where: { person in
-                guard let box = person.portraitBox else { return false }
-                return (tile.personKey == nil || tile.personKey == person.key)
-                    && tile.contains(x: box.x + box.w / 2, y: box.y + box.h / 2)
-            })?.portraitBox else { return nil }
-            return (tile.index, CGRect(x: box.x, y: box.y, width: box.w, height: box.h))
-        })
-        let faceCenters: [Int: (x: Double, y: Double)] = Dictionary(uniqueKeysWithValues: tiles.compactMap { tile in
-            if let face = tile.faceCenter { return (tile.index, face) }
-            guard let box = roster.first(where: { person in
-                guard let box = person.portraitBox else { return false }
-                return (tile.personKey == nil || tile.personKey == person.key)
-                    && tile.contains(x: box.x + box.w / 2, y: box.y + box.h / 2)
-            })?.portraitBox else { return nil }
-            return (tile.index, (box.x + box.w / 2, box.y + box.h / 2))
-        })
+        let faces = Dictionary(uniqueKeysWithValues: tiles.map { ($0.index, faceFocus(of: $0, roster: roster)) })
+        let faceBoxes = faces.compactMapValues { $0.faceBox }
+        let faceCenters = faces.compactMapValues { $0.center }
         func rect(_ index: Int, area: ScreenCropArea) -> FreeCropRect? {
             guard let tile = tiles.first(where: { $0.index == index }) else { return nil }
             let bounds = area.bounds
